@@ -31,7 +31,7 @@ async def index(username: str = Depends(check_auth)):
 
 
 @app.get("/api/status")
-async def status(username: str = Depends(check_auth)):
+async def app_status(username: str = Depends(check_auth)):
     return {"status": "ok", "message": "Сервер работает"}
 
 @app.post("/api/upload/data")
@@ -46,6 +46,14 @@ async def upload_data(file: UploadFile = File(...), username: str = Depends(chec
 @app.post("/api/upload/template")
 async def upload_template(file: UploadFile = File(...), username: str = Depends(check_auth)):
     dest = Path("data/templates") / file.filename
+    dest.parent.mkdir(exist_ok=True)
+    with dest.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return {"status": "ok", "filename": file.filename}
+
+@app.post("/api/upload/base")
+async def upload_base(file: UploadFile = File(...), username: str = Depends(check_auth)):
+    dest = Path("data/base.xlsx")
     dest.parent.mkdir(exist_ok=True)
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -187,6 +195,30 @@ def finalize_generated_files(results: list[dict]) -> None:
 
     for result in results:
         result.pop("generated_files", None)
+
+
+@app.get("/api/counts")
+async def counts(username: str = Depends(check_auth)):
+    base_path = Path("data/base.xlsx")
+    data_path = Path("data/data.xlsx")
+    
+    parser_total = 0
+    if base_path.exists():
+        _, _, rows = load_rows(base_path)
+        parser_total = len(rows)
+    
+    generator_total = 0
+    if data_path.exists():
+        _, _, rows = load_rows(data_path)
+        generator_total = len(rows)
+    
+    sender_total = generator_total // 2
+    
+    return {
+        "parser_total": parser_total,
+        "generator_total": generator_total,
+        "sender_total": sender_total
+    }
 
 @app.post("/api/generate")
 async def generate(username: str = Depends(check_auth)):
