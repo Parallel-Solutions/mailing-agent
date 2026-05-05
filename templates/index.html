@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Рассылка КП — Система автоматизации</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: #f4f5f0;
+    color: #1a1a1a;
+    min-height: 100vh;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 2rem;
+  }
+
+  .app {
+    display: grid;
+    grid-template-columns: 230px 1fr;
+    min-height: 620px;
+    width: 100%;
+    max-width: 1000px;
+    border: 1px solid #d8ddd0;
+    border-radius: 14px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.07);
+  }
+
+  /* SIDEBAR */
+  .sidebar {
+    background: #f9faf6;
+    border-right: 1px solid #e4e8dc;
+    padding: 1.5rem 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sidebar-logo {
+    padding: 0 1.25rem 1.25rem;
+    border-bottom: 1px solid #e4e8dc;
+    margin-bottom: 0.75rem;
+  }
+
+  .logo-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1a1a1a;
+    letter-spacing: 0.2px;
+  }
+
+  .logo-sub {
+    font-size: 11px;
+    color: #888;
+    margin-top: 3px;
+  }
+
+  .nav-section {
+    padding: 0.5rem 1.25rem 0.25rem;
+    font-size: 10px;
+    font-weight: 600;
+    color: #aaa;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 1.25rem;
+    cursor: pointer;
+    font-size: 13px;
+    color: #555;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+    user-select: none;
+  }
+
+  .nav-item:hover {
+    color: #1a1a1a;
+    background: #f0f2ec;
+  }
+
+  .nav-item.active {
+    color: #2d5a0e;
+    background: #fff;
+    border-left-color: #5a9e1f;
+    font-weight: 600;
+  }
+
+  .nav-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .dot-green { background: #5a9e1f; }
+  .dot-amber { background: #c07a10; }
+  .dot-gray  { background: #ccc; }
+  .dot-blue  { background: #2d7ab0; }
+
+  .sidebar-bottom {
+    margin-top: auto;
+    border-top: 1px solid #e4e8dc;
+    padding-top: 0.5rem;
+  }
+
+  /* CONTENT */
+  .content {
+    padding: 2rem;
+    overflow-y: auto;
+    max-height: 620px;
+  }
+
+  .screen { display: none; }
+  .screen.active { display: block; }
+
+  .page-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #1a1a1a;
+    margin-bottom: 4px;
+  }
+
+  .page-sub {
+    font-size: 13px;
+    color: #777;
+    margin-bottom: 1.75rem;
+  }
+
+  .divider {
+    height: 1px;
+    background: #eee;
+    margin: 1.5rem 0;
+  }
+
+  /* FORMS */
+  .field { margin-bottom: 1.25rem; }
+
+  .field label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 6px;
+  }
+
+  .field select,
+  .field input[type="text"],
+  .field input[type="email"],
+  .field input[type="password"] {
+    width: 100%;
+    padding: 9px 12px;
+    font-size: 13px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    color: #1a1a1a;
+    background: #fff;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  .field select:focus,
+  .field input:focus {
+    border-color: #5a9e1f;
+    box-shadow: 0 0 0 3px rgba(90,158,31,0.1);
+  }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+
+  .file-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    border: 1.5px dashed #ccc;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    color: #888;
+    transition: all 0.15s;
+    background: transparent;
+    width: 100%;
+    text-align: left;
+  }
+
+  .file-btn:hover {
+    border-color: #5a9e1f;
+    color: #2d5a0e;
+    background: #f5faf0;
+  }
+
+  .file-btn.uploaded {
+    border-style: solid;
+    border-color: #5a9e1f;
+    color: #2d5a0e;
+    background: #f5faf0;
+  }
+
+  .file-icon { font-size: 15px; }
+
+  /* BUTTONS */
+  .btn-primary {
+    padding: 9px 22px;
+    background: #3a6e10;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: background 0.15s;
+  }
+
+  .btn-primary:hover { background: #2a5409; }
+
+  .btn-outline {
+    padding: 8px 16px;
+    background: transparent;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    color: #555;
+    transition: all 0.15s;
+  }
+
+  .btn-outline:hover {
+    border-color: #999;
+    color: #1a1a1a;
+    background: #f5f5f5;
+  }
+
+  .btn-danger {
+    padding: 8px 16px;
+    background: transparent;
+    border: 1px solid #e0a0a0;
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    color: #b03030;
+    transition: all 0.15s;
+  }
+
+  .btn-danger:hover { background: #fdf0f0; }
+
+  /* MODULE CARDS */
+  .module-card {
+    border: 1px solid #e4e8dc;
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+    background: #fff;
+  }
+
+  .module-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+
+  .module-num {
+    font-size: 11px;
+    font-weight: 600;
+    color: #aaa;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .module-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1a1a1a;
+    margin: 4px 0 6px;
+  }
+
+  .module-desc {
+    font-size: 12px;
+    color: #777;
+    line-height: 1.6;
+    margin-bottom: 1rem;
+  }
+
+  .module-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  /* BADGES */
+  .badge {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-weight: 600;
+  }
+
+  .badge-idle    { background: #f0f0f0; color: #999; }
+  .badge-running { background: #e8f5d8; color: #2d6e0a; }
+  .badge-done    { background: #e8f5d8; color: #2d6e0a; }
+  .badge-wait    { background: #fdf0d8; color: #8a5a00; }
+  .badge-error   { background: #fde8e8; color: #a02020; }
+
+  /* PROGRESS */
+  .progress-wrap { margin-top: 10px; }
+
+  .progress-bar {
+    height: 5px;
+    background: #eee;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: #5a9e1f;
+    border-radius: 3px;
+    transition: width 0.4s ease;
+  }
+
+  .progress-label {
+    font-size: 11px;
+    color: #aaa;
+    margin-top: 5px;
+  }
+
+  /* STATS */
+  .stats-row {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 1.25rem;
+  }
+
+  .stat {
+    background: #f9faf6;
+    border: 1px solid #e4e8dc;
+    border-radius: 10px;
+    padding: 12px;
+    text-align: center;
+  }
+
+  .stat-n {
+    font-size: 20px;
+    font-weight: 600;
+    color: #1a1a1a;
+  }
+
+  .stat-l {
+    font-size: 11px;
+    color: #aaa;
+    margin-top: 3px;
+  }
+
+  /* UPLOAD ZONE */
+  .upload-zone {
+    border: 1.5px dashed #ccc;
+    border-radius: 12px;
+    padding: 1.5rem;
+    text-align: center;
+    margin-bottom: 1.25rem;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .upload-zone:hover {
+    border-color: #5a9e1f;
+    background: #f5faf0;
+  }
+
+  .upload-zone p {
+    font-size: 14px;
+    font-weight: 600;
+    color: #444;
+    margin-bottom: 4px;
+  }
+
+  .upload-zone span {
+    font-size: 12px;
+    color: #aaa;
+  }
+
+  /* INFO BOX */
+  .info-box {
+    background: #f5faf0;
+    border: 1px solid #c8e0a0;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: #3a6e10;
+    margin-bottom: 1rem;
+    line-height: 1.5;
+  }
+
+  .warn-box {
+    background: #fdf8e8;
+    border: 1px solid #e8d080;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: #7a5a00;
+    margin-bottom: 1rem;
+    line-height: 1.5;
+  }
+
+  /* TOAST */
+  .toast {
+    position: fixed;
+    bottom: 2rem;
+    right: 2rem;
+    background: #2d5a0e;
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: all 0.3s;
+    z-index: 999;
+    pointer-events: none;
+  }
+
+  .toast.show {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* CHAT */
+  .chat-section {
+    margin-top: 1.5rem;
+    border: 1px solid #e4e8dc;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .chat-header {
+    padding: 10px 14px;
+    background: #f9faf6;
+    border-bottom: 1px solid #e4e8dc;
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .chat-header .dot-green {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #5a9e1f;
+    flex-shrink: 0;
+  }
+
+  .chat-messages {
+    height: 200px;
+    overflow-y: auto;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: #fff;
+  }
+
+  .chat-msg {
+    max-width: 85%;
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 8px 12px;
+    border-radius: 10px;
+  }
+
+  .chat-msg.agent {
+    background: #f0f4ea;
+    color: #2d5a0e;
+    align-self: flex-start;
+    border-bottom-left-radius: 3px;
+  }
+
+  .chat-msg.user {
+    background: #3a6e10;
+    color: #fff;
+    align-self: flex-end;
+    border-bottom-right-radius: 3px;
+  }
+
+  .chat-input-row {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    border-top: 1px solid #e4e8dc;
+    background: #fafbf8;
+  }
+
+  .chat-input-row input {
+    flex: 1;
+    padding: 7px 10px;
+    font-size: 12px;
+    border: 1px solid #ddd;
+    border-radius: 7px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  .chat-input-row input:focus { border-color: #5a9e1f; }
+
+  .chat-input-row button {
+    padding: 7px 14px;
+    background: #3a6e10;
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .chat-input-row button:hover { background: #2a5409; }
+
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-title">Рассылка КП</div>
+      <div class="logo-sub">Система автоматизации</div>
+    </div>
+
+    <div class="nav-section">Параметры</div>
+    <div class="nav-item active" onclick="show('settings', this)">
+      <div class="nav-dot dot-green"></div> Настройки рассылки
+    </div>
+
+    <div class="nav-section" style="margin-top:0.5rem">Модули</div>
+    <div class="nav-item" onclick="show('parser', this)">
+      <div class="nav-dot dot-gray"></div> Модуль 1 — Парсер
+    </div>
+    <div class="nav-item" onclick="show('generator', this)">
+      <div class="nav-dot dot-gray"></div> Модуль 2 — Генератор
+    </div>
+    <div class="nav-item" onclick="show('sender', this)">
+      <div class="nav-dot dot-gray"></div> Модуль 3 — Отправщик
+    </div>
+
+    <div class="sidebar-bottom">
+      <div class="nav-item" onclick="show('status', this)">
+        <div class="nav-dot dot-amber"></div> Статусы отправки
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTENT -->
+  <div class="content">
+
+    <!-- НАСТРОЙКИ -->
+    <div class="screen active" id="s-settings">
+      <div class="page-title">Настройки рассылки</div>
+      <div class="page-sub">Укажите параметры перед запуском модулей</div>
+
+      <div class="field">
+        <label>Вид работ</label>
+        <select>
+          <option>МНГП</option>
+          <option>ГП+ПЗЗ</option>
+          <option>Отдельно ГП и ПЗЗ</option>
+          <option>СТП</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Тема письма для рассылки</label>
+        <input type="text" value="Коммерческое предложение МНГП. Срок действия до 31.05.2026">
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="grid2">
+        <div class="field">
+          <label>Шаблон текста письма (.txt)</label>
+          <button class="file-btn uploaded" onclick="toggleFile(this)">
+            <span class="file-icon">✓</span> Шаблон_Письмо.txt
+          </button>
+        </div>
+        <div class="field">
+          <label>Шаблон КП (.docx)</label>
+          <input type="file" id="upload-kp-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'kp-btn', 'Шаблон КП')">
+          <button class="file-btn" id="kp-btn" onclick="document.getElementById('upload-kp-input').click()">
+            <span class="file-icon">📎</span> Выбрать файл
+          </button>
+        </div>
+        <div class="field">
+          <label>Шаблон договора (.docx)</label>
+          <input type="file" id="upload-contract-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'contract-btn', 'Шаблон Договор')">
+          <button class="file-btn" id="contract-btn" onclick="document.getElementById('upload-contract-input').click()">
+            <span class="file-icon">📎</span> Выбрать файл
+          </button>
+        </div>
+        <div class="field">
+          <label>База МО 2025 (.xlsx)</label>
+          <button class="file-btn uploaded" onclick="toggleFile(this)">
+            <span class="file-icon">✓</span> БАЗА_МО_2025.xlsx
+          </button>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="field">
+        <label>Email отправителя</label>
+        <input type="email" placeholder="info@company.ru">
+      </div>
+
+      <div class="field">
+        <label>Пароль почтового ящика</label>
+        <input type="password" placeholder="••••••••••">
+      </div>
+
+      <button class="btn-primary" onclick="showToast('Настройки сохранены')">Сохранить настройки</button>
+    </div>
+
+    <!-- ПАРСЕР -->
+    <div class="screen" id="s-parser">
+      <div class="page-title">Модуль 1 — Парсер данных</div>
+      <div class="page-sub">Сбор информации по 11 155 муниципальным образованиям</div>
+
+      <div class="upload-zone" onclick="document.getElementById('upload-data-input').click()">
+        <input type="file" id="upload-data-input" accept=".xlsx" style="display:none" onchange="uploadData(this)">
+        <p id="upload-data-label">Загрузить готовый data.xlsx</p>
+        <span>Нажмите, если файл уже подготовлен — парсер запускать не нужно</span>
+      </div>
+
+      <div class="info-box">
+        Парсер обращается к API checko.ru и заполняет data.xlsx: ИНН, КПП, ОГРН, ОКПО, ОКТМО, ФИО главы, email, адрес. Пауза 2 сек между запросами.
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-num">Основной источник — checko.ru</span>
+          <span class="badge badge-idle" id="p-badge">Ожидание</span>
+        </div>
+        <div class="module-title">Автоматический сбор данных</div>
+        <div class="module-desc">
+          Запрашивает данные для каждого МО из файла «БАЗА МО 2025». Результат сохраняется в data.xlsx. Парсер можно останавливать и продолжать — он продолжит с того места, где остановился.
+        </div>
+        <div class="progress-wrap">
+          <div class="progress-bar"><div class="progress-fill" id="p-fill" style="width:0%"></div></div>
+          <div class="progress-label" id="p-label">0 / 11 155 записей</div>
+        </div>
+        <div class="module-actions" style="margin-top:12px">
+          <button class="btn-primary" id="p-run" onclick="startParser()">Запустить парсер</button>
+          <button class="btn-outline" id="p-pause" onclick="pauseParser()" style="display:none">Пауза</button>
+          <button class="btn-outline" onclick="showToast('Файл data.xlsx будет доступен для скачивания в финальной версии')">Скачать data.xlsx</button>
+        </div>
+      </div>
+
+      <div class="chat-section">
+        <div class="chat-header">
+          <div class="dot-green"></div> Чат с агентом
+        </div>
+        <div class="chat-messages" id="p-chat-messages">
+          <div class="chat-msg agent">Привет! Я агент-парсер. Могу рассказать статус сбора данных, найти информацию по конкретному МО или ответить на вопросы о процессе парсинга.</div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="p-chat-input" placeholder="Напишите вопрос агенту..." onkeydown="if(event.key==='Enter') sendChat('p-chat')">
+          <button onclick="sendChat('p-chat')">Отправить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ГЕНЕРАТОР -->
+    <div class="screen" id="s-generator">
+      <div class="page-title">Модуль 2 — Генератор документов</div>
+      <div class="page-sub">Создание КП и договора для каждого МО по шаблонам</div>
+
+      <div class="stats-row" style="grid-template-columns: repeat(3, 1fr)">
+        <div class="stat">
+          <div class="stat-n" id="g-total">11 155</div>
+          <div class="stat-l">Всего МО</div>
+        </div>
+        <div class="stat">
+          <div class="stat-n" id="g-done" style="color:#2d6e0a">0</div>
+          <div class="stat-l">Обработано</div>
+        </div>
+        <div class="stat">
+          <div class="stat-n" id="g-err" style="color:#a02020">0</div>
+          <div class="stat-l">Ошибок</div>
+        </div>
+      </div>
+
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-num">Генерация PDF из шаблонов Word</span>
+          <span class="badge badge-idle" id="g-badge">Ожидание</span>
+        </div>
+        <div class="module-title">Создание пакета документов</div>
+        <div class="module-desc">
+          Подставляет данные из data.xlsx в шаблоны Word. Автоматически склоняет ФИО и названия МО по падежам. Конвертирует в PDF. Сохраняет в папку output/ID_Название_МО/.
+        </div>
+        <div class="progress-wrap">
+          <div class="progress-bar"><div class="progress-fill" id="g-fill" style="width:0%"></div></div>
+          <div class="progress-label" id="g-label">0 / 11 155 документов</div>
+        </div>
+        <div class="module-actions" style="margin-top:12px">
+          <button class="btn-primary" id="g-run" onclick="startGenerator()">Запустить генератор</button>
+          <button class="btn-outline" id="g-pause" onclick="pauseGenerator()" style="display:none">Пауза</button>
+          <button class="btn-outline" onclick="window.location.href='/api/download/output'">Скачать output.zip</button>
+        </div>
+      </div>
+
+      <div class="module-card" style="border-color:#c8e0a0; background:#fafdf6">
+        <div class="module-header">
+          <span class="module-num">Постобработка — склонение по падежам</span>
+          <span class="badge badge-idle" id="ph-badge">Ожидание</span>
+        </div>
+        <div class="module-title">Агент-филолог</div>
+        <div class="module-desc">
+          Автоматически склоняет ФИО глав и названия МО по нужным падежам
+        </div>
+        <div class="progress-wrap">
+          <div class="progress-bar"><div class="progress-fill" id="ph-fill" style="width:0%"></div></div>
+          <div class="progress-label" id="ph-label">0 / 11 155 записей</div>
+        </div>
+        <div class="module-actions" style="margin-top:12px">
+          <button class="btn-primary" id="ph-run" onclick="startPhilologist()">Запустить агента-филолога</button>
+          <button class="btn-outline" id="ph-pause" onclick="pausePhilologist()" style="display:none">Пауза</button>
+        </div>
+      </div>
+
+
+      <div class="chat-section">
+        <div class="chat-header">
+          <div class="dot-green"></div> Чат с агентом
+        </div>
+        <div class="chat-messages" id="g-chat-messages">
+          <div class="chat-msg agent">Привет! Я агент-генератор. Могу рассказать о статусе генерации документов, сообщить об ошибках или ответить на вопросы по конкретному МО.</div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="g-chat-input" placeholder="Напишите вопрос агенту..." onkeydown="if(event.key==='Enter') sendChat('g-chat')">
+          <button onclick="sendChat('g-chat')">Отправить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ОТПРАВЩИК -->
+    <div class="screen" id="s-sender">
+      <div class="page-title">Модуль 3 — Отправщик писем</div>
+      <div class="page-sub">Рассылка КП и договоров по email с контролем статусов</div>
+
+      <div class="stats-row" style="grid-template-columns: repeat(4, 1fr)">
+        <div class="stat">
+          <div class="stat-n" id="s-sent" style="color:#2d6e0a">0</div>
+          <div class="stat-l">Отправлено (ОК)</div>
+        </div>
+        <div class="stat">
+          <div class="stat-n" id="s-left">11 155</div>
+          <div class="stat-l">Осталось</div>
+        </div>
+        <div class="stat">
+          <div class="stat-n" id="s-err2" style="color:#a02020">0</div>
+          <div class="stat-l">Ошибок</div>
+        </div>
+        <div class="stat">
+          <div class="stat-n">11 155</div>
+          <div class="stat-l">Всего</div>
+        </div>
+      </div>
+
+      <div class="warn-box">
+        Скорость отправки: не более 100–150 писем в час. При повторном запуске отправщик продолжит с первой строки где STATUS пустой.
+      </div>
+
+      <div class="module-card">
+        <div class="module-header">
+          <span class="module-num">SMTP рассылка с вложениями</span>
+          <span class="badge badge-idle" id="s-badge">Ожидание</span>
+        </div>
+        <div class="module-title">Отправка писем с КП и договором</div>
+        <div class="module-desc">
+          Читает data.xlsx, формирует письмо из шаблона, прикрепляет PDF из папки output/, отправляет. Ставит ОК или Ошибка в столбец STATUS. Можно останавливать и продолжать в любой момент.
+        </div>
+        <div class="progress-wrap">
+          <div class="progress-bar"><div class="progress-fill" id="s-fill" style="width:0%"></div></div>
+          <div class="progress-label" id="s-label">0 / 11 155 писем</div>
+        </div>
+        <div class="module-actions" style="margin-top:12px">
+          <button class="btn-primary" id="s-run" onclick="startSender()">Начать рассылку</button>
+          <button class="btn-outline" id="s-pause" onclick="pauseSender()" style="display:none">Пауза</button>
+          <button class="btn-danger" onclick="showToast('Рассылка остановлена')">Остановить</button>
+        </div>
+      </div>
+
+      <div class="chat-section">
+        <div class="chat-header">
+          <div class="dot-green"></div> Чат с агентом
+        </div>
+        <div class="chat-messages" id="s-chat-messages">
+          <div class="chat-msg agent">Привет! Я агент-отправщик. Могу сообщить статус рассылки, найти письмо по конкретному МО или сообщить об ошибках доставки.</div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="s-chat-input" placeholder="Напишите вопрос агенту..." onkeydown="if(event.key==='Enter') sendChat('s-chat')">
+          <button onclick="sendChat('s-chat')">Отправить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- СТАТУСЫ -->
+    <div class="screen" id="s-status">
+      <div class="page-title">Статусы отправки</div>
+      <div class="page-sub">Мониторинг рассылки в реальном времени</div>
+
+      <div class="stats-row" style="grid-template-columns: repeat(4, 1fr)">
+        <div class="stat">
+          <div class="stat-n" style="color:#2d6e0a">7 234</div>
+          <div class="stat-l">Отправлено (ОК)</div>
+        </div>
+        <div class="stat">
+          <div class="stat-n" style="color:#a02020">142</div>
+          <div class="stat-l">Ошибка</div>
+        </div>
+        <div class="stat">
+          <div class="stat-n" style="color:#888">3 779</div>
+          <div class="stat-l">Не отправлено</div>
+        </div>
+        <div class="stat">
+          <div class="stat-n">11 155</div>
+          <div class="stat-l">Всего</div>
+        </div>
+      </div>
+
+      <div class="progress-bar" style="height:8px; margin-bottom:6px">
+        <div class="progress-fill" style="width:65%"></div>
+      </div>
+      <div class="progress-label" style="margin-bottom:1.5rem; font-size:13px; color:#555">
+        65% завершено — идёт рассылка
+      </div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap">
+        <button class="btn-outline" onclick="showToast('Файл data.xlsx со статусами будет доступен в финальной версии')">Скачать data.xlsx со статусами</button>
+        <button class="btn-outline" onclick="showToast('Повторная отправка будет доступна в финальной версии')">Повторить письма с ошибкой</button>
+        <button class="btn-outline" onclick="showToast('Обновлено')">Обновить статусы</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  function show(id, el) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById('s-' + id).classList.add('active');
+    el.classList.add('active');
+  }
+
+  function toggleFile(btn, name) {
+    if (btn.classList.contains('uploaded')) {
+      btn.classList.remove('uploaded');
+      btn.innerHTML = '<span class="file-icon">📎</span> Выбрать файл';
+    } else {
+      btn.classList.add('uploaded');
+      btn.innerHTML = '<span class="file-icon">✓</span> ' + (name || 'Файл загружен');
+      showToast('Файл прикреплён');
+    }
+  }
+
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2500);
+  }
+
+
+  // UPLOAD
+  async function uploadData(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append('file', file);
+    const label = document.getElementById('upload-data-label');
+    label.textContent = 'Загрузка...';
+    try {
+      const res = await fetch('/api/upload/data', { method: 'POST', body: form });
+      const data = await res.json();
+      if (res.ok) {
+        label.textContent = '✓ ' + file.name;
+        document.querySelector('.upload-zone').style.borderColor = '#5a9e1f';
+        showToast('data.xlsx загружен успешно');
+      } else {
+        label.textContent = 'Загрузить готовый data.xlsx';
+        showToast('Ошибка загрузки файла');
+      }
+    } catch(e) {
+      label.textContent = 'Загрузить готовый data.xlsx';
+      showToast('Ошибка соединения');
+    }
+    input.value = '';
+  }
+
+  async function uploadTemplate(input, btnId, label) {
+    const file = input.files[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append('file', file);
+    const btn = document.getElementById(btnId);
+    btn.textContent = 'Загрузка...';
+    try {
+      const res = await fetch('/api/upload/template', { method: 'POST', body: form });
+      const data = await res.json();
+      if (res.ok) {
+        btn.textContent = '✓ ' + label;
+        btn.classList.add('uploaded');
+        showToast(label + ' загружен успешно');
+      } else {
+        btn.textContent = label;
+        showToast('Ошибка загрузки шаблона');
+      }
+    } catch(e) {
+      btn.textContent = label;
+      showToast('Ошибка соединения');
+    }
+    input.value = '';
+  }
+
+  // CHAT
+  function sendChat(chatId) {
+    const input = document.getElementById(chatId + '-input');
+    const messages = document.getElementById(chatId + '-messages');
+    const text = input.value.trim();
+    if (!text) return;
+
+    // User message
+    const userMsg = document.createElement('div');
+    userMsg.className = 'chat-msg user';
+    userMsg.textContent = text;
+    messages.appendChild(userMsg);
+    input.value = '';
+    messages.scrollTop = messages.scrollHeight;
+
+    // Agent reply placeholder
+    setTimeout(() => {
+      const agentMsg = document.createElement('div');
+      agentMsg.className = 'chat-msg agent';
+      agentMsg.textContent = 'Функция чата будет подключена к агенту в следующей версии.';
+      messages.appendChild(agentMsg);
+      messages.scrollTop = messages.scrollHeight;
+    }, 400);
+  }
+
+  // PARSER
+  let parserInterval, parserRunning = false, parserN = 0;
+  function startParser() {
+    parserRunning = true;
+    document.getElementById('p-badge').textContent = 'Запущен';
+    document.getElementById('p-badge').className = 'badge badge-running';
+    document.getElementById('p-pause').style.display = 'inline-block';
+    parserInterval = setInterval(() => {
+      if (!parserRunning) return;
+      parserN = Math.min(parserN + 43, 11155);
+      let pct = Math.round(parserN / 11155 * 100);
+      document.getElementById('p-fill').style.width = pct + '%';
+      document.getElementById('p-label').textContent = parserN.toLocaleString('ru') + ' / 11 155 записей';
+      if (parserN >= 11155) {
+        clearInterval(parserInterval);
+        document.getElementById('p-badge').textContent = 'Готово';
+        document.getElementById('p-badge').className = 'badge badge-done';
+        document.getElementById('p-pause').style.display = 'none';
+        showToast('Парсер завершил работу');
+      }
+    }, 80);
+  }
+  function pauseParser() {
+    parserRunning = !parserRunning;
+    document.getElementById('p-pause').textContent = parserRunning ? 'Пауза' : 'Продолжить';
+    document.getElementById('p-badge').textContent = parserRunning ? 'Запущен' : 'Пауза';
+    document.getElementById('p-badge').className = parserRunning ? 'badge badge-running' : 'badge badge-wait';
+  }
+
+
+  // PHILOLOGIST
+  let phInterval, phRunning = false, phN = 0;
+  function startPhilologist() {
+    phRunning = true;
+    document.getElementById('ph-badge').textContent = 'Запущен';
+    document.getElementById('ph-badge').className = 'badge badge-running';
+    document.getElementById('ph-pause').style.display = 'inline-block';
+    phInterval = setInterval(() => {
+      if (!phRunning) return;
+      phN = Math.min(phN + 40, 11155);
+      let pct = Math.round(phN / 11155 * 100);
+      document.getElementById('ph-fill').style.width = pct + '%';
+      document.getElementById('ph-label').textContent = phN.toLocaleString('ru') + ' / 11 155 записей';
+      if (phN >= 11155) {
+        clearInterval(phInterval);
+        document.getElementById('ph-badge').textContent = 'Готово';
+        document.getElementById('ph-badge').className = 'badge badge-done';
+        document.getElementById('ph-pause').style.display = 'none';
+        showToast('Агент-филолог завершил работу');
+      }
+    }, 80);
+  }
+  function pausePhilologist() {
+    phRunning = !phRunning;
+    document.getElementById('ph-pause').textContent = phRunning ? 'Пауза' : 'Продолжить';
+    document.getElementById('ph-badge').textContent = phRunning ? 'Запущен' : 'Пауза';
+    document.getElementById('ph-badge').className = phRunning ? 'badge badge-running' : 'badge badge-wait';
+  }
+
+  // GENERATOR
+  async function startGenerator() {
+    document.getElementById('g-badge').textContent = 'Запущен';
+    document.getElementById('g-badge').className = 'badge badge-running';
+    document.getElementById('g-run').disabled = true;
+    document.getElementById('g-fill').style.width = '10%';
+    document.getElementById('g-label').textContent = 'Генерация...';
+    try {
+      const res = await fetch('/api/generate', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast('Ошибка: ' + (data.detail || 'неизвестная ошибка'));
+        document.getElementById('g-badge').textContent = 'Ошибка';
+        document.getElementById('g-badge').className = 'badge badge-error';
+        document.getElementById('g-run').disabled = false;
+        document.getElementById('g-fill').style.width = '0%';
+        return;
+      }
+      const total = data.total || 0;
+      const errors = data.results.filter(r => r.status === 'error').length;
+      document.getElementById('g-fill').style.width = '100%';
+      document.getElementById('g-label').textContent = total + ' документов сгенерировано, ошибок: ' + errors;
+      if (document.getElementById('g-done')) document.getElementById('g-done').textContent = total;
+      document.getElementById('g-badge').textContent = 'Готово';
+      document.getElementById('g-badge').className = 'badge badge-done';
+      document.getElementById('g-run').disabled = false;
+      showToast('Генерация завершена: ' + total + ' документов');
+    } catch(e) {
+      showToast('Ошибка соединения с сервером');
+      document.getElementById('g-badge').textContent = 'Ошибка';
+      document.getElementById('g-badge').className = 'badge badge-error';
+      document.getElementById('g-run').disabled = false;
+    }
+  }
+  function pauseGenerator() {}
+
+  // SENDER
+  let senderInterval, senderRunning = false, senderN = 0;
+  function startSender() {
+    senderRunning = true;
+    document.getElementById('s-badge').textContent = 'Отправляет';
+    document.getElementById('s-badge').className = 'badge badge-running';
+    document.getElementById('s-pause').style.display = 'inline-block';
+    senderInterval = setInterval(() => {
+      if (!senderRunning) return;
+      senderN = Math.min(senderN + 21, 11155);
+      let pct = Math.round(senderN / 11155 * 100);
+      document.getElementById('s-fill').style.width = pct + '%';
+      document.getElementById('s-sent').textContent = senderN.toLocaleString('ru');
+      document.getElementById('s-left').textContent = (11155 - senderN).toLocaleString('ru');
+      document.getElementById('s-label').textContent = senderN.toLocaleString('ru') + ' / 11 155 писем';
+      if (senderN >= 11155) {
+        clearInterval(senderInterval);
+        document.getElementById('s-badge').textContent = 'Завершено';
+        document.getElementById('s-badge').className = 'badge badge-done';
+        document.getElementById('s-pause').style.display = 'none';
+        showToast('Рассылка завершена!');
+      }
+    }, 80);
+  }
+  function pauseSender() {
+    senderRunning = !senderRunning;
+    document.getElementById('s-pause').textContent = senderRunning ? 'Пауза' : 'Продолжить';
+    document.getElementById('s-badge').textContent = senderRunning ? 'Отправляет' : 'Пауза';
+    document.getElementById('s-badge').className = senderRunning ? 'badge badge-running' : 'badge badge-wait';
+  }
+</script>
+
+</body>
+</html>
