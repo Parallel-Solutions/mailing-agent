@@ -1,0 +1,200 @@
+{
+  "name": "KP Batch Orchestrator",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "1c3d0cb0-8586-4d98-9ed0-c635fd932901",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "jsonOutput": "{\n  \"pythonBin\": \"C:/Users/civ/Desktop/n8n/kp_sender_python/.venv/Scripts/python.exe\",\n  \"scriptPath\": \"C:/Users/civ/Desktop/n8n/kp_sender_python/src/n8n_run_batch.py\",\n  \"startRow\": 1,\n  \"endRow\": 5,\n  \"runId\": \"n8n-demo\",\n  \"enableCaseAgent\": true,\n  \"caseAgentMode\": \"auto_fix\",\n  \"caseAgentModel\": \"gpt-4o-mini\",\n  \"caseAgentOnlySuspicious\": false,\n  \"caseAgentAutoFixMinConfidence\": 0.9\n}"
+      },
+      "id": "5b67efc4-60ca-4d52-bd63-29a65eb1ba15",
+      "name": "Workflow Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $input.first().json;\nconst boolFlag = (value) => value ? '1' : '0';\nconst quote = (value) => `\"${String(value).replaceAll('\"', '\\\\\"')}\"`;\nconst parts = [\n  quote(cfg.pythonBin),\n  quote(cfg.scriptPath),\n  '--start', String(cfg.startRow ?? 1),\n  '--end', String(cfg.endRow ?? cfg.startRow ?? 1),\n  '--run-id', quote(cfg.runId ?? 'n8n-run'),\n  '--enable-case-agent', boolFlag(cfg.enableCaseAgent ?? true),\n  '--case-agent-mode', quote(cfg.caseAgentMode ?? 'auto_fix'),\n  '--case-agent-model', quote(cfg.caseAgentModel ?? 'gpt-4o-mini'),\n  '--case-agent-only-suspicious', boolFlag(cfg.caseAgentOnlySuspicious ?? false),\n  '--case-agent-auto-fix-min-confidence', String(cfg.caseAgentAutoFixMinConfidence ?? 0.9),\n];\nreturn [{ json: { ...cfg, commandLine: parts.join(' ') } }];"
+      },
+      "id": "c79139a9-bfe6-4471-bf4d-5520dba91773",
+      "name": "Build Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "command": "={{ $json.commandLine }}"
+      },
+      "id": "01c7be63-df34-4b5d-a34e-35675e595f55",
+      "name": "Run Python Batch",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        980,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.stdout || '';\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (error) {\n  return [{\n    json: {\n      ok: false,\n      parseError: error.message,\n      rawStdout: raw,\n      stderr: $json.stderr || '',\n      exitCode: $json.exitCode ?? null,\n    },\n  }];\n}\nreturn [{ json: parsed }];"
+      },
+      "id": "c4ee6f7f-b022-482b-aaf9-c38afdd44ad1",
+      "name": "Parse Batch Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "7f31d611-c1f8-442a-8a61-f8eeb065a8d0",
+      "name": "Batch OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const reviewFiles = $json.review_files || [];\nconst summary = {\n  status: 'success',\n  selectedRange: $json.selected_range,\n  outputDir: $json.output_dir,\n  reviewFilesCount: reviewFiles.length,\n  reviewFiles,\n  caseAgent: $json.case_agent,\n  shortLog: ($json.stdout || '').split('\\n').filter(Boolean).slice(-8),\n};\nreturn [{ json: summary }];"
+      },
+      "id": "18d71c33-f648-4667-bb07-64bc0ea795bb",
+      "name": "Success Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1720,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    status: 'error',\n    selectedRange: $json.selected_range || null,\n    exitCode: $json.exit_code ?? $json.exitCode ?? null,\n    stderr: $json.stderr || '',\n    stdout: $json.stdout || $json.rawStdout || '',\n    parseError: $json.parseError || null,\n  },\n}];"
+      },
+      "id": "0be1b1fb-8f9a-4f59-9f1a-b3a8c79d9d5e",
+      "name": "Error Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1720,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Config": {
+      "main": [
+        [
+          {
+            "node": "Build Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Command": {
+      "main": [
+        [
+          {
+            "node": "Run Python Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Python Batch": {
+      "main": [
+        [
+          {
+            "node": "Parse Batch Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Batch Result": {
+      "main": [
+        [
+          {
+            "node": "Batch OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch OK?": {
+      "main": [
+        [
+          {
+            "node": "Success Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "6e78861d-f76e-4588-a09f-7275a90b4ee1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "tags": []
+}

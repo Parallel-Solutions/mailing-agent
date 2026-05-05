@@ -6,7 +6,18 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from config import BATCH_LIBREOFFICE_PROFILES_DIR, PDF_CHUNK_SIZE, PDF_WORKERS
+try:
+    from src.generator.config_generator import (
+        BATCH_LIBREOFFICE_PROFILES_DIR,
+        PDF_CHUNK_SIZE,
+        PDF_WORKERS,
+    )
+except ImportError:  # pragma: no cover
+    from generator.config_generator import (
+        BATCH_LIBREOFFICE_PROFILES_DIR,
+        PDF_CHUNK_SIZE,
+        PDF_WORKERS,
+    )
 
 
 def find_soffice() -> Optional[str]:
