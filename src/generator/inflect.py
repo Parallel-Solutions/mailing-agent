@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import re
 
 
@@ -61,7 +62,8 @@ def _replace_case_insensitive(text: str, target: str, replacement: str) -> str:
     return pattern.sub(replacement, text)
 
 
-def _simple_word_inflect(word: str, grammemes: set[str]) -> str:
+@lru_cache(maxsize=4096)
+def _simple_word_inflect_cached(word: str, grammemes_key: tuple[str, ...]) -> str:
     if not _MORPH:
         return word
 
@@ -70,10 +72,14 @@ def _simple_word_inflect(word: str, grammemes: set[str]) -> str:
         return word
 
     best = parsed[0]
-    inflected = best.inflect(grammemes)
+    inflected = best.inflect(set(grammemes_key))
     if not inflected:
         return word
     return inflected.word
+
+
+def _simple_word_inflect(word: str, grammemes: set[str]) -> str:
+    return _simple_word_inflect_cached(word, tuple(sorted(grammemes)))
 
 
 def _maybe_inflect_single_settlement_name(name: str, grammemes: set[str]) -> str:
