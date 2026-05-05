@@ -614,8 +614,9 @@
         </div>
         <div class="field">
           <label>База МО 2025 (.xlsx)</label>
-          <button class="file-btn uploaded" onclick="toggleFile(this)">
-            <span class="file-icon">✓</span> БАЗА_МО_2025.xlsx
+          <input type="file" id="upload-base-input" accept=".xlsx" style="display:none" onchange="uploadBase(this)">
+          <button class="file-btn" id="base-btn" onclick="document.getElementById('upload-base-input').click()">
+            <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
       </div>
@@ -638,7 +639,7 @@
     <!-- ПАРСЕР -->
     <div class="screen" id="s-parser">
       <div class="page-title">Модуль 1 — Парсер данных</div>
-      <div class="page-sub">Сбор информации по 11 155 муниципальным образованиям</div>
+      <div class="page-sub">Сбор информации по муниципальным образованиям</div>
 
       <div class="upload-zone" onclick="document.getElementById('upload-data-input').click()">
         <input type="file" id="upload-data-input" accept=".xlsx" style="display:none" onchange="uploadData(this)">
@@ -661,7 +662,7 @@
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="p-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="p-label">0 / 11 155 записей</div>
+          <div class="progress-label" id="p-label">0 / <span id="p-total">0</span> записей</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="p-run" onclick="startParser()">Запустить парсер</button>
@@ -691,7 +692,7 @@
 
       <div class="stats-row" style="grid-template-columns: repeat(3, 1fr)">
         <div class="stat">
-          <div class="stat-n" id="g-total">11 155</div>
+          <div class="stat-n" id="g-total">0</div>
           <div class="stat-l">Всего МО</div>
         </div>
         <div class="stat">
@@ -716,7 +717,7 @@
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="g-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="g-label">0 / 11 155 документов</div>
+          <div class="progress-label" id="g-label">0 / <span id="g-total-label">0</span> документов</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="g-run" onclick="startGenerator()">Запустить генератор</button>
@@ -770,7 +771,7 @@
           <div class="stat-l">Отправлено (ОК)</div>
         </div>
         <div class="stat">
-          <div class="stat-n" id="s-left">11 155</div>
+          <div class="stat-n" id="s-left">0</div>
           <div class="stat-l">Осталось</div>
         </div>
         <div class="stat">
@@ -798,7 +799,7 @@
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="s-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="s-label">0 / 11 155 писем</div>
+          <div class="progress-label" id="s-label">0 / <span id="s-total-label">0</span> писем</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="s-run" onclick="startSender()">Начать рассылку</button>
@@ -906,6 +907,10 @@
         label.textContent = '✓ ' + file.name;
         document.querySelector('.upload-zone').style.borderColor = '#5a9e1f';
         showToast('data.xlsx загружен успешно');
+        const info = await fetch('/api/data/info').then(r => r.json());
+        if (info.loaded) {
+            document.getElementById('g-total').textContent = info.total.toLocaleString('ru');
+        }
       } else {
         label.textContent = 'Загрузить готовый data.xlsx';
         showToast('Ошибка загрузки файла');
@@ -1192,6 +1197,19 @@
     document.getElementById('s-badge').textContent = senderRunning ? 'Отправляет' : 'Пауза';
     document.getElementById('s-badge').className = senderRunning ? 'badge badge-running' : 'badge badge-wait';
   }
+
+  async function refreshCounts() {
+    try {
+      const data = await fetch('/api/counts').then(r => r.json());
+      document.getElementById('p-total').textContent = data.parser_total.toLocaleString('ru');
+      document.getElementById('g-total').textContent = data.generator_total.toLocaleString('ru');
+      document.getElementById('g-total-label').textContent = data.generator_total.toLocaleString('ru');
+      document.getElementById('s-total-label').textContent = data.sender_total.toLocaleString('ru');
+      document.getElementById('s-left').textContent = data.sender_total.toLocaleString('ru');
+    } catch(e) {}
+  }
+
+  refreshCounts();
 </script>
 
 </body>
