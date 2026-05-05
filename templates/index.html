@@ -480,6 +480,7 @@
     line-height: 1.5;
     padding: 8px 12px;
     border-radius: 10px;
+    white-space: pre-wrap;
   }
 
   .chat-msg.agent {
@@ -731,7 +732,7 @@
         </div>
         <div class="module-title">Агент-филолог</div>
         <div class="module-desc">
-          Автоматически склоняет ФИО глав и названия МО по нужным падежам
+          Проверяет готовые документы на грамотность, ищет языковые ошибки, старается автоматически исправлять безопасные случаи и может объяснить результат в чате.
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="ph-fill" style="width:0%"></div></div>
@@ -749,7 +750,7 @@
           <div class="dot-green"></div> Чат с агентом
         </div>
         <div class="chat-messages" id="g-chat-messages">
-          <div class="chat-msg agent">Привет! Я агент-генератор. Могу рассказать о статусе генерации документов, сообщить об ошибках или ответить на вопросы по конкретному МО.</div>
+          <div class="chat-msg agent">Привет! Я агент-филолог. Могу проверить готовые документы, исправить безопасные ошибки и объяснить, что именно нашёл по конкретному МО или документу.</div>
         </div>
         <div class="chat-input-row">
           <input type="text" id="g-chat-input" placeholder="Напишите вопрос агенту..." onkeydown="if(event.key==='Enter') sendChat('g-chat')">
@@ -942,28 +943,41 @@
   }
 
   // CHAT
+  function appendChatMessage(chatId, role, text) {
+    const messages = document.getElementById(chatId + '-messages');
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg ' + role;
+    msg.textContent = text;
+    messages.appendChild(msg);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
   function sendChat(chatId) {
     const input = document.getElementById(chatId + '-input');
-    const messages = document.getElementById(chatId + '-messages');
     const text = input.value.trim();
     if (!text) return;
 
-    // User message
-    const userMsg = document.createElement('div');
-    userMsg.className = 'chat-msg user';
-    userMsg.textContent = text;
-    messages.appendChild(userMsg);
+    appendChatMessage(chatId, 'user', text);
     input.value = '';
-    messages.scrollTop = messages.scrollHeight;
 
-    // Agent reply placeholder
-    setTimeout(() => {
-      const agentMsg = document.createElement('div');
-      agentMsg.className = 'chat-msg agent';
-      agentMsg.textContent = 'Функция чата будет подключена к агенту в следующей версии.';
-      messages.appendChild(agentMsg);
-      messages.scrollTop = messages.scrollHeight;
-    }, 400);
+    if (chatId !== 'g-chat') {
+      setTimeout(() => appendChatMessage(chatId, 'agent', 'Функция чата для этого модуля будет подключена позже.'), 400);
+      return;
+    }
+
+    fetch('/api/philologist/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    })
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Ошибка чата');
+        appendChatMessage(chatId, 'agent', data.reply || 'Ответ недоступен.');
+      })
+      .catch(err => {
+        appendChatMessage(chatId, 'agent', 'Не удалось получить ответ агента: ' + err.message);
+      });
   }
 
   // PARSER
@@ -997,33 +1011,120 @@
 
 
   // PHILOLOGIST
-  let phInterval, phRunning = false, phN = 0;
-  function startPhilologist() {
-    phRunning = true;
-    document.getElementById('ph-badge').textContent = 'Запущен';
-    document.getElementById('ph-badge').className = 'badge badge-running';
-    document.getElementById('ph-pause').style.display = 'inline-block';
-    phInterval = setInterval(() => {
-      if (!phRunning) return;
-      phN = Math.min(phN + 40, 11155);
-      let pct = Math.round(phN / 11155 * 100);
-      document.getElementById('ph-fill').style.width = pct + '%';
-      document.getElementById('ph-label').textContent = phN.toLocaleString('ru') + ' / 11 155 записей';
-      if (phN >= 11155) {
-        clearInterval(phInterval);
-        document.getElementById('ph-badge').textContent = 'Готово';
-        document.getElementById('ph-badge').className = 'badge badge-done';
-        document.getElementById('ph-pause').style.display = 'none';
-        showToast('Агент-филолог завершил работу');
+  let phRunning = false, philologistStatusPoll = null;
+
+  function setPhilologistUiState(result = {}) {
+    const badge = document.getElementById('ph-badge');
+    const fill = document.getElementById('ph-fill');
+    const label = document.getElementById('ph-label');
+    const runButton = document.getElementById('ph-run');
+    const total = Number(result.total_documents || 0);
+    const processed = Number(result.processed_documents || 0);
+    const status = result.status || 'idle';
+    const percent = total > 0 ? Math.round((processed / total) * 100) : (status === 'completed' ? 100 : 0);
+
+    fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
+
+    if (status === 'running') {
+      badge.textContent = 'Проверка';
+      badge.className = 'badge badge-running';
+      label.textContent = total > 0
+        ? `${processed} / ${total} документов проверено`
+        : 'Агент-филолог проверяет документы...';
+      runButton.disabled = true;
+      return;
+    }
+
+    runButton.disabled = false;
+
+    if (status === 'completed') {
+      badge.textContent = 'Готово';
+      badge.className = 'badge badge-done';
+      label.textContent = total > 0
+        ? `${processed} / ${total} документов проверено`
+        : 'Проверка завершена';
+      return;
+    }
+
+    if (status === 'error') {
+      badge.textContent = 'Ошибка';
+      badge.className = 'badge badge-error';
+      label.textContent = result.summary_text || 'Проверка завершилась с ошибкой';
+      return;
+    }
+
+    badge.textContent = 'Ожидание';
+    badge.className = 'badge badge-idle';
+    label.textContent = total > 0
+      ? `${processed} / ${total} документов проверено`
+      : '0 / 0 документов проверено';
+  }
+
+  async function refreshPhilologistStatus({ silent = false } = {}) {
+    try {
+      const res = await fetch('/api/philologist/status');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус агента-филолога');
+      const result = data.result || {};
+      setPhilologistUiState(result);
+      return result;
+    } catch (err) {
+      if (!silent) {
+        appendChatMessage('g-chat', 'agent', 'Не удалось обновить статус агента-филолога: ' + err.message);
       }
-    }, 80);
+      return null;
+    }
+  }
+
+  async function startPhilologist() {
+    phRunning = true;
+    setPhilologistUiState({ status: 'running', total_documents: 0, processed_documents: 0 });
+    appendChatMessage('g-chat', 'agent', 'Запускаю проверку документов. После завершения расскажу, что нашёл и что удалось исправить.');
+    if (philologistStatusPoll) clearInterval(philologistStatusPoll);
+    philologistStatusPoll = setInterval(() => {
+      refreshPhilologistStatus({ silent: true });
+    }, 3000);
+    try {
+      const res = await fetch('/api/philologist/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ai_enabled: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Ошибка запуска агента-филолога');
+      }
+
+      const result = data.result || {};
+      const total = result.total_documents || 0;
+      const processed = result.processed_documents || 0;
+      const fixed = result.fixed_documents || 0;
+      const issueDocs = result.documents_with_issues || 0;
+      setPhilologistUiState(result);
+      showToast('Агент-филолог завершил работу');
+      appendChatMessage(
+        'g-chat',
+        'agent',
+        result.summary_text || `Проверено ${processed} документов. Замечания есть в ${issueDocs}, автоматически исправлено ${fixed}.`
+      );
+    } catch (err) {
+      setPhilologistUiState({ status: 'error', summary_text: 'Проверка не завершилась' });
+      appendChatMessage('g-chat', 'agent', 'Не удалось завершить проверку: ' + err.message);
+      showToast('Ошибка агента-филолога');
+    } finally {
+      phRunning = false;
+      if (philologistStatusPoll) {
+        clearInterval(philologistStatusPoll);
+        philologistStatusPoll = null;
+      }
+      await refreshPhilologistStatus({ silent: true });
+    }
   }
   function pausePhilologist() {
-    phRunning = !phRunning;
-    document.getElementById('ph-pause').textContent = phRunning ? 'Пауза' : 'Продолжить';
-    document.getElementById('ph-badge').textContent = phRunning ? 'Запущен' : 'Пауза';
-    document.getElementById('ph-badge').className = phRunning ? 'badge badge-running' : 'badge badge-wait';
+    appendChatMessage('g-chat', 'agent', 'Пауза для агента-филолога пока не поддерживается. Можно дождаться завершения текущей проверки.');
   }
+
+  refreshPhilologistStatus({ silent: true });
 
   // GENERATOR
   async function startGenerator() {

@@ -59,3 +59,4 @@ CASE_AGENT_OK_DEFAULT_CONFIDENCE = float(_read_env_override("CASE_AGENT_OK_DEFAU
 # AI-ревью готового документа
 ENABLE_DOCUMENT_REVIEW_AI = _read_env_override("ENABLE_DOCUMENT_REVIEW_AI", "1") == "1"
 DOCUMENT_REVIEW_MODEL = _read_env_override("DOCUMENT_REVIEW_MODEL", CASE_AGENT_MODEL)
+WEB_CASE_AGENT_MAX_WORKERS = max(1, int(_read_env_override("WEB_CASE_AGENT_MAX_WORKERS", "1")))

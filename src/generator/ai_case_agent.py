@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Dict, List, Optional
 
 from src.generator.config_generator import (
@@ -36,6 +37,9 @@ except ImportError:  # pragma: no cover
 TARGET_FIELDS = (
     "HEAD_FIO_1",
     "HEAD_FIO_2",
+    "MUN_NAME_1",
+    "MUN_NAME_2",
+    "ADM_NAME_1",
 )
 
 
@@ -60,7 +64,7 @@ def _resolve_openai_api_key() -> Optional[str]:
     if direct_key:
         return direct_key
 
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(__file__).resolve().parents[2]
     candidate_env_files = [
         project_root / ".env",
         project_root / ".env.local",
@@ -87,7 +91,7 @@ def _resolve_openai_base_url() -> Optional[str]:
     if direct_base_url:
         return direct_base_url.strip().rstrip("/")
 
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(__file__).resolve().parents[2]
     candidate_env_files = [
         project_root / ".env",
         project_root / ".env.local",
@@ -305,7 +309,11 @@ def _call_openai_adm_name_agent(row: dict, context: dict) -> dict:
     if not base_url:
         request_kwargs["response_format"] = {"type": "json_object"}
 
+    row_id = row.get("ID")
+    started_at = perf_counter()
+    print(f"[case-agent] adm_name_llm_start id={row_id}")
     response = client.chat.completions.create(**request_kwargs)
+    print(f"[case-agent] adm_name_llm_done id={row_id} elapsed={perf_counter() - started_at:.2f}s")
     content = response.choices[0].message.content or "{}"
     parsed = json.loads(_extract_json_payload(content))
     return parsed if isinstance(parsed, dict) else {}
@@ -474,7 +482,11 @@ def _call_openai_canonical_mo_agent(row: dict, context: dict) -> dict:
     if not base_url:
         request_kwargs["response_format"] = {"type": "json_object"}
 
+    row_id = row.get("ID")
+    started_at = perf_counter()
+    print(f"[case-agent] canonical_mo_llm_start id={row_id}")
     response = client.chat.completions.create(**request_kwargs)
+    print(f"[case-agent] canonical_mo_llm_done id={row_id} elapsed={perf_counter() - started_at:.2f}s")
     content = response.choices[0].message.content or "{}"
     parsed = json.loads(_extract_json_payload(content))
     return parsed if isinstance(parsed, dict) else {}
@@ -526,6 +538,12 @@ def _build_context_sentence(field: str, context: dict) -> str:
         return f'в лице главы {context.get("HEAD_MO_FRAGMENT", "")} [SLOT]'
     if field == "HEAD_FIO_2":
         return "просим направить материалы и обратную связь [SLOT]"
+    if field == "MUN_NAME_1":
+        return "для подготовки документов в отношении [SLOT]"
+    if field == "MUN_NAME_2":
+        return "по разработке проекта местных нормативов градостроительного проектирования [SLOT]"
+    if field == "ADM_NAME_1":
+        return "обязательства главы [SLOT] подтверждаются уставом"
     return context.get(field, "")
 
 
@@ -533,6 +551,9 @@ def _slot_instruction(field: str) -> str:
     mapping = {
         "HEAD_FIO_1": "Верни только форму ФИО для позиции после слов 'в лице главы'.",
         "HEAD_FIO_2": "Верни только форму текста, которая грамматически корректно вставляется в [SLOT].",
+        "MUN_NAME_1": "Верни только корректную форму названия муниципального образования для позиции [SLOT].",
+        "MUN_NAME_2": "Верни только корректную форму названия муниципального образования для проектной фразы в [SLOT].",
+        "ADM_NAME_1": "Верни только корректную форму названия администрации для позиции [SLOT].",
     }
     return mapping.get(field, "Верни только текст для позиции [SLOT].")
 
@@ -541,6 +562,9 @@ def _slot_label(field: str) -> str:
     mapping = {
         "HEAD_FIO_1": "fio_after_head_title",
         "HEAD_FIO_2": "recipient_slot",
+        "MUN_NAME_1": "municipality_genitive_slot",
+        "MUN_NAME_2": "municipality_project_slot",
+        "ADM_NAME_1": "administration_genitive_slot",
     }
     return mapping.get(field, field.lower())
 
@@ -549,8 +573,169 @@ def _target_case_name(field: str) -> str:
     mapping = {
         "HEAD_FIO_1": "genitive",
         "HEAD_FIO_2": "dative",
+        "MUN_NAME_1": "genitive",
+        "MUN_NAME_2": "project_genitive",
+        "ADM_NAME_1": "genitive",
     }
     return mapping.get(field, "unknown")
+
+
+def _looks_like_abbreviated_or_noisy_name(value: str) -> bool:
+    text = _safe_str(value)
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(token in lowered for token in ("г.", "гор.", "пгт", "пос.", "пос ", "с. ", "д. ")):
+        return True
+    if any(ch.isdigit() for ch in text):
+        return True
+    return bool(re.search(r"\b[А-ЯA-ZЁ]\.", text))
+
+
+def _contains_mo_or_admin_noise(value: str) -> bool:
+    text = _safe_str(value).lower()
+    if not text:
+        return False
+    noisy_tokens = (
+        "г.",
+        "гор.",
+        "пгт",
+        "пос.",
+        "пос ",
+        "р-н",
+        "м.р.",
+        "мо ",
+        "муницип. ",
+    )
+    if any(token in text for token in noisy_tokens):
+        return True
+    return any(ch.isdigit() for ch in text)
+
+
+def _source_field_name(field: str) -> str:
+    mapping = {
+        "HEAD_FIO_1": "HEAD_FIO",
+        "HEAD_FIO_2": "HEAD_FIO",
+        "MUN_NAME_1": "MUN_NAME",
+        "MUN_NAME_2": "MUN_NAME",
+        "ADM_NAME_1": "ADM_NAME",
+    }
+    return mapping.get(field, field.replace("_1", "").replace("_2", ""))
+
+
+def _looks_like_full_fio(value: str) -> bool:
+    parts = [part for part in _safe_str(value).split() if part]
+    return len(parts) == 3 and all(any(ch.isalpha() for ch in part) for part in parts)
+
+
+def _fio_probably_should_inflect(source_value: str) -> bool:
+    if not _looks_like_full_fio(source_value):
+        return False
+    lowered = source_value.lower()
+    # Many Russian surnames/names are declinable; use a conservative heuristic
+    # and let AI review only when the local result stays unchanged in such cases.
+    common_surname_endings = (
+        "ов", "ев", "ин", "ын", "ский", "цкий", "ой", "ый", "ий",
+        "ова", "ева", "ина", "ына", "ая", "яя",
+    )
+    common_patronymic_endings = (
+        "ич", "ович", "евич", "оглы", "вна", "овна", "евна", "ична", "инична",
+    )
+    parts = lowered.split()
+    surname = parts[0]
+    patronymic = parts[2]
+    return surname.endswith(common_surname_endings) or patronymic.endswith(common_patronymic_endings)
+
+
+def _is_suspicious_fio_result(field: str, value: str, context: dict) -> bool:
+    source_field = _source_field_name(field)
+    source_value = _safe_str(context.get(source_field))
+    generated_value = _safe_str(value)
+    if not generated_value:
+        return True
+    if generated_value.lower() == generated_value:
+        return True
+    if _looks_like_abbreviated_or_noisy_name(source_value) or _looks_like_abbreviated_or_noisy_name(generated_value):
+        return True
+
+    inflection_debug = context.get("INFLECTION_DEBUG") or {}
+    debug_confidence = _safe_str(inflection_debug.get(field)).lower()
+    if debug_confidence and debug_confidence not in {"rule", "auto"}:
+        return True
+
+    if source_value and generated_value == source_value and _fio_probably_should_inflect(source_value):
+        return True
+
+    source_parts = [part for part in source_value.split() if part]
+    generated_parts = [part for part in generated_value.split() if part]
+    if source_parts and generated_parts and len(source_parts) != len(generated_parts):
+        return True
+
+    return False
+
+
+def _mun_name_probably_should_inflect(source_value: str) -> bool:
+    text = _safe_str(source_value).lower()
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in (
+            "поселение",
+            "округ",
+            "сельсовет",
+            "поссовет",
+            "район",
+            "республика",
+            "область",
+            "край",
+            "город ",
+            "поселок ",
+            "посёлок ",
+        )
+    )
+
+
+def _looks_like_mechanical_mo_phrase(value: str) -> bool:
+    text = _safe_str(value).lower()
+    if not text:
+        return False
+    odd_fragments = (
+        "городского поселения город ",
+        "городского поселения поселок ",
+        "городского поселения посёлок ",
+    )
+    return any(fragment in text for fragment in odd_fragments)
+
+
+def _is_suspicious_mo_or_admin_result(field: str, value: str, context: dict) -> bool:
+    source_field = _source_field_name(field)
+    source_value = _safe_str(context.get(source_field))
+    generated_value = _safe_str(value)
+    if not generated_value:
+        return True
+    if _contains_mo_or_admin_noise(source_value) or _contains_mo_or_admin_noise(generated_value):
+        return True
+
+    inflection_debug = context.get("INFLECTION_DEBUG") or {}
+    debug_confidence = _safe_str(inflection_debug.get(field)).lower()
+    if debug_confidence and debug_confidence not in {"rule", "auto"}:
+        return True
+
+    if source_value and generated_value == source_value and _mun_name_probably_should_inflect(source_value):
+        return True
+
+    if field in {"MUN_NAME_1", "MUN_NAME_2"} and _looks_like_mechanical_mo_phrase(generated_value):
+        return True
+
+    if field == "ADM_NAME_1":
+        lowered = generated_value.lower()
+        if "администрация муниципального образования" in lowered:
+            return True
+        if source_value and source_value.count('"') != generated_value.count('"'):
+            return True
+
+    return False
 
 
 def _is_suspicious(field: str, value: str, context: dict) -> bool:
@@ -558,7 +743,9 @@ def _is_suspicious(field: str, value: str, context: dict) -> bool:
     if not value:
         return True
     if field.startswith("HEAD_FIO"):
-        return value.lower() == value
+        return _is_suspicious_fio_result(field, value, context)
+    if field in {"MUN_NAME_1", "MUN_NAME_2", "ADM_NAME_1"}:
+        return _is_suspicious_mo_or_admin_result(field, value, context)
     return False
 
 
@@ -569,7 +756,7 @@ def collect_case_reviews(row: dict, context: dict) -> List[CaseFieldReview]:
         if CASE_AGENT_ONLY_SUSPICIOUS and not _is_suspicious(field, generated_value, context):
             continue
 
-        source_field = field.replace("_1", "").replace("_2", "")
+        source_field = _source_field_name(field)
         source_value = _safe_str(row.get(source_field) or context.get(source_field))
         reviews.append(
             CaseFieldReview(
@@ -681,7 +868,11 @@ def _call_openai_case_agent(reviews: List[CaseFieldReview]) -> List[dict]:
     if not base_url:
         request_kwargs["response_format"] = {"type": "json_object"}
 
+    review_fields = ",".join(review.field for review in reviews)
+    started_at = perf_counter()
+    print(f"[case-agent] slot_llm_start fields={review_fields}")
     response = client.chat.completions.create(**request_kwargs)
+    print(f"[case-agent] slot_llm_done fields={review_fields} elapsed={perf_counter() - started_at:.2f}s")
     content = response.choices[0].message.content or "{}"
     parsed = json.loads(_extract_json_payload(content))
     if isinstance(parsed, dict):
@@ -772,6 +963,8 @@ def _safe_call_openai_case_agent(reviews: List[CaseFieldReview]) -> tuple[List[d
 
 
 def run_case_validation_agent(row: dict, context: dict) -> dict:
+    row_id = row.get("ID")
+    started_at = perf_counter()
     result = {
         "enabled": ENABLE_CASE_AGENT,
         "mode": CASE_AGENT_MODE,
@@ -785,20 +978,37 @@ def run_case_validation_agent(row: dict, context: dict) -> dict:
         },
     }
     if not ENABLE_CASE_AGENT:
+        print(f"[case-agent] skipped_disabled id={row_id}")
         return result
 
+    canonical_started_at = perf_counter()
     canonical_result = _derive_canonical_mo_name(row, context)
+    print(
+        f"[case-agent] canonical_done id={row_id} status={canonical_result.get('status')} "
+        f"elapsed={perf_counter() - canonical_started_at:.2f}s"
+    )
     result["canonical_mo"] = canonical_result
     if canonical_result.get("status") == "ok" and canonical_result.get("canonical_mo_name"):
         context = _apply_canonical_mo_name(context, canonical_result["canonical_mo_name"])
 
+    review_collection_started_at = perf_counter()
     reviews = collect_case_reviews(row, context)
+    print(
+        f"[case-agent] reviews_collected id={row_id} count={len(reviews)} "
+        f"elapsed={perf_counter() - review_collection_started_at:.2f}s"
+    )
     if not reviews:
+        print(f"[case-agent] no_reviews_needed id={row_id} total={perf_counter() - started_at:.2f}s")
         return result
 
     result["summary"]["reviewed_fields_count"] = len(reviews)
 
+    llm_started_at = perf_counter()
     agent_items, error_message = _safe_call_openai_case_agent(reviews)
+    print(
+        f"[case-agent] review_llm_finished id={row_id} items={len(agent_items)} "
+        f"error={bool(error_message)} elapsed={perf_counter() - llm_started_at:.2f}s"
+    )
     if not agent_items:
         result["items"] = [
             {
@@ -814,6 +1024,7 @@ def run_case_validation_agent(row: dict, context: dict) -> dict:
         ]
         result["error"] = error_message
         result["summary"]["needs_review_count"] = len(reviews)
+        print(f"[case-agent] fallback_needs_review id={row_id} total={perf_counter() - started_at:.2f}s")
         return result
 
     result["items"] = _normalize_agent_items(agent_items, reviews)
@@ -821,6 +1032,11 @@ def run_case_validation_agent(row: dict, context: dict) -> dict:
     result["summary"]["fix_count"] = sum(1 for item in result["items"] if item["status"] == "fix")
     result["summary"]["needs_review_count"] = sum(
         1 for item in result["items"] if item["status"] == "needs_review"
+    )
+    print(
+        f"[case-agent] completed id={row_id} ok={result['summary']['ok_count']} "
+        f"fix={result['summary']['fix_count']} needs_review={result['summary']['needs_review_count']} "
+        f"total={perf_counter() - started_at:.2f}s"
     )
     return result
 
