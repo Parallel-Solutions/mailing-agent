@@ -76,11 +76,20 @@ async def data_info(username: str = Depends(check_auth)):
 
 @app.post("/api/upload/template")
 async def upload_template(file: UploadFile = File(...), username: str = Depends(check_auth)):
-    dest = Path("data/templates") / file.filename
-    dest.parent.mkdir(exist_ok=True)
+    templates_dir = Path("data/templates")
+    templates_dir.mkdir(exist_ok=True)
+    original_name = Path(file.filename or "").name
+    if original_name.lower().endswith(".txt"):
+        dest = templates_dir / "mail_template.txt"
+    else:
+        dest = templates_dir / original_name
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
-    return {"status": "ok", "filename": file.filename}
+    return {
+        "status": "ok",
+        "filename": file.filename,
+        "stored_as": dest.name,
+    }
 
 @app.post("/api/upload/base")
 async def upload_base(file: UploadFile = File(...), username: str = Depends(check_auth)):
@@ -115,6 +124,7 @@ from src.generator.sender_agent import (
     chat_with_sender,
     get_sender_status,
     preview_recipients,
+    request_sender_stop,
     run_sender,
 )
 from src.generator.parser_agent import (
@@ -329,6 +339,18 @@ async def download_data_xlsx(username: str = Depends(check_auth)):
     )
 
 
+@app.get("/api/download/sent-mail-log")
+async def download_sent_mail_log(username: str = Depends(check_auth)):
+    log_path = Path("data/sent_mail_log.jsonl")
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail="Журнал отправленных писем пока не создан.")
+    return FileResponse(
+        log_path,
+        media_type="application/x-ndjson",
+        filename="sent_mail_log.jsonl",
+    )
+
+
 @app.post("/api/philologist/run")
 async def philologist_run(
     payload: dict | None = Body(default=None),
@@ -394,13 +416,20 @@ async def sender_run(
 ):
     dry_run = True if payload is None else bool(payload.get("dry_run", True))
     limit = _parse_optional_limit(payload)
-    result = run_sender(dry_run=dry_run, limit=limit)
+    transport = None if payload is None else payload.get("transport")
+    result = run_sender(dry_run=dry_run, limit=limit, transport=transport)
     return {"status": "ok", "result": result}
 
 
 @app.get("/api/sender/status")
 async def sender_status(username: str = Depends(check_auth)):
     return {"status": "ok", "result": get_sender_status()}
+
+
+@app.post("/api/sender/stop")
+async def sender_stop(username: str = Depends(check_auth)):
+    result = request_sender_stop()
+    return {"status": "ok", "result": result}
 
 
 @app.post("/api/sender/preview")

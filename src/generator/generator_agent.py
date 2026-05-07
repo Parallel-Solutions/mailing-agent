@@ -52,13 +52,20 @@ GENERATOR_STATE: dict[str, Any] = {
 }
 
 
-def _format_generator_summary(state: dict[str, Any], *, review_handoffs: int = 0) -> str:
+def _format_generator_summary(
+    state: dict[str, Any],
+    *,
+    review_handoffs: int = 0,
+    philologist_started_rows: int = 0,
+) -> str:
     base = (
         f"Агент-генератор завершил обработку: всего {state.get('total_rows', 0)}, "
         f"успешно {state.get('ok_rows', 0)}, ошибок {state.get('error_rows', 0)}."
     )
     if review_handoffs > 0:
-        base += f" Передал филологу задач на проверку: {review_handoffs}."
+        base += f" Подготовил для филолога {review_handoffs} задач на проверку."
+    if philologist_started_rows > 0:
+        base += f" Филолог автоматически запущен по {philologist_started_rows} строкам."
     return base
 
 
@@ -162,6 +169,7 @@ def run_generator_agent(
                 else f"Агент-генератор начал обработку строк и принял {len(claimed_tasks)} внутренних задач."
             ),
             "results": [],
+            "philologist_result": None,
             "task_stats": count_tasks_for_agent("generator"),
             "tasks": get_tasks_for_agent("generator")[:20],
             "recent_events": get_recent_events(agent_name="generator", limit=20),
@@ -247,6 +255,7 @@ def run_generator_agent(
 
     finalize_generated_files(results)
     review_handoffs = 0
+    review_row_ids: list[str] = []
     for result in results:
         result.pop("result_index", None)
         result_id = _safe_id(result.get("id"))
@@ -283,6 +292,8 @@ def run_generator_agent(
                 },
             )
             review_handoffs += 1
+            if result_id:
+                review_row_ids.append(result_id)
         else:
             set_task_statuses(
                 "generator",
@@ -292,16 +303,33 @@ def run_generator_agent(
                 resolution_summary="Комплект документов не собран.",
             )
 
+    philologist_started_rows = 0
+    philologist_result = None
+    if review_row_ids:
+        from src.generator.philologist_agent import run_philologist
+
+        philologist_result = run_philologist(ai_enabled=True, row_ids=review_row_ids)
+        philologist_started_rows = len(review_row_ids)
+
     state["results"] = results
     state["ok_rows"] = sum(1 for item in results if item.get("status") == "ok")
     state["error_rows"] = sum(1 for item in results if item.get("status") == "error")
     state["completed_at"] = datetime.now().isoformat(timespec="seconds")
     state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
     state["status"] = "completed"
+    if isinstance(philologist_result, dict):
+        state["philologist_result"] = {
+            "status": philologist_result.get("status"),
+            "summary_text": philologist_result.get("summary_text"),
+        }
     state["task_stats"] = count_tasks_for_agent("generator")
     state["tasks"] = get_tasks_for_agent("generator")[:20]
     state["recent_events"] = get_recent_events(agent_name="generator", limit=20)
-    state["summary_text"] = _format_generator_summary(state, review_handoffs=review_handoffs)
+    state["summary_text"] = _format_generator_summary(
+        state,
+        review_handoffs=review_handoffs,
+        philologist_started_rows=philologist_started_rows,
+    )
     logger.info(
         "generator_agent_done",
         total=len(results),
