@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import imaplib
 import smtplib
 import json
 import re
+import base64
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from src.generator.ai_case_agent import (
     OpenAI,
@@ -39,6 +43,7 @@ DEFAULT_MAIL_BODY = (
     "ООО «ПР»"
 )
 STATUS_OK_VALUES = {"ОК", "OK", "SENT"}
+UNISENDER_SEND_URL = "https://api.unisender.com/ru/api/sendEmail"
 
 
 SENDER_STATE: dict[str, Any] = {
@@ -56,6 +61,7 @@ SENDER_STATE: dict[str, Any] = {
     "summary_text": "Агент-отправщик ещё не запускался.",
     "rows": [],
     "stats": {},
+    "warning_rows": 0,
     "task_stats": {"total": 0, "pending": 0, "in_progress": 0, "done": 0, "blocked": 0},
     "tasks": [],
     "recent_events": [],
@@ -64,6 +70,9 @@ SENDER_STATE: dict[str, Any] = {
     "autonomous_recovery_rows": 0,
     "effective_limit": None,
     "remaining_rows": 0,
+    "stop_requested": False,
+    "stop_requested_at": None,
+    "transport": "smtp",
 }
 
 
@@ -203,11 +212,25 @@ def _collect_excel_stats() -> dict[str, int]:
 
 
 def _format_sender_summary(state: dict[str, Any]) -> str:
+    if state.get("status") == "stopped":
+        summary = (
+            f"Отправка через {state.get('transport') or 'smtp'} остановлена пользователем: обработано {state.get('processed_rows', 0)} строк, "
+            f"успешно отправлено {state.get('sent_rows', 0)}, готово {state.get('ready_rows', 0)}, "
+            f"ошибок {state.get('error_rows', 0)}."
+        )
+        if state.get("warning_rows", 0) > 0:
+            summary += (
+                f" У {state.get('warning_rows', 0)} строк письмо ушло, "
+                "но копию не удалось сохранить в папку «Отправленные»."
+            )
+        if state.get("remaining_rows", 0) > 0:
+            summary += f" Осталось строк без статуса ОК: {state.get('remaining_rows', 0)}."
+        return summary
     if state.get("total_rows", 0) == 0:
         return "В data.xlsx пока нет строк для отправки."
     mode = "проверка готовности" if state.get("mode") == "dry_run" else "отправка"
     summary = (
-        f"Завершена {mode}: проверено {state.get('processed_rows', 0)} строк, "
+        f"Завершена {mode} через {state.get('transport') or 'smtp'}: проверено {state.get('processed_rows', 0)} строк, "
         f"готово {state.get('ready_rows', 0)}, ошибок {state.get('error_rows', 0)}, "
         f"пропущено {state.get('skipped_rows', 0)}, уже отправлено {state.get('sent_rows', 0)}, "
         f"на дозаполнение отправлено {state.get('handoff_rows', 0)}."
@@ -218,8 +241,11 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
         summary += f" Заблокировано замечаниями филолога: {state.get('philology_blocked_rows', 0)}."
     if state.get("autonomous_recovery_rows", 0) > 0:
         summary += f" Автономно восстановлено кейсов: {state.get('autonomous_recovery_rows', 0)}."
-    if state.get("effective_limit"):
-        summary += f" Размер текущей партии: {state.get('effective_limit')}."
+    if state.get("warning_rows", 0) > 0:
+        summary += (
+            f" У {state.get('warning_rows', 0)} строк письмо ушло, "
+            "но копию не удалось сохранить в папку «Отправленные»."
+        )
     if state.get("remaining_rows", 0) > 0:
         summary += f" После этой партии осталось строк без статуса ОК: {state.get('remaining_rows', 0)}."
     return summary
@@ -233,6 +259,29 @@ def _normalize_limit(limit: int | None, *, dry_run: bool) -> int | None:
 
     normalized = max(1, int(limit))
     return min(normalized, max(1, int(settings.sender_max_batch_size)))
+
+
+def _normalize_transport(transport: str | None) -> str:
+    value = _safe_text(transport).lower()
+    if value in {"unisender", "smtp"}:
+        return value
+    configured = _safe_text(settings.sender_transport).lower()
+    return configured if configured in {"unisender", "smtp"} else "smtp"
+
+
+def request_sender_stop() -> dict[str, Any]:
+    SENDER_STATE["stop_requested"] = True
+    SENDER_STATE["stop_requested_at"] = datetime.now().isoformat(timespec="seconds")
+    if SENDER_STATE.get("status") == "running":
+        SENDER_STATE["summary_text"] = (
+            "Получен запрос на остановку. Отправщик завершит текущую строку и больше не будет брать новые."
+        )
+    return get_sender_status()
+
+
+def clear_sender_stop_request() -> None:
+    SENDER_STATE["stop_requested"] = False
+    SENDER_STATE["stop_requested_at"] = None
 
 
 def _active_sender_review_task(row_id: Any) -> dict[str, Any] | None:
@@ -402,7 +451,130 @@ def _build_message(row: dict[str, Any], recipient: str, attachments: list[str], 
     return message
 
 
-def _send_via_smtp(row: dict[str, Any], recipient: str, attachments: list[str], subject: str) -> None:
+def _build_mail_body(row: dict[str, Any]) -> str:
+    return _read_mail_template().format(
+        HEAD_FIO=_safe_text(row.get("HEAD_FIO")),
+        ADM_NAME=_safe_text(row.get("ADM_NAME")),
+        MUN_NAME=_safe_text(row.get("MUN_NAME")),
+    )
+
+
+def _save_sent_copy(message: EmailMessage) -> str | None:
+    if not settings.smtp_save_sent_copy:
+        return None
+    if not settings.smtp_sender_email or not settings.smtp_sender_password:
+        return "Не удалось сохранить копию письма: не заданы почтовые учётные данные."
+    if not settings.imap_host:
+        return "Не удалось сохранить копию письма: не указан IMAP host."
+
+    def _imap_utf7_decode(value: str) -> str:
+        def _decode_match(match: re.Match[str]) -> str:
+            chunk = match.group(1)
+            if chunk == "-":
+                return "&"
+            payload = chunk[:-1].replace(",", "/")
+            padding = "=" * ((4 - len(payload) % 4) % 4)
+            raw = base64.b64decode(payload + padding)
+            return raw.decode("utf-16-be", errors="ignore")
+
+        return re.sub(r"&([A-Za-z0-9+,]+-)", _decode_match, value)
+
+    def _imap_utf7_encode(value: str) -> str:
+        result: list[str] = []
+        buffer = ""
+
+        def _flush_buffer() -> None:
+            nonlocal buffer
+            if not buffer:
+                return
+            encoded = base64.b64encode(buffer.encode("utf-16-be")).decode("ascii").rstrip("=")
+            result.append("&" + encoded.replace("/", ",") + "-")
+            buffer = ""
+
+        for char in value:
+            code = ord(char)
+            if 0x20 <= code <= 0x7E and char != "&":
+                _flush_buffer()
+                result.append(char)
+            elif char == "&":
+                _flush_buffer()
+                result.append("&-")
+            else:
+                buffer += char
+        _flush_buffer()
+        return "".join(result)
+
+    def _extract_imap_mailbox_name(line: bytes | str) -> tuple[str, str]:
+        text = line.decode("ascii", errors="ignore") if isinstance(line, bytes) else str(line)
+        match = re.match(r'^\((?P<flags>.*?)\)\s+"[^"]*"\s+(?P<name>.+)$', text.strip())
+        if not match:
+            return "", ""
+        flags = (match.group("flags") or "").strip()
+        name = (match.group("name") or "").strip()
+        if name.startswith('"') and name.endswith('"') and len(name) >= 2:
+            name = name[1:-1]
+        return flags, _imap_utf7_decode(name)
+
+    def _discover_imap_sent_folders(client: imaplib.IMAP4) -> list[str]:
+        try:
+            status, mailboxes = client.list()
+        except Exception:
+            return []
+        if status != "OK" or not mailboxes:
+            return []
+
+        discovered: list[str] = []
+        for item in mailboxes:
+            flags, name = _extract_imap_mailbox_name(item)
+            if not name:
+                continue
+            haystack = f"{flags} {name}".lower()
+            if "\\sent" in haystack or "sent" in haystack or "отправ" in haystack:
+                if name not in discovered:
+                    discovered.append(name)
+        return discovered
+
+    tried_folders: list[str] = []
+    try:
+        if settings.imap_use_ssl:
+            client = imaplib.IMAP4_SSL(settings.imap_host, settings.imap_port)
+        else:
+            client = imaplib.IMAP4(settings.imap_host, settings.imap_port)
+        try:
+            client.login(settings.smtp_sender_email, settings.smtp_sender_password)
+            payload = message.as_bytes()
+            internal_date = imaplib.Time2Internaldate(datetime.now().timestamp())
+            folder_candidates = [
+                _safe_text(settings.imap_sent_folder) or "Отправленные",
+                "Sent",
+                "Sent Messages",
+                *_discover_imap_sent_folders(client),
+            ]
+            for folder in folder_candidates:
+                if folder in tried_folders:
+                    continue
+                tried_folders.append(folder)
+                try:
+                    status, _ = client.append(_imap_utf7_encode(folder), "\\Seen", internal_date, payload)
+                except imaplib.IMAP4.error:
+                    status = "NO"
+                if status == "OK":
+                    return None
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
+    except Exception as exc:
+        return f"Не удалось сохранить копию письма в 'Отправленные': {_safe_text(exc) or 'ошибка IMAP'}."
+
+    return (
+        "Не удалось сохранить копию письма в папку 'Отправленные'. "
+        f"Пробовал папки: {', '.join(tried_folders)}."
+    )
+
+
+def _send_via_smtp(row: dict[str, Any], recipient: str, attachments: list[str], subject: str) -> str | None:
     if not settings.smtp_allow_real_send:
         raise RuntimeError(
             "Реальная SMTP-отправка запрещена настройкой smtp_allow_real_send. "
@@ -419,7 +591,7 @@ def _send_via_smtp(row: dict[str, Any], recipient: str, attachments: list[str], 
         with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
             server.login(settings.smtp_sender_email, settings.smtp_sender_password)
             server.send_message(message)
-        return
+        return _save_sent_copy(message)
 
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as server:
         server.ehlo()
@@ -428,20 +600,97 @@ def _send_via_smtp(row: dict[str, Any], recipient: str, attachments: list[str], 
             server.ehlo()
         server.login(settings.smtp_sender_email, settings.smtp_sender_password)
         server.send_message(message)
+    return _save_sent_copy(message)
 
 
-def _send_with_fallbacks(row: dict[str, Any], recipients: list[str], attachments: list[str], subject: str) -> dict[str, Any]:
+def _htmlify_mail_body(body: str) -> str:
+    parts = [line.strip() for line in body.splitlines()]
+    non_empty = [line for line in parts if line]
+    html = "<br>".join(non_empty)
+    if "{{UnsubscribeUrl}}" not in html:
+        html += "<br><br><a href='{{UnsubscribeUrl}}'>Отписаться от писем</a>"
+    return html
+
+
+def _send_via_unisender(row: dict[str, Any], recipient: str, attachments: list[str], subject: str) -> str | None:
+    api_key = _safe_text(settings.unisender_api_key)
+    sender_email = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
+    sender_name = _safe_text(settings.unisender_sender_name) or "ООО «ПР»"
+    list_id = int(settings.unisender_list_id or 1)
+    if not api_key:
+        raise RuntimeError("Не указан API-ключ UniSender.")
+    if not sender_email:
+        raise RuntimeError("Не указан подтверждённый email отправителя UniSender.")
+
+    body = _htmlify_mail_body(_build_mail_body(row))
+    payload: dict[str, Any] = {
+        "format": "json",
+        "api_key": api_key,
+        "email": recipient,
+        "sender_name": sender_name,
+        "sender_email": sender_email,
+        "subject": subject,
+        "body": body,
+        "list_id": list_id,
+        "lang": "ru",
+        "error_checking": 1,
+    }
+
+    for attachment_path in attachments:
+        path = Path(attachment_path)
+        payload[f"attachments[{path.name}]"] = path.read_bytes()
+
+    request = Request(
+        UNISENDER_SEND_URL,
+        data=urlencode(payload).encode("utf-8", errors="ignore"),
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urlopen(request, timeout=60) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"UniSender вернул непонятный ответ: {raw[:300]}") from exc
+
+    result_items = data.get("result")
+    if isinstance(result_items, list) and result_items:
+        first = result_items[0]
+        errors = first.get("errors") or []
+        if errors:
+            message = "; ".join(_safe_text(err.get("message")) for err in errors if isinstance(err, dict))
+            raise RuntimeError(message or "UniSender отклонил письмо.")
+        if first.get("id"):
+            return None
+
+    if data.get("error"):
+        raise RuntimeError(_safe_text(data.get("error")) or "UniSender вернул ошибку.")
+    raise RuntimeError("UniSender не подтвердил отправку письма.")
+
+
+def _send_with_transport(
+    row: dict[str, Any],
+    recipients: list[str],
+    attachments: list[str],
+    subject: str,
+    *,
+    transport: str,
+) -> dict[str, Any]:
     attempts: list[dict[str, str]] = []
     for recipient in recipients:
         try:
-            _send_via_smtp(row, recipient, attachments, subject)
+            warning = None
+            if transport == "unisender":
+                warning = _send_via_unisender(row, recipient, attachments, subject)
+            else:
+                warning = _send_via_smtp(row, recipient, attachments, subject)
         except Exception as exc:
             attempts.append({"recipient": recipient, "status": "error", "error": _safe_text(exc) or "SMTP error"})
             continue
         attempts.append({"recipient": recipient, "status": "sent", "error": ""})
-        return {"recipient": recipient, "attempts": attempts, "error": ""}
+        return {"recipient": recipient, "attempts": attempts, "error": "", "warning": warning or ""}
     last_error = attempts[-1]["error"] if attempts else "Не найден получатель для отправки."
-    return {"recipient": None, "attempts": attempts, "error": last_error}
+    return {"recipient": None, "attempts": attempts, "error": last_error, "warning": ""}
 
 
 def run_sender(
@@ -450,9 +699,12 @@ def run_sender(
     limit: int | None = None,
     auto_recover: bool = True,
     row_ids: list[str] | None = None,
+    transport: str | None = None,
 ) -> dict[str, Any]:
     state = SENDER_STATE
+    clear_sender_stop_request()
     effective_limit = _normalize_limit(limit, dry_run=dry_run)
+    effective_transport = _normalize_transport(transport)
     stats = _collect_excel_stats()
     state.update(
         {
@@ -469,6 +721,7 @@ def run_sender(
             "summary_text": "Агент-отправщик начал обработку строк.",
             "rows": [],
             "stats": stats,
+            "warning_rows": 0,
             "handoff_rows": 0,
             "task_stats": count_tasks_for_agent("sender"),
             "tasks": get_tasks_for_agent("sender")[:20],
@@ -478,6 +731,9 @@ def run_sender(
             "autonomous_recovery_rows": 0,
             "effective_limit": effective_limit,
             "remaining_rows": 0,
+            "stop_requested": False,
+            "stop_requested_at": None,
+            "transport": effective_transport,
         }
     )
 
@@ -498,6 +754,8 @@ def run_sender(
     subject = DEFAULT_MAIL_SUBJECT
 
     for row in candidates:
+        if state.get("stop_requested"):
+            break
         row_id = row.get("ID")
         row_status = _safe_text(row.get("STATUS"))
         entry: dict[str, Any] = {
@@ -515,6 +773,7 @@ def run_sender(
             "folder": None,
             "attachments": [],
             "error": "",
+            "warning": "",
             "next_action": "",
             "attempts": [],
         }
@@ -669,19 +928,31 @@ def run_sender(
         state["ready_rows"] += 1
 
         if not dry_run:
+            if state.get("stop_requested"):
+                entry["result"] = "stopped_before_send"
+                entry["next_action"] = "Отправка этой и следующих строк остановлена по запросу пользователя."
+                state["ready_rows"] -= 1
+                processed_entries.append(entry)
+                state["processed_rows"] += 1
+                break
             try:
-                send_result = _send_with_fallbacks(
+                send_result = _send_with_transport(
                     row,
                     _allowed_send_recipients(email_decision),
                     attachments,
                     subject,
+                    transport=effective_transport,
                 )
                 entry["attempts"] = send_result["attempts"]
+                entry["warning"] = _safe_text(send_result.get("warning"))
                 if not send_result["recipient"]:
                     raise RuntimeError(send_result["error"])
                 entry["recipient"] = send_result["recipient"]
                 if entry["email_strategy"] == "fallback_extra" or entry["recipient"] != email_decision["recipient"]:
                     entry["decision_reason"] = "Письмо отправлено по резервному email после выбора лучшего доступного адреса."
+                if entry["warning"]:
+                    state["warning_rows"] += 1
+                    entry["next_action"] = entry["warning"]
                 update_status(worksheet, row["_row_index"], "ОК")
             except Exception as exc:
                 entry["result"] = "error_send"
@@ -713,7 +984,7 @@ def run_sender(
     state["rows"] = processed_entries
     state["completed_at"] = datetime.now().isoformat(timespec="seconds")
     state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
-    state["status"] = "completed"
+    state["status"] = "stopped" if state.get("stop_requested") else "completed"
     state["task_stats"] = count_tasks_for_agent("sender")
     state["tasks"] = get_tasks_for_agent("sender")[:20]
     state["recent_events"] = get_recent_events(agent_name="sender", limit=20)

@@ -266,7 +266,10 @@ def run_philologist(
             path for path in docx_paths
             if _extract_row_id_from_docx_path(path) in requested_row_ids
         ]
-    claimed_tasks = mark_tasks_in_progress("philologist")
+    claimed_tasks = mark_tasks_in_progress(
+        "philologist",
+        row_ids=sorted(requested_row_ids) if requested_row_ids else None,
+    )
 
     state = PHILOLOGIST_STATE
     state.update(
