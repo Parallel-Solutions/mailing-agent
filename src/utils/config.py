@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     unisender_sender_email: str = ""
     unisender_list_id: int = 1
 
-    autonomous_workers_enabled: bool = True
+    inter_agent_handoffs_enabled: bool = False
+    autonomous_workers_enabled: bool = False
     philologist_auto_run_enabled: bool = False
     autonomous_workers_poll_seconds: int = 5
     autonomous_task_timeout_seconds: int = 120

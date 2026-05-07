@@ -33,6 +33,7 @@ from src.generator.excel_io import load_rows
 from src.generator.pdf_converter import convert_docx_batch
 from src.generator.responsibility_matrix import diagnose_responsibility
 from src.generator.transforms import build_document_context
+from src.utils.config import settings
 from src.utils.logger import logger
 
 
@@ -269,29 +270,30 @@ def run_generator_agent(
                 note="Генератор пересобрал или подтвердил комплект документов.",
                 resolution_summary="Комплект документов собран и сохранён в output.",
             )
-            diagnosis = diagnose_responsibility(
-                symptom="documents_ready_for_review",
-                context={"row_id": result.get("id")},
-            )
-            create_task(
-                source_agent="generator",
-                target_agent=diagnosis["owner_agent"],
-                owner_agent=diagnosis["owner_agent"],
-                task_type="review_generated_documents",
-                problem_type=diagnosis["problem_type"],
-                symptom="documents_ready_for_review",
-                root_cause=diagnosis["root_cause"],
-                priority=diagnosis["priority"],
-                blocking=diagnosis["blocking"],
-                can_retry_after=diagnosis["can_retry_after"],
-                row_id=result.get("id"),
-                mun_name=mun_name,
-                details={
-                    "reason": "Документы готовы и требуют языковой проверки.",
-                    "files": result.get("files") or {},
-                },
-            )
-            review_handoffs += 1
+            if settings.inter_agent_handoffs_enabled:
+                diagnosis = diagnose_responsibility(
+                    symptom="documents_ready_for_review",
+                    context={"row_id": result.get("id")},
+                )
+                create_task(
+                    source_agent="generator",
+                    target_agent=diagnosis["owner_agent"],
+                    owner_agent=diagnosis["owner_agent"],
+                    task_type="review_generated_documents",
+                    problem_type=diagnosis["problem_type"],
+                    symptom="documents_ready_for_review",
+                    root_cause=diagnosis["root_cause"],
+                    priority=diagnosis["priority"],
+                    blocking=diagnosis["blocking"],
+                    can_retry_after=diagnosis["can_retry_after"],
+                    row_id=result.get("id"),
+                    mun_name=mun_name,
+                    details={
+                        "reason": "Документы готовы и требуют языковой проверки.",
+                        "files": result.get("files") or {},
+                    },
+                )
+                review_handoffs += 1
             if result_id:
                 review_row_ids.append(result_id)
         else:
@@ -305,7 +307,7 @@ def run_generator_agent(
 
     philologist_started_rows = 0
     philologist_result = None
-    if review_row_ids:
+    if review_row_ids and settings.philologist_auto_run_enabled:
         from src.generator.philologist_agent import run_philologist
 
         philologist_result = run_philologist(ai_enabled=True, row_ids=review_row_ids)
