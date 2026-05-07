@@ -467,6 +467,48 @@ async def parser_run(
 async def parser_status(username: str = Depends(check_auth)):
     return {"status": "ok", "result": get_parser_status()}
 
+@app.post("/api/upload/rmz")
+async def upload_rmz(file: UploadFile = File(...), username: str = Depends(check_auth)):
+    dest = Path("data/RMZ7KH.xlsx")
+    dest.parent.mkdir(exist_ok=True)
+    with dest.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return {"status": "ok", "filename": file.filename}
+
+@app.post("/api/parser/merge-rmz")
+async def merge_rmz(username: str = Depends(check_auth)):
+    from src.parser.rmz_merger import run_merge
+    result = run_merge()
+    # Если есть спорные совпадения — просим агента проверить
+    if result.suspicious:
+        suspicious_list = [
+            {
+                "mo_name": s.mo_name,
+                "org_name": s.org_name,
+                "sub_rf": s.sub_rf,
+                "mun_r_name": s.mun_r_name,
+                "reason": s.reason,
+            }
+            for s in result.suspicious
+        ]
+        agent_reply = chat(
+            f"Проверь эти спорные совпадения из слияния RMZ7KH. "
+            f"Для каждого скажи верное ли совпадение: {suspicious_list}"
+        )
+        return {
+            "written": result.written,
+            "skipped_existing": result.skipped_existing,
+            "not_found": result.not_found,
+            "suspicious_count": len(result.suspicious),
+            "agent_review": agent_reply.get("reply", ""),
+        }
+    return {
+        "written": result.written,
+        "skipped_existing": result.skipped_existing,
+        "not_found": result.not_found,
+        "suspicious_count": 0,
+    }
+
 
 @app.post("/api/parser/chat")
 async def parser_chat(
