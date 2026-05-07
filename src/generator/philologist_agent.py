@@ -29,6 +29,7 @@ from src.generator.document_review_agent import review_docx
 from src.generator.philology_knowledge import find_relevant_rules, format_rules_context
 from src.generator.pdf_converter import convert_docx_batch
 from src.generator.responsibility_matrix import diagnose_responsibility
+from src.utils.config import settings
 
 try:
     import httpx  # type: ignore
@@ -404,6 +405,8 @@ def run_philologist(
             note=note,
             resolution_summary="Филолог завершил проверку документов по строке.",
         )
+        if not settings.inter_agent_handoffs_enabled:
+            continue
         if unresolved_issue_count > 0:
             diagnosis = diagnose_responsibility(
                 symptom="philology_review_block",

@@ -15,12 +15,12 @@ security = HTTPBasic()
 
 @app.on_event("startup")
 async def app_startup():
-    start_autonomous_worker()
+    return None
 
 
 @app.on_event("shutdown")
 async def app_shutdown():
-    stop_autonomous_worker()
+    return None
 
 
 def check_auth(credentials: HTTPBasicCredentials = Depends(security)):
@@ -417,7 +417,7 @@ async def sender_run(
     dry_run = True if payload is None else bool(payload.get("dry_run", True))
     limit = _parse_optional_limit(payload)
     transport = None if payload is None else payload.get("transport")
-    result = run_sender(dry_run=dry_run, limit=limit, transport=transport)
+    result = run_sender(dry_run=dry_run, limit=limit, transport=transport, auto_recover=False)
     return {"status": "ok", "result": result}
 
 

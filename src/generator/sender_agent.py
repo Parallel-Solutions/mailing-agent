@@ -286,6 +286,8 @@ def clear_sender_stop_request() -> None:
 
 
 def _active_sender_review_task(row_id: Any) -> dict[str, Any] | None:
+    if not settings.inter_agent_handoffs_enabled:
+        return None
     row_id_text = _safe_text(row_id)
     for item in get_tasks_for_agent("sender"):
         if _safe_text(item.get("task_type")) != "review_before_send":
@@ -311,6 +313,8 @@ def _delegate_sender_problem(
     mun_name: str,
     details: dict[str, Any],
 ) -> dict[str, Any]:
+    if not settings.inter_agent_handoffs_enabled:
+        return {}
     diagnosis = diagnose_responsibility(symptom=symptom, context=details)
     task_type = {
         "missing_output": "generate_missing_documents",
@@ -730,7 +734,7 @@ def run_sender(
     *,
     dry_run: bool = True,
     limit: int | None = None,
-    auto_recover: bool = True,
+    auto_recover: bool = False,
     row_ids: list[str] | None = None,
     transport: str | None = None,
 ) -> dict[str, Any]:
@@ -838,7 +842,11 @@ def run_sender(
         if not entry["recipient"]:
             entry["result"] = "needs_enrichment"
             entry["error"] = "Не найден валидный email получателя."
-            entry["next_action"] = "Запросить у агента-парсера поиск или уточнение email."
+            entry["next_action"] = (
+                "Нужно вручную проверить и заполнить email получателя."
+                if not settings.inter_agent_handoffs_enabled
+                else "Запросить у агента-парсера поиск или уточнение email."
+            )
             task = _delegate_sender_problem(
                 symptom="missing_recipient_data",
                 row_id=row_id,
@@ -851,12 +859,17 @@ def run_sender(
                     "has_any_valid_email": bool(email_decision["valid_emails"]),
                 },
             )
-            entry["handoff_task_id"] = task.get("id")
-            state["handoff_rows"] += 1
+            if task:
+                entry["handoff_task_id"] = task.get("id")
+                state["handoff_rows"] += 1
         elif folder_error:
             entry["result"] = "error_missing_output"
             entry["error"] = folder_error
-            entry["next_action"] = "Передать генератору задачу на пересборку комплекта документов."
+            entry["next_action"] = (
+                "Нужно вручную перезапустить генератор и пересобрать комплект документов."
+                if not settings.inter_agent_handoffs_enabled
+                else "Передать генератору задачу на пересборку комплекта документов."
+            )
             task = _delegate_sender_problem(
                 symptom="missing_output",
                 row_id=row_id,
@@ -867,8 +880,9 @@ def run_sender(
                     "attachment_count": 0,
                 },
             )
-            entry["handoff_task_id"] = task.get("id")
-            state["generator_handoff_rows"] += 1
+            if task:
+                entry["handoff_task_id"] = task.get("id")
+                state["generator_handoff_rows"] += 1
             if auto_recover:
                 recovery_info = _run_autonomous_recovery_for_generator(row_id=row_id)
                 folder, folder_error, attachments, attachment_error = _retry_row_resources(row_id)
@@ -881,7 +895,11 @@ def run_sender(
         elif attachment_error:
             entry["result"] = "error_missing_attachments"
             entry["error"] = attachment_error
-            entry["next_action"] = "Передать генератору задачу на восстановление вложений."
+            entry["next_action"] = (
+                "Нужно вручную перезапустить генератор и восстановить вложения."
+                if not settings.inter_agent_handoffs_enabled
+                else "Передать генератору задачу на восстановление вложений."
+            )
             task = _delegate_sender_problem(
                 symptom="missing_attachments",
                 row_id=row_id,
@@ -893,8 +911,9 @@ def run_sender(
                     "attachment_count": len(attachments),
                 },
             )
-            entry["handoff_task_id"] = task.get("id")
-            state["generator_handoff_rows"] += 1
+            if task:
+                entry["handoff_task_id"] = task.get("id")
+                state["generator_handoff_rows"] += 1
             if auto_recover:
                 recovery_info = _run_autonomous_recovery_for_generator(row_id=row_id)
                 folder, folder_error, attachments, attachment_error = _retry_row_resources(row_id)
