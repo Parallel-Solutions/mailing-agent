@@ -702,9 +702,6 @@
     </div>
 
     <div class="nav-section" style="margin-top:0.5rem">Модули</div>
-    <div class="nav-item" onclick="show('orchestrator', this)">
-      <div class="nav-dot dot-green"></div> Агент-оркестратор
-    </div>
     <div class="nav-item" onclick="show('parser', this)">
       <div class="nav-dot dot-gray"></div> Модуль 1 — Парсер
     </div>
@@ -790,44 +787,6 @@
       </div>
 
       <button class="btn-primary" onclick="showToast('Настройки сохранены')">Сохранить настройки</button>
-    </div>
-
-    <!-- ОРКЕСТРАТОР -->
-    <div class="screen" id="s-orchestrator">
-      <div class="page-title">Тестовый агент-оркестратор</div>
-      <div class="page-sub">Единая точка входа для целей пользователя и маршрутизации задач между внутренними агентами</div>
-
-      <div class="stats-row" style="grid-template-columns: repeat(4, 1fr)">
-        <div class="stat">
-          <div class="stat-n" id="o-parser-state">idle</div>
-          <div class="stat-l">Парсер</div>
-        </div>
-        <div class="stat">
-          <div class="stat-n" id="o-generator-state">idle</div>
-          <div class="stat-l">Генератор</div>
-        </div>
-        <div class="stat">
-          <div class="stat-n" id="o-philologist-state">idle</div>
-          <div class="stat-l">Филолог</div>
-        </div>
-        <div class="stat">
-          <div class="stat-n" id="o-sender-state">idle</div>
-          <div class="stat-l">Отправщик</div>
-        </div>
-      </div>
-
-      <div class="chat-section chat-section-flat">
-        <div class="chat-header">
-          <div class="dot-green"></div> Чат с оркестратором
-        </div>
-        <div class="chat-messages" id="o-chat-messages">
-          <div class="chat-msg agent">Привет! Я тестовый агент-оркестратор. Могу показать статус системы, запустить генератора, передать задачу отправщику на проверку готовности, поднять очередь дозаполнения у парсера или собрать связанный план действий.</div>
-        </div>
-        <div class="chat-input-row">
-          <input type="text" id="o-chat-input" placeholder="Например: подготовь к отправке" onkeydown="if(event.key==='Enter') sendChat('o-chat')">
-          <button onclick="sendChat('o-chat')">Отправить</button>
-        </div>
-      </div>
     </div>
 
     <!-- ПАРСЕР -->
@@ -979,7 +938,7 @@
       </div>
 
       <div class="warn-box">
-        Боевой режим: лучше отправлять партиями по 20–30 писем. При повторном запуске отправщик продолжит с первой строки, где STATUS ещё не ОК.
+        Скорость отправки: не более 100–150 писем в час. При повторном запуске отправщик продолжит с первой строки, где STATUS ещё не ОК.
       </div>
 
       <div class="module-card">
@@ -990,15 +949,6 @@
         <div class="module-title">Отправка писем с КП и договором</div>
         <div class="module-desc">
           Читает data.xlsx, умеет заранее показать адреса получателей, проверяет готовность вложений и только после подтверждения может переходить к реальной отправке.
-        </div>
-        <div class="grid2" style="margin-bottom:12px">
-          <div class="field" style="margin-bottom:0">
-            <label>Размер партии</label>
-            <input type="number" id="s-limit" value="25" min="1" max="100" step="1" placeholder="Например: 25">
-          </div>
-          <div class="info-box" style="margin-bottom:0">
-            Можно поставить 10, 25, 50 или 100. Для первого боевого запуска безопаснее идти с 25.
-          </div>
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="s-fill" style="width:0%"></div></div>
@@ -1493,7 +1443,6 @@
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус агента-филолога');
       const result = data.result || {};
       setPhilologistUiState(result);
-      appendNewAgentEvents('g-chat', 'philologist', result.recent_events || [], 'Новые внутренние действия филолога:');
       return result;
     } catch (err) {
       if (!silent) {
@@ -1535,7 +1484,7 @@
           result.summary_text || `Проверено ${processed} документов. Замечания есть в ${issueDocs}, автоматически исправлено ${fixed}.`
         );
         if (Array.isArray(result.recent_events) && result.recent_events.length) {
-          appendChatMessage('g-chat', 'agent', 'Что я передал дальше по цепочке:\n' + formatAgentEvents(result.recent_events, 4));
+          appendChatMessage('g-chat', 'agent', 'Что я сделал дальше:\n' + formatAgentEvents(result.recent_events, 4));
         }
       } catch (err) {
       setPhilologistUiState({ status: 'error', summary_text: 'Проверка не завершилась' });
@@ -1562,7 +1511,6 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус генератора');
       const result = data.result || {};
-      appendNewAgentEvents('g-chat', 'generator', result.recent_events || [], 'Новые внутренние действия генератора:');
       return result;
     } catch (err) {
       if (!silent) {
@@ -1601,7 +1549,7 @@
         showToast('Генерация завершена: ' + total + ' документов');
         appendChatMessage('g-chat', 'agent', data.summary_text || (`Генерация завершена: ${total} документов.`));
         if (Array.isArray(data.recent_events) && data.recent_events.length) {
-          appendChatMessage('g-chat', 'agent', 'Кому я передал задачу дальше:\n' + formatAgentEvents(data.recent_events, 4));
+          appendChatMessage('g-chat', 'agent', 'Что я сделал дальше:\n' + formatAgentEvents(data.recent_events, 4));
         }
       } catch(e) {
       showToast('Ошибка соединения с сервером');
@@ -1617,14 +1565,7 @@
   let senderPreviewState = null;
 
   function getSenderBatchLimit() {
-    const input = document.getElementById('s-limit');
-    if (!input) return 25;
-    const raw = String(input.value || '').trim();
-    const parsed = Number.parseInt(raw, 10);
-    const normalized = Number.isFinite(parsed) ? parsed : 25;
-    const clamped = Math.max(1, Math.min(normalized, 100));
-    input.value = String(clamped);
-    return clamped;
+    return 25;
   }
 
   function safeAppendChatMessage(chatId, role, text) {
@@ -1639,14 +1580,69 @@
     } catch (e) {}
   }
 
+  function humanAgentName(agent) {
+    if (agent === 'generator') return 'агент-генератор';
+    if (agent === 'philologist') return 'агент-филолог';
+    if (agent === 'sender') return 'агент-отправщик';
+    if (agent === 'parser') return 'агент-парсер';
+    if (agent === 'orchestrator') return 'оркестратор';
+    return 'другой агент';
+  }
+
+  function humanTaskName(taskType) {
+    if (taskType === 'review_generated_documents') return 'проверку готовых документов';
+    if (taskType === 'restore_missing_attachments') return 'восстановление недостающих вложений';
+    if (taskType === 'generate_missing_documents') return 'пересборку недостающих документов';
+    if (taskType === 'review_before_send') return 'дополнительную проверку перед отправкой';
+    if (taskType === 'resume_send_readiness') return 'повторную проверку готовности к отправке';
+    if (taskType === 'enrich_email') return 'уточнение адреса электронной почты';
+    return 'внутреннюю задачу';
+  }
+
+  function summarizeAgentEvent(item) {
+    const source = humanAgentName(item.source_agent);
+    const target = humanAgentName(item.target_agent);
+    const eventType = item.event_type || '';
+    const taskType = item.task_type || item.details?.task_type || '';
+    const problemType = item.problem_type || item.details?.problem_type || '';
+    const munName = item.mun_name || item.details?.mun_name || '';
+    const rowId = item.row_id || item.details?.row_id || '';
+    const rowLabel = munName ? `по "${munName}"` : (rowId ? `по строке ${rowId}` : '');
+
+    if (eventType === 'task_created') {
+      return `${source} передал ${target} ${humanTaskName(taskType)} ${rowLabel}`.trim();
+    }
+    if (eventType === 'task_claimed') {
+      return `${source} принял в работу ${humanTaskName(taskType)} ${rowLabel}`.trim();
+    }
+    if (eventType === 'task_done') {
+      const resolution = item.resolution_summary || item.details?.resolution_summary || '';
+      return resolution
+        ? `${source} завершил работу ${rowLabel}: ${resolution}`.trim()
+        : `${source} завершил работу ${rowLabel}`.trim();
+    }
+    if (eventType === 'task_blocked') {
+      return `${source} не смог продолжить ${rowLabel}. Нужна дополнительная проверка.`.trim();
+    }
+    if (eventType === 'task_escalated') {
+      return `${source} несколько раз пытался решить вопрос ${rowLabel}, но нужна ручная проверка.`.trim();
+    }
+    if (problemType === 'missing_attachments') {
+      return `${source} заметил, что комплект вложений ${rowLabel} неполный, и передал это ${target}.`.trim();
+    }
+    if (problemType === 'missing_output') {
+      return `${source} заметил, что документы ${rowLabel} не собраны, и передал это ${target}.`.trim();
+    }
+    if (problemType === 'review_before_send') {
+      return `${source} попросил ${target} дополнительно проверить документы ${rowLabel} перед отправкой.`.trim();
+    }
+
+    return item.message || `${source} выполнил внутреннее действие ${rowLabel}`.trim();
+  }
+
   function formatAgentEvents(events, limit = 4) {
     if (!Array.isArray(events) || !events.length) return '';
-    return events.slice(-limit).map(item => {
-      const source = item.source_agent || 'agent';
-      const target = item.target_agent || 'system';
-      const message = item.message || 'без сообщения';
-      return `${source} -> ${target}: ${message}`;
-    }).join('\n');
+    return events.slice(-limit).map(item => `• ${summarizeAgentEvent(item)}`).join('\n');
   }
 
   const lastAgentEventIds = {
@@ -1668,7 +1664,7 @@
     }
     lastAgentEventIds[agentKey] = events[events.length - 1]?.id || lastAgentEventIds[agentKey];
     if (!unseen.length) return;
-    appendChatMessage(chatId, 'agent', `${title}\n${formatAgentEvents(unseen, unseen.length)}`);
+      appendChatMessage(chatId, 'agent', `${title}\n${formatAgentEvents(unseen, unseen.length)}`);
   }
 
   function setSenderUiState(result = {}) {
@@ -1730,7 +1726,6 @@
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус отправщика');
       const result = data.result || {};
       setSenderUiState(result);
-      appendNewAgentEvents('s-chat', 'sender', result.recent_events || [], 'Новые внутренние действия отправщика:');
       return result;
     } catch (err) {
       if (!silent) {
@@ -1763,7 +1758,7 @@
       if (!previewRes.ok) throw new Error(previewData.detail || 'Ошибка предпросмотра адресов');
 
       safeSetSenderUiState({ status: 'running', total_rows: 0, processed_rows: 0, stats: {} });
-      safeAppendChatMessage('s-chat', 'agent', `Сначала покажу адреса и проверю готовность вложений без реальной отправки. Размер текущей партии: ${limit}.`);
+      safeAppendChatMessage('s-chat', 'agent', 'Сначала покажу адреса и проверю готовность вложений без реальной отправки.');
       senderPreviewState = previewData.result || {};
       safeAppendChatMessage('s-chat', 'agent', (senderPreviewState.summary_text || 'Предпросмотр адресов готов.') + '\n' + formatSenderPreviewRows(senderPreviewState.rows || [], 10));
 
@@ -1779,7 +1774,7 @@
         showToast('Проверка готовности завершена');
         safeAppendChatMessage('s-chat', 'agent', (result.summary_text || 'Проверка готовности завершена.') + '\nЕсли адреса верные, нажми «Подтвердить и отправить».');
         if (Array.isArray(result.recent_events) && result.recent_events.length) {
-          safeAppendChatMessage('s-chat', 'agent', 'К кому я обратился внутри платформы:\n' + formatAgentEvents(result.recent_events, 4));
+          safeAppendChatMessage('s-chat', 'agent', 'Что я сделал дальше:\n' + formatAgentEvents(result.recent_events, 4));
         }
       } catch (err) {
       safeSetSenderUiState({ status: 'error', summary_text: 'Проверка отправщика не завершилась' });
@@ -1798,11 +1793,11 @@
         return;
       }
       const limit = getSenderBatchLimit();
-      if (!confirm(`Отправить текущую партию писем? Размер партии: ${limit}.`)) {
+      if (!confirm('Запустить реальную отправку писем?')) {
         return;
       }
       senderRunning = true;
-      safeAppendChatMessage('s-chat', 'agent', `Подтверждение получено. Запускаю реальную отправку. Размер партии: ${limit}.`);
+      safeAppendChatMessage('s-chat', 'agent', 'Подтверждение получено. Запускаю реальную отправку.');
 
       const res = await fetch('/api/sender/run', {
         method: 'POST',
@@ -1816,7 +1811,7 @@
         showToast('Отправка завершена');
         safeAppendChatMessage('s-chat', 'agent', result.summary_text || 'Реальная отправка завершена.');
         if (Array.isArray(result.recent_events) && result.recent_events.length) {
-          safeAppendChatMessage('s-chat', 'agent', 'Последние внутренние действия:\n' + formatAgentEvents(result.recent_events, 4));
+          safeAppendChatMessage('s-chat', 'agent', 'Что произошло во время отправки:\n' + formatAgentEvents(result.recent_events, 4));
         }
       } catch (err) {
       safeSetSenderUiState({ status: 'error', summary_text: 'Отправка завершилась с ошибкой' });
@@ -1848,7 +1843,6 @@
   }
 
   refreshCounts();
-  refreshOrchestratorStatus({ silent: true });
   refreshParserStatus({ silent: true });
   refreshGeneratorStatus({ silent: true });
   refreshPhilologistStatus({ silent: true });

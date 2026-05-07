@@ -420,7 +420,7 @@ async def parser_chat(
 
 @app.get("/api/orchestrator/status")
 async def orchestrator_status(session_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_orchestrator_status(session_id=session_id)}
+    raise HTTPException(status_code=404, detail="Оркестратор отключён в этой ветке.")
 
 
 @app.get("/api/autonomous-worker/status")
@@ -433,13 +433,7 @@ async def orchestrator_chat(
     payload: dict = Body(...),
     username: str = Depends(check_auth),
 ):
-    message = str(payload.get("message", "")).strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="Пустое сообщение")
-    session_id = payload.get("session_id")
-    if session_id is not None:
-        session_id = str(session_id).strip() or None
-    return {"status": "ok", **chat_with_orchestrator(message, session_id=session_id)}
+    raise HTTPException(status_code=404, detail="Оркестратор отключён в этой ветке.")
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     sender_max_batch_size: int = 100
 
     autonomous_workers_enabled: bool = True
+    philologist_auto_run_enabled: bool = False
     autonomous_workers_poll_seconds: int = 5
     autonomous_task_timeout_seconds: int = 120
     autonomous_task_max_retries: int = 3

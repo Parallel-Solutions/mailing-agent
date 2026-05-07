@@ -142,6 +142,8 @@ class AutonomousWorker:
         AUTONOMOUS_WORKER_STATE["generator_runs"] += 1
 
     def _process_philologist_tasks(self) -> None:
+        if not settings.philologist_auto_run_enabled:
+            return
         pending_rows = sorted({
             str(task.get("row_id")).strip()
             for task in get_tasks_for_agent("philologist")
