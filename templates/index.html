@@ -1488,7 +1488,8 @@
           result.summary_text || `Проверено ${processed} документов. Замечания есть в ${issueDocs}, автоматически исправлено ${fixed}.`
         );
         if (Array.isArray(result.recent_events) && result.recent_events.length) {
-          appendChatMessage('g-chat', 'agent', 'Что я сделал дальше:\n' + formatAgentEvents(result.recent_events, 4));
+          const formatted = formatAgentEvents(result.recent_events, 4);
+          if (formatted) appendChatMessage('g-chat', 'agent', 'Что я сделал дальше:\n' + formatted);
         }
       } catch (err) {
       setPhilologistUiState({ status: 'error', summary_text: 'Проверка не завершилась' });
@@ -1553,7 +1554,8 @@
         showToast('Генерация завершена: ' + total + ' документов');
         appendChatMessage('g-chat', 'agent', data.summary_text || (`Генерация завершена: ${total} документов.`));
         if (Array.isArray(data.recent_events) && data.recent_events.length) {
-          appendChatMessage('g-chat', 'agent', 'Что я сделал дальше:\n' + formatAgentEvents(data.recent_events, 4));
+          const formatted = formatAgentEvents(data.recent_events, 4);
+          if (formatted) appendChatMessage('g-chat', 'agent', 'Что я сделал дальше:\n' + formatted);
         }
       } catch(e) {
       showToast('Ошибка соединения с сервером');
@@ -1634,7 +1636,7 @@
       return `${source} не смог продолжить ${rowLabel}. Нужна дополнительная проверка.`.trim();
     }
     if (eventType === 'task_escalated') {
-      return `${source} несколько раз пытался решить вопрос ${rowLabel}, но нужна ручная проверка.`.trim();
+      return '';
     }
     if (problemType === 'missing_attachments') {
       return `${source} заметил, что комплект вложений ${rowLabel} неполный, и передал это ${target}.`.trim();
@@ -1651,7 +1653,15 @@
 
   function formatAgentEvents(events, limit = 4) {
     if (!Array.isArray(events) || !events.length) return '';
-    return events.slice(-limit).map(item => `• ${summarizeAgentEvent(item)}`).join('\n');
+    const lines = [];
+    const seen = new Set();
+    for (const item of events) {
+      const summary = summarizeAgentEvent(item);
+      if (!summary || seen.has(summary)) continue;
+      seen.add(summary);
+      lines.push(`• ${summary}`);
+    }
+    return lines.slice(-limit).join('\n');
   }
 
   const lastAgentEventIds = {
@@ -1673,7 +1683,9 @@
     }
     lastAgentEventIds[agentKey] = events[events.length - 1]?.id || lastAgentEventIds[agentKey];
     if (!unseen.length) return;
-      appendChatMessage(chatId, 'agent', `${title}\n${formatAgentEvents(unseen, unseen.length)}`);
+    const formatted = formatAgentEvents(unseen, unseen.length);
+    if (!formatted) return;
+    appendChatMessage(chatId, 'agent', `${title}\n${formatted}`);
   }
 
   function setSenderUiState(result = {}) {
@@ -1794,7 +1806,8 @@
         showToast('Проверка готовности завершена');
         safeAppendChatMessage('s-chat', 'agent', (result.summary_text || 'Проверка готовности завершена.') + '\nЕсли адреса верные, нажми «Подтвердить и отправить».');
         if (Array.isArray(result.recent_events) && result.recent_events.length) {
-          safeAppendChatMessage('s-chat', 'agent', 'Что я сделал дальше:\n' + formatAgentEvents(result.recent_events, 4));
+          const formatted = formatAgentEvents(result.recent_events, 4);
+          if (formatted) safeAppendChatMessage('s-chat', 'agent', 'Что я сделал дальше:\n' + formatted);
         }
       } catch (err) {
       safeSetSenderUiState({ status: 'error', summary_text: 'Проверка отправщика не завершилась' });
@@ -1832,7 +1845,8 @@
         showToast('Отправка завершена');
         safeAppendChatMessage('s-chat', 'agent', result.summary_text || 'Реальная отправка завершена.');
         if (Array.isArray(result.recent_events) && result.recent_events.length) {
-          safeAppendChatMessage('s-chat', 'agent', 'Что произошло во время отправки:\n' + formatAgentEvents(result.recent_events, 4));
+          const formatted = formatAgentEvents(result.recent_events, 4);
+          if (formatted) safeAppendChatMessage('s-chat', 'agent', 'Что произошло во время отправки:\n' + formatted);
         }
       } catch (err) {
       safeSetSenderUiState({ status: 'error', summary_text: 'Отправка завершилась с ошибкой' });
