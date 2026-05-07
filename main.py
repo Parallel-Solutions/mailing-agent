@@ -91,14 +91,6 @@ async def upload_template(file: UploadFile = File(...), username: str = Depends(
         "stored_as": dest.name,
     }
 
-@app.post("/api/upload/base")
-async def upload_base(file: UploadFile = File(...), username: str = Depends(check_auth)):
-    dest = Path("data/base.xlsx")
-    dest.parent.mkdir(exist_ok=True)
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
-    return {"status": "ok", "filename": file.filename}
-
 from src.generator.excel_io import load_rows
 from src.generator.transforms import build_document_context
 from src.generator.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
@@ -261,7 +253,7 @@ def finalize_generated_files(results: list[dict]) -> None:
 
 @app.get("/api/counts")
 async def counts(username: str = Depends(check_auth)):
-    base_path = Path("data/base.xlsx")
+    base_path = Path("service_docs/base.xlsx")
     data_path = Path("data/data.xlsx")
     
     parser_total = 0
@@ -466,14 +458,6 @@ async def parser_run(
 @app.get("/api/parser/status")
 async def parser_status(username: str = Depends(check_auth)):
     return {"status": "ok", "result": get_parser_status()}
-
-@app.post("/api/upload/rmz")
-async def upload_rmz(file: UploadFile = File(...), username: str = Depends(check_auth)):
-    dest = Path("data/RMZ7KH.xlsx")
-    dest.parent.mkdir(exist_ok=True)
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
-    return {"status": "ok", "filename": file.filename}
 
 @app.post("/api/parser/merge-rmz")
 async def merge_rmz(username: str = Depends(check_auth)):

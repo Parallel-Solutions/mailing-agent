@@ -27,7 +27,7 @@ from src.utils.logger import logger
 # Константы
 # ------------------------------------------------------------------
 
-BASE_MO_PATH = Path("data/base.xlsx")
+BASE_MO_PATH = Path("service_docs/base.xlsx")
 DATA_XLSX_PATH = Path("data/data.xlsx")
 
 OKVED_RURAL = "84.11.31"   # сельские поселения
