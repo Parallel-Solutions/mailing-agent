@@ -213,14 +213,21 @@ def count_tasks_for_agent(agent_name: str) -> dict[str, int]:
     return result
 
 
-def mark_tasks_in_progress(agent_name: str, limit: int | None = None) -> list[dict[str, Any]]:
+def mark_tasks_in_progress(
+    agent_name: str,
+    limit: int | None = None,
+    row_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
     tasks = load_tasks()
     touched: list[dict[str, Any]] = []
     remaining = limit
+    requested_row_ids = {_safe_text(item) for item in (row_ids or []) if _safe_text(item)}
     for item in tasks:
         if _safe_text(item.get("target_agent")) != agent_name:
             continue
         if _safe_text(item.get("status")) != "pending":
+            continue
+        if requested_row_ids and _safe_text(item.get("row_id")) not in requested_row_ids:
             continue
         item["status"] = "in_progress"
         item["updated_at"] = datetime.now().isoformat(timespec="seconds")
