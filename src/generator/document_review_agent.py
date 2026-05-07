@@ -82,6 +82,18 @@ def _looks_like_editorial_instruction(text: str) -> bool:
     return False
 
 
+def _is_overlong_replacement(fragment: str, suggestion: str) -> bool:
+    fragment_text = _safe_text(fragment)
+    suggestion_text = _safe_text(suggestion)
+    if not fragment_text or not suggestion_text:
+        return False
+    if len(suggestion_text) > 400:
+        return True
+    if len(fragment_text) <= 80 and len(suggestion_text) > len(fragment_text) * 3:
+        return True
+    return False
+
+
 def _population_with_unit(number_text: str) -> str:
     number = int(number_text)
     mod100 = number % 100
@@ -105,10 +117,54 @@ def _iter_docx_blocks(doc: Document) -> Iterable[tuple[str, str]]:
 
     for table_index, table in enumerate(doc.tables, 1):
         for row_index, row in enumerate(table.rows, 1):
-            row_text = " | ".join(_safe_text(cell.text.replace("\n", " / ")) for cell in row.cells if _safe_text(cell.text))
-            row_text = _safe_text(row_text)
-            if row_text:
-                yield (f"table:{table_index}:row:{row_index}", row_text)
+            for cell_index, cell in enumerate(row.cells, 1):
+                for paragraph_index, paragraph in enumerate(cell.paragraphs, 1):
+                    text = _safe_text(paragraph.text.replace("\n", " / "))
+                    if text:
+                        yield (
+                            f"table:{table_index}:row:{row_index}:cell:{cell_index}:paragraph:{paragraph_index}",
+                            text,
+                        )
+
+
+def _add_local_issue(
+    issues: list[ReviewIssue],
+    *,
+    location: str,
+    fragment: str,
+    issue: str,
+    suggestion: str,
+    severity: str = "warning",
+) -> None:
+    issues.append(
+        ReviewIssue(
+            source="local",
+            location=location,
+            fragment=fragment,
+            issue=issue,
+            suggestion=suggestion,
+            severity=severity,
+        )
+    )
+
+
+def _add_local_replacement_issue(
+    issues: list[ReviewIssue],
+    *,
+    location: str,
+    fragment: str,
+    replacement: str,
+    issue: str,
+    severity: str = "warning",
+) -> None:
+    _add_local_issue(
+        issues,
+        location=location,
+        fragment=fragment,
+        issue=issue,
+        suggestion=replacement,
+        severity=severity,
+    )
 
 
 def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
@@ -117,15 +173,13 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
         placeholder_match = PLACEHOLDER_PATTERN.search(text)
         if placeholder_match:
             placeholder = placeholder_match.group(0)
-            issues.append(
-                ReviewIssue(
-                    source="local",
-                    location=location,
-                    fragment=text,
-                    issue=f"В документе остался незаменённый плейсхолдер `{placeholder}`.",
-                    suggestion="Проверить подстановку данных и шаблон.",
-                    severity="error",
-                )
+            _add_local_issue(
+                issues,
+                location=location,
+                fragment=text,
+                issue=f"В документе остался незаменённый плейсхолдер `{placeholder}`.",
+                suggestion="Проверить подстановку данных и шаблон.",
+                severity="error",
             )
 
         for match in POPULATION_PATTERN.finditer(text):
@@ -133,27 +187,73 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
             expected = _population_with_unit(number_text)
             current = f"{number_text} {unit}"
             if current != expected:
-                issues.append(
-                    ReviewIssue(
-                        source="local",
-                        location=location,
-                        fragment=text,
-                        issue=f"После числа используется неверная форма слова: `{current}`.",
-                        suggestion=f"{prefix}{expected}.",
-                        severity="warning",
-                    )
+                _add_local_issue(
+                    issues,
+                    location=location,
+                    fragment=text,
+                    issue=f"После числа используется неверная форма слова: `{current}`.",
+                    suggestion=f"{prefix}{expected}.",
+                    severity="warning",
                 )
 
         if "  " in text:
-            issues.append(
-                ReviewIssue(
-                    source="local",
-                    location=location,
-                    fragment=text,
-                    issue="Обнаружены двойные пробелы.",
-                    suggestion="Убрать лишние пробелы.",
-                    severity="info",
-                )
+            _add_local_issue(
+                issues,
+                location=location,
+                fragment=text,
+                issue="Обнаружены двойные пробелы.",
+                suggestion="Убрать лишние пробелы.",
+                severity="info",
+            )
+
+        if "обоснование предмета нормирование" in text:
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment="обоснование предмета нормирование",
+                replacement="обоснование предмета нормирования",
+                issue="Нарушена падежная форма в словосочетании 'предмета нормирование'.",
+                severity="error",
+            )
+
+        if "утвержденный постановление" in text:
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment="утвержденный постановление",
+                replacement="утвержденный постановлением",
+                issue="Нарушено управление в конструкции 'утвержденный постановление'.",
+                severity="error",
+            )
+
+        if "подписанный в 2 (двух) экземплярах акта сдачи-приемки работ" in text:
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment="подписанный в 2 (двух) экземплярах акта сдачи-приемки работ",
+                replacement="подписанный в 2 (двух) экземплярах акт сдачи-приемки работ",
+                issue="Нарушено согласование в конструкции с актом сдачи-приемки работ.",
+                severity="error",
+            )
+
+        if "дней, следующих за днем поступления Заказчику акта сдачи-приемки работ Заказчик подписывает" in text:
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment="дней, следующих за днем поступления Заказчику акта сдачи-приемки работ Заказчик подписывает",
+                replacement="дней, следующих за днем поступления Заказчику акта сдачи-приемки работ, Заказчик подписывает",
+                issue="В предложении есть лишний повтор слова 'Заказчик', который ломает синтаксис.",
+                severity="warning",
+            )
+
+        if "В стоимость работ включены консультационное сопровождение" in text:
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment="В стоимость работ включены консультационное сопровождение",
+                replacement="В стоимость работ включено консультационное сопровождение",
+                issue="Нарушено согласование сказуемого со словом 'сопровождение'.",
+                severity="warning",
             )
     return issues
 
@@ -169,7 +269,8 @@ def _build_ai_prompt(blocks: list[tuple[str, str]]) -> str:
         "Проверь текст фрагментов договора/КП на грамматику, падежи, согласование и канцелярский стиль. "
         "Сначала опирайся на локальную базу правил русского языка, затем на сам текст фрагмента. "
         "Не придумывай новый текст целиком. Ищи только реальные ошибки русского языка или шаблонные огрехи. "
-        "Если нашлась ошибка, в поле suggestion верни ПОЛНЫЙ ИСПРАВЛЕННЫЙ ФРАГМЕНТ, который можно сразу вставить вместо fragment. "
+        "Если нашлась ошибка, location должен указывать точное место, а fragment должен быть МИНИМАЛЬНЫМ точным куском исходного текста, где есть ошибка. "
+        "Если нашлась ошибка, в поле suggestion верни только ИСПРАВЛЕННУЮ ЗАМЕНУ для fragment, а не весь абзац. "
         "suggestion должен быть готовым текстом документа, а не комментарием редактора. "
         "Нельзя писать 'Заменить ...', 'Исправить ...', 'Нужно ...', 'Следует ...', 'Проверить ...'. "
         "Если для фрагмента нельзя дать безопасную готовую замену, оставь suggestion пустым, но опиши ошибку в issue. "
@@ -217,14 +318,15 @@ def _run_ai_review(blocks: list[tuple[str, str]], *, ai_enabled: bool = True) ->
     for item in issues or []:
         if not isinstance(item, dict):
             continue
+        fragment = _safe_text(item.get("fragment"))
         suggestion = _safe_text(item.get("suggestion"))
-        if _looks_like_editorial_instruction(suggestion):
+        if _looks_like_editorial_instruction(suggestion) or _is_overlong_replacement(fragment, suggestion):
             suggestion = ""
         result.append(
             ReviewIssue(
                 source="ai",
                 location=_safe_text(item.get("location")),
-                fragment=_safe_text(item.get("fragment")),
+                fragment=fragment,
                 issue=_safe_text(item.get("issue")),
                 suggestion=suggestion,
                 severity=_safe_text(item.get("severity")) or "warning",

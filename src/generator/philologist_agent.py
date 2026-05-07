@@ -105,6 +105,16 @@ def _replace_paragraph_text(paragraph, new_text: str) -> bool:
     return True
 
 
+def _replace_fragment_in_paragraph(paragraph, fragment: str, replacement: str) -> bool:
+    current_text = "".join(run.text for run in paragraph.runs) if paragraph.runs else paragraph.text
+    if not fragment or not replacement or fragment not in current_text:
+        return False
+    new_text = current_text.replace(fragment, replacement, 1)
+    if new_text == current_text:
+        return False
+    return _replace_paragraph_text(paragraph, new_text)
+
+
 def _normalize_double_spaces(text: str) -> str:
     while "  " in text:
         text = text.replace("  ", " ")
@@ -153,8 +163,17 @@ def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]
     if "после числа используется неверная форма слова" in issue_text and suggestion:
         return _replace_paragraph_text(paragraph, suggestion)
 
-    if issue.get("source") == "ai" and suggestion and fragment and current_text.strip() == fragment.strip():
-        return _replace_paragraph_text(paragraph, suggestion)
+    if issue.get("source") == "local" and suggestion and fragment:
+        if fragment in current_text:
+            return _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+        if current_text.strip() == fragment.strip():
+            return _replace_paragraph_text(paragraph, suggestion)
+
+    if issue.get("source") == "ai" and suggestion and fragment:
+        if fragment in current_text:
+            return _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+        if current_text.strip() == fragment.strip():
+            return _replace_paragraph_text(paragraph, suggestion)
 
     return False
 
