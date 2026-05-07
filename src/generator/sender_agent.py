@@ -288,14 +288,20 @@ def _delegate_sender_problem(
 def _run_autonomous_recovery_for_generator(*, row_id: Any) -> dict[str, Any]:
     row_id_text = _safe_text(row_id)
     generator_result = run_generator_agent(row_ids=[row_id_text] if row_id_text else None)
-    philologist_result = run_philologist(ai_enabled=True, row_ids=[row_id_text] if row_id_text else None)
-    return {
+    result = {
         "generator_result": generator_result,
-        "philologist_result": philologist_result,
     }
+    if settings.philologist_auto_run_enabled:
+        result["philologist_result"] = run_philologist(
+            ai_enabled=True,
+            row_ids=[row_id_text] if row_id_text else None,
+        )
+    return result
 
 
 def _run_autonomous_recovery_for_philologist(*, row_id: Any) -> dict[str, Any]:
+    if not settings.philologist_auto_run_enabled:
+        return {"philologist_result": {"status": "skipped", "summary_text": "Автозапуск филолога отключён."}}
     row_id_text = _safe_text(row_id)
     philologist_result = run_philologist(ai_enabled=True, row_ids=[row_id_text] if row_id_text else None)
     return {"philologist_result": philologist_result}
@@ -622,7 +628,7 @@ def run_sender(
                 + diagnosis["root_cause"]
             )
             state["philology_blocked_rows"] += 1
-            if auto_recover:
+            if auto_recover and settings.philologist_auto_run_enabled:
                 recovery_info = _run_autonomous_recovery_for_philologist(row_id=row_id)
                 review_task = _active_sender_review_task(row_id)
                 if not review_task:
@@ -631,6 +637,10 @@ def run_sender(
                     entry["next_action"] = ""
                     entry["decision_reason"] += " Филолог автоматически перепроверил документы и снял блокер."
                     state["autonomous_recovery_rows"] += 1
+            elif auto_recover:
+                entry["next_action"] = (
+                    "Нужна ручная проверка филолога. Автоматический запуск филолога сейчас отключён."
+                )
         else:
             entry["result"] = "ready" if dry_run else "sent"
 
