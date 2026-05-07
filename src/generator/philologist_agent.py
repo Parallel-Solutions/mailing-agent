@@ -105,10 +105,41 @@ def _replace_paragraph_text(paragraph, new_text: str) -> bool:
     return True
 
 
+def _replace_fragment_in_paragraph(paragraph, fragment: str, replacement: str) -> bool:
+    current_text = "".join(run.text for run in paragraph.runs) if paragraph.runs else paragraph.text
+    if not fragment or not replacement or fragment not in current_text:
+        return False
+    new_text = current_text.replace(fragment, replacement, 1)
+    if new_text == current_text:
+        return False
+    return _replace_paragraph_text(paragraph, new_text)
+
+
 def _normalize_double_spaces(text: str) -> str:
     while "  " in text:
         text = text.replace("  ", " ")
     return text
+
+
+EDITORIAL_SUGGESTION_PREFIXES = (
+    "заменить ",
+    "исправить ",
+    "нужно ",
+    "следует ",
+    "проверить ",
+    "убрать ",
+)
+
+
+def _looks_like_editorial_instruction(text: str) -> bool:
+    normalized = _safe_text(text).strip().lower()
+    if not normalized:
+        return False
+    if any(normalized.startswith(prefix) for prefix in EDITORIAL_SUGGESTION_PREFIXES):
+        return True
+    if "заменить" in normalized and (" на " in normalized or '"' in normalized or "«" in normalized):
+        return True
+    return False
 
 
 def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]) -> bool:
@@ -122,6 +153,9 @@ def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]
     suggestion = _safe_text(issue.get("suggestion"))
     current_text = paragraph.text
 
+    if _looks_like_editorial_instruction(suggestion):
+        return False
+
     if "двойные пробелы" in issue_text:
         normalized = _normalize_double_spaces(current_text)
         return _replace_paragraph_text(paragraph, normalized)
@@ -129,8 +163,17 @@ def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]
     if "после числа используется неверная форма слова" in issue_text and suggestion:
         return _replace_paragraph_text(paragraph, suggestion)
 
-    if issue.get("source") == "ai" and suggestion and fragment and current_text.strip() == fragment.strip():
-        return _replace_paragraph_text(paragraph, suggestion)
+    if issue.get("source") == "local" and suggestion and fragment:
+        if fragment in current_text:
+            return _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+        if current_text.strip() == fragment.strip():
+            return _replace_paragraph_text(paragraph, suggestion)
+
+    if issue.get("source") == "ai" and suggestion and fragment:
+        if fragment in current_text:
+            return _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+        if current_text.strip() == fragment.strip():
+            return _replace_paragraph_text(paragraph, suggestion)
 
     return False
 
@@ -266,7 +309,10 @@ def run_philologist(
             path for path in docx_paths
             if _extract_row_id_from_docx_path(path) in requested_row_ids
         ]
-    claimed_tasks = mark_tasks_in_progress("philologist")
+    claimed_tasks = mark_tasks_in_progress(
+        "philologist",
+        row_ids=sorted(requested_row_ids) if requested_row_ids else None,
+    )
 
     state = PHILOLOGIST_STATE
     state.update(

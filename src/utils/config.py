@@ -33,8 +33,18 @@ class Settings(BaseSettings):
     smtp_use_ssl: bool = True
     smtp_use_starttls: bool = False
     smtp_allow_real_send: bool = False
+    imap_host: str = "imap.mail.ru"
+    imap_port: int = 993
+    imap_use_ssl: bool = True
+    imap_sent_folder: str = "Отправленные"
+    smtp_save_sent_copy: bool = True
     sender_default_batch_size: int = 25
     sender_max_batch_size: int = 100
+    sender_transport: str = "smtp"
+    unisender_api_key: str = ""
+    unisender_sender_name: str = "ООО «ПР»"
+    unisender_sender_email: str = ""
+    unisender_list_id: int = 1
 
     autonomous_workers_enabled: bool = True
     philologist_auto_run_enabled: bool = False
