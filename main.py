@@ -354,6 +354,38 @@ async def philologist_chat(
         raise HTTPException(status_code=400, detail="Пустое сообщение")
     return {"status": "ok", **chat_with_philologist(message)}
 
+from src.parser.agent import chat, clear_memory, get_memory, run_batch_parser, set_system_prompt
+
+@app.post("/api/parser/chat")
+async def parser_chat(payload: dict = Body(...), username: str = Depends(check_auth)):
+    message = str(payload.get("message", "")).strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Пустое сообщение")
+    result = chat(message)
+    return result
+
+@app.post("/api/parser/start")
+async def parser_start(username: str = Depends(check_auth)):
+    result = run_batch_parser()
+    return result
+
+@app.get("/api/parser/memory")
+async def parser_memory(username: str = Depends(check_auth)):
+    return get_memory()
+
+@app.post("/api/parser/memory/clear")
+async def parser_memory_clear(username: str = Depends(check_auth)):
+    clear_memory()
+    return {"status": "ok"}
+
+@app.post("/api/parser/prompt")
+async def parser_prompt(payload: dict = Body(...), username: str = Depends(check_auth)):
+    prompt = str(payload.get("prompt", "")).strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Пустой промпт")
+    set_system_prompt(prompt)
+    return {"status": "ok"}
+
 
 @app.post("/api/sender/run")
 async def sender_run(

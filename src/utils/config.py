@@ -8,9 +8,6 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-    # Checko API
-    checko_api_key: str = ""
-
     # СБИС
     sbis_login: str = ""
     sbis_password: str = ""
@@ -44,6 +41,13 @@ class Settings(BaseSettings):
     autonomous_workers_poll_seconds: int = 5
     autonomous_task_timeout_seconds: int = 120
     autonomous_task_max_retries: int = 3
+
+    # Парсер
+    checko_api_key: str = ""
+    tavily_api_key: str = ""
+    parser_openai_api_key: str = ""
+    parser_openai_base_url: str = "https://api.vsellm.ru/v1"
+    parser_model: str = "gpt-4o"
 
 
 settings = Settings()
