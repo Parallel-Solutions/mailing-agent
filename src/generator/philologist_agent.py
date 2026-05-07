@@ -111,6 +111,27 @@ def _normalize_double_spaces(text: str) -> str:
     return text
 
 
+EDITORIAL_SUGGESTION_PREFIXES = (
+    "заменить ",
+    "исправить ",
+    "нужно ",
+    "следует ",
+    "проверить ",
+    "убрать ",
+)
+
+
+def _looks_like_editorial_instruction(text: str) -> bool:
+    normalized = _safe_text(text).strip().lower()
+    if not normalized:
+        return False
+    if any(normalized.startswith(prefix) for prefix in EDITORIAL_SUGGESTION_PREFIXES):
+        return True
+    if "заменить" in normalized and (" на " in normalized or '"' in normalized or "«" in normalized):
+        return True
+    return False
+
+
 def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]) -> bool:
     location = _safe_text(issue.get("location"))
     paragraph = location_map.get(location)
@@ -121,6 +142,9 @@ def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]
     fragment = _safe_text(issue.get("fragment"))
     suggestion = _safe_text(issue.get("suggestion"))
     current_text = paragraph.text
+
+    if _looks_like_editorial_instruction(suggestion):
+        return False
 
     if "двойные пробелы" in issue_text:
         normalized = _normalize_double_spaces(current_text)
