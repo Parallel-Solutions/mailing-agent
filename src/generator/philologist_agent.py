@@ -9,6 +9,15 @@ from typing import Any, Iterable
 
 from docx import Document
 
+from src.generator.agent_handoff import (
+    append_agent_event,
+    count_tasks_for_agent,
+    create_task,
+    get_recent_events,
+    get_tasks_for_agent,
+    mark_tasks_in_progress,
+    set_task_statuses,
+)
 from src.generator.ai_case_agent import (
     OpenAI,
     _extract_json_payload,
@@ -17,7 +26,9 @@ from src.generator.ai_case_agent import (
 )
 from src.generator.config_generator import DOCUMENT_REVIEW_MODEL, OUTPUT_DIR
 from src.generator.document_review_agent import review_docx
+from src.generator.philology_knowledge import find_relevant_rules, format_rules_context
 from src.generator.pdf_converter import convert_docx_batch
+from src.generator.responsibility_matrix import diagnose_responsibility
 
 try:
     import httpx  # type: ignore
@@ -35,6 +46,9 @@ PHILOLOGIST_STATE: dict[str, Any] = {
     "documents_with_issues": 0,
     "documents": [],
     "summary_text": "Агент-филолог ещё не запускался.",
+    "task_stats": {"total": 0, "pending": 0, "in_progress": 0, "done": 0, "blocked": 0},
+    "tasks": [],
+    "recent_events": [],
 }
 
 
@@ -168,6 +182,13 @@ def _format_summary(documents: list[dict[str, Any]]) -> str:
     )
 
 
+def _format_run_summary(documents: list[dict[str, Any]], *, sender_handoffs: int = 0) -> str:
+    base = _format_summary(documents)
+    if sender_handoffs > 0:
+        return base + f" Передал отправщику задач на дополнительную проверку перед отправкой: {sender_handoffs}."
+    return base
+
+
 def _format_fixed_details(documents: list[dict[str, Any]], limit: int = 5) -> str:
     lines: list[str] = []
     for item in documents:
@@ -206,9 +227,46 @@ def _format_issue_details(documents: list[dict[str, Any]], limit: int = 5) -> st
     return "Вот где есть замечания:\n" + "\n".join(lines[: limit * 2])
 
 
-def run_philologist(*, output_dir: Path | None = None, ai_enabled: bool = True) -> dict[str, Any]:
+def _format_rule_details(message: str) -> str:
+    rules = find_relevant_rules(message, limit=4)
+    if not rules:
+        return "В локальной базе правил я не нашёл точного совпадения по этому вопросу. Могу всё равно проверить формулировку по найденным замечаниям."
+    lines = ["Вот на какие правила я могу опереться:"]
+    for rule in rules:
+        lines.append(
+            f"- {_safe_text(rule.get('title'))}: {_safe_text(rule.get('rule'))} "
+            f"(источник: {_safe_text(rule.get('source'))})"
+        )
+    return "\n".join(lines)
+
+
+def _extract_row_id_from_docx_path(docx_path: Path) -> str:
+    folder_name = docx_path.parent.name
+    return folder_name.split("_", 1)[0].strip()
+
+
+def _extract_mun_name_from_docx_path(docx_path: Path) -> str:
+    folder_name = docx_path.parent.name
+    if "_" not in folder_name:
+        return folder_name
+    return folder_name.split("_", 1)[1].strip()
+
+
+def run_philologist(
+    *,
+    output_dir: Path | None = None,
+    ai_enabled: bool = True,
+    row_ids: list[str] | None = None,
+) -> dict[str, Any]:
     target_dir = output_dir or OUTPUT_DIR
     docx_paths = sorted(target_dir.rglob("*.docx"))
+    requested_row_ids = {str(item).strip() for item in (row_ids or []) if str(item).strip()}
+    if requested_row_ids:
+        docx_paths = [
+            path for path in docx_paths
+            if _extract_row_id_from_docx_path(path) in requested_row_ids
+        ]
+    claimed_tasks = mark_tasks_in_progress("philologist")
 
     state = PHILOLOGIST_STATE
     state.update(
@@ -221,7 +279,14 @@ def run_philologist(*, output_dir: Path | None = None, ai_enabled: bool = True) 
             "fixed_documents": 0,
             "documents_with_issues": 0,
             "documents": [],
-            "summary_text": "Агент-филолог начал проверку документов.",
+            "summary_text": (
+                "Агент-филолог начал проверку документов."
+                if not claimed_tasks
+                else f"Агент-филолог начал проверку документов и принял {len(claimed_tasks)} внутренних задач."
+            ),
+            "task_stats": count_tasks_for_agent("philologist"),
+            "tasks": get_tasks_for_agent("philologist")[:20],
+            "recent_events": get_recent_events(agent_name="philologist", limit=20),
         }
     )
 
@@ -237,6 +302,8 @@ def run_philologist(*, output_dir: Path | None = None, ai_enabled: bool = True) 
             "name": docx_path.name,
             "path": str(docx_path),
             "folder": str(docx_path.parent),
+            "row_id": _extract_row_id_from_docx_path(docx_path),
+            "mun_name": _extract_mun_name_from_docx_path(docx_path),
             "issue_count": int(review_result.get("issue_count", 0)),
             "local_issue_count": int(review_result.get("local_issue_count", 0)),
             "ai_issue_count": int(review_result.get("ai_issue_count", 0)),
@@ -254,34 +321,163 @@ def run_philologist(*, output_dir: Path | None = None, ai_enabled: bool = True) 
         state["documents_with_issues"] = sum(1 for item in processed_documents if item.get("issue_count", 0) > 0)
         state["summary_text"] = _format_summary(processed_documents)
 
+    row_rollups: dict[str, dict[str, Any]] = {}
+    for item in processed_documents:
+        row_id = _safe_text(item.get("row_id"))
+        if not row_id:
+            continue
+        row_entry = row_rollups.setdefault(
+            row_id,
+            {
+                "row_id": row_id,
+                "mun_name": _safe_text(item.get("mun_name")),
+                "issue_count": 0,
+                "applied_fix_count": 0,
+            },
+        )
+        row_entry["issue_count"] += int(item.get("issue_count", 0))
+        row_entry["applied_fix_count"] += int(item.get("applied_fix_count", 0))
+
+    sender_handoffs = 0
+    for row_entry in row_rollups.values():
+        row_id = row_entry["row_id"]
+        mun_name = row_entry["mun_name"]
+        issue_count = int(row_entry["issue_count"])
+        applied_fix_count = int(row_entry["applied_fix_count"])
+        unresolved_issue_count = max(0, issue_count - applied_fix_count)
+        note = (
+            "Филолог завершил проверку документов."
+            if unresolved_issue_count == 0
+            else f"Филолог нашёл {unresolved_issue_count} нерешённых замечаний."
+        )
+        set_task_statuses(
+            "philologist",
+            row_id=row_id,
+            task_type="review_generated_documents",
+            new_status="done",
+            note=note,
+            resolution_summary="Филолог завершил проверку документов по строке.",
+        )
+        if unresolved_issue_count > 0:
+            diagnosis = diagnose_responsibility(
+                symptom="philology_review_block",
+                context={"unresolved_issue_count": unresolved_issue_count},
+            )
+            create_task(
+                source_agent="philologist",
+                target_agent=diagnosis["owner_agent"],
+                owner_agent=diagnosis["owner_agent"],
+                task_type="review_before_send",
+                problem_type=diagnosis["problem_type"],
+                symptom="philology_review_block",
+                root_cause=diagnosis["root_cause"],
+                priority=diagnosis["priority"],
+                blocking=diagnosis["blocking"],
+                can_retry_after=diagnosis["can_retry_after"],
+                row_id=row_id,
+                mun_name=mun_name,
+                details={
+                    "issue_count": issue_count,
+                    "applied_fix_count": applied_fix_count,
+                    "unresolved_issue_count": unresolved_issue_count,
+                    "reason": "Перед отправкой нужно учесть замечания филолога.",
+                },
+            )
+            sender_handoffs += 1
+            append_agent_event(
+                source_agent="philologist",
+                target_agent="sender",
+                event_type="review_flagged",
+                message=f"Филолог нашёл замечания по комплекту документов для строки {row_id}.",
+                row_id=row_id,
+                mun_name=mun_name,
+                details={
+                    "issue_count": issue_count,
+                    "unresolved_issue_count": unresolved_issue_count,
+                },
+            )
+        else:
+            create_task(
+                source_agent="philologist",
+                target_agent="sender",
+                owner_agent="sender",
+                task_type="resume_send_readiness",
+                problem_type="delivery_blocked",
+                symptom="documents_ready_after_review",
+                root_cause="Филолог завершил проверку и снял языковой блокер, можно повторно проверить готовность к отправке.",
+                priority="medium",
+                blocking=False,
+                can_retry_after=True,
+                row_id=row_id,
+                mun_name=mun_name,
+                details={
+                    "issue_count": issue_count,
+                    "applied_fix_count": applied_fix_count,
+                    "reason": "После филологической проверки строку можно снова прогнать через отправщика.",
+                },
+            )
+            set_task_statuses(
+                "sender",
+                row_id=row_id,
+                task_type="review_before_send",
+                new_status="done",
+                note="Филолог подтвердил, что критичных замечаний перед отправкой не осталось.",
+                resolution_summary="Критичных замечаний перед отправкой не осталось.",
+            )
+            append_agent_event(
+                source_agent="philologist",
+                target_agent="sender",
+                event_type="review_completed",
+                message=f"Филолог проверил документы для строки {row_id}; критичных замечаний не осталось.",
+                row_id=row_id,
+                mun_name=mun_name,
+                details={
+                    "issue_count": issue_count,
+                    "applied_fix_count": applied_fix_count,
+                },
+            )
+
     state["status"] = "completed"
     state["completed_at"] = datetime.now().isoformat(timespec="seconds")
     state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
-    state["summary_text"] = _format_summary(processed_documents)
+    state["task_stats"] = count_tasks_for_agent("philologist")
+    state["tasks"] = get_tasks_for_agent("philologist")[:20]
+    state["recent_events"] = get_recent_events(agent_name="philologist", limit=20)
+    state["summary_text"] = _format_run_summary(processed_documents, sender_handoffs=sender_handoffs)
     return dict(state)
 
 
 def get_philologist_status() -> dict[str, Any]:
-    return dict(PHILOLOGIST_STATE)
+    state = dict(PHILOLOGIST_STATE)
+    state["task_stats"] = count_tasks_for_agent("philologist")
+    state["tasks"] = get_tasks_for_agent("philologist")[:20]
+    state["recent_events"] = get_recent_events(agent_name="philologist", limit=20)
+    return state
 
 
 def _fallback_chat_answer(message: str, state: dict[str, Any]) -> str:
-    lowered = message.lower()
     documents = state.get("documents") or []
     if not documents:
-        return "Агент-филолог ещё не запускался. Сначала запусти проверку документов."
-    if "что исправ" in lowered:
-        fixed = [item for item in documents if item.get("applied_fix_count", 0) > 0]
-        return _format_fixed_details(fixed)
-    if "ошиб" in lowered or "замеч" in lowered:
-        issues = [item for item in documents if item.get("issue_count", 0) > 0]
-        return _format_issue_details(issues)
-    return state.get("summary_text") or "Проверка завершена, но краткая сводка пока недоступна."
+        return (
+            "Агент-филолог ещё не запускался. "
+            f"{_format_rule_details(message)}"
+        )
+    issues = [item for item in documents if item.get("issue_count", 0) > 0]
+    fixed = [item for item in documents if item.get("applied_fix_count", 0) > 0]
+    parts = [state.get("summary_text") or "Проверка завершена, но краткая сводка пока недоступна."]
+    if issues:
+        parts.append(_format_issue_details(issues, limit=3))
+    if fixed:
+        parts.append(_format_fixed_details(fixed, limit=3))
+    parts.append(_format_rule_details(message))
+    return "\n\n".join(part for part in parts if part)
 
 
 def chat_with_philologist(message: str) -> dict[str, Any]:
     state = get_philologist_status()
     client = _build_llm_client()
+    relevant_rules = find_relevant_rules(message, limit=4)
+    rules_context = format_rules_context(relevant_rules)
     if not client:
         return {"reply": _fallback_chat_answer(message, state), "state": state}
 
@@ -301,8 +497,11 @@ def chat_with_philologist(message: str) -> dict[str, Any]:
         "Ты агент-филолог для проверки коммерческих предложений и договоров. "
         "Ты уже проверил документы и должен отвечать пользователю по результатам этой проверки. "
         "Отвечай по-русски, кратко и по делу. "
-        "Если пользователь спрашивает об ошибках или исправлениях, опирайся только на переданные данные. "
+        "Если пользователь спрашивает об ошибках или исправлениях, сначала опирайся на локальную базу правил русского языка, "
+        "а потом на переданные данные по документам. "
+        "Если правило найдено, кратко ссылайся на него и объясняй исправление. "
         "Не придумывай факты, которых нет в сводке.\n\n"
+        f"Локальная база правил:\n{rules_context}\n\n"
         f"Состояние:\n{json.dumps({'summary_text': state.get('summary_text'), 'status': state.get('status'), 'documents': compact_documents}, ensure_ascii=False, indent=2)}\n\n"
         f"Вопрос пользователя:\n{message}"
     )

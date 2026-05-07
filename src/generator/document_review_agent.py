@@ -16,6 +16,7 @@ try:
         _resolve_openai_api_key,
         _resolve_openai_base_url,
     )
+    from src.generator.philology_knowledge import find_relevant_rules, format_rules_context
 except ImportError:  # pragma: no cover
     from generator.config_generator import DOCUMENT_REVIEW_MODEL, ENABLE_DOCUMENT_REVIEW_AI
     from generator.ai_case_agent import (
@@ -23,6 +24,7 @@ except ImportError:  # pragma: no cover
         _resolve_openai_api_key,
         _resolve_openai_base_url,
     )
+    from generator.philology_knowledge import find_relevant_rules, format_rules_context
 
 try:
     from openai import OpenAI  # type: ignore
@@ -140,12 +142,16 @@ def _build_ai_prompt(blocks: list[tuple[str, str]]) -> str:
         {"location": location, "text": text}
         for location, text in blocks
     ]
+    rules = find_relevant_rules(" ".join(text for _, text in blocks), limit=5)
+    rules_context = format_rules_context(rules)
     return (
         "Проверь текст фрагментов договора/КП на грамматику, падежи, согласование и канцелярский стиль. "
+        "Сначала опирайся на локальную базу правил русского языка, затем на сам текст фрагмента. "
         "Не придумывай новый текст целиком. Ищи только реальные ошибки русского языка или шаблонные огрехи. "
         "Верни только JSON-объект вида "
         '{"issues":[{"location":"...","fragment":"...","issue":"...","suggestion":"...","severity":"warning|error|info"}]}. '
         "Если ошибок нет, верни {\"issues\": []}. Без markdown и пояснений вне JSON.\n\n"
+        f"Локальная база правил:\n{rules_context}\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
