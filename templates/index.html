@@ -1135,7 +1135,10 @@
     if (typeof navIndex === 'number' && navItems[navIndex]) {
       navItems[navIndex].classList.add('active');
     }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    const content = document.querySelector('.content');
+    if (content && typeof content.scrollTo === 'function') {
+      content.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   }
 
   function toggleFile(btn, name) {
@@ -1853,8 +1856,6 @@
     const badge = document.getElementById('g-badge');
     const fill = document.getElementById('g-fill');
     const label = document.getElementById('g-label');
-    const totalStat = document.getElementById('g-total');
-    const totalLabel = document.getElementById('g-total-label');
     const doneStat = document.getElementById('g-done');
     const errorStat = document.getElementById('g-err');
     const total = Number(result.total_rows || 0);
@@ -1864,8 +1865,6 @@
     const status = result.status || 'idle';
     const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
 
-    if (totalStat) totalStat.textContent = total.toLocaleString('ru');
-    if (totalLabel) totalLabel.textContent = total.toLocaleString('ru');
     if (doneStat) doneStat.textContent = processed.toLocaleString('ru');
     if (errorStat) errorStat.textContent = errors.toLocaleString('ru');
 
