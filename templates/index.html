@@ -224,6 +224,19 @@
 
   .btn-primary:hover { background: #2a5409; }
 
+  .btn-primary:disabled,
+  .btn-outline:disabled,
+  .btn-danger:disabled {
+    cursor: not-allowed;
+    opacity: 1;
+  }
+
+  .btn-primary:disabled {
+    background: #b8c1ae;
+    color: #f8faf5;
+    box-shadow: none;
+  }
+
   .btn-outline {
     padding: 8px 16px;
     background: transparent;
@@ -253,6 +266,18 @@
   }
 
   .btn-danger:hover { background: #fdf0f0; }
+
+  .btn-outline:disabled {
+    border-color: #d8ddd0;
+    color: #a7afa0;
+    background: #f6f7f3;
+  }
+
+  .btn-danger:disabled {
+    border-color: #ecd6d6;
+    color: #d0aaaa;
+    background: #fdf7f7;
+  }
 
   /* MODULE CARDS */
   .module-card {
@@ -299,6 +324,13 @@
     flex-wrap: wrap;
   }
 
+  .step-nav {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 1rem;
+  }
+
   /* BADGES */
   .badge {
     font-size: 11px;
@@ -317,17 +349,55 @@
   .progress-wrap { margin-top: 10px; }
 
   .progress-bar {
-    height: 5px;
-    background: #eee;
-    border-radius: 3px;
+    height: 8px;
+    background: linear-gradient(180deg, #eef2e8 0%, #e6ebde 100%);
+    border-radius: 999px;
     overflow: hidden;
+    position: relative;
   }
 
   .progress-fill {
     height: 100%;
-    background: #5a9e1f;
-    border-radius: 3px;
-    transition: width 0.4s ease;
+    background: linear-gradient(90deg, #5a9e1f 0%, #79bd39 45%, #5a9e1f 100%);
+    border-radius: 999px;
+    transition: width 0.35s ease;
+    box-shadow: 0 0 12px rgba(90,158,31,0.25);
+    position: relative;
+  }
+
+  .progress-fill::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      120deg,
+      rgba(255,255,255,0) 0%,
+      rgba(255,255,255,0.18) 35%,
+      rgba(255,255,255,0.32) 50%,
+      rgba(255,255,255,0.18) 65%,
+      rgba(255,255,255,0) 100%
+    );
+    transform: translateX(-100%);
+  }
+
+  .progress-fill.running::after {
+    animation: none;
+  }
+
+  .progress-fill.indeterminate {
+    width: 0% !important;
+    animation: none;
+  }
+
+  @keyframes progressShine {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(200%); }
+  }
+
+  @keyframes progressIndeterminate {
+    0% { transform: translateX(-60%); }
+    50% { transform: translateX(80%); }
+    100% { transform: translateX(220%); }
   }
 
   .progress-label {
@@ -845,6 +915,10 @@
           <button onclick="sendChat('p-chat')">Отправить</button>
         </div>
       </div>
+
+      <div class="step-nav">
+        <button class="btn-primary" type="button" onclick="goToScreen('generator')">Перейти к генератору</button>
+      </div>
     </div>
 
     <!-- ГЕНЕРАТОР -->
@@ -879,7 +953,7 @@
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="g-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="g-label">0 / <span id="g-total-label">0</span> документов</div>
+          <div class="progress-label" id="g-label">0 из <span id="g-total-label">0</span> документов обработано, осталось 0</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="g-run" onclick="startGenerator()">Запустить генератор</button>
@@ -899,7 +973,7 @@
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="ph-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="ph-label">0 / 11 155 записей</div>
+          <div class="progress-label" id="ph-label">0 из 0 документов проверено, осталось 0</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="ph-run" onclick="startPhilologist()">Запустить агента-филолога</button>
@@ -919,6 +993,11 @@
           <input type="text" id="g-chat-input" placeholder="Напишите вопрос агенту..." onkeydown="if(event.key==='Enter') sendChat('g-chat')">
           <button onclick="sendChat('g-chat')">Отправить</button>
         </div>
+      </div>
+
+      <div class="step-nav">
+        <button class="btn-outline" type="button" onclick="goToScreen('parser')">Назад к парсеру</button>
+        <button class="btn-primary" type="button" onclick="goToScreen('sender')">Перейти к отправщику</button>
       </div>
     </div>
 
@@ -964,7 +1043,7 @@
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="s-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="s-label">0 / 0 писем</div>
+          <div class="progress-label" id="s-label">0 из 0 строк проверено, осталось 0</div>
         </div>
           <div class="module-actions" style="margin-top:12px">
             <button type="button" class="btn-primary" id="s-run">Проверить адреса и готовность</button>
@@ -986,6 +1065,11 @@
           <input type="text" id="s-chat-input" placeholder="Напишите вопрос агенту..." onkeydown="if(event.key==='Enter') sendChat('s-chat')">
           <button onclick="sendChat('s-chat')">Отправить</button>
         </div>
+      </div>
+
+      <div class="step-nav">
+        <button class="btn-outline" type="button" onclick="goToScreen('generator')">Назад к генератору</button>
+        <button class="btn-primary" type="button" onclick="goToScreen('status')">Перейти к статусам</button>
       </div>
     </div>
 
@@ -1040,6 +1124,26 @@
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     document.getElementById('s-' + id).classList.add('active');
     el.classList.add('active');
+  }
+
+  function goToScreen(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    const screen = document.getElementById('s-' + id);
+    if (screen) screen.classList.add('active');
+    const navMap = {
+      settings: 0,
+      parser: 1,
+      generator: 2,
+      sender: 3,
+      status: 4,
+    };
+    const navItems = Array.from(document.querySelectorAll('.nav-item'));
+    const navIndex = navMap[id];
+    if (typeof navIndex === 'number' && navItems[navIndex]) {
+      navItems[navIndex].classList.add('active');
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   function toggleFile(btn, name) {
@@ -1409,17 +1513,23 @@
     const runButton = document.getElementById('ph-run');
     const total = Number(result.total_documents || 0);
     const processed = Number(result.processed_documents || 0);
+    const fixed = Number(result.fixed_documents || 0);
+    const withIssues = Number(result.documents_with_issues || 0);
     const status = result.status || 'idle';
     const percent = total > 0 ? Math.round((processed / total) * 100) : (status === 'completed' ? 100 : 0);
-
-    fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
 
     if (status === 'running') {
       badge.textContent = 'Проверка';
       badge.className = 'badge badge-running';
-      label.textContent = total > 0
-        ? `${processed} / ${total} документов проверено`
-        : 'Агент-филолог проверяет документы...';
+      label.textContent = formatProgressText({
+        processed,
+        total,
+        noun: 'документов',
+        action: 'проверено',
+        extra: `с замечаниями ${withIssues}, исправлено ${fixed}`,
+        pendingText: 'Подготавливаю документы к проверке...'
+      });
+      setProgressVisual(fill, { percent, running: total > 0, indeterminate: false });
       runButton.disabled = true;
       return;
     }
@@ -1430,8 +1540,15 @@
       badge.textContent = 'Готово';
       badge.className = 'badge badge-done';
       label.textContent = total > 0
-        ? `${processed} / ${total} документов проверено`
+        ? formatProgressText({
+            processed: total,
+            total,
+            noun: 'документов',
+            action: 'проверено',
+            extra: `с замечаниями ${withIssues}, исправлено ${fixed}`
+          })
         : 'Проверка завершена';
+      setProgressVisual(fill, { percent: 100, running: false });
       return;
     }
 
@@ -1439,14 +1556,22 @@
       badge.textContent = 'Ошибка';
       badge.className = 'badge badge-error';
       label.textContent = result.summary_text || 'Проверка завершилась с ошибкой';
+      setProgressVisual(fill, { percent: total > 0 ? percent : 0, running: false });
       return;
     }
 
     badge.textContent = 'Ожидание';
     badge.className = 'badge badge-idle';
     label.textContent = total > 0
-      ? `${processed} / ${total} документов проверено`
-      : '0 / 0 документов проверено';
+      ? formatProgressText({
+          processed,
+          total,
+          noun: 'документов',
+          action: 'проверено',
+          extra: `с замечаниями ${withIssues}, исправлено ${fixed}`
+        })
+      : '0 из 0 документов проверено, осталось 0';
+    setProgressVisual(fill, { percent: 0, running: false, indeterminate: false });
   }
 
   async function refreshPhilologistStatus({ silent = false } = {}) {
@@ -1496,10 +1621,6 @@
           'agent',
           result.summary_text || `Проверено ${processed} документов. Замечания есть в ${issueDocs}, автоматически исправлено ${fixed}.`
         );
-        if (Array.isArray(result.recent_events) && result.recent_events.length) {
-          const formatted = formatAgentEvents(result.recent_events, 4);
-          if (formatted) appendChatMessage('g-chat', 'agent', 'Что я сделал дальше:\n' + formatted);
-        }
       } catch (err) {
       setPhilologistUiState({ status: 'error', summary_text: 'Проверка не завершилась' });
       appendChatMessage('g-chat', 'agent', 'Не удалось завершить проверку: ' + err.message);
@@ -1519,12 +1640,15 @@
 
   refreshPhilologistStatus({ silent: true });
 
+  let generatorStatusPoll = null;
+
   async function refreshGeneratorStatus({ silent = false } = {}) {
     try {
       const res = await fetch('/api/generator/status');
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус генератора');
       const result = data.result || {};
+      setGeneratorUiState(result);
       return result;
     } catch (err) {
       if (!silent) {
@@ -1536,41 +1660,40 @@
 
   // GENERATOR
   async function startGenerator() {
-    document.getElementById('g-badge').textContent = 'Запущен';
-    document.getElementById('g-badge').className = 'badge badge-running';
-    document.getElementById('g-run').disabled = true;
-    document.getElementById('g-fill').style.width = '10%';
-    document.getElementById('g-label').textContent = 'Генерация...';
+    setGeneratorUiState({ status: 'running', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
+    if (generatorStatusPoll) clearInterval(generatorStatusPoll);
+    generatorStatusPoll = setInterval(() => {
+      refreshGeneratorStatus({ silent: true });
+    }, 2000);
     try {
       const res = await fetch('/api/generate', { method: 'POST' });
       const data = await res.json();
       if (!res.ok) {
         showToast('Ошибка: ' + (data.detail || 'неизвестная ошибка'));
-        document.getElementById('g-badge').textContent = 'Ошибка';
-        document.getElementById('g-badge').className = 'badge badge-error';
-        document.getElementById('g-run').disabled = false;
-        document.getElementById('g-fill').style.width = '0%';
+        setGeneratorUiState({ status: 'error', summary_text: data.detail || 'неизвестная ошибка' });
         return;
       }
       const total = data.total || 0;
       const errors = data.results.filter(r => r.status === 'error').length;
-      document.getElementById('g-fill').style.width = '100%';
-      document.getElementById('g-label').textContent = total + ' документов сгенерировано, ошибок: ' + errors;
+      setGeneratorUiState({
+        status: 'completed',
+        total_rows: total,
+        processed_rows: total,
+        ok_rows: Math.max(0, total - errors),
+        error_rows: errors,
+      });
         if (document.getElementById('g-done')) document.getElementById('g-done').textContent = total;
-        document.getElementById('g-badge').textContent = 'Готово';
-        document.getElementById('g-badge').className = 'badge badge-done';
-        document.getElementById('g-run').disabled = false;
         showToast('Генерация завершена: ' + total + ' документов');
         appendChatMessage('g-chat', 'agent', data.summary_text || (`Генерация завершена: ${total} документов.`));
-        if (Array.isArray(data.recent_events) && data.recent_events.length) {
-          const formatted = formatAgentEvents(data.recent_events, 4);
-          if (formatted) appendChatMessage('g-chat', 'agent', 'Что я сделал дальше:\n' + formatted);
-        }
       } catch(e) {
       showToast('Ошибка соединения с сервером');
-      document.getElementById('g-badge').textContent = 'Ошибка';
-      document.getElementById('g-badge').className = 'badge badge-error';
-      document.getElementById('g-run').disabled = false;
+      setGeneratorUiState({ status: 'error', summary_text: 'Ошибка соединения с сервером' });
+    } finally {
+      if (generatorStatusPoll) {
+        clearInterval(generatorStatusPoll);
+        generatorStatusPoll = null;
+      }
+      await refreshGeneratorStatus({ silent: true });
     }
   }
   function pauseGenerator() {}
@@ -1697,11 +1820,132 @@
     appendChatMessage(chatId, 'agent', `${title}\n${formatted}`);
   }
 
+  function setProgressVisual(fillEl, { percent = 0, running = false, indeterminate = false } = {}) {
+    if (!fillEl) return;
+    fillEl.classList.remove('running', 'indeterminate');
+    if (indeterminate) {
+      fillEl.style.width = '35%';
+      fillEl.classList.add('running', 'indeterminate');
+      return;
+    }
+    const safePercent = Math.max(0, Math.min(Number(percent) || 0, 100));
+    fillEl.style.width = `${safePercent}%`;
+    if (running) fillEl.classList.add('running');
+  }
+
+  function formatProgressText({
+    processed = 0,
+    total = 0,
+    noun = 'элементов',
+    action = 'обработано',
+    extra = '',
+    pendingText = '',
+  } = {}) {
+    const safeProcessed = Math.max(0, Number(processed) || 0);
+    const safeTotal = Math.max(0, Number(total) || 0);
+    if (safeTotal === 0 && pendingText) {
+      return pendingText;
+    }
+    const remaining = Math.max(0, safeTotal - safeProcessed);
+    const percent = safeTotal > 0 ? Math.round((safeProcessed / safeTotal) * 100) : 0;
+    const base = `${safeProcessed} из ${safeTotal} ${noun} ${action}, осталось ${remaining}, ${percent}%`;
+    return extra ? `${base}, ${extra}` : base;
+  }
+
+  function setGeneratorButtonsBusy(isBusy) {
+    const runButton = document.getElementById('g-run');
+    if (runButton) runButton.disabled = !!isBusy;
+  }
+
+  function setGeneratorUiState(result = {}) {
+    const badge = document.getElementById('g-badge');
+    const fill = document.getElementById('g-fill');
+    const label = document.getElementById('g-label');
+    const totalStat = document.getElementById('g-total');
+    const totalLabel = document.getElementById('g-total-label');
+    const doneStat = document.getElementById('g-done');
+    const errorStat = document.getElementById('g-err');
+    const total = Number(result.total_rows || 0);
+    const processed = Number(result.processed_rows || 0);
+    const ok = Number(result.ok_rows || 0);
+    const errors = Number(result.error_rows || 0);
+    const status = result.status || 'idle';
+    const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+
+    if (totalStat) totalStat.textContent = total.toLocaleString('ru');
+    if (totalLabel) totalLabel.textContent = total.toLocaleString('ru');
+    if (doneStat) doneStat.textContent = processed.toLocaleString('ru');
+    if (errorStat) errorStat.textContent = errors.toLocaleString('ru');
+
+    if (status === 'running') {
+      badge.textContent = 'Генерация';
+      badge.className = 'badge badge-running';
+      label.textContent = formatProgressText({
+        processed,
+        total,
+        noun: 'документов',
+        action: 'обработано',
+        extra: `успешно ${ok}, ошибок ${errors}`,
+        pendingText: 'Подготавливаю список документов для генерации...'
+      });
+      setGeneratorButtonsBusy(true);
+      setProgressVisual(fill, { percent, running: total > 0, indeterminate: false });
+      return;
+    }
+
+    setGeneratorButtonsBusy(false);
+
+    if (status === 'completed') {
+      badge.textContent = 'Готово';
+      badge.className = 'badge badge-done';
+      label.textContent = total > 0
+        ? formatProgressText({
+            processed: total,
+            total,
+            noun: 'документов',
+            action: 'обработано',
+            extra: `успешно ${ok}, ошибок ${errors}`
+          })
+        : 'Генерация завершена';
+      setProgressVisual(fill, { percent: 100, running: false });
+      return;
+    }
+
+    if (status === 'error') {
+      badge.textContent = 'Ошибка';
+      badge.className = 'badge badge-error';
+      label.textContent = result.summary_text || 'Генерация завершилась с ошибкой';
+      setProgressVisual(fill, { percent: total > 0 ? percent : 0, running: false });
+      return;
+    }
+
+    badge.textContent = 'Ожидание';
+    badge.className = 'badge badge-idle';
+    label.textContent = total > 0
+      ? formatProgressText({
+          processed,
+          total,
+          noun: 'документов',
+          action: 'обработано',
+          extra: `успешно ${ok}, ошибок ${errors}`
+        })
+      : '0 из 0 документов обработано, осталось 0';
+    setProgressVisual(fill, { percent: 0, running: false });
+  }
+
+  function setSenderButtonsState({ running = false, canConfirm = false, canStop = false } = {}) {
+    const runButton = document.getElementById('s-run');
+    const confirmButton = document.getElementById('s-confirm-send');
+    const stopButton = document.getElementById('s-stop');
+    if (runButton) runButton.disabled = !!running;
+    if (confirmButton) confirmButton.disabled = running || !canConfirm;
+    if (stopButton) stopButton.disabled = !canStop;
+  }
+
   function setSenderUiState(result = {}) {
       const badge = document.getElementById('s-badge');
       const fill = document.getElementById('s-fill');
       const label = document.getElementById('s-label');
-      const runButton = document.getElementById('s-run');
       const processed = Number(result.processed_rows || 0);
       const totalRaw = Number(result.total_rows || 0);
       const total = totalRaw > 0 ? totalRaw : (processed > 0 ? processed : 0);
@@ -1714,8 +1958,9 @@
       const pending = Number(stats.pending || total);
       const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
       const status = result.status || 'idle';
+      const canConfirm = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
 
-      fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
+      setProgressVisual(fill, { percent, running: status === 'running' && total > 0, indeterminate: false });
       document.getElementById('s-sent').textContent = sent.toLocaleString('ru');
       document.getElementById('s-left').textContent = Math.max(0, pending).toLocaleString('ru');
       document.getElementById('s-err2').textContent = errorFromStats.toLocaleString('ru');
@@ -1723,40 +1968,56 @@
       if (status === 'running') {
         badge.textContent = 'Проверяет';
         badge.className = 'badge badge-running';
-        label.textContent = total > 0 ? `${processed} / ${total} писем` : 'Агент-отправщик обрабатывает строки...';
-      runButton.disabled = true;
-      return;
-    }
+        label.textContent = formatProgressText({
+          processed,
+          total,
+          noun: 'строк',
+          action: 'проверено',
+          extra: `готово ${ready}, ошибок ${errors}`,
+          pendingText: 'Подготавливаю строки к отправке...'
+        });
+        setSenderButtonsState({ running: true, canConfirm: false, canStop: true });
+        return;
+      }
 
-    if (status === 'stopped') {
-      badge.textContent = 'Остановлено';
-      badge.className = 'badge badge-wait';
-      label.textContent = result.summary_text || 'Отправка остановлена пользователем';
-      runButton.disabled = false;
-      return;
-    }
+      if (status === 'stopped') {
+        badge.textContent = 'Остановлено';
+        badge.className = 'badge badge-wait';
+        label.textContent = result.summary_text || 'Отправка остановлена пользователем';
+        setSenderButtonsState({ running: false, canConfirm, canStop: false });
+        return;
+      }
 
-    runButton.disabled = false;
+      setSenderButtonsState({ running: false, canConfirm, canStop: false });
 
       if (status === 'completed') {
         badge.textContent = result.mode === 'dry_run' ? 'Проверено' : 'Готово';
         badge.className = 'badge badge-done';
         label.textContent = total > 0
-          ? `${processed} / ${total} строк проверено, готово ${ready}, ошибок ${errors}`
-        : 'Обработка завершена';
-      return;
-    }
+          ? formatProgressText({
+              processed,
+              total,
+              noun: 'строк',
+              action: 'проверено',
+              extra: `готово ${ready}, ошибок ${errors}`
+            })
+          : 'Обработка завершена';
+        return;
+      }
 
-    if (status === 'error') {
-      badge.textContent = 'Ошибка';
-      badge.className = 'badge badge-error';
-      label.textContent = result.summary_text || 'Проверка завершилась с ошибкой';
-      return;
-    }
+      if (status === 'error') {
+        badge.textContent = 'Ошибка';
+        badge.className = 'badge badge-error';
+        label.textContent = result.summary_text || 'Проверка завершилась с ошибкой';
+        return;
+      }
 
-    badge.textContent = 'Ожидание';
-    badge.className = 'badge badge-idle';
-    label.textContent = total > 0 ? `0 / ${total} писем` : '0 / 0 писем';
+      badge.textContent = 'Ожидание';
+      badge.className = 'badge badge-idle';
+      label.textContent = total > 0
+        ? formatProgressText({ processed: 0, total, noun: 'строк', action: 'проверено' })
+        : '0 из 0 строк проверено, осталось 0';
+      setProgressVisual(fill, { percent: 0, running: false, indeterminate: false });
   }
 
   async function refreshSenderStatus({ silent = false } = {}) {
@@ -1790,6 +2051,7 @@
       const transport = getSenderTransport();
       showToast('Запускаю предпросмотр отправки');
       senderRunning = true;
+      setSenderButtonsState({ running: true, canConfirm: false, canStop: true });
       const previewRes = await fetch('/api/sender/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1814,10 +2076,6 @@
         safeSetSenderUiState(result);
         showToast('Проверка готовности завершена');
         safeAppendChatMessage('s-chat', 'agent', (result.summary_text || 'Проверка готовности завершена.') + '\nЕсли адреса верные, нажми «Подтвердить и отправить».');
-        if (Array.isArray(result.recent_events) && result.recent_events.length) {
-          const formatted = formatAgentEvents(result.recent_events, 4);
-          if (formatted) safeAppendChatMessage('s-chat', 'agent', 'Что я сделал дальше:\n' + formatted);
-        }
       } catch (err) {
       safeSetSenderUiState({ status: 'error', summary_text: 'Проверка отправщика не завершилась' });
       safeAppendChatMessage('s-chat', 'agent', 'Не удалось подготовить отправку: ' + (err && err.message ? err.message : String(err)));
@@ -1840,6 +2098,7 @@
         return;
       }
       senderRunning = true;
+      setSenderButtonsState({ running: true, canConfirm: false, canStop: true });
       safeAppendChatMessage('s-chat', 'agent', `Подтверждение получено. Запускаю реальную отправку через ${transport === 'unisender' ? 'UniSender' : 'обычный канал'}.`);
 
       const res = await fetch('/api/sender/run', {
@@ -1853,10 +2112,6 @@
         safeSetSenderUiState(result);
         showToast('Отправка завершена');
         safeAppendChatMessage('s-chat', 'agent', result.summary_text || 'Реальная отправка завершена.');
-        if (Array.isArray(result.recent_events) && result.recent_events.length) {
-          const formatted = formatAgentEvents(result.recent_events, 4);
-          if (formatted) safeAppendChatMessage('s-chat', 'agent', 'Что произошло во время отправки:\n' + formatted);
-        }
       } catch (err) {
       safeSetSenderUiState({ status: 'error', summary_text: 'Отправка завершилась с ошибкой' });
       safeAppendChatMessage('s-chat', 'agent', 'Не удалось завершить отправку: ' + (err && err.message ? err.message : String(err)));
