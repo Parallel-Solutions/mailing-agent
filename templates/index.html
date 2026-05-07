@@ -21,7 +21,8 @@
   .app {
     display: grid;
     grid-template-columns: 230px 1fr;
-    min-height: 620px;
+    min-height: calc(100vh - 4rem);
+    max-height: calc(100vh - 4rem);
     width: 100%;
     max-width: 1000px;
     border: 1px solid #d8ddd0;
@@ -115,7 +116,7 @@
   .content {
     padding: 2rem;
     overflow-y: auto;
-    max-height: 620px;
+    max-height: calc(100vh - 4rem);
   }
 
   .screen { display: none; }
@@ -497,6 +498,129 @@
     border-bottom-right-radius: 3px;
   }
 
+  .chat-msg.typing {
+    background: #f0f4ea;
+    color: #6d7d5a;
+    align-self: flex-start;
+    border-bottom-left-radius: 3px;
+    width: fit-content;
+  }
+
+  .typing-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 30px;
+  }
+
+  .typing-dots span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #7a8b64;
+    display: inline-block;
+    animation: chatTypingBlink 1.2s infinite ease-in-out;
+  }
+
+  .typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+  @keyframes chatTypingBlink {
+    0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
+    40% { opacity: 1; transform: translateY(-2px); }
+  }
+
+  .chat-downloads {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .chat-download-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: #ffffff;
+    border: 1px solid #c8d9b0;
+    color: #2d5a0e;
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .chat-download-link:hover {
+    background: #f7fbf1;
+  }
+
+  .chat-structured {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .chat-structured-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #1f3f08;
+  }
+
+  .chat-structured-sub {
+    font-size: 11px;
+    color: #58713f;
+  }
+
+  .chat-stage-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .chat-stage {
+    border: 1px solid #dbe7cb;
+    border-radius: 8px;
+    padding: 7px 8px;
+    background: #f8fbf2;
+  }
+
+  .chat-stage-name {
+    font-size: 11px;
+    font-weight: 700;
+    color: #355b10;
+  }
+
+  .chat-stage-status {
+    font-size: 11px;
+    color: #6d7d5a;
+    margin-top: 2px;
+  }
+
+  .chat-mini-block {
+    border: 1px solid #dbe7cb;
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: #f8fbf2;
+  }
+
+  .chat-mini-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #355b10;
+    margin-bottom: 4px;
+  }
+
+  .chat-mini-list {
+    margin: 0;
+    padding-left: 16px;
+    font-size: 11px;
+    color: #44533b;
+  }
+
+  .chat-mini-list li + li {
+    margin-top: 2px;
+  }
+
   .chat-input-row {
     display: flex;
     gap: 8px;
@@ -529,6 +653,35 @@
   }
 
   .chat-input-row button:hover { background: #2a5409; }
+
+  .chat-section-flat {
+    border: none;
+    border-radius: 0;
+    overflow: visible;
+    margin-top: 1.25rem;
+    background: transparent;
+  }
+
+  .chat-section-flat .chat-header {
+    background: transparent;
+    border-bottom: none;
+    padding: 0 0 10px 0;
+  }
+
+  .chat-section-flat .chat-messages {
+    height: auto;
+    min-height: 320px;
+    max-height: none;
+    overflow: visible;
+    padding: 0;
+    background: transparent;
+  }
+
+  .chat-section-flat .chat-input-row {
+    padding: 12px 0 0 0;
+    border-top: none;
+    background: transparent;
+  }
 
 </style>
 </head>
@@ -667,7 +820,7 @@
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="p-run" onclick="startParser()">Запустить парсер</button>
           <button class="btn-outline" id="p-pause" onclick="pauseParser()" style="display:none">Пауза</button>
-          <button class="btn-outline" onclick="showToast('Файл data.xlsx будет доступен для скачивания в финальной версии')">Скачать data.xlsx</button>
+          <button class="btn-outline" onclick="window.location.href='/api/download/data-xlsx'">Скачать data.xlsx</button>
         </div>
       </div>
 
@@ -751,7 +904,7 @@
           <div class="dot-green"></div> Чат с агентом
         </div>
         <div class="chat-messages" id="g-chat-messages">
-          <div class="chat-msg agent">Привет! Я агент-филолог. Могу проверить готовые документы, исправить безопасные ошибки и объяснить, что именно нашёл по конкретному МО или документу.</div>
+          <div class="chat-msg agent">Привет! Я агент-филолог. Могу проверить готовые документы, исправить безопасные ошибки и объяснить замечания с опорой на локальную базу правил русского языка.</div>
         </div>
         <div class="chat-input-row">
           <input type="text" id="g-chat-input" placeholder="Напишите вопрос агенту..." onkeydown="if(event.key==='Enter') sendChat('g-chat')">
@@ -785,7 +938,7 @@
       </div>
 
       <div class="warn-box">
-        Скорость отправки: не более 100–150 писем в час. При повторном запуске отправщик продолжит с первой строки где STATUS пустой.
+        Скорость отправки: не более 100–150 писем в час. При повторном запуске отправщик продолжит с первой строки, где STATUS ещё не ОК.
       </div>
 
       <div class="module-card">
@@ -795,16 +948,17 @@
         </div>
         <div class="module-title">Отправка писем с КП и договором</div>
         <div class="module-desc">
-          Читает data.xlsx, формирует письмо из шаблона, прикрепляет PDF из папки output/, отправляет. Ставит ОК или Ошибка в столбец STATUS. Можно останавливать и продолжать в любой момент.
+          Читает data.xlsx, умеет заранее показать адреса получателей, проверяет готовность вложений и только после подтверждения может переходить к реальной отправке.
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="s-fill" style="width:0%"></div></div>
           <div class="progress-label" id="s-label">0 / <span id="s-total-label">0</span> писем</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
-          <button class="btn-primary" id="s-run" onclick="startSender()">Начать рассылку</button>
-          <button class="btn-outline" id="s-pause" onclick="pauseSender()" style="display:none">Пауза</button>
-          <button class="btn-danger" onclick="showToast('Рассылка остановлена')">Остановить</button>
+          <button type="button" class="btn-primary" id="s-run">Проверить адреса и готовность</button>
+          <button type="button" class="btn-outline" id="s-confirm-send">Подтвердить и отправить</button>
+          <button type="button" class="btn-outline" id="s-pause" style="display:none">Пауза</button>
+          <button type="button" class="btn-danger" onclick="showToast('Рассылка остановлена')">Остановить</button>
         </div>
       </div>
 
@@ -813,7 +967,7 @@
           <div class="dot-green"></div> Чат с агентом
         </div>
         <div class="chat-messages" id="s-chat-messages">
-          <div class="chat-msg agent">Привет! Я агент-отправщик. Могу сообщить статус рассылки, найти письмо по конкретному МО или сообщить об ошибках доставки.</div>
+          <div class="chat-msg agent">Привет! Я агент-отправщик. Могу заранее показать адреса из data.xlsx, сказать где нет почты, где будет выбран резервный адрес и что готово к отправке.</div>
         </div>
         <div class="chat-input-row">
           <input type="text" id="s-chat-input" placeholder="Напишите вопрос агенту..." onkeydown="if(event.key==='Enter') sendChat('s-chat')">
@@ -854,7 +1008,7 @@
       </div>
 
       <div style="display:flex; gap:8px; flex-wrap:wrap">
-        <button class="btn-outline" onclick="showToast('Файл data.xlsx со статусами будет доступен в финальной версии')">Скачать data.xlsx со статусами</button>
+        <button class="btn-outline" onclick="window.location.href='/api/download/data-xlsx'">Скачать data.xlsx со статусами</button>
         <button class="btn-outline" onclick="showToast('Повторная отправка будет доступна в финальной версии')">Повторить письма с ошибкой</button>
         <button class="btn-outline" onclick="showToast('Обновлено')">Обновить статусы</button>
       </div>
@@ -866,6 +1020,8 @@
 <div class="toast" id="toast"></div>
 
 <script>
+  const chatSessions = {};
+
   function show(id, el) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -957,6 +1113,114 @@
     messages.scrollTop = messages.scrollHeight;
   }
 
+  function appendTypingIndicator(chatId) {
+    const messages = document.getElementById(chatId + '-messages');
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg agent typing';
+    msg.dataset.typing = 'true';
+    msg.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+    messages.appendChild(msg);
+    messages.scrollTop = messages.scrollHeight;
+    return msg;
+  }
+
+  function removeTypingIndicator(chatId) {
+    const messages = document.getElementById(chatId + '-messages');
+    const typing = messages.querySelector('[data-typing="true"]');
+    if (typing) typing.remove();
+  }
+
+  function appendDownloadMessage(chatId, downloads) {
+    if (!Array.isArray(downloads) || !downloads.length) return;
+    const messages = document.getElementById(chatId + '-messages');
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg agent';
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-downloads';
+    downloads.forEach(item => {
+      if (!item || !item.url) return;
+      const link = document.createElement('a');
+      link.className = 'chat-download-link';
+      link.href = item.url;
+      link.textContent = item.label || 'Скачать файл';
+      wrap.appendChild(link);
+    });
+    if (!wrap.children.length) return;
+    msg.appendChild(wrap);
+    messages.appendChild(msg);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function appendStructuredOrchestratorMessage(state) {
+    const messages = document.getElementById('o-chat-messages');
+    if (!messages || !state) return;
+
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg agent';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-structured';
+
+    const title = document.createElement('div');
+    title.className = 'chat-structured-title';
+    title.textContent = state.last_goal || 'Статус оркестратора';
+    wrap.appendChild(title);
+
+    if (state.last_action) {
+      const sub = document.createElement('div');
+      sub.className = 'chat-structured-sub';
+      sub.textContent = `Последнее действие: ${state.last_action}`;
+      wrap.appendChild(sub);
+    }
+
+    const snapshot = state.snapshot || {};
+    const stageGrid = document.createElement('div');
+    stageGrid.className = 'chat-stage-grid';
+    const stageItems = [
+      ['Парсер', snapshot.parser?.status || 'idle'],
+      ['Генератор', snapshot.generator?.status || 'idle'],
+      ['Филолог', snapshot.philologist?.status || 'idle'],
+      ['Отправщик', snapshot.sender?.status || 'idle'],
+    ];
+    stageItems.forEach(([name, status]) => {
+      const stage = document.createElement('div');
+      stage.className = 'chat-stage';
+      stage.innerHTML = `<div class="chat-stage-name">${name}</div><div class="chat-stage-status">${status}</div>`;
+      stageGrid.appendChild(stage);
+    });
+    wrap.appendChild(stageGrid);
+
+    if (state.last_result) {
+      const block = document.createElement('div');
+      block.className = 'chat-mini-block';
+      block.innerHTML = `<div class="chat-mini-title">Результат</div><div>${state.last_result}</div>`;
+      wrap.appendChild(block);
+    }
+
+    const todoSource = Array.isArray(state.last_plan) && state.last_plan.length
+      ? state.last_plan
+      : (Array.isArray(state.last_options) ? state.last_options : []);
+    if (todoSource.length) {
+      const block = document.createElement('div');
+      block.className = 'chat-mini-block';
+      const list = todoSource.map(step => `<li>${step}</li>`).join('');
+      block.innerHTML = `<div class="chat-mini-title">To do</div><ol class="chat-mini-list">${list}</ol>`;
+      wrap.appendChild(block);
+    }
+
+    if (Array.isArray(state.last_risks) && state.last_risks.length) {
+      const block = document.createElement('div');
+      block.className = 'chat-mini-block';
+      const list = state.last_risks.map(step => `<li>${step}</li>`).join('');
+      block.innerHTML = `<div class="chat-mini-title">Риски</div><ul class="chat-mini-list">${list}</ul>`;
+      wrap.appendChild(block);
+    }
+
+    msg.appendChild(wrap);
+    messages.appendChild(msg);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
   function sendChat(chatId) {
     const input = document.getElementById(chatId + '-input');
     const text = input.value.trim();
@@ -964,54 +1228,161 @@
 
     appendChatMessage(chatId, 'user', text);
     input.value = '';
+    const typingIndicator = appendTypingIndicator(chatId);
 
-    if (chatId !== 'g-chat') {
+    let endpoint = null;
+    if (chatId === 'o-chat') endpoint = '/api/orchestrator/chat';
+    if (chatId === 'p-chat') endpoint = '/api/parser/chat';
+    if (chatId === 'g-chat') endpoint = '/api/philologist/chat';
+    if (chatId === 's-chat') endpoint = '/api/sender/chat';
+
+    if (!endpoint) {
       setTimeout(() => appendChatMessage(chatId, 'agent', 'Функция чата для этого модуля будет подключена позже.'), 400);
       return;
     }
 
-    fetch('/api/philologist/chat', {
+    const payload = { message: text };
+    if (chatId === 'o-chat' && chatSessions['o-chat']) {
+      payload.session_id = chatSessions['o-chat'];
+    }
+
+    fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify(payload),
     })
       .then(async res => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Ошибка чата');
+        removeTypingIndicator(chatId);
+        if (chatId === 'o-chat' && data.session_id) {
+          chatSessions['o-chat'] = data.session_id;
+        }
         appendChatMessage(chatId, 'agent', data.reply || 'Ответ недоступен.');
+        if (chatId === 'o-chat' && Array.isArray(data.downloads) && data.downloads.length) {
+          appendDownloadMessage(chatId, data.downloads);
+        }
+        if (chatId === 'o-chat') {
+          refreshOrchestratorStatus({ silent: true });
+          refreshParserStatus({ silent: true });
+          refreshSenderStatus({ silent: true });
+          refreshPhilologistStatus({ silent: true });
+        }
       })
       .catch(err => {
+        removeTypingIndicator(chatId);
         appendChatMessage(chatId, 'agent', 'Не удалось получить ответ агента: ' + err.message);
       });
   }
 
   // PARSER
-  let parserInterval, parserRunning = false, parserN = 0;
-  function startParser() {
-    parserRunning = true;
-    document.getElementById('p-badge').textContent = 'Запущен';
-    document.getElementById('p-badge').className = 'badge badge-running';
-    document.getElementById('p-pause').style.display = 'inline-block';
-    parserInterval = setInterval(() => {
-      if (!parserRunning) return;
-      parserN = Math.min(parserN + 43, 11155);
-      let pct = Math.round(parserN / 11155 * 100);
-      document.getElementById('p-fill').style.width = pct + '%';
-      document.getElementById('p-label').textContent = parserN.toLocaleString('ru') + ' / 11 155 записей';
-      if (parserN >= 11155) {
-        clearInterval(parserInterval);
-        document.getElementById('p-badge').textContent = 'Готово';
-        document.getElementById('p-badge').className = 'badge badge-done';
-        document.getElementById('p-pause').style.display = 'none';
-        showToast('Парсер завершил работу');
+  let parserRunning = false;
+
+  function setParserUiState(result = {}) {
+    const badge = document.getElementById('p-badge');
+    const fill = document.getElementById('p-fill');
+    const label = document.getElementById('p-label');
+    const runButton = document.getElementById('p-run');
+    const total = Number(result.row_count || 0);
+    const taskStats = result.task_stats || {};
+    const inProgress = Number(taskStats.in_progress || 0);
+    const pending = Number(taskStats.pending || 0);
+    const claimed = inProgress + pending;
+    const percent = total > 0 ? Math.round((claimed / total) * 100) : 0;
+    const status = result.status || 'idle';
+
+    fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
+    document.getElementById('p-total').textContent = total.toLocaleString('ru');
+
+    if (status === 'running') {
+      badge.textContent = 'Работает';
+      badge.className = 'badge badge-running';
+      label.textContent = `Задач на дозаполнение: ${pending}, в работе: ${inProgress}`;
+      runButton.disabled = true;
+      return;
+    }
+
+    runButton.disabled = false;
+
+    if (status === 'completed') {
+      badge.textContent = 'Готово';
+      badge.className = 'badge badge-done';
+      label.textContent = `Задач в очереди: ${pending}, в работе: ${inProgress}`;
+      return;
+    }
+
+    badge.textContent = 'Ожидание';
+    badge.className = 'badge badge-idle';
+    label.textContent = total > 0 ? `0 / ${total} записей` : '0 / 0 записей';
+  }
+
+  async function refreshParserStatus({ silent = false } = {}) {
+    try {
+      const res = await fetch('/api/parser/status');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус парсера');
+      const result = data.result || {};
+      setParserUiState(result);
+      return result;
+    } catch (err) {
+      if (!silent) {
+        appendChatMessage('p-chat', 'agent', 'Не удалось обновить статус парсера: ' + err.message);
       }
-    }, 80);
+      return null;
+    }
+  }
+
+  async function startParser() {
+    parserRunning = true;
+    setParserUiState({ status: 'running', row_count: 0, task_stats: {} });
+    appendChatMessage('p-chat', 'agent', 'Запускаю парсерский контур. Сейчас он примет задачи на дозаполнение от других агентов и покажет очередь на обработку.');
+    try {
+      const res = await fetch('/api/parser/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Ошибка запуска парсера');
+      const result = data.result || {};
+      setParserUiState(result);
+      showToast('Парсер обновил очередь задач');
+      appendChatMessage('p-chat', 'agent', result.summary_text || 'Парсер обработал очередь задач.');
+    } catch (err) {
+      appendChatMessage('p-chat', 'agent', 'Не удалось запустить парсер: ' + err.message);
+      showToast('Ошибка парсера');
+    } finally {
+      parserRunning = false;
+      await refreshParserStatus({ silent: true });
+    }
   }
   function pauseParser() {
-    parserRunning = !parserRunning;
-    document.getElementById('p-pause').textContent = parserRunning ? 'Пауза' : 'Продолжить';
-    document.getElementById('p-badge').textContent = parserRunning ? 'Запущен' : 'Пауза';
-    document.getElementById('p-badge').className = parserRunning ? 'badge badge-running' : 'badge badge-wait';
+    appendChatMessage('p-chat', 'agent', 'Пауза для парсера пока не поддерживается. Сейчас он работает как агент дозаполнения и обновления очереди.');
+  }
+
+  async function refreshOrchestratorStatus({ silent = false } = {}) {
+    try {
+      let statusUrl = '/api/orchestrator/status';
+      if (chatSessions['o-chat']) {
+        statusUrl += '?session_id=' + encodeURIComponent(chatSessions['o-chat']);
+      }
+      const res = await fetch(statusUrl);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус оркестратора');
+      const result = data.result || {};
+      const snapshot = result.snapshot || {};
+      const plan = Array.isArray(result.last_plan) ? result.last_plan : [];
+      document.getElementById('o-parser-state').textContent = (snapshot.parser?.status || 'idle');
+      document.getElementById('o-generator-state').textContent = (snapshot.generator?.status || 'idle');
+      document.getElementById('o-philologist-state').textContent = (snapshot.philologist?.status || 'idle');
+      document.getElementById('o-sender-state').textContent = (snapshot.sender?.status || 'idle');
+      return result;
+    } catch (err) {
+      if (!silent) {
+        appendChatMessage('o-chat', 'agent', 'Не удалось обновить статус оркестратора: ' + err.message);
+      }
+      return null;
+    }
   }
 
 
@@ -1107,12 +1478,15 @@
       const issueDocs = result.documents_with_issues || 0;
       setPhilologistUiState(result);
       showToast('Агент-филолог завершил работу');
-      appendChatMessage(
-        'g-chat',
-        'agent',
-        result.summary_text || `Проверено ${processed} документов. Замечания есть в ${issueDocs}, автоматически исправлено ${fixed}.`
-      );
-    } catch (err) {
+        appendChatMessage(
+          'g-chat',
+          'agent',
+          result.summary_text || `Проверено ${processed} документов. Замечания есть в ${issueDocs}, автоматически исправлено ${fixed}.`
+        );
+        if (Array.isArray(result.recent_events) && result.recent_events.length) {
+          appendChatMessage('g-chat', 'agent', 'Что я сделал дальше:\n' + formatAgentEvents(result.recent_events, 4));
+        }
+      } catch (err) {
       setPhilologistUiState({ status: 'error', summary_text: 'Проверка не завершилась' });
       appendChatMessage('g-chat', 'agent', 'Не удалось завершить проверку: ' + err.message);
       showToast('Ошибка агента-филолога');
@@ -1130,6 +1504,21 @@
   }
 
   refreshPhilologistStatus({ silent: true });
+
+  async function refreshGeneratorStatus({ silent = false } = {}) {
+    try {
+      const res = await fetch('/api/generator/status');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус генератора');
+      const result = data.result || {};
+      return result;
+    } catch (err) {
+      if (!silent) {
+        appendChatMessage('g-chat', 'agent', 'Не удалось обновить статус генератора: ' + err.message);
+      }
+      return null;
+    }
+  }
 
   // GENERATOR
   async function startGenerator() {
@@ -1153,12 +1542,16 @@
       const errors = data.results.filter(r => r.status === 'error').length;
       document.getElementById('g-fill').style.width = '100%';
       document.getElementById('g-label').textContent = total + ' документов сгенерировано, ошибок: ' + errors;
-      if (document.getElementById('g-done')) document.getElementById('g-done').textContent = total;
-      document.getElementById('g-badge').textContent = 'Готово';
-      document.getElementById('g-badge').className = 'badge badge-done';
-      document.getElementById('g-run').disabled = false;
-      showToast('Генерация завершена: ' + total + ' документов');
-    } catch(e) {
+        if (document.getElementById('g-done')) document.getElementById('g-done').textContent = total;
+        document.getElementById('g-badge').textContent = 'Готово';
+        document.getElementById('g-badge').className = 'badge badge-done';
+        document.getElementById('g-run').disabled = false;
+        showToast('Генерация завершена: ' + total + ' документов');
+        appendChatMessage('g-chat', 'agent', data.summary_text || (`Генерация завершена: ${total} документов.`));
+        if (Array.isArray(data.recent_events) && data.recent_events.length) {
+          appendChatMessage('g-chat', 'agent', 'Что я сделал дальше:\n' + formatAgentEvents(data.recent_events, 4));
+        }
+      } catch(e) {
       showToast('Ошибка соединения с сервером');
       document.getElementById('g-badge').textContent = 'Ошибка';
       document.getElementById('g-badge').className = 'badge badge-error';
@@ -1168,35 +1561,275 @@
   function pauseGenerator() {}
 
   // SENDER
-  let senderInterval, senderRunning = false, senderN = 0;
-  function startSender() {
-    senderRunning = true;
-    document.getElementById('s-badge').textContent = 'Отправляет';
-    document.getElementById('s-badge').className = 'badge badge-running';
-    document.getElementById('s-pause').style.display = 'inline-block';
-    senderInterval = setInterval(() => {
-      if (!senderRunning) return;
-      senderN = Math.min(senderN + 21, 11155);
-      let pct = Math.round(senderN / 11155 * 100);
-      document.getElementById('s-fill').style.width = pct + '%';
-      document.getElementById('s-sent').textContent = senderN.toLocaleString('ru');
-      document.getElementById('s-left').textContent = (11155 - senderN).toLocaleString('ru');
-      document.getElementById('s-label').textContent = senderN.toLocaleString('ru') + ' / 11 155 писем';
-      if (senderN >= 11155) {
-        clearInterval(senderInterval);
-        document.getElementById('s-badge').textContent = 'Завершено';
-        document.getElementById('s-badge').className = 'badge badge-done';
-        document.getElementById('s-pause').style.display = 'none';
-        showToast('Рассылка завершена!');
+  let senderRunning = false;
+  let senderPreviewState = null;
+
+  function getSenderBatchLimit() {
+    return 25;
+  }
+
+  function safeAppendChatMessage(chatId, role, text) {
+    try {
+      appendChatMessage(chatId, role, text);
+    } catch (e) {}
+  }
+
+  function safeSetSenderUiState(result = {}) {
+    try {
+      setSenderUiState(result);
+    } catch (e) {}
+  }
+
+  function humanAgentName(agent) {
+    if (agent === 'generator') return 'агент-генератор';
+    if (agent === 'philologist') return 'агент-филолог';
+    if (agent === 'sender') return 'агент-отправщик';
+    if (agent === 'parser') return 'агент-парсер';
+    if (agent === 'orchestrator') return 'оркестратор';
+    return 'другой агент';
+  }
+
+  function humanTaskName(taskType) {
+    if (taskType === 'review_generated_documents') return 'проверку готовых документов';
+    if (taskType === 'restore_missing_attachments') return 'восстановление недостающих вложений';
+    if (taskType === 'generate_missing_documents') return 'пересборку недостающих документов';
+    if (taskType === 'review_before_send') return 'дополнительную проверку перед отправкой';
+    if (taskType === 'resume_send_readiness') return 'повторную проверку готовности к отправке';
+    if (taskType === 'enrich_email') return 'уточнение адреса электронной почты';
+    return 'внутреннюю задачу';
+  }
+
+  function summarizeAgentEvent(item) {
+    const source = humanAgentName(item.source_agent);
+    const target = humanAgentName(item.target_agent);
+    const eventType = item.event_type || '';
+    const taskType = item.task_type || item.details?.task_type || '';
+    const problemType = item.problem_type || item.details?.problem_type || '';
+    const munName = item.mun_name || item.details?.mun_name || '';
+    const rowId = item.row_id || item.details?.row_id || '';
+    const rowLabel = munName ? `по "${munName}"` : (rowId ? `по строке ${rowId}` : '');
+
+    if (eventType === 'task_created') {
+      return `${source} передал ${target} ${humanTaskName(taskType)} ${rowLabel}`.trim();
+    }
+    if (eventType === 'task_claimed') {
+      return `${source} принял в работу ${humanTaskName(taskType)} ${rowLabel}`.trim();
+    }
+    if (eventType === 'task_done') {
+      const resolution = item.resolution_summary || item.details?.resolution_summary || '';
+      return resolution
+        ? `${source} завершил работу ${rowLabel}: ${resolution}`.trim()
+        : `${source} завершил работу ${rowLabel}`.trim();
+    }
+    if (eventType === 'task_blocked') {
+      return `${source} не смог продолжить ${rowLabel}. Нужна дополнительная проверка.`.trim();
+    }
+    if (eventType === 'task_escalated') {
+      return `${source} несколько раз пытался решить вопрос ${rowLabel}, но нужна ручная проверка.`.trim();
+    }
+    if (problemType === 'missing_attachments') {
+      return `${source} заметил, что комплект вложений ${rowLabel} неполный, и передал это ${target}.`.trim();
+    }
+    if (problemType === 'missing_output') {
+      return `${source} заметил, что документы ${rowLabel} не собраны, и передал это ${target}.`.trim();
+    }
+    if (problemType === 'review_before_send') {
+      return `${source} попросил ${target} дополнительно проверить документы ${rowLabel} перед отправкой.`.trim();
+    }
+
+    return item.message || `${source} выполнил внутреннее действие ${rowLabel}`.trim();
+  }
+
+  function formatAgentEvents(events, limit = 4) {
+    if (!Array.isArray(events) || !events.length) return '';
+    return events.slice(-limit).map(item => `• ${summarizeAgentEvent(item)}`).join('\n');
+  }
+
+  const lastAgentEventIds = {
+    generator: '',
+    philologist: '',
+    sender: '',
+  };
+
+  function appendNewAgentEvents(chatId, agentKey, events, title) {
+    if (!Array.isArray(events) || !events.length) return;
+    const unseen = [];
+    for (const item of events) {
+      if (!item || !item.id) continue;
+      if (item.id === lastAgentEventIds[agentKey]) {
+        unseen.length = 0;
+      } else {
+        unseen.push(item);
       }
-    }, 80);
+    }
+    lastAgentEventIds[agentKey] = events[events.length - 1]?.id || lastAgentEventIds[agentKey];
+    if (!unseen.length) return;
+      appendChatMessage(chatId, 'agent', `${title}\n${formatAgentEvents(unseen, unseen.length)}`);
   }
+
+  function setSenderUiState(result = {}) {
+    const badge = document.getElementById('s-badge');
+    const fill = document.getElementById('s-fill');
+    const label = document.getElementById('s-label');
+    const runButton = document.getElementById('s-run');
+    const total = Number(result.total_rows || 0);
+    const processed = Number(result.processed_rows || 0);
+    const ready = Number(result.ready_rows || 0);
+    const errors = Number(result.error_rows || 0);
+    const stats = result.stats || {};
+    const sent = Number(stats.sent || 0);
+    const pending = Number(stats.pending || total);
+    const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+    const status = result.status || 'idle';
+
+    fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
+    document.getElementById('s-sent').textContent = sent.toLocaleString('ru');
+    document.getElementById('s-left').textContent = Math.max(0, pending).toLocaleString('ru');
+    document.getElementById('s-err2').textContent = errors.toLocaleString('ru');
+    document.getElementById('s-total-label').textContent = total.toLocaleString('ru');
+
+    if (status === 'running') {
+      badge.textContent = 'Проверяет';
+      badge.className = 'badge badge-running';
+      label.textContent = total > 0 ? `${processed} / ${total} писем` : 'Агент-отправщик обрабатывает строки...';
+      runButton.disabled = true;
+      return;
+    }
+
+    runButton.disabled = false;
+
+    if (status === 'completed') {
+      badge.textContent = result.mode === 'dry_run' ? 'Проверено' : 'Готово';
+      badge.className = 'badge badge-done';
+      label.textContent = total > 0
+        ? `${processed} / ${total} строк проверено, готово ${ready}, ошибок ${errors}`
+        : 'Обработка завершена';
+      return;
+    }
+
+    if (status === 'error') {
+      badge.textContent = 'Ошибка';
+      badge.className = 'badge badge-error';
+      label.textContent = result.summary_text || 'Проверка завершилась с ошибкой';
+      return;
+    }
+
+    badge.textContent = 'Ожидание';
+    badge.className = 'badge badge-idle';
+    label.textContent = total > 0 ? `0 / ${total} писем` : '0 / 0 писем';
+  }
+
+  async function refreshSenderStatus({ silent = false } = {}) {
+    try {
+      const res = await fetch('/api/sender/status');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус отправщика');
+      const result = data.result || {};
+      setSenderUiState(result);
+      return result;
+    } catch (err) {
+      if (!silent) {
+        appendChatMessage('s-chat', 'agent', 'Не удалось обновить статус отправщика: ' + err.message);
+      }
+      return null;
+    }
+  }
+
+  function formatSenderPreviewRows(rows, limit = 10) {
+    if (!Array.isArray(rows) || !rows.length) return 'Подходящих строк для показа нет.';
+    return rows.slice(0, limit).map(item => {
+      const recipient = item.recipient || 'нет валидного адреса';
+      const reason = item.decision_reason || 'без пояснения';
+      return `${item.id} ${item.mun_name}: ${recipient} (${reason})`;
+    }).join('\n');
+  }
+
+  async function previewSender() {
+    try {
+      const limit = getSenderBatchLimit();
+      showToast('Запускаю предпросмотр отправки');
+      senderRunning = true;
+      const previewRes = await fetch('/api/sender/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit }),
+      });
+      const previewData = await previewRes.json();
+      if (!previewRes.ok) throw new Error(previewData.detail || 'Ошибка предпросмотра адресов');
+
+      safeSetSenderUiState({ status: 'running', total_rows: 0, processed_rows: 0, stats: {} });
+      safeAppendChatMessage('s-chat', 'agent', 'Сначала покажу адреса и проверю готовность вложений без реальной отправки.');
+      senderPreviewState = previewData.result || {};
+      safeAppendChatMessage('s-chat', 'agent', (senderPreviewState.summary_text || 'Предпросмотр адресов готов.') + '\n' + formatSenderPreviewRows(senderPreviewState.rows || [], 10));
+
+      const res = await fetch('/api/sender/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: true, limit }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
+        const result = data.result || {};
+        safeSetSenderUiState(result);
+        showToast('Проверка готовности завершена');
+        safeAppendChatMessage('s-chat', 'agent', (result.summary_text || 'Проверка готовности завершена.') + '\nЕсли адреса верные, нажми «Подтвердить и отправить».');
+        if (Array.isArray(result.recent_events) && result.recent_events.length) {
+          safeAppendChatMessage('s-chat', 'agent', 'Что я сделал дальше:\n' + formatAgentEvents(result.recent_events, 4));
+        }
+      } catch (err) {
+      safeSetSenderUiState({ status: 'error', summary_text: 'Проверка отправщика не завершилась' });
+      safeAppendChatMessage('s-chat', 'agent', 'Не удалось подготовить отправку: ' + (err && err.message ? err.message : String(err)));
+      showToast('Ошибка отправщика');
+    } finally {
+      senderRunning = false;
+      await refreshSenderStatus({ silent: true });
+    }
+  }
+
+  async function confirmAndSendSender() {
+    try {
+      if (!senderPreviewState || !Array.isArray(senderPreviewState.rows)) {
+        safeAppendChatMessage('s-chat', 'agent', 'Сначала нужно выполнить предпросмотр адресов и готовности, а уже потом подтверждать отправку.');
+        return;
+      }
+      const limit = getSenderBatchLimit();
+      if (!confirm('Запустить реальную отправку писем?')) {
+        return;
+      }
+      senderRunning = true;
+      safeAppendChatMessage('s-chat', 'agent', 'Подтверждение получено. Запускаю реальную отправку.');
+
+      const res = await fetch('/api/sender/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: false, limit }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');
+        const result = data.result || {};
+        safeSetSenderUiState(result);
+        showToast('Отправка завершена');
+        safeAppendChatMessage('s-chat', 'agent', result.summary_text || 'Реальная отправка завершена.');
+        if (Array.isArray(result.recent_events) && result.recent_events.length) {
+          safeAppendChatMessage('s-chat', 'agent', 'Что произошло во время отправки:\n' + formatAgentEvents(result.recent_events, 4));
+        }
+      } catch (err) {
+      safeSetSenderUiState({ status: 'error', summary_text: 'Отправка завершилась с ошибкой' });
+      safeAppendChatMessage('s-chat', 'agent', 'Не удалось завершить отправку: ' + (err && err.message ? err.message : String(err)));
+      showToast('Ошибка отправки');
+    } finally {
+      senderRunning = false;
+      await refreshSenderStatus({ silent: true });
+    }
+  }
+
   function pauseSender() {
-    senderRunning = !senderRunning;
-    document.getElementById('s-pause').textContent = senderRunning ? 'Пауза' : 'Продолжить';
-    document.getElementById('s-badge').textContent = senderRunning ? 'Отправляет' : 'Пауза';
-    document.getElementById('s-badge').className = senderRunning ? 'badge badge-running' : 'badge badge-wait';
+    appendChatMessage('s-chat', 'agent', 'Пауза для отправщика пока не поддерживается. Сейчас модуль 3 работает в режиме dry-run и завершает проверку одной задачей.');
   }
+
+  window.previewSender = previewSender;
+  window.confirmAndSendSender = confirmAndSendSender;
+  window.pauseSender = pauseSender;
 
   async function refreshCounts() {
     try {
@@ -1210,6 +1843,25 @@
   }
 
   refreshCounts();
+  refreshParserStatus({ silent: true });
+  refreshGeneratorStatus({ silent: true });
+  refreshPhilologistStatus({ silent: true });
+  refreshSenderStatus({ silent: true });
+  setInterval(() => refreshGeneratorStatus({ silent: true }), 5000);
+  setInterval(() => refreshPhilologistStatus({ silent: true }), 5000);
+  setInterval(() => refreshSenderStatus({ silent: true }), 5000);
+
+  const senderPreviewButton = document.getElementById('s-run');
+  if (senderPreviewButton) {
+    senderPreviewButton.onclick = null;
+    senderPreviewButton.addEventListener('click', () => previewSender());
+  }
+
+  const senderConfirmButton = document.getElementById('s-confirm-send');
+  if (senderConfirmButton) {
+    senderConfirmButton.onclick = null;
+    senderConfirmButton.addEventListener('click', () => confirmAndSendSender());
+  }
 </script>
 
 </body>

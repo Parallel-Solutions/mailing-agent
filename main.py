@@ -13,6 +13,16 @@ app = FastAPI(title="Mailing Agent")
 security = HTTPBasic()
 
 
+@app.on_event("startup")
+async def app_startup():
+    start_autonomous_worker()
+
+
+@app.on_event("shutdown")
+async def app_shutdown():
+    stop_autonomous_worker()
+
+
 def check_auth(credentials: HTTPBasicCredentials = Depends(security)):
     ok_user = secrets.compare_digest(credentials.username, settings.app_username)
     ok_pass = secrets.compare_digest(credentials.password, settings.app_password)
@@ -23,6 +33,18 @@ def check_auth(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": "Basic"},
         )
     return credentials.username
+
+
+def _parse_optional_limit(payload: dict | None) -> int | None:
+    if not payload:
+        return None
+    raw_value = payload.get("limit")
+    if raw_value in (None, ""):
+        return None
+    text_value = str(raw_value).strip()
+    if not text_value:
+        return None
+    return int(text_value)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -41,6 +63,15 @@ async def upload_data(file: UploadFile = File(...), username: str = Depends(chec
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     return {"status": "ok", "filename": file.filename}
+
+
+@app.get("/api/data/info")
+async def data_info(username: str = Depends(check_auth)):
+    data_path = Path("data/data.xlsx")
+    if not data_path.exists():
+        return {"loaded": False, "total": 0}
+    _, _, rows = load_rows(data_path)
+    return {"loaded": True, "total": len(rows)}
 
 
 @app.post("/api/upload/template")
@@ -80,6 +111,27 @@ from src.generator.philologist_agent import (
     get_philologist_status,
     run_philologist,
 )
+from src.generator.sender_agent import (
+    chat_with_sender,
+    get_sender_status,
+    preview_recipients,
+    run_sender,
+)
+from src.generator.parser_agent import (
+    chat_with_parser,
+    get_parser_status,
+    run_parser_agent,
+)
+from src.generator.orchestrator_agent import (
+    chat_with_orchestrator,
+    get_orchestrator_status,
+)
+from src.generator.autonomous_worker import (
+    get_autonomous_worker_state,
+    start_autonomous_worker,
+    stop_autonomous_worker,
+)
+from src.generator.generator_agent import get_generator_status, run_generator_agent
 
 
 def cleanup_batch_pdf_dir() -> None:
@@ -211,8 +263,8 @@ async def counts(username: str = Depends(check_auth)):
     if data_path.exists():
         _, _, rows = load_rows(data_path)
         generator_total = len(rows)
-    
-    sender_total = generator_total // 2
+
+    sender_total = generator_total
     
     return {
         "parser_total": parser_total,
@@ -225,128 +277,21 @@ async def generate(username: str = Depends(check_auth)):
     xlsx_path = Path("data/data.xlsx")
     if not xlsx_path.exists():
         raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
-    _, _, rows = load_rows(xlsx_path)
-    if not rows:
-        raise HTTPException(status_code=400, detail="Нет данных в файле")
+    result = run_generator_agent(xlsx_path=xlsx_path)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("summary_text") or "Ошибка генерации")
+    return {
+        "total": len(result.get("results", [])),
+        "results": result.get("results", []),
+        "summary_text": result.get("summary_text"),
+        "task_stats": result.get("task_stats"),
+        "recent_events": result.get("recent_events"),
+    }
 
-    cleanup_batch_docx_dir()
-    cleanup_batch_pdf_dir()
 
-    started_at = perf_counter()
-    logger.info("web_generate_start", row_count=len(rows))
-    results = []
-    payloads = [
-        (index, START_OUTGOING_NUMBER + index, row)
-        for index, row in enumerate(rows)
-    ]
-    results = [
-        {
-            "result_index": index,
-            "id": row.get("ID"),
-            "status": "error",
-            "error": "Generation did not complete",
-            "files": {},
-        }
-        for index, _, row in payloads
-    ]
-
-    if ENABLE_CASE_AGENT:
-        logger.info(
-            "web_generate_dispatch",
-            row_count=len(payloads),
-            execution_mode="sequential_case_agent",
-            max_workers=1,
-            case_agent_enabled=ENABLE_CASE_AGENT,
-            case_agent_only_suspicious=CASE_AGENT_ONLY_SUSPICIOUS,
-            web_case_agent_max_workers=WEB_CASE_AGENT_MAX_WORKERS,
-        )
-        completed_count = 0
-        for payload in payloads:
-            result_index, _, row = payload
-            try:
-                results[result_index] = process_web_row(payload)
-                completed_count += 1
-                logger.info(
-                    "web_generate_row_done",
-                    completed=completed_count,
-                    total=len(payloads),
-                    row_id=row.get("ID"),
-                    status=results[result_index].get("status"),
-                    case_agent_status=results[result_index].get("case_agent_status"),
-                )
-            except Exception as e:
-                completed_count += 1
-                results[result_index] = {
-                    "result_index": result_index,
-                    "id": row.get("ID"),
-                    "status": "error",
-                    "error": str(e),
-                    "files": {},
-                }
-                logger.exception(
-                    "web_generate_row_failed",
-                    completed=completed_count,
-                    total=len(payloads),
-                    row_id=row.get("ID"),
-                )
-    else:
-        max_workers = max(1, min(DOCX_WORKERS, len(payloads)))
-        logger.info(
-            "web_generate_dispatch",
-            row_count=len(payloads),
-            execution_mode="process_pool",
-            max_workers=max_workers,
-            case_agent_enabled=ENABLE_CASE_AGENT,
-            case_agent_only_suspicious=CASE_AGENT_ONLY_SUSPICIOUS,
-            web_case_agent_max_workers=WEB_CASE_AGENT_MAX_WORKERS,
-        )
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {
-                executor.submit(process_web_row, payload): payload
-                for payload in payloads
-            }
-            completed_count = 0
-            for future in as_completed(future_map):
-                result_index, _, row = future_map[future]
-                try:
-                    results[result_index] = future.result()
-                    completed_count += 1
-                    logger.info(
-                        "web_generate_row_done",
-                        completed=completed_count,
-                        total=len(payloads),
-                        row_id=row.get("ID"),
-                        status=results[result_index].get("status"),
-                        case_agent_status=results[result_index].get("case_agent_status"),
-                    )
-                except Exception as e:
-                    completed_count += 1
-                    results[result_index] = {
-                        "result_index": result_index,
-                        "id": row.get("ID"),
-                        "status": "error",
-                        "error": str(e),
-                        "files": {},
-                    }
-                    logger.exception(
-                        "web_generate_row_failed",
-                        completed=completed_count,
-                        total=len(payloads),
-                        row_id=row.get("ID"),
-                    )
-
-    finalize_generated_files(results)
-    for result in results:
-        result.pop("result_index", None)
-
-    logger.info(
-        "web_generate_done",
-        total=len(results),
-        ok_count=sum(1 for item in results if item.get("status") == "ok"),
-        error_count=sum(1 for item in results if item.get("status") == "error"),
-        elapsed_seconds=round(perf_counter() - started_at, 2),
-    )
-    return {"total": len(results), "results": results}
+@app.get("/api/generator/status")
+async def generator_status(username: str = Depends(check_auth)):
+    return {"status": "ok", "result": get_generator_status()}
 
 
 from fastapi.responses import FileResponse
@@ -369,6 +314,18 @@ async def download_output(username: str = Depends(check_auth)):
         tmp.name,
         media_type="application/zip",
         filename="output.zip"
+    )
+
+
+@app.get("/api/download/data-xlsx")
+async def download_data_xlsx(username: str = Depends(check_auth)):
+    data_path = Path("data/data.xlsx")
+    if not data_path.exists():
+        raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
+    return FileResponse(
+        data_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="data.xlsx",
     )
 
 
@@ -396,6 +353,87 @@ async def philologist_chat(
     if not message:
         raise HTTPException(status_code=400, detail="Пустое сообщение")
     return {"status": "ok", **chat_with_philologist(message)}
+
+
+@app.post("/api/sender/run")
+async def sender_run(
+    payload: dict | None = Body(default=None),
+    username: str = Depends(check_auth),
+):
+    dry_run = True if payload is None else bool(payload.get("dry_run", True))
+    limit = _parse_optional_limit(payload)
+    result = run_sender(dry_run=dry_run, limit=limit)
+    return {"status": "ok", "result": result}
+
+
+@app.get("/api/sender/status")
+async def sender_status(username: str = Depends(check_auth)):
+    return {"status": "ok", "result": get_sender_status()}
+
+
+@app.post("/api/sender/preview")
+async def sender_preview(
+    payload: dict | None = Body(default=None),
+    username: str = Depends(check_auth),
+):
+    limit = _parse_optional_limit(payload)
+    result = preview_recipients(limit=limit)
+    return {"status": "ok", "result": result}
+
+
+@app.post("/api/sender/chat")
+async def sender_chat(
+    payload: dict = Body(...),
+    username: str = Depends(check_auth),
+):
+    message = str(payload.get("message", "")).strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Пустое сообщение")
+    return {"status": "ok", **chat_with_sender(message)}
+
+
+@app.post("/api/parser/run")
+async def parser_run(
+    payload: dict | None = Body(default=None),
+    username: str = Depends(check_auth),
+):
+    limit = _parse_optional_limit(payload)
+    result = run_parser_agent(limit=limit)
+    return {"status": "ok", "result": result}
+
+
+@app.get("/api/parser/status")
+async def parser_status(username: str = Depends(check_auth)):
+    return {"status": "ok", "result": get_parser_status()}
+
+
+@app.post("/api/parser/chat")
+async def parser_chat(
+    payload: dict = Body(...),
+    username: str = Depends(check_auth),
+):
+    message = str(payload.get("message", "")).strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Пустое сообщение")
+    return {"status": "ok", **chat_with_parser(message)}
+
+
+@app.get("/api/orchestrator/status")
+async def orchestrator_status(session_id: str | None = None, username: str = Depends(check_auth)):
+    raise HTTPException(status_code=404, detail="Оркестратор отключён в этой ветке.")
+
+
+@app.get("/api/autonomous-worker/status")
+async def autonomous_worker_status(username: str = Depends(check_auth)):
+    return {"status": "ok", "result": get_autonomous_worker_state()}
+
+
+@app.post("/api/orchestrator/chat")
+async def orchestrator_chat(
+    payload: dict = Body(...),
+    username: str = Depends(check_auth),
+):
+    raise HTTPException(status_code=404, detail="Оркестратор отключён в этой ветке.")
 
 
 if __name__ == "__main__":
