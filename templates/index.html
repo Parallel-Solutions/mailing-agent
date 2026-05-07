@@ -800,7 +800,7 @@
       <div class="field">
         <label>Вид работ</label>
         <select>
-          <option>МНГП</option>
+          <option>МНГП (сельских и городских поселений)</option>
           <option>ГП+ПЗЗ</option>
           <option>Отдельно ГП и ПЗЗ</option>
           <option>СТП</option>
@@ -833,20 +833,6 @@
           <label>Шаблон договора (.docx)</label>
           <input type="file" id="upload-contract-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'contract-btn', 'Шаблон Договор')">
           <button class="file-btn" id="contract-btn" onclick="document.getElementById('upload-contract-input').click()">
-            <span class="file-icon">📎</span> Выбрать файл
-          </button>
-        </div>
-        <div class="field">
-          <label>База МО 2025 (.xlsx)</label>
-          <input type="file" id="upload-base-input" accept=".xlsx" style="display:none" onchange="uploadBase(this)">
-          <button class="file-btn" id="base-btn" onclick="document.getElementById('upload-base-input').click()">
-            <span class="file-icon">📎</span> Выбрать файл
-          </button>
-        </div>
-        <div class="field">
-          <label>Справочник организаций RMZ7KH (.xlsx)</label>
-          <input type="file" id="upload-rmz-input" accept=".xlsx" style="display:none" onchange="uploadRmz(this)">
-          <button class="file-btn" id="rmz-btn" onclick="document.getElementById('upload-rmz-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
@@ -2147,32 +2133,6 @@
       document.getElementById('g-total').textContent = data.generator_total.toLocaleString('ru');
       document.getElementById('g-total-label').textContent = data.generator_total.toLocaleString('ru');
     } catch(e) {}
-  }
-
-
-  async function uploadRmz(input) {
-    const file = input.files[0];
-    if (!file) return;
-    const form = new FormData();
-    form.append('file', file);
-    const btn = document.getElementById('rmz-btn');
-    btn.textContent = 'Загрузка...';
-    try {
-      const res = await fetch('/api/upload/rmz', { method: 'POST', body: form });
-      const data = await res.json();
-      if (res.ok) {
-        btn.innerHTML = '<span class="file-icon">✓</span> ' + file.name;
-        btn.classList.add('uploaded');
-        showToast('Файл RMZ7KH загружен успешно');
-      } else {
-        btn.innerHTML = '<span class="file-icon">📎</span> Выбрать файл';
-        showToast('Ошибка загрузки файла');
-      }
-    } catch(e) {
-      btn.innerHTML = '<span class="file-icon">📎</span> Выбрать файл';
-      showToast('Ошибка соединения');
-    }
-    input.value = '';
   }
 
   async function startMergeRmz() {
