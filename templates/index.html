@@ -915,7 +915,7 @@
       <div class="stats-row" style="grid-template-columns: repeat(3, 1fr)">
         <div class="stat">
           <div class="stat-n" id="g-total">0</div>
-          <div class="stat-l">Всего МО</div>
+          <div class="stat-l">Всего клиентов</div>
         </div>
         <div class="stat">
           <div class="stat-n" id="g-done" style="color:#2d6e0a">0</div>
@@ -1523,7 +1523,7 @@
       return;
     }
 
-    runButton.disabled = false;
+    runButton.disabled = !!phRunning;
 
     if (status === 'completed') {
       badge.textContent = 'Готово';
@@ -2164,9 +2164,6 @@
   refreshGeneratorStatus({ silent: true });
   refreshPhilologistStatus({ silent: true });
   refreshSenderStatus({ silent: true });
-  setInterval(() => refreshGeneratorStatus({ silent: true }), 5000);
-  setInterval(() => refreshPhilologistStatus({ silent: true }), 5000);
-  setInterval(() => refreshSenderStatus({ silent: true }), 5000);
 
   const senderPreviewButton = document.getElementById('s-run');
   if (senderPreviewButton) {
