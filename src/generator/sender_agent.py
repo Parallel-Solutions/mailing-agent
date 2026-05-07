@@ -24,7 +24,7 @@ from src.generator.agent_handoff import (
     get_recent_events,
     get_tasks_for_agent,
 )
-from src.generator.config_generator import DATA_XLSX_PATH, OUTPUT_DIR, TEMPLATES_DIR
+from src.generator.config_generator import DATA_DIR, DATA_XLSX_PATH, OUTPUT_DIR, TEMPLATES_DIR
 from src.generator.excel_io import load_rows, save_workbook, update_status
 from src.generator.generator_agent import run_generator_agent
 from src.generator.philologist_agent import run_philologist
@@ -34,6 +34,7 @@ from src.utils.config import settings
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MAIL_TEMPLATE_PATH = TEMPLATES_DIR / "mail_template.txt"
+SENT_MAIL_LOG_PATH = DATA_DIR / "sent_mail_log.jsonl"
 DEFAULT_MAIL_SUBJECT = "Коммерческое предложение МНГП. Срок действия до 31.05.2026"
 DEFAULT_MAIL_BODY = (
     "Уважаемый(ая) {HEAD_FIO}!\n\n"
@@ -457,6 +458,38 @@ def _build_mail_body(row: dict[str, Any]) -> str:
         ADM_NAME=_safe_text(row.get("ADM_NAME")),
         MUN_NAME=_safe_text(row.get("MUN_NAME")),
     )
+
+
+def _append_sent_mail_log(
+    *,
+    row: dict[str, Any],
+    recipient: str,
+    attachments: list[str],
+    subject: str,
+    transport: str,
+    warning: str = "",
+) -> str | None:
+    record = {
+        "sent_at": datetime.now().isoformat(timespec="seconds"),
+        "transport": _safe_text(transport) or "smtp",
+        "row_id": _safe_text(row.get("ID")),
+        "mun_name": _safe_text(row.get("MUN_NAME")),
+        "recipient": _safe_text(recipient),
+        "subject": _safe_text(subject),
+        "attachments": [Path(path).name for path in attachments if _safe_text(path)],
+        "attachment_paths": [str(Path(path)) for path in attachments if _safe_text(path)],
+        "warning": _safe_text(warning),
+    }
+    try:
+        SENT_MAIL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with SENT_MAIL_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        return (
+            "Письмо отправлено, но не удалось записать его в локальный журнал: "
+            f"{_safe_text(exc) or 'ошибка записи файла'}."
+        )
+    return None
 
 
 def _save_sent_copy(message: EmailMessage) -> str | None:
@@ -950,6 +983,18 @@ def run_sender(
                 entry["recipient"] = send_result["recipient"]
                 if entry["email_strategy"] == "fallback_extra" or entry["recipient"] != email_decision["recipient"]:
                     entry["decision_reason"] = "Письмо отправлено по резервному email после выбора лучшего доступного адреса."
+                log_warning = _append_sent_mail_log(
+                    row=row,
+                    recipient=entry["recipient"],
+                    attachments=attachments,
+                    subject=subject,
+                    transport=effective_transport,
+                    warning=entry["warning"],
+                )
+                if log_warning:
+                    entry["warning"] = (
+                        f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
+                    )
                 if entry["warning"]:
                     state["warning_rows"] += 1
                     entry["next_action"] = entry["warning"]

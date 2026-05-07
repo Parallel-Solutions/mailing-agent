@@ -918,24 +918,20 @@
       <div class="page-title">Модуль 3 — Отправщик писем</div>
       <div class="page-sub">Рассылка КП и договоров по email с контролем статусов</div>
 
-      <div class="stats-row" style="grid-template-columns: repeat(4, 1fr)">
-        <div class="stat">
-          <div class="stat-n" id="s-sent" style="color:#2d6e0a">0</div>
-          <div class="stat-l">Отправлено (ОК)</div>
+        <div class="stats-row" style="grid-template-columns: repeat(3, 1fr)">
+          <div class="stat">
+            <div class="stat-n" id="s-sent" style="color:#2d6e0a">0</div>
+            <div class="stat-l">Отправлено (ОК)</div>
+          </div>
+          <div class="stat">
+            <div class="stat-n" id="s-left">0</div>
+            <div class="stat-l">Осталось</div>
+          </div>
+          <div class="stat">
+            <div class="stat-n" id="s-err2" style="color:#a02020">0</div>
+            <div class="stat-l">Ошибок</div>
+          </div>
         </div>
-        <div class="stat">
-          <div class="stat-n" id="s-left">0</div>
-          <div class="stat-l">Осталось</div>
-        </div>
-        <div class="stat">
-          <div class="stat-n" id="s-err2" style="color:#a02020">0</div>
-          <div class="stat-l">Ошибок</div>
-        </div>
-        <div class="stat">
-          <div class="stat-n" id="s-total">0</div>
-          <div class="stat-l">Всего</div>
-        </div>
-      </div>
 
       <div class="warn-box">
         Скорость отправки: не более 100–150 писем в час. При повторном запуске отправщик продолжит с первой строки, где STATUS ещё не ОК.
@@ -961,13 +957,14 @@
           <div class="progress-bar"><div class="progress-fill" id="s-fill" style="width:0%"></div></div>
           <div class="progress-label" id="s-label">0 / 0 писем</div>
         </div>
-        <div class="module-actions" style="margin-top:12px">
-          <button type="button" class="btn-primary" id="s-run">Проверить адреса и готовность</button>
-          <button type="button" class="btn-outline" id="s-confirm-send">Подтвердить и отправить</button>
-          <button type="button" class="btn-outline" id="s-pause" style="display:none">Пауза</button>
-          <button type="button" class="btn-danger" id="s-stop">Остановить</button>
+          <div class="module-actions" style="margin-top:12px">
+            <button type="button" class="btn-primary" id="s-run">Проверить адреса и готовность</button>
+            <button type="button" class="btn-outline" id="s-confirm-send">Подтвердить и отправить</button>
+            <button type="button" class="btn-outline" id="s-pause" style="display:none">Пауза</button>
+            <button type="button" class="btn-danger" id="s-stop">Остановить</button>
+            <button type="button" class="btn-outline" onclick="window.location.href='/api/download/sent-mail-log'">Скачать журнал отправки</button>
+          </div>
         </div>
-      </div>
 
       <div class="chat-section">
         <div class="chat-header">
@@ -1701,7 +1698,6 @@
       document.getElementById('s-sent').textContent = sent.toLocaleString('ru');
       document.getElementById('s-left').textContent = Math.max(0, pending).toLocaleString('ru');
       document.getElementById('s-err2').textContent = errorFromStats.toLocaleString('ru');
-      document.getElementById('s-total').textContent = totalFromStats.toLocaleString('ru');
 
       if (status === 'running') {
         badge.textContent = 'Проверяет';

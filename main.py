@@ -339,6 +339,18 @@ async def download_data_xlsx(username: str = Depends(check_auth)):
     )
 
 
+@app.get("/api/download/sent-mail-log")
+async def download_sent_mail_log(username: str = Depends(check_auth)):
+    log_path = Path("data/sent_mail_log.jsonl")
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail="Журнал отправленных писем пока не создан.")
+    return FileResponse(
+        log_path,
+        media_type="application/x-ndjson",
+        filename="sent_mail_log.jsonl",
+    )
+
+
 @app.post("/api/philologist/run")
 async def philologist_run(
     payload: dict | None = Body(default=None),

@@ -61,6 +61,27 @@ def _safe_text(value) -> str:
     return " ".join(str(value).split())
 
 
+EDITORIAL_SUGGESTION_PREFIXES = (
+    "заменить ",
+    "исправить ",
+    "нужно ",
+    "следует ",
+    "проверить ",
+    "убрать ",
+)
+
+
+def _looks_like_editorial_instruction(text: str) -> bool:
+    normalized = _safe_text(text).strip().lower()
+    if not normalized:
+        return False
+    if any(normalized.startswith(prefix) for prefix in EDITORIAL_SUGGESTION_PREFIXES):
+        return True
+    if "заменить" in normalized and (" на " in normalized or '"' in normalized or "«" in normalized):
+        return True
+    return False
+
+
 def _population_with_unit(number_text: str) -> str:
     number = int(number_text)
     mod100 = number % 100
@@ -148,6 +169,11 @@ def _build_ai_prompt(blocks: list[tuple[str, str]]) -> str:
         "Проверь текст фрагментов договора/КП на грамматику, падежи, согласование и канцелярский стиль. "
         "Сначала опирайся на локальную базу правил русского языка, затем на сам текст фрагмента. "
         "Не придумывай новый текст целиком. Ищи только реальные ошибки русского языка или шаблонные огрехи. "
+        "Если нашлась ошибка, в поле suggestion верни ПОЛНЫЙ ИСПРАВЛЕННЫЙ ФРАГМЕНТ, который можно сразу вставить вместо fragment. "
+        "suggestion должен быть готовым текстом документа, а не комментарием редактора. "
+        "Нельзя писать 'Заменить ...', 'Исправить ...', 'Нужно ...', 'Следует ...', 'Проверить ...'. "
+        "Если для фрагмента нельзя дать безопасную готовую замену, оставь suggestion пустым, но опиши ошибку в issue. "
+        "Не меняй смысл документа и не переписывай абзац шире, чем нужно для исправления ошибки. "
         "Верни только JSON-объект вида "
         '{"issues":[{"location":"...","fragment":"...","issue":"...","suggestion":"...","severity":"warning|error|info"}]}. '
         "Если ошибок нет, верни {\"issues\": []}. Без markdown и пояснений вне JSON.\n\n"
@@ -191,13 +217,16 @@ def _run_ai_review(blocks: list[tuple[str, str]], *, ai_enabled: bool = True) ->
     for item in issues or []:
         if not isinstance(item, dict):
             continue
+        suggestion = _safe_text(item.get("suggestion"))
+        if _looks_like_editorial_instruction(suggestion):
+            suggestion = ""
         result.append(
             ReviewIssue(
                 source="ai",
                 location=_safe_text(item.get("location")),
                 fragment=_safe_text(item.get("fragment")),
                 issue=_safe_text(item.get("issue")),
-                suggestion=_safe_text(item.get("suggestion")),
+                suggestion=suggestion,
                 severity=_safe_text(item.get("severity")) or "warning",
             )
         )
