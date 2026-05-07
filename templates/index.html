@@ -772,6 +772,13 @@
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
+        <div class="field">
+          <label>Справочник организаций RMZ7KH (.xlsx)</label>
+          <input type="file" id="upload-rmz-input" accept=".xlsx" style="display:none" onchange="uploadRmz(this)">
+          <button class="file-btn" id="rmz-btn" onclick="document.getElementById('upload-rmz-input').click()">
+            <span class="file-icon">📎</span> Выбрать файл
+          </button>
+        </div>
       </div>
 
       <div class="divider"></div>
@@ -820,6 +827,7 @@
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="p-run" onclick="startParser()">Запустить парсер</button>
           <button class="btn-outline" id="p-pause" onclick="pauseParser()" style="display:none">Пауза</button>
+          <button class="btn-outline" id="p-merge" onclick="startMergeRmz()">Слияние RMZ7KH</button>
           <button class="btn-outline" onclick="window.location.href='/api/download/data-xlsx'">Скачать data.xlsx</button>
         </div>
       </div>
@@ -1883,6 +1891,57 @@
       document.getElementById('g-total').textContent = data.generator_total.toLocaleString('ru');
       document.getElementById('g-total-label').textContent = data.generator_total.toLocaleString('ru');
     } catch(e) {}
+  }
+
+
+  async function uploadRmz(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append('file', file);
+    const btn = document.getElementById('rmz-btn');
+    btn.textContent = 'Загрузка...';
+    try {
+      const res = await fetch('/api/upload/rmz', { method: 'POST', body: form });
+      const data = await res.json();
+      if (res.ok) {
+        btn.innerHTML = '<span class="file-icon">✓</span> ' + file.name;
+        btn.classList.add('uploaded');
+        showToast('Файл RMZ7KH загружен успешно');
+      } else {
+        btn.innerHTML = '<span class="file-icon">📎</span> Выбрать файл';
+        showToast('Ошибка загрузки файла');
+      }
+    } catch(e) {
+      btn.innerHTML = '<span class="file-icon">📎</span> Выбрать файл';
+      showToast('Ошибка соединения');
+    }
+    input.value = '';
+  }
+
+  async function startMergeRmz() {
+    const btn = document.getElementById('p-merge');
+    btn.disabled = true;
+    btn.textContent = 'Выполняется...';
+    appendChatMessage('p-chat', 'agent', 'Запускаю слияние с RMZ7KH...');
+    try {
+      const res = await fetch('/api/parser/merge-rmz', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Ошибка слияния');
+      let msg = `Слияние завершено. Записано: ${data.written}, пропущено (уже есть): ${data.skipped_existing}, не найдено: ${data.not_found}.`;
+      if (data.suspicious_count > 0) {
+        msg += `\n\nСпорных совпадений: ${data.suspicious_count}. Агент проверил:\n${data.agent_review}`;
+      }
+      appendChatMessage('p-chat', 'agent', msg);
+      showToast('Слияние RMZ7KH завершено');
+      refreshCounts();
+    } catch(e) {
+      appendChatMessage('p-chat', 'agent', 'Ошибка слияния: ' + e.message);
+      showToast('Ошибка слияния');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Слияние RMZ7KH';
+    }
   }
 
   refreshCounts();

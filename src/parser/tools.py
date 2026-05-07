@@ -250,15 +250,19 @@ def tool_tavily_search(query: str) -> dict:
 # ------------------------------------------------------------------
 # 6. Запись в data.xlsx
 # ------------------------------------------------------------------
+def tool_validate_matches(suspicious_matches: list[dict]) -> dict:
+    """
+    Принимает список спорных совпадений и проверяет каждое.
+    Агент сам вызывает этот инструмент после merge-rmz.
+    """
+    # Просто возвращает список для анализа агентом через LLM
+    return {"matches_to_review": suspicious_matches}
 
-def tool_write_to_excel(records: list[dict]) -> dict:
-    """
-    Записывает список МО в файл data.xlsx.
-    Каждый элемент списка — словарь с полями MoRecord.
-    Автоматически валидирует данные перед записью.
-    """
+
+def tool_write_to_excel(records: list[dict], output_filename: str = "data.xlsx") -> dict:
+    path = Path("data") / output_filename
     validator = MoValidator()
-    writer = ExcelWriter(DATA_XLSX_PATH)
+    writer = ExcelWriter(path)
 
     written = 0
     skipped = 0
@@ -362,7 +366,6 @@ def _to_sentence_case(text: str) -> str:
 # ------------------------------------------------------------------
 # Описания инструментов для OpenAI function calling
 # ------------------------------------------------------------------
-
 TOOL_DEFINITIONS = [
     {
         "type": "function",
@@ -477,8 +480,10 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "write_to_excel",
             "description": (
-                "Записывает найденные данные об МО в файл data.xlsx. "
-                "Используй после того как собрал все данные по одному или нескольким МО."
+                "Записывает найденные данные об МО в Excel файл. "
+                "По умолчанию пишет в data.xlsx. "
+                "Если пользователь попросил создать новый файл — передай имя в output_filename, "
+                "например 'data_Kaliningrad.xlsx'."
             ),
             "parameters": {
                 "type": "object",
@@ -510,8 +515,46 @@ TOOL_DEFINITIONS = [
                             },
                         },
                     },
+                    "output_filename": {
+                        "type": "string",
+                        "description": (
+                            "Имя файла для записи. По умолчанию 'data.xlsx'. "
+                            "Для нового файла используй имя вида 'data_Kaliningrad.xlsx'."
+                        ),
+                    },
                 },
                 "required": ["records"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "validate_matches",
+            "description": (
+                "Проверяет список спорных совпадений из слияния RMZ7KH. "
+                "Для каждого совпадения определяет верно ли что org_name является "
+                "администрацией mo_name с учётом района и субъекта."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "suspicious_matches": {
+                        "type": "array",
+                        "description": "Список спорных совпадений для проверки",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "mo_name": {"type": "string"},
+                                "org_name": {"type": "string"},
+                                "sub_rf": {"type": "string"},
+                                "mun_r_name": {"type": "string"},
+                                "reason": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                "required": ["suspicious_matches"],
             },
         },
     },
@@ -525,6 +568,7 @@ TOOL_FUNCTIONS = {
     "checko_get_details": tool_checko_get_details,
     "tavily_search": tool_tavily_search,
     "write_to_excel": tool_write_to_excel,
+    "validate_matches": tool_validate_matches,
 }
 
 
