@@ -22,8 +22,8 @@ import openpyxl
 from src.parser.excel_writer import ExcelWriter, MoRecord
 from src.utils.logger import logger
 
-BASE_MO_PATH = Path("data/base.xlsx")
-RMZ_PATH = Path("data/RMZ7KH.xlsx")
+BASE_MO_PATH = Path("service_docs/base.xlsx")
+RMZ_PATH = Path("service_docs/RMZ7KH.xlsx")
 DATA_XLSX_PATH = Path("data/data.xlsx")
 
 # Слова-шум при извлечении ключей из названия МО
