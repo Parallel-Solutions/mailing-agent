@@ -860,8 +860,22 @@
 
       <div class="upload-zone" onclick="document.getElementById('upload-data-input').click()">
         <input type="file" id="upload-data-input" accept=".xlsx" style="display:none" onchange="uploadData(this)">
-        <p id="upload-data-label">Загрузить готовый data.xlsx</p>
-        <span>Нажмите, если файл уже подготовлен — парсер запускать не нужно</span>
+        <p id="upload-data-label">📁 Загрузить data.xlsx</p>
+        <span>Нажмите, чтобы выбрать файл Excel с данными МО</span>
+      </div>
+
+      <!-- Блок со статусом загруженного файла -->
+      <div id="data-file-status" class="info-box" style="display:none; background:#e8f5d8; border-color:#5a9e1f;">
+        <span id="data-file-name"></span>
+        <span id="data-file-info" style="display:block; font-size:11px; margin-top:4px;"></span>
+      </div>
+
+      <!-- Подсказка: что делать дальше -->
+      <div id="data-action-hint" class="warn-box" style="background:#fdf0d8; border-color:#e8d080;">
+        <strong>🔍 Что дальше?</strong><br>
+        • <strong>Если файл уже готов</strong> — можно переходить к <strong>Модулю 2 (Генератор)</strong><br>
+        • <strong>Если нужно дозаполнить данные</strong> (ИНН, ОГРН, email и т.д.) — нажмите «Запустить парсер»<br>
+        • <strong>Если есть справочник RMZ7KH</strong> — нажмите «Слияние RMZ7KH» для обогащения данных
       </div>
 
       <div class="info-box">
@@ -1161,25 +1175,50 @@
     const form = new FormData();
     form.append('file', file);
     const label = document.getElementById('upload-data-label');
-    label.textContent = 'Загрузка...';
+    const originalText = label.innerHTML;
+    label.innerHTML = '⏳ Загрузка...';
     try {
       const res = await fetch('/api/upload/data', { method: 'POST', body: form });
       const data = await res.json();
       if (res.ok) {
-        label.textContent = '✓ ' + file.name;
+        // Обновляем зону загрузки
+        label.innerHTML = '✓ ' + file.name;
         document.querySelector('.upload-zone').style.borderColor = '#5a9e1f';
-        showToast('data.xlsx загружен успешно');
+        document.querySelector('.upload-zone').style.background = '#f5faf0';
+        
+        // Показываем блок со статусом файла
+        const statusBlock = document.getElementById('data-file-status');
+        const fileNameSpan = document.getElementById('data-file-name');
+        const fileInfoSpan = document.getElementById('data-file-info');
+        
+        statusBlock.style.display = 'block';
+        fileNameSpan.innerHTML = `<strong>✅ Файл сохранён:</strong> ${file.name}`;
+        
+        // Получаем информацию о файле
         const info = await fetch('/api/data/info').then(r => r.json());
         if (info.loaded) {
-            document.getElementById('g-total').textContent = info.total.toLocaleString('ru');
+          fileInfoSpan.innerHTML = `📊 Записей: ${info.total.toLocaleString('ru')} | Колонок: ${info.columns || '?'}<br>
+          ⚡ ${info.has_email ? '✉️ Email-колонка найдена' : '⚠️ Нет email-колонки, парсер доставит адреса'}`;
+          document.getElementById('g-total').textContent = info.total.toLocaleString('ru');
+          document.getElementById('g-total-label').textContent = info.total.toLocaleString('ru');
+        } else {
+          fileInfoSpan.innerHTML = `📊 Файл загружен, дождитесь обработки...`;
         }
+        
+        // Добавляем сообщение в чат
+        appendChatMessage('p-chat', 'agent', `Файл «${file.name}» успешно загружен. Содержит ${info.total || '?'} записей. Что дальше?\n\n• Если данных достаточно — переходи в «Модуль 2 — Генератор»\n• Если нужно дозаполнить ИНН/ОГРН/email — запусти парсер\n• Если есть справочник RMZ7KH — выполни слияние`);
+        
+        showToast(`✅ ${file.name} загружен и сохранён на сервере`);
       } else {
-        label.textContent = 'Загрузить готовый data.xlsx';
-        showToast('Ошибка загрузки файла');
+        label.innerHTML = originalText;
+        document.querySelector('.upload-zone').style.borderColor = '';
+        showToast('❌ Ошибка загрузки файла');
+        appendChatMessage('p-chat', 'agent', 'Не удалось загрузить файл. Попробуйте ещё раз или проверьте формат (требуется .xlsx).');
       }
     } catch(e) {
-      label.textContent = 'Загрузить готовый data.xlsx';
-      showToast('Ошибка соединения');
+      label.innerHTML = originalText;
+      showToast('❌ Ошибка соединения');
+      appendChatMessage('p-chat', 'agent', 'Ошибка соединения с сервером при загрузке файла.');
     }
     input.value = '';
   }
@@ -1399,6 +1438,20 @@
 
     fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
     document.getElementById('p-total').textContent = total.toLocaleString('ru');
+
+    // Обновляем подсказку о состоянии файла
+    const hintBlock = document.getElementById('data-action-hint');
+    if (hintBlock && total > 0) {
+      if (claimed === total) {
+        hintBlock.innerHTML = `<strong>✅ Данные полностью заполнены!</strong><br>
+        Все ${total.toLocaleString('ru')} записей обработаны. Можно переходить в <strong>Модуль 2 — Генератор</strong>.`;
+        hintBlock.style.background = '#e8f5d8';
+        hintBlock.style.borderColor = '#5a9e1f';
+      } else if (claimed > 0 && claimed < total) {
+        hintBlock.innerHTML = `<strong>🔄 Идёт заполнение данных (${claimed}/${total})</strong><br>
+        Парсер работает. Можно дождаться завершения или перейти к генерации частично заполненных данных.`;
+      }
+    }
 
     if (status === 'running') {
       badge.textContent = 'Работает';
@@ -2158,6 +2211,40 @@
       btn.textContent = 'Слияние RMZ7KH';
     }
   }
+
+  // Проверка состояния data.xlsx при загрузке страницы
+  async function checkDataFileStatus() {
+    try {
+      const res = await fetch('/api/data/info');
+      const info = await res.json();
+      if (info.loaded && info.total > 0) {
+        const statusBlock = document.getElementById('data-file-status');
+        const fileNameSpan = document.getElementById('data-file-name');
+        const fileInfoSpan = document.getElementById('data-file-info');
+        
+        statusBlock.style.display = 'block';
+        fileNameSpan.innerHTML = `<strong>📁 Файл загружен:</strong> data.xlsx`;
+        fileInfoSpan.innerHTML = `📊 Записей: ${info.total.toLocaleString('ru')}<br>
+        ${info.has_email ? '✉️ Email-колонка найдена ✓' : '⚠️ Нет email-колонки — парсер её добавит'}`;
+        
+        document.getElementById('g-total').textContent = info.total.toLocaleString('ru');
+        document.getElementById('g-total-label').textContent = info.total.toLocaleString('ru');
+        
+        const label = document.getElementById('upload-data-label');
+        if (label) label.innerHTML = '✓ data.xlsx (заменён)';
+        const zone = document.querySelector('.upload-zone');
+        if (zone) {
+          zone.style.borderColor = '#5a9e1f';
+          zone.style.background = '#f5faf0';
+        }
+      }
+    } catch(e) {
+      // Файла нет — ничего не делаем
+    }
+  }
+
+  // Вызываем при загрузке страницы
+  checkDataFileStatus();
 
   refreshCounts();
   refreshParserStatus({ silent: true });
