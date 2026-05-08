@@ -1243,6 +1243,17 @@
     document.getElementById('upload-data-label').textContent = 'Нажмите чтобы выбрать файл data.xlsx';
   }
 
+  function resetModuleUiForNewDataUpload() {
+    senderPreviewState = null;
+    parserRunning = false;
+    phRunning = false;
+    senderRunning = false;
+    setParserUiState({ status: 'idle', row_count: 0, task_stats: {} });
+    setGeneratorUiState({ status: 'idle', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
+    setPhilologistUiState({ status: 'idle', total_documents: 0, processed_documents: 0, fixed_documents: 0, documents_with_issues: 0 });
+    setSenderUiState({ status: 'idle', total_rows: 0, processed_rows: 0, ready_rows: 0, error_rows: 0, stats: { total: 0, sent: 0, error: 0, pending: 0 } });
+  }
+
   async function uploadData(input) {
     const file = input.files[0];
     if (!file) return;
@@ -1256,6 +1267,7 @@
       const data = await res.json();
       if (res.ok) {
         if (data.job_id) setCurrentJobId(data.job_id);
+        resetModuleUiForNewDataUpload();
         const info = await fetch(apiUrl('/api/data/info')).then(r => r.json());
         const rows = info.loaded ? info.total : '?';
         document.getElementById('upload-data-filename').textContent = file.name;
@@ -1264,6 +1276,10 @@
         document.getElementById('upload-zone-data').style.display = 'none';
         showToast('Файл загружен: ' + rows + ' записей');
         await refreshCounts();
+        await refreshParserStatus({ silent: true });
+        await refreshGeneratorStatus({ silent: true });
+        await refreshPhilologistStatus({ silent: true });
+        await refreshSenderStatus({ silent: true });
         appendChatMessage('p-chat', 'agent', `Файл «${file.name}» загружен, ${rows} записей. Можешь перейти к генерации или дополнить данные через парсер.`);
       } else {
         document.getElementById('upload-data-label').textContent = 'Нажмите чтобы выбрать файл data.xlsx';
@@ -1796,7 +1812,7 @@
   let senderPreviewState = null;
 
   function getSenderBatchLimit() {
-    return 25;
+    return 0;
   }
 
   function getSenderTransport() {
@@ -2032,9 +2048,9 @@
   }
 
   function setSenderUiState(result = {}) {
-      const badge = document.getElementById('s-badge');
-      const fill = document.getElementById('s-fill');
-      const label = document.getElementById('s-label');
+        const badge = document.getElementById('s-badge');
+        const fill = document.getElementById('s-fill');
+        const label = document.getElementById('s-label');
       const processed = Number(result.processed_rows || 0);
       const totalRaw = Number(result.total_rows || 0);
       const total = totalRaw > 0 ? totalRaw : (processed > 0 ? processed : 0);
@@ -2046,8 +2062,20 @@
       const errorFromStats = Number(stats.error || 0);
       const pending = Number(stats.pending || total);
       const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
-      const status = result.status || 'idle';
-      const canConfirm = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
+        const status = result.status || 'idle';
+        const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
+        const hasPendingRows = Math.max(0, pending) > 0;
+        const hasReadyRows = ready > 0;
+        const isDryRunReady = status === 'completed' && result.mode === 'dry_run' && hasReadyRows;
+        const canResumeStopped = status === 'stopped' && hasPendingRows;
+        const canConfirm = hasPreviewRows || isDryRunReady || canResumeStopped;
+
+        if ((!senderPreviewState || !Array.isArray(senderPreviewState.rows) || !senderPreviewState.rows.length) && Array.isArray(result.rows) && result.rows.length) {
+          senderPreviewState = {
+            rows: result.rows,
+            summary_text: result.summary_text || ''
+          };
+        }
 
       setProgressVisual(fill, { percent, running: status === 'running' && total > 0, indeterminate: false });
       document.getElementById('s-sent').textContent = sent.toLocaleString('ru');
@@ -2177,17 +2205,17 @@
   }
 
   async function confirmAndSendSender() {
-    try {
-      await ensureCurrentJobId();
-      if (!senderPreviewState || !Array.isArray(senderPreviewState.rows)) {
-        safeAppendChatMessage('s-chat', 'agent', 'Сначала нужно выполнить предпросмотр адресов и готовности, а уже потом подтверждать отправку.');
-        return;
-      }
-      const limit = getSenderBatchLimit();
-      const transport = getSenderTransport();
-      if (!confirm('Запустить реальную отправку писем?')) {
-        return;
-      }
+      try {
+        await ensureCurrentJobId();
+        const limit = getSenderBatchLimit();
+        const transport = getSenderTransport();
+        const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
+        if (!hasPreviewRows) {
+          safeAppendChatMessage('s-chat', 'agent', 'Продолжаю отправку с первой строки без статуса ОК. Уже отправленные письма повторно не уйдут.');
+        }
+        if (!confirm('Запустить реальную отправку писем?')) {
+          return;
+        }
       senderRunning = true;
       setSenderButtonsState({ running: true, canConfirm: false, canStop: true });
       safeAppendChatMessage('s-chat', 'agent', `Подтверждение получено. Запускаю реальную отправку через ${transport === 'unisender' ? 'UniSender' : 'обычный канал'}.`);

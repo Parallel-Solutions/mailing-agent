@@ -31,7 +31,18 @@ def resolve_template_paths(templates_dir: Path | None = None) -> tuple[Path, Pat
 
 
 def ensure_output_folder(row: dict, output_dir: Path | None = None) -> Path:
-    folder = (output_dir or OUTPUT_DIR) / build_output_folder_name(row)
+    root_dir = output_dir or OUTPUT_DIR
+    folder = root_dir / build_output_folder_name(row)
+    row_id = str(row.get("ID", "")).strip()
+    if row_id and root_dir.exists():
+        prefix = f"{row_id}_"
+        for existing_path in root_dir.iterdir():
+            if not existing_path.is_dir():
+                continue
+            if existing_path == folder:
+                continue
+            if existing_path.name.startswith(prefix):
+                shutil.rmtree(existing_path, ignore_errors=True)
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 

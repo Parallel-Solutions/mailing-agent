@@ -86,6 +86,22 @@ def cleanup_batch_pdf_dir(batch_pdf_dir: Path | None = None) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
 
 
+def cleanup_existing_output_dirs(rows: list[dict], output_dir: Path | None) -> None:
+    if output_dir is None:
+        return
+    output_dir.mkdir(parents=True, exist_ok=True)
+    row_ids = {str(row.get("ID") or "").strip() for row in rows}
+    row_ids.discard("")
+    if not row_ids:
+        return
+    for path in output_dir.iterdir():
+        if not path.is_dir():
+            continue
+        prefix = path.name.split("_", 1)[0].strip()
+        if prefix in row_ids:
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def process_generator_row(
     payload: tuple[int, int, dict],
     *,
@@ -233,6 +249,7 @@ def run_generator_agent(
 
     cleanup_batch_docx_dir(job_paths.batch_docx_dir if not job_paths.uses_legacy_layout else None)
     cleanup_batch_pdf_dir(job_paths.batch_pdf_dir if not job_paths.uses_legacy_layout else None)
+    cleanup_existing_output_dirs(rows, None if job_paths.uses_legacy_layout else job_paths.output_dir)
 
     started_at = perf_counter()
     payloads = [(index, START_OUTGOING_NUMBER + index, row) for index, row in enumerate(rows)]

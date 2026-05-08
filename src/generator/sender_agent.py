@@ -5,12 +5,14 @@ import smtplib
 import json
 import re
 import base64
+import mimetypes
+import secrets
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any
-from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from src.generator.ai_case_agent import (
@@ -45,7 +47,8 @@ DEFAULT_MAIL_BODY = (
     "ООО «ПР»"
 )
 STATUS_OK_VALUES = {"ОК", "OK", "SENT"}
-UNISENDER_SEND_URL = "https://api.unisender.com/ru/api/sendEmail"
+UNISENDER_GO_SEND_PATH = "email/send.json"
+UNISENDER_CLASSIC_SEND_PATH = "sendEmail"
 
 
 SENDER_STATE: dict[str, Any] = {
@@ -273,9 +276,7 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
 
 def _normalize_limit(limit: int | None, *, dry_run: bool) -> int | None:
     if limit in (None, 0):
-        if dry_run:
-            return None
-        return max(1, int(settings.sender_default_batch_size))
+        return None
 
     normalized = max(1, int(limit))
     return min(normalized, max(1, int(settings.sender_max_batch_size)))
@@ -697,7 +698,26 @@ def _htmlify_mail_body(body: str) -> str:
     return html
 
 
-def _send_via_unisender(
+def _build_unisender_go_url(path: str) -> str:
+    base_url = _safe_text(settings.unisender_api_base_url).rstrip("/")
+    if not base_url:
+        base_url = "https://goapi.unisender.ru/ru/transactional/api/v1"
+    return f"{base_url}/{path.lstrip('/')}"
+
+
+def _uses_unisender_go_api() -> bool:
+    base_url = _safe_text(settings.unisender_api_base_url).lower()
+    return "goapi.unisender.ru" in base_url
+
+
+def _build_unisender_classic_url(path: str) -> str:
+    base_url = _safe_text(settings.unisender_api_base_url).rstrip("/")
+    if not base_url:
+        base_url = "https://api.unisender.com/ru/api"
+    return f"{base_url}/{path.lstrip('/')}"
+
+
+def _send_via_unisender_classic(
     row: dict[str, Any],
     recipient: str,
     attachments: list[str],
@@ -732,8 +752,10 @@ def _send_via_unisender(
         path = Path(attachment_path)
         payload[f"attachments[{path.name}]"] = path.read_bytes()
 
+    from urllib.parse import urlencode
+
     request = Request(
-        UNISENDER_SEND_URL,
+        _build_unisender_classic_url(UNISENDER_CLASSIC_SEND_PATH),
         data=urlencode(payload).encode("utf-8", errors="ignore"),
         method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -758,6 +780,110 @@ def _send_via_unisender(
     if data.get("error"):
         raise RuntimeError(_safe_text(data.get("error")) or "UniSender вернул ошибку.")
     raise RuntimeError("UniSender не подтвердил отправку письма.")
+
+
+def _send_via_unisender(
+    row: dict[str, Any],
+    recipient: str,
+    attachments: list[str],
+    subject: str,
+    *,
+    mail_template_path: Path | None = None,
+) -> str | None:
+    if not _uses_unisender_go_api():
+        return _send_via_unisender_classic(
+            row,
+            recipient,
+            attachments,
+            subject,
+            mail_template_path=mail_template_path,
+        )
+
+    api_key = _safe_text(settings.unisender_api_key)
+    sender_email = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
+    sender_name = _safe_text(settings.unisender_sender_name) or "ООО «ПР»"
+    if not api_key:
+        raise RuntimeError("Не указан API-ключ UniSender Go.")
+    if not sender_email:
+        raise RuntimeError("Не указан email отправителя UniSender Go.")
+
+    plaintext_body = _build_mail_body(row, mail_template_path=mail_template_path)
+    html_body = _htmlify_mail_body(plaintext_body)
+    payload: dict[str, Any] = {
+        "message": {
+            "recipients": [{"email": recipient}],
+            "body": {
+                "html": html_body,
+                "plaintext": plaintext_body,
+            },
+            "subject": subject,
+            "from_email": sender_email,
+            "from_name": sender_name,
+            "reply_to": sender_email,
+            "reply_to_name": sender_name,
+            "global_language": "ru",
+            "template_engine": "simple",
+            "track_links": 1,
+            "track_read": 1,
+            "idempotence_key": secrets.token_urlsafe(24),
+        }
+    }
+
+    encoded_attachments: list[dict[str, str]] = []
+    for attachment_path in attachments:
+        path = Path(attachment_path)
+        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        encoded_attachments.append(
+            {
+                "type": mime_type,
+                "name": path.name,
+                "content": base64.b64encode(path.read_bytes()).decode("ascii"),
+            }
+        )
+    if encoded_attachments:
+        payload["message"]["attachments"] = encoded_attachments
+
+    request = Request(
+        _build_unisender_go_url(UNISENDER_GO_SEND_PATH),
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-API-KEY": api_key,
+        },
+    )
+    try:
+        with urlopen(request, timeout=60) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw)
+            message = _safe_text(data.get("message"))
+            code = data.get("code")
+            if message:
+                suffix = f" (code {code})" if code is not None else ""
+                raise RuntimeError(message + suffix) from exc
+        except json.JSONDecodeError:
+            pass
+        raise RuntimeError(f"UniSender Go вернул HTTP {exc.code}: {raw[:300]}") from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"UniSender Go вернул непонятный ответ: {raw[:300]}") from exc
+
+    if _safe_text(data.get("status")).lower() != "success":
+        raise RuntimeError(_safe_text(data.get("message")) or "UniSender Go не подтвердил отправку письма.")
+
+    failed_emails = data.get("failed_emails") or {}
+    if isinstance(failed_emails, dict) and recipient in failed_emails:
+        raise RuntimeError(f"UniSender Go не принял адрес {recipient}: {_safe_text(failed_emails.get(recipient))}")
+
+    accepted_emails = data.get("emails") or []
+    if accepted_emails and recipient not in accepted_emails:
+        raise RuntimeError("UniSender Go не подтвердил адрес получателя в ответе.")
+    return None
 
 
 def _send_with_transport(
@@ -1124,6 +1250,9 @@ def run_sender(
                 state["error_rows"] += 1
             else:
                 state["sent_rows"] += 1
+                delay_seconds = max(0.0, float(settings.sender_delay_seconds or 0))
+                if delay_seconds > 0 and state["processed_rows"] + 1 < state["total_rows"]:
+                    sleep(delay_seconds)
         else:
             entry["attempts"] = [
                 {
