@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore"
     )
@@ -40,8 +40,10 @@ class Settings(BaseSettings):
     smtp_save_sent_copy: bool = True
     sender_default_batch_size: int = 25
     sender_max_batch_size: int = 100
+    sender_delay_seconds: float = 30.0
     sender_transport: str = "smtp"
     unisender_api_key: str = ""
+    unisender_api_base_url: str = "https://goapi.unisender.ru/ru/transactional/api/v1"
     unisender_sender_name: str = "ООО «ПР»"
     unisender_sender_email: str = ""
     unisender_list_id: int = 1

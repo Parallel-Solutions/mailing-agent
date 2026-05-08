@@ -68,6 +68,20 @@ async def create_job(username: str = Depends(check_auth)):
     paths.ensure_dirs()
     return {"status": "ok", "job_id": job_id}
 
+
+def _clone_job_templates_if_present(source_job_id: str | None, target_job_id: str | None) -> None:
+    source_paths = resolve_job_paths(source_job_id)
+    target_paths = resolve_job_paths(target_job_id)
+    source_dir = source_paths.templates_dir
+    target_dir = target_paths.templates_dir
+    if not source_dir.exists():
+        return
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source_path in source_dir.iterdir():
+        if not source_path.is_file():
+            continue
+        shutil.copy2(source_path, target_dir / source_path.name)
+
 @app.post("/api/upload/data")
 async def upload_data(
     file: UploadFile = File(...),
@@ -75,9 +89,15 @@ async def upload_data(
     username: str = Depends(check_auth),
 ):
     paths = resolve_job_paths(job_id)
+    if not paths.uses_legacy_layout and paths.data_xlsx.exists():
+        fresh_job_id = create_job_id()
+        fresh_paths = resolve_job_paths(fresh_job_id)
+        fresh_paths.ensure_dirs()
+        _clone_job_templates_if_present(paths.job_id, fresh_job_id)
+        paths = fresh_paths
     paths.ensure_dirs()
     dest = paths.data_xlsx
-    dest.parent.mkdir(exist_ok=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     return {"status": "ok", "filename": file.filename, "job_id": paths.job_id}
