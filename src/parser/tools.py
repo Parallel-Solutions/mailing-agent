@@ -108,6 +108,7 @@ def tool_checko_search_by_name(mun_name: str, region_code: str) -> dict:
         return {"found": 0, "items": []}
 
     items = [_parse_search_item(item) for item in raw_items]
+    items = [i for i in items if i]
     # Фильтруем — оставляем только администрации МО
     filtered = [item for item in items if _is_administration(item.get("full_name", ""))]
 
@@ -308,6 +309,247 @@ def tool_write_to_excel(records: list[dict], output_filename: str = "data.xlsx")
     logger.info("tool_write_to_excel", written=written, skipped=skipped)
     return {"written": written, "skipped": skipped, "errors": errors[:10]}
 
+def tool_search_in_base_mo(mun_name: str, sub_rf: str, return_list: bool = False) -> dict:
+    """
+    Ищет МО в локальном файле base.xlsx.
+    Если return_list=True — возвращает все МО указанного субъекта.
+    """
+    path = Path("service_docs/base.xlsx")
+    if not path.exists():
+        return {"error": "Файл base.xlsx не найден в service_docs/"}
+    try:
+        rows = read_base_mo(path)
+        sub_norm = sub_rf.lower().strip()
+
+        # Фильтруем по субъекту
+        regional = [r for r in rows if sub_norm in r.sub_rf.lower()]
+        if not regional:
+            return {"found": False, "message": f"Субъект '{sub_rf}' не найден в базе МО"}
+
+        if return_list:
+            return {
+                "found": True,
+                "total": len(regional),
+                "rows": [{"sub_rf": r.sub_rf, "mun_r_name": r.mun_r_name,
+                          "mun_name": r.mun_name, "population": r.population,
+                          "region_code": get_region_code(r.sub_rf) or "?"} for r in regional]
+            }
+
+        # Ищем конкретное МО
+        name_norm = mun_name.lower().strip()
+        found = [r for r in regional if name_norm in r.mun_name.lower() or r.mun_name.lower() in name_norm]
+        if not found:
+            return {"found": False, "message": f"МО '{mun_name}' не найдено в субъекте '{sub_rf}'"}
+
+        r = found[0]
+        return {
+            "found": True,
+            "sub_rf": r.sub_rf,
+            "mun_r_name": r.mun_r_name,
+            "mun_name": r.mun_name,
+            "population": r.population,
+            "region_code": get_region_code(r.sub_rf) or "?",
+        }
+    except Exception as e:
+        logger.exception("tool_search_in_base_mo_error")
+        return {"error": str(e)}
+
+def tool_find_missing_mo() -> dict:
+    """
+    Сравнивает base.xlsx и data.xlsx.
+    Возвращает список МО которые есть в базе но отсутствуют в data.xlsx.
+    Совпадение точное — по субъекту, району и названию МО.
+    """
+    import openpyxl as _xl
+    base_path = Path("service_docs/base.xlsx")
+    data_path = Path("data/data.xlsx")
+
+    if not base_path.exists():
+        return {"error": "Файл base.xlsx не найден"}
+
+    # Читаем base.xlsx — col A=sub_rf, B=mun_r_name, C=mun_name
+    wb_base = _xl.load_workbook(base_path, data_only=True, read_only=True)
+    base_rows = []
+    for row in wb_base.worksheets[0].iter_rows(min_row=2, values_only=True):
+        sub = str(row[0] or "").strip()
+        dist = str(row[1] or "").strip()
+        name = str(row[2] or "").strip()
+        pop = row[3]
+        if name:
+            base_rows.append({"sub_rf": sub, "mun_r_name": dist,
+                              "mun_name": name, "population": pop,
+                              "region_code": get_region_code(sub) or "?"})
+    wb_base.close()
+
+    # Читаем data.xlsx — col B=sub_rf, C=mun_r_name, D=mun_name (с 3й строки)
+    existing = set()
+    if data_path.exists():
+        wb_data = _xl.load_workbook(data_path, data_only=True, read_only=True)
+        for row in wb_data.worksheets[0].iter_rows(min_row=3, values_only=True):
+            sub = str(row[1] or "").strip().lower()
+            dist = str(row[2] or "").strip().lower()
+            name = str(row[3] or "").strip().lower()
+            if name:
+                existing.add((sub, dist, name))
+        wb_data.close()
+
+    missing = [
+        r for r in base_rows
+        if (r["sub_rf"].lower(), r["mun_r_name"].lower(), r["mun_name"].lower()) not in existing
+    ]
+
+    logger.info("find_missing_mo", total_base=len(base_rows),
+                existing=len(existing), missing=len(missing))
+
+    return {
+        "total_base": len(base_rows),
+        "already_in_data": len(base_rows) - len(missing),
+        "missing_count": len(missing),
+        "missing": missing[:100],  # первые 100 для агента
+        "note": f"Показаны первые 100 из {len(missing)} пропущенных МО" if len(missing) > 100 else ""
+    }
+
+
+def tool_search_in_rmz(mun_name: str, sub_rf: str = "") -> dict:
+    """
+    Ищет администрацию МО в локальном файле RMZ7KH.xlsx.
+    Ищет в столбцах A (сокр. наим) и B (полн. наим).
+    Проверяет субъект по столбцу K.
+    """
+    import openpyxl as _xl
+    path = Path("service_docs/RMZ7KH.xlsx")
+    if not path.exists():
+        return {"error": "Файл RMZ7KH.xlsx не найден в service_docs/"}
+    try:
+        wb = _xl.load_workbook(path, data_only=True, read_only=True)
+        sheet = wb.worksheets[0]
+
+        name_norm = mun_name.lower().strip()
+        sub_norm = sub_rf.lower().strip() if sub_rf else ""
+
+        # Извлекаем ключевые слова из названия МО
+        _noise = {
+            "сельское","поселение","поселения","сельской","городское","городской",
+            "муниципальное","муниципального","образование","образования",
+            "администрация","округ","район","рабочего","рабочий","пгт","гп",
+        }
+        keywords = [w for w in name_norm.split() if w not in _noise and len(w) > 3]
+        if not keywords:
+            return {"error": f"Не удалось извлечь ключевые слова из '{mun_name}'"}
+
+        results = []
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            col_a = str(row[0] or "").strip().lower()   # сокр. наим
+            col_b = str(row[1] or "").strip()           # полн. наим
+            col_b_lower = col_b.lower()
+            col_k = str(row[10] or "").strip().lower()  # регион
+
+            if not col_b:
+                continue
+
+            # Проверяем что это администрация
+            if "администрация" not in col_b_lower:
+                continue
+            banned = ["совет депутатов", "совет народных депутатов",
+                      "бюджетное учреждение", "казенное учреждение"]
+            if any(b in col_b_lower for b in banned):
+                continue
+
+            # Проверяем субъект если указан
+            if sub_norm:
+                sub_words = [w for w in sub_norm.split() if len(w) > 3]
+                if sub_words and not any(w in col_k for w in sub_words):
+                    continue
+
+            # Ищем ключевые слова в столбцах A и B
+            search_text = col_a + " " + col_b_lower
+            if not all(kw[:7] in search_text for kw in keywords):
+                continue
+
+            emails = str(row[6] or "").strip()
+            phones = str(row[5] or "").strip()
+            email1 = emails.split(",")[0].strip() if emails else ""
+            email_rest = ", ".join(emails.split(",")[1:]).strip() if "," in emails else ""
+            phone1 = phones.split(",")[0].strip() if phones else ""
+            phone_rest = ", ".join(phones.split(",")[1:]).strip() if "," in phones else ""
+
+            results.append({
+                "full_name": col_b,
+                "ogrn": str(row[2] or ""),
+                "inn": str(row[3] or ""),
+                "kpp": str(row[4] or ""),
+                "address": str(row[11] or ""),
+                "head_fio": str(row[15] or ""),
+                "email_osn": email1,
+                "email_dop": email_rest,
+                "tel_osn": phone1,
+                "tel_dop": phone_rest,
+                "region": str(row[10] or ""),
+            })
+
+        wb.close()
+        if not results:
+            return {"found": False, "message": f"МО '{mun_name}' не найдено в RMZ7KH"}
+        return {"found": True, "total": len(results), "items": results[:5]}
+    except Exception as e:
+        logger.exception("tool_search_in_rmz_error")
+        return {"error": str(e)}
+    
+
+    def tool_find_missing_mo() -> dict:
+        """
+        Сравнивает base.xlsx и data.xlsx.
+        Возвращает список МО которые есть в базе но отсутствуют в data.xlsx.
+        Совпадение точное — по субъекту, району и названию МО.
+        """
+        import openpyxl as _xl
+        base_path = Path("service_docs/base.xlsx")
+        data_path = Path("data/data.xlsx")
+
+        if not base_path.exists():
+            return {"error": "Файл base.xlsx не найден"}
+
+        # Читаем base.xlsx — col A=sub_rf, B=mun_r_name, C=mun_name
+        wb_base = _xl.load_workbook(base_path, data_only=True, read_only=True)
+        base_rows = []
+        for row in wb_base.worksheets[0].iter_rows(min_row=2, values_only=True):
+            sub = str(row[0] or "").strip()
+            dist = str(row[1] or "").strip()
+            name = str(row[2] or "").strip()
+            pop = row[3]
+            if name:
+                base_rows.append({"sub_rf": sub, "mun_r_name": dist,
+                                "mun_name": name, "population": pop,
+                                "region_code": get_region_code(sub) or "?"})
+        wb_base.close()
+
+        # Читаем data.xlsx — col B=sub_rf, C=mun_r_name, D=mun_name (с 3й строки)
+        existing = set()
+        if data_path.exists():
+            wb_data = _xl.load_workbook(data_path, data_only=True, read_only=True)
+            for row in wb_data.worksheets[0].iter_rows(min_row=3, values_only=True):
+                sub = str(row[1] or "").strip().lower()
+                dist = str(row[2] or "").strip().lower()
+                name = str(row[3] or "").strip().lower()
+                if name:
+                    existing.add((sub, dist, name))
+            wb_data.close()
+
+        missing = [
+            r for r in base_rows
+            if (r["sub_rf"].lower(), r["mun_r_name"].lower(), r["mun_name"].lower()) not in existing
+        ]
+
+        logger.info("find_missing_mo", total_base=len(base_rows),
+                    existing=len(existing), missing=len(missing))
+
+        return {
+            "total_base": len(base_rows),
+            "already_in_data": len(base_rows) - len(missing),
+            "missing_count": len(missing),
+            "missing": missing[:100],  # первые 100 для агента
+            "note": f"Показаны первые 100 из {len(missing)} пропущенных МО" if len(missing) > 100 else ""
+        }
 
 # ------------------------------------------------------------------
 # Вспомогательные функции
@@ -315,6 +557,8 @@ def tool_write_to_excel(records: list[dict], output_filename: str = "data.xlsx")
 
 def _parse_search_item(item: dict) -> dict:
     """Извлекает нужные поля из одного элемента ответа Checko /search."""
+    if not isinstance(item, dict):
+        return {}
     rukovod = item.get("Руковод", [])
     head_fio = rukovod[0].get("ФИО", "") if rukovod else ""
 
@@ -410,6 +654,17 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "find_missing_mo",
+            "description": (
+                "Сравнивает base.xlsx и data.xlsx, находит МО которых нет в data.xlsx. "
+                "Используй когда пользователь просит дополнить data.xlsx недостающими МО."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "checko_search_by_okved",
             "description": (
                 "Ищет все МО в регионе по коду ОКВЭД. "
@@ -452,6 +707,17 @@ TOOL_DEFINITIONS = [
                 },
                 "required": ["inn"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_missing_mo",
+            "description": (
+                "Сравнивает base.xlsx и data.xlsx, находит МО которых нет в data.xlsx. "
+                "Используй когда пользователь просит дополнить data.xlsx недостающими МО."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {
@@ -530,6 +796,45 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "search_in_base_mo",
+            "description": (
+                "Ищет МО в локальном файле base.xlsx. "
+                "Используй ПЕРВЫМ при любом запросе про МО. "
+                "Если return_list=true — возвращает все МО субъекта."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mun_name": {"type": "string", "description": "Название МО"},
+                    "sub_rf": {"type": "string", "description": "Субъект РФ"},
+                    "return_list": {"type": "boolean", "description": "true — вернуть все МО субъекта"},
+                },
+                "required": ["mun_name", "sub_rf"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_in_rmz",
+            "description": (
+                "Ищет администрацию МО в локальном файле RMZ7KH.xlsx. "
+                "Используй если в base.xlsx нет нужных контактных данных. "
+                "Обязательно проверяет совпадение субъекта."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mun_name": {"type": "string", "description": "Название МО"},
+                    "sub_rf": {"type": "string", "description": "Субъект РФ для проверки"},
+                },
+                "required": ["mun_name", "sub_rf"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "validate_matches",
             "description": (
                 "Проверяет список спорных совпадений из слияния RMZ7KH. "
@@ -569,6 +874,10 @@ TOOL_FUNCTIONS = {
     "tavily_search": tool_tavily_search,
     "write_to_excel": tool_write_to_excel,
     "validate_matches": tool_validate_matches,
+    "search_in_base_mo": tool_search_in_base_mo,
+    "search_in_rmz": tool_search_in_rmz,
+    "find_missing_mo": tool_find_missing_mo,
+    "search_in_rmz": tool_search_in_rmz,
 }
 
 

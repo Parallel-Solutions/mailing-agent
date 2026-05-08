@@ -753,6 +753,20 @@
     background: transparent;
   }
 
+  .scenario-btn {
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: 1px solid #c8d8b0;
+    background: #f5f8f0;
+    cursor: pointer;
+    font-size: 13px;
+    color: #444;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .scenario-btn:hover { background: #eaf2e0; }
+  .scenario-btn.active { background: #3a6e10; color: #fff; border-color: #3a6e10; }
+
 </style>
 </head>
 <body>
@@ -858,43 +872,56 @@
       <div class="page-title">Модуль 1 — Парсер данных</div>
       <div class="page-sub">Сбор информации по муниципальным образованиям</div>
 
-      <div class="upload-zone" onclick="document.getElementById('upload-data-input').click()">
-        <input type="file" id="upload-data-input" accept=".xlsx" style="display:none" onchange="uploadData(this)">
-        <p id="upload-data-label">Загрузить готовый data.xlsx</p>
-        <span>Нажмите, если файл уже подготовлен — парсер запускать не нужно</span>
+      <!-- Сценарии -->
+      <div style="display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap">
+        <div class="scenario-btn active" id="sc-1" onclick="setScenario(1)">📥 Загрузить готовый файл</div>
+        <div class="scenario-btn" id="sc-2" onclick="setScenario(2)">🔍 Парсить с нуля</div>
+        <div class="scenario-btn" id="sc-3" onclick="setScenario(3)">📥 + 🔍 Загрузить и дополнить</div>
       </div>
 
-      <div class="info-box">
-        Парсер обращается к API checko.ru и заполняет data.xlsx: ИНН, КПП, ОГРН, ОКПО, ОКТМО, ФИО главы, email, адрес. Пауза 2 сек между запросами.
-      </div>
-
-      <div class="module-card">
-        <div class="module-header">
-          <span class="module-num">Основной источник — checko.ru</span>
-          <span class="badge badge-idle" id="p-badge">Ожидание</span>
+      <!-- Сценарий 1 и 3: загрузка файла -->
+      <div id="sc-upload-block">
+        <div class="upload-zone" id="upload-zone-data" onclick="document.getElementById('upload-data-input').click()">
+          <input type="file" id="upload-data-input" accept=".xlsx" style="display:none" onchange="uploadData(this)">
+          <p id="upload-data-label">Нажмите чтобы выбрать файл data.xlsx</p>
+          <span id="upload-data-hint">Файл будет загружен на сервер</span>
         </div>
-        <div class="module-title">Автоматический сбор данных</div>
-        <div class="module-desc">
-          Запрашивает данные для каждого МО из файла «БАЗА МО 2025». Результат сохраняется в data.xlsx. Парсер можно останавливать и продолжать — он продолжит с того места, где остановился.
-        </div>
-        <div class="progress-wrap">
-          <div class="progress-bar"><div class="progress-fill" id="p-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="p-label">0 / <span id="p-total">0</span> записей</div>
-        </div>
-        <div class="module-actions" style="margin-top:12px">
-          <button class="btn-primary" id="p-run" onclick="startParser()">Запустить парсер</button>
-          <button class="btn-outline" id="p-pause" onclick="pauseParser()" style="display:none">Пауза</button>
-          <button class="btn-outline" id="p-merge" onclick="startMergeRmz()">Слияние RMZ7KH</button>
-          <button class="btn-outline" onclick="window.location.href='/api/download/data-xlsx'">Скачать data.xlsx</button>
+        <div id="upload-data-status" style="display:none;margin:8px 0 0;padding:10px 14px;background:#f0f7ea;border:1px solid #b7d9a0;border-radius:8px;font-size:13px;color:#2d6a0e">
+          ✓ Файл загружен: <span id="upload-data-filename"></span> — <span id="upload-data-rows"></span> записей
+          <button onclick="clearDataFile()" style="margin-left:12px;background:none;border:none;color:#888;cursor:pointer;font-size:12px">✕ Заменить</button>
         </div>
       </div>
 
-      <div class="chat-section">
+      <!-- Сценарий 2 и 3: парсер -->
+      <div id="sc-parser-block">
+        <div class="info-box" style="margin-top:14px">
+          Парсер обращается к API checko.ru и заполняет data.xlsx: ИНН, КПП, ОГРН, ФИО главы, email, адрес.
+        </div>
+        <div class="module-card" style="margin-top:14px">
+          <div class="module-header">
+            <span class="module-num">Основной источник — checko.ru</span>
+            <span class="badge badge-idle" id="p-badge">Ожидание</span>
+          </div>
+          <div class="module-title">Автоматический сбор данных</div>
+          <div class="progress-wrap" style="margin-top:10px">
+            <div class="progress-bar"><div class="progress-fill" id="p-fill" style="width:0%"></div></div>
+            <div class="progress-label" id="p-label">0 / <span id="p-total">0</span> записей</div>
+          </div>
+          <div class="module-actions" style="margin-top:12px">
+            <button class="btn-primary" id="p-run" onclick="startParser()">Запустить парсер</button>
+            <button class="btn-outline" id="p-pause" onclick="pauseParser()" style="display:none">Пауза</button>
+            <button class="btn-outline" id="p-merge" onclick="startMergeRmz()">Слияние RMZ7KH</button>
+            <button class="btn-outline" onclick="window.location.href='/api/download/data-xlsx'">Скачать data.xlsx</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="chat-section" style="margin-top:18px">
         <div class="chat-header">
           <div class="dot-green"></div> Чат с агентом
         </div>
         <div class="chat-messages" id="p-chat-messages">
-          <div class="chat-msg agent">Привет! Я агент-парсер. Могу рассказать статус сбора данных, найти информацию по конкретному МО или ответить на вопросы о процессе парсинга.</div>
+          <div class="chat-msg agent">Привет! Я агент-парсер. Выбери сценарий работы выше или задай мне вопрос про любое МО.</div>
         </div>
         <div class="chat-input-row">
           <input type="text" id="p-chat-input" placeholder="Напишите вопрос агенту..." onkeydown="if(event.key==='Enter') sendChat('p-chat')">
@@ -1155,30 +1182,51 @@
 
 
   // UPLOAD
+  function setScenario(n) {
+    [1,2,3].forEach(i => document.getElementById('sc-'+i).classList.remove('active'));
+    document.getElementById('sc-'+n).classList.add('active');
+    const uploadBlock = document.getElementById('sc-upload-block');
+    const parserBlock = document.getElementById('sc-parser-block');
+    if (n === 1) { uploadBlock.style.display = ''; parserBlock.style.display = 'none'; }
+    if (n === 2) { uploadBlock.style.display = 'none'; parserBlock.style.display = ''; }
+    if (n === 3) { uploadBlock.style.display = ''; parserBlock.style.display = ''; }
+    const msgs = { 1: 'Загрузи готовый файл data.xlsx — парсинг запускать не нужно.',
+                   2: 'Файл data.xlsx будет создан автоматически. Нажми «Запустить парсер».',
+                   3: 'Загрузи частично заполненный data.xlsx и запусти парсер для дозаполнения.' };
+    appendChatMessage('p-chat', 'agent', msgs[n]);
+  }
+
+  function clearDataFile() {
+    document.getElementById('upload-data-status').style.display = 'none';
+    document.getElementById('upload-zone-data').style.display = '';
+    document.getElementById('upload-data-label').textContent = 'Нажмите чтобы выбрать файл data.xlsx';
+  }
+
   async function uploadData(input) {
     const file = input.files[0];
     if (!file) return;
     const form = new FormData();
     form.append('file', file);
-    const label = document.getElementById('upload-data-label');
-    label.textContent = 'Загрузка...';
+    document.getElementById('upload-data-label').textContent = 'Загрузка...';
     try {
       const res = await fetch('/api/upload/data', { method: 'POST', body: form });
       const data = await res.json();
       if (res.ok) {
-        label.textContent = '✓ ' + file.name;
-        document.querySelector('.upload-zone').style.borderColor = '#5a9e1f';
-        showToast('data.xlsx загружен успешно');
         const info = await fetch('/api/data/info').then(r => r.json());
-        if (info.loaded) {
-            document.getElementById('g-total').textContent = info.total.toLocaleString('ru');
-        }
+        const rows = info.loaded ? info.total : '?';
+        document.getElementById('upload-data-filename').textContent = file.name;
+        document.getElementById('upload-data-rows').textContent = rows + ' записей';
+        document.getElementById('upload-data-status').style.display = 'block';
+        document.getElementById('upload-zone-data').style.display = 'none';
+        showToast('Файл загружен: ' + rows + ' записей');
+        await refreshCounts();
+        appendChatMessage('p-chat', 'agent', `Файл «${file.name}» загружен, ${rows} записей. Можешь перейти к генерации или дополнить данные через парсер.`);
       } else {
-        label.textContent = 'Загрузить готовый data.xlsx';
-        showToast('Ошибка загрузки файла');
+        document.getElementById('upload-data-label').textContent = 'Нажмите чтобы выбрать файл data.xlsx';
+        showToast('Ошибка загрузки');
       }
     } catch(e) {
-      label.textContent = 'Загрузить готовый data.xlsx';
+      document.getElementById('upload-data-label').textContent = 'Нажмите чтобы выбрать файл data.xlsx';
       showToast('Ошибка соединения');
     }
     input.value = '';
@@ -1398,7 +1446,8 @@
     const status = result.status || 'idle';
 
     fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
-    document.getElementById('p-total').textContent = total.toLocaleString('ru');
+    const totalEl = document.getElementById('p-total');
+    if (totalEl) totalEl.textContent = total.toLocaleString('ru');
 
     if (status === 'running') {
       badge.textContent = 'Работает';
@@ -1443,7 +1492,7 @@
     setParserUiState({ status: 'running', row_count: 0, task_stats: {} });
     appendChatMessage('p-chat', 'agent', 'Запускаю парсерский контур. Сейчас он примет задачи на дозаполнение от других агентов и покажет очередь на обработку.');
     try {
-      const res = await fetch('/api/parser/run', {
+      const res = await fetch('/api/parser/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -2158,6 +2207,8 @@
       btn.textContent = 'Слияние RMZ7KH';
     }
   }
+
+  setScenario(1);
 
   refreshCounts();
   refreshParserStatus({ silent: true });

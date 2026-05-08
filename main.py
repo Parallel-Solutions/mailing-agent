@@ -476,8 +476,8 @@ async def merge_rmz(username: str = Depends(check_auth)):
             for s in result.suspicious
         ]
         agent_reply = chat(
-            f"Проверь эти спорные совпадения из слияния RMZ7KH. "
-            f"Для каждого скажи верное ли совпадение: {suspicious_list}"
+            f"Из {len(suspicious_list)} спорных совпадений коротко скажи сколько верных и сколько неверных. "
+            f"Только цифры, без перечисления. Данные: {suspicious_list}"
         )
         return {
             "written": result.written,
