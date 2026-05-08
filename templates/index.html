@@ -2153,6 +2153,17 @@
     }
   }
 
+  async function waitForSenderCompletion() {
+    while (true) {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      const result = await refreshSenderStatus({ silent: true });
+      const status = result && result.status ? result.status : 'idle';
+      if (status !== 'running') {
+        return result;
+      }
+    }
+  }
+
   function formatSenderPreviewRows(rows, limit = 10) {
     if (!Array.isArray(rows) || !rows.length) return 'Подходящих строк для показа нет.';
     return rows.slice(0, limit).map(item => {
@@ -2229,8 +2240,15 @@
       if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');
         const result = data.result || {};
         safeSetSenderUiState(result);
-        showToast('Отправка завершена');
-        safeAppendChatMessage('s-chat', 'agent', result.summary_text || 'Реальная отправка завершена.');
+        if (result.status === 'running') {
+          const finalResult = await waitForSenderCompletion();
+          safeSetSenderUiState(finalResult || {});
+          showToast('Отправка завершена');
+          safeAppendChatMessage('s-chat', 'agent', (finalResult && finalResult.summary_text) || 'Реальная отправка завершена.');
+        } else {
+          showToast('Отправка завершена');
+          safeAppendChatMessage('s-chat', 'agent', result.summary_text || 'Реальная отправка завершена.');
+        }
       } catch (err) {
       safeSetSenderUiState({ status: 'error', summary_text: 'Отправка завершилась с ошибкой' });
       safeAppendChatMessage('s-chat', 'agent', 'Не удалось завершить отправку: ' + (err && err.message ? err.message : String(err)));
