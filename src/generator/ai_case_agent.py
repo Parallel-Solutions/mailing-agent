@@ -60,7 +60,11 @@ def _read_env_value_from_file(env_path: Path, key_name: str) -> Optional[str]:
 
 
 def _resolve_openai_api_key() -> Optional[str]:
-    direct_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("KEY")
+    direct_key = (
+        os.environ.get("GENERATOR_OPENAI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("KEY")
+    )
     if direct_key:
         return direct_key
 
@@ -73,6 +77,9 @@ def _resolve_openai_api_key() -> Optional[str]:
     if extra_env_path:
         candidate_env_files.append(Path(extra_env_path))
     for env_path in candidate_env_files:
+        key_value = _read_env_value_from_file(env_path, "GENERATOR_OPENAI_API_KEY")
+        if key_value:
+            return key_value
         key_value = _read_env_value_from_file(env_path, "OPENAI_API_KEY")
         if key_value:
             return key_value
@@ -84,7 +91,8 @@ def _resolve_openai_api_key() -> Optional[str]:
 
 def _resolve_openai_base_url() -> Optional[str]:
     direct_base_url = (
-        os.environ.get("OPENAI_BASE_URL")
+        os.environ.get("GENERATOR_OPENAI_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
         or os.environ.get("VSELLM_BASE_URL")
         or os.environ.get("VLLM_BASE_URL")
     )
@@ -100,7 +108,7 @@ def _resolve_openai_base_url() -> Optional[str]:
     if extra_env_path:
         candidate_env_files.append(Path(extra_env_path))
     for env_path in candidate_env_files:
-        for key_name in ("OPENAI_BASE_URL", "VSELLM_BASE_URL", "VLLM_BASE_URL"):
+        for key_name in ("GENERATOR_OPENAI_BASE_URL", "OPENAI_BASE_URL", "VSELLM_BASE_URL", "VLLM_BASE_URL"):
             base_url = _read_env_value_from_file(env_path, key_name)
             if base_url:
                 return base_url.strip().rstrip("/")

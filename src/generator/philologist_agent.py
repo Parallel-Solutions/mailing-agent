@@ -29,6 +29,8 @@ from src.generator.document_review_agent import review_docx
 from src.generator.philology_knowledge import find_relevant_rules, format_rules_context
 from src.generator.pdf_converter import convert_docx_batch
 from src.generator.responsibility_matrix import diagnose_responsibility
+from src.jobs import load_agent_state, save_agent_state
+from src.jobs.storage import resolve_job_paths
 from src.utils.config import settings
 
 try:
@@ -51,6 +53,14 @@ PHILOLOGIST_STATE: dict[str, Any] = {
     "tasks": [],
     "recent_events": [],
 }
+
+
+def _load_philologist_state(job_id: str | None = None) -> dict[str, Any]:
+    return load_agent_state("philologist", PHILOLOGIST_STATE, job_id)
+
+
+def _save_philologist_state(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
+    return save_agent_state("philologist", state, job_id)
 
 
 def _build_llm_client():
@@ -301,8 +311,10 @@ def run_philologist(
     output_dir: Path | None = None,
     ai_enabled: bool = True,
     row_ids: list[str] | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
-    target_dir = output_dir or OUTPUT_DIR
+    job_paths = resolve_job_paths(job_id)
+    target_dir = output_dir or (job_paths.output_dir if not job_paths.uses_legacy_layout else OUTPUT_DIR)
     docx_paths = sorted(target_dir.rglob("*.docx"))
     requested_row_ids = {str(item).strip() for item in (row_ids or []) if str(item).strip()}
     if requested_row_ids:
@@ -313,9 +325,10 @@ def run_philologist(
     claimed_tasks = mark_tasks_in_progress(
         "philologist",
         row_ids=sorted(requested_row_ids) if requested_row_ids else None,
+        job_id=job_id,
     )
 
-    state = PHILOLOGIST_STATE
+    state = _load_philologist_state(job_id)
     state.update(
         {
             "status": "running",
@@ -331,11 +344,12 @@ def run_philologist(
                 if not claimed_tasks
                 else f"Агент-филолог начал проверку документов и принял {len(claimed_tasks)} внутренних задач."
             ),
-            "task_stats": count_tasks_for_agent("philologist"),
-            "tasks": get_tasks_for_agent("philologist")[:20],
-            "recent_events": get_recent_events(agent_name="philologist", limit=20),
+            "task_stats": count_tasks_for_agent("philologist", job_id),
+            "tasks": get_tasks_for_agent("philologist", job_id)[:20],
+            "recent_events": get_recent_events(agent_name="philologist", limit=20, job_id=job_id),
         }
     )
+    _save_philologist_state(state, job_id)
 
     started_at = perf_counter()
     processed_documents: list[dict[str, Any]] = []
@@ -367,6 +381,7 @@ def run_philologist(
         state["fixed_documents"] = sum(1 for item in processed_documents if item.get("applied_fix_count", 0) > 0)
         state["documents_with_issues"] = sum(1 for item in processed_documents if item.get("issue_count", 0) > 0)
         state["summary_text"] = _format_summary(processed_documents)
+        _save_philologist_state(state, job_id)
 
     row_rollups: dict[str, dict[str, Any]] = {}
     for item in processed_documents:
@@ -404,6 +419,7 @@ def run_philologist(
             new_status="done",
             note=note,
             resolution_summary="Филолог завершил проверку документов по строке.",
+            job_id=job_id,
         )
         if not settings.inter_agent_handoffs_enabled:
             continue
@@ -431,6 +447,7 @@ def run_philologist(
                     "unresolved_issue_count": unresolved_issue_count,
                     "reason": "Перед отправкой нужно учесть замечания филолога.",
                 },
+                job_id=job_id,
             )
             sender_handoffs += 1
             append_agent_event(
@@ -444,6 +461,7 @@ def run_philologist(
                     "issue_count": issue_count,
                     "unresolved_issue_count": unresolved_issue_count,
                 },
+                job_id=job_id,
             )
         else:
             create_task(
@@ -464,6 +482,7 @@ def run_philologist(
                     "applied_fix_count": applied_fix_count,
                     "reason": "После филологической проверки строку можно снова прогнать через отправщика.",
                 },
+                job_id=job_id,
             )
             set_task_statuses(
                 "sender",
@@ -472,6 +491,7 @@ def run_philologist(
                 new_status="done",
                 note="Филолог подтвердил, что критичных замечаний перед отправкой не осталось.",
                 resolution_summary="Критичных замечаний перед отправкой не осталось.",
+                job_id=job_id,
             )
             append_agent_event(
                 source_agent="philologist",
@@ -484,23 +504,29 @@ def run_philologist(
                     "issue_count": issue_count,
                     "applied_fix_count": applied_fix_count,
                 },
+                job_id=job_id,
             )
 
     state["status"] = "completed"
     state["completed_at"] = datetime.now().isoformat(timespec="seconds")
     state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
-    state["task_stats"] = count_tasks_for_agent("philologist")
-    state["tasks"] = get_tasks_for_agent("philologist")[:20]
-    state["recent_events"] = get_recent_events(agent_name="philologist", limit=20)
+    state["task_stats"] = count_tasks_for_agent("philologist", job_id)
+    state["tasks"] = get_tasks_for_agent("philologist", job_id)[:20]
+    state["recent_events"] = get_recent_events(agent_name="philologist", limit=20, job_id=job_id)
     state["summary_text"] = _format_run_summary(processed_documents, sender_handoffs=sender_handoffs)
+    _save_philologist_state(state, job_id)
     return dict(state)
 
 
-def get_philologist_status() -> dict[str, Any]:
-    state = dict(PHILOLOGIST_STATE)
-    state["task_stats"] = count_tasks_for_agent("philologist")
-    state["tasks"] = get_tasks_for_agent("philologist")[:20]
-    state["recent_events"] = get_recent_events(agent_name="philologist", limit=20)
+def get_philologist_status(job_id: str | None = None) -> dict[str, Any]:
+    state = _load_philologist_state(job_id)
+    job_paths = resolve_job_paths(job_id)
+    target_dir = job_paths.output_dir if not job_paths.uses_legacy_layout else OUTPUT_DIR
+    state["task_stats"] = count_tasks_for_agent("philologist", job_id)
+    state["tasks"] = get_tasks_for_agent("philologist", job_id)[:20]
+    state["recent_events"] = get_recent_events(agent_name="philologist", limit=20, job_id=job_id)
+    if state.get("status") == "idle":
+        state["total_documents"] = len(list(target_dir.rglob("*.docx"))) if target_dir.exists() else 0
     return state
 
 
@@ -522,8 +548,8 @@ def _fallback_chat_answer(message: str, state: dict[str, Any]) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-def chat_with_philologist(message: str) -> dict[str, Any]:
-    state = get_philologist_status()
+def chat_with_philologist(message: str, *, job_id: str | None = None) -> dict[str, Any]:
+    state = get_philologist_status(job_id)
     client = _build_llm_client()
     relevant_rules = find_relevant_rules(message, limit=4)
     rules_context = format_rules_context(relevant_rules)

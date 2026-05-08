@@ -33,6 +33,7 @@ from src.generator.excel_io import load_rows
 from src.generator.pdf_converter import convert_docx_batch
 from src.generator.responsibility_matrix import diagnose_responsibility
 from src.generator.transforms import build_document_context
+from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
 from src.utils.config import settings
 from src.utils.logger import logger
 
@@ -53,6 +54,14 @@ GENERATOR_STATE: dict[str, Any] = {
 }
 
 
+def _load_generator_state(job_id: str | None = None) -> dict[str, Any]:
+    return load_agent_state("generator", GENERATOR_STATE, job_id)
+
+
+def _save_generator_state(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
+    return save_agent_state("generator", state, job_id)
+
+
 def _format_generator_summary(
     state: dict[str, Any],
     *,
@@ -70,18 +79,31 @@ def _format_generator_summary(
     return base
 
 
-def cleanup_batch_pdf_dir() -> None:
-    if BATCH_PDF_DIR.exists():
-        shutil.rmtree(BATCH_PDF_DIR)
-    BATCH_PDF_DIR.mkdir(parents=True, exist_ok=True)
+def cleanup_batch_pdf_dir(batch_pdf_dir: Path | None = None) -> None:
+    target_dir = batch_pdf_dir or BATCH_PDF_DIR
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
 
 
-def process_generator_row(payload: tuple[int, int, dict]) -> dict:
+def process_generator_row(
+    payload: tuple[int, int, dict],
+    *,
+    output_dir: Path | None = None,
+    batch_docx_dir: Path | None = None,
+    templates_dir: Path | None = None,
+) -> dict:
     result_index, outgoing_number, row = payload
     context = build_document_context(row, outgoing_number)
     agent_result = run_case_validation_agent(row, context)
     context = apply_case_agent_result(context, agent_result)
-    generated_files = generate_documents_for_row(row, context)
+    generated_files = generate_documents_for_row(
+        row,
+        context,
+        output_dir=output_dir,
+        batch_docx_dir=batch_docx_dir,
+        templates_dir=templates_dir,
+    )
     return {
         "result_index": result_index,
         "id": row.get("ID"),
@@ -113,10 +135,11 @@ def build_docx_jobs(results: list[dict]) -> list[dict[str, Path]]:
     return jobs
 
 
-def finalize_generated_files(results: list[dict]) -> None:
+def finalize_generated_files(results: list[dict], *, batch_pdf_dir: Path | None = None) -> None:
     jobs = build_docx_jobs(results)
     staged_docx_paths = [job["staged_docx"] for job in jobs]
-    pdf_map = convert_docx_batch(staged_docx_paths, BATCH_PDF_DIR, chunk_size=100, worker_count=1)
+    pdf_target_dir = batch_pdf_dir or BATCH_PDF_DIR
+    pdf_map = convert_docx_batch(staged_docx_paths, pdf_target_dir, chunk_size=100, worker_count=1)
 
     for job in jobs:
         staged_docx = job["staged_docx"]
@@ -151,10 +174,12 @@ def run_generator_agent(
     xlsx_path: Path | None = None,
     limit: int | None = None,
     row_ids: list[str] | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
-    source_path = xlsx_path or DATA_XLSX_PATH
-    claimed_tasks = mark_tasks_in_progress("generator", limit=limit)
-    state = GENERATOR_STATE
+    job_paths = resolve_job_paths(job_id)
+    source_path = xlsx_path or (job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH)
+    claimed_tasks = mark_tasks_in_progress("generator", limit=limit, job_id=job_id)
+    state = _load_generator_state(job_id)
     state.update(
         {
             "status": "running",
@@ -171,21 +196,24 @@ def run_generator_agent(
             ),
             "results": [],
             "philologist_result": None,
-            "task_stats": count_tasks_for_agent("generator"),
-            "tasks": get_tasks_for_agent("generator")[:20],
-            "recent_events": get_recent_events(agent_name="generator", limit=20),
+            "task_stats": count_tasks_for_agent("generator", job_id),
+            "tasks": get_tasks_for_agent("generator", job_id)[:20],
+            "recent_events": get_recent_events(agent_name="generator", limit=20, job_id=job_id),
         }
     )
+    _save_generator_state(state, job_id)
 
     if not source_path.exists():
         state["status"] = "error"
         state["summary_text"] = "Файл data.xlsx не найден."
+        _save_generator_state(state, job_id)
         return dict(state)
 
     _, _, rows = load_rows(source_path)
     if not rows:
         state["status"] = "error"
         state["summary_text"] = "Нет данных для генерации."
+        _save_generator_state(state, job_id)
         return dict(state)
 
     requested_row_ids = {str(item).strip() for item in (row_ids or []) if str(item).strip()}
@@ -197,13 +225,14 @@ def run_generator_agent(
     if not rows:
         state["status"] = "completed"
         state["summary_text"] = "Для генератора не нашлось строк под текущую задачу."
-        state["task_stats"] = count_tasks_for_agent("generator")
-        state["tasks"] = get_tasks_for_agent("generator")[:20]
-        state["recent_events"] = get_recent_events(agent_name="generator", limit=20)
+        state["task_stats"] = count_tasks_for_agent("generator", job_id)
+        state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
+        state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
+        _save_generator_state(state, job_id)
         return dict(state)
 
-    cleanup_batch_docx_dir()
-    cleanup_batch_pdf_dir()
+    cleanup_batch_docx_dir(job_paths.batch_docx_dir if not job_paths.uses_legacy_layout else None)
+    cleanup_batch_pdf_dir(job_paths.batch_pdf_dir if not job_paths.uses_legacy_layout else None)
 
     started_at = perf_counter()
     payloads = [(index, START_OUTGOING_NUMBER + index, row) for index, row in enumerate(rows)]
@@ -221,12 +250,18 @@ def run_generator_agent(
 
     logger.info("generator_agent_start", row_count=len(payloads))
     state["total_rows"] = len(payloads)
+    _save_generator_state(state, job_id)
 
     if ENABLE_CASE_AGENT:
         for payload in payloads:
             result_index, _, row = payload
             try:
-                results[result_index] = process_generator_row(payload)
+                results[result_index] = process_generator_row(
+                    payload,
+                    output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
+                    batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
+                    templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
+                )
             except Exception as exc:
                 results[result_index] = {
                     "result_index": result_index,
@@ -236,10 +271,20 @@ def run_generator_agent(
                     "files": {},
                 }
             state["processed_rows"] += 1
+            _save_generator_state(state, job_id)
     else:
         max_workers = max(1, min(DOCX_WORKERS, len(payloads)))
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {executor.submit(process_generator_row, payload): payload for payload in payloads}
+            future_map = {
+                executor.submit(
+                    process_generator_row,
+                    payload,
+                    output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
+                    batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
+                    templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
+                ): payload
+                for payload in payloads
+            }
             for future in as_completed(future_map):
                 result_index, _, row = future_map[future]
                 try:
@@ -253,8 +298,12 @@ def run_generator_agent(
                         "files": {},
                     }
                 state["processed_rows"] += 1
+                _save_generator_state(state, job_id)
 
-    finalize_generated_files(results)
+    finalize_generated_files(
+        results,
+        batch_pdf_dir=None if job_paths.uses_legacy_layout else job_paths.batch_pdf_dir,
+    )
     review_handoffs = 0
     review_row_ids: list[str] = []
     for result in results:
@@ -269,6 +318,7 @@ def run_generator_agent(
                 new_status="done",
                 note="Генератор пересобрал или подтвердил комплект документов.",
                 resolution_summary="Комплект документов собран и сохранён в output.",
+                job_id=job_id,
             )
             if settings.inter_agent_handoffs_enabled:
                 diagnosis = diagnose_responsibility(
@@ -292,6 +342,7 @@ def run_generator_agent(
                         "reason": "Документы готовы и требуют языковой проверки.",
                         "files": result.get("files") or {},
                     },
+                    job_id=job_id,
                 )
                 review_handoffs += 1
             if result_id:
@@ -303,6 +354,7 @@ def run_generator_agent(
                 new_status="blocked",
                 note=str(result.get("error") or "Генератор не смог собрать документы."),
                 resolution_summary="Комплект документов не собран.",
+                job_id=job_id,
             )
 
     philologist_started_rows = 0
@@ -310,7 +362,7 @@ def run_generator_agent(
     if review_row_ids and settings.philologist_auto_run_enabled:
         from src.generator.philologist_agent import run_philologist
 
-        philologist_result = run_philologist(ai_enabled=True, row_ids=review_row_ids)
+        philologist_result = run_philologist(ai_enabled=True, row_ids=review_row_ids, job_id=job_id)
         philologist_started_rows = len(review_row_ids)
 
     state["results"] = results
@@ -324,14 +376,15 @@ def run_generator_agent(
             "status": philologist_result.get("status"),
             "summary_text": philologist_result.get("summary_text"),
         }
-    state["task_stats"] = count_tasks_for_agent("generator")
-    state["tasks"] = get_tasks_for_agent("generator")[:20]
-    state["recent_events"] = get_recent_events(agent_name="generator", limit=20)
+    state["task_stats"] = count_tasks_for_agent("generator", job_id)
+    state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
+    state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
     state["summary_text"] = _format_generator_summary(
         state,
         review_handoffs=review_handoffs,
         philologist_started_rows=philologist_started_rows,
     )
+    _save_generator_state(state, job_id)
     logger.info(
         "generator_agent_done",
         total=len(results),
@@ -345,11 +398,11 @@ def run_generator_agent(
     return dict(state)
 
 
-def get_generator_status() -> dict[str, Any]:
-    state = dict(GENERATOR_STATE)
-    state["task_stats"] = count_tasks_for_agent("generator")
-    state["tasks"] = get_tasks_for_agent("generator")[:20]
-    state["recent_events"] = get_recent_events(agent_name="generator", limit=20)
+def get_generator_status(job_id: str | None = None) -> dict[str, Any]:
+    state = _load_generator_state(job_id)
+    state["task_stats"] = count_tasks_for_agent("generator", job_id)
+    state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
+    state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
     return state
 
 

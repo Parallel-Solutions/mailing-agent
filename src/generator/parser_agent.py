@@ -16,6 +16,7 @@ from src.generator.ai_case_agent import (
     _resolve_openai_api_key,
     _resolve_openai_base_url,
 )
+from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
 from src.utils.config import settings
 
 
@@ -28,6 +29,14 @@ PARSER_STATE: dict[str, Any] = {
     "tasks": [],
     "row_count": 0,
 }
+
+
+def _load_parser_state(job_id: str | None = None) -> dict[str, Any]:
+    return load_agent_state("parser", PARSER_STATE, job_id=job_id)
+
+
+def _save_parser_state(state: dict[str, Any], job_id: str | None = None) -> None:
+    save_agent_state("parser", state, job_id=job_id)
 
 
 def _safe_text(value: Any) -> str:
@@ -52,19 +61,21 @@ def _build_llm_client() -> OpenAI | None:
         return None
 
 
-def _row_count() -> int:
-    if not DATA_XLSX_PATH.exists():
+def _row_count(job_id: str | None = None) -> int:
+    job_paths = resolve_job_paths(job_id)
+    data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    if not data_xlsx_path.exists():
         return 0
-    _, _, rows = load_rows(DATA_XLSX_PATH)
+    _, _, rows = load_rows(data_xlsx_path)
     return len(rows)
 
 
-def run_parser_agent(*, limit: int | None = None) -> dict[str, Any]:
+def run_parser_agent(*, limit: int | None = None, job_id: str | None = None) -> dict[str, Any]:
     started_at = datetime.now().isoformat(timespec="seconds")
-    claimed_tasks = mark_tasks_in_progress("parser", limit=limit)
-    task_stats = count_tasks_for_agent("parser")
-    tasks = get_tasks_for_agent("parser")
-    state = PARSER_STATE
+    claimed_tasks = mark_tasks_in_progress("parser", limit=limit, job_id=job_id)
+    task_stats = count_tasks_for_agent("parser", job_id=job_id)
+    tasks = get_tasks_for_agent("parser", job_id=job_id)
+    state = _load_parser_state(job_id)
     state.update(
         {
             "status": "completed",
@@ -77,23 +88,25 @@ def run_parser_agent(*, limit: int | None = None) -> dict[str, Any]:
             ),
             "task_stats": task_stats,
             "tasks": tasks[:50],
-            "row_count": _row_count(),
+            "row_count": _row_count(job_id),
         }
     )
+    _save_parser_state(state, job_id)
     return dict(state)
 
 
-def get_parser_status() -> dict[str, Any]:
-    state = dict(PARSER_STATE)
-    state["task_stats"] = count_tasks_for_agent("parser")
-    state["tasks"] = get_tasks_for_agent("parser")[:50]
-    state["row_count"] = _row_count()
+def get_parser_status(job_id: str | None = None) -> dict[str, Any]:
+    state = _load_parser_state(job_id)
+    state["task_stats"] = count_tasks_for_agent("parser", job_id=job_id)
+    state["tasks"] = get_tasks_for_agent("parser", job_id=job_id)[:50]
+    state["row_count"] = _row_count(job_id)
     if state["status"] == "idle":
         state["summary_text"] = (
             f"В data.xlsx сейчас {state['row_count']} строк. "
             f"Запросов на дозаполнение: {state['task_stats']['total']}."
         )
-    return state
+    _save_parser_state(state, job_id)
+    return dict(state)
 
 
 def _fallback_parser_chat(message: str, state: dict[str, Any]) -> str:
@@ -110,8 +123,8 @@ def _fallback_parser_chat(message: str, state: dict[str, Any]) -> str:
     return state.get("summary_text") or "Статус агента-парсера пока недоступен."
 
 
-def chat_with_parser(message: str) -> dict[str, Any]:
-    state = get_parser_status()
+def chat_with_parser(message: str, job_id: str | None = None) -> dict[str, Any]:
+    state = get_parser_status(job_id)
     client = _build_llm_client()
     if not client:
         return {"reply": _fallback_parser_chat(message, state), "state": state}
