@@ -1,16 +1,15 @@
 """
 Слияние данных из трёх источников:
-- data/base.xlsx  — база МО (субъект, район, МО, население)
-- data/data.xlsx  — уже обработанные записи (пропускаем)
-- data/RMZ7KH.xlsx — справочник организаций
+- service_docs/base.xlsx  — база МО
+- data/data.xlsx          — уже обработанные записи (пропускаем)
+- service_docs/RMZ7KH.xlsx — справочник организаций
 
-Алгоритм:
-1. Читаем baseMO — только первый лист
-2. Читаем data.xlsx — собираем уже обработанные МО (по MUN_NAME)
-3. Читаем RMZ7KH — только первый лист, фильтруем администрации
-4. Для каждого МО из baseMO которого нет в data.xlsx — ищем в RMZ7KH
-5. Записываем найденное в data.xlsx
-6. Возвращаем список спорных совпадений для проверки агентом
+Ключевое отличие от предыдущей версии:
+- Ключевые слова МО сравниваются ТОЛЬКО с частью названия поселения в строке организации,
+  а не со всей строкой. Это устраняет ложные срабатывания типа
+  "Лямбирское СП" → "...ЛЯМБИРСКОГО МУНИЦИПАЛЬНОГО РАЙОНА".
+- ПГТ сопоставляются только с городскими поселениями/округами.
+- Проверка уникальности ИНН перед записью.
 """
 
 import re
@@ -26,7 +25,9 @@ BASE_MO_PATH = Path("service_docs/base.xlsx")
 RMZ_PATH = Path("service_docs/RMZ7KH.xlsx")
 DATA_XLSX_PATH = Path("data/data.xlsx")
 
-# Слова-шум при извлечении ключей из названия МО
+BRACKET_RE = re.compile(r'\s*\(.*?\)\s*')
+QUOTE_RE = re.compile(r'[«"\'](.*?)[»"\']')
+
 NOISE_WORDS = {
     "сельское", "поселение", "поселения", "сельской",
     "поселок", "посёлок", "рабочего", "рабочий",
@@ -34,20 +35,17 @@ NOISE_WORDS = {
     "муниципальное", "муниципального", "образование", "образования",
 }
 
-# Шум при нормализации региона
 REGION_NOISE = {
     "республика", "область", "край", "округ", "автономная", "автономный",
     "автономной", "федерального", "значения", "город", "г", "и", "ао",
     "федеральный",
 }
 
-# Шум при нормализации района
 DISTRICT_NOISE = {
     "муниципальный", "муниципального", "район", "административный",
     "административного", "городской", "городского", "округ",
 }
 
-# Разрешённые и запрещённые маркеры организации
 ALLOWED_MARKERS = ["администрация", "муниципальное образование"]
 BANNED_MARKERS = [
     "совет депутатов", "совет народных депутатов",
@@ -55,17 +53,24 @@ BANNED_MARKERS = [
     "автономное учреждение", "школа", "детский", "дошкольное",
 ]
 
-BRACKET_RE = re.compile(r'\s*\(.*?\)\s*')
+RURAL_MARKERS = ["сельск", "сельсовет"]
+URBAN_MARKERS = ["городск", "городское", "пгт", "посёлок городского", "поселок городского"]
+
+DISTRICT_START_MARKERS = [
+    " муниципального района",
+    " муниципального округа",
+    " городского района",
+    " административного района",
+]
 
 
 @dataclass
 class SuspiciousMatch:
-    """Спорное совпадение для проверки агентом."""
-    mo_name: str          # название МО из baseMO
-    org_name: str         # название организации из RMZ7KH
-    sub_rf: str           # субъект из baseMO
-    mun_r_name: str       # район из baseMO
-    reason: str           # причина подозрения: "multiple" или "district_weak"
+    mo_name: str
+    org_name: str
+    sub_rf: str
+    mun_r_name: str
+    reason: str
 
 
 @dataclass
@@ -75,40 +80,26 @@ class MergeResult:
     not_found: int
     suspicious: list[SuspiciousMatch]
     log_lines: list[str]
+    not_found_list: list[dict]
 
 
 def run_merge() -> MergeResult:
-    """
-    Запускает слияние. Возвращает результат с количеством записей
-    и списком спорных совпадений для проверки агентом.
-    """
     if not BASE_MO_PATH.exists():
-        raise FileNotFoundError("Файл base.xlsx не загружен")
+        raise FileNotFoundError("Файл base.xlsx не найден в service_docs/")
     if not RMZ_PATH.exists():
-        raise FileNotFoundError("Файл RMZ7KH.xlsx не загружен")
+        raise FileNotFoundError("Файл RMZ7KH.xlsx не найден в service_docs/")
 
     logger.info("rmz_merge_start")
 
-    # Читаем baseMO — только первый лист
-    wb_base = openpyxl.load_workbook(BASE_MO_PATH, data_only=True)
-    sheet_base = wb_base.worksheets[0]
+    wb_base = openpyxl.load_workbook(BASE_MO_PATH, data_only=True, read_only=True)
+    wb_rmz = openpyxl.load_workbook(RMZ_PATH, data_only=True, read_only=True)
 
-    # Читаем RMZ7KH — только первый лист
-    wb_rmz = openpyxl.load_workbook(RMZ_PATH, data_only=True)
-    sheet_rmz = wb_rmz.worksheets[0]
+    existing_keys, existing_inns = _get_existing_data()
+    base_rows = _load_base_rows(wb_base.worksheets[0])
+    rmz_rows = _load_rmz_rows(wb_rmz.worksheets[0])
 
-    # Собираем уже обработанные МО из data.xlsx
-    existing_mun_names = _get_existing_mun_names()
+    logger.info("rmz_merge_loaded", base=len(base_rows), rmz=len(rmz_rows))
 
-    # Загружаем строки baseMO
-    base_rows = _load_base_rows(sheet_base)
-    logger.info("rmz_merge_base_loaded", total=len(base_rows))
-
-    # Загружаем RMZ7KH — фильтруем только администрации
-    rmz_rows = _load_rmz_rows(sheet_rmz)
-    logger.info("rmz_merge_rmz_loaded", total=len(rmz_rows))
-
-    # Определяем стартовый ID
     writer = ExcelWriter(DATA_XLSX_PATH)
     start_id = _get_next_id()
 
@@ -117,22 +108,22 @@ def run_merge() -> MergeResult:
     not_found = 0
     suspicious: list[SuspiciousMatch] = []
     log_lines: list[str] = []
+    not_found_list: list[dict] = []
     record_id = start_id
 
     for mo in base_rows:
-        # Пропускаем уже обработанные
-        if mo["mun_name"].strip().lower() in existing_mun_names:
+        key = (mo["sub_rf"].lower(), mo["mun_r_name"].lower(), mo["mun_name"].lower())
+        if key in existing_keys:
             skipped_existing += 1
             continue
 
         if not mo["words"]:
-            log_lines.append(f"НЕТ КЛЮЧА | МО: {mo['mun_name']} | Субъект: {mo['sub_rf']}")
+            log_lines.append(f"НЕТ КЛЮЧА | МО: {mo['mun_name']}")
             not_found += 1
+            not_found_list.append(mo)
             continue
 
-        candidates, level = _find_candidates(
-            mo["words"], rmz_rows, mo["sub_rf_norm"], mo["mun_r_name"]
-        )
+        candidates, level = _find_candidates(mo, rmz_rows)
 
         if not candidates:
             log_lines.append(
@@ -140,11 +131,19 @@ def run_merge() -> MergeResult:
                 f"| Район: {mo['mun_r_name']} | Причина: {level}"
             )
             not_found += 1
+            not_found_list.append(mo)
             continue
 
         match = candidates[0]
 
-        # Фиксируем спорные совпадения для агента
+        inn = str(match["D"] or "").strip()
+        if inn and inn in existing_inns:
+            log_lines.append(f"ДУБЛЬ ИНН | МО: {mo['mun_name']} | ИНН: {inn}")
+            skipped_existing += 1
+            continue
+        if inn:
+            existing_inns.add(inn)
+
         if len(candidates) > 1:
             suspicious.append(SuspiciousMatch(
                 mo_name=mo["mun_name"],
@@ -153,9 +152,6 @@ def run_merge() -> MergeResult:
                 mun_r_name=mo["mun_r_name"],
                 reason=f"multiple({len(candidates)})",
             ))
-            log_lines.append(
-                f"ДУБЛЬ (взято 1е) | МО: {mo['mun_name']} | Кандидатов: {len(candidates)}"
-            )
 
         email1, email_rest = _split_first(match["G"])
         phone1, phone_rest = _split_first(match["F"])
@@ -165,25 +161,24 @@ def run_merge() -> MergeResult:
             sub_rf=mo["sub_rf"],
             mun_r_name=mo["mun_r_name"],
             mun_name=mo["mun_name"],
-            adm_name=match["B"],           # столбец E: полное название администрации
-            adres=match["L"],              # столбец F: юридический адрес
-            head_fio=match["P"],           # столбец G: ФИО руководителя
+            adm_name=match["B"],
+            adres=match["L"],
+            head_fio=match["P"],
             population=mo["population"],
-            email_osn=email1 or "",        # первый email
-            email_dop=email_rest or "",    # остальные email
-            tel_osn=phone1 or "",          # первый телефон
-            tel_dop=phone_rest or "",      # остальные телефоны
-            requisites_inn=str(match["D"]) if match["D"] else "",    # ИНН
-            requisites_kpp=str(match["E"]) if match["E"] else "",    # КПП
-            requisites_ogrn=str(match["C"]) if match["C"] else "",   # ОГРН
+            email_osn=email1 or "",
+            email_dop=email_rest or "",
+            tel_osn=phone1 or "",
+            tel_dop=phone_rest or "",
+            requisites_inn=inn,
+            requisites_kpp=str(match["E"] or ""),
+            requisites_ogrn=str(match["C"] or ""),
             status="rmz",
         )
         writer.append_record(record)
 
-        # Сохраняем каждые 100 записей
         if written > 0 and written % 100 == 0:
             writer.save()
-            logger.info("rmz_merge_checkpoint", written=written)
+            logger.info("rmz_checkpoint", written=written)
 
         written += 1
         record_id += 1
@@ -191,13 +186,8 @@ def run_merge() -> MergeResult:
     writer.save()
     writer.close()
 
-    logger.info(
-        "rmz_merge_done",
-        written=written,
-        skipped_existing=skipped_existing,
-        not_found=not_found,
-        suspicious=len(suspicious),
-    )
+    logger.info("rmz_merge_done", written=written, skipped=skipped_existing,
+                not_found=not_found, suspicious=len(suspicious))
 
     return MergeResult(
         written=written,
@@ -205,11 +195,162 @@ def run_merge() -> MergeResult:
         not_found=not_found,
         suspicious=suspicious,
         log_lines=log_lines,
+        not_found_list=not_found_list,
     )
 
 
 # ------------------------------------------------------------------
-# Вспомогательные функции
+# Извлечение части с названием поселения
+# ------------------------------------------------------------------
+
+def _extract_settlement_part(org_name: str) -> str:
+    """
+    Извлекает ТОЛЬКО часть названия организации относящуюся к поселению.
+
+    "АДМИНИСТРАЦИЯ БЕРСЕНЕВСКОГО СЕЛЬСКОГО ПОСЕЛЕНИЯ ЛЯМБИРСКОГО МУНИЦИПАЛЬНОГО РАЙОНА"
+    → "БЕРСЕНЕВСКОГО СЕЛЬСКОГО ПОСЕЛЕНИЯ"
+
+    "АДМИНИСТРАЦИЯ МО «АЙРЮМОВСКОЕ СЕЛЬСКОЕ ПОСЕЛЕНИЕ»"
+    → "АЙРЮМОВСКОЕ СЕЛЬСКОЕ ПОСЕЛЕНИЕ"
+    """
+    # 1. Текст в кавычках
+    q = QUOTE_RE.search(org_name)
+    if q:
+        return q.group(1).strip()
+
+    # 2. Убираем административный префикс
+    lower = org_name.lower()
+    rest = org_name
+    for p in ["администрация муниципального образования", "администрация мо", "администрация"]:
+        if lower.startswith(p):
+            rest = org_name[len(p):].strip().lstrip(",").strip()
+            break
+
+    # 3. Обрезаем по маркеру начала района
+    rest_lower = rest.lower()
+    end_pos = len(rest)
+    for marker in DISTRICT_START_MARKERS:
+        idx = rest_lower.find(marker)
+        if idx != -1 and idx < end_pos:
+            end_pos = idx
+
+    # 4. Дополнительно ищем паттерн " XXXСКОГО РАЙОНА"
+    m = re.search(r'\s+\w{5,}ского\s+района\b', rest_lower)
+    if m and m.start() < end_pos:
+        end_pos = m.start()
+
+    return rest[:end_pos].strip()
+
+
+def _settlement_matches_mo(mo_name: str, org_name: str) -> bool:
+    """
+    Проверяет что название поселения в организации соответствует МО.
+    Сравниваем ключевые слова МО ТОЛЬКО с частью про поселение.
+    """
+    settlement_part = _extract_settlement_part(org_name)
+    if not settlement_part:
+        return False
+
+    settlement_lower = settlement_part.lower()
+    mo_lower = BRACKET_RE.sub(' ', mo_name).lower()
+    mo_words = [w for w in mo_lower.split() if w not in NOISE_WORDS and len(w) > 3]
+
+    if not mo_words:
+        return False
+
+    for w in mo_words:
+        prefix = _word_prefix(w)
+        if prefix not in settlement_lower:
+            return False
+    return True
+
+
+# ------------------------------------------------------------------
+# Тип МО
+# ------------------------------------------------------------------
+
+def _mo_type(mun_name: str) -> str:
+    lower = mun_name.lower()
+    if lower.startswith("пгт") or "посёлок городского" in lower or "поселок городского" in lower:
+        return "pgt"
+    if any(m in lower for m in ["городск", "городское", "городской"]):
+        return "urban"
+    if any(m in lower for m in ["сельск", "сельсовет"]):
+        return "rural"
+    return "unknown"
+
+
+def _org_type(org_name: str) -> str:
+    lower = org_name.lower()
+    if any(m in lower for m in RURAL_MARKERS):
+        return "rural"
+    if any(m in lower for m in URBAN_MARKERS):
+        return "urban"
+    return "unknown"
+
+
+def _types_compatible(mo_type: str, org_type: str) -> bool:
+    if mo_type == "rural":
+        return org_type in ("rural", "unknown")
+    if mo_type in ("pgt", "urban"):
+        return org_type in ("urban", "unknown")
+    return True
+
+
+# ------------------------------------------------------------------
+# Поиск кандидатов
+# ------------------------------------------------------------------
+
+def _find_candidates(mo: dict, rmz_rows: list) -> tuple:
+    words = mo["words"]
+    subj_norm = mo["sub_rf_norm"]
+    district = mo["mun_r_name"]
+    mo_name = mo["mun_name"]
+    mo_t = _mo_type(mo_name)
+
+    def preliminary_match(b_lower: str) -> bool:
+        for w in words:
+            variants = [_word_prefix(w)]
+            if w == "новый": variants.append("ново")
+            elif w == "нижний": variants.append("нижне")
+            elif w == "верхний": variants.append("верхне")
+            elif w == "старый": variants.append("старо")
+            elif w == "большой": variants.extend(["больше", "больш"])
+            if not any(v in b_lower for v in variants):
+                return False
+        return True
+
+    # Шаг 1: субъект + район + слова (предварительная фильтрация по всей строке)
+    level1 = [
+        r for r in rmz_rows
+        if _regions_match(subj_norm, r["region_norm"])
+        and _district_match(district, r["B"])
+        and preliminary_match(r["B_lower"])
+    ]
+
+    if not level1:
+        return [], "not_found"
+
+    # Шаг 2: слова МО только в части про поселение
+    level2 = [r for r in level1 if _settlement_matches_mo(mo_name, r["B"])]
+
+    # Шаг 3: тип МО
+    if level2 and mo_t in ("rural", "pgt", "urban"):
+        typed = [r for r in level2 if _types_compatible(mo_t, _org_type(r["B"]))]
+        if typed:
+            level2 = typed
+
+    if not level2:
+        return [], "settlement_name_mismatch"
+
+    if len(level2) == 1:
+        return level2, "exact"
+
+    return level2, f"multiple({len(level2)})"
+
+
+# ------------------------------------------------------------------
+# Загрузка
 # ------------------------------------------------------------------
 
 def _load_base_rows(sheet) -> list[dict]:
@@ -233,13 +374,6 @@ def _load_base_rows(sheet) -> list[dict]:
 
 
 def _load_rmz_rows(sheet) -> list[dict]:
-    """
-    Загружает RMZ7KH. Столбцы:
-    A=сокр. наим, B=полн. наим, C=ОГРН, D=ИНН, E=КПП,
-    F=телефоны, G=email, H=сайт, I=статус, J=дата рег,
-    K=регион, L=юр. адрес, M=ОКВЭД, N=осн. вид деят.,
-    O=доп. вид деят., P=руководитель, Q=должность
-    """
     rows = []
     for row in sheet.iter_rows(min_row=2, values_only=True):
         b = row[1] if len(row) > 1 else None
@@ -252,39 +386,42 @@ def _load_rmz_rows(sheet) -> list[dict]:
         rows.append({
             "B": b_str,
             "B_lower": b_str.lower(),
-            "C": row[2] if len(row) > 2 else None,   # ОГРН
-            "D": row[3] if len(row) > 3 else None,   # ИНН
-            "E": row[4] if len(row) > 4 else None,   # КПП
-            "F": row[5] if len(row) > 5 else None,   # телефоны
-            "G": row[6] if len(row) > 6 else None,   # email
-            "L": row[11] if len(row) > 11 else None, # юр. адрес
-            "P": row[15] if len(row) > 15 else None, # руководитель
+            "C": row[2] if len(row) > 2 else None,
+            "D": row[3] if len(row) > 3 else None,
+            "E": row[4] if len(row) > 4 else None,
+            "F": row[5] if len(row) > 5 else None,
+            "G": row[6] if len(row) > 6 else None,
+            "L": row[11] if len(row) > 11 else None,
+            "P": row[15] if len(row) > 15 else None,
             "region_norm": _normalize_region(str(region_k) if region_k else ""),
         })
     return rows
 
 
-def _get_existing_mun_names() -> set[str]:
-    """Возвращает множество названий МО уже записанных в data.xlsx."""
+def _get_existing_data() -> tuple[set, set]:
+    keys: set = set()
+    inns: set = set()
     if not DATA_XLSX_PATH.exists():
-        return set()
+        return keys, inns
     try:
         wb = openpyxl.load_workbook(DATA_XLSX_PATH, data_only=True, read_only=True)
         sheet = wb.worksheets[0]
-        names = set()
-        # MUN_NAME — столбец D (индекс 3), данные начинаются с 3й строки
         for row in sheet.iter_rows(min_row=3, values_only=True):
-            if row[3]:
-                names.add(str(row[3]).strip().lower())
+            sub = str(row[1] or "").strip().lower()
+            dist = str(row[2] or "").strip().lower()
+            name = str(row[3] or "").strip().lower()
+            inn = str(row[12] or "").strip()
+            if name:
+                keys.add((sub, dist, name))
+            if inn:
+                inns.add(inn)
         wb.close()
-        return names
     except Exception as e:
-        logger.warning("rmz_get_existing_failed", error=str(e))
-        return set()
+        logger.warning("get_existing_data_failed", error=str(e))
+    return keys, inns
 
 
 def _get_next_id() -> int:
-    """Возвращает следующий доступный ID для записи."""
     if not DATA_XLSX_PATH.exists():
         return 1
     try:
@@ -304,39 +441,9 @@ def _get_next_id() -> int:
         return 1
 
 
-def _find_candidates(words: list, rmz_rows: list, subj_norm: set, district: str) -> tuple:
-    """
-    Поиск кандидатов в RMZ7KH.
-    Шаг 1: субъект + все ключевые слова МО
-    Шаг 2: фильтр по району (обязателен)
-    """
-    def matches_all(b_lower: str) -> bool:
-        for w in words:
-            variants = _get_variants(w)
-            if not any(v in b_lower for v in variants):
-                return False
-        return True
-
-    level1 = [
-        r for r in rmz_rows
-        if _regions_match(subj_norm, r["region_norm"]) and matches_all(r["B_lower"])
-    ]
-
-    if not level1:
-        return [], "not_found"
-
-    if district:
-        filtered = [r for r in level1 if _district_match(district, r["B"])]
-        if not filtered:
-            return [], "district_mismatch"
-        if len(filtered) == 1:
-            return filtered, "exact"
-        return filtered, f"multiple({len(filtered)})"
-
-    if len(level1) == 1:
-        return level1, "exact_no_district"
-    return level1, f"multiple_no_district({len(level1)})"
-
+# ------------------------------------------------------------------
+# Утилиты
+# ------------------------------------------------------------------
 
 def _is_administration(name: str) -> bool:
     lower = name.lower()
@@ -351,6 +458,10 @@ def _extract_keywords(name: str) -> list[str]:
     return [w for w in s.split() if w not in NOISE_WORDS and len(w) > 2]
 
 
+def _word_prefix(word: str) -> str:
+    return word[:10] if len(word) > 13 else word[:7]
+
+
 def _normalize_region(text: str) -> set[str]:
     if not text:
         return set()
@@ -363,18 +474,20 @@ def _regions_match(a: set, b: set) -> bool:
 
 
 def _district_match(district_from_mo: str, org_name: str) -> bool:
+    if not district_from_mo:
+        return False
     prefix = _get_district_prefix(district_from_mo)
     if not prefix:
         return False
-    # Ищем слово перед "муниципального района"
+
     lower = org_name.lower()
     marker = "муниципального района"
     idx = lower.find(marker)
     if idx != -1:
         before = lower[:idx].strip().split()
-        if before:
-            return before[-1].startswith(prefix)
-    # Fallback: ищем префикс где угодно в строке
+        if before and before[-1].startswith(prefix):
+            return True
+
     return prefix in lower
 
 
@@ -387,20 +500,7 @@ def _get_district_prefix(district: str) -> str:
     words = s.split()
     if not words:
         return ""
-    w = words[0]
-    return w[:10] if len(w) > 13 else w[:7]
-
-
-def _get_variants(word: str) -> list[str]:
-    root = word[:10] if len(word) > 13 else word[:7]
-    variants = [root]
-    special = {
-        "новый": "ново", "нижний": "нижне", "верхний": "верхне",
-        "старый": "старо", "большой": "больше",
-    }
-    if word in special:
-        variants.append(special[word])
-    return variants
+    return _word_prefix(words[0])
 
 
 def _split_first(value) -> tuple[str | None, str | None]:
