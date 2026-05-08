@@ -273,8 +273,10 @@ def reset_cell_text(cell, paragraphs: list[str], first_bold: bool = False) -> No
 def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
     gray = RGBColor(0x59, 0x59, 0x59)
     body_font_size = 10
+    compact_body_font_size = 9.5
     body_line_spacing = 1.0
-    table_line_spacing = 1.0
+    compact_line_spacing = 0.94
+    table_line_spacing = 0.94
 
     work_scope_fragment = (
         str(context.get("WORK_SCOPE_FRAGMENT", "")).strip()
@@ -297,8 +299,8 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
                 "Tahoma",
                 gray,
             )
-            apply_paragraph_font(paragraph, "Tahoma", body_font_size, gray)
-            compact_paragraph(paragraph, body_line_spacing)
+            apply_paragraph_font(paragraph, "Tahoma", compact_body_font_size, gray)
+            compact_paragraph(paragraph, compact_line_spacing)
             break
 
     if len(doc.tables) >= 1 and doc.tables[0].rows and len(doc.tables[0].rows[0].cells) > 1:
@@ -325,37 +327,40 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
             "Tahoma",
             gray,
         )
-        apply_paragraph_font(doc.tables[1].rows[1].cells[0].paragraphs[0], "Tahoma", body_font_size, gray)
+        apply_paragraph_font(doc.tables[1].rows[1].cells[0].paragraphs[0], "Tahoma", compact_body_font_size, gray)
         compact_paragraph(doc.tables[1].rows[1].cells[0].paragraphs[0], table_line_spacing)
 
     for paragraph_index in [3, 5, 6, 8, 9, 10]:
         if paragraph_index < len(doc.paragraphs):
-            apply_paragraph_font(doc.paragraphs[paragraph_index], "Tahoma", body_font_size, gray)
-            compact_paragraph(doc.paragraphs[paragraph_index], body_line_spacing)
+            font_size = compact_body_font_size if paragraph_index in {5, 6, 8, 9, 10} else body_font_size
+            line_spacing = compact_line_spacing if paragraph_index in {5, 6, 8, 9, 10} else body_line_spacing
+            apply_paragraph_font(doc.paragraphs[paragraph_index], "Tahoma", font_size, gray)
+            compact_paragraph(doc.paragraphs[paragraph_index], line_spacing)
 
     if len(doc.paragraphs) > 5:
-        doc.paragraphs[5].paragraph_format.space_after = Pt(6)
+        doc.paragraphs[5].paragraph_format.space_after = Pt(2)
 
     if len(doc.paragraphs) > 9:
-        doc.paragraphs[9].paragraph_format.space_before = Pt(6)
+        doc.paragraphs[9].paragraph_format.space_before = Pt(2)
 
     if len(doc.paragraphs) > 10:
-        doc.paragraphs[10].paragraph_format.space_before = Pt(6)
+        doc.paragraphs[10].paragraph_format.space_before = Pt(2)
 
     if len(doc.tables) >= 2:
         for row_index in [0, 1, 2]:
             if row_index < len(doc.tables[1].rows):
                 for cell in doc.tables[1].rows[row_index].cells:
                     for paragraph in cell.paragraphs:
-                        apply_paragraph_font(paragraph, "Tahoma", body_font_size, gray)
+                        font_size = compact_body_font_size if row_index == 1 else body_font_size
+                        apply_paragraph_font(paragraph, "Tahoma", font_size, gray)
                         compact_paragraph(paragraph, table_line_spacing)
 
     if len(doc.tables) >= 3 and doc.tables[2].rows:
-        insert_spacer_before_table(doc.tables[2], 36)
+        insert_spacer_before_table(doc.tables[2], 12)
         signature_row = doc.tables[2].rows[0]
         for cell in signature_row.cells:
             for paragraph_index, paragraph in enumerate(cell.paragraphs):
-                apply_paragraph_font(paragraph, "Tahoma", body_font_size, gray)
+                apply_paragraph_font(paragraph, "Tahoma", compact_body_font_size, gray)
                 compact_paragraph(paragraph, table_line_spacing)
                 paragraph.paragraph_format.space_before = Pt(0)
 
