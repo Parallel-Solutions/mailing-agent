@@ -15,19 +15,31 @@ from src.generator.config_generator import BATCH_DOCX_DIR, OUTPUT_DIR, TEMPLATES
 from src.generator.transforms import build_output_folder_name
 
 
-KP_TEMPLATE_PATH = TEMPLATES_DIR / "kp_template_source.docx"
-CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / "contract_template_source.docx"
+KP_TEMPLATE_FILENAME = "kp_template_source.docx"
+CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
+KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
+CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
 
 
-def ensure_output_folder(row: dict) -> Path:
-    folder = OUTPUT_DIR / build_output_folder_name(row)
+def resolve_template_paths(templates_dir: Path | None = None) -> tuple[Path, Path]:
+    templates_root = templates_dir or TEMPLATES_DIR
+    kp_path = templates_root / KP_TEMPLATE_FILENAME
+    contract_path = templates_root / CONTRACT_TEMPLATE_FILENAME
+    if kp_path.exists() and contract_path.exists():
+        return kp_path, contract_path
+    return KP_TEMPLATE_PATH, CONTRACT_TEMPLATE_PATH
+
+
+def ensure_output_folder(row: dict, output_dir: Path | None = None) -> Path:
+    folder = (output_dir or OUTPUT_DIR) / build_output_folder_name(row)
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
 
-def ensure_batch_docx_dir() -> Path:
-    BATCH_DOCX_DIR.mkdir(parents=True, exist_ok=True)
-    return BATCH_DOCX_DIR
+def ensure_batch_docx_dir(batch_docx_dir: Path | None = None) -> Path:
+    target_dir = batch_docx_dir or BATCH_DOCX_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir
 
 
 def iter_paragraphs(parent: DocumentObject | _Cell | Table):
@@ -601,27 +613,36 @@ def build_staged_filename(row: dict, kind: str) -> str:
     return f"{row_id}_{kind}_{mun_name}.docx"
 
 
-def cleanup_batch_docx_dir() -> None:
-    if BATCH_DOCX_DIR.exists():
-        shutil.rmtree(BATCH_DOCX_DIR)
+def cleanup_batch_docx_dir(batch_docx_dir: Path | None = None) -> None:
+    target_dir = batch_docx_dir or BATCH_DOCX_DIR
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
 
 
-def generate_documents_for_row(row: dict, context: dict) -> dict[str, Path]:
-    output_folder = ensure_output_folder(row)
-    batch_docx_dir = ensure_batch_docx_dir()
+def generate_documents_for_row(
+    row: dict,
+    context: dict,
+    *,
+    output_dir: Path | None = None,
+    batch_docx_dir: Path | None = None,
+    templates_dir: Path | None = None,
+) -> dict[str, Path]:
+    output_folder = ensure_output_folder(row, output_dir=output_dir)
+    batch_docx_dir = ensure_batch_docx_dir(batch_docx_dir=batch_docx_dir)
+    kp_template_path, contract_template_path = resolve_template_paths(templates_dir)
     kp_path = batch_docx_dir / build_staged_filename(row, "kp")
     contract_path = batch_docx_dir / build_staged_filename(row, "contract")
 
     generated_files: dict[str, Path] = {}
 
-    if KP_TEMPLATE_PATH.exists():
-        generated_files["kp"] = render_docx(KP_TEMPLATE_PATH, build_kp_replacements(context), kp_path, context)
+    if kp_template_path.exists():
+        generated_files["kp"] = render_docx(kp_template_path, build_kp_replacements(context), kp_path, context)
         generated_files["kp_final_docx"] = output_folder / build_kp_filename(row)
         generated_files["kp_final_pdf"] = output_folder / build_kp_filename(row).replace(".docx", ".pdf")
 
-    if CONTRACT_TEMPLATE_PATH.exists():
+    if contract_template_path.exists():
         generated_files["contract"] = render_docx(
-            CONTRACT_TEMPLATE_PATH,
+            contract_template_path,
             build_contract_replacements(context),
             contract_path,
             context,

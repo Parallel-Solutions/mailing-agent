@@ -29,6 +29,7 @@ from src.generator.excel_io import load_rows, save_workbook, update_status
 from src.generator.generator_agent import run_generator_agent
 from src.generator.philologist_agent import run_philologist
 from src.generator.responsibility_matrix import diagnose_responsibility
+from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
 from src.utils.config import settings
 
 
@@ -77,16 +78,32 @@ SENDER_STATE: dict[str, Any] = {
 }
 
 
+def _load_sender_state(job_id: str | None = None) -> dict[str, Any]:
+    return load_agent_state("sender", SENDER_STATE, job_id)
+
+
+def _save_sender_state(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
+    return save_agent_state("sender", state, job_id)
+
+
+def _refresh_sender_stop_flag(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
+    persisted = _load_sender_state(job_id)
+    state["stop_requested"] = bool(persisted.get("stop_requested", False))
+    state["stop_requested_at"] = persisted.get("stop_requested_at")
+    return state
+
+
 def _safe_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
 
 
-def _read_mail_template() -> str:
-    if MAIL_TEMPLATE_PATH.exists():
+def _read_mail_template(mail_template_path: Path | None = None) -> str:
+    template_path = mail_template_path or MAIL_TEMPLATE_PATH
+    if template_path.exists():
         try:
-            text = MAIL_TEMPLATE_PATH.read_text(encoding="utf-8-sig").strip()
+            text = template_path.read_text(encoding="utf-8-sig").strip()
             if text:
                 return text
         except OSError:
@@ -161,12 +178,13 @@ def _allowed_send_recipients(email_decision: dict[str, Any]) -> list[str]:
     return [recipient]
 
 
-def _resolve_output_folder(row_id: Any) -> tuple[Path | None, str | None]:
+def _resolve_output_folder(row_id: Any, *, output_dir: Path | None = None) -> tuple[Path | None, str | None]:
     if row_id in (None, ""):
         return None, "Не указан ID строки."
 
+    root_dir = output_dir or OUTPUT_DIR
     prefix = f"{row_id}_"
-    matches = [path for path in OUTPUT_DIR.iterdir() if path.is_dir() and path.name.startswith(prefix)] if OUTPUT_DIR.exists() else []
+    matches = [path for path in root_dir.iterdir() if path.is_dir() and path.name.startswith(prefix)] if root_dir.exists() else []
     if not matches:
         return None, f"Не найдена папка output для ID={row_id}."
     if len(matches) > 1:
@@ -195,11 +213,12 @@ def _status_class(raw_status: Any) -> str:
     return "other"
 
 
-def _collect_excel_stats() -> dict[str, int]:
-    if not DATA_XLSX_PATH.exists():
+def _collect_excel_stats(data_xlsx_path: Path | None = None) -> dict[str, int]:
+    source_path = data_xlsx_path or DATA_XLSX_PATH
+    if not source_path.exists():
         return {"total": 0, "sent": 0, "error": 0, "pending": 0}
 
-    _, _, rows = load_rows(DATA_XLSX_PATH)
+    _, _, rows = load_rows(source_path)
     stats = {"total": len(rows), "sent": 0, "error": 0, "pending": 0}
     for row in rows:
         status_class = _status_class(row.get("STATUS"))
@@ -270,26 +289,30 @@ def _normalize_transport(transport: str | None) -> str:
     return configured if configured in {"unisender", "smtp"} else "smtp"
 
 
-def request_sender_stop() -> dict[str, Any]:
-    SENDER_STATE["stop_requested"] = True
-    SENDER_STATE["stop_requested_at"] = datetime.now().isoformat(timespec="seconds")
-    if SENDER_STATE.get("status") == "running":
-        SENDER_STATE["summary_text"] = (
+def request_sender_stop(job_id: str | None = None) -> dict[str, Any]:
+    state = _load_sender_state(job_id)
+    state["stop_requested"] = True
+    state["stop_requested_at"] = datetime.now().isoformat(timespec="seconds")
+    if state.get("status") == "running":
+        state["summary_text"] = (
             "Получен запрос на остановку. Отправщик завершит текущую строку и больше не будет брать новые."
         )
-    return get_sender_status()
+    _save_sender_state(state, job_id)
+    return get_sender_status(job_id)
 
 
-def clear_sender_stop_request() -> None:
-    SENDER_STATE["stop_requested"] = False
-    SENDER_STATE["stop_requested_at"] = None
+def clear_sender_stop_request(job_id: str | None = None) -> None:
+    state = _load_sender_state(job_id)
+    state["stop_requested"] = False
+    state["stop_requested_at"] = None
+    _save_sender_state(state, job_id)
 
 
-def _active_sender_review_task(row_id: Any) -> dict[str, Any] | None:
+def _active_sender_review_task(row_id: Any, *, job_id: str | None = None) -> dict[str, Any] | None:
     if not settings.inter_agent_handoffs_enabled:
         return None
     row_id_text = _safe_text(row_id)
-    for item in get_tasks_for_agent("sender"):
+    for item in get_tasks_for_agent("sender", job_id):
         if _safe_text(item.get("task_type")) != "review_before_send":
             continue
         if _safe_text(item.get("row_id")) != row_id_text:
@@ -300,8 +323,12 @@ def _active_sender_review_task(row_id: Any) -> dict[str, Any] | None:
     return None
 
 
-def _retry_row_resources(row_id: Any) -> tuple[Path | None, str | None, list[str], str | None]:
-    folder, folder_error = _resolve_output_folder(row_id)
+def _retry_row_resources(
+    row_id: Any,
+    *,
+    output_dir: Path | None = None,
+) -> tuple[Path | None, str | None, list[str], str | None]:
+    folder, folder_error = _resolve_output_folder(row_id, output_dir=output_dir)
     attachments, attachment_error = _resolve_pdf_attachments(folder)
     return folder, folder_error, attachments, attachment_error
 
@@ -312,6 +339,7 @@ def _delegate_sender_problem(
     row_id: Any,
     mun_name: str,
     details: dict[str, Any],
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     if not settings.inter_agent_handoffs_enabled:
         return {}
@@ -336,12 +364,13 @@ def _delegate_sender_problem(
         row_id=row_id,
         mun_name=mun_name,
         details=details,
+        job_id=job_id,
     )
 
 
-def _run_autonomous_recovery_for_generator(*, row_id: Any) -> dict[str, Any]:
+def _run_autonomous_recovery_for_generator(*, row_id: Any, job_id: str | None = None) -> dict[str, Any]:
     row_id_text = _safe_text(row_id)
-    generator_result = run_generator_agent(row_ids=[row_id_text] if row_id_text else None)
+    generator_result = run_generator_agent(row_ids=[row_id_text] if row_id_text else None, job_id=job_id)
     result = {
         "generator_result": generator_result,
     }
@@ -349,20 +378,23 @@ def _run_autonomous_recovery_for_generator(*, row_id: Any) -> dict[str, Any]:
         result["philologist_result"] = run_philologist(
             ai_enabled=True,
             row_ids=[row_id_text] if row_id_text else None,
+            job_id=job_id,
         )
     return result
 
 
-def _run_autonomous_recovery_for_philologist(*, row_id: Any) -> dict[str, Any]:
+def _run_autonomous_recovery_for_philologist(*, row_id: Any, job_id: str | None = None) -> dict[str, Any]:
     if not settings.philologist_auto_run_enabled:
         return {"philologist_result": {"status": "skipped", "summary_text": "Автозапуск филолога отключён."}}
     row_id_text = _safe_text(row_id)
-    philologist_result = run_philologist(ai_enabled=True, row_ids=[row_id_text] if row_id_text else None)
+    philologist_result = run_philologist(ai_enabled=True, row_ids=[row_id_text] if row_id_text else None, job_id=job_id)
     return {"philologist_result": philologist_result}
 
 
-def preview_recipients(*, limit: int | None = None) -> dict[str, Any]:
-    if not DATA_XLSX_PATH.exists():
+def preview_recipients(*, limit: int | None = None, job_id: str | None = None) -> dict[str, Any]:
+    job_paths = resolve_job_paths(job_id)
+    data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    if not data_xlsx_path.exists():
         return {
             "status": "error",
             "summary_text": "Файл data.xlsx не найден.",
@@ -370,7 +402,7 @@ def preview_recipients(*, limit: int | None = None) -> dict[str, Any]:
             "total_rows": 0,
         }
 
-    _, _, rows = load_rows(DATA_XLSX_PATH)
+    _, _, rows = load_rows(data_xlsx_path)
     effective_limit = _normalize_limit(limit, dry_run=True)
     candidates = rows[:effective_limit] if effective_limit else rows
     preview_rows: list[dict[str, Any]] = []
@@ -433,8 +465,15 @@ def _format_preview_rows(rows: list[dict[str, Any]], *, limit: int = 5) -> str:
     return "\n".join(lines)
 
 
-def _build_message(row: dict[str, Any], recipient: str, attachments: list[str], subject: str) -> EmailMessage:
-    body = _read_mail_template().format(
+def _build_message(
+    row: dict[str, Any],
+    recipient: str,
+    attachments: list[str],
+    subject: str,
+    *,
+    mail_template_path: Path | None = None,
+) -> EmailMessage:
+    body = _read_mail_template(mail_template_path).format(
         HEAD_FIO=_safe_text(row.get("HEAD_FIO")),
         ADM_NAME=_safe_text(row.get("ADM_NAME")),
         MUN_NAME=_safe_text(row.get("MUN_NAME")),
@@ -456,8 +495,8 @@ def _build_message(row: dict[str, Any], recipient: str, attachments: list[str], 
     return message
 
 
-def _build_mail_body(row: dict[str, Any]) -> str:
-    return _read_mail_template().format(
+def _build_mail_body(row: dict[str, Any], *, mail_template_path: Path | None = None) -> str:
+    return _read_mail_template(mail_template_path).format(
         HEAD_FIO=_safe_text(row.get("HEAD_FIO")),
         ADM_NAME=_safe_text(row.get("ADM_NAME")),
         MUN_NAME=_safe_text(row.get("MUN_NAME")),
@@ -472,6 +511,7 @@ def _append_sent_mail_log(
     subject: str,
     transport: str,
     warning: str = "",
+    sent_mail_log_path: Path | None = None,
 ) -> str | None:
     record = {
         "sent_at": datetime.now().isoformat(timespec="seconds"),
@@ -485,8 +525,9 @@ def _append_sent_mail_log(
         "warning": _safe_text(warning),
     }
     try:
-        SENT_MAIL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with SENT_MAIL_LOG_PATH.open("a", encoding="utf-8") as handle:
+        log_path = sent_mail_log_path or SENT_MAIL_LOG_PATH
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError as exc:
         return (
@@ -611,7 +652,14 @@ def _save_sent_copy(message: EmailMessage) -> str | None:
     )
 
 
-def _send_via_smtp(row: dict[str, Any], recipient: str, attachments: list[str], subject: str) -> str | None:
+def _send_via_smtp(
+    row: dict[str, Any],
+    recipient: str,
+    attachments: list[str],
+    subject: str,
+    *,
+    mail_template_path: Path | None = None,
+) -> str | None:
     if not settings.smtp_allow_real_send:
         raise RuntimeError(
             "Реальная SMTP-отправка запрещена настройкой smtp_allow_real_send. "
@@ -622,7 +670,7 @@ def _send_via_smtp(row: dict[str, Any], recipient: str, attachments: list[str], 
     if not settings.smtp_host:
         raise RuntimeError("Не указан SMTP host.")
 
-    message = _build_message(row, recipient, attachments, subject)
+    message = _build_message(row, recipient, attachments, subject, mail_template_path=mail_template_path)
 
     if settings.smtp_use_ssl:
         with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
@@ -649,7 +697,14 @@ def _htmlify_mail_body(body: str) -> str:
     return html
 
 
-def _send_via_unisender(row: dict[str, Any], recipient: str, attachments: list[str], subject: str) -> str | None:
+def _send_via_unisender(
+    row: dict[str, Any],
+    recipient: str,
+    attachments: list[str],
+    subject: str,
+    *,
+    mail_template_path: Path | None = None,
+) -> str | None:
     api_key = _safe_text(settings.unisender_api_key)
     sender_email = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
     sender_name = _safe_text(settings.unisender_sender_name) or "ООО «ПР»"
@@ -659,7 +714,7 @@ def _send_via_unisender(row: dict[str, Any], recipient: str, attachments: list[s
     if not sender_email:
         raise RuntimeError("Не указан подтверждённый email отправителя UniSender.")
 
-    body = _htmlify_mail_body(_build_mail_body(row))
+    body = _htmlify_mail_body(_build_mail_body(row, mail_template_path=mail_template_path))
     payload: dict[str, Any] = {
         "format": "json",
         "api_key": api_key,
@@ -712,15 +767,28 @@ def _send_with_transport(
     subject: str,
     *,
     transport: str,
+    mail_template_path: Path | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, str]] = []
     for recipient in recipients:
         try:
             warning = None
             if transport == "unisender":
-                warning = _send_via_unisender(row, recipient, attachments, subject)
+                warning = _send_via_unisender(
+                    row,
+                    recipient,
+                    attachments,
+                    subject,
+                    mail_template_path=mail_template_path,
+                )
             else:
-                warning = _send_via_smtp(row, recipient, attachments, subject)
+                warning = _send_via_smtp(
+                    row,
+                    recipient,
+                    attachments,
+                    subject,
+                    mail_template_path=mail_template_path,
+                )
         except Exception as exc:
             attempts.append({"recipient": recipient, "status": "error", "error": _safe_text(exc) or "SMTP error"})
             continue
@@ -737,12 +805,20 @@ def run_sender(
     auto_recover: bool = False,
     row_ids: list[str] | None = None,
     transport: str | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
-    state = SENDER_STATE
-    clear_sender_stop_request()
+    job_paths = resolve_job_paths(job_id)
+    data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    output_dir = None if job_paths.uses_legacy_layout else job_paths.output_dir
+    job_template_path = job_paths.templates_dir / "mail_template.txt"
+    mail_template_path = None if job_paths.uses_legacy_layout or not job_template_path.exists() else job_template_path
+    sent_mail_log_path = None if job_paths.uses_legacy_layout else job_paths.sent_mail_log_path
+    state = _load_sender_state(job_id)
+    clear_sender_stop_request(job_id)
+    state = _load_sender_state(job_id)
     effective_limit = _normalize_limit(limit, dry_run=dry_run)
     effective_transport = _normalize_transport(transport)
-    stats = _collect_excel_stats()
+    stats = _collect_excel_stats(data_xlsx_path)
     state.update(
         {
             "status": "running",
@@ -760,9 +836,9 @@ def run_sender(
             "stats": stats,
             "warning_rows": 0,
             "handoff_rows": 0,
-            "task_stats": count_tasks_for_agent("sender"),
-            "tasks": get_tasks_for_agent("sender")[:20],
-            "recent_events": get_recent_events(agent_name="sender", limit=20),
+            "task_stats": count_tasks_for_agent("sender", job_id),
+            "tasks": get_tasks_for_agent("sender", job_id)[:20],
+            "recent_events": get_recent_events(agent_name="sender", limit=20, job_id=job_id),
             "generator_handoff_rows": 0,
             "philology_blocked_rows": 0,
             "autonomous_recovery_rows": 0,
@@ -773,24 +849,28 @@ def run_sender(
             "transport": effective_transport,
         }
     )
+    _save_sender_state(state, job_id)
 
-    if not DATA_XLSX_PATH.exists():
+    if not data_xlsx_path.exists():
         state["status"] = "error"
         state["summary_text"] = "Файл data.xlsx не найден."
+        _save_sender_state(state, job_id)
         return dict(state)
 
-    workbook, worksheet, rows = load_rows(DATA_XLSX_PATH)
+    workbook, worksheet, rows = load_rows(data_xlsx_path)
     requested_row_ids = {str(item).strip() for item in (row_ids or []) if str(item).strip()}
     if requested_row_ids:
         rows = [row for row in rows if str(row.get("ID")).strip() in requested_row_ids]
     candidates = rows[:effective_limit] if effective_limit else rows
     state["total_rows"] = len(candidates)
+    _save_sender_state(state, job_id)
 
     processed_entries: list[dict[str, Any]] = []
     started_at = perf_counter()
     subject = DEFAULT_MAIL_SUBJECT
 
     for row in candidates:
+        _refresh_sender_stop_flag(state, job_id)
         if state.get("stop_requested"):
             break
         row_id = row.get("ID")
@@ -822,6 +902,8 @@ def run_sender(
             processed_entries.append(entry)
             state["skipped_rows"] += 1
             state["processed_rows"] += 1
+            state["rows"] = processed_entries
+            _save_sender_state(state, job_id)
             continue
 
         email_decision = _choose_recipient(row)
@@ -832,11 +914,11 @@ def run_sender(
         entry["decision_reason"] = email_decision["decision_reason"]
         entry["fallback_candidates"] = email_decision["fallback_candidates"]
 
-        folder, folder_error = _resolve_output_folder(row_id)
+        folder, folder_error = _resolve_output_folder(row_id, output_dir=output_dir)
         entry["folder"] = str(folder) if folder else None
         attachments, attachment_error = _resolve_pdf_attachments(folder)
         entry["attachments"] = attachments
-        review_task = _active_sender_review_task(row_id)
+        review_task = _active_sender_review_task(row_id, job_id=job_id)
         recovery_info: dict[str, Any] | None = None
 
         if not entry["recipient"]:
@@ -858,6 +940,7 @@ def run_sender(
                     "has_primary_email": bool(_parse_emails(row.get("EMAIL_OSN"))),
                     "has_any_valid_email": bool(email_decision["valid_emails"]),
                 },
+                job_id=job_id,
             )
             if task:
                 entry["handoff_task_id"] = task.get("id")
@@ -879,13 +962,17 @@ def run_sender(
                     "folder_exists": False,
                     "attachment_count": 0,
                 },
+                job_id=job_id,
             )
             if task:
                 entry["handoff_task_id"] = task.get("id")
                 state["generator_handoff_rows"] += 1
             if auto_recover:
-                recovery_info = _run_autonomous_recovery_for_generator(row_id=row_id)
-                folder, folder_error, attachments, attachment_error = _retry_row_resources(row_id)
+                recovery_info = _run_autonomous_recovery_for_generator(row_id=row_id, job_id=job_id)
+                folder, folder_error, attachments, attachment_error = _retry_row_resources(
+                    row_id,
+                    output_dir=output_dir,
+                )
                 entry["folder"] = str(folder) if folder else None
                 entry["attachments"] = attachments
                 if not folder_error and not attachment_error and entry["recipient"]:
@@ -910,13 +997,17 @@ def run_sender(
                     "folder_exists": bool(folder),
                     "attachment_count": len(attachments),
                 },
+                job_id=job_id,
             )
             if task:
                 entry["handoff_task_id"] = task.get("id")
                 state["generator_handoff_rows"] += 1
             if auto_recover:
-                recovery_info = _run_autonomous_recovery_for_generator(row_id=row_id)
-                folder, folder_error, attachments, attachment_error = _retry_row_resources(row_id)
+                recovery_info = _run_autonomous_recovery_for_generator(row_id=row_id, job_id=job_id)
+                folder, folder_error, attachments, attachment_error = _retry_row_resources(
+                    row_id,
+                    output_dir=output_dir,
+                )
                 entry["folder"] = str(folder) if folder else None
                 entry["attachments"] = attachments
                 if not folder_error and not attachment_error and entry["recipient"]:
@@ -940,8 +1031,8 @@ def run_sender(
             )
             state["philology_blocked_rows"] += 1
             if auto_recover and settings.philologist_auto_run_enabled:
-                recovery_info = _run_autonomous_recovery_for_philologist(row_id=row_id)
-                review_task = _active_sender_review_task(row_id)
+                recovery_info = _run_autonomous_recovery_for_philologist(row_id=row_id, job_id=job_id)
+                review_task = _active_sender_review_task(row_id, job_id=job_id)
                 if not review_task:
                     entry["result"] = "ready_after_recovery" if dry_run else "sent"
                     entry["error"] = ""
@@ -975,17 +1066,22 @@ def run_sender(
             state["error_rows"] += 1
             processed_entries.append(entry)
             state["processed_rows"] += 1
+            state["rows"] = processed_entries
+            _save_sender_state(state, job_id)
             continue
 
         state["ready_rows"] += 1
 
         if not dry_run:
+            _refresh_sender_stop_flag(state, job_id)
             if state.get("stop_requested"):
                 entry["result"] = "stopped_before_send"
                 entry["next_action"] = "Отправка этой и следующих строк остановлена по запросу пользователя."
                 state["ready_rows"] -= 1
                 processed_entries.append(entry)
                 state["processed_rows"] += 1
+                state["rows"] = processed_entries
+                _save_sender_state(state, job_id)
                 break
             try:
                 send_result = _send_with_transport(
@@ -994,6 +1090,7 @@ def run_sender(
                     attachments,
                     subject,
                     transport=effective_transport,
+                    mail_template_path=mail_template_path,
                 )
                 entry["attempts"] = send_result["attempts"]
                 entry["warning"] = _safe_text(send_result.get("warning"))
@@ -1009,6 +1106,7 @@ def run_sender(
                     subject=subject,
                     transport=effective_transport,
                     warning=entry["warning"],
+                    sent_mail_log_path=sent_mail_log_path,
                 )
                 if log_warning:
                     entry["warning"] = (
@@ -1037,10 +1135,12 @@ def run_sender(
 
         processed_entries.append(entry)
         state["processed_rows"] += 1
+        state["rows"] = processed_entries
+        _save_sender_state(state, job_id)
 
     if not dry_run:
-        save_workbook(workbook, DATA_XLSX_PATH)
-        state["stats"] = _collect_excel_stats()
+        save_workbook(workbook, data_xlsx_path)
+        state["stats"] = _collect_excel_stats(data_xlsx_path)
         state["remaining_rows"] = int(state["stats"].get("pending", 0))
     else:
         state["remaining_rows"] = max(0, len(rows) - len(candidates))
@@ -1049,29 +1149,34 @@ def run_sender(
     state["completed_at"] = datetime.now().isoformat(timespec="seconds")
     state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
     state["status"] = "stopped" if state.get("stop_requested") else "completed"
-    state["task_stats"] = count_tasks_for_agent("sender")
-    state["tasks"] = get_tasks_for_agent("sender")[:20]
-    state["recent_events"] = get_recent_events(agent_name="sender", limit=20)
+    state["task_stats"] = count_tasks_for_agent("sender", job_id)
+    state["tasks"] = get_tasks_for_agent("sender", job_id)[:20]
+    state["recent_events"] = get_recent_events(agent_name="sender", limit=20, job_id=job_id)
     state["summary_text"] = _format_sender_summary(state)
+    _save_sender_state(state, job_id)
     return dict(state)
 
 
-def get_sender_status() -> dict[str, Any]:
-    state = dict(SENDER_STATE)
-    state["stats"] = _collect_excel_stats()
-    state["task_stats"] = count_tasks_for_agent("sender")
-    state["tasks"] = get_tasks_for_agent("sender")[:20]
-    state["recent_events"] = get_recent_events(agent_name="sender", limit=20)
+def get_sender_status(job_id: str | None = None) -> dict[str, Any]:
+    job_paths = resolve_job_paths(job_id)
+    state = _load_sender_state(job_id)
+    data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    state["stats"] = _collect_excel_stats(data_xlsx_path)
+    state["task_stats"] = count_tasks_for_agent("sender", job_id)
+    state["tasks"] = get_tasks_for_agent("sender", job_id)[:20]
+    state["recent_events"] = get_recent_events(agent_name="sender", limit=20, job_id=job_id)
     return state
 
 
-def _fallback_sender_chat(message: str, state: dict[str, Any]) -> str:
+def _fallback_sender_chat(message: str, state: dict[str, Any], *, job_id: str | None = None) -> str:
     rows = state.get("rows") or []
-    preview = preview_recipients(limit=10)
+    preview = preview_recipients(limit=10, job_id=job_id)
     tasks = state.get("tasks") or []
     recent_events = state.get("recent_events") or []
     if not rows:
-        stats = state.get("stats") or _collect_excel_stats()
+        job_paths = resolve_job_paths(job_id)
+        data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+        stats = state.get("stats") or _collect_excel_stats(data_xlsx_path)
         extra = ""
         if tasks:
             extra = (
@@ -1138,12 +1243,12 @@ def _build_openai_client() -> OpenAI | None:
         return None
 
 
-def chat_with_sender(message: str) -> dict[str, Any]:
-    state = get_sender_status()
+def chat_with_sender(message: str, *, job_id: str | None = None) -> dict[str, Any]:
+    state = get_sender_status(job_id)
     client = _build_openai_client()
-    preview = preview_recipients(limit=30)
+    preview = preview_recipients(limit=30, job_id=job_id)
     if not client:
-        return {"reply": _fallback_sender_chat(message, state), "state": state}
+        return {"reply": _fallback_sender_chat(message, state, job_id=job_id), "state": state}
 
     compact_rows = []
     for item in (state.get("rows") or [])[:20]:
@@ -1178,8 +1283,8 @@ def chat_with_sender(message: str) -> dict[str, Any]:
         response = client.chat.completions.create(**request_kwargs)
         reply = _safe_text(response.choices[0].message.content)
         if not reply:
-            reply = _fallback_sender_chat(message, state)
+            reply = _fallback_sender_chat(message, state, job_id=job_id)
     except Exception:
-        reply = _fallback_sender_chat(message, state)
+        reply = _fallback_sender_chat(message, state, job_id=job_id)
 
     return {"reply": reply, "state": state}

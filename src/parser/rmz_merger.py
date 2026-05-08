@@ -18,12 +18,20 @@ from pathlib import Path
 
 import openpyxl
 
+from src.jobs import resolve_job_paths
 from src.parser.excel_writer import ExcelWriter, MoRecord
 from src.utils.logger import logger
 
 BASE_MO_PATH = Path("service_docs/base.xlsx")
 RMZ_PATH = Path("service_docs/RMZ7KH.xlsx")
 DATA_XLSX_PATH = Path("data/data.xlsx")
+
+_MERGE_PATHS = {
+    "job_id": None,
+    "base_mo_path": BASE_MO_PATH,
+    "rmz_path": RMZ_PATH,
+    "data_xlsx_path": DATA_XLSX_PATH,
+}
 
 BRACKET_RE = re.compile(r'\s*\(.*?\)\s*')
 QUOTE_RE = re.compile(r'[«"\'](.*?)[»"\']')
@@ -83,16 +91,43 @@ class MergeResult:
     not_found_list: list[dict]
 
 
-def run_merge() -> MergeResult:
-    if not BASE_MO_PATH.exists():
+def configure_merge_paths(job_id: str | None = None) -> dict:
+    job_paths = resolve_job_paths(job_id)
+    rmz_candidate = job_paths.root_dir / "service_docs" / "RMZ7KH.xlsx"
+    _MERGE_PATHS["job_id"] = job_paths.job_id
+    _MERGE_PATHS["base_mo_path"] = job_paths.base_xlsx if job_paths.base_xlsx.exists() else BASE_MO_PATH
+    _MERGE_PATHS["rmz_path"] = rmz_candidate if rmz_candidate.exists() else RMZ_PATH
+    _MERGE_PATHS["data_xlsx_path"] = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    return dict(_MERGE_PATHS)
+
+
+def _current_base_mo_path() -> Path:
+    return Path(_MERGE_PATHS["base_mo_path"])
+
+
+def _current_rmz_path() -> Path:
+    return Path(_MERGE_PATHS["rmz_path"])
+
+
+def _current_data_xlsx_path() -> Path:
+    return Path(_MERGE_PATHS["data_xlsx_path"])
+
+
+def run_merge(job_id: str | None = None) -> MergeResult:
+    configure_merge_paths(job_id)
+    base_mo_path = _current_base_mo_path()
+    rmz_path = _current_rmz_path()
+    data_xlsx_path = _current_data_xlsx_path()
+
+    if not base_mo_path.exists():
         raise FileNotFoundError("Файл base.xlsx не найден в service_docs/")
-    if not RMZ_PATH.exists():
+    if not rmz_path.exists():
         raise FileNotFoundError("Файл RMZ7KH.xlsx не найден в service_docs/")
 
     logger.info("rmz_merge_start")
 
-    wb_base = openpyxl.load_workbook(BASE_MO_PATH, data_only=True, read_only=True)
-    wb_rmz = openpyxl.load_workbook(RMZ_PATH, data_only=True, read_only=True)
+    wb_base = openpyxl.load_workbook(base_mo_path, data_only=True, read_only=True)
+    wb_rmz = openpyxl.load_workbook(rmz_path, data_only=True, read_only=True)
 
     existing_keys, existing_inns = _get_existing_data()
     base_rows = _load_base_rows(wb_base.worksheets[0])
@@ -100,7 +135,7 @@ def run_merge() -> MergeResult:
 
     logger.info("rmz_merge_loaded", base=len(base_rows), rmz=len(rmz_rows))
 
-    writer = ExcelWriter(DATA_XLSX_PATH)
+    writer = ExcelWriter(data_xlsx_path)
     start_id = _get_next_id()
 
     written = 0
@@ -401,10 +436,11 @@ def _load_rmz_rows(sheet) -> list[dict]:
 def _get_existing_data() -> tuple[set, set]:
     keys: set = set()
     inns: set = set()
-    if not DATA_XLSX_PATH.exists():
+    data_xlsx_path = _current_data_xlsx_path()
+    if not data_xlsx_path.exists():
         return keys, inns
     try:
-        wb = openpyxl.load_workbook(DATA_XLSX_PATH, data_only=True, read_only=True)
+        wb = openpyxl.load_workbook(data_xlsx_path, data_only=True, read_only=True)
         sheet = wb.worksheets[0]
         for row in sheet.iter_rows(min_row=3, values_only=True):
             sub = str(row[1] or "").strip().lower()
@@ -422,10 +458,11 @@ def _get_existing_data() -> tuple[set, set]:
 
 
 def _get_next_id() -> int:
-    if not DATA_XLSX_PATH.exists():
+    data_xlsx_path = _current_data_xlsx_path()
+    if not data_xlsx_path.exists():
         return 1
     try:
-        wb = openpyxl.load_workbook(DATA_XLSX_PATH, data_only=True, read_only=True)
+        wb = openpyxl.load_workbook(data_xlsx_path, data_only=True, read_only=True)
         sheet = wb.worksheets[0]
         last_id = 0
         for row in sheet.iter_rows(min_row=3, values_only=True):

@@ -4,7 +4,7 @@ from pathlib import Path
 import secrets
 from src.utils.logger import logger
 from src.utils.config import settings
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form
 import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from time import perf_counter
@@ -47,6 +47,10 @@ def _parse_optional_limit(payload: dict | None) -> int | None:
     return int(text_value)
 
 
+def _prefer_existing_file(primary: Path, fallback: Path) -> Path:
+    return primary if primary.exists() else fallback
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(username: str = Depends(check_auth)):
     return Path("templates/index.html").read_text(encoding="utf-8")
@@ -56,18 +60,32 @@ async def index(username: str = Depends(check_auth)):
 async def app_status(username: str = Depends(check_auth)):
     return {"status": "ok", "message": "Сервер работает"}
 
+
+@app.post("/api/jobs")
+async def create_job(username: str = Depends(check_auth)):
+    job_id = create_job_id()
+    paths = resolve_job_paths(job_id)
+    paths.ensure_dirs()
+    return {"status": "ok", "job_id": job_id}
+
 @app.post("/api/upload/data")
-async def upload_data(file: UploadFile = File(...), username: str = Depends(check_auth)):
-    dest = Path("data/data.xlsx")
+async def upload_data(
+    file: UploadFile = File(...),
+    job_id: str | None = Form(default=None),
+    username: str = Depends(check_auth),
+):
+    paths = resolve_job_paths(job_id)
+    paths.ensure_dirs()
+    dest = paths.data_xlsx
     dest.parent.mkdir(exist_ok=True)
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
-    return {"status": "ok", "filename": file.filename}
+    return {"status": "ok", "filename": file.filename, "job_id": paths.job_id}
 
 
 @app.get("/api/data/info")
-async def data_info(username: str = Depends(check_auth)):
-    data_path = Path("data/data.xlsx")
+async def data_info(job_id: str | None = None, username: str = Depends(check_auth)):
+    data_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
     if not data_path.exists():
         return {"loaded": False, "total": 0}
     _, _, rows = load_rows(data_path)
@@ -75,8 +93,14 @@ async def data_info(username: str = Depends(check_auth)):
 
 
 @app.post("/api/upload/template")
-async def upload_template(file: UploadFile = File(...), username: str = Depends(check_auth)):
-    templates_dir = Path("data/templates")
+async def upload_template(
+    file: UploadFile = File(...),
+    job_id: str | None = Form(default=None),
+    username: str = Depends(check_auth),
+):
+    paths = resolve_job_paths(job_id)
+    paths.ensure_dirs()
+    templates_dir = paths.templates_dir
     templates_dir.mkdir(exist_ok=True)
     original_name = Path(file.filename or "").name
     if original_name.lower().endswith(".txt"):
@@ -89,6 +113,7 @@ async def upload_template(file: UploadFile = File(...), username: str = Depends(
         "status": "ok",
         "filename": file.filename,
         "stored_as": dest.name,
+        "job_id": paths.job_id,
     }
 
 from src.generator.excel_io import load_rows
@@ -134,6 +159,7 @@ from src.generator.autonomous_worker import (
     stop_autonomous_worker,
 )
 from src.generator.generator_agent import get_generator_status, run_generator_agent
+from src.jobs import create_job_id, resolve_job_paths
 
 
 def cleanup_batch_pdf_dir() -> None:
@@ -252,9 +278,10 @@ def finalize_generated_files(results: list[dict]) -> None:
 
 
 @app.get("/api/counts")
-async def counts(username: str = Depends(check_auth)):
-    base_path = Path("service_docs/base.xlsx")
-    data_path = Path("data/data.xlsx")
+async def counts(job_id: str | None = None, username: str = Depends(check_auth)):
+    paths = resolve_job_paths(job_id)
+    base_path = _prefer_existing_file(paths.base_xlsx, Path("service_docs/base.xlsx"))
+    data_path = _prefer_existing_file(paths.data_xlsx, Path("data/data.xlsx"))
     
     parser_total = 0
     if base_path.exists():
@@ -275,11 +302,12 @@ async def counts(username: str = Depends(check_auth)):
     }
 
 @app.post("/api/generate")
-async def generate(username: str = Depends(check_auth)):
-    xlsx_path = Path("data/data.xlsx")
+async def generate(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
+    job_id = str((payload or {}).get("job_id") or "").strip() or None
+    xlsx_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
     if not xlsx_path.exists():
         raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
-    result = run_generator_agent(xlsx_path=xlsx_path)
+    result = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
     if result.get("status") == "error":
         raise HTTPException(status_code=400, detail=result.get("summary_text") or "Ошибка генерации")
     return {
@@ -292,8 +320,8 @@ async def generate(username: str = Depends(check_auth)):
 
 
 @app.get("/api/generator/status")
-async def generator_status(username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_generator_status()}
+async def generator_status(job_id: str | None = None, username: str = Depends(check_auth)):
+    return {"status": "ok", "result": get_generator_status(job_id)}
 
 
 from fastapi.responses import FileResponse
@@ -301,8 +329,8 @@ import zipfile
 import tempfile
 
 @app.get("/api/download/output")
-async def download_output(username: str = Depends(check_auth)):
-    output_dir = Path("data/output")
+async def download_output(job_id: str | None = None, username: str = Depends(check_auth)):
+    output_dir = resolve_job_paths(job_id).output_dir
     if not output_dir.exists() or not list(output_dir.rglob("*.*")):
         raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
     
@@ -320,8 +348,8 @@ async def download_output(username: str = Depends(check_auth)):
 
 
 @app.get("/api/download/data-xlsx")
-async def download_data_xlsx(username: str = Depends(check_auth)):
-    data_path = Path("data/data.xlsx")
+async def download_data_xlsx(job_id: str | None = None, username: str = Depends(check_auth)):
+    data_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
     if not data_path.exists():
         raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
     return FileResponse(
@@ -332,8 +360,13 @@ async def download_data_xlsx(username: str = Depends(check_auth)):
 
 
 @app.get("/api/download/sent-mail-log")
-async def download_sent_mail_log(username: str = Depends(check_auth)):
-    log_path = Path("data/sent_mail_log.jsonl")
+async def download_sent_mail_log(job_id: str | None = None, username: str = Depends(check_auth)):
+    job_paths = resolve_job_paths(job_id)
+    log_path = (
+        job_paths.sent_mail_log_path
+        if not job_paths.uses_legacy_layout
+        else Path("data/sent_mail_log.jsonl")
+    )
     if not log_path.exists():
         raise HTTPException(status_code=404, detail="Журнал отправленных писем пока не создан.")
     return FileResponse(
@@ -349,13 +382,14 @@ async def philologist_run(
     username: str = Depends(check_auth),
 ):
     ai_enabled = True if payload is None else bool(payload.get("ai_enabled", True))
-    result = run_philologist(ai_enabled=ai_enabled)
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    result = run_philologist(ai_enabled=ai_enabled, job_id=job_id)
     return {"status": "ok", "result": result}
 
 
 @app.get("/api/philologist/status")
-async def philologist_status(username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_philologist_status()}
+async def philologist_status(job_id: str | None = None, username: str = Depends(check_auth)):
+    return {"status": "ok", "result": get_philologist_status(job_id)}
 
 
 @app.post("/api/philologist/chat")
@@ -366,30 +400,34 @@ async def philologist_chat(
     message = str(payload.get("message", "")).strip()
     if not message:
         raise HTTPException(status_code=400, detail="Пустое сообщение")
-    return {"status": "ok", **chat_with_philologist(message)}
+    job_id = str(payload.get("job_id") or "").strip() or None
+    return {"status": "ok", **chat_with_philologist(message, job_id=job_id)}
 
 from src.parser.agent import chat, clear_memory, get_memory, run_batch_parser, set_system_prompt
 
-@app.post("/api/parser/chat")
-async def parser_chat(payload: dict = Body(...), username: str = Depends(check_auth)):
+@app.post("/api/parser/chat-v2")
+async def parser_chat_v2(payload: dict = Body(...), username: str = Depends(check_auth)):
     message = str(payload.get("message", "")).strip()
     if not message:
         raise HTTPException(status_code=400, detail="Пустое сообщение")
-    result = chat(message)
+    job_id = str(payload.get("job_id") or "").strip() or None
+    result = chat(message, job_id=job_id)
     return result
 
 @app.post("/api/parser/start")
-async def parser_start(username: str = Depends(check_auth)):
-    result = run_batch_parser()
-    return result
+async def parser_start(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    result = run_batch_parser(job_id=job_id)
+    return {"status": "ok", "result": result}
 
 @app.get("/api/parser/memory")
-async def parser_memory(username: str = Depends(check_auth)):
-    return get_memory()
+async def parser_memory(job_id: str | None = None, username: str = Depends(check_auth)):
+    return get_memory(job_id=job_id)
 
 @app.post("/api/parser/memory/clear")
-async def parser_memory_clear(username: str = Depends(check_auth)):
-    clear_memory()
+async def parser_memory_clear(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    clear_memory(job_id=job_id)
     return {"status": "ok"}
 
 @app.post("/api/parser/prompt")
@@ -397,7 +435,8 @@ async def parser_prompt(payload: dict = Body(...), username: str = Depends(check
     prompt = str(payload.get("prompt", "")).strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="Пустой промпт")
-    set_system_prompt(prompt)
+    job_id = str(payload.get("job_id") or "").strip() or None
+    set_system_prompt(prompt, job_id=job_id)
     return {"status": "ok"}
 
 
@@ -409,18 +448,20 @@ async def sender_run(
     dry_run = True if payload is None else bool(payload.get("dry_run", True))
     limit = _parse_optional_limit(payload)
     transport = None if payload is None else payload.get("transport")
-    result = run_sender(dry_run=dry_run, limit=limit, transport=transport, auto_recover=False)
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    result = run_sender(dry_run=dry_run, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
     return {"status": "ok", "result": result}
 
 
 @app.get("/api/sender/status")
-async def sender_status(username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_sender_status()}
+async def sender_status(job_id: str | None = None, username: str = Depends(check_auth)):
+    return {"status": "ok", "result": get_sender_status(job_id)}
 
 
 @app.post("/api/sender/stop")
-async def sender_stop(username: str = Depends(check_auth)):
-    result = request_sender_stop()
+async def sender_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    result = request_sender_stop(job_id=job_id)
     return {"status": "ok", "result": result}
 
 
@@ -430,7 +471,8 @@ async def sender_preview(
     username: str = Depends(check_auth),
 ):
     limit = _parse_optional_limit(payload)
-    result = preview_recipients(limit=limit)
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    result = preview_recipients(limit=limit, job_id=job_id)
     return {"status": "ok", "result": result}
 
 
@@ -442,7 +484,8 @@ async def sender_chat(
     message = str(payload.get("message", "")).strip()
     if not message:
         raise HTTPException(status_code=400, detail="Пустое сообщение")
-    return {"status": "ok", **chat_with_sender(message)}
+    job_id = str(payload.get("job_id") or "").strip() or None
+    return {"status": "ok", **chat_with_sender(message, job_id=job_id)}
 
 
 @app.post("/api/parser/run")
@@ -451,18 +494,20 @@ async def parser_run(
     username: str = Depends(check_auth),
 ):
     limit = _parse_optional_limit(payload)
-    result = run_parser_agent(limit=limit)
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    result = run_parser_agent(limit=limit, job_id=job_id)
     return {"status": "ok", "result": result}
 
 
 @app.get("/api/parser/status")
-async def parser_status(username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_parser_status()}
+async def parser_status(job_id: str | None = None, username: str = Depends(check_auth)):
+    return {"status": "ok", "result": get_parser_status(job_id)}
 
 @app.post("/api/parser/merge-rmz")
-async def merge_rmz(username: str = Depends(check_auth)):
+async def merge_rmz(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
     from src.parser.rmz_merger import run_merge
-    result = run_merge()
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    result = run_merge(job_id=job_id)
     # Если есть спорные совпадения — просим агента проверить
     if result.suspicious:
         suspicious_list = [
@@ -477,7 +522,8 @@ async def merge_rmz(username: str = Depends(check_auth)):
         ]
         agent_reply = chat(
             f"Из {len(suspicious_list)} спорных совпадений коротко скажи сколько верных и сколько неверных. "
-            f"Только цифры, без перечисления. Данные: {suspicious_list}"
+            f"Только цифры, без перечисления. Данные: {suspicious_list}",
+            job_id=job_id,
         )
         return {
             "written": result.written,
@@ -502,7 +548,8 @@ async def parser_chat(
     message = str(payload.get("message", "")).strip()
     if not message:
         raise HTTPException(status_code=400, detail="Пустое сообщение")
-    return {"status": "ok", **chat_with_parser(message)}
+    job_id = str(payload.get("job_id") or "").strip() or None
+    return {"status": "ok", **chat_with_parser(message, job_id=job_id)}
 
 
 @app.get("/api/orchestrator/status")
