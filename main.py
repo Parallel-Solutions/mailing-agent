@@ -6,11 +6,14 @@ from src.utils.logger import logger
 from src.utils.config import settings
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form
 import shutil
+import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from time import perf_counter
 
 app = FastAPI(title="Mailing Agent")
 security = HTTPBasic()
+_sender_threads: dict[str, threading.Thread] = {}
+_sender_threads_lock = threading.Lock()
 
 
 @app.on_event("startup")
@@ -49,6 +52,35 @@ def _parse_optional_limit(payload: dict | None) -> int | None:
 
 def _prefer_existing_file(primary: Path, fallback: Path) -> Path:
     return primary if primary.exists() else fallback
+
+
+def _sender_job_key(job_id: str | None) -> str:
+    return str(job_id or "__legacy__")
+
+
+def _get_sender_thread(job_id: str | None) -> threading.Thread | None:
+    key = _sender_job_key(job_id)
+    with _sender_threads_lock:
+        thread = _sender_threads.get(key)
+        if thread and not thread.is_alive():
+            _sender_threads.pop(key, None)
+            return None
+        return thread
+
+
+def _register_sender_thread(job_id: str | None, thread: threading.Thread) -> None:
+    with _sender_threads_lock:
+        _sender_threads[_sender_job_key(job_id)] = thread
+
+
+def _run_sender_background(*, limit: int | None, transport: str | None, job_id: str | None) -> None:
+    try:
+        run_sender(dry_run=False, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
+    except Exception:
+        logger.exception("sender_background_failed", job_id=job_id, transport=transport)
+    finally:
+        with _sender_threads_lock:
+            _sender_threads.pop(_sender_job_key(job_id), None)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -159,6 +191,7 @@ from src.generator.philologist_agent import (
 )
 from src.generator.sender_agent import (
     chat_with_sender,
+    clear_sender_stop_request,
     get_sender_status,
     preview_recipients,
     request_sender_stop,
@@ -469,7 +502,24 @@ async def sender_run(
     limit = _parse_optional_limit(payload)
     transport = None if payload is None else payload.get("transport")
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    result = run_sender(dry_run=dry_run, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
+    if dry_run:
+        result = run_sender(dry_run=True, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
+        return {"status": "ok", "result": result}
+
+    existing_thread = _get_sender_thread(job_id)
+    if existing_thread:
+        return {"status": "ok", "result": get_sender_status(job_id)}
+
+    clear_sender_stop_request(job_id)
+    sender_thread = threading.Thread(
+        target=_run_sender_background,
+        kwargs={"limit": limit, "transport": transport, "job_id": job_id},
+        daemon=True,
+        name=f"sender-{_sender_job_key(job_id)}",
+    )
+    _register_sender_thread(job_id, sender_thread)
+    sender_thread.start()
+    result = get_sender_status(job_id)
     return {"status": "ok", "result": result}
 
 
