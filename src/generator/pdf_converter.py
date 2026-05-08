@@ -5,6 +5,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from uuid import uuid4
 
 try:
     from src.generator.config_generator import (
@@ -35,7 +36,12 @@ def find_soffice() -> Optional[str]:
 def cleanup_libreoffice_profiles(profiles_root: Optional[Path] = None) -> Path:
     target_dir = profiles_root or BATCH_LIBREOFFICE_PROFILES_DIR
     if target_dir.exists():
-        shutil.rmtree(target_dir)
+        try:
+            shutil.rmtree(target_dir)
+        except PermissionError:
+            # LibreOffice can leave profile files locked for a short time.
+            # Fall back to a fresh sibling directory instead of breaking the whole generation run.
+            target_dir = target_dir.parent / f"{target_dir.name}_{uuid4().hex[:8]}"
     target_dir.mkdir(parents=True, exist_ok=True)
     return target_dir
 

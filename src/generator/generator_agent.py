@@ -86,6 +86,22 @@ def cleanup_batch_pdf_dir(batch_pdf_dir: Path | None = None) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
 
 
+def cleanup_existing_output_dirs(rows: list[dict], output_dir: Path | None) -> None:
+    if output_dir is None:
+        return
+    output_dir.mkdir(parents=True, exist_ok=True)
+    row_ids = {str(row.get("ID") or "").strip() for row in rows}
+    row_ids.discard("")
+    if not row_ids:
+        return
+    for path in output_dir.iterdir():
+        if not path.is_dir():
+            continue
+        prefix = path.name.split("_", 1)[0].strip()
+        if prefix in row_ids:
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def process_generator_row(
     payload: tuple[int, int, dict],
     *,
@@ -233,6 +249,7 @@ def run_generator_agent(
 
     cleanup_batch_docx_dir(job_paths.batch_docx_dir if not job_paths.uses_legacy_layout else None)
     cleanup_batch_pdf_dir(job_paths.batch_pdf_dir if not job_paths.uses_legacy_layout else None)
+    cleanup_existing_output_dirs(rows, None if job_paths.uses_legacy_layout else job_paths.output_dir)
 
     started_at = perf_counter()
     payloads = [(index, START_OUTGOING_NUMBER + index, row) for index, row in enumerate(rows)]
@@ -252,43 +269,17 @@ def run_generator_agent(
     state["total_rows"] = len(payloads)
     _save_generator_state(state, job_id)
 
-    if ENABLE_CASE_AGENT:
-        for payload in payloads:
-            result_index, _, row = payload
-            try:
-                results[result_index] = process_generator_row(
-                    payload,
-                    output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
-                    batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
-                    templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
-                )
-            except Exception as exc:
-                results[result_index] = {
-                    "result_index": result_index,
-                    "id": row.get("ID"),
-                    "status": "error",
-                    "error": str(exc),
-                    "files": {},
-                }
-            state["processed_rows"] += 1
-            _save_generator_state(state, job_id)
-    else:
-        max_workers = max(1, min(DOCX_WORKERS, len(payloads)))
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {
-                executor.submit(
-                    process_generator_row,
-                    payload,
-                    output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
-                    batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
-                    templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
-                ): payload
-                for payload in payloads
-            }
-            for future in as_completed(future_map):
-                result_index, _, row = future_map[future]
+    try:
+        if ENABLE_CASE_AGENT:
+            for payload in payloads:
+                result_index, _, row = payload
                 try:
-                    results[result_index] = future.result()
+                    results[result_index] = process_generator_row(
+                        payload,
+                        output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
+                        batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
+                        templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
+                    )
                 except Exception as exc:
                     results[result_index] = {
                         "result_index": result_index,
@@ -299,103 +290,145 @@ def run_generator_agent(
                     }
                 state["processed_rows"] += 1
                 _save_generator_state(state, job_id)
+        else:
+            max_workers = max(1, min(DOCX_WORKERS, len(payloads)))
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                future_map = {
+                    executor.submit(
+                        process_generator_row,
+                        payload,
+                        output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
+                        batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
+                        templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
+                    ): payload
+                    for payload in payloads
+                }
+                for future in as_completed(future_map):
+                    result_index, _, row = future_map[future]
+                    try:
+                        results[result_index] = future.result()
+                    except Exception as exc:
+                        results[result_index] = {
+                            "result_index": result_index,
+                            "id": row.get("ID"),
+                            "status": "error",
+                            "error": str(exc),
+                            "files": {},
+                        }
+                    state["processed_rows"] += 1
+                    _save_generator_state(state, job_id)
 
-    finalize_generated_files(
-        results,
-        batch_pdf_dir=None if job_paths.uses_legacy_layout else job_paths.batch_pdf_dir,
-    )
-    review_handoffs = 0
-    review_row_ids: list[str] = []
-    for result in results:
-        result.pop("result_index", None)
-        result_id = _safe_id(result.get("id"))
-        row = row_lookup.get(result_id) or {}
-        mun_name = str(row.get("MUN_NAME") or "")
-        if result.get("status") == "ok":
-            set_task_statuses(
-                "generator",
-                row_id=result.get("id"),
-                new_status="done",
-                note="Генератор пересобрал или подтвердил комплект документов.",
-                resolution_summary="Комплект документов собран и сохранён в output.",
-                job_id=job_id,
-            )
-            if settings.inter_agent_handoffs_enabled:
-                diagnosis = diagnose_responsibility(
-                    symptom="documents_ready_for_review",
-                    context={"row_id": result.get("id")},
-                )
-                create_task(
-                    source_agent="generator",
-                    target_agent=diagnosis["owner_agent"],
-                    owner_agent=diagnosis["owner_agent"],
-                    task_type="review_generated_documents",
-                    problem_type=diagnosis["problem_type"],
-                    symptom="documents_ready_for_review",
-                    root_cause=diagnosis["root_cause"],
-                    priority=diagnosis["priority"],
-                    blocking=diagnosis["blocking"],
-                    can_retry_after=diagnosis["can_retry_after"],
+        finalize_generated_files(
+            results,
+            batch_pdf_dir=None if job_paths.uses_legacy_layout else job_paths.batch_pdf_dir,
+        )
+        review_handoffs = 0
+        review_row_ids: list[str] = []
+        for result in results:
+            result.pop("result_index", None)
+            result_id = _safe_id(result.get("id"))
+            row = row_lookup.get(result_id) or {}
+            mun_name = str(row.get("MUN_NAME") or "")
+            if result.get("status") == "ok":
+                set_task_statuses(
+                    "generator",
                     row_id=result.get("id"),
-                    mun_name=mun_name,
-                    details={
-                        "reason": "Документы готовы и требуют языковой проверки.",
-                        "files": result.get("files") or {},
-                    },
+                    new_status="done",
+                    note="Генератор пересобрал или подтвердил комплект документов.",
+                    resolution_summary="Комплект документов собран и сохранён в output.",
                     job_id=job_id,
                 )
-                review_handoffs += 1
-            if result_id:
-                review_row_ids.append(result_id)
-        else:
-            set_task_statuses(
-                "generator",
-                row_id=result.get("id"),
-                new_status="blocked",
-                note=str(result.get("error") or "Генератор не смог собрать документы."),
-                resolution_summary="Комплект документов не собран.",
-                job_id=job_id,
-            )
+                if settings.inter_agent_handoffs_enabled:
+                    diagnosis = diagnose_responsibility(
+                        symptom="documents_ready_for_review",
+                        context={"row_id": result.get("id")},
+                    )
+                    create_task(
+                        source_agent="generator",
+                        target_agent=diagnosis["owner_agent"],
+                        owner_agent=diagnosis["owner_agent"],
+                        task_type="review_generated_documents",
+                        problem_type=diagnosis["problem_type"],
+                        symptom="documents_ready_for_review",
+                        root_cause=diagnosis["root_cause"],
+                        priority=diagnosis["priority"],
+                        blocking=diagnosis["blocking"],
+                        can_retry_after=diagnosis["can_retry_after"],
+                        row_id=result.get("id"),
+                        mun_name=mun_name,
+                        details={
+                            "reason": "Документы готовы и требуют языковой проверки.",
+                            "files": result.get("files") or {},
+                        },
+                        job_id=job_id,
+                    )
+                    review_handoffs += 1
+                if result_id:
+                    review_row_ids.append(result_id)
+            else:
+                set_task_statuses(
+                    "generator",
+                    row_id=result.get("id"),
+                    new_status="blocked",
+                    note=str(result.get("error") or "Генератор не смог собрать документы."),
+                    resolution_summary="Комплект документов не собран.",
+                    job_id=job_id,
+                )
 
-    philologist_started_rows = 0
-    philologist_result = None
-    if review_row_ids and settings.philologist_auto_run_enabled:
-        from src.generator.philologist_agent import run_philologist
+        philologist_started_rows = 0
+        philologist_result = None
+        if review_row_ids and settings.philologist_auto_run_enabled:
+            from src.generator.philologist_agent import run_philologist
 
-        philologist_result = run_philologist(ai_enabled=True, row_ids=review_row_ids, job_id=job_id)
-        philologist_started_rows = len(review_row_ids)
+            philologist_result = run_philologist(ai_enabled=True, row_ids=review_row_ids, job_id=job_id)
+            philologist_started_rows = len(review_row_ids)
 
-    state["results"] = results
-    state["ok_rows"] = sum(1 for item in results if item.get("status") == "ok")
-    state["error_rows"] = sum(1 for item in results if item.get("status") == "error")
-    state["completed_at"] = datetime.now().isoformat(timespec="seconds")
-    state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
-    state["status"] = "completed"
-    if isinstance(philologist_result, dict):
-        state["philologist_result"] = {
-            "status": philologist_result.get("status"),
-            "summary_text": philologist_result.get("summary_text"),
-        }
-    state["task_stats"] = count_tasks_for_agent("generator", job_id)
-    state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
-    state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
-    state["summary_text"] = _format_generator_summary(
-        state,
-        review_handoffs=review_handoffs,
-        philologist_started_rows=philologist_started_rows,
-    )
-    _save_generator_state(state, job_id)
-    logger.info(
-        "generator_agent_done",
-        total=len(results),
-        ok_count=state["ok_rows"],
-        error_count=state["error_rows"],
-        elapsed_seconds=state["elapsed_seconds"],
-        case_agent_enabled=ENABLE_CASE_AGENT,
-        case_agent_only_suspicious=CASE_AGENT_ONLY_SUSPICIOUS,
-        web_case_agent_max_workers=WEB_CASE_AGENT_MAX_WORKERS,
-    )
-    return dict(state)
+        state["results"] = results
+        state["ok_rows"] = sum(1 for item in results if item.get("status") == "ok")
+        state["error_rows"] = sum(1 for item in results if item.get("status") == "error")
+        state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
+        state["status"] = "completed"
+        if isinstance(philologist_result, dict):
+            state["philologist_result"] = {
+                "status": philologist_result.get("status"),
+                "summary_text": philologist_result.get("summary_text"),
+            }
+        state["task_stats"] = count_tasks_for_agent("generator", job_id)
+        state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
+        state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
+        state["summary_text"] = _format_generator_summary(
+            state,
+            review_handoffs=review_handoffs,
+            philologist_started_rows=philologist_started_rows,
+        )
+        _save_generator_state(state, job_id)
+        logger.info(
+            "generator_agent_done",
+            total=len(results),
+            ok_count=state["ok_rows"],
+            error_count=state["error_rows"],
+            elapsed_seconds=state["elapsed_seconds"],
+            case_agent_enabled=ENABLE_CASE_AGENT,
+            case_agent_only_suspicious=CASE_AGENT_ONLY_SUSPICIOUS,
+            web_case_agent_max_workers=WEB_CASE_AGENT_MAX_WORKERS,
+        )
+        return dict(state)
+    except Exception as exc:
+        logger.exception("generator_agent_failed")
+        state["status"] = "error"
+        state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
+        state["error_rows"] = max(
+            state.get("error_rows", 0),
+            max(1, state.get("total_rows", 0) - state.get("ok_rows", 0)),
+        )
+        state["summary_text"] = f"Генерация завершилась с ошибкой: {exc}"
+        state["task_stats"] = count_tasks_for_agent("generator", job_id)
+        state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
+        state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
+        _save_generator_state(state, job_id)
+        return dict(state)
 
 
 def get_generator_status(job_id: str | None = None) -> dict[str, Any]:
