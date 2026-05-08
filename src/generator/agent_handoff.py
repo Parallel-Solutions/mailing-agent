@@ -7,11 +7,20 @@ from typing import Any
 from uuid import uuid4
 
 from src.generator.config_generator import DATA_DIR
+from src.jobs.storage import resolve_job_paths
 from src.utils.config import settings
 
 
 TASKS_PATH = DATA_DIR / "agent_tasks.json"
 EVENTS_PATH = DATA_DIR / "agent_events.json"
+
+
+def _resolve_handoff_paths(job_id: str | None = None) -> tuple[Path, Path]:
+    job_paths = resolve_job_paths(job_id)
+    if job_paths.uses_legacy_layout:
+        return TASKS_PATH, EVENTS_PATH
+    state_dir = job_paths.root_dir / "state"
+    return state_dir / "agent_tasks.json", state_dir / "agent_events.json"
 
 
 def _safe_text(value: Any) -> str:
@@ -24,11 +33,12 @@ def _build_retry_key(*, target_agent: str, task_type: str, row_id: Any) -> str:
     return f"{_safe_text(target_agent)}::{_safe_text(task_type)}::{_safe_text(row_id)}"
 
 
-def load_tasks() -> list[dict[str, Any]]:
-    if not TASKS_PATH.exists():
+def load_tasks(job_id: str | None = None) -> list[dict[str, Any]]:
+    tasks_path, _ = _resolve_handoff_paths(job_id)
+    if not tasks_path.exists():
         return []
     try:
-        payload = json.loads(TASKS_PATH.read_text(encoding="utf-8"))
+        payload = json.loads(tasks_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
     if not isinstance(payload, list):
@@ -36,11 +46,12 @@ def load_tasks() -> list[dict[str, Any]]:
     return [item for item in payload if isinstance(item, dict)]
 
 
-def load_events() -> list[dict[str, Any]]:
-    if not EVENTS_PATH.exists():
+def load_events(job_id: str | None = None) -> list[dict[str, Any]]:
+    _, events_path = _resolve_handoff_paths(job_id)
+    if not events_path.exists():
         return []
     try:
-        payload = json.loads(EVENTS_PATH.read_text(encoding="utf-8"))
+        payload = json.loads(events_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
     if not isinstance(payload, list):
@@ -48,17 +59,19 @@ def load_events() -> list[dict[str, Any]]:
     return [item for item in payload if isinstance(item, dict)]
 
 
-def save_tasks(tasks: list[dict[str, Any]]) -> None:
-    TASKS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TASKS_PATH.write_text(
+def save_tasks(tasks: list[dict[str, Any]], job_id: str | None = None) -> None:
+    tasks_path, _ = _resolve_handoff_paths(job_id)
+    tasks_path.parent.mkdir(parents=True, exist_ok=True)
+    tasks_path.write_text(
         json.dumps(tasks, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
-def save_events(events: list[dict[str, Any]]) -> None:
-    EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    EVENTS_PATH.write_text(
+def save_events(events: list[dict[str, Any]], job_id: str | None = None) -> None:
+    _, events_path = _resolve_handoff_paths(job_id)
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    events_path.write_text(
         json.dumps(events[-1000:], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -74,8 +87,9 @@ def append_agent_event(
     mun_name: str = "",
     task_id: str | None = None,
     details: dict[str, Any] | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
-    events = load_events()
+    events = load_events(job_id)
     event = {
         "id": uuid4().hex[:12],
         "source_agent": source_agent,
@@ -89,12 +103,12 @@ def append_agent_event(
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
     events.append(event)
-    save_events(events)
+    save_events(events, job_id)
     return event
 
 
-def get_recent_events(*, agent_name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-    events = load_events()
+def get_recent_events(*, agent_name: str | None = None, limit: int = 50, job_id: str | None = None) -> list[dict[str, Any]]:
+    events = load_events(job_id)
     if agent_name:
         agent_name = _safe_text(agent_name)
         events = [
@@ -121,8 +135,9 @@ def create_task(
     priority: str = "medium",
     blocking: bool = False,
     can_retry_after: bool = False,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
-    tasks = load_tasks()
+    tasks = load_tasks(job_id)
     row_id_text = _safe_text(row_id)
     retry_key = _build_retry_key(target_agent=target_agent, task_type=task_type, row_id=row_id)
 
@@ -166,7 +181,7 @@ def create_task(
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
     tasks.append(task)
-    save_tasks(tasks)
+    save_tasks(tasks, job_id)
     append_agent_event(
         source_agent=source_agent,
         target_agent=target_agent,
@@ -195,17 +210,18 @@ def create_task(
             "retry_count": retry_count,
             "retry_key": retry_key,
         },
+        job_id=job_id,
     )
     return task
 
 
-def get_tasks_for_agent(agent_name: str) -> list[dict[str, Any]]:
-    return [item for item in load_tasks() if _safe_text(item.get("target_agent")) == agent_name]
+def get_tasks_for_agent(agent_name: str, job_id: str | None = None) -> list[dict[str, Any]]:
+    return [item for item in load_tasks(job_id) if _safe_text(item.get("target_agent")) == agent_name]
 
 
-def count_tasks_for_agent(agent_name: str) -> dict[str, int]:
+def count_tasks_for_agent(agent_name: str, job_id: str | None = None) -> dict[str, int]:
     result = {"total": 0, "pending": 0, "in_progress": 0, "done": 0, "blocked": 0, "escalated": 0}
-    for item in get_tasks_for_agent(agent_name):
+    for item in get_tasks_for_agent(agent_name, job_id):
         result["total"] += 1
         status = _safe_text(item.get("status")) or "pending"
         if status in result:
@@ -217,8 +233,9 @@ def mark_tasks_in_progress(
     agent_name: str,
     limit: int | None = None,
     row_ids: list[str] | None = None,
+    job_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    tasks = load_tasks()
+    tasks = load_tasks(job_id)
     touched: list[dict[str, Any]] = []
     remaining = limit
     requested_row_ids = {_safe_text(item) for item in (row_ids or []) if _safe_text(item)}
@@ -241,13 +258,14 @@ def mark_tasks_in_progress(
             mun_name=_safe_text(item.get("mun_name")),
             task_id=_safe_text(item.get("id")) or None,
             details={"status": "in_progress"},
+            job_id=job_id,
         )
         if remaining is not None:
             remaining -= 1
             if remaining <= 0:
                 break
     if touched:
-        save_tasks(tasks)
+        save_tasks(tasks, job_id)
     return touched
 
 
@@ -260,8 +278,9 @@ def set_task_statuses(
     note: str = "",
     resolution_summary: str = "",
     only_statuses: tuple[str, ...] = ("pending", "in_progress"),
+    job_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    tasks = load_tasks()
+    tasks = load_tasks(job_id)
     touched: list[dict[str, Any]] = []
     row_id_text = _safe_text(row_id)
     event_type = {
@@ -301,10 +320,11 @@ def set_task_statuses(
                 "status": new_status,
                 "resolution_summary": resolution_summary,
             },
+            job_id=job_id,
         )
 
     if touched:
-        save_tasks(tasks)
+        save_tasks(tasks, job_id)
     return touched
 
 
@@ -313,10 +333,11 @@ def get_stale_tasks(
     *,
     older_than_seconds: int,
     statuses: tuple[str, ...] = ("pending", "in_progress"),
+    job_id: str | None = None,
 ) -> list[dict[str, Any]]:
     now = datetime.now()
     stale: list[dict[str, Any]] = []
-    for item in get_tasks_for_agent(agent_name):
+    for item in get_tasks_for_agent(agent_name, job_id):
         status = _safe_text(item.get("status"))
         if status not in set(statuses):
             continue

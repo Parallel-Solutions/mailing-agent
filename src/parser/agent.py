@@ -10,7 +10,8 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from src.parser.tools import TOOL_DEFINITIONS, call_tool
+from src.jobs import resolve_job_paths
+from src.parser.tools import TOOL_DEFINITIONS, call_tool, configure_parser_paths
 from src.utils.config import settings
 from src.utils.logger import logger
 
@@ -102,48 +103,60 @@ DEFAULT_SYSTEM_PROMPT = """Ты — агент-парсер муниципаль
 # Память агента
 # ------------------------------------------------------------------
 
-def _load_memory() -> dict:
+def _resolve_memory_path(job_id: str | None = None) -> Path:
+    job_paths = resolve_job_paths(job_id)
+    if job_paths.uses_legacy_layout:
+        return MEMORY_PATH
+    path = job_paths.root_dir / "state" / "agent_memory.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _load_memory(job_id: str | None = None) -> dict:
     """Загружает память из файла. Создаёт новую если файла нет."""
-    MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not MEMORY_PATH.exists():
+    configure_parser_paths(job_id)
+    memory_path = _resolve_memory_path(job_id)
+    memory_path.parent.mkdir(parents=True, exist_ok=True)
+    if not memory_path.exists():
         return {"system_prompt": DEFAULT_SYSTEM_PROMPT, "messages": []}
     try:
-        return json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
+        return json.loads(memory_path.read_text(encoding="utf-8"))
     except Exception:
         logger.warning("agent_memory_corrupted_reset")
         return {"system_prompt": DEFAULT_SYSTEM_PROMPT, "messages": []}
 
 
-def _save_memory(memory: dict) -> None:
+def _save_memory(memory: dict, job_id: str | None = None) -> None:
     """Сохраняет память в файл. Обрезает историю если слишком длинная."""
+    memory_path = _resolve_memory_path(job_id)
     messages = memory.get("messages", [])
     if len(messages) > MAX_HISTORY_MESSAGES:
         # Оставляем последние MAX_HISTORY_MESSAGES сообщений
         memory["messages"] = messages[-MAX_HISTORY_MESSAGES:]
-    MEMORY_PATH.write_text(
+    memory_path.write_text(
         json.dumps(memory, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
-def get_memory() -> dict:
+def get_memory(job_id: str | None = None) -> dict:
     """Возвращает текущую память агента (для API)."""
-    return _load_memory()
+    return _load_memory(job_id)
 
 
-def clear_memory() -> None:
+def clear_memory(job_id: str | None = None) -> None:
     """Очищает историю сообщений, сохраняя системный промпт."""
-    memory = _load_memory()
+    memory = _load_memory(job_id)
     memory["messages"] = []
-    _save_memory(memory)
+    _save_memory(memory, job_id)
     logger.info("agent_memory_cleared")
 
 
-def set_system_prompt(prompt: str) -> None:
+def set_system_prompt(prompt: str, job_id: str | None = None) -> None:
     """Обновляет системный промпт агента."""
-    memory = _load_memory()
+    memory = _load_memory(job_id)
     memory["system_prompt"] = prompt
-    _save_memory(memory)
+    _save_memory(memory, job_id)
     logger.info("agent_system_prompt_updated")
 
 
@@ -162,7 +175,7 @@ def _get_client() -> OpenAI:
 # Основной агентский цикл
 # ------------------------------------------------------------------
 
-def chat(user_message: str) -> dict:
+def chat(user_message: str, job_id: str | None = None) -> dict:
     """
     Принимает сообщение от пользователя, запускает агентский цикл,
     возвращает финальный ответ.
@@ -174,7 +187,8 @@ def chat(user_message: str) -> dict:
             "iterations": 3,
         }
     """
-    memory = _load_memory()
+    configure_parser_paths(job_id)
+    memory = _load_memory(job_id)
     client = _get_client()
 
     # Добавляем сообщение пользователя в историю
@@ -207,7 +221,7 @@ def chat(user_message: str) -> dict:
             logger.exception("agent_llm_error")
             error_reply = f"Ошибка при обращении к LLM: {e}"
             memory["messages"].append({"role": "assistant", "content": error_reply})
-            _save_memory(memory)
+            _save_memory(memory, job_id)
             return {"reply": error_reply, "tools_called": tools_called, "iterations": iterations}
 
         message = response.choices[0].message
@@ -220,7 +234,7 @@ def chat(user_message: str) -> dict:
         if finish_reason == "stop" or not message.tool_calls:
             final_reply = message.content or "Готово."
             memory["messages"].append({"role": "assistant", "content": final_reply})
-            _save_memory(memory)
+            _save_memory(memory, job_id)
 
             logger.info(
                 "agent_chat_done",
@@ -260,7 +274,7 @@ def chat(user_message: str) -> dict:
     # Защита: если вышли из цикла по лимиту итераций
     fallback_reply = "Достигнут лимит шагов. Попробуй переформулировать запрос."
     memory["messages"].append({"role": "assistant", "content": fallback_reply})
-    _save_memory(memory)
+    _save_memory(memory, job_id)
 
     logger.warning("agent_max_iterations_reached", iterations=iterations)
     return {"reply": fallback_reply, "tools_called": tools_called, "iterations": iterations}
@@ -270,7 +284,7 @@ def chat(user_message: str) -> dict:
 # Batch-парсинг всей Базы МО (для кнопки "Запустить парсер")
 # ------------------------------------------------------------------
 
-def run_batch_parser() -> dict:
+def run_batch_parser(job_id: str | None = None) -> dict:
     """
     Запускает парсинг всей Базы МО через агента.
     Используется при нажатии кнопки "Запустить парсер".
@@ -282,4 +296,4 @@ def run_batch_parser() -> dict:
         "Если Checko не находит — используй Tavily для поиска в интернете. "
         "Работай последовательно по всем строкам."
     )
-    return chat(prompt)
+    return chat(prompt, job_id=job_id)

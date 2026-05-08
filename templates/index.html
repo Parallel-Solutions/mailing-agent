@@ -911,7 +911,7 @@
             <button class="btn-primary" id="p-run" onclick="startParser()">Запустить парсер</button>
             <button class="btn-outline" id="p-pause" onclick="pauseParser()" style="display:none">Пауза</button>
             <button class="btn-outline" id="p-merge" onclick="startMergeRmz()">Слияние RMZ7KH</button>
-            <button class="btn-outline" onclick="window.location.href='/api/download/data-xlsx'">Скачать data.xlsx</button>
+            <button class="btn-outline" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать data.xlsx</button>
           </div>
         </div>
       </div>
@@ -971,7 +971,7 @@
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="g-run" onclick="startGenerator()">Запустить генератор</button>
           <button class="btn-outline" id="g-pause" onclick="pauseGenerator()" style="display:none">Пауза</button>
-          <button class="btn-outline" onclick="window.location.href='/api/download/output'">Скачать output.zip</button>
+        <button class="btn-outline" onclick="downloadWithJob('/api/download/output')">Скачать output.zip</button>
         </div>
       </div>
 
@@ -1063,7 +1063,7 @@
             <button type="button" class="btn-outline" id="s-confirm-send">Подтвердить и отправить</button>
             <button type="button" class="btn-outline" id="s-pause" style="display:none">Пауза</button>
             <button type="button" class="btn-danger" id="s-stop">Остановить</button>
-            <button type="button" class="btn-outline" onclick="window.location.href='/api/download/sent-mail-log'">Скачать журнал отправки</button>
+            <button type="button" class="btn-outline" onclick="downloadWithJob('/api/download/sent-mail-log')">Скачать журнал отправки</button>
           </div>
         </div>
 
@@ -1118,7 +1118,7 @@
       </div>
 
       <div style="display:flex; gap:8px; flex-wrap:wrap">
-        <button class="btn-outline" onclick="window.location.href='/api/download/data-xlsx'">Скачать data.xlsx со статусами</button>
+        <button class="btn-outline" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать data.xlsx со статусами</button>
         <button class="btn-outline" onclick="showToast('Повторная отправка будет доступна в финальной версии')">Повторить письма с ошибкой</button>
         <button class="btn-outline" onclick="showToast('Обновлено')">Обновить статусы</button>
       </div>
@@ -1131,6 +1131,47 @@
 
 <script>
   const chatSessions = {};
+  const JOB_STORAGE_KEY = 'mailing-agent-current-job-id';
+  let currentJobId = localStorage.getItem(JOB_STORAGE_KEY) || '';
+
+  function setCurrentJobId(jobId) {
+    currentJobId = String(jobId || '').trim();
+    if (currentJobId) {
+      localStorage.setItem(JOB_STORAGE_KEY, currentJobId);
+    } else {
+      localStorage.removeItem(JOB_STORAGE_KEY);
+    }
+  }
+
+  async function ensureCurrentJobId() {
+    if (currentJobId) return currentJobId;
+    const res = await fetch('/api/jobs', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Не удалось создать рабочую сессию');
+    setCurrentJobId(data.job_id || '');
+    return currentJobId;
+  }
+
+  function apiUrl(path) {
+    if (!currentJobId) return path;
+    const separator = path.includes('?') ? '&' : '?';
+    return `${path}${separator}job_id=${encodeURIComponent(currentJobId)}`;
+  }
+
+  function withJobPayload(payload = {}) {
+    return currentJobId ? { ...payload, job_id: currentJobId } : { ...payload };
+  }
+
+  function appendJobId(formData) {
+    if (currentJobId) {
+      formData.append('job_id', currentJobId);
+    }
+    return formData;
+  }
+
+  function downloadWithJob(path) {
+    window.location.href = apiUrl(path);
+  }
 
   function show(id, el) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -1205,14 +1246,17 @@
   async function uploadData(input) {
     const file = input.files[0];
     if (!file) return;
+    await ensureCurrentJobId();
     const form = new FormData();
     form.append('file', file);
+    appendJobId(form);
     document.getElementById('upload-data-label').textContent = 'Загрузка...';
     try {
       const res = await fetch('/api/upload/data', { method: 'POST', body: form });
       const data = await res.json();
       if (res.ok) {
-        const info = await fetch('/api/data/info').then(r => r.json());
+        if (data.job_id) setCurrentJobId(data.job_id);
+        const info = await fetch(apiUrl('/api/data/info')).then(r => r.json());
         const rows = info.loaded ? info.total : '?';
         document.getElementById('upload-data-filename').textContent = file.name;
         document.getElementById('upload-data-rows').textContent = rows + ' записей';
@@ -1235,8 +1279,10 @@
   async function uploadTemplate(input, btnId, label) {
     const file = input.files[0];
     if (!file) return;
+    await ensureCurrentJobId();
     const form = new FormData();
     form.append('file', file);
+    appendJobId(form);
     const btn = document.getElementById(btnId);
     btn.innerHTML = '<span class="file-icon">⏳</span> Загрузка...';
     try {
@@ -1395,7 +1441,9 @@
       return;
     }
 
-    const payload = { message: text };
+    const payload = (chatId === 'p-chat' || chatId === 'g-chat' || chatId === 's-chat')
+      ? withJobPayload({ message: text })
+      : { message: text };
     if (chatId === 'o-chat' && chatSessions['o-chat']) {
       payload.session_id = chatSessions['o-chat'];
     }
@@ -1473,7 +1521,7 @@
 
   async function refreshParserStatus({ silent = false } = {}) {
     try {
-      const res = await fetch('/api/parser/status');
+      const res = await fetch(apiUrl('/api/parser/status'));
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус парсера');
       const result = data.result || {};
@@ -1488,15 +1536,16 @@
   }
 
   async function startParser() {
+    await ensureCurrentJobId();
     parserRunning = true;
     setParserUiState({ status: 'running', row_count: 0, task_stats: {} });
     appendChatMessage('p-chat', 'agent', 'Запускаю парсерский контур. Сейчас он примет задачи на дозаполнение от других агентов и покажет очередь на обработку.');
     try {
-      const res = await fetch('/api/parser/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
+        const res = await fetch('/api/parser/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withJobPayload({})),
+        });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Ошибка запуска парсера');
       const result = data.result || {};
@@ -1614,7 +1663,7 @@
 
   async function refreshPhilologistStatus({ silent = false } = {}) {
     try {
-      const res = await fetch('/api/philologist/status');
+      const res = await fetch(apiUrl('/api/philologist/status'));
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус агента-филолога');
       const result = data.result || {};
@@ -1629,6 +1678,7 @@
   }
 
   async function startPhilologist() {
+    await ensureCurrentJobId();
     phRunning = true;
     setPhilologistUiState({ status: 'running', total_documents: 0, processed_documents: 0 });
     appendChatMessage('g-chat', 'agent', 'Запускаю проверку документов. После завершения расскажу, что нашёл и что удалось исправить.');
@@ -1640,7 +1690,7 @@
       const res = await fetch('/api/philologist/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ai_enabled: true }),
+        body: JSON.stringify(withJobPayload({ ai_enabled: true })),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1682,7 +1732,7 @@
 
   async function refreshGeneratorStatus({ silent = false } = {}) {
     try {
-      const res = await fetch('/api/generator/status');
+      const res = await fetch(apiUrl('/api/generator/status'));
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус генератора');
       const result = data.result || {};
@@ -1698,13 +1748,18 @@
 
   // GENERATOR
   async function startGenerator() {
+    await ensureCurrentJobId();
     setGeneratorUiState({ status: 'running', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
     if (generatorStatusPoll) clearInterval(generatorStatusPoll);
     generatorStatusPoll = setInterval(() => {
       refreshGeneratorStatus({ silent: true });
     }, 2000);
     try {
-      const res = await fetch('/api/generate', { method: 'POST' });
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withJobPayload({})),
+      });
       const data = await res.json();
       if (!res.ok) {
         showToast('Ошибка: ' + (data.detail || 'неизвестная ошибка'));
@@ -2056,7 +2111,7 @@
 
   async function refreshSenderStatus({ silent = false } = {}) {
     try {
-      const res = await fetch('/api/sender/status');
+      const res = await fetch(apiUrl('/api/sender/status'));
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус отправщика');
       const result = data.result || {};
@@ -2081,6 +2136,7 @@
 
   async function previewSender() {
     try {
+      await ensureCurrentJobId();
       const limit = getSenderBatchLimit();
       const transport = getSenderTransport();
       showToast('Запускаю предпросмотр отправки');
@@ -2089,7 +2145,7 @@
       const previewRes = await fetch('/api/sender/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ limit }),
+        body: JSON.stringify(withJobPayload({ limit })),
       });
       const previewData = await previewRes.json();
       if (!previewRes.ok) throw new Error(previewData.detail || 'Ошибка предпросмотра адресов');
@@ -2102,7 +2158,7 @@
       const res = await fetch('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dry_run: true, limit, transport }),
+        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport })),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
@@ -2122,6 +2178,7 @@
 
   async function confirmAndSendSender() {
     try {
+      await ensureCurrentJobId();
       if (!senderPreviewState || !Array.isArray(senderPreviewState.rows)) {
         safeAppendChatMessage('s-chat', 'agent', 'Сначала нужно выполнить предпросмотр адресов и готовности, а уже потом подтверждать отправку.');
         return;
@@ -2138,7 +2195,7 @@
       const res = await fetch('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dry_run: false, limit, transport }),
+        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport })),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');
@@ -2158,7 +2215,11 @@
 
   async function pauseSender() {
     try {
-      const res = await fetch('/api/sender/stop', { method: 'POST' });
+      const res = await fetch('/api/sender/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withJobPayload({})),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось остановить отправку');
       safeSetSenderUiState(data.result || {});
@@ -2176,7 +2237,7 @@
 
   async function refreshCounts() {
     try {
-      const data = await fetch('/api/counts').then(r => r.json());
+      const data = await fetch(apiUrl('/api/counts')).then(r => r.json());
       document.getElementById('p-total').textContent = data.parser_total.toLocaleString('ru');
       document.getElementById('g-total').textContent = data.generator_total.toLocaleString('ru');
       document.getElementById('g-total-label').textContent = data.generator_total.toLocaleString('ru');
@@ -2184,12 +2245,17 @@
   }
 
   async function startMergeRmz() {
+    await ensureCurrentJobId();
     const btn = document.getElementById('p-merge');
     btn.disabled = true;
     btn.textContent = 'Выполняется...';
     appendChatMessage('p-chat', 'agent', 'Запускаю слияние с RMZ7KH...');
     try {
-      const res = await fetch('/api/parser/merge-rmz', { method: 'POST' });
+      const res = await fetch('/api/parser/merge-rmz', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withJobPayload({})),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Ошибка слияния');
       let msg = `Слияние завершено. Записано: ${data.written}, пропущено (уже есть): ${data.skipped_existing}, не найдено: ${data.not_found}.`;

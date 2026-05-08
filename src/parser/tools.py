@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from src.jobs import resolve_job_paths
 from src.parser.excel_reader import MoRow, read_base_mo
 from src.parser.excel_writer import ExcelWriter, MoRecord
 from src.parser.region_codes import get_region_code
@@ -29,6 +30,14 @@ from src.utils.logger import logger
 
 BASE_MO_PATH = Path("service_docs/base.xlsx")
 DATA_XLSX_PATH = Path("data/data.xlsx")
+RMZ_PATH = Path("service_docs/RMZ7KH.xlsx")
+
+_PARSER_PATHS = {
+    "job_id": None,
+    "base_mo_path": BASE_MO_PATH,
+    "data_xlsx_path": DATA_XLSX_PATH,
+    "rmz_path": RMZ_PATH,
+}
 
 OKVED_RURAL = "84.11.31"   # сельские поселения
 OKVED_URBAN = "84.11.32"   # городские поселения
@@ -41,6 +50,28 @@ _SETTLEMENT_KEYWORDS = (
 )
 
 
+def configure_parser_paths(job_id: str | None = None) -> dict:
+    job_paths = resolve_job_paths(job_id)
+    rmz_candidate = job_paths.root_dir / "service_docs" / "RMZ7KH.xlsx"
+    _PARSER_PATHS["job_id"] = job_paths.job_id
+    _PARSER_PATHS["base_mo_path"] = job_paths.base_xlsx if job_paths.base_xlsx.exists() else BASE_MO_PATH
+    _PARSER_PATHS["data_xlsx_path"] = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    _PARSER_PATHS["rmz_path"] = rmz_candidate if rmz_candidate.exists() else RMZ_PATH
+    return dict(_PARSER_PATHS)
+
+
+def _current_base_mo_path() -> Path:
+    return Path(_PARSER_PATHS["base_mo_path"])
+
+
+def _current_data_xlsx_path() -> Path:
+    return Path(_PARSER_PATHS["data_xlsx_path"])
+
+
+def _current_rmz_path() -> Path:
+    return Path(_PARSER_PATHS["rmz_path"])
+
+
 # ------------------------------------------------------------------
 # 1. Чтение файла База МО
 # ------------------------------------------------------------------
@@ -50,11 +81,12 @@ def tool_read_base_mo() -> dict:
     Читает файл База МО с сервера.
     Возвращает список МО с полями: sub_rf, mun_r_name, mun_name, population.
     """
-    if not BASE_MO_PATH.exists():
+    base_path = _current_base_mo_path()
+    if not base_path.exists():
         return {"error": "Файл База МО не загружен. Загрузите файл через интерфейс."}
 
     try:
-        rows = read_base_mo(BASE_MO_PATH)
+        rows = read_base_mo(base_path)
         return {
             "total": len(rows),
             "rows": [
@@ -261,7 +293,8 @@ def tool_validate_matches(suspicious_matches: list[dict]) -> dict:
 
 
 def tool_write_to_excel(records: list[dict], output_filename: str = "data.xlsx") -> dict:
-    path = Path("data") / output_filename
+    data_path = _current_data_xlsx_path()
+    path = data_path if output_filename == "data.xlsx" else data_path.parent / output_filename
     validator = MoValidator()
     writer = ExcelWriter(path)
 
@@ -314,7 +347,7 @@ def tool_search_in_base_mo(mun_name: str, sub_rf: str, return_list: bool = False
     Ищет МО в локальном файле base.xlsx.
     Если return_list=True — возвращает все МО указанного субъекта.
     """
-    path = Path("service_docs/base.xlsx")
+    path = _current_base_mo_path()
     if not path.exists():
         return {"error": "Файл base.xlsx не найден в service_docs/"}
     try:
@@ -361,8 +394,8 @@ def tool_find_missing_mo() -> dict:
     Совпадение точное — по субъекту, району и названию МО.
     """
     import openpyxl as _xl
-    base_path = Path("service_docs/base.xlsx")
-    data_path = Path("data/data.xlsx")
+    base_path = _current_base_mo_path()
+    data_path = _current_data_xlsx_path()
 
     if not base_path.exists():
         return {"error": "Файл base.xlsx не найден"}
@@ -417,7 +450,7 @@ def tool_search_in_rmz(mun_name: str, sub_rf: str = "") -> dict:
     Проверяет субъект по столбцу K.
     """
     import openpyxl as _xl
-    path = Path("service_docs/RMZ7KH.xlsx")
+    path = _current_rmz_path()
     if not path.exists():
         return {"error": "Файл RMZ7KH.xlsx не найден в service_docs/"}
     try:
