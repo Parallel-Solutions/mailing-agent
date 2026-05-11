@@ -560,8 +560,6 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
         replace_text_in_runs(paragraph, replacements)
 
     clear_highlights(doc)
-    if template_path.name.startswith("kp_"):
-        normalize_kp_formatting(doc, context)
     if template_path.name.startswith("contract_"):
         normalize_contract_formatting(doc, context)
     doc.save(output_path)

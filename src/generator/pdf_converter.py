@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -46,9 +47,22 @@ def cleanup_libreoffice_profiles(profiles_root: Optional[Path] = None) -> Path:
     return target_dir
 
 
+def _build_writer_pdf_filter() -> str:
+    # Use controlled PDF export instead of LibreOffice's quick default.
+    # This preserves raster assets better and avoids silent downscaling.
+    filter_data = {
+        "UseLosslessCompression": {"type": "boolean", "value": "true"},
+        "Quality": {"type": "long", "value": "100"},
+        "ReduceImageResolution": {"type": "boolean", "value": "false"},
+        "EmbedStandardFonts": {"type": "boolean", "value": "true"},
+    }
+    return f"pdf:writer_pdf_Export:{json.dumps(filter_data, ensure_ascii=False, separators=(',', ':'))}"
+
+
 def _convert_chunk(args: Tuple[str, List[str], str, str]) -> List[Tuple[str, Optional[str]]]:
     soffice, chunk_paths, output_dir, profile_dir = args
     profile_uri = Path(profile_dir).resolve().as_uri()
+    pdf_filter = _build_writer_pdf_filter()
 
     subprocess.run(
         [
@@ -56,7 +70,7 @@ def _convert_chunk(args: Tuple[str, List[str], str, str]) -> List[Tuple[str, Opt
             f"-env:UserInstallation={profile_uri}",
             "--headless",
             "--convert-to",
-            "pdf",
+            pdf_filter,
             "--outdir",
             output_dir,
             *chunk_paths,
