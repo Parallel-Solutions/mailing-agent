@@ -424,6 +424,24 @@ def normalize_contract_formatting(doc: DocumentObject, context: dict) -> None:
             )
             break
 
+    execution_marker = "1.2. Выполнение"
+    for paragraph in doc.paragraphs:
+        if execution_marker in paragraph.text and "неотъемлемой частью настоящего" in paragraph.text:
+            rebuild_paragraph(
+                paragraph,
+                [
+                    (
+                        "1.2. Выполнение работ осуществляется по месту нахождения исполнителя "
+                        "на условиях и в сроки, установленные настоящим договором, "
+                        "техническим заданием (Приложение № 1 к договору), "
+                        "календарным планом выполнения работ (Приложение № 2 к договору), "
+                        "которые являются неотъемлемой частью настоящего договора.",
+                        False,
+                    )
+                ],
+            )
+            break
+
     population_marker = "Численность населения проектируемой территории составляет"
     if population_with_unit:
         for table in doc.tables:
