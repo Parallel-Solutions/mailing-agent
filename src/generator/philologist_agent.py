@@ -116,9 +116,34 @@ def _replace_paragraph_text(paragraph, new_text: str) -> bool:
     return True
 
 
+def _run_format_signature(run) -> tuple[Any, ...]:
+    color = None
+    if run.font.color is not None and run.font.color.rgb is not None:
+        color = str(run.font.color.rgb)
+    size = run.font.size.pt if run.font.size is not None else None
+    return (
+        run.bold,
+        run.italic,
+        run.underline,
+        run.font.name,
+        size,
+        color,
+    )
+
+
+def _paragraph_is_safe_for_text_rewrite(paragraph) -> bool:
+    non_empty_runs = [run for run in paragraph.runs if run.text]
+    if len(non_empty_runs) <= 1:
+        return True
+    signatures = {_run_format_signature(run) for run in non_empty_runs}
+    return len(signatures) == 1
+
+
 def _replace_fragment_in_paragraph(paragraph, fragment: str, replacement: str) -> bool:
     current_text = "".join(run.text for run in paragraph.runs) if paragraph.runs else paragraph.text
     if not fragment or not replacement or fragment not in current_text:
+        return False
+    if not _paragraph_is_safe_for_text_rewrite(paragraph):
         return False
     new_text = current_text.replace(fragment, replacement, 1)
     if new_text == current_text:
@@ -171,20 +196,39 @@ def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]
         normalized = _normalize_double_spaces(current_text)
         return _replace_paragraph_text(paragraph, normalized)
 
+    if issue.get("source") == "local" and suggestion:
+        if not _paragraph_is_safe_for_text_rewrite(paragraph) and fragment.strip() != current_text.strip():
+            return False
+        if fragment and fragment in current_text:
+            return _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+        if current_text.strip() == fragment.strip():
+            if not _paragraph_is_safe_for_text_rewrite(paragraph):
+                return False
+            return _replace_paragraph_text(paragraph, suggestion)
+
     if "после числа используется неверная форма слова" in issue_text and suggestion:
+        if not _paragraph_is_safe_for_text_rewrite(paragraph):
+            return False
         return _replace_paragraph_text(paragraph, suggestion)
 
-    if issue.get("source") == "local" and suggestion and fragment:
-        if fragment in current_text:
-            return _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
-        if current_text.strip() == fragment.strip():
-            return _replace_paragraph_text(paragraph, suggestion)
-
     if issue.get("source") == "ai" and suggestion and fragment:
+        if not _paragraph_is_safe_for_text_rewrite(paragraph) and fragment.strip() != current_text.strip():
+            return False
         if fragment in current_text:
             return _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
         if current_text.strip() == fragment.strip():
+            if not _paragraph_is_safe_for_text_rewrite(paragraph):
+                return False
             return _replace_paragraph_text(paragraph, suggestion)
+        if issue.get("severity") == "error":
+            if not _paragraph_is_safe_for_text_rewrite(paragraph):
+                return False
+            return _replace_paragraph_text(paragraph, current_text.replace(fragment, suggestion))
+
+    if issue.get("source") == "ai" and suggestion and not fragment and issue.get("severity") == "error":
+        if not _paragraph_is_safe_for_text_rewrite(paragraph):
+            return False
+        return _replace_paragraph_text(paragraph, suggestion)
 
     return False
 

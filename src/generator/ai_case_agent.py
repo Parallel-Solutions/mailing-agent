@@ -410,12 +410,22 @@ def _normalize_from_adm_name(row: dict, context: dict) -> dict:
 
 
 def _build_work_scope_fragment(context: dict) -> str:
-    parts = [
+    parts: list[str] = []
+    for raw_part in (
         _safe_str(context.get("MUN_NAME_2")),
         _safe_str(context.get("MUN_R_NAME_1")),
         _safe_str(context.get("SUB_RF_1")),
-    ]
-    return " ".join(part for part in parts if part).strip()
+    ):
+        if not raw_part:
+            continue
+        lower_part = raw_part.lower()
+        if any(lower_part == existing.lower() for existing in parts):
+            continue
+        if any(lower_part in existing.lower() for existing in parts):
+            continue
+        parts = [existing for existing in parts if existing.lower() not in lower_part]
+        parts.append(raw_part)
+    return " ".join(parts).strip()
 
 
 def _apply_canonical_mo_name(context: dict, canonical_name: str) -> dict:

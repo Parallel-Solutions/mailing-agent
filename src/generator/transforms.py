@@ -22,6 +22,112 @@ def normalize_display_text(value: str) -> str:
     return text
 
 
+def _capitalize_phrase_if_lower(value: str) -> str:
+    text = normalize_display_text(value).strip()
+    if not text:
+        return ""
+    if text == text.lower():
+        return text[:1].upper() + text[1:]
+    return text
+
+
+def _capitalize_words(value: str) -> str:
+    words = []
+    for word in normalize_display_text(value).split():
+        parts = [part[:1].upper() + part[1:] if part else part for part in word.split("-")]
+        words.append("-".join(parts))
+    return " ".join(words)
+
+
+def _normalize_mo_tail_case(value: str) -> str:
+    text = _capitalize_words(value)
+    return re.sub(r"\b(Сельсовет|Поссовет)\b", lambda match: match.group(1).lower(), text)
+
+
+def _normalize_mo_name_case(value: str) -> str:
+    text = normalize_display_text(value).strip()
+    if not text:
+        return ""
+    lower = text.lower()
+    if lower.startswith("сельское поселение село "):
+        locality = text[len("Сельское поселение село ") :].strip()
+        return f"Сельское поселение село {_normalize_mo_tail_case(locality)}"
+    if lower.startswith("сельское поселение "):
+        tail = text[len("Сельское поселение ") :].strip()
+        if tail == tail.lower():
+            tail = _normalize_mo_tail_case(tail)
+        return f"Сельское поселение {tail}"
+    if lower.startswith("городское поселение город "):
+        locality = text[len("Городское поселение город ") :].strip()
+        return f"Городское поселение город {_capitalize_words(locality)}"
+    if lower.startswith("городское поселение поселок "):
+        locality = text[len("Городское поселение поселок ") :].strip()
+        return f"Городское поселение поселок {_capitalize_words(locality)}"
+    return _capitalize_phrase_if_lower(text)
+
+
+def _trim_administrative_tail(value: str) -> str:
+    text = normalize_display_text(value).strip()
+    if not text:
+        return ""
+    upper = text.upper()
+    markers = (
+        " МУНИЦИПАЛЬНОГО РАЙОНА ",
+        " МУНИЦИПАЛЬНОГО ОКРУГА ",
+        " РЕСПУБЛИКИ ",
+        " ОБЛАСТИ",
+        " КРАЯ",
+        " АВТОНОМНОГО ОКРУГА",
+    )
+    cut = len(text)
+    for marker in markers:
+        marker_index = upper.find(marker)
+        if marker_index > 0:
+            cut = min(cut, marker_index)
+    trimmed = text[:cut].strip(" ,")
+    trimmed = re.sub(
+        r"\s+[А-ЯЁа-яё-]+(?:ского|цкого)\s*$",
+        "",
+        trimmed,
+    ).strip(" ,")
+    return trimmed or text
+
+
+def _dedupe_scope_parts(parts: list[str]) -> list[str]:
+    result: list[str] = []
+    lower_result: list[str] = []
+    for raw_part in parts:
+        part = _capitalize_phrase_if_lower(raw_part)
+        if not part:
+            continue
+        lower_part = part.lower()
+        if any(lower_part == existing for existing in lower_result):
+            continue
+        if any(lower_part in existing for existing in lower_result):
+            continue
+        filtered_pairs = [
+            (existing_part, existing_lower)
+            for existing_part, existing_lower in zip(result, lower_result)
+            if existing_lower not in lower_part
+        ]
+        result = [existing_part for existing_part, _ in filtered_pairs]
+        lower_result = [existing_lower for _, existing_lower in filtered_pairs]
+        result.append(part)
+        lower_result.append(lower_part)
+    return result
+
+
+def build_work_scope_fragment(context: dict) -> str:
+    parts = _dedupe_scope_parts(
+        [
+            str(context.get("MUN_NAME_2", "")).strip(),
+            str(context.get("MUN_R_NAME_1", "")).strip(),
+            str(context.get("SUB_RF_1", "")).strip(),
+        ]
+    )
+    return " ".join(parts).strip()
+
+
 def patch_admin_name_components(adm_name: str, row: dict, inflected: Optional[dict] = None) -> str:
     result = adm_name
     for field in ("MUN_NAME", "MUN_R_NAME", "SUB_RF"):
@@ -103,10 +209,10 @@ def extract_official_mo_name_from_adm_name(adm_name: str) -> str:
     if quote_match:
         quoted = normalize_display_text(quote_match.group(1)).strip()
         if _quoted_name_looks_like_mo_name(quoted):
-            return quoted
+            return _normalize_mo_name_case(_trim_administrative_tail(quoted))
     pattern_name = _extract_canonical_mo_from_adm_pattern(normalized_adm_name)
     if pattern_name:
-        return pattern_name
+        return _normalize_mo_name_case(_trim_administrative_tail(pattern_name))
     return ""
 
 
@@ -173,11 +279,13 @@ def build_document_context(row: dict, outgoing_number: int) -> dict:
     row_for_inflection = dict(row)
     row_for_inflection["MUN_NAME"] = normalized_mun_name
     row_for_inflection["ADM_NAME"] = adm_name
+    row_for_inflection["MUN_R_NAME"] = _capitalize_phrase_if_lower(row.get("MUN_R_NAME", ""))
+    row_for_inflection["SUB_RF"] = _capitalize_phrase_if_lower(row.get("SUB_RF", ""))
     inflected = build_inflected_fields(row_for_inflection)
     context = {
         "ID": row.get("ID"),
-        "SUB_RF": row.get("SUB_RF"),
-        "MUN_R_NAME": row.get("MUN_R_NAME"),
+        "SUB_RF": row_for_inflection["SUB_RF"],
+        "MUN_R_NAME": row_for_inflection["MUN_R_NAME"],
         "MUN_NAME": normalized_mun_name,
         "ADM_NAME": adm_name,
         "ADM_NAME_RAW": raw_adm_name,
@@ -203,10 +311,5 @@ def build_document_context(row: dict, outgoing_number: int) -> dict:
     }
     context.update(inflected)
     context["HEAD_MO_FRAGMENT"] = str(context.get("MUN_NAME_1", "")).strip()
-    work_scope_parts = [
-        str(context.get("MUN_NAME_2", "")).strip(),
-        str(context.get("MUN_R_NAME_1", "")).strip(),
-        str(context.get("SUB_RF_1", "")).strip(),
-    ]
-    context["WORK_SCOPE_FRAGMENT"] = " ".join(part for part in work_scope_parts if part).strip()
+    context["WORK_SCOPE_FRAGMENT"] = build_work_scope_fragment(context)
     return context

@@ -148,6 +148,19 @@ def _normalize_city_or_settlement_locality(name: str) -> str:
     return _to_nominative_single_word(normalized)
 
 
+def _capitalize_phrase_words(value: str) -> str:
+    words = []
+    for word in _normalize_spaces(value).split():
+        parts = [part[:1].upper() + part[1:] if part else part for part in word.split("-")]
+        words.append("-".join(parts))
+    return " ".join(words)
+
+
+def _normalize_mo_tail_case(value: str) -> str:
+    text = _capitalize_phrase_words(value)
+    return re.sub(r"\b(Сельсовет|Поссовет)\b", lambda match: match.group(1).lower(), text)
+
+
 def _restore_word_case(source_word: str, inflected_word: str) -> str:
     if source_word.isupper():
         return inflected_word.upper()
@@ -276,6 +289,21 @@ def inflect_fio_dative(fio: str) -> InflectionResult:
 
 def inflect_mun_name_genitive(name: str) -> InflectionResult:
     normalized = _normalize_spaces(name)
+    if normalized.startswith("Сельское поселение село "):
+        locality = normalized[len("Сельское поселение село ") :].strip()
+        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
+        value = f"Сельского поселения село {locality}"
+        return InflectionResult(value=value, changed=value != name, confidence="rule")
+    if normalized.startswith("Сельское поселение Село "):
+        locality = normalized[len("Сельское поселение Село ") :].strip()
+        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
+        value = f"Сельского поселения село {locality}"
+        return InflectionResult(value=value, changed=value != name, confidence="rule")
+    if normalized.startswith("Сельское поселение "):
+        locality = normalized[len("Сельское поселение ") :].strip()
+        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
+        value = f"Сельского поселения {locality}"
+        return InflectionResult(value=value, changed=value != name, confidence="rule")
     if normalized.startswith("Городское поселение город "):
         locality = normalized[len("Городское поселение город ") :].strip()
         locality = _normalize_city_or_settlement_locality(locality)
@@ -315,6 +343,21 @@ def inflect_mun_name_dative(name: str) -> InflectionResult:
 
 def inflect_mun_name_prepositional(name: str) -> InflectionResult:
     normalized = _normalize_spaces(name)
+    if normalized.startswith("Сельское поселение село "):
+        locality = normalized[len("Сельское поселение село ") :].strip()
+        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
+        value = f"Сельском поселении село {locality}"
+        return InflectionResult(value=value, changed=value != name, confidence="rule")
+    if normalized.startswith("Сельское поселение Село "):
+        locality = normalized[len("Сельское поселение Село ") :].strip()
+        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
+        value = f"Сельском поселении село {locality}"
+        return InflectionResult(value=value, changed=value != name, confidence="rule")
+    if normalized.startswith("Сельское поселение "):
+        locality = normalized[len("Сельское поселение ") :].strip()
+        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
+        value = f"Сельском поселении {locality}"
+        return InflectionResult(value=value, changed=value != name, confidence="rule")
     if normalized.startswith("Городское поселение город "):
         locality = normalized[len("Городское поселение город ") :].strip()
         locality = _normalize_city_or_settlement_locality(locality)

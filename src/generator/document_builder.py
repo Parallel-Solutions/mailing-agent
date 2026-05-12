@@ -22,18 +22,15 @@ CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
 KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
 CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
 
-SVG_FALLBACK_PARTS = {
-    "word/document.xml": "word/_rels/document.xml.rels",
-    "word/header2.xml": "word/_rels/header2.xml.rels",
-    "word/header3.xml": "word/_rels/header3.xml.rels",
-}
-
 SVG_BLIP_PATTERN = re.compile(
     r'<a:blip r:embed="(?P<png>rId\d+)">'
     r'<a:extLst><a:ext uri="\{96DAC541-7B7A-43D3-8B79-37D633B846F1\}">'
     r'<asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" '
     r'r:embed="(?P<svg>rId\d+)"/></a:ext></a:extLst>',
     re.S,
+)
+SVG_RELATION_PATTERN = re.compile(
+    r'<Relationship Id="(?P<id>[^"]+)" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="(?P<target>[^"]+)"\/>'
 )
 
 
@@ -368,11 +365,6 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
 
     if len(doc.tables) >= 3 and doc.tables[2].rows:
         insert_spacer_before_table(doc.tables[2], 24)
-        signature_table = doc.tables[2]
-        for row in signature_table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    apply_paragraph_font(paragraph, "Tahoma", compact_body_font_size, gray)
 
 
 def normalize_contract_formatting(doc: DocumentObject, context: dict) -> None:
@@ -566,14 +558,28 @@ def normalize_contract_formatting(doc: DocumentObject, context: dict) -> None:
 def force_svg_blips_in_docx(docx_path: Path) -> None:
     removed_rel_ids_by_part: dict[str, list[str]] = {}
 
+    def iter_svg_candidate_parts(names: list[str]) -> list[str]:
+        return sorted(
+            name
+            for name in names
+            if name.startswith("word/")
+            and name.endswith(".xml")
+            and "/_rels/" not in name
+        )
+
+    def rels_path_for_part(part_name: str) -> str:
+        part_path = Path(part_name)
+        return str(part_path.parent / "_rels" / f"{part_path.name}.rels").replace("\\", "/")
+
     with zipfile.ZipFile(docx_path, "r") as source_zip:
         items = source_zip.infolist()
         payloads: dict[str, bytes] = {}
+        candidate_parts = iter_svg_candidate_parts([item.filename for item in items])
 
         for item in items:
             data = source_zip.read(item.filename)
 
-            if item.filename in SVG_FALLBACK_PARTS:
+            if item.filename in candidate_parts:
                 text = data.decode("utf-8", errors="ignore")
                 removed_rel_ids: list[str] = []
 
@@ -582,18 +588,21 @@ def force_svg_blips_in_docx(docx_path: Path) -> None:
                     return f'<a:blip r:embed="{match.group("svg")}">'
 
                 updated_text = SVG_BLIP_PATTERN.sub(replace_svg_fallback, text)
-                removed_rel_ids_by_part[item.filename] = removed_rel_ids
+                if removed_rel_ids:
+                    removed_rel_ids_by_part[item.filename] = removed_rel_ids
                 data = updated_text.encode("utf-8")
 
-            elif item.filename in SVG_FALLBACK_PARTS.values():
+            elif item.filename.endswith(".rels"):
                 text = data.decode("utf-8", errors="ignore")
-                parent_part = next(part for part, rels in SVG_FALLBACK_PARTS.items() if rels == item.filename)
-                for relation_id in removed_rel_ids_by_part.get(parent_part, []):
-                    text = re.sub(
-                        rf'<Relationship Id="{relation_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="[^"]+"\/>',
-                        "",
-                        text,
-                    )
+                for parent_part, relation_ids in removed_rel_ids_by_part.items():
+                    if rels_path_for_part(parent_part) != item.filename:
+                        continue
+                    for relation_id in relation_ids:
+                        text = re.sub(
+                            rf'<Relationship Id="{relation_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="[^"]+"\/>',
+                            "",
+                            text,
+                        )
                 data = text.encode("utf-8")
 
             payloads[item.filename] = data
@@ -601,6 +610,92 @@ def force_svg_blips_in_docx(docx_path: Path) -> None:
     with zipfile.ZipFile(docx_path, "w", compression=zipfile.ZIP_DEFLATED) as target_zip:
         for item in items:
             target_zip.writestr(item, payloads[item.filename])
+
+
+def restore_svg_assets_from_template(template_path: Path, output_path: Path) -> None:
+    with zipfile.ZipFile(template_path, "r") as template_zip, zipfile.ZipFile(output_path, "r") as output_zip:
+        output_items = output_zip.infolist()
+        payloads: dict[str, bytes] = {item.filename: output_zip.read(item.filename) for item in output_items}
+        template_names = set(template_zip.namelist())
+
+        candidate_parts = sorted(
+            name
+            for name in template_names
+            if name.startswith("word/")
+            and name.endswith(".xml")
+            and "/_rels/" not in name
+            and name in payloads
+        )
+
+        for part_name in candidate_parts:
+            template_text = template_zip.read(part_name).decode("utf-8", errors="ignore")
+            output_text = payloads[part_name].decode("utf-8", errors="ignore")
+            if "svgBlip" not in template_text:
+                continue
+
+            rels_name = str(Path(part_name).parent / "_rels" / f"{Path(part_name).name}.rels").replace("\\", "/")
+            template_rels_text = (
+                template_zip.read(rels_name).decode("utf-8", errors="ignore")
+                if rels_name in template_names
+                else ""
+            )
+            output_rels_text = (
+                payloads[rels_name].decode("utf-8", errors="ignore")
+                if rels_name in payloads
+                else ""
+            )
+            template_rel_map = {
+                match.group("id"): match.group("target")
+                for match in SVG_RELATION_PATTERN.finditer(template_rels_text)
+            }
+
+            part_changed = False
+            rels_changed = False
+            for match in SVG_BLIP_PATTERN.finditer(template_text):
+                full_fragment = match.group(0)
+                png_rid = match.group("png")
+                svg_rid = match.group("svg")
+                open_tag = f'<a:blip r:embed="{png_rid}">'
+                self_closing_tag = f'<a:blip r:embed="{png_rid}"/>'
+
+                if open_tag in output_text and full_fragment not in output_text:
+                    output_text = output_text.replace(open_tag, full_fragment, 1)
+                    part_changed = True
+                elif self_closing_tag in output_text and full_fragment not in output_text:
+                    output_text = output_text.replace(self_closing_tag, full_fragment, 1)
+                    part_changed = True
+
+                if svg_rid and svg_rid not in output_rels_text and svg_rid in template_rel_map:
+                    relation_line = next(
+                        (
+                            rel_match.group(0)
+                            for rel_match in SVG_RELATION_PATTERN.finditer(template_rels_text)
+                            if rel_match.group("id") == svg_rid
+                        ),
+                        "",
+                    )
+                    if relation_line:
+                        output_rels_text = output_rels_text.replace("</Relationships>", relation_line + "</Relationships>")
+                        rels_changed = True
+
+                    target = template_rel_map.get(svg_rid, "")
+                    if target:
+                        media_part = str((Path(part_name).parent / target).as_posix())
+                        if media_part in template_names and media_part not in payloads:
+                            payloads[media_part] = template_zip.read(media_part)
+
+            if part_changed:
+                payloads[part_name] = output_text.encode("utf-8")
+            if rels_changed:
+                payloads[rels_name] = output_rels_text.encode("utf-8")
+
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as target_zip:
+        known_names = {item.filename for item in output_items}
+        for item in output_items:
+            target_zip.writestr(item, payloads[item.filename])
+        for extra_name, extra_payload in payloads.items():
+            if extra_name not in known_names:
+                target_zip.writestr(extra_name, extra_payload)
 
 
 def render_docx(template_path: Path, replacements: list[tuple[str, str]], output_path: Path, context: dict) -> Path:
@@ -616,6 +711,7 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
         normalize_contract_formatting(doc, context)
     doc.save(output_path)
     if template_path.name.startswith("kp_"):
+        restore_svg_assets_from_template(template_path, output_path)
         force_svg_blips_in_docx(output_path)
     return output_path
 
