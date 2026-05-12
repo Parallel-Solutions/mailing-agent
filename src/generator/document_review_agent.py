@@ -43,6 +43,25 @@ POPULATION_PATTERN = re.compile(
     r"(Численность населения проектируемой территории составляет )(\d+)\s+(человек(?:а)?)",
     re.IGNORECASE,
 )
+LOWERCASE_LOCALITY_PATTERN = re.compile(
+    r"\b(?P<prefix>города|город|села|село|поселка|посёлка|поселок|посёлок)\s+"
+    r"(?P<name>[а-яё]+(?:-[а-яё]+)*)",
+)
+REPEATED_GEO_FRAGMENT_PATTERN = re.compile(
+    r"(?P<fragment>"
+    r"[А-ЯЁа-яё-]+(?:\s+[А-ЯЁа-яё-]+){0,4}\s+муниципального\s+района\s+"
+    r"[А-ЯЁа-яё-]+(?:\s+[А-ЯЁа-яё-]+){0,3}\s+области"
+    r")\s+(?P=fragment)",
+    re.IGNORECASE,
+)
+DOUBLE_RAYON_PATTERN = re.compile(
+    r"(?P<fragment>[А-ЯЁа-яё-]+ского\s+района)\s+района",
+    re.IGNORECASE,
+)
+BAD_UPPERCASE_WORDS = {
+    "ДОГОВОР": "Договор",
+    "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ": "Коммерческое предложение",
+}
 
 
 @dataclass
@@ -107,6 +126,11 @@ def _population_with_unit(number_text: str) -> str:
     else:
         unit = "человек"
     return f"{number_text} {unit}"
+
+
+def _title_case_locality_name(name: str) -> str:
+    parts = [part for part in name.split("-") if part]
+    return "-".join(part[:1].upper() + part[1:] for part in parts)
 
 
 def _iter_docx_blocks(doc: Document) -> Iterable[tuple[str, str]]:
@@ -204,6 +228,60 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
                 issue="Обнаружены двойные пробелы.",
                 suggestion="Убрать лишние пробелы.",
                 severity="info",
+            )
+
+        for source, replacement in BAD_UPPERCASE_WORDS.items():
+            if source not in text:
+                continue
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment=source,
+                replacement=replacement,
+                issue="Есть неудачное использование капса в текстовом блоке.",
+                severity="warning",
+            )
+
+        for match in LOWERCASE_LOCALITY_PATTERN.finditer(text):
+            prefix = match.group("prefix")
+            locality_name = match.group("name")
+            titled_locality = _title_case_locality_name(locality_name)
+            if locality_name == titled_locality:
+                continue
+            fragment = match.group(0)
+            replacement = f"{prefix} {titled_locality}"
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment=fragment,
+                replacement=replacement,
+                issue="Название населённого пункта в официальной конструкции должно начинаться с заглавной буквы.",
+                severity="warning",
+            )
+
+        repeated_geo_match = REPEATED_GEO_FRAGMENT_PATTERN.search(text)
+        if repeated_geo_match:
+            fragment = repeated_geo_match.group("fragment")
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment=repeated_geo_match.group(0),
+                replacement=fragment,
+                issue="Повторяется один и тот же географический хвост (район/область).",
+                severity="error",
+            )
+
+        double_rayon_match = DOUBLE_RAYON_PATTERN.search(text)
+        if double_rayon_match:
+            fragment = double_rayon_match.group(0)
+            replacement = double_rayon_match.group("fragment")
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment=fragment,
+                replacement=replacement,
+                issue="Дублируется слово 'района' в официальной конструкции.",
+                severity="error",
             )
 
         if "обоснование предмета нормирование" in text:
