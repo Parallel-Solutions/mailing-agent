@@ -2105,9 +2105,10 @@
     const processed = Number(result.processed_rows || 0);
     const ok = Number(result.ok_rows || 0);
     const errors = Number(result.error_rows || 0);
+    const outputFileCount = Number(result.output_file_count || 0);
     const status = result.status || 'idle';
     const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
-    const canDownloadOutput = status === 'completed' && ok > 0;
+    const canDownloadOutput = status === 'completed' && outputFileCount > 0;
 
     if (doneStat) doneStat.textContent = processed.toLocaleString('ru');
     if (errorStat) errorStat.textContent = errors.toLocaleString('ru');
