@@ -806,7 +806,10 @@ def _send_via_unisender_classic(
     if not sender_email:
         raise RuntimeError("Не указан подтверждённый email отправителя UniSender.")
 
-    body = _htmlify_mail_body(_build_mail_body(row, mail_template_path=mail_template_path))
+    body = _htmlify_mail_body(
+        _build_mail_body(row, mail_template_path=mail_template_path),
+        include_unsubscribe=False,
+    )
     payload: dict[str, Any] = {
         "format": "json",
         "api_key": api_key,
@@ -880,7 +883,7 @@ def _send_via_unisender(
         raise RuntimeError("Не указан email отправителя UniSender Go.")
 
     plaintext_body = _build_mail_body(row, mail_template_path=mail_template_path)
-    html_body = _htmlify_mail_body(plaintext_body)
+    html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
     payload: dict[str, Any] = {
         "message": {
             "recipients": [{"email": recipient}],
