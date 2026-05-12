@@ -459,6 +459,13 @@ def run_generator_agent(
 
 def get_generator_status(job_id: str | None = None) -> dict[str, Any]:
     state = _load_generator_state(job_id)
+    job_paths = resolve_job_paths(job_id)
+    output_dir = job_paths.output_dir if not job_paths.uses_legacy_layout else OUTPUT_DIR
+    state["output_file_count"] = (
+        sum(1 for path in output_dir.rglob("*") if path.is_file())
+        if output_dir.exists()
+        else 0
+    )
     state["task_stats"] = count_tasks_for_agent("generator", job_id)
     state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
