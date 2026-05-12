@@ -58,6 +58,10 @@ DOUBLE_RAYON_PATTERN = re.compile(
     r"(?P<fragment>[А-ЯЁа-яё-]+ского\s+района)\s+района",
     re.IGNORECASE,
 )
+MISSING_MUNICIPAL_DISTRICT_PATTERN = re.compile(
+    r"(?<!муниципального\s)\b(?!муниципального\b)(?P<district>[А-ЯЁа-яё-]+(?:ского|цкого|ого))\s+района\b",
+    re.IGNORECASE,
+)
 BAD_UPPERCASE_WORDS = {
     "ДОГОВОР": "Договор",
     "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ": "Коммерческое предложение",
@@ -281,6 +285,18 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
                 fragment=fragment,
                 replacement=replacement,
                 issue="Дублируется слово 'района' в официальной конструкции.",
+                severity="error",
+            )
+
+        for match in MISSING_MUNICIPAL_DISTRICT_PATTERN.finditer(text):
+            fragment = match.group(0)
+            replacement = f"{match.group('district')} муниципального района"
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment=fragment,
+                replacement=replacement,
+                issue="В официальной конструкции района пропущено слово 'муниципального'.",
                 severity="error",
             )
 

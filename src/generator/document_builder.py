@@ -14,7 +14,7 @@ from docx.shared import Cm, Pt, RGBColor
 from docx.table import _Cell, Table
 
 from src.generator.config_generator import BATCH_DOCX_DIR, OUTPUT_DIR, TEMPLATES_DIR
-from src.generator.transforms import build_output_folder_name
+from src.generator.transforms import build_output_folder_name, ensure_official_district_wording
 
 
 KP_TEMPLATE_FILENAME = "kp_template_source.docx"
@@ -299,6 +299,7 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
         str(context.get("WORK_SCOPE_FRAGMENT", "")).strip()
         or f"{context.get('MUN_NAME_2', '')} {context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
     )
+    work_scope_fragment = ensure_official_district_wording(work_scope_fragment)
 
     for section in doc.sections:
         section.top_margin = Cm(1.3)
@@ -373,6 +374,7 @@ def normalize_contract_formatting(doc: DocumentObject, context: dict) -> None:
         str(context.get("WORK_SCOPE_FRAGMENT", "")).strip()
         or f"{context.get('MUN_NAME_2', '')} {context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
     )
+    work_scope_fragment = ensure_official_district_wording(work_scope_fragment)
     population_with_unit = str(context.get("POPULATION_WITH_UNIT", "")).strip()
 
     for section in doc.sections:
@@ -729,6 +731,10 @@ def build_kp_replacements(context: dict) -> list[tuple[str, str]]:
 def build_contract_replacements(context: dict) -> list[tuple[str, str]]:
     contract_number = str(context.get("CONTRACT_NUMBER", ""))
     date = str(context.get("DATE", ""))
+    work_scope_fragment = ensure_official_district_wording(
+        str(context.get("WORK_SCOPE_FRAGMENT", "")).strip()
+        or f"{context.get('MUN_NAME_2', '')} {context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
+    )
     return [
         ("№ 101", f"№ {contract_number}"),
         ("« » мая 2026 г.", date),
@@ -740,12 +746,20 @@ def build_contract_replacements(context: dict) -> list[tuple[str, str]]:
         ("MUN_NAME_2", str(context.get("MUN_NAME_2", ""))),
         ("MUN_NAME_1", str(context.get("MUN_NAME_1", ""))),
         (
+            "MUN_NAME_2 MUN_R_NAME SUB_RF_1",
+            work_scope_fragment,
+        ),
+        (
+            "MUN_NAME_2 MUN_R_NAME SUB_RF",
+            work_scope_fragment,
+        ),
+        (
             "MUN_NAME MUN_R_NAME SUB_RF",
-            f"{context.get('MUN_NAME', '')} {context.get('MUN_R_NAME', '')} {context.get('SUB_RF', '')}".strip(),
+            work_scope_fragment,
         ),
         ("MUN_NAME", str(context.get("MUN_NAME", ""))),
         ("MUN_R_NAME_1", str(context.get("MUN_R_NAME_1", ""))),
-        ("MUN_R_NAME", str(context.get("MUN_R_NAME", ""))),
+        ("MUN_R_NAME", str(context.get("MUN_R_NAME_1", context.get("MUN_R_NAME", "")))),
         ("SUB_RF_1", str(context.get("SUB_RF_1", ""))),
         ("SUB_RF", str(context.get("SUB_RF", ""))),
         ("ADRES", str(context.get("ADRES", ""))),

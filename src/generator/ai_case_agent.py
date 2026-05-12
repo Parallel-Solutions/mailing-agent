@@ -22,6 +22,7 @@ from src.generator.inflect import (
     inflect_mun_name_prepositional,
     inflect_mun_name_project_form,
 )
+from src.generator.transforms import ensure_official_district_wording
 
 try:
     from openai import OpenAI  # type: ignore
@@ -425,7 +426,7 @@ def _build_work_scope_fragment(context: dict) -> str:
             continue
         parts = [existing for existing in parts if existing.lower() not in lower_part]
         parts.append(raw_part)
-    return " ".join(parts).strip()
+    return ensure_official_district_wording(" ".join(parts).strip())
 
 
 def _apply_canonical_mo_name(context: dict, canonical_name: str) -> dict:

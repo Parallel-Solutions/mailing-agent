@@ -9,6 +9,7 @@ import mimetypes
 import secrets
 from datetime import datetime
 from email.message import EmailMessage
+from html import escape
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any
@@ -46,6 +47,20 @@ DEFAULT_MAIL_BODY = (
     "С уважением,\n"
     "ООО «ПР»"
 )
+DEFAULT_MAIL_FOOTER_TEXT = (
+    "С уважением,\n"
+    "Черкашина Наталья Александровна\n"
+    "+7 (812) 242-93-12\n"
+    "ООО «Параллельные Решения»\n"
+    "https://www.parresh.ru/"
+)
+MAIL_FOOTER_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "parresh-signature-logo.png"
+MAIL_FOOTER_LOGO_CID = "parresh-signature-logo"
+MAIL_FOOTER_HTML_TEMPLATE = """
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:16px;border-collapse:collapse">
+  <tr><td style="padding:0"><img src="{image_src}" alt="Параллельные Решения" width="340" style="display:block;width:340px;max-width:340px;height:auto;border:0;outline:none;text-decoration:none"></td></tr>
+</table>
+""".strip()
 STATUS_OK_VALUES = {"ОК", "OK", "SENT"}
 UNISENDER_GO_SEND_PATH = "email/send.json"
 UNISENDER_CLASSIC_SEND_PATH = "sendEmail"
@@ -119,6 +134,33 @@ def _read_mail_template(mail_template_path: Path | None = None) -> str:
         except OSError:
             pass
     return DEFAULT_MAIL_BODY
+
+
+def _build_mail_footer_html(*, inline_image: bool = False) -> str:
+    return MAIL_FOOTER_HTML_TEMPLATE.format(image_src=_mail_footer_image_src(inline=inline_image))
+
+
+def _mail_footer_image_src(*, inline: bool = False) -> str:
+    if inline:
+        return f"cid:{MAIL_FOOTER_LOGO_CID}"
+    public_base_url = _safe_text(settings.public_base_url).rstrip("/")
+    if public_base_url:
+        return f"{public_base_url}/public/mail-signature.png"
+    return ""
+
+
+def _append_mail_footer_text(body: str) -> str:
+    body_text = body.rstrip()
+    footer_text = DEFAULT_MAIL_FOOTER_TEXT.strip()
+    if footer_text in body_text or "Черкашина Наталья Александровна" in body_text:
+        return body_text
+    body_text = re.sub(
+        r"\n{2,}С уважением,\s*\nООО\s+«ПР»\s*$",
+        "",
+        body_text,
+        flags=re.IGNORECASE,
+    ).rstrip()
+    return f"{body_text}\n\n{footer_text}" if body_text else footer_text
 
 
 def _parse_emails(raw_value: Any) -> list[str]:
@@ -480,16 +522,26 @@ def _build_message(
     *,
     mail_template_path: Path | None = None,
 ) -> EmailMessage:
-    body = _read_mail_template(mail_template_path).format(
+    body = _append_mail_footer_text(_read_mail_template(mail_template_path).format(
         HEAD_FIO=_safe_text(row.get("HEAD_FIO")),
         ADM_NAME=_safe_text(row.get("ADM_NAME")),
         MUN_NAME=_safe_text(row.get("MUN_NAME")),
-    )
+    ))
     message = EmailMessage()
     message["From"] = settings.smtp_sender_email
     message["To"] = recipient
     message["Subject"] = subject
     message.set_content(body)
+    message.add_alternative(_htmlify_mail_body(body, inline_footer_image=True), subtype="html")
+    if MAIL_FOOTER_LOGO_PATH.exists():
+        html_part = message.get_payload()[-1]
+        html_part.add_related(
+            MAIL_FOOTER_LOGO_PATH.read_bytes(),
+            maintype="image",
+            subtype="png",
+            cid=f"<{MAIL_FOOTER_LOGO_CID}>",
+            filename=MAIL_FOOTER_LOGO_PATH.name,
+        )
 
     for attachment_path in attachments:
         path = Path(attachment_path)
@@ -503,11 +555,11 @@ def _build_message(
 
 
 def _build_mail_body(row: dict[str, Any], *, mail_template_path: Path | None = None) -> str:
-    return _read_mail_template(mail_template_path).format(
+    return _append_mail_footer_text(_read_mail_template(mail_template_path).format(
         HEAD_FIO=_safe_text(row.get("HEAD_FIO")),
         ADM_NAME=_safe_text(row.get("ADM_NAME")),
         MUN_NAME=_safe_text(row.get("MUN_NAME")),
-    )
+    ))
 
 
 def _append_sent_mail_log(
@@ -695,10 +747,15 @@ def _send_via_smtp(
     return _save_sent_copy(message)
 
 
-def _htmlify_mail_body(body: str) -> str:
-    parts = [line.strip() for line in body.splitlines()]
+def _htmlify_mail_body(body: str, *, inline_footer_image: bool = False) -> str:
+    parts = [escape(line.strip()) for line in body.splitlines()]
     non_empty = [line for line in parts if line]
     html = "<br>".join(non_empty)
+    if "Черкашина Наталья Александровна" in body:
+        marker = "С уважением,<br>Черкашина Наталья Александровна"
+        marker_index = html.find(marker)
+        if marker_index >= 0:
+            html = html[:marker_index] + _build_mail_footer_html(inline_image=inline_footer_image)
     if "{{UnsubscribeUrl}}" not in html:
         html += "<br><br><a href='{{UnsubscribeUrl}}'>Отписаться от писем</a>"
     return html
