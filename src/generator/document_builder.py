@@ -35,11 +35,8 @@ SVG_RELATION_PATTERN = re.compile(
 
 
 def resolve_template_paths(templates_dir: Path | None = None) -> tuple[Path, Path]:
-    templates_root = templates_dir or TEMPLATES_DIR
-    kp_path = templates_root / KP_TEMPLATE_FILENAME
-    contract_path = templates_root / CONTRACT_TEMPLATE_FILENAME
-    if kp_path.exists() and contract_path.exists():
-        return kp_path, contract_path
+    if templates_dir is not None:
+        return templates_dir / KP_TEMPLATE_FILENAME, templates_dir / CONTRACT_TEMPLATE_FILENAME
     return KP_TEMPLATE_PATH, CONTRACT_TEMPLATE_PATH
 
 

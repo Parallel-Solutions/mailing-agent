@@ -831,21 +831,21 @@
       <div class="grid2">
         <div class="field">
           <label>Шаблон текста письма (.txt)</label>
-          <input type="file" id="upload-mail-input" accept=".txt" style="display:none" onchange="uploadTemplate(this, 'mail-btn', 'Шаблон письма')">
+          <input type="file" id="upload-mail-input" accept=".txt" style="display:none" onchange="uploadTemplate(this, 'mail-btn', 'Шаблон письма', 'mail')">
           <button class="file-btn" id="mail-btn" data-default-label="Выбрать файл" onclick="document.getElementById('upload-mail-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
         <div class="field">
           <label>Шаблон КП (.docx)</label>
-          <input type="file" id="upload-kp-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'kp-btn', 'Шаблон КП')">
+          <input type="file" id="upload-kp-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'kp-btn', 'Шаблон КП', 'kp')">
           <button class="file-btn" id="kp-btn" data-default-label="Выбрать файл" onclick="document.getElementById('upload-kp-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
         <div class="field">
           <label>Шаблон договора (.docx)</label>
-          <input type="file" id="upload-contract-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'contract-btn', 'Шаблон Договор')">
+          <input type="file" id="upload-contract-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'contract-btn', 'Шаблон Договор', 'contract')">
           <button class="file-btn" id="contract-btn" data-default-label="Выбрать файл" onclick="document.getElementById('upload-contract-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
@@ -1414,12 +1414,13 @@
     input.value = '';
   }
 
-  async function uploadTemplate(input, btnId, label) {
+  async function uploadTemplate(input, btnId, label, templateKind) {
     const file = input.files[0];
     if (!file) return;
     await ensureCurrentJobId();
     const form = new FormData();
     form.append('file', file);
+    form.append('template_kind', templateKind || '');
     appendJobId(form);
     const btn = document.getElementById(btnId);
     btn.innerHTML = '<span class="file-icon">⏳</span> Загрузка...';
