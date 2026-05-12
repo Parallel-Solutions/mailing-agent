@@ -66,6 +66,15 @@ BAD_UPPERCASE_WORDS = {
     "ДОГОВОР": "Договор",
     "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ": "Коммерческое предложение",
 }
+LEGAL_TERM_CASE_REPLACEMENTS = {
+    "Выполнение Работ": "Выполнение работ",
+    "нахождения Исполнителя": "нахождения исполнителя",
+    "настоящим Договором": "настоящим договором",
+    "Техническим заданием": "техническим заданием",
+    "Календарным планом": "календарным планом",
+    "к Договору": "к договору",
+    "настоящего Договора": "настоящего договора",
+}
 
 
 @dataclass
@@ -245,6 +254,19 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
                 issue="Есть неудачное использование капса в текстовом блоке.",
                 severity="warning",
             )
+
+        if "1.2." in text or "Выполнение Работ" in text:
+            for source, replacement in LEGAL_TERM_CASE_REPLACEMENTS.items():
+                if source not in text:
+                    continue
+                _add_local_replacement_issue(
+                    issues,
+                    location=location,
+                    fragment=source,
+                    replacement=replacement,
+                    issue="В середине предложения используется лишняя заглавная буква.",
+                    severity="warning",
+                )
 
         for match in LOWERCASE_LOCALITY_PATTERN.finditer(text):
             prefix = match.group("prefix")
