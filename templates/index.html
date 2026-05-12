@@ -1384,6 +1384,7 @@
       const res = await fetch('/api/upload/data', { method: 'POST', body: form });
       const data = await res.json();
       if (res.ok) {
+        const previousJobId = currentJobId;
         if (data.job_id) setCurrentJobId(data.job_id);
         resetModuleUiForNewDataUpload();
         const info = await fetch(apiUrl('/api/data/info')).then(r => r.json());
@@ -1393,6 +1394,9 @@
         document.getElementById('upload-data-status').style.display = 'block';
         document.getElementById('upload-zone-data').style.display = 'none';
         showToast('Файл загружен: ' + rows + ' записей');
+        if (previousJobId && currentJobId && previousJobId !== currentJobId) {
+          appendChatMessage('p-chat', 'agent', `Рабочая сессия обновлена: ${previousJobId} → ${currentJobId}. Шаблоны и данные теперь привязаны к новому job.`);
+        }
         await refreshCounts();
         await refreshParserStatus({ silent: true });
         await refreshGeneratorStatus({ silent: true });
@@ -1423,6 +1427,7 @@
       const res = await fetch('/api/upload/template', { method: 'POST', body: form });
       const data = await res.json();
       if (res.ok) {
+        if (data.job_id) setCurrentJobId(data.job_id);
         btn.innerHTML = '<span class="file-icon">✓</span> ' + (file.name || label);
         btn.classList.add('uploaded');
         showToast(label + ' загружен успешно');
