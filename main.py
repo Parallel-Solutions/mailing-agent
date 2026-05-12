@@ -160,6 +160,7 @@ async def data_info(job_id: str | None = None, username: str = Depends(check_aut
 async def upload_template(
     file: UploadFile = File(...),
     job_id: str | None = Form(default=None),
+    template_kind: str | None = Form(default=None),
     username: str = Depends(check_auth),
 ):
     paths = resolve_job_paths(job_id)
@@ -167,15 +168,15 @@ async def upload_template(
     templates_dir = paths.templates_dir
     templates_dir.mkdir(exist_ok=True)
     original_name = Path(file.filename or "").name
-    original_name_lower = original_name.lower()
-    if original_name_lower.endswith(".txt"):
+    kind = (template_kind or "").strip().lower()
+    if kind == "mail":
         dest = templates_dir / "mail_template.txt"
-    elif "kp_template_source" in original_name_lower:
+    elif kind == "kp":
         dest = templates_dir / "kp_template_source.docx"
-    elif "contract_template_source" in original_name_lower:
+    elif kind == "contract":
         dest = templates_dir / "contract_template_source.docx"
     else:
-        dest = templates_dir / original_name
+        raise HTTPException(status_code=400, detail="Не указан тип шаблона.")
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     return {
