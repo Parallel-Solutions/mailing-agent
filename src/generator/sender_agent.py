@@ -533,7 +533,10 @@ def _build_message(
     message["To"] = recipient
     message["Subject"] = subject
     message.set_content(body)
-    message.add_alternative(_htmlify_mail_body(body, inline_footer_image=True), subtype="html")
+    message.add_alternative(
+        _htmlify_mail_body(body, inline_footer_image=True, include_unsubscribe=False),
+        subtype="html",
+    )
     if MAIL_FOOTER_LOGO_PATH.exists():
         html_part = message.get_payload()[-1]
         html_part.add_related(
@@ -748,7 +751,12 @@ def _send_via_smtp(
     return _save_sent_copy(message)
 
 
-def _htmlify_mail_body(body: str, *, inline_footer_image: bool = False) -> str:
+def _htmlify_mail_body(
+    body: str,
+    *,
+    inline_footer_image: bool = False,
+    include_unsubscribe: bool = True,
+) -> str:
     parts = [escape(line.strip()) for line in body.splitlines()]
     non_empty = [line for line in parts if line]
     html = "<br>".join(non_empty)
@@ -757,7 +765,7 @@ def _htmlify_mail_body(body: str, *, inline_footer_image: bool = False) -> str:
         marker_index = html.find(marker)
         if marker_index >= 0:
             html = html[:marker_index] + _build_mail_footer_html(inline_image=inline_footer_image)
-    if "{{UnsubscribeUrl}}" not in html:
+    if include_unsubscribe and "{{UnsubscribeUrl}}" not in html:
         html += "<br><br><a href='{{UnsubscribeUrl}}'>Отписаться от писем</a>"
     return html
 
