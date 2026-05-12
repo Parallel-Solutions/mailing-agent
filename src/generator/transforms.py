@@ -117,6 +117,18 @@ def _dedupe_scope_parts(parts: list[str]) -> list[str]:
     return result
 
 
+def ensure_official_district_wording(value: str) -> str:
+    text = normalize_display_text(value).strip()
+    if not text:
+        return ""
+    return re.sub(
+        r"(?<!муниципального\s)\b(?!муниципального\b)([А-ЯЁа-яё-]+(?:ского|цкого|ого))\s+района\b",
+        r"\1 муниципального района",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
 def build_work_scope_fragment(context: dict) -> str:
     parts = _dedupe_scope_parts(
         [
@@ -125,7 +137,7 @@ def build_work_scope_fragment(context: dict) -> str:
             str(context.get("SUB_RF_1", "")).strip(),
         ]
     )
-    return " ".join(parts).strip()
+    return ensure_official_district_wording(" ".join(parts).strip())
 
 
 def patch_admin_name_components(adm_name: str, row: dict, inflected: Optional[dict] = None) -> str:

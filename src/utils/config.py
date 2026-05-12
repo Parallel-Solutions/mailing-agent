@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # Приложение
     app_host: str = "0.0.0.0"
     app_port: int = 8000
+    public_base_url: str = "http://31.130.150.209:9806"
 
     openai_api_key: str = "sk-PK3lARaSCCuZ6-fKKecF0w"
     openai_base_url: str = "https://api.vsellm.ru/v1"

@@ -387,8 +387,10 @@ def inflect_mun_r_name_genitive(name: str) -> InflectionResult:
     if normalized.startswith("Муниципальный район "):
         tail = normalized[len("Муниципальный район ") :].strip()
         if tail.lower().endswith(" район"):
-            tail = _phrase_inflect(tail, {"gent"}).value
-            return InflectionResult(value=tail, changed=tail != name, confidence="rule")
+            head = tail[: -len(" район")].strip()
+            head = _phrase_inflect(head, {"gent"}).value
+            value = f"{head} муниципального района"
+            return InflectionResult(value=value, changed=value != name, confidence="rule")
         tail = _phrase_inflect(tail, {"gent"}).value
         value = f"{tail} муниципального района"
         return InflectionResult(value=value, changed=value != name, confidence="rule")
@@ -406,7 +408,9 @@ def inflect_mun_r_name_genitive(name: str) -> InflectionResult:
         return InflectionResult(value=value, changed=value != name, confidence="rule")
 
     if normalized.endswith(" район"):
-        value = _phrase_inflect(normalized, {"gent"}).value
+        head = normalized[: -len(" район")].strip()
+        head = _phrase_inflect(head, {"gent"}).value
+        value = f"{head} муниципального района"
         return InflectionResult(value=value, changed=value != name, confidence="rule")
 
     return _phrase_inflect(name, {"gent"})

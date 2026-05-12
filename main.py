@@ -411,6 +411,17 @@ from fastapi.responses import FileResponse
 import zipfile
 import tempfile
 
+PUBLIC_ASSETS_DIR = Path("src/generator/assets")
+
+
+@app.get("/public/mail-signature.png")
+async def public_mail_signature():
+    signature_path = PUBLIC_ASSETS_DIR / "parresh-signature-logo.png"
+    if not signature_path.exists():
+        raise HTTPException(status_code=404, detail="Mail signature image not found.")
+    return FileResponse(signature_path, media_type="image/png")
+
+
 @app.get("/api/download/output")
 async def download_output(job_id: str | None = None, username: str = Depends(check_auth)):
     output_dir = resolve_job_paths(job_id).output_dir
