@@ -79,11 +79,16 @@ def _extract_canonical_mo_from_adm_pattern(adm_name: str) -> str:
         if not candidate:
             return ""
         upper_candidate = candidate.upper()
-        if upper_candidate.startswith("ГОРОД "):
-            locality = normalize_display_text(candidate[len("город ") :].strip()).capitalize()
+        if upper_candidate.startswith("ГОРОД ") or upper_candidate.startswith("ГОРОДА "):
+            locality = normalize_display_text(candidate.split(" ", 1)[1].strip()).capitalize() if " " in candidate else ""
             if locality:
                 return f"Городское поселение город {locality}"
-        if upper_candidate.startswith("ПОСЕЛОК ") or upper_candidate.startswith("ПОСЁЛОК "):
+        if (
+            upper_candidate.startswith("ПОСЕЛОК ")
+            or upper_candidate.startswith("ПОСЁЛОК ")
+            or upper_candidate.startswith("ПОСЕЛКА ")
+            or upper_candidate.startswith("ПОСЁЛКА ")
+        ):
             locality = normalize_display_text(candidate.split(" ", 1)[1].strip()).capitalize() if " " in candidate else ""
             if locality:
                 return f"Городское поселение поселок {locality}"

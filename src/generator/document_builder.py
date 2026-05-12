@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import zipfile
 from pathlib import Path
 import shutil
 
@@ -19,6 +21,20 @@ KP_TEMPLATE_FILENAME = "kp_template_source.docx"
 CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
 KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
 CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
+
+SVG_FALLBACK_PARTS = {
+    "word/document.xml": "word/_rels/document.xml.rels",
+    "word/header2.xml": "word/_rels/header2.xml.rels",
+    "word/header3.xml": "word/_rels/header3.xml.rels",
+}
+
+SVG_BLIP_PATTERN = re.compile(
+    r'<a:blip r:embed="(?P<png>rId\d+)">'
+    r'<a:extLst><a:ext uri="\{96DAC541-7B7A-43D3-8B79-37D633B846F1\}">'
+    r'<asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" '
+    r'r:embed="(?P<svg>rId\d+)"/></a:ext></a:extLst>',
+    re.S,
+)
 
 
 def resolve_template_paths(templates_dir: Path | None = None) -> tuple[Path, Path]:
@@ -117,7 +133,6 @@ def rebuild_paragraph(paragraph, segments: list[tuple[str, bool]]) -> None:
     for text, is_bold in segments:
         new_run = paragraph.add_run(text)
         if template_run is not None:
-            new_run.style = template_run.style
             if template_run.font.name:
                 new_run.font.name = template_run.font.name
             if template_run.font.size:
@@ -136,7 +151,6 @@ def rebuild_paragraph_with_format(paragraph, segments: list[tuple[str, bool]], f
     for text, is_bold in segments:
         new_run = paragraph.add_run(text)
         if template_run is not None:
-            new_run.style = template_run.style
             if template_run.font.size:
                 new_run.font.size = template_run.font.size
         new_run.font.name = font_name
@@ -156,6 +170,12 @@ def compact_paragraph(paragraph, line_spacing: float = 1.0) -> None:
     paragraph_format.space_before = Pt(0)
     paragraph_format.space_after = Pt(0)
     paragraph_format.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
+    paragraph_format.line_spacing = line_spacing
+
+
+def set_paragraph_line_spacing(paragraph, line_spacing: float = 1.0) -> None:
+    paragraph_format = paragraph.paragraph_format
+    paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
     paragraph_format.line_spacing = line_spacing
 
 
@@ -275,8 +295,8 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
     body_font_size = 10
     compact_body_font_size = 9.5
     body_line_spacing = 1.0
-    compact_line_spacing = 0.94
-    table_line_spacing = 0.94
+    compact_line_spacing = 1.0
+    table_line_spacing = 1.0
 
     work_scope_fragment = (
         str(context.get("WORK_SCOPE_FRAGMENT", "")).strip()
@@ -300,7 +320,7 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
                 gray,
             )
             apply_paragraph_font(paragraph, "Tahoma", compact_body_font_size, gray)
-            compact_paragraph(paragraph, compact_line_spacing)
+            set_paragraph_line_spacing(paragraph, compact_line_spacing)
             break
 
     if len(doc.tables) >= 1 and doc.tables[0].rows and len(doc.tables[0].rows[0].cells) > 1:
@@ -311,7 +331,7 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
             gray,
         )
         apply_paragraph_font(doc.tables[0].rows[0].cells[1].paragraphs[0], "Tahoma", body_font_size, gray)
-        compact_paragraph(doc.tables[0].rows[0].cells[1].paragraphs[0], table_line_spacing)
+        set_paragraph_line_spacing(doc.tables[0].rows[0].cells[1].paragraphs[0], table_line_spacing)
 
     if len(doc.tables) >= 2 and len(doc.tables[1].rows) > 1 and len(doc.tables[1].rows[1].cells) > 0:
         rebuild_paragraph_with_format(
@@ -328,23 +348,14 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
             gray,
         )
         apply_paragraph_font(doc.tables[1].rows[1].cells[0].paragraphs[0], "Tahoma", compact_body_font_size, gray)
-        compact_paragraph(doc.tables[1].rows[1].cells[0].paragraphs[0], table_line_spacing)
+        set_paragraph_line_spacing(doc.tables[1].rows[1].cells[0].paragraphs[0], table_line_spacing)
 
     for paragraph_index in [3, 5, 6, 8, 9, 10]:
         if paragraph_index < len(doc.paragraphs):
             font_size = compact_body_font_size if paragraph_index in {5, 6, 8, 9, 10} else body_font_size
             line_spacing = compact_line_spacing if paragraph_index in {5, 6, 8, 9, 10} else body_line_spacing
             apply_paragraph_font(doc.paragraphs[paragraph_index], "Tahoma", font_size, gray)
-            compact_paragraph(doc.paragraphs[paragraph_index], line_spacing)
-
-    if len(doc.paragraphs) > 5:
-        doc.paragraphs[5].paragraph_format.space_after = Pt(2)
-
-    if len(doc.paragraphs) > 9:
-        doc.paragraphs[9].paragraph_format.space_before = Pt(2)
-
-    if len(doc.paragraphs) > 10:
-        doc.paragraphs[10].paragraph_format.space_before = Pt(2)
+            set_paragraph_line_spacing(doc.paragraphs[paragraph_index], line_spacing)
 
     if len(doc.tables) >= 2:
         for row_index in [0, 1, 2]:
@@ -353,16 +364,15 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
                     for paragraph in cell.paragraphs:
                         font_size = compact_body_font_size if row_index == 1 else body_font_size
                         apply_paragraph_font(paragraph, "Tahoma", font_size, gray)
-                        compact_paragraph(paragraph, table_line_spacing)
+                        set_paragraph_line_spacing(paragraph, table_line_spacing)
 
     if len(doc.tables) >= 3 and doc.tables[2].rows:
-        insert_spacer_before_table(doc.tables[2], 12)
-        signature_row = doc.tables[2].rows[0]
-        for cell in signature_row.cells:
-            for paragraph_index, paragraph in enumerate(cell.paragraphs):
-                apply_paragraph_font(paragraph, "Tahoma", compact_body_font_size, gray)
-                compact_paragraph(paragraph, table_line_spacing)
-                paragraph.paragraph_format.space_before = Pt(0)
+        insert_spacer_before_table(doc.tables[2], 24)
+        signature_table = doc.tables[2]
+        for row in signature_table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    apply_paragraph_font(paragraph, "Tahoma", compact_body_font_size, gray)
 
 
 def normalize_contract_formatting(doc: DocumentObject, context: dict) -> None:
@@ -553,6 +563,46 @@ def normalize_contract_formatting(doc: DocumentObject, context: dict) -> None:
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.BOTTOM
 
 
+def force_svg_blips_in_docx(docx_path: Path) -> None:
+    removed_rel_ids_by_part: dict[str, list[str]] = {}
+
+    with zipfile.ZipFile(docx_path, "r") as source_zip:
+        items = source_zip.infolist()
+        payloads: dict[str, bytes] = {}
+
+        for item in items:
+            data = source_zip.read(item.filename)
+
+            if item.filename in SVG_FALLBACK_PARTS:
+                text = data.decode("utf-8", errors="ignore")
+                removed_rel_ids: list[str] = []
+
+                def replace_svg_fallback(match: re.Match[str]) -> str:
+                    removed_rel_ids.append(match.group("png"))
+                    return f'<a:blip r:embed="{match.group("svg")}">'
+
+                updated_text = SVG_BLIP_PATTERN.sub(replace_svg_fallback, text)
+                removed_rel_ids_by_part[item.filename] = removed_rel_ids
+                data = updated_text.encode("utf-8")
+
+            elif item.filename in SVG_FALLBACK_PARTS.values():
+                text = data.decode("utf-8", errors="ignore")
+                parent_part = next(part for part, rels in SVG_FALLBACK_PARTS.items() if rels == item.filename)
+                for relation_id in removed_rel_ids_by_part.get(parent_part, []):
+                    text = re.sub(
+                        rf'<Relationship Id="{relation_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="[^"]+"\/>',
+                        "",
+                        text,
+                    )
+                data = text.encode("utf-8")
+
+            payloads[item.filename] = data
+
+    with zipfile.ZipFile(docx_path, "w", compression=zipfile.ZIP_DEFLATED) as target_zip:
+        for item in items:
+            target_zip.writestr(item, payloads[item.filename])
+
+
 def render_docx(template_path: Path, replacements: list[tuple[str, str]], output_path: Path, context: dict) -> Path:
     doc = Document(template_path)
 
@@ -560,9 +610,13 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
         replace_text_in_runs(paragraph, replacements)
 
     clear_highlights(doc)
+    if template_path.name.startswith("kp_"):
+        normalize_kp_formatting(doc, context)
     if template_path.name.startswith("contract_"):
         normalize_contract_formatting(doc, context)
     doc.save(output_path)
+    if template_path.name.startswith("kp_"):
+        force_svg_blips_in_docx(output_path)
     return output_path
 
 

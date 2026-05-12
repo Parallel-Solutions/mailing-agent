@@ -263,10 +263,15 @@ def _extract_canonical_from_adm_name(adm_name: str) -> Optional[str]:
             if candidate:
                 upper_candidate = candidate.upper()
                 if prefix == "АДМИНИСТРАЦИЯ ГОРОДСКОГО ПОСЕЛЕНИЯ ":
-                    if upper_candidate.startswith("ГОРОД "):
-                        locality = _capitalize_first(_normalize_name_candidate(candidate[len("город ") :].strip())).capitalize()
+                    if upper_candidate.startswith("ГОРОД ") or upper_candidate.startswith("ГОРОДА "):
+                        locality = _capitalize_first(_normalize_name_candidate(candidate.split(" ", 1)[1].strip())).capitalize() if " " in candidate else ""
                         return f"Городское поселение город {locality}"
-                    if upper_candidate.startswith("ПОСЕЛОК ") or upper_candidate.startswith("ПОСЁЛОК "):
+                    if (
+                        upper_candidate.startswith("ПОСЕЛОК ")
+                        or upper_candidate.startswith("ПОСЁЛОК ")
+                        or upper_candidate.startswith("ПОСЕЛКА ")
+                        or upper_candidate.startswith("ПОСЁЛКА ")
+                    ):
                         locality = _capitalize_first(_normalize_name_candidate(candidate.split(" ", 1)[1].strip())).capitalize() if " " in candidate else ""
                         if locality:
                             return f"Городское поселение поселок {locality}"

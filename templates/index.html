@@ -813,7 +813,7 @@
 
       <div class="field">
         <label>Вид работ</label>
-        <select>
+        <select id="settings-work-type">
           <option>МНГП (сельских и городских поселений)</option>
           <option>ГП+ПЗЗ</option>
           <option>Отдельно ГП и ПЗЗ</option>
@@ -823,7 +823,7 @@
 
       <div class="field">
         <label>Тема письма для рассылки</label>
-        <input type="text" value="Коммерческое предложение МНГП. Срок действия до 31.05.2026">
+        <input id="settings-mail-subject" type="text" value="Коммерческое предложение МНГП. Срок действия до 31.05.2026">
       </div>
 
       <div class="divider"></div>
@@ -832,21 +832,21 @@
         <div class="field">
           <label>Шаблон текста письма (.txt)</label>
           <input type="file" id="upload-mail-input" accept=".txt" style="display:none" onchange="uploadTemplate(this, 'mail-btn', 'Шаблон письма')">
-          <button class="file-btn" id="mail-btn" onclick="document.getElementById('upload-mail-input').click()">
+          <button class="file-btn" id="mail-btn" data-default-label="Выбрать файл" onclick="document.getElementById('upload-mail-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
         <div class="field">
           <label>Шаблон КП (.docx)</label>
           <input type="file" id="upload-kp-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'kp-btn', 'Шаблон КП')">
-          <button class="file-btn" id="kp-btn" onclick="document.getElementById('upload-kp-input').click()">
+          <button class="file-btn" id="kp-btn" data-default-label="Выбрать файл" onclick="document.getElementById('upload-kp-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
         <div class="field">
           <label>Шаблон договора (.docx)</label>
           <input type="file" id="upload-contract-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'contract-btn', 'Шаблон Договор')">
-          <button class="file-btn" id="contract-btn" onclick="document.getElementById('upload-contract-input').click()">
+          <button class="file-btn" id="contract-btn" data-default-label="Выбрать файл" onclick="document.getElementById('upload-contract-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
@@ -856,15 +856,22 @@
 
       <div class="field">
         <label>Email отправителя</label>
-        <input type="email" placeholder="info@company.ru">
+        <input id="settings-sender-email" type="email" placeholder="info@company.ru">
       </div>
 
       <div class="field">
         <label>Пароль почтового ящика</label>
-        <input type="password" placeholder="••••••••••">
+        <input id="settings-sender-password" type="password" placeholder="••••••••••">
       </div>
 
-      <button class="btn-primary" onclick="showToast('Настройки сохранены')">Сохранить настройки</button>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn-primary" onclick="showToast('Настройки сохранены')">Сохранить настройки</button>
+        <button class="btn-outline" type="button" onclick="resetAllMailingState()">Очистить все поля</button>
+      </div>
+
+      <div class="step-nav">
+        <button class="btn-primary" type="button" onclick="goToScreen('parser')">Перейти к модулю 1</button>
+      </div>
     </div>
 
     <!-- ПАРСЕР -->
@@ -971,7 +978,7 @@
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="g-run" onclick="startGenerator()">Запустить генератор</button>
           <button class="btn-outline" id="g-pause" onclick="pauseGenerator()" style="display:none">Пауза</button>
-        <button class="btn-outline" onclick="downloadWithJob('/api/download/output')">Скачать output.zip</button>
+        <button class="btn-outline" id="g-download-output" onclick="downloadWithJob('/api/download/output')">Скачать output.zip</button>
         </div>
       </div>
 
@@ -1063,7 +1070,7 @@
             <button type="button" class="btn-outline" id="s-confirm-send">Подтвердить и отправить</button>
             <button type="button" class="btn-outline" id="s-pause" style="display:none">Пауза</button>
             <button type="button" class="btn-danger" id="s-stop">Остановить</button>
-            <button type="button" class="btn-outline" onclick="downloadWithJob('/api/download/sent-mail-log')">Скачать журнал отправки</button>
+            <button type="button" class="btn-outline" id="s-download-xlsx" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать data.xlsx со статусами</button>
           </div>
         </div>
 
@@ -1132,6 +1139,11 @@
 <script>
   const chatSessions = {};
   const JOB_STORAGE_KEY = 'mailing-agent-current-job-id';
+  const INITIAL_CHAT_MESSAGES = {
+    'p-chat': 'Привет! Я агент-парсер. Выбери сценарий работы выше или задай мне вопрос про любое МО.',
+    'g-chat': 'Привет! Я агент-филолог. Могу проверить готовые документы, исправить безопасные ошибки и объяснить замечания с опорой на локальную базу правил русского языка.',
+    's-chat': 'Привет! Я агент-отправщик. Могу заранее показать адреса из data.xlsx, сказать где нет почты, где будет выбран резервный адрес и что готово к отправке.',
+  };
   let currentJobId = localStorage.getItem(JOB_STORAGE_KEY) || '';
 
   function setCurrentJobId(jobId) {
@@ -1241,6 +1253,13 @@
     document.getElementById('upload-data-status').style.display = 'none';
     document.getElementById('upload-zone-data').style.display = '';
     document.getElementById('upload-data-label').textContent = 'Нажмите чтобы выбрать файл data.xlsx';
+    document.getElementById('upload-data-hint').textContent = 'Файл будет загружен на сервер';
+    const filename = document.getElementById('upload-data-filename');
+    const rows = document.getElementById('upload-data-rows');
+    if (filename) filename.textContent = '';
+    if (rows) rows.textContent = '';
+    const uploadInput = document.getElementById('upload-data-input');
+    if (uploadInput) uploadInput.value = '';
   }
 
   function resetModuleUiForNewDataUpload() {
@@ -1252,6 +1271,105 @@
     setGeneratorUiState({ status: 'idle', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
     setPhilologistUiState({ status: 'idle', total_documents: 0, processed_documents: 0, fixed_documents: 0, documents_with_issues: 0 });
     setSenderUiState({ status: 'idle', total_rows: 0, processed_rows: 0, ready_rows: 0, error_rows: 0, stats: { total: 0, sent: 0, error: 0, pending: 0 } });
+  }
+
+  function resetTemplateButton(buttonId, inputId) {
+    const button = document.getElementById(buttonId);
+    if (button) {
+      const defaultLabel = button.dataset.defaultLabel || 'Выбрать файл';
+      button.classList.remove('uploaded');
+      button.innerHTML = `<span class="file-icon">📎</span> ${defaultLabel}`;
+    }
+    const input = document.getElementById(inputId);
+    if (input) input.value = '';
+  }
+
+  function resetChatMessages(chatId) {
+    const wrap = document.getElementById(`${chatId}-messages`);
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    const input = document.getElementById(`${chatId}-input`);
+    if (input) input.value = '';
+    const initialText = INITIAL_CHAT_MESSAGES[chatId];
+    if (initialText) {
+      appendChatMessage(chatId, 'agent', initialText);
+    }
+  }
+
+  function resetSettingsFormFields() {
+    const workType = document.getElementById('settings-work-type');
+    const subject = document.getElementById('settings-mail-subject');
+    const senderEmail = document.getElementById('settings-sender-email');
+    const senderPassword = document.getElementById('settings-sender-password');
+    const transport = document.getElementById('s-transport');
+
+    if (workType) workType.selectedIndex = 0;
+    if (subject) subject.value = 'Коммерческое предложение МНГП. Срок действия до 31.05.2026';
+    if (senderEmail) senderEmail.value = '';
+    if (senderPassword) senderPassword.value = '';
+    if (transport) transport.value = 'smtp';
+  }
+
+  function resetModuleCountCards() {
+    const ids = ['p-total', 'g-total', 'g-total-label'];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = '0';
+    });
+  }
+
+  async function resetAllMailingState() {
+    const confirmed = window.confirm('Очистить все поля и начать заново?');
+    if (!confirmed) return;
+
+    if (generatorStatusPoll) {
+      clearInterval(generatorStatusPoll);
+      generatorStatusPoll = null;
+    }
+    if (philologistStatusPoll) {
+      clearInterval(philologistStatusPoll);
+      philologistStatusPoll = null;
+    }
+
+    senderRunning = false;
+    parserRunning = false;
+    phRunning = false;
+    senderPreviewState = null;
+    chatSessions['o-chat'] = '';
+    setCurrentJobId('');
+
+    try {
+      const res = await fetch('/api/jobs', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.job_id) {
+        setCurrentJobId(data.job_id);
+      }
+    } catch (e) {}
+
+    resetSettingsFormFields();
+    clearDataFile();
+    resetTemplateButton('mail-btn', 'upload-mail-input');
+    resetTemplateButton('kp-btn', 'upload-kp-input');
+    resetTemplateButton('contract-btn', 'upload-contract-input');
+    resetModuleCountCards();
+    resetModuleUiForNewDataUpload();
+    setScenario(1);
+
+    ['p-chat', 'g-chat', 's-chat'].forEach(resetChatMessages);
+    lastAgentEventIds.generator = '';
+    lastAgentEventIds.philologist = '';
+    lastAgentEventIds.sender = '';
+
+    if (currentJobId) {
+      await refreshCounts();
+      await refreshParserStatus({ silent: true });
+      await refreshGeneratorStatus({ silent: true });
+      await refreshPhilologistStatus({ silent: true });
+      await refreshSenderStatus({ silent: true });
+    }
+
+    showToast('Все поля и состояния модулей очищены');
+    goToScreen('settings');
   }
 
   async function uploadData(input) {
@@ -1783,13 +1901,13 @@
         return;
       }
       const total = data.total || 0;
-      const errors = data.results.filter(r => r.status === 'error').length;
       setGeneratorUiState({
-        status: 'completed',
-        total_rows: total,
-        processed_rows: total,
-        ok_rows: Math.max(0, total - errors),
-        error_rows: errors,
+        status: data.status || 'completed',
+        total_rows: data.total_rows ?? total,
+        processed_rows: data.processed_rows ?? total,
+        ok_rows: data.ok_rows ?? 0,
+        error_rows: data.error_rows ?? 0,
+        summary_text: data.summary_text || '',
       });
         if (document.getElementById('g-done')) document.getElementById('g-done').textContent = total;
         showToast('Генерация завершена: ' + total + ' документов');
@@ -1966,6 +2084,11 @@
     if (runButton) runButton.disabled = !!isBusy;
   }
 
+  function setGeneratorDownloadEnabled(isEnabled) {
+    const downloadButton = document.getElementById('g-download-output');
+    if (downloadButton) downloadButton.disabled = !isEnabled;
+  }
+
   function setGeneratorUiState(result = {}) {
     const badge = document.getElementById('g-badge');
     const fill = document.getElementById('g-fill');
@@ -1978,6 +2101,7 @@
     const errors = Number(result.error_rows || 0);
     const status = result.status || 'idle';
     const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+    const canDownloadOutput = status === 'completed' && ok > 0;
 
     if (doneStat) doneStat.textContent = processed.toLocaleString('ru');
     if (errorStat) errorStat.textContent = errors.toLocaleString('ru');
@@ -1994,11 +2118,13 @@
         pendingText: 'Подготавливаю список документов для генерации...'
       });
       setGeneratorButtonsBusy(true);
+      setGeneratorDownloadEnabled(false);
       setProgressVisual(fill, { percent, running: total > 0, indeterminate: false });
       return;
     }
 
     setGeneratorButtonsBusy(false);
+    setGeneratorDownloadEnabled(canDownloadOutput);
 
     if (status === 'completed') {
       badge.textContent = 'Готово';
@@ -2013,6 +2139,14 @@
           })
         : 'Генерация завершена';
       setProgressVisual(fill, { percent: 100, running: false });
+      return;
+    }
+
+    if (status === 'error') {
+      badge.textContent = 'Ошибка';
+      badge.className = 'badge badge-error';
+      label.textContent = result.summary_text || 'Генерация завершилась с ошибкой';
+      setProgressVisual(fill, { percent, running: false, indeterminate: false });
       return;
     }
 
@@ -2047,6 +2181,11 @@
     if (stopButton) stopButton.disabled = !canStop;
   }
 
+  function setSenderDownloadEnabled(isEnabled) {
+    const downloadButton = document.getElementById('s-download-xlsx');
+    if (downloadButton) downloadButton.disabled = !isEnabled;
+  }
+
   function setSenderUiState(result = {}) {
         const badge = document.getElementById('s-badge');
         const fill = document.getElementById('s-fill');
@@ -2057,18 +2196,24 @@
       const ready = Number(result.ready_rows || 0);
       const errors = Number(result.error_rows || 0);
       const stats = result.stats || {};
-      const sent = Number(stats.sent || 0);
-      const totalFromStats = Number(stats.total || 0);
+      const sent = Math.max(Number(result.sent_rows || 0), Number(stats.sent || 0));
+      const totalFromStats = Number(stats.total || total);
       const errorFromStats = Number(stats.error || 0);
-      const pending = Number(stats.pending || total);
+      const pending = Number(
+        result.remaining_rows != null
+          ? result.remaining_rows
+          : (stats.pending != null ? stats.pending : Math.max(0, total - processed))
+      );
       const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
         const status = result.status || 'idle';
+        const mode = result.mode || 'dry_run';
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
         const hasPendingRows = Math.max(0, pending) > 0;
         const hasReadyRows = ready > 0;
         const isDryRunReady = status === 'completed' && result.mode === 'dry_run' && hasReadyRows;
         const canResumeStopped = status === 'stopped' && hasPendingRows;
         const canConfirm = hasPreviewRows || isDryRunReady || canResumeStopped;
+        const canDownloadStatuses = sent > 0;
 
         if ((!senderPreviewState || !Array.isArray(senderPreviewState.rows) || !senderPreviewState.rows.length) && Array.isArray(result.rows) && result.rows.length) {
           senderPreviewState = {
@@ -2081,6 +2226,7 @@
       document.getElementById('s-sent').textContent = sent.toLocaleString('ru');
       document.getElementById('s-left').textContent = Math.max(0, pending).toLocaleString('ru');
       document.getElementById('s-err2').textContent = errorFromStats.toLocaleString('ru');
+      setSenderDownloadEnabled(canDownloadStatuses);
 
       if (status === 'running') {
         badge.textContent = 'Проверяет';
@@ -2089,8 +2235,8 @@
           processed,
           total,
           noun: 'строк',
-          action: 'проверено',
-          extra: `готово ${ready}, ошибок ${errors}`,
+          action: mode === 'send' ? 'обработано' : 'проверено',
+          extra: mode === 'send' ? `отправлено ${sent}, ошибок ${errors}` : `готово ${ready}, ошибок ${errors}`,
           pendingText: 'Подготавливаю строки к отправке...'
         });
         setSenderButtonsState({ running: true, canConfirm: false, canStop: true });
@@ -2108,15 +2254,16 @@
       setSenderButtonsState({ running: false, canConfirm, canStop: false });
 
       if (status === 'completed') {
-        badge.textContent = result.mode === 'dry_run' ? 'Проверено' : 'Готово';
-        badge.className = 'badge badge-done';
+        const isFailedSend = mode === 'send' && sent === 0 && errors > 0;
+        badge.textContent = mode === 'dry_run' ? 'Проверено' : (isFailedSend ? 'Ошибка' : 'Готово');
+        badge.className = isFailedSend ? 'badge badge-error' : 'badge badge-done';
         label.textContent = total > 0
           ? formatProgressText({
-              processed,
+              processed: mode === 'send' ? processed : total,
               total,
               noun: 'строк',
-              action: 'проверено',
-              extra: `готово ${ready}, ошибок ${errors}`
+              action: mode === 'send' ? 'обработано' : 'проверено',
+              extra: mode === 'send' ? `отправлено ${sent}, ошибок ${errors}` : `готово ${ready}, ошибок ${errors}`
             })
           : 'Обработка завершена';
         return;

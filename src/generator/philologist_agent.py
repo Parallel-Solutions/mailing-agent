@@ -259,7 +259,7 @@ def _format_fixed_details(documents: list[dict[str, Any]], limit: int = 5) -> st
             break
     if not lines:
         return "Автоматических исправлений пока не было. Я только нашёл замечания."
-    return "Вот что я исправил:\n" + "\n".join(lines[: limit * 2])
+    return "Исправил:\n" + "\n".join(lines[: limit * 2])
 
 
 def _format_issue_details(documents: list[dict[str, Any]], limit: int = 5) -> str:
@@ -278,7 +278,7 @@ def _format_issue_details(documents: list[dict[str, Any]], limit: int = 5) -> st
             break
     if not lines:
         return "Явных языковых проблем в проверенных документах я не нашёл."
-    return "Вот где есть замечания:\n" + "\n".join(lines[: limit * 2])
+    return "Остались замечания:\n" + "\n".join(lines[: limit * 2])
 
 
 def _format_rule_details(message: str) -> str:
@@ -292,6 +292,26 @@ def _format_rule_details(message: str) -> str:
             f"(источник: {_safe_text(rule.get('source'))})"
         )
     return "\n".join(lines)
+
+
+def _format_philologist_structured_reply(message: str, state: dict[str, Any]) -> str:
+    documents = state.get("documents") or []
+    if not documents:
+        return (
+            "Сводка:\n"
+            "Филолог ещё не запускался или не нашёл готовых документов для проверки.\n\n"
+            f"{_format_rule_details(message)}"
+        )
+
+    issues = [item for item in documents if item.get("issue_count", 0) > 0]
+    fixed = [item for item in documents if item.get("applied_fix_count", 0) > 0]
+    parts = [
+        "Сводка:\n" + (state.get("summary_text") or "Проверка завершена, но краткая сводка пока недоступна.")
+    ]
+    parts.append(_format_fixed_details(fixed, limit=5) if fixed else "Исправил:\nАвтоматических исправлений не было.")
+    parts.append(_format_issue_details(issues, limit=5) if issues else "Остались замечания:\nКритичных языковых замечаний не осталось.")
+    parts.append(_format_rule_details(message))
+    return "\n\n".join(part for part in parts if part)
 
 
 def _extract_row_id_from_docx_path(docx_path: Path) -> str:
@@ -531,21 +551,7 @@ def get_philologist_status(job_id: str | None = None) -> dict[str, Any]:
 
 
 def _fallback_chat_answer(message: str, state: dict[str, Any]) -> str:
-    documents = state.get("documents") or []
-    if not documents:
-        return (
-            "Агент-филолог ещё не запускался. "
-            f"{_format_rule_details(message)}"
-        )
-    issues = [item for item in documents if item.get("issue_count", 0) > 0]
-    fixed = [item for item in documents if item.get("applied_fix_count", 0) > 0]
-    parts = [state.get("summary_text") or "Проверка завершена, но краткая сводка пока недоступна."]
-    if issues:
-        parts.append(_format_issue_details(issues, limit=3))
-    if fixed:
-        parts.append(_format_fixed_details(fixed, limit=3))
-    parts.append(_format_rule_details(message))
-    return "\n\n".join(part for part in parts if part)
+    return _format_philologist_structured_reply(message, state)
 
 
 def chat_with_philologist(message: str, *, job_id: str | None = None) -> dict[str, Any]:
@@ -571,11 +577,13 @@ def chat_with_philologist(message: str, *, job_id: str | None = None) -> dict[st
     prompt = (
         "Ты агент-филолог для проверки коммерческих предложений и договоров. "
         "Ты уже проверил документы и должен отвечать пользователю по результатам этой проверки. "
-        "Отвечай по-русски, кратко и по делу. "
+        "Отвечай по-русски, кратко, структурированно и по делу. "
         "Если пользователь спрашивает об ошибках или исправлениях, сначала опирайся на локальную базу правил русского языка, "
         "а потом на переданные данные по документам. "
         "Если правило найдено, кратко ссылайся на него и объясняй исправление. "
-        "Не придумывай факты, которых нет в сводке.\n\n"
+        "Не придумывай факты, которых нет в сводке. "
+        "Если вопрос про исправления, используй разделы: «Сводка:», «Исправил:», «Остались замечания:», «Правила:». "
+        "В разделах про исправления и замечания указывай конкретные документы и не более 1-2 примеров на документ.\n\n"
         f"Локальная база правил:\n{rules_context}\n\n"
         f"Состояние:\n{json.dumps({'summary_text': state.get('summary_text'), 'status': state.get('status'), 'documents': compact_documents}, ensure_ascii=False, indent=2)}\n\n"
         f"Вопрос пользователя:\n{message}"

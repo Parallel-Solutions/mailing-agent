@@ -89,6 +89,13 @@ def _save_sender_state(state: dict[str, Any], job_id: str | None = None) -> dict
     return save_agent_state("sender", state, job_id)
 
 
+def _resolve_sender_data_xlsx_path(job_id: str | None = None) -> Path:
+    job_paths = resolve_job_paths(job_id)
+    if job_id:
+        return job_paths.data_xlsx
+    return job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+
+
 def _refresh_sender_stop_flag(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
     persisted = _load_sender_state(job_id)
     state["stop_requested"] = bool(persisted.get("stop_requested", False))
@@ -393,8 +400,7 @@ def _run_autonomous_recovery_for_philologist(*, row_id: Any, job_id: str | None 
 
 
 def preview_recipients(*, limit: int | None = None, job_id: str | None = None) -> dict[str, Any]:
-    job_paths = resolve_job_paths(job_id)
-    data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
     if not data_xlsx_path.exists():
         return {
             "status": "error",
@@ -934,7 +940,7 @@ def run_sender(
     job_id: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
-    data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
     output_dir = None if job_paths.uses_legacy_layout else job_paths.output_dir
     job_template_path = job_paths.templates_dir / "mail_template.txt"
     mail_template_path = None if job_paths.uses_legacy_layout or not job_template_path.exists() else job_template_path
@@ -1250,7 +1256,7 @@ def run_sender(
                 state["error_rows"] += 1
             else:
                 state["sent_rows"] += 1
-                delay_seconds = max(0.0, float(settings.sender_delay_seconds or 0))
+                delay_seconds = 0.0 if effective_transport == "unisender" else max(0.0, float(settings.sender_delay_seconds or 0))
                 if delay_seconds > 0 and state["processed_rows"] + 1 < state["total_rows"]:
                     sleep(delay_seconds)
         else:
@@ -1287,9 +1293,8 @@ def run_sender(
 
 
 def get_sender_status(job_id: str | None = None) -> dict[str, Any]:
-    job_paths = resolve_job_paths(job_id)
     state = _load_sender_state(job_id)
-    data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
     state["stats"] = _collect_excel_stats(data_xlsx_path)
     state["task_stats"] = count_tasks_for_agent("sender", job_id)
     state["tasks"] = get_tasks_for_agent("sender", job_id)[:20]
@@ -1303,8 +1308,7 @@ def _fallback_sender_chat(message: str, state: dict[str, Any], *, job_id: str | 
     tasks = state.get("tasks") or []
     recent_events = state.get("recent_events") or []
     if not rows:
-        job_paths = resolve_job_paths(job_id)
-        data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+        data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
         stats = state.get("stats") or _collect_excel_stats(data_xlsx_path)
         extra = ""
         if tasks:

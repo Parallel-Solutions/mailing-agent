@@ -5,6 +5,7 @@ from openpyxl import load_workbook
 
 
 HEADER_ROW = 2
+STATUS_HEADER_ALIASES = ("STATUS", "Статус отправки")
 
 
 def load_rows(xlsx_path: Path, sheet_name: Optional[str] = None) -> tuple[object, object, list[dict]]:
@@ -39,7 +40,13 @@ def update_status(worksheet, row_index: int, status_value: str) -> None:
         worksheet.cell(row=HEADER_ROW, column=column_index).value: column_index
         for column_index in range(1, worksheet.max_column + 1)
     }
-    status_column = header_map["STATUS"]
+    status_column = None
+    for header in STATUS_HEADER_ALIASES:
+        if header in header_map:
+            status_column = header_map[header]
+            break
+    if status_column is None:
+        raise KeyError("STATUS")
     worksheet.cell(row=row_index, column=status_column).value = status_value
 
 

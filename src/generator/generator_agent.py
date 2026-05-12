@@ -151,6 +151,31 @@ def build_docx_jobs(results: list[dict]) -> list[dict[str, Path]]:
     return jobs
 
 
+def _validate_generated_result(result: dict[str, Any]) -> None:
+    result_files = result.get("files") or {}
+    if not result_files:
+        result["status"] = "error"
+        result["error"] = "Генератор не подготовил ожидаемые файлы."
+        return
+
+    missing_outputs: list[str] = []
+    for kind in ("kp", "contract"):
+        final_docx = result_files.get(f"{kind}_final_docx")
+        final_pdf = result_files.get(f"{kind}_final_pdf")
+        if final_docx is None and final_pdf is None:
+            continue
+        final_docx_path = Path(final_docx) if final_docx else None
+        final_pdf_path = Path(final_pdf) if final_pdf else None
+        if final_docx_path is None or not final_docx_path.exists():
+            missing_outputs.append(f"{kind}.docx")
+        if final_pdf_path is None or not final_pdf_path.exists():
+            missing_outputs.append(f"{kind}.pdf")
+
+    if missing_outputs:
+        result["status"] = "error"
+        result["error"] = "Не созданы итоговые файлы: " + ", ".join(missing_outputs)
+
+
 def finalize_generated_files(results: list[dict], *, batch_pdf_dir: Path | None = None) -> None:
     jobs = build_docx_jobs(results)
     staged_docx_paths = [job["staged_docx"] for job in jobs]
@@ -325,6 +350,7 @@ def run_generator_agent(
         review_handoffs = 0
         review_row_ids: list[str] = []
         for result in results:
+            _validate_generated_result(result)
             result.pop("result_index", None)
             result_id = _safe_id(result.get("id"))
             row = row_lookup.get(result_id) or {}
