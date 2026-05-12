@@ -59,6 +59,7 @@ MAIL_FOOTER_LOGO_CID = "parresh-signature-logo"
 MAIL_FOOTER_HTML_TEMPLATE = """
 <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:16px;border-collapse:collapse">
   <tr><td style="padding:0"><img src="{image_src}" alt="Параллельные Решения" width="340" style="display:block;width:340px;max-width:340px;height:auto;border:0;outline:none;text-decoration:none"></td></tr>
+  <tr><td style="padding:6px 0 0 0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;font-size:13px;line-height:1.3"><a href="https://www.parresh.ru/" style="color:#1f5da8;text-decoration:underline">https://www.parresh.ru/</a></td></tr>
 </table>
 """.strip()
 STATUS_OK_VALUES = {"ОК", "OK", "SENT"}
