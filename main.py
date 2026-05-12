@@ -83,6 +83,18 @@ def _run_sender_background(*, limit: int | None, transport: str | None, job_id: 
             _sender_threads.pop(_sender_job_key(job_id), None)
 
 
+def _prime_sender_running_state(job_id: str | None, transport: str | None) -> dict:
+    state = _load_sender_state(job_id)
+    state["status"] = "running"
+    state["mode"] = "send"
+    state["transport"] = transport or state.get("transport") or "smtp"
+    state["summary_text"] = "Агент-отправщик начал отправку писем."
+    state["stop_requested"] = False
+    state["stop_requested_at"] = None
+    _save_sender_state(state, job_id)
+    return state
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(username: str = Depends(check_auth)):
     return Path("templates/index.html").read_text(encoding="utf-8")
@@ -155,8 +167,13 @@ async def upload_template(
     templates_dir = paths.templates_dir
     templates_dir.mkdir(exist_ok=True)
     original_name = Path(file.filename or "").name
-    if original_name.lower().endswith(".txt"):
+    original_name_lower = original_name.lower()
+    if original_name_lower.endswith(".txt"):
         dest = templates_dir / "mail_template.txt"
+    elif "kp_template_source" in original_name_lower:
+        dest = templates_dir / "kp_template_source.docx"
+    elif "contract_template_source" in original_name_lower:
+        dest = templates_dir / "contract_template_source.docx"
     else:
         dest = templates_dir / original_name
     with dest.open("wb") as f:
@@ -190,6 +207,8 @@ from src.generator.philologist_agent import (
     run_philologist,
 )
 from src.generator.sender_agent import (
+    _load_sender_state,
+    _save_sender_state,
     chat_with_sender,
     clear_sender_stop_request,
     get_sender_status,
@@ -333,8 +352,12 @@ def finalize_generated_files(results: list[dict]) -> None:
 @app.get("/api/counts")
 async def counts(job_id: str | None = None, username: str = Depends(check_auth)):
     paths = resolve_job_paths(job_id)
-    base_path = _prefer_existing_file(paths.base_xlsx, Path("service_docs/base.xlsx"))
-    data_path = _prefer_existing_file(paths.data_xlsx, Path("data/data.xlsx"))
+    if job_id:
+        base_path = paths.base_xlsx
+        data_path = paths.data_xlsx
+    else:
+        base_path = _prefer_existing_file(paths.base_xlsx, Path("service_docs/base.xlsx"))
+        data_path = _prefer_existing_file(paths.data_xlsx, Path("data/data.xlsx"))
     
     parser_total = 0
     if base_path.exists():
@@ -363,8 +386,15 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
     result = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
     if result.get("status") == "error":
         raise HTTPException(status_code=400, detail=result.get("summary_text") or "Ошибка генерации")
+    if int(result.get("ok_rows", 0) or 0) == 0 and int(result.get("error_rows", 0) or 0) > 0:
+        raise HTTPException(status_code=400, detail=result.get("summary_text") or "Генерация не создала ни одного комплекта документов")
     return {
+        "status": result.get("status"),
         "total": len(result.get("results", [])),
+        "total_rows": result.get("total_rows"),
+        "processed_rows": result.get("processed_rows"),
+        "ok_rows": result.get("ok_rows"),
+        "error_rows": result.get("error_rows"),
         "results": result.get("results", []),
         "summary_text": result.get("summary_text"),
         "task_stats": result.get("task_stats"),
@@ -511,6 +541,7 @@ async def sender_run(
         return {"status": "ok", "result": get_sender_status(job_id)}
 
     clear_sender_stop_request(job_id)
+    primed_state = _prime_sender_running_state(job_id, transport)
     sender_thread = threading.Thread(
         target=_run_sender_background,
         kwargs={"limit": limit, "transport": transport, "job_id": job_id},
@@ -519,8 +550,7 @@ async def sender_run(
     )
     _register_sender_thread(job_id, sender_thread)
     sender_thread.start()
-    result = get_sender_status(job_id)
-    return {"status": "ok", "result": result}
+    return {"status": "ok", "result": primed_state}
 
 
 @app.get("/api/sender/status")
