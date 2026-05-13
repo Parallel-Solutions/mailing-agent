@@ -79,12 +79,15 @@ def format_inflection_report(rows: list[dict[str, Any]], *, limit: int = 12) -> 
     for item in rows[:limit]:
         warning = str(item.get("warning") or "").strip()
         warning_suffix = f" | warning: {warning}" if warning else ""
+        reason = str(item.get("reason") or "").strip()
+        reason_suffix = f" | reason: {reason}" if reason else ""
         lines.append(
             "- "
             f"строка {item.get('row_id')}, {item.get('field')}: "
             f"`{item.get('source_value')}` -> `{item.get('result_value')}` "
             f"({item.get('method')}, {item.get('confidence')})"
             f"{warning_suffix}"
+            f"{reason_suffix}"
         )
 
     if len(rows) > limit:
@@ -105,6 +108,7 @@ def save_inflection_csv(rows: list[dict[str, Any]], csv_path: Path) -> None:
         "method",
         "confidence",
         "warning",
+        "reason",
     ]
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)

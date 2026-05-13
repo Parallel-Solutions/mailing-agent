@@ -6,6 +6,7 @@ from typing import Callable
 from src.generator import inflect as legacy_inflect
 from src.generator.case_engine.models import CaseDecision
 from src.generator.case_engine.overrides import lookup_override
+from src.generator.case_engine.tools import CaseToolRunner, build_case_tool_manifest
 
 
 LegacyInflector = Callable[[str], legacy_inflect.InflectionResult]
@@ -68,7 +69,42 @@ def _safe_text(value) -> str:
     return " ".join(str(value or "").split())
 
 
-def _decision_from_legacy(row: dict, spec: dict[str, str | LegacyInflector]) -> CaseDecision:
+def _join_warnings(*items: str) -> str:
+    return " ".join(item.strip() for item in items if item and item.strip()).strip()
+
+
+def _postcheck_decision(
+    *,
+    entity_type: str,
+    source_value: str,
+    result_value: str,
+    target_case: str,
+) -> str:
+    warnings: list[str] = []
+    source_lower = source_value.casefold()
+    result_lower = result_value.casefold()
+
+    if source_value and not result_value:
+        warnings.append("Inflection result is empty while source value is present.")
+    if "муниципальн" in source_lower and "муниципальн" not in result_lower:
+        warnings.append("Municipal marker disappeared after inflection.")
+    if re.search(r"\bрайона\s+района\b", result_lower):
+        warnings.append("Duplicated district word detected after inflection.")
+    if entity_type == "subject_rf" and source_value.startswith("Республика ") and not result_value.startswith("Республики "):
+        warnings.append("Republic subject should normally be in genitive form: 'Республики ...'.")
+    if target_case == "genitive" and source_value == result_value and source_value:
+        warnings.append("Source value was preserved for a genitive target case; manual review may be needed.")
+    if source_value.count('"') != result_value.count('"'):
+        warnings.append("Quote count changed after inflection.")
+
+    return " ".join(warnings)
+
+
+def _decision_from_legacy(
+    row: dict,
+    spec: dict[str, str | LegacyInflector],
+    tool_runner: CaseToolRunner,
+) -> CaseDecision:
     field = str(spec["field"])
     source_field = str(spec["source_field"])
     target_case = str(spec["target_case"])
@@ -76,8 +112,22 @@ def _decision_from_legacy(row: dict, spec: dict[str, str | LegacyInflector]) -> 
     legacy = spec["legacy"]
     source_value = _safe_text(row.get(source_field))
 
-    override_value = lookup_override(entity_type, source_value, target_case)
+    override_value = tool_runner.call(
+        "lookup_override",
+        {"entity_type": entity_type, "source_value": source_value, "target_case": target_case},
+        lambda: lookup_override(entity_type, source_value, target_case),
+    )
     if override_value:
+        warning = tool_runner.call(
+            "postcheck_decision",
+            {"field": field, "source_value": source_value, "result_value": override_value},
+            lambda: _postcheck_decision(
+                entity_type=entity_type,
+                source_value=source_value,
+                result_value=override_value,
+                target_case=target_case,
+            ),
+        )
         return CaseDecision(
             field=field,
             source_field=source_field,
@@ -86,6 +136,8 @@ def _decision_from_legacy(row: dict, spec: dict[str, str | LegacyInflector]) -> 
             target_case=target_case,
             method="override",
             confidence="high",
+            warning=warning,
+            reason="Trusted dictionary override matched by normalized source value.",
         )
 
     if not callable(legacy):
@@ -98,14 +150,29 @@ def _decision_from_legacy(row: dict, spec: dict[str, str | LegacyInflector]) -> 
             method="fallback",
             confidence="low",
             warning="Legacy inflector is not callable.",
+            reason="No callable inflector was registered for this field.",
         )
 
-    result = legacy(source_value)
+    result = tool_runner.call(
+        "legacy_inflect",
+        {"field": field, "source_value": source_value, "target_case": target_case},
+        lambda: legacy(source_value),
+    )
     warning = ""
     method = "legacy_rule" if result.confidence == "rule" else "legacy_morph"
     if result.confidence in {"empty", "no_morph"}:
         method = "fallback"
         warning = f"Inflection confidence is {result.confidence}; source value was preserved or weakly transformed."
+    postcheck_warning = tool_runner.call(
+        "postcheck_decision",
+        {"field": field, "source_value": source_value, "result_value": result.value},
+        lambda: _postcheck_decision(
+            entity_type=entity_type,
+            source_value=source_value,
+            result_value=result.value,
+            target_case=target_case,
+        ),
+    )
 
     return CaseDecision(
         field=field,
@@ -115,7 +182,8 @@ def _decision_from_legacy(row: dict, spec: dict[str, str | LegacyInflector]) -> 
         target_case=target_case,
         method=method,
         confidence=result.confidence,
-        warning=warning,
+        warning=_join_warnings(warning, postcheck_warning),
+        reason="Applied current local rule/morphology inflector.",
     )
 
 
@@ -126,10 +194,28 @@ def _replace_case_insensitive(text: str, target: str, replacement: str) -> str:
     return pattern.sub(replacement, text)
 
 
-def _build_admin_decision(row: dict, decisions_by_field: dict[str, CaseDecision]) -> CaseDecision:
+def _build_admin_decision(
+    row: dict,
+    decisions_by_field: dict[str, CaseDecision],
+    tool_runner: CaseToolRunner,
+) -> CaseDecision:
     source_value = _safe_text(row.get("ADM_NAME"))
-    override_value = lookup_override("administration", source_value, "genitive")
+    override_value = tool_runner.call(
+        "lookup_override",
+        {"entity_type": "administration", "source_value": source_value, "target_case": "genitive"},
+        lambda: lookup_override("administration", source_value, "genitive"),
+    )
     if override_value:
+        warning = tool_runner.call(
+            "postcheck_decision",
+            {"field": "ADM_NAME_1", "source_value": source_value, "result_value": override_value},
+            lambda: _postcheck_decision(
+                entity_type="administration",
+                source_value=source_value,
+                result_value=override_value,
+                target_case="genitive",
+            ),
+        )
         return CaseDecision(
             field="ADM_NAME_1",
             source_field="ADM_NAME",
@@ -138,9 +224,15 @@ def _build_admin_decision(row: dict, decisions_by_field: dict[str, CaseDecision]
             target_case="genitive",
             method="override",
             confidence="high",
+            warning=warning,
+            reason="Trusted administration override matched by normalized source value.",
         )
 
-    adm_result = legacy_inflect.inflect_admin_name_genitive(source_value)
+    adm_result = tool_runner.call(
+        "legacy_inflect",
+        {"field": "ADM_NAME_1", "source_value": source_value, "target_case": "genitive"},
+        lambda: legacy_inflect.inflect_admin_name_genitive(source_value),
+    )
     result_value = adm_result.value
     for field in ("MUN_NAME_1", "MUN_R_NAME_1", "SUB_RF_1"):
         decision = decisions_by_field.get(field)
@@ -158,6 +250,16 @@ def _build_admin_decision(row: dict, decisions_by_field: dict[str, CaseDecision]
     if adm_result.confidence in {"empty", "no_morph"}:
         method = "fallback"
         warning = f"Inflection confidence is {adm_result.confidence}; source value was preserved or weakly transformed."
+    postcheck_warning = tool_runner.call(
+        "postcheck_decision",
+        {"field": "ADM_NAME_1", "source_value": source_value, "result_value": result_value},
+        lambda: _postcheck_decision(
+            entity_type="administration",
+            source_value=source_value,
+            result_value=result_value,
+            target_case="genitive",
+        ),
+    )
 
     return CaseDecision(
         field="ADM_NAME_1",
@@ -167,17 +269,21 @@ def _build_admin_decision(row: dict, decisions_by_field: dict[str, CaseDecision]
         target_case="genitive",
         method=method,
         confidence=adm_result.confidence,
-        warning=warning,
+        warning=_join_warnings(warning, postcheck_warning),
+        reason="Applied administration inflector and reconciled known municipality/district/subject forms.",
     )
 
 
 def build_inflected_fields_with_trace(row: dict) -> tuple[dict, list[CaseDecision]]:
-    decisions = [_decision_from_legacy(row, spec) for spec in FIELD_SPECS]
+    tool_runner = CaseToolRunner()
+    decisions = [_decision_from_legacy(row, spec, tool_runner) for spec in FIELD_SPECS]
     decisions_by_field = {decision.field: decision for decision in decisions}
-    admin_decision = _build_admin_decision(row, decisions_by_field)
+    admin_decision = _build_admin_decision(row, decisions_by_field, tool_runner)
     decisions.append(admin_decision)
 
     fields = {decision.field: decision.result_value for decision in decisions}
     fields["INFLECTION_DEBUG"] = {decision.field: decision.confidence for decision in decisions}
     fields["INFLECTION_TRACE"] = [decision.to_dict() for decision in decisions]
+    fields["INFLECTION_TOOL_MANIFEST"] = build_case_tool_manifest()
+    fields["INFLECTION_TOOL_TRACE"] = tool_runner.as_state()
     return fields, decisions
