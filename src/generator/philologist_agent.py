@@ -31,6 +31,7 @@ from src.generator.inflection_report import format_inflection_report, load_infle
 from src.generator.philologist_decisions import AUTO_FIX, decide_issue_fix
 from src.generator.philologist_executor import PhilologistAgentLoop, merge_plan_execution
 from src.generator.philologist_planner import build_philologist_plan
+from src.generator.philologist_rag import explain_fix_decision_with_rag
 from src.generator.philology_knowledge import find_relevant_rules, format_rules_context
 from src.generator.philologist_tools import PhilologistToolRunner, build_philologist_tool_manifest
 from src.generator.pdf_converter import convert_docx_batch
@@ -315,6 +316,7 @@ def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, 
         paragraph = location_map.get(location)
         current_text = paragraph.text if paragraph is not None else ""
         decision = decide_issue_fix(issue, current_text=current_text).to_dict()
+        decision["rag"] = explain_fix_decision_with_rag(decision)
         fix_decisions.append(decision)
         if decision.get("action") != AUTO_FIX:
             if issue.get("suggestion"):
@@ -450,7 +452,11 @@ def _format_fix_decision_details(documents: list[dict[str, Any]], limit: int = 6
             action = _safe_text(decision.get("action")) or "unknown"
             reason = _safe_text(decision.get("reason"))
             issue = _safe_text(decision.get("issue")) or "правка"
-            lines.append(f"- {action}: {issue} ({reason})")
+            rag = decision.get("rag") or {}
+            rag_text = ""
+            if isinstance(rag, dict) and rag.get("recommendation"):
+                rag_text = f"; RAG: {rag.get('recommendation')}, score={rag.get('support_score', 0)}"
+            lines.append(f"- {action}: {issue} ({reason}{rag_text})")
         if len(lines) >= limit:
             break
     if not lines:

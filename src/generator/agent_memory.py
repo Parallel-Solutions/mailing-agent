@@ -107,6 +107,7 @@ def build_agent_report(
         f"- Документов с замечаниями: {philologist_state.get('documents_with_issues', 0)}",
         f"- Документов с автоправками: {philologist_state.get('fixed_documents', 0)}",
         f"- Решений по правкам: {_count_fix_decisions(philologist_state)}",
+        f"- RAG-объяснений правок: {_count_rag_explanations(philologist_state)}",
         "",
     ]
     plan = philologist_state.get("plan") or {}
@@ -157,6 +158,15 @@ def _count_fix_decisions(philologist_state: dict[str, Any]) -> int:
     return total
 
 
+def _count_rag_explanations(philologist_state: dict[str, Any]) -> int:
+    total = 0
+    for document in philologist_state.get("documents") or []:
+        for decision in document.get("fix_decisions") or []:
+            if isinstance(decision, dict) and decision.get("rag"):
+                total += 1
+    return total
+
+
 def build_quarantine_items(job_id: str | None = None) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for row in load_inflection_log(job_id):
@@ -182,10 +192,25 @@ def build_quarantine_items(job_id: str | None = None) -> list[dict[str, Any]]:
                     "confidence": candidate.get("confidence", ""),
                     "reason": candidate.get("reason", ""),
                     "warning": candidate.get("issue", ""),
-                    "next_action": "Проверить правку человеком или через RAG/LLM перед добавлением в правило.",
+                    "next_action": _philology_candidate_next_action(candidate),
+                    "rag_recommendation": candidate.get("rag_recommendation", ""),
+                    "rag_reason": candidate.get("rag_reason", ""),
+                    "rag_support_score": candidate.get("rag_support_score", ""),
+                    "rag_rules": candidate.get("rag_rules", ""),
                 }
             )
     return items
+
+
+def _philology_candidate_next_action(candidate: dict[str, Any]) -> str:
+    recommendation = str(candidate.get("rag_recommendation") or "")
+    if recommendation == "candidate_for_human_approval":
+        return "RAG нашёл опору на правила: проверить человеком и при подтверждении добавить правило/override."
+    if recommendation == "candidate_for_safe_rule":
+        return "Можно рассмотреть безопасное правило после ручной проверки примеров."
+    if recommendation == "keep_in_quarantine":
+        return "Оставить в карантине: не хватает уверенной опоры на правила."
+    return "Проверить правку человеком или через RAG/LLM перед добавлением в правило."
 
 
 def save_quarantine(job_id: str | None, items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
@@ -215,6 +240,10 @@ def save_quarantine_csv(items: list[dict[str, Any]], csv_path: Path) -> None:
         "reason",
         "warning",
         "next_action",
+        "rag_recommendation",
+        "rag_reason",
+        "rag_support_score",
+        "rag_rules",
     ]
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -519,7 +548,26 @@ def _philologist_decision_candidate(document: dict[str, Any], decision: dict[str
         "suggestion": decision.get("suggestion", ""),
         "reason": decision.get("reason", ""),
         "confidence": decision.get("confidence", ""),
+        "rag_recommendation": (decision.get("rag") or {}).get("recommendation", ""),
+        "rag_reason": (decision.get("rag") or {}).get("reason", ""),
+        "rag_support_score": (decision.get("rag") or {}).get("support_score", ""),
+        "rag_rules": _format_rag_rules(decision.get("rag") or {}),
     }
+
+
+def _format_rag_rules(rag: dict[str, Any]) -> str:
+    rules = rag.get("rules") or []
+    if not isinstance(rules, list):
+        return ""
+    parts = []
+    for rule in rules[:3]:
+        if not isinstance(rule, dict):
+            continue
+        rule_id = str(rule.get("id") or "").strip()
+        title = str(rule.get("title") or "").strip()
+        score = rule.get("score", "")
+        parts.append(f"{rule_id} {title} score={score}".strip())
+    return "; ".join(parts)
 
 
 def _load_philologist_state(job_id: str | None) -> dict[str, Any]:
