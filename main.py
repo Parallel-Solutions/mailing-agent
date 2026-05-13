@@ -237,6 +237,11 @@ from src.generator.autonomous_worker import (
     start_autonomous_worker,
     stop_autonomous_worker,
 )
+from src.generator.agent_memory import (
+    build_learning_candidates,
+    get_agent_memory_csv_path,
+    save_learning_memory_csv,
+)
 from src.generator.inflection_report import load_inflection_log, save_inflection_csv
 from src.generator.generator_agent import get_generator_status, run_generator_agent
 from src.jobs import create_job_id, resolve_job_paths
@@ -520,6 +525,20 @@ async def download_inflection_report(job_id: str | None = None, username: str = 
         report_path,
         media_type="text/csv",
         filename="inflection_report.csv",
+    )
+
+
+@app.get("/api/download/agent-memory")
+async def download_agent_memory(job_id: str | None = None, username: str = Depends(check_auth)):
+    candidates = build_learning_candidates(job_id)
+    if not candidates:
+        raise HTTPException(status_code=404, detail="Кандидаты для памяти агента пока не найдены.")
+    report_path = get_agent_memory_csv_path(job_id)
+    save_learning_memory_csv(candidates, report_path)
+    return FileResponse(
+        report_path,
+        media_type="text/csv",
+        filename="agent_memory_candidates.csv",
     )
 
 
