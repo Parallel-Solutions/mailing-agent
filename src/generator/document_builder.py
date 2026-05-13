@@ -10,6 +10,7 @@ from docx.document import Document as DocumentObject
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 from docx.table import _Cell, Table
 
@@ -75,6 +76,14 @@ def iter_paragraphs(parent: DocumentObject | _Cell | Table):
 
     for table in parent.tables:
         yield from iter_paragraphs(table)
+
+
+def iter_cells(table: Table):
+    for row in table.rows:
+        for cell in row.cells:
+            yield cell
+            for nested_table in cell.tables:
+                yield from iter_cells(nested_table)
 
 
 def replace_text_in_runs(paragraph, replacements: list[tuple[str, str]]) -> None:
@@ -241,6 +250,72 @@ def set_cell_border(cell: _Cell, **kwargs) -> None:
             element.set(f"{{http://schemas.openxmlformats.org/wordprocessingml/2006/main}}{key}", value)
 
 
+def set_cell_margins(cell: _Cell, *, start: int | None = None, end: int | None = None) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_mar = tc_pr.find(qn("w:tcMar"))
+    if tc_mar is None:
+        tc_mar = OxmlElement("w:tcMar")
+        tc_pr.append(tc_mar)
+
+    for edge_name, value in {"start": start, "end": end}.items():
+        if value is None:
+            continue
+        edge = tc_mar.find(qn(f"w:{edge_name}"))
+        if edge is None:
+            edge = OxmlElement(f"w:{edge_name}")
+            tc_mar.append(edge)
+        edge.set(qn("w:w"), str(value))
+        edge.set(qn("w:type"), "dxa")
+
+
+def shift_small_anchored_drawings(paragraph, shift_emu: int) -> None:
+    for anchor in paragraph._p.iter(qn("wp:anchor")):
+        extent = anchor.find(qn("wp:extent"))
+        if extent is None:
+            continue
+        try:
+            cx = int(extent.get("cx", "0"))
+            cy = int(extent.get("cy", "0"))
+        except ValueError:
+            continue
+        # Only move the small phone/mail icons in the executor contact block.
+        if cx > 250000 or cy > 250000:
+            continue
+        position_h = anchor.find(qn("wp:positionH"))
+        if position_h is None:
+            continue
+        pos_offset = position_h.find(qn("wp:posOffset"))
+        if pos_offset is None or not pos_offset.text:
+            continue
+        try:
+            current_offset = int(pos_offset.text)
+        except ValueError:
+            continue
+        if current_offset < 70000:
+            pos_offset.text = str(current_offset + shift_emu)
+
+
+def normalize_signature_contact_block(signature_table: Table) -> None:
+    left_padding_dxa = 260
+    icon_shift_emu = 90000
+    contact_markers = ("Исп.", "тел.", "parresh")
+
+    for cell in iter_cells(signature_table):
+        cell_text = "\n".join(paragraph.text for paragraph in cell.paragraphs)
+        if not any(marker in cell_text for marker in contact_markers):
+            continue
+
+        set_cell_margins(cell, start=left_padding_dxa, end=108)
+        for paragraph in cell.paragraphs:
+            paragraph.paragraph_format.left_indent = Pt(0)
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+            paragraph.paragraph_format.line_spacing = 1.0
+            if any(marker in paragraph.text for marker in contact_markers):
+                shift_small_anchored_drawings(paragraph, icon_shift_emu)
+
+
 def clear_paragraph(paragraph) -> None:
     for run in list(paragraph.runs):
         paragraph._element.remove(run._element)
@@ -363,6 +438,17 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
 
     if len(doc.tables) >= 3 and doc.tables[2].rows:
         insert_spacer_before_table(doc.tables[2], 24)
+        signature_table = doc.tables[2]
+        left_padding_dxa = 260
+        for row in signature_table.rows:
+            if not row.cells:
+                continue
+            left_cell = row.cells[0]
+            set_cell_margins(left_cell, start=left_padding_dxa, end=108)
+            for paragraph in left_cell.paragraphs:
+                paragraph.paragraph_format.left_indent = Pt(0)
+                paragraph.paragraph_format.first_line_indent = Pt(0)
+        normalize_signature_contact_block(signature_table)
 
 
 def normalize_contract_formatting(doc: DocumentObject, context: dict) -> None:
