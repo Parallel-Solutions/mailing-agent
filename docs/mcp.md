@@ -1,21 +1,25 @@
-# Mailing Agent MCP Server
+# MCP-Сервер Mailing Agent
 
-Optional MCP wrapper for the agent tools.
+Это опциональная MCP-обертка над инструментами агента.
 
-## Tools
+## Инструменты
 
-- `get_agent_report(job_id)` returns the unified human-readable agent report.
-- `get_agent_memory_candidates(job_id)` returns learning candidates.
-- `get_agent_quarantine(job_id)` returns risky decisions kept for review.
-- `preview_inflection(row)` returns generated inflection fields and traces for one row.
-- `approve_inflection_override(entity_type, source_value, target_case, result_value)` writes a trusted override.
+- `get_agent_report(job_id)` возвращает единый человекочитаемый отчет агента.
+- `get_agent_memory_candidates(job_id)` возвращает кандидаты для обучения памяти.
+- `get_agent_quarantine(job_id)` возвращает рискованные решения, оставленные на
+  проверку.
+- `preview_inflection(row)` возвращает поля склонения и трассировку для одной
+  строки.
+- `approve_inflection_override(entity_type, source_value, target_case, result_value)`
+  записывает доверенное исключение склонения.
 
-## Run
+## Запуск
 
-Install the optional MCP package in the project environment, then run:
+Установить опциональный пакет MCP в окружение проекта и выполнить:
 
 ```bash
 python -m src.generator.mcp_server
 ```
 
-The main FastAPI service does not require this server. If the MCP package is not installed, the rest of the mailing agent keeps working normally.
+Основной FastAPI-сервис не зависит от этого сервера. Если пакет MCP не
+установлен, остальная часть mailing-agent продолжит работать нормально.

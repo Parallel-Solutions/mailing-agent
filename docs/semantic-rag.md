@@ -1,19 +1,21 @@
-# Semantic RAG for the philologist
+# Семантический RAG Для Филолога
 
-The default philology RAG works with keyword/token search. Semantic RAG is optional and uses
-`cointegrated/rubert-tiny` through `transformers` and `torch`.
+По умолчанию филологический RAG работает через поиск по ключевым словам и
+токенам. Семантический RAG является опциональным и использует
+`cointegrated/rubert-tiny` через `transformers` и `torch`.
 
-## Install optional dependencies
+## Установка Опциональных Зависимостей
 
 ```bash
 pip install ".[semantic-rag]"
 ```
 
-If the project is deployed without these packages, the service keeps working and falls back to keyword search.
+Если проект развернут без этих пакетов, сервис продолжает работать и
+откатывается на поиск по ключевым словам.
 
-## Enable
+## Включение
 
-Add to `.env.local` or `.env`:
+Добавить в `.env.local` или `.env`:
 
 ```env
 ENABLE_SEMANTIC_RAG=1
@@ -22,17 +24,19 @@ RAG_SEMANTIC_MIN_SCORE=0.45
 RAG_SEMANTIC_WEIGHT=30
 ```
 
-Restart the service after changing env values.
+После изменения env-переменных нужно перезапустить сервис.
 
-## How it works
+## Как Это Работает
 
-1. Rules from `data/knowledge/philology_rules.json` and source chunks from
-   `data/knowledge/philology_sources.jsonl` are converted into embeddings.
-2. The index is cached in `data/knowledge/philology_semantic_index.json`.
-3. `find_relevant_rules()` combines keyword score and semantic score.
-4. If the model is unavailable, semantic search returns nothing and keyword search is used.
+1. Правила из `data/knowledge/philology_rules.json` и фрагменты источников из
+   `data/knowledge/philology_sources.jsonl` превращаются в embeddings.
+2. Индекс кешируется в `data/knowledge/philology_semantic_index.json`.
+3. `find_relevant_rules()` объединяет оценку по ключевым словам и
+   семантическую оценку.
+4. Если модель недоступна, семантический поиск ничего не возвращает и
+   используется обычный keyword-поиск.
 
-## Useful checks
+## Полезные Проверки
 
 ```bash
 python -c "from src.generator.philology_embeddings import semantic_rag_status; print(semantic_rag_status())"
