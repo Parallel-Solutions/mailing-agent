@@ -9,6 +9,7 @@ from src.generator.agent_memory import (
 )
 from src.generator.case_engine import build_inflected_fields_with_trace
 from src.generator.case_engine.overrides import upsert_override
+from src.generator.philologist_rag import explain_fix_decision_with_rag
 from src.generator.philologist_planner import build_philologist_plan
 
 try:
@@ -45,6 +46,11 @@ def create_mcp_server():
     def get_philologist_plan(job_id: str | None = None) -> dict[str, Any]:
         """Return the current philologist plan for a job."""
         return build_philologist_plan(job_id)
+
+    @mcp.tool()
+    def explain_philologist_fix(decision: dict[str, Any]) -> dict[str, Any]:
+        """Explain a philologist fix decision using the local rule base."""
+        return explain_fix_decision_with_rag(decision)
 
     @mcp.tool()
     def preview_inflection(row: dict[str, Any]) -> dict[str, Any]:
