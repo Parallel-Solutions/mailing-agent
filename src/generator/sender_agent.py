@@ -45,11 +45,21 @@ MAIL_TEMPLATE_DOCX_PATH = TEMPLATES_DIR / "mail_template.docx"
 SENT_MAIL_LOG_PATH = DATA_DIR / "sent_mail_log.jsonl"
 DEFAULT_MAIL_SUBJECT = "Коммерческое предложение МНГП. Срок действия до 31.05.2026"
 DEFAULT_MAIL_BODY = (
-    "Уважаемый(ая) {HEAD_FIO}!\n\n"
-    "Направляем в адрес {ADM_NAME} коммерческое предложение и проект договора.\n"
-    "Просим при ответе указать входящий номер письма.\n\n"
-    "С уважением,\n"
-    "ООО «ПР»"
+    "Добрый день!\n"
+    "Направляем для рассмотрения коммерческое предложение на выполнение работ по разработке проекта "
+    "местных нормативов градостроительного проектирования.\n"
+    "Во вложении:\n"
+    "— коммерческое предложение;\n"
+    "— проект договора;\n"
+    "— проект технического задания;\n"
+    "— календарный план выполнения работ.\n"
+    "Срок действия коммерческого предложения — до 31.05.2026.\n\n"
+    "ООО «Параллельные Решения» специализируется на разработке документов территориального планирования "
+    "и градостроительного зонирования. В состав работ входят сбор и анализ исходных данных, подготовка "
+    "проектных материалов и сопровождение согласования проекта до его утверждения.\n"
+    "Просим передать материалы должностному лицу, курирующему вопросы архитектуры и градостроительства. "
+    "Готовы провести рабочую консультацию по составу работ, срокам, порядку взаимодействия и ответить "
+    "на вопросы в формате ВКС."
 )
 DEFAULT_MAIL_FOOTER_TEXT = (
     "С уважением,\n"
@@ -155,7 +165,9 @@ def _read_docx_mail_template(template_path: Path) -> str:
 
 
 def _read_mail_template(mail_template_path: Path | None = None) -> str:
-    template_paths = [mail_template_path] if mail_template_path else [MAIL_TEMPLATE_DOCX_PATH, MAIL_TEMPLATE_PATH]
+    if mail_template_path is None:
+        return DEFAULT_MAIL_BODY
+    template_paths = [mail_template_path]
     for template_path in [path for path in template_paths if path is not None]:
         if not template_path.exists():
             continue
@@ -326,13 +338,7 @@ def _choose_recipient(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _allowed_send_recipients(email_decision: dict[str, Any]) -> list[str]:
-    recipient = email_decision.get("recipient")
-    if not recipient:
-        return []
-    # Safety rule: send only to the chosen recipient.
-    # EMAIL_DOP may help choose a recipient when EMAIL_OSN is empty/invalid,
-    # but it must not be used as an automatic fallback destination after SMTP failure.
-    return [recipient]
+    return list(email_decision.get("valid_emails") or [])
 
 
 def _resolve_output_folder(row_id: Any, *, output_dir: Path | None = None) -> tuple[Path | None, str | None]:
@@ -1071,6 +1077,8 @@ def _send_with_transport(
     mail_template_path: Path | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, str]] = []
+    sent_recipients: list[str] = []
+    warnings: list[str] = []
     for recipient in recipients:
         try:
             warning = None
@@ -1094,8 +1102,19 @@ def _send_with_transport(
             attempts.append({"recipient": recipient, "status": "error", "error": _safe_text(exc) or "SMTP error"})
             continue
         attempts.append({"recipient": recipient, "status": "sent", "error": ""})
-        return {"recipient": recipient, "attempts": attempts, "error": "", "warning": warning or ""}
-    last_error = attempts[-1]["error"] if attempts else "Не найден получатель для отправки."
+        sent_recipients.append(recipient)
+        if warning:
+            warnings.append(warning)
+    if sent_recipients and len(sent_recipients) == len(recipients):
+        return {
+            "recipient": sent_recipients[0],
+            "recipients": sent_recipients,
+            "attempts": attempts,
+            "error": "",
+            "warning": " ".join(warnings).strip(),
+        }
+    failed_errors = [attempt["error"] for attempt in attempts if attempt.get("status") == "error" and attempt.get("error")]
+    last_error = "; ".join(failed_errors) or "Не найден получатель для отправки."
     return {"recipient": None, "attempts": attempts, "error": last_error, "warning": ""}
 
 
@@ -1407,21 +1426,25 @@ def run_sender(
                 if not send_result["recipient"]:
                     raise RuntimeError(send_result["error"])
                 entry["recipient"] = send_result["recipient"]
-                if entry["email_strategy"] == "fallback_extra" or entry["recipient"] != email_decision["recipient"]:
+                entry["sent_recipients"] = send_result.get("recipients") or [entry["recipient"]]
+                if len(entry["sent_recipients"]) > 1:
+                    entry["decision_reason"] = "Письмо отправлено на основной и дополнительный email."
+                elif entry["email_strategy"] == "fallback_extra" or entry["recipient"] != email_decision["recipient"]:
                     entry["decision_reason"] = "Письмо отправлено по резервному email после выбора лучшего доступного адреса."
-                log_warning = _append_sent_mail_log(
-                    row=row,
-                    recipient=entry["recipient"],
-                    attachments=attachments,
-                    subject=row_subject,
-                    transport=effective_transport,
-                    warning=entry["warning"],
-                    sent_mail_log_path=sent_mail_log_path,
-                )
-                if log_warning:
-                    entry["warning"] = (
-                        f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
+                for sent_recipient in entry["sent_recipients"]:
+                    log_warning = _append_sent_mail_log(
+                        row=row,
+                        recipient=sent_recipient,
+                        attachments=attachments,
+                        subject=row_subject,
+                        transport=effective_transport,
+                        warning=entry["warning"],
+                        sent_mail_log_path=sent_mail_log_path,
                     )
+                    if log_warning:
+                        entry["warning"] = (
+                            f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
+                        )
                 if entry["warning"]:
                     state["warning_rows"] += 1
                     entry["next_action"] = entry["warning"]
