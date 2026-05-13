@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.generator.philology_knowledge import find_relevant_rules
+from src.generator.russian_linguistics import compact_linguistic_summary
 
 
 def explain_fix_decision_with_rag(decision: dict[str, Any], *, limit: int = 3) -> dict[str, Any]:
@@ -12,11 +13,13 @@ def explain_fix_decision_with_rag(decision: dict[str, Any], *, limit: int = 3) -
     rules = find_relevant_rules(query, limit=limit)
     support_score = _support_score(rules)
     recommendation = _recommendation(decision, support_score)
+    linguistic_summary = compact_linguistic_summary(query)
     return {
         "query": query,
         "support_score": support_score,
         "recommendation": recommendation["action"],
         "reason": recommendation["reason"],
+        "linguistics": linguistic_summary,
         "rules": [_compact_rule(rule) for rule in rules],
     }
 

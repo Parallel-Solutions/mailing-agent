@@ -13,6 +13,7 @@ from src.generator.philology_embeddings import semantic_rag_status
 from src.generator.philology_knowledge import find_relevant_rules
 from src.generator.philologist_rag import explain_fix_decision_with_rag
 from src.generator.philologist_planner import build_philologist_plan
+from src.generator.russian_linguistics import analyze_russian_text, linguistic_tools_status
 
 try:
     from mcp.server.fastmcp import FastMCP  # type: ignore
@@ -63,6 +64,16 @@ def create_mcp_server():
     def get_semantic_rag_status() -> dict[str, Any]:
         """Return semantic RAG availability and model status."""
         return semantic_rag_status()
+
+    @mcp.tool()
+    def get_linguistic_tools_status() -> dict[str, Any]:
+        """Return availability of Russian linguistic libraries."""
+        return linguistic_tools_status()
+
+    @mcp.tool()
+    def analyze_russian_language(text: str) -> dict[str, Any]:
+        """Analyze Russian text with optional Natasha and pymorphy3 tools."""
+        return analyze_russian_text(text)
 
     @mcp.tool()
     def preview_inflection(row: dict[str, Any]) -> dict[str, Any]:
