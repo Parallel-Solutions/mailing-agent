@@ -108,6 +108,22 @@ def build_agent_report(
         f"- Документов с автоправками: {philologist_state.get('fixed_documents', 0)}",
         "",
     ]
+    plan = philologist_state.get("plan") or {}
+    if isinstance(plan, dict) and plan:
+        lines.extend(
+            [
+                "План агента:",
+                f"- Статус плана: {plan.get('status', 'unknown')}",
+                f"- Цель: {plan.get('goal', '')}",
+            ]
+        )
+        for step in (plan.get("steps") or [])[:8]:
+            lines.append(
+                "- "
+                f"{step.get('id')}: {step.get('status')} "
+                f"({step.get('tool')}) - {step.get('reason')}"
+            )
+        lines.append("")
 
     lines.extend(_format_report_section("Автоматически принято", auto_verified, limit=8))
     lines.extend(_format_report_section("Карантин", quarantine, limit=8))

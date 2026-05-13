@@ -9,6 +9,7 @@ from src.generator.agent_memory import (
 )
 from src.generator.case_engine import build_inflected_fields_with_trace
 from src.generator.case_engine.overrides import upsert_override
+from src.generator.philologist_planner import build_philologist_plan
 
 try:
     from mcp.server.fastmcp import FastMCP  # type: ignore
@@ -39,6 +40,11 @@ def create_mcp_server():
     def get_agent_quarantine(job_id: str | None = None) -> list[dict[str, Any]]:
         """Return risky decisions that were quarantined for review."""
         return build_quarantine_items(job_id)
+
+    @mcp.tool()
+    def get_philologist_plan(job_id: str | None = None) -> dict[str, Any]:
+        """Return the current philologist plan for a job."""
+        return build_philologist_plan(job_id)
 
     @mcp.tool()
     def preview_inflection(row: dict[str, Any]) -> dict[str, Any]:
