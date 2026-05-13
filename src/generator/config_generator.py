@@ -60,3 +60,12 @@ CASE_AGENT_OK_DEFAULT_CONFIDENCE = float(_read_env_override("CASE_AGENT_OK_DEFAU
 ENABLE_DOCUMENT_REVIEW_AI = _read_env_override("ENABLE_DOCUMENT_REVIEW_AI", "1") == "1"
 DOCUMENT_REVIEW_MODEL = _read_env_override("DOCUMENT_REVIEW_MODEL", CASE_AGENT_MODEL)
 WEB_CASE_AGENT_MAX_WORKERS = max(1, int(_read_env_override("WEB_CASE_AGENT_MAX_WORKERS", "1")))
+
+# PDF-конвертация
+PDF_CONVERTER = _read_env_override("PDF_CONVERTER", "libreoffice").strip().lower() or "libreoffice"
+PDF_CONVERTER_FALLBACK = _read_env_override("PDF_CONVERTER_FALLBACK", "").strip().lower()
+ONLYOFFICE_BASE_URL = _read_env_override("ONLYOFFICE_BASE_URL", "").strip().rstrip("/")
+ONLYOFFICE_CONVERTER_MODE = _read_env_override("ONLYOFFICE_CONVERTER_MODE", "upload").strip().lower() or "upload"
+ONLYOFFICE_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("ONLYOFFICE_CONVERT_TIMEOUT_SECONDS", "120"))
+ONLYOFFICE_JWT_SECRET = _read_env_override("ONLYOFFICE_JWT_SECRET", "").strip()
+ONLYOFFICE_PUBLIC_FILES_URL = _read_env_override("ONLYOFFICE_PUBLIC_FILES_URL", "").strip()
