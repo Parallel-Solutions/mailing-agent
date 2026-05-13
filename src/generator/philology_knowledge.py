@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from src.generator.config_generator import DATA_DIR
+from src.generator.config_generator import RAG_SEMANTIC_WEIGHT
+from src.generator.philology_embeddings import semantic_search_rules
 from src.generator.philology_sources import source_chunks_as_rules
 
 
@@ -47,7 +49,7 @@ def find_relevant_rules(text: str, *, limit: int = 4) -> list[dict[str, Any]]:
     if not query:
         return all_rules[:limit]
 
-    scored: list[tuple[int, str, dict[str, Any]]] = []
+    scored_by_key: dict[str, dict[str, Any]] = {}
     for rule in all_rules:
         score = 0
         matched_terms: list[str] = []
@@ -90,14 +92,46 @@ def find_relevant_rules(text: str, *, limit: int = 4) -> list[dict[str, Any]]:
                 if len(matched_terms) < 5:
                     matched_terms.append(token)
         if score > 0:
-            scored.append((score, ", ".join(dict.fromkeys(matched_terms)), rule))
+            key = _rule_key(rule)
+            scored_by_key[key] = {
+                "score": score,
+                "matched": ", ".join(dict.fromkeys(matched_terms)),
+                "rule": rule,
+                "semantic_score": 0.0,
+                "retrieval": "keyword",
+            }
 
-    scored.sort(key=lambda item: item[0], reverse=True)
+    for semantic_rule in semantic_search_rules(text, all_rules, limit=max(limit * 2, 8)):
+        key = _rule_key(semantic_rule)
+        semantic_score = float(semantic_rule.get("_semantic_score") or 0.0)
+        semantic_points = int(round(semantic_score * RAG_SEMANTIC_WEIGHT))
+        existing = scored_by_key.get(key)
+        if existing:
+            existing["score"] += semantic_points
+            existing["semantic_score"] = semantic_score
+            existing["retrieval"] = "hybrid"
+            existing["rule"] = semantic_rule
+            continue
+        scored_by_key[key] = {
+            "score": semantic_points,
+            "matched": semantic_rule.get("_matched_terms", ""),
+            "rule": semantic_rule,
+            "semantic_score": semantic_score,
+            "retrieval": "semantic",
+        }
+
+    scored = sorted(scored_by_key.values(), key=lambda item: int(item["score"]), reverse=True)
     selected = []
-    for score, matched, rule in scored[:limit]:
+    for item in scored[:limit]:
+        score = int(item["score"])
+        matched = str(item["matched"] or "")
+        rule = item["rule"]
         enriched = dict(rule)
         enriched["_rag_score"] = score
         enriched["_matched_terms"] = matched
+        enriched["_keyword_score"] = score - int(round(float(item.get("semantic_score") or 0.0) * RAG_SEMANTIC_WEIGHT))
+        enriched["_semantic_score"] = item.get("semantic_score", 0.0)
+        enriched["_retrieval"] = item.get("retrieval", "keyword")
         selected.append(enriched)
     if selected:
         return selected
@@ -115,8 +149,14 @@ def format_rules_context(rules: list[dict[str, Any]]) -> str:
         matched = _safe_text(rule.get("_matched_terms"))
         score = rule.get("_rag_score")
         meta = f"score={score}" if score is not None else ""
+        retrieval = _safe_text(rule.get("_retrieval"))
+        semantic_score = rule.get("_semantic_score")
         if matched:
             meta = f"{meta}; matched={matched}".strip("; ")
+        if retrieval:
+            meta = f"{meta}; retrieval={retrieval}".strip("; ")
+        if semantic_score:
+            meta = f"{meta}; semantic={semantic_score}".strip("; ")
         chunks.append(
             f"[{_safe_text(rule.get('id'))}] {_safe_text(rule.get('title'))}\n"
             f"Источник: {_safe_text(rule.get('source'))}\n"
@@ -127,3 +167,10 @@ def format_rules_context(rules: list[dict[str, Any]]) -> str:
             f"Поиск: {meta}"
         )
     return "\n\n".join(chunks)
+
+
+def _rule_key(rule: dict[str, Any]) -> str:
+    value = _safe_text(rule.get("id"))
+    if value:
+        return value
+    return _safe_text(rule.get("title")) + "|" + _safe_text(rule.get("source"))

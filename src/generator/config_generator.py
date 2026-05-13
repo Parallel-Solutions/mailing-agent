@@ -58,6 +58,10 @@ CASE_AGENT_OK_DEFAULT_CONFIDENCE = float(_read_env_override("CASE_AGENT_OK_DEFAU
 AGENT_MEMORY_AUTO_APPROVE_SAFE_INFLECTIONS = (
     _read_env_override("AGENT_MEMORY_AUTO_APPROVE_SAFE_INFLECTIONS", "1") == "1"
 )
+ENABLE_SEMANTIC_RAG = _read_env_override("ENABLE_SEMANTIC_RAG", "0") == "1"
+RAG_EMBEDDING_MODEL = _read_env_override("RAG_EMBEDDING_MODEL", "cointegrated/rubert-tiny").strip()
+RAG_SEMANTIC_MIN_SCORE = float(_read_env_override("RAG_SEMANTIC_MIN_SCORE", "0.45"))
+RAG_SEMANTIC_WEIGHT = int(_read_env_override("RAG_SEMANTIC_WEIGHT", "30"))
 
 # AI-ревью готового документа
 ENABLE_DOCUMENT_REVIEW_AI = _read_env_override("ENABLE_DOCUMENT_REVIEW_AI", "1") == "1"
