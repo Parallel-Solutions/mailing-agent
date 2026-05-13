@@ -53,7 +53,7 @@ DEFAULT_MAIL_BODY = (
     "— проект договора;\n"
     "— проект технического задания;\n"
     "— календарный план выполнения работ.\n"
-    "Срок действия коммерческого предложения — до 31.05.2026.\n\n"
+    "\n"
     "ООО «Параллельные Решения» специализируется на разработке документов территориального планирования "
     "и градостроительного зонирования. В состав работ входят сбор и анализ исходных данных, подготовка "
     "проектных материалов и сопровождение согласования проекта до его утверждения.\n"
@@ -665,7 +665,13 @@ def _build_message(
 
 
 def _build_mail_body(row: dict[str, Any], *, mail_template_path: Path | None = None) -> str:
-    return _append_mail_footer_text(_render_mail_template(_read_mail_template(mail_template_path), row))
+    body = _render_mail_template(_read_mail_template(mail_template_path), row)
+    body = re.sub(
+        r"(?im)^\s*Срок\s+действия\s+коммерческого\s+предложения\s*[—-]\s*до\s+31\.05\.2026\.\s*\n?",
+        "",
+        body,
+    ).strip()
+    return _append_mail_footer_text(body)
 
 
 def _build_mail_subject(subject_template: str, row: dict[str, Any]) -> str:
