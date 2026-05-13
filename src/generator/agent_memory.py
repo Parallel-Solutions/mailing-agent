@@ -370,6 +370,13 @@ def save_learning_memory_csv(candidates: list[dict[str, Any]], csv_path: Path) -
         "warning",
         "verified_value",
         "previous_value",
+        "decision_action",
+        "decision_reason",
+        "decision_confidence",
+        "rag_recommendation",
+        "rag_reason",
+        "rag_support_score",
+        "rag_rules",
     ]
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -531,6 +538,13 @@ def _philologist_fix_candidate(document: dict[str, Any], fix: dict[str, Any], *,
         "suggestion": fix.get("suggestion", ""),
         "issue": fix.get("issue", ""),
         "reason": fix.get("mode", "") if applied else fix.get("reason", ""),
+        "decision_action": fix.get("decision_action", ""),
+        "decision_reason": fix.get("decision_reason", ""),
+        "decision_confidence": fix.get("decision_confidence", ""),
+        "rag_recommendation": fix.get("rag_recommendation", ""),
+        "rag_reason": fix.get("rag_reason", ""),
+        "rag_support_score": fix.get("rag_support_score", ""),
+        "rag_rules": fix.get("rag_rules", ""),
     }
 
 
