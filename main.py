@@ -404,6 +404,7 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
         "error_rows": result.get("error_rows"),
         "results": result.get("results", []),
         "summary_text": result.get("summary_text"),
+        "inflection_summary": result.get("inflection_summary"),
         "task_stats": result.get("task_stats"),
         "recent_events": result.get("recent_events"),
     }
@@ -490,6 +491,19 @@ async def download_sent_mail_log(job_id: str | None = None, username: str = Depe
         log_path,
         media_type="application/x-ndjson",
         filename="sent_mail_log.jsonl",
+    )
+
+
+@app.get("/api/download/inflection-log")
+async def download_inflection_log(job_id: str | None = None, username: str = Depends(check_auth)):
+    job_paths = resolve_job_paths(job_id)
+    log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
+    return FileResponse(
+        log_path,
+        media_type="application/x-ndjson",
+        filename="inflection_log.jsonl",
     )
 
 

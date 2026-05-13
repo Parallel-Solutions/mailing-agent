@@ -73,6 +73,12 @@ def _format_generator_summary(
         f"Агент-генератор завершил обработку: всего {state.get('total_rows', 0)}, "
         f"успешно {state.get('ok_rows', 0)}, ошибок {state.get('error_rows', 0)}."
     )
+    inflection_summary = state.get("inflection_summary") or {}
+    if inflection_summary.get("total"):
+        by_method = inflection_summary.get("by_method") or {}
+        override_count = int(by_method.get("override", 0) or 0)
+        warning_count = int(inflection_summary.get("warning_count", 0) or 0)
+        base += f" Склонения: проверено {inflection_summary['total']}, по словарю {override_count}, предупреждений {warning_count}."
     if review_handoffs > 0:
         base += f" Подготовил для филолога {review_handoffs} задач на проверку."
     if philologist_started_rows > 0:
@@ -131,11 +137,51 @@ def process_generator_row(
     }
 
 
-def append_inflection_log(results: list[dict], *, log_path: Path | None) -> None:
+def build_inflection_summary(results: list[dict]) -> dict[str, Any]:
+    by_method: dict[str, int] = {}
+    by_confidence: dict[str, int] = {}
+    warning_samples: list[dict[str, Any]] = []
+    total = 0
+
+    for result in results:
+        row_id = result.get("id")
+        for item in result.get("inflection_trace") or []:
+            total += 1
+            method = str(item.get("method") or "unknown")
+            confidence = str(item.get("confidence") or "unknown")
+            by_method[method] = by_method.get(method, 0) + 1
+            by_confidence[confidence] = by_confidence.get(confidence, 0) + 1
+            warning = str(item.get("warning") or "").strip()
+            if warning and len(warning_samples) < 10:
+                warning_samples.append(
+                    {
+                        "row_id": row_id,
+                        "field": item.get("field"),
+                        "source_value": item.get("source_value"),
+                        "result_value": item.get("result_value"),
+                        "warning": warning,
+                    }
+                )
+
+    return {
+        "total": total,
+        "by_method": by_method,
+        "by_confidence": by_confidence,
+        "warning_count": sum(
+            1
+            for result in results
+            for item in (result.get("inflection_trace") or [])
+            if str(item.get("warning") or "").strip()
+        ),
+        "sample_warnings": warning_samples,
+    }
+
+
+def save_inflection_log(results: list[dict], *, log_path: Path | None) -> None:
     if log_path is None:
         return
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as handle:
+    with log_path.open("w", encoding="utf-8") as handle:
         for result in results:
             for item in result.get("inflection_trace") or []:
                 payload = {
@@ -252,6 +298,7 @@ def run_generator_agent(
                 else f"Агент-генератор начал обработку строк и принял {len(claimed_tasks)} внутренних задач."
             ),
             "results": [],
+            "inflection_summary": {},
             "philologist_result": None,
             "task_stats": count_tasks_for_agent("generator", job_id),
             "tasks": get_tasks_for_agent("generator", job_id)[:20],
@@ -363,10 +410,12 @@ def run_generator_agent(
             results,
             batch_pdf_dir=None if job_paths.uses_legacy_layout else job_paths.batch_pdf_dir,
         )
-        append_inflection_log(
+        inflection_log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
+        save_inflection_log(
             results,
-            log_path=None if job_paths.uses_legacy_layout else job_paths.root_dir / "state" / "inflection_log.jsonl",
+            log_path=inflection_log_path,
         )
+        inflection_summary = build_inflection_summary(results)
         review_handoffs = 0
         review_row_ids: list[str] = []
         for result in results:
@@ -430,6 +479,7 @@ def run_generator_agent(
             philologist_started_rows = len(review_row_ids)
 
         state["results"] = results
+        state["inflection_summary"] = inflection_summary
         state["ok_rows"] = sum(1 for item in results if item.get("status") == "ok")
         state["error_rows"] = sum(1 for item in results if item.get("status") == "error")
         state["completed_at"] = datetime.now().isoformat(timespec="seconds")
