@@ -120,6 +120,7 @@ def _summarize_output(value: Any) -> Any:
             "ai_issue_count",
             "ai_error",
             "applied_fix_count",
+            "skipped_fix_count",
             "updated_pdf",
         )
         summary = {key: value.get(key) for key in keys if key in value}
@@ -129,6 +130,9 @@ def _summarize_output(value: Any) -> Any:
         if "applied_fixes" in value:
             fixes = value.get("applied_fixes") or []
             summary["applied_fixes"] = {"count": len(fixes) if isinstance(fixes, list) else 0}
+        if "skipped_fixes" in value:
+            fixes = value.get("skipped_fixes") or []
+            summary["skipped_fixes"] = {"count": len(fixes) if isinstance(fixes, list) else 0}
         return summary
     if isinstance(value, list):
         return {"count": len(value)}

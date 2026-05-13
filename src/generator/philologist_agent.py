@@ -111,10 +111,16 @@ def _replace_paragraph_text(paragraph, new_text: str) -> bool:
     if current_text == new_text:
         return False
 
+    non_empty_runs = [run for run in paragraph.runs if run.text]
+    if len(non_empty_runs) > 1:
+        return False
+
     if paragraph.runs:
-        paragraph.runs[0].text = new_text
-        for run in paragraph.runs[1:]:
-            run.text = ""
+        target_run = non_empty_runs[0] if non_empty_runs else paragraph.runs[0]
+        target_run.text = new_text
+        for run in paragraph.runs:
+            if run is not target_run:
+                run.text = ""
     else:
         paragraph.add_run(new_text)
     return True
@@ -147,12 +153,40 @@ def _replace_fragment_in_paragraph(paragraph, fragment: str, replacement: str) -
     current_text = "".join(run.text for run in paragraph.runs) if paragraph.runs else paragraph.text
     if not fragment or not replacement or fragment not in current_text:
         return False
+    if _replace_fragment_inside_single_run(paragraph, fragment, replacement):
+        return True
     if not _paragraph_is_safe_for_text_rewrite(paragraph):
         return False
     new_text = current_text.replace(fragment, replacement, 1)
     if new_text == current_text:
         return False
     return _replace_paragraph_text(paragraph, new_text)
+
+
+def _replace_fragment_inside_single_run(paragraph, fragment: str, replacement: str) -> bool:
+    for run in paragraph.runs:
+        if fragment not in run.text:
+            continue
+        new_text = run.text.replace(fragment, replacement, 1)
+        if new_text == run.text:
+            return False
+        run.text = new_text
+        return True
+    return False
+
+
+def _fragment_exists_inside_single_run(paragraph, fragment: str) -> bool:
+    return any(fragment and fragment in run.text for run in paragraph.runs)
+
+
+def _normalize_double_spaces_in_runs(paragraph) -> bool:
+    changed = False
+    for run in paragraph.runs:
+        normalized = _normalize_double_spaces(run.text)
+        if normalized != run.text:
+            run.text = normalized
+            changed = True
+    return changed
 
 
 def _normalize_double_spaces(text: str) -> str:
@@ -182,77 +216,98 @@ def _looks_like_editorial_instruction(text: str) -> bool:
     return False
 
 
-def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]) -> bool:
+def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]) -> dict[str, Any]:
     location = _safe_text(issue.get("location"))
     paragraph = location_map.get(location)
     if paragraph is None:
-        return False
+        return {"applied": False, "reason": "location_not_found"}
 
     issue_text = _safe_text(issue.get("issue")).lower()
     fragment = _safe_text(issue.get("fragment"))
     suggestion = _safe_text(issue.get("suggestion"))
     current_text = paragraph.text
 
-    if _looks_like_editorial_instruction(suggestion):
-        return False
-
     if "двойные пробелы" in issue_text:
+        if _normalize_double_spaces_in_runs(paragraph):
+            return {"applied": True, "mode": "run_normalization"}
         normalized = _normalize_double_spaces(current_text)
-        return _replace_paragraph_text(paragraph, normalized)
+        applied = _replace_paragraph_text(paragraph, normalized)
+        return {"applied": applied, "mode": "paragraph_rewrite" if applied else "", "reason": "" if applied else "unsafe_multirun"}
+
+    if _looks_like_editorial_instruction(suggestion):
+        return {"applied": False, "reason": "editorial_instruction"}
 
     if issue.get("source") == "local" and suggestion:
-        if not _paragraph_is_safe_for_text_rewrite(paragraph) and fragment.strip() != current_text.strip():
-            return False
         if fragment and fragment in current_text:
-            return _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+            if not _paragraph_is_safe_for_text_rewrite(paragraph) and not _fragment_exists_inside_single_run(paragraph, fragment):
+                return {"applied": False, "reason": "unsafe_formatting"}
+            applied = _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+            return {"applied": applied, "mode": "fragment_replace" if applied else "", "reason": "" if applied else "unsafe_or_missing_fragment"}
         if current_text.strip() == fragment.strip():
             if not _paragraph_is_safe_for_text_rewrite(paragraph):
-                return False
-            return _replace_paragraph_text(paragraph, suggestion)
+                return {"applied": False, "reason": "unsafe_formatting"}
+            applied = _replace_paragraph_text(paragraph, suggestion)
+            return {"applied": applied, "mode": "paragraph_rewrite" if applied else "", "reason": "" if applied else "unsafe_multirun"}
 
     if "после числа используется неверная форма слова" in issue_text and suggestion:
         if not _paragraph_is_safe_for_text_rewrite(paragraph):
-            return False
-        return _replace_paragraph_text(paragraph, suggestion)
+            return {"applied": False, "reason": "unsafe_formatting"}
+        applied = _replace_paragraph_text(paragraph, suggestion)
+        return {"applied": applied, "mode": "paragraph_rewrite" if applied else "", "reason": "" if applied else "unsafe_multirun"}
 
     if issue.get("source") == "ai" and suggestion and fragment:
-        if not _paragraph_is_safe_for_text_rewrite(paragraph) and fragment.strip() != current_text.strip():
-            return False
         if fragment in current_text:
-            return _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+            if not _paragraph_is_safe_for_text_rewrite(paragraph) and not _fragment_exists_inside_single_run(paragraph, fragment):
+                return {"applied": False, "reason": "unsafe_formatting"}
+            applied = _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+            return {"applied": applied, "mode": "fragment_replace" if applied else "", "reason": "" if applied else "unsafe_or_missing_fragment"}
         if current_text.strip() == fragment.strip():
             if not _paragraph_is_safe_for_text_rewrite(paragraph):
-                return False
-            return _replace_paragraph_text(paragraph, suggestion)
+                return {"applied": False, "reason": "unsafe_formatting"}
+            applied = _replace_paragraph_text(paragraph, suggestion)
+            return {"applied": applied, "mode": "paragraph_rewrite" if applied else "", "reason": "" if applied else "unsafe_multirun"}
         if issue.get("severity") == "error":
             if not _paragraph_is_safe_for_text_rewrite(paragraph):
-                return False
-            return _replace_paragraph_text(paragraph, current_text.replace(fragment, suggestion))
+                return {"applied": False, "reason": "unsafe_formatting"}
+            applied = _replace_paragraph_text(paragraph, current_text.replace(fragment, suggestion))
+            return {"applied": applied, "mode": "paragraph_rewrite" if applied else "", "reason": "" if applied else "unsafe_multirun"}
 
     if issue.get("source") == "ai" and suggestion and not fragment and issue.get("severity") == "error":
-        if not _paragraph_is_safe_for_text_rewrite(paragraph):
-            return False
-        return _replace_paragraph_text(paragraph, suggestion)
+        return {"applied": False, "reason": "ai_full_paragraph_rewrite_blocked"}
 
-    return False
+    return {"applied": False, "reason": "no_safe_fix"}
+
+
+def _format_skipped_fix(issue: dict[str, Any], result: dict[str, Any]) -> dict[str, str]:
+    return {
+        "location": _safe_text(issue.get("location")),
+        "issue": _safe_text(issue.get("issue")),
+        "suggestion": _safe_text(issue.get("suggestion")),
+        "reason": _safe_text(result.get("reason")) or "not_safe_to_apply",
+    }
 
 
 def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, Any]:
     doc = Document(docx_path)
     location_map = {location: paragraph for location, paragraph in _iter_document_paragraphs(doc)}
     applied_fixes: list[dict[str, str]] = []
+    skipped_fixes: list[dict[str, str]] = []
 
     for issue in review_result.get("issues", []):
         if not isinstance(issue, dict):
             continue
-        if _apply_issue_to_document(location_map, issue):
+        apply_result = _apply_issue_to_document(location_map, issue)
+        if apply_result.get("applied"):
             applied_fixes.append(
                 {
                     "location": _safe_text(issue.get("location")),
                     "issue": _safe_text(issue.get("issue")),
                     "suggestion": _safe_text(issue.get("suggestion")),
+                    "mode": _safe_text(apply_result.get("mode")),
                 }
             )
+        elif issue.get("suggestion"):
+            skipped_fixes.append(_format_skipped_fix(issue, apply_result))
 
     if applied_fixes:
         doc.save(docx_path)
@@ -260,6 +315,8 @@ def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, 
     return {
         "applied_fix_count": len(applied_fixes),
         "applied_fixes": applied_fixes,
+        "skipped_fix_count": len(skipped_fixes),
+        "skipped_fixes": skipped_fixes,
     }
 
 
@@ -329,6 +386,24 @@ def _format_issue_details(documents: list[dict[str, Any]], limit: int = 5) -> st
     return "Остались замечания:\n" + "\n".join(lines[: limit * 2])
 
 
+def _format_skipped_fix_details(documents: list[dict[str, Any]], limit: int = 5) -> str:
+    lines: list[str] = []
+    for item in documents:
+        skipped = item.get("skipped_fixes") or []
+        if not skipped:
+            continue
+        lines.append(f"{item['name']}:")
+        for fix in skipped[:2]:
+            issue = _safe_text(fix.get("issue")) or "правка пропущена"
+            reason = _safe_text(fix.get("reason")) or "небезопасно применять автоматически"
+            lines.append(f"- {issue} ({reason})")
+        if len(lines) >= limit * 2:
+            break
+    if not lines:
+        return ""
+    return "Не применил автоматически:\n" + "\n".join(lines[: limit * 2])
+
+
 def _format_rule_details(message: str) -> str:
     rules = find_relevant_rules(message, limit=4)
     if not rules:
@@ -376,6 +451,9 @@ def _format_philologist_structured_reply(message: str, state: dict[str, Any]) ->
     if isinstance(tool_trace, list):
         parts.append(_format_tool_trace(tool_trace))
     parts.append(_format_fixed_details(fixed, limit=5) if fixed else "Исправил:\nАвтоматических исправлений не было.")
+    skipped_details = _format_skipped_fix_details(documents, limit=5)
+    if skipped_details:
+        parts.append(skipped_details)
     parts.append(_format_issue_details(issues, limit=5) if issues else "Остались замечания:\nКритичных языковых замечаний не осталось.")
     parts.append(_format_rule_details(message))
     return "\n\n".join(part for part in parts if part)
@@ -485,6 +563,8 @@ def run_philologist(
             "issues": review_result.get("issues", []),
             "applied_fix_count": fix_result["applied_fix_count"],
             "applied_fixes": fix_result["applied_fixes"],
+            "skipped_fix_count": fix_result.get("skipped_fix_count", 0),
+            "skipped_fixes": fix_result.get("skipped_fixes", []),
             "updated_pdf": pdf_path,
         }
         processed_documents.append(document_entry)
