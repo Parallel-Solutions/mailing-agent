@@ -238,9 +238,12 @@ from src.generator.autonomous_worker import (
     stop_autonomous_worker,
 )
 from src.generator.agent_memory import (
+    build_quarantine_items,
     build_learning_candidates,
     get_agent_memory_csv_path,
+    get_agent_quarantine_csv_path,
     save_learning_memory_csv,
+    save_quarantine_csv,
 )
 from src.generator.case_engine.overrides import upsert_override
 from src.generator.inflection_report import load_inflection_log, save_inflection_csv
@@ -540,6 +543,20 @@ async def download_agent_memory(job_id: str | None = None, username: str = Depen
         report_path,
         media_type="text/csv",
         filename="agent_memory_candidates.csv",
+    )
+
+
+@app.get("/api/download/agent-quarantine")
+async def download_agent_quarantine(job_id: str | None = None, username: str = Depends(check_auth)):
+    items = build_quarantine_items(job_id)
+    if not items:
+        raise HTTPException(status_code=404, detail="Карантин агента пока пуст.")
+    report_path = get_agent_quarantine_csv_path(job_id)
+    save_quarantine_csv(items, report_path)
+    return FileResponse(
+        report_path,
+        media_type="text/csv",
+        filename="agent_quarantine.csv",
     )
 
 

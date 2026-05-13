@@ -14,6 +14,8 @@ from src.jobs.storage import resolve_job_paths
 
 MEMORY_JSONL_NAME = "agent_memory_candidates.jsonl"
 MEMORY_CSV_NAME = "agent_memory_candidates.csv"
+QUARANTINE_JSONL_NAME = "agent_quarantine.jsonl"
+QUARANTINE_CSV_NAME = "agent_quarantine.csv"
 
 
 def get_agent_memory_path(job_id: str | None = None) -> Path:
@@ -24,6 +26,16 @@ def get_agent_memory_path(job_id: str | None = None) -> Path:
 def get_agent_memory_csv_path(job_id: str | None = None) -> Path:
     job_paths = resolve_job_paths(job_id)
     return job_paths.root_dir / "state" / MEMORY_CSV_NAME
+
+
+def get_agent_quarantine_path(job_id: str | None = None) -> Path:
+    job_paths = resolve_job_paths(job_id)
+    return job_paths.root_dir / "state" / QUARANTINE_JSONL_NAME
+
+
+def get_agent_quarantine_csv_path(job_id: str | None = None) -> Path:
+    job_paths = resolve_job_paths(job_id)
+    return job_paths.root_dir / "state" / QUARANTINE_CSV_NAME
 
 
 def build_learning_candidates(job_id: str | None = None) -> list[dict[str, Any]]:
@@ -37,12 +49,80 @@ def save_learning_memory(job_id: str | None = None) -> list[dict[str, Any]]:
     candidates = build_learning_candidates(job_id)
     if AGENT_MEMORY_AUTO_APPROVE_SAFE_INFLECTIONS:
         candidates.extend(auto_approve_safe_inflections(job_id))
+    quarantine = build_quarantine_items(job_id)
+    save_quarantine(job_id, quarantine)
     path = get_agent_memory_path(job_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for item in candidates:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
     return candidates
+
+
+def build_quarantine_items(job_id: str | None = None) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in load_inflection_log(job_id):
+        decision = _safe_auto_approval_decision(row)
+        if decision["allowed"]:
+            continue
+        items.append(_quarantine_record(row, reason=decision["reason"]))
+
+    for candidate in _build_philologist_candidates(job_id):
+        if candidate.get("status") == "needs_human_review":
+            items.append(
+                {
+                    "quarantine_type": "philology_review",
+                    "status": "quarantine",
+                    "source": candidate.get("source", ""),
+                    "row_id": candidate.get("row_id", ""),
+                    "document": candidate.get("document", ""),
+                    "location": candidate.get("location", ""),
+                    "field": "",
+                    "source_value": "",
+                    "result_value": candidate.get("suggestion", ""),
+                    "method": "",
+                    "confidence": "",
+                    "reason": candidate.get("reason", ""),
+                    "warning": candidate.get("issue", ""),
+                    "next_action": "Проверить правку человеком или через RAG/LLM перед добавлением в правило.",
+                }
+            )
+    return items
+
+
+def save_quarantine(job_id: str | None, items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    items = build_quarantine_items(job_id) if items is None else items
+    path = get_agent_quarantine_path(job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for item in items:
+            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+    return items
+
+
+def save_quarantine_csv(items: list[dict[str, Any]], csv_path: Path) -> None:
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "quarantine_type",
+        "status",
+        "source",
+        "row_id",
+        "document",
+        "location",
+        "field",
+        "source_value",
+        "result_value",
+        "method",
+        "confidence",
+        "reason",
+        "warning",
+        "next_action",
+    ]
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for item in items:
+            writer.writerow({field: item.get(field, "") for field in fieldnames})
 
 
 def auto_approve_safe_inflections(job_id: str | None = None) -> list[dict[str, Any]]:
@@ -244,6 +324,34 @@ def _auto_approval_record(
     if extra:
         record.update(extra)
     return record
+
+
+def _quarantine_record(row: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    warning = str(row.get("warning") or "").strip()
+    next_action = "Проверить форму и при подтверждении добавить override."
+    if reason == "has_warning":
+        next_action = "Разобрать warning и подтвердить правильную форму вручную."
+    elif reason == "method_not_trusted_for_auto_approval":
+        next_action = "Проверить источник решения; fallback/override не автоутверждаются."
+    elif reason == "empty_or_unchanged_value":
+        next_action = "Проверить, почему форма не изменилась или отсутствует."
+
+    return {
+        "quarantine_type": "inflection_review",
+        "status": "quarantine",
+        "source": "case_engine",
+        "row_id": row.get("row_id", ""),
+        "document": "",
+        "location": "",
+        "field": row.get("field", ""),
+        "source_value": row.get("source_value", ""),
+        "result_value": row.get("result_value", ""),
+        "method": row.get("method", ""),
+        "confidence": row.get("confidence", ""),
+        "reason": reason,
+        "warning": warning,
+        "next_action": next_action,
+    }
 
 
 def _build_philologist_candidates(job_id: str | None) -> list[dict[str, Any]]:
