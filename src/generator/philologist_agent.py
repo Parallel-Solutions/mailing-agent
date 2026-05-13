@@ -26,6 +26,7 @@ from src.generator.ai_case_agent import (
 )
 from src.generator.config_generator import DOCUMENT_REVIEW_MODEL, OUTPUT_DIR
 from src.generator.document_review_agent import review_docx
+from src.generator.inflection_report import format_inflection_report, load_inflection_log
 from src.generator.philology_knowledge import find_relevant_rules, format_rules_context
 from src.generator.pdf_converter import convert_docx_batch
 from src.generator.responsibility_matrix import diagnose_responsibility
@@ -352,6 +353,9 @@ def _format_philologist_structured_reply(message: str, state: dict[str, Any]) ->
     parts = [
         "Сводка:\n" + (state.get("summary_text") or "Проверка завершена, но краткая сводка пока недоступна.")
     ]
+    inflection_report = _safe_text(state.get("inflection_report"))
+    if inflection_report:
+        parts.append(inflection_report)
     parts.append(_format_fixed_details(fixed, limit=5) if fixed else "Исправил:\nАвтоматических исправлений не было.")
     parts.append(_format_issue_details(issues, limit=5) if issues else "Остались замечания:\nКритичных языковых замечаний не осталось.")
     parts.append(_format_rule_details(message))
@@ -578,6 +582,9 @@ def run_philologist(
     state["tasks"] = get_tasks_for_agent("philologist", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="philologist", limit=20, job_id=job_id)
     state["summary_text"] = _format_run_summary(processed_documents, sender_handoffs=sender_handoffs)
+    inflection_rows = load_inflection_log(job_id)
+    state["inflection_report"] = format_inflection_report(inflection_rows, limit=8) if inflection_rows else ""
+    state["inflection_log_count"] = len(inflection_rows)
     _save_philologist_state(state, job_id)
     return dict(state)
 
@@ -589,6 +596,9 @@ def get_philologist_status(job_id: str | None = None) -> dict[str, Any]:
     state["task_stats"] = count_tasks_for_agent("philologist", job_id)
     state["tasks"] = get_tasks_for_agent("philologist", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="philologist", limit=20, job_id=job_id)
+    inflection_rows = load_inflection_log(job_id)
+    state["inflection_report"] = format_inflection_report(inflection_rows, limit=8) if inflection_rows else ""
+    state["inflection_log_count"] = len(inflection_rows)
     if state.get("status") == "idle":
         state["total_documents"] = len(list(target_dir.rglob("*.docx"))) if target_dir.exists() else 0
     return state

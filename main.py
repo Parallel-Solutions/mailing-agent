@@ -237,6 +237,7 @@ from src.generator.autonomous_worker import (
     start_autonomous_worker,
     stop_autonomous_worker,
 )
+from src.generator.inflection_report import load_inflection_log, save_inflection_csv
 from src.generator.generator_agent import get_generator_status, run_generator_agent
 from src.jobs import create_job_id, resolve_job_paths
 
@@ -504,6 +505,21 @@ async def download_inflection_log(job_id: str | None = None, username: str = Dep
         log_path,
         media_type="application/x-ndjson",
         filename="inflection_log.jsonl",
+    )
+
+
+@app.get("/api/download/inflection-report")
+async def download_inflection_report(job_id: str | None = None, username: str = Depends(check_auth)):
+    rows = load_inflection_log(job_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
+    job_paths = resolve_job_paths(job_id)
+    report_path = job_paths.root_dir / "state" / "inflection_report.csv"
+    save_inflection_csv(rows, report_path)
+    return FileResponse(
+        report_path,
+        media_type="text/csv",
+        filename="inflection_report.csv",
     )
 
 

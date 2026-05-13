@@ -981,6 +981,7 @@
           <button class="btn-outline" id="g-pause" onclick="pauseGenerator()" style="display:none">Пауза</button>
         <button class="btn-outline" id="g-download-output" onclick="downloadWithJob('/api/download/output')">Скачать output.zip</button>
         <button class="btn-outline" id="g-download-inflection" onclick="downloadWithJob('/api/download/inflection-log')">Скачать журнал склонений</button>
+        <button class="btn-outline" id="g-download-inflection-report" onclick="downloadWithJob('/api/download/inflection-report')">Скачать отчет склонений CSV</button>
         </div>
       </div>
 
@@ -2100,6 +2101,8 @@
   function setInflectionDownloadEnabled(isEnabled) {
     const downloadButton = document.getElementById('g-download-inflection');
     if (downloadButton) downloadButton.disabled = !isEnabled;
+    const reportButton = document.getElementById('g-download-inflection-report');
+    if (reportButton) reportButton.disabled = !isEnabled;
   }
 
   function formatInflectionSummary(summary = {}) {
