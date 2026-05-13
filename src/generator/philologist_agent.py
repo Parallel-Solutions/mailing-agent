@@ -28,6 +28,7 @@ from src.generator.ai_case_agent import (
 from src.generator.config_generator import DOCUMENT_REVIEW_MODEL, OUTPUT_DIR
 from src.generator.document_review_agent import review_docx
 from src.generator.inflection_report import format_inflection_report, load_inflection_log
+from src.generator.philologist_decisions import AUTO_FIX, decide_issue_fix
 from src.generator.philologist_executor import PhilologistAgentLoop, merge_plan_execution
 from src.generator.philologist_planner import build_philologist_plan
 from src.generator.philology_knowledge import find_relevant_rules, format_rules_context
@@ -283,12 +284,20 @@ def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]
     return {"applied": False, "reason": "no_safe_fix"}
 
 
-def _format_skipped_fix(issue: dict[str, Any], result: dict[str, Any]) -> dict[str, str]:
+def _format_skipped_fix(
+    issue: dict[str, Any],
+    result: dict[str, Any],
+    decision: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    decision = decision or {}
     return {
         "location": _safe_text(issue.get("location")),
         "issue": _safe_text(issue.get("issue")),
         "suggestion": _safe_text(issue.get("suggestion")),
         "reason": _safe_text(result.get("reason")) or "not_safe_to_apply",
+        "decision_action": _safe_text(decision.get("action")),
+        "decision_reason": _safe_text(decision.get("reason")),
+        "decision_confidence": _safe_text(decision.get("confidence")),
     }
 
 
@@ -297,9 +306,25 @@ def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, 
     location_map = {location: paragraph for location, paragraph in _iter_document_paragraphs(doc)}
     applied_fixes: list[dict[str, str]] = []
     skipped_fixes: list[dict[str, str]] = []
+    fix_decisions: list[dict[str, Any]] = []
 
     for issue in review_result.get("issues", []):
         if not isinstance(issue, dict):
+            continue
+        location = _safe_text(issue.get("location"))
+        paragraph = location_map.get(location)
+        current_text = paragraph.text if paragraph is not None else ""
+        decision = decide_issue_fix(issue, current_text=current_text).to_dict()
+        fix_decisions.append(decision)
+        if decision.get("action") != AUTO_FIX:
+            if issue.get("suggestion"):
+                skipped_fixes.append(
+                    _format_skipped_fix(
+                        issue,
+                        {"reason": decision.get("action") or "not_auto_fix"},
+                        decision,
+                    )
+                )
             continue
         apply_result = _apply_issue_to_document(location_map, issue)
         if apply_result.get("applied"):
@@ -309,10 +334,13 @@ def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, 
                     "issue": _safe_text(issue.get("issue")),
                     "suggestion": _safe_text(issue.get("suggestion")),
                     "mode": _safe_text(apply_result.get("mode")),
+                    "decision_action": _safe_text(decision.get("action")),
+                    "decision_reason": _safe_text(decision.get("reason")),
+                    "decision_confidence": _safe_text(decision.get("confidence")),
                 }
             )
         elif issue.get("suggestion"):
-            skipped_fixes.append(_format_skipped_fix(issue, apply_result))
+            skipped_fixes.append(_format_skipped_fix(issue, apply_result, decision))
 
     if applied_fixes:
         doc.save(docx_path)
@@ -322,6 +350,8 @@ def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, 
         "applied_fixes": applied_fixes,
         "skipped_fix_count": len(skipped_fixes),
         "skipped_fixes": skipped_fixes,
+        "decision_count": len(fix_decisions),
+        "fix_decisions": fix_decisions,
     }
 
 
@@ -409,6 +439,25 @@ def _format_skipped_fix_details(documents: list[dict[str, Any]], limit: int = 5)
     return "Не применил автоматически:\n" + "\n".join(lines[: limit * 2])
 
 
+def _format_fix_decision_details(documents: list[dict[str, Any]], limit: int = 6) -> str:
+    lines: list[str] = []
+    for item in documents:
+        decisions = item.get("fix_decisions") or []
+        if not decisions:
+            continue
+        lines.append(f"{item['name']}:")
+        for decision in decisions[:3]:
+            action = _safe_text(decision.get("action")) or "unknown"
+            reason = _safe_text(decision.get("reason"))
+            issue = _safe_text(decision.get("issue")) or "правка"
+            lines.append(f"- {action}: {issue} ({reason})")
+        if len(lines) >= limit:
+            break
+    if not lines:
+        return ""
+    return "Решения по правкам:\n" + "\n".join(lines[:limit])
+
+
 def _format_rule_details(message: str) -> str:
     rules = find_relevant_rules(message, limit=4)
     if not rules:
@@ -480,6 +529,9 @@ def _format_philologist_structured_reply(message: str, state: dict[str, Any]) ->
     plan_summary = _format_plan_summary(state.get("plan"))
     if plan_summary:
         parts.append(plan_summary)
+    decision_details = _format_fix_decision_details(documents, limit=6)
+    if decision_details:
+        parts.append(decision_details)
     parts.append(_format_fixed_details(fixed, limit=5) if fixed else "Исправил:\nАвтоматических исправлений не было.")
     skipped_details = _format_skipped_fix_details(documents, limit=5)
     if skipped_details:
@@ -625,6 +677,8 @@ def run_philologist(
             "applied_fixes": fix_result["applied_fixes"],
             "skipped_fix_count": fix_result.get("skipped_fix_count", 0),
             "skipped_fixes": fix_result.get("skipped_fixes", []),
+            "decision_count": fix_result.get("decision_count", 0),
+            "fix_decisions": fix_result.get("fix_decisions", []),
             "updated_pdf": pdf_path,
         }
         processed_documents.append(document_entry)
@@ -651,11 +705,20 @@ def run_philologist(
         )
         total_applied = sum(int(item.get("applied_fix_count", 0) or 0) for item in processed_documents)
         total_skipped = sum(int(item.get("skipped_fix_count", 0) or 0) for item in processed_documents)
+        total_decisions = sum(int(item.get("decision_count", 0) or 0) for item in processed_documents)
         agent_loop.mark_step(
             "apply_safe_fixes",
             "done",
-            f"Безопасных правок применено: {total_applied}; отложено в ручную проверку: {total_skipped}.",
-            data={"applied_fixes": total_applied, "skipped_fixes": total_skipped},
+            (
+                f"Решений по правкам принято: {total_decisions}; "
+                f"безопасных правок применено: {total_applied}; "
+                f"отложено в ручную проверку: {total_skipped}."
+            ),
+            data={
+                "decisions": total_decisions,
+                "applied_fixes": total_applied,
+                "skipped_fixes": total_skipped,
+            },
         )
         rebuilt_pdfs = sum(1 for item in processed_documents if item.get("updated_pdf"))
         agent_loop.mark_step(
