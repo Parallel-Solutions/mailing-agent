@@ -2,6 +2,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pathlib import Path
 import secrets
+import re
 from src.utils.logger import logger
 from src.utils.config import settings
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form
@@ -196,6 +197,7 @@ from src.generator.document_builder import cleanup_batch_docx_dir, generate_docu
 from src.generator.config_generator import (
     BATCH_PDF_DIR,
     DOCX_WORKERS,
+    ONLYOFFICE_PUBLIC_FILES_DIR,
     START_OUTGOING_NUMBER,
     WEB_CASE_AGENT_MAX_WORKERS,
 )
@@ -425,6 +427,22 @@ async def public_mail_signature():
     if not signature_path.exists():
         raise HTTPException(status_code=404, detail="Mail signature image not found.")
     return FileResponse(signature_path, media_type="image/png")
+
+
+@app.get("/public/onlyoffice/{token}/{filename}")
+async def public_onlyoffice_document(token: str, filename: str):
+    if not re.fullmatch(r"[a-f0-9]{32}", token):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    safe_filename = Path(filename).name
+    document_path = (ONLYOFFICE_PUBLIC_FILES_DIR / token / safe_filename).resolve()
+    public_root = ONLYOFFICE_PUBLIC_FILES_DIR.resolve()
+    if public_root not in document_path.parents or not document_path.exists():
+        raise HTTPException(status_code=404, detail="Document not found.")
+    return FileResponse(
+        document_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=safe_filename,
+    )
 
 
 @app.get("/api/download/output")
