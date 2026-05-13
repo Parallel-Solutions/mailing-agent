@@ -145,6 +145,9 @@ def _summarize_output(value: Any) -> Any:
         if "skipped_fixes" in value:
             fixes = value.get("skipped_fixes") or []
             summary["skipped_fixes"] = {"count": len(fixes) if isinstance(fixes, list) else 0}
+        if "fix_decisions" in value:
+            decisions = value.get("fix_decisions") or []
+            summary["fix_decisions"] = {"count": len(decisions) if isinstance(decisions, list) else 0}
         return summary
     if isinstance(value, list):
         return {"count": len(value)}

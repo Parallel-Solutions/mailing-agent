@@ -106,6 +106,7 @@ def build_agent_report(
         f"- Проверено документов: {philologist_state.get('processed_documents', 0)}",
         f"- Документов с замечаниями: {philologist_state.get('documents_with_issues', 0)}",
         f"- Документов с автоправками: {philologist_state.get('fixed_documents', 0)}",
+        f"- Решений по правкам: {_count_fix_decisions(philologist_state)}",
         "",
     ]
     plan = philologist_state.get("plan") or {}
@@ -149,6 +150,13 @@ def save_agent_report(
     return report_path
 
 
+def _count_fix_decisions(philologist_state: dict[str, Any]) -> int:
+    total = 0
+    for document in philologist_state.get("documents") or []:
+        total += len(document.get("fix_decisions") or [])
+    return total
+
+
 def build_quarantine_items(job_id: str | None = None) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for row in load_inflection_log(job_id):
@@ -168,10 +176,10 @@ def build_quarantine_items(job_id: str | None = None) -> list[dict[str, Any]]:
                     "document": candidate.get("document", ""),
                     "location": candidate.get("location", ""),
                     "field": "",
-                    "source_value": "",
+                    "source_value": candidate.get("fragment", ""),
                     "result_value": candidate.get("suggestion", ""),
-                    "method": "",
-                    "confidence": "",
+                    "method": candidate.get("action", ""),
+                    "confidence": candidate.get("confidence", ""),
                     "reason": candidate.get("reason", ""),
                     "warning": candidate.get("issue", ""),
                     "next_action": "Проверить правку человеком или через RAG/LLM перед добавлением в правило.",
@@ -477,6 +485,9 @@ def _build_philologist_candidates(job_id: str | None) -> list[dict[str, Any]]:
         for fix in document.get("skipped_fixes") or []:
             if isinstance(fix, dict):
                 candidates.append(_philologist_fix_candidate(document, fix, applied=False))
+        for decision in document.get("fix_decisions") or []:
+            if isinstance(decision, dict) and decision.get("action") in {"quarantine", "needs_human"}:
+                candidates.append(_philologist_decision_candidate(document, decision))
     return candidates
 
 
@@ -491,6 +502,23 @@ def _philologist_fix_candidate(document: dict[str, Any], fix: dict[str, Any], *,
         "suggestion": fix.get("suggestion", ""),
         "issue": fix.get("issue", ""),
         "reason": fix.get("mode", "") if applied else fix.get("reason", ""),
+    }
+
+
+def _philologist_decision_candidate(document: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidate_type": "philology_fix_decision",
+        "status": "needs_human_review",
+        "source": "philologist_decision",
+        "row_id": document.get("row_id", ""),
+        "document": document.get("name", ""),
+        "location": decision.get("location", ""),
+        "action": decision.get("action", ""),
+        "issue": decision.get("issue", ""),
+        "fragment": decision.get("fragment", ""),
+        "suggestion": decision.get("suggestion", ""),
+        "reason": decision.get("reason", ""),
+        "confidence": decision.get("confidence", ""),
     }
 
 
