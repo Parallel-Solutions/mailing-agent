@@ -170,7 +170,11 @@ async def upload_template(
     original_name = Path(file.filename or "").name
     kind = (template_kind or "").strip().lower()
     if kind == "mail":
-        dest = templates_dir / "mail_template.txt"
+        for stale_name in ("mail_template.txt", "mail_template.docx"):
+            stale_path = templates_dir / stale_name
+            if stale_path.exists():
+                stale_path.unlink()
+        dest = templates_dir / ("mail_template.docx" if original_name.lower().endswith(".docx") else "mail_template.txt")
     elif kind == "kp":
         dest = templates_dir / "kp_template_source.docx"
     elif kind == "contract":

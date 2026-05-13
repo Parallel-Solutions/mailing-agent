@@ -18,7 +18,7 @@ from src.generator.document_builder import CONTRACT_TEMPLATE_PATH, KP_TEMPLATE_P
 from src.generator.generator_agent import get_generator_status, run_generator_agent
 from src.generator.parser_agent import get_parser_status, run_parser_agent
 from src.generator.philologist_agent import get_philologist_status, run_philologist
-from src.generator.sender_agent import MAIL_TEMPLATE_PATH, get_sender_status, run_sender
+from src.generator.sender_agent import MAIL_TEMPLATE_DOCX_PATH, MAIL_TEMPLATE_PATH, get_sender_status, run_sender
 from src.utils.config import settings
 
 
@@ -79,7 +79,7 @@ def _preflight() -> dict[str, Any]:
         "row_count": rows,
         "kp_template_loaded": KP_TEMPLATE_PATH.exists(),
         "contract_template_loaded": CONTRACT_TEMPLATE_PATH.exists(),
-        "mail_template_loaded": MAIL_TEMPLATE_PATH.exists(),
+        "mail_template_loaded": MAIL_TEMPLATE_PATH.exists() or MAIL_TEMPLATE_DOCX_PATH.exists(),
         "base_loaded": (DATA_DIR / "base.xlsx").exists(),
         "output_folder_count": output_folders,
         "smtp_configured": bool(settings.smtp_sender_email and settings.smtp_sender_password and settings.smtp_host),
