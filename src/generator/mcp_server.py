@@ -9,6 +9,8 @@ from src.generator.agent_memory import (
 )
 from src.generator.case_engine import build_inflected_fields_with_trace
 from src.generator.case_engine.overrides import upsert_override
+from src.generator.philology_embeddings import semantic_rag_status
+from src.generator.philology_knowledge import find_relevant_rules
 from src.generator.philologist_rag import explain_fix_decision_with_rag
 from src.generator.philologist_planner import build_philologist_plan
 
@@ -51,6 +53,16 @@ def create_mcp_server():
     def explain_philologist_fix(decision: dict[str, Any]) -> dict[str, Any]:
         """Explain a philologist fix decision using the local rule base."""
         return explain_fix_decision_with_rag(decision)
+
+    @mcp.tool()
+    def search_philology_rules(query: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Search philology rules using keyword and optional semantic RAG."""
+        return find_relevant_rules(query, limit=limit)
+
+    @mcp.tool()
+    def get_semantic_rag_status() -> dict[str, Any]:
+        """Return semantic RAG availability and model status."""
+        return semantic_rag_status()
 
     @mcp.tool()
     def preview_inflection(row: dict[str, Any]) -> dict[str, Any]:
