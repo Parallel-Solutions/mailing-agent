@@ -35,3 +35,13 @@ semantic-rag = [
     "torch>=2.2.0",
     "transformers>=4.40.0",
 ]
+linguistics = [
+    "natasha>=1.6.0",
+    "yargy>=0.16.0",
+]
+agent-full = [
+    "torch>=2.2.0",
+    "transformers>=4.40.0",
+    "natasha>=1.6.0",
+    "yargy>=0.16.0",
+]
