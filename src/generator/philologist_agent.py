@@ -28,6 +28,7 @@ from src.generator.ai_case_agent import (
 from src.generator.config_generator import DOCUMENT_REVIEW_MODEL, OUTPUT_DIR
 from src.generator.document_review_agent import review_docx
 from src.generator.inflection_report import format_inflection_report, load_inflection_log
+from src.generator.philologist_planner import build_philologist_plan
 from src.generator.philology_knowledge import find_relevant_rules, format_rules_context
 from src.generator.philologist_tools import PhilologistToolRunner, build_philologist_tool_manifest
 from src.generator.pdf_converter import convert_docx_batch
@@ -54,6 +55,7 @@ PHILOLOGIST_STATE: dict[str, Any] = {
     "summary_text": "Агент-филолог ещё не запускался.",
     "tool_manifest": build_philologist_tool_manifest(),
     "tool_trace": [],
+    "plan": None,
     "task_stats": {"total": 0, "pending": 0, "in_progress": 0, "done": 0, "blocked": 0},
     "tasks": [],
     "recent_events": [],
@@ -431,14 +433,31 @@ def _format_tool_trace(tool_trace: list[dict[str, Any]], limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+def _format_plan_summary(plan: dict[str, Any] | None, limit: int = 7) -> str:
+    if not plan:
+        return ""
+    lines = [
+        f"План агента: {plan.get('status', 'unknown')}",
+        f"Цель: {plan.get('goal', '')}",
+    ]
+    for step in (plan.get("steps") or [])[:limit]:
+        lines.append(
+            "- "
+            f"{step.get('id')}: {step.get('status')} "
+            f"({step.get('tool')}) - {step.get('reason')}"
+        )
+    return "\n".join(lines)
+
+
 def _format_philologist_structured_reply(message: str, state: dict[str, Any]) -> str:
     documents = state.get("documents") or []
     if not documents:
-        return (
-            "Сводка:\n"
-            "Филолог ещё не запускался или не нашёл готовых документов для проверки.\n\n"
-            f"{_format_rule_details(message)}"
-        )
+        parts = [
+            "Сводка:\nФилолог ещё не запускался или не нашёл готовых документов для проверки.",
+            _format_plan_summary(state.get("plan")),
+            _format_rule_details(message),
+        ]
+        return "\n\n".join(part for part in parts if part)
 
     issues = [item for item in documents if item.get("issue_count", 0) > 0]
     fixed = [item for item in documents if item.get("applied_fix_count", 0) > 0]
@@ -451,6 +470,9 @@ def _format_philologist_structured_reply(message: str, state: dict[str, Any]) ->
     tool_trace = state.get("tool_trace") or []
     if isinstance(tool_trace, list):
         parts.append(_format_tool_trace(tool_trace))
+    plan_summary = _format_plan_summary(state.get("plan"))
+    if plan_summary:
+        parts.append(plan_summary)
     parts.append(_format_fixed_details(fixed, limit=5) if fixed else "Исправил:\nАвтоматических исправлений не было.")
     skipped_details = _format_skipped_fix_details(documents, limit=5)
     if skipped_details:
@@ -494,6 +516,7 @@ def run_philologist(
         job_id=job_id,
     )
     tool_runner = PhilologistToolRunner()
+    plan = build_philologist_plan(job_id, output_dir=target_dir)
     inflection_rows = tool_runner.call(
         "read_inflection_log",
         {"job_id": job_id},
@@ -520,6 +543,7 @@ def run_philologist(
             "inflection_log_count": len(inflection_rows),
             "tool_manifest": build_philologist_tool_manifest(),
             "tool_trace": tool_runner.as_state(),
+            "plan": plan,
             "task_stats": count_tasks_for_agent("philologist", job_id),
             "tasks": get_tasks_for_agent("philologist", job_id)[:20],
             "recent_events": get_recent_events(agent_name="philologist", limit=20, job_id=job_id),
@@ -711,6 +735,7 @@ def run_philologist(
     state["summary_text"] = _format_run_summary(processed_documents, sender_handoffs=sender_handoffs)
     state["inflection_report"] = format_inflection_report(inflection_rows, limit=8) if inflection_rows else ""
     state["inflection_log_count"] = len(inflection_rows)
+    state["plan"] = build_philologist_plan(job_id, output_dir=target_dir, current_state=state)
     tool_runner.call(
         "write_report",
         {"document_count": len(processed_documents)},
@@ -718,6 +743,7 @@ def run_philologist(
     )
     state["tool_manifest"] = build_philologist_tool_manifest()
     state["tool_trace"] = tool_runner.as_state()
+    state["plan"] = build_philologist_plan(job_id, output_dir=target_dir, current_state=state)
     _save_philologist_state(state, job_id)
     save_learning_memory(job_id)
     return dict(state)
@@ -735,6 +761,7 @@ def get_philologist_status(job_id: str | None = None) -> dict[str, Any]:
     state["inflection_log_count"] = len(inflection_rows)
     state["tool_manifest"] = build_philologist_tool_manifest()
     state["tool_trace"] = state.get("tool_trace") or []
+    state["plan"] = build_philologist_plan(job_id, output_dir=target_dir, current_state=state)
     if state.get("status") == "idle":
         state["total_documents"] = len(list(target_dir.rglob("*.docx"))) if target_dir.exists() else 0
     return state

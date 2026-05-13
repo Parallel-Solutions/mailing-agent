@@ -251,6 +251,7 @@ from src.generator.agent_memory import (
 from src.generator.case_engine.overrides import upsert_override
 from src.generator.inflection_report import load_inflection_log, save_inflection_csv
 from src.generator.generator_agent import get_generator_status, run_generator_agent
+from src.generator.philologist_planner import build_philologist_plan
 from src.jobs import create_job_id, resolve_job_paths
 
 
@@ -605,6 +606,11 @@ async def philologist_run(
 @app.get("/api/philologist/status")
 async def philologist_status(job_id: str | None = None, username: str = Depends(check_auth)):
     return {"status": "ok", "result": get_philologist_status(job_id)}
+
+
+@app.get("/api/philologist/plan")
+async def philologist_plan(job_id: str | None = None, username: str = Depends(check_auth)):
+    return {"status": "ok", "result": build_philologist_plan(job_id)}
 
 
 @app.post("/api/philologist/chat")
