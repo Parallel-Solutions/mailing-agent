@@ -18,7 +18,7 @@ from src.generator.agent_handoff import (
     mark_tasks_in_progress,
     set_task_statuses,
 )
-from src.generator.agent_memory import save_learning_memory
+from src.generator.agent_memory import build_quarantine_items, save_agent_report, save_learning_memory
 from src.generator.ai_case_agent import (
     OpenAI,
     _extract_json_payload,
@@ -28,6 +28,7 @@ from src.generator.ai_case_agent import (
 from src.generator.config_generator import DOCUMENT_REVIEW_MODEL, OUTPUT_DIR
 from src.generator.document_review_agent import review_docx
 from src.generator.inflection_report import format_inflection_report, load_inflection_log
+from src.generator.philologist_executor import PhilologistAgentLoop, merge_plan_execution
 from src.generator.philologist_planner import build_philologist_plan
 from src.generator.philology_knowledge import find_relevant_rules, format_rules_context
 from src.generator.philologist_tools import PhilologistToolRunner, build_philologist_tool_manifest
@@ -56,6 +57,7 @@ PHILOLOGIST_STATE: dict[str, Any] = {
     "tool_manifest": build_philologist_tool_manifest(),
     "tool_trace": [],
     "plan": None,
+    "agent_loop": None,
     "task_stats": {"total": 0, "pending": 0, "in_progress": 0, "done": 0, "blocked": 0},
     "tasks": [],
     "recent_events": [],
@@ -440,6 +442,11 @@ def _format_plan_summary(plan: dict[str, Any] | None, limit: int = 7) -> str:
         f"План агента: {plan.get('status', 'unknown')}",
         f"Цель: {plan.get('goal', '')}",
     ]
+    execution = plan.get("execution") or {}
+    if execution:
+        lines.append(f"Цикл исполнения: {execution.get('status', 'unknown')}")
+    if plan.get("next_step"):
+        lines.append(f"Следующий шаг: {plan.get('next_step')}")
     for step in (plan.get("steps") or [])[:limit]:
         lines.append(
             "- "
@@ -517,10 +524,31 @@ def run_philologist(
     )
     tool_runner = PhilologistToolRunner()
     plan = build_philologist_plan(job_id, output_dir=target_dir)
+    agent_loop = PhilologistAgentLoop(plan)
+    agent_loop.start(
+        f"К исполнению принято документов: {len(docx_paths)}; "
+        f"фильтр строк: {len(requested_row_ids) if requested_row_ids else 'все'}."
+    )
+    agent_loop.mark_step(
+        "inspect_job",
+        "done",
+        "Проверены входные условия запуска филолога.",
+        data={"docx_count": len(docx_paths), "requested_row_ids": len(requested_row_ids)},
+    )
     inflection_rows = tool_runner.call(
         "read_inflection_log",
         {"job_id": job_id},
         lambda: load_inflection_log(job_id),
+    )
+    agent_loop.mark_step(
+        "read_inflection_log",
+        "done" if inflection_rows else "skipped",
+        (
+            f"Прочитан журнал склонений: {len(inflection_rows)} записей."
+            if inflection_rows
+            else "Журнал склонений пуст, филолог продолжает проверку по тексту документов."
+        ),
+        data={"inflection_log_rows": len(inflection_rows)},
     )
 
     state = _load_philologist_state(job_id)
@@ -543,7 +571,8 @@ def run_philologist(
             "inflection_log_count": len(inflection_rows),
             "tool_manifest": build_philologist_tool_manifest(),
             "tool_trace": tool_runner.as_state(),
-            "plan": plan,
+            "plan": agent_loop.as_plan(),
+            "agent_loop": agent_loop.as_plan().get("execution"),
             "task_stats": count_tasks_for_agent("philologist", job_id),
             "tasks": get_tasks_for_agent("philologist", job_id)[:20],
             "recent_events": get_recent_events(agent_name="philologist", limit=20, job_id=job_id),
@@ -554,6 +583,12 @@ def run_philologist(
     started_at = perf_counter()
     processed_documents: list[dict[str, Any]] = []
     for index, docx_path in enumerate(docx_paths, start=1):
+        agent_loop.observe(
+            "document_start",
+            f"Проверяю документ {index} из {len(docx_paths)}: {docx_path.name}.",
+            step_id="review_docx",
+            data={"index": index, "path": str(docx_path)},
+        )
         review_result = tool_runner.call(
             "review_docx",
             {"path": str(docx_path), "ai_enabled": ai_enabled},
@@ -600,7 +635,43 @@ def run_philologist(
         state["documents_with_issues"] = sum(1 for item in processed_documents if item.get("issue_count", 0) > 0)
         state["summary_text"] = _format_summary(processed_documents)
         state["tool_trace"] = tool_runner.as_state()
+        state["plan"] = agent_loop.as_plan()
+        state["agent_loop"] = state["plan"].get("execution")
         _save_philologist_state(state, job_id)
+
+    if docx_paths:
+        agent_loop.mark_step(
+            "review_docx",
+            "done",
+            f"Проверено документов: {len(processed_documents)}.",
+            data={
+                "processed_documents": len(processed_documents),
+                "documents_with_issues": sum(1 for item in processed_documents if item.get("issue_count", 0) > 0),
+            },
+        )
+        total_applied = sum(int(item.get("applied_fix_count", 0) or 0) for item in processed_documents)
+        total_skipped = sum(int(item.get("skipped_fix_count", 0) or 0) for item in processed_documents)
+        agent_loop.mark_step(
+            "apply_safe_fixes",
+            "done",
+            f"Безопасных правок применено: {total_applied}; отложено в ручную проверку: {total_skipped}.",
+            data={"applied_fixes": total_applied, "skipped_fixes": total_skipped},
+        )
+        rebuilt_pdfs = sum(1 for item in processed_documents if item.get("updated_pdf"))
+        agent_loop.mark_step(
+            "rebuild_pdf",
+            "done" if rebuilt_pdfs else "skipped",
+            (
+                f"PDF пересобраны для документов с правками: {rebuilt_pdfs}."
+                if rebuilt_pdfs
+                else "Правок, требующих пересборки PDF, не было."
+            ),
+            data={"rebuilt_pdfs": rebuilt_pdfs},
+        )
+    else:
+        agent_loop.mark_step("review_docx", "blocked", "DOCX-файлы не найдены.")
+        agent_loop.mark_step("apply_safe_fixes", "blocked", "Нет документов для применения правок.")
+        agent_loop.mark_step("rebuild_pdf", "blocked", "Нет документов для пересборки PDF.")
 
     row_rollups: dict[str, dict[str, Any]] = {}
     for item in processed_documents:
@@ -735,17 +806,49 @@ def run_philologist(
     state["summary_text"] = _format_run_summary(processed_documents, sender_handoffs=sender_handoffs)
     state["inflection_report"] = format_inflection_report(inflection_rows, limit=8) if inflection_rows else ""
     state["inflection_log_count"] = len(inflection_rows)
-    state["plan"] = build_philologist_plan(job_id, output_dir=target_dir, current_state=state)
     tool_runner.call(
         "write_report",
         {"document_count": len(processed_documents)},
         lambda: {"status": "completed"},
     )
+    candidates = tool_runner.call(
+        "save_learning_memory",
+        {"job_id": job_id},
+        lambda: save_learning_memory(job_id),
+    )
+    quarantine = build_quarantine_items(job_id)
+    agent_loop.mark_step(
+        "update_memory",
+        "done",
+        f"Память обновлена: кандидатов {len(candidates)}, в карантине {len(quarantine)}.",
+        data={"candidates": len(candidates), "quarantine_items": len(quarantine)},
+    )
+    agent_loop.mark_step(
+        "finalize_report",
+        "done",
+        "Итоговый отчет агента подготовлен.",
+        data={"document_count": len(processed_documents)},
+    )
+    agent_loop.complete(
+        "needs_review" if quarantine else "completed",
+        (
+            f"Цикл филолога завершен, ручной проверки требуют {len(quarantine)} решений."
+            if quarantine
+            else "Цикл филолога завершен без карантина."
+        ),
+    )
     state["tool_manifest"] = build_philologist_tool_manifest()
     state["tool_trace"] = tool_runner.as_state()
-    state["plan"] = build_philologist_plan(job_id, output_dir=target_dir, current_state=state)
+    state["plan"] = agent_loop.as_plan()
+    state["agent_loop"] = state["plan"].get("execution")
     _save_philologist_state(state, job_id)
-    save_learning_memory(job_id)
+    tool_runner.call(
+        "save_agent_report",
+        {"job_id": job_id},
+        lambda: str(save_agent_report(job_id)),
+    )
+    state["tool_trace"] = tool_runner.as_state()
+    _save_philologist_state(state, job_id)
     return dict(state)
 
 
@@ -761,7 +864,11 @@ def get_philologist_status(job_id: str | None = None) -> dict[str, Any]:
     state["inflection_log_count"] = len(inflection_rows)
     state["tool_manifest"] = build_philologist_tool_manifest()
     state["tool_trace"] = state.get("tool_trace") or []
-    state["plan"] = build_philologist_plan(job_id, output_dir=target_dir, current_state=state)
+    state["plan"] = merge_plan_execution(
+        build_philologist_plan(job_id, output_dir=target_dir, current_state=state),
+        state.get("plan") if isinstance(state.get("plan"), dict) else None,
+    )
+    state["agent_loop"] = (state.get("plan") or {}).get("execution")
     if state.get("status") == "idle":
         state["total_documents"] = len(list(target_dir.rglob("*.docx"))) if target_dir.exists() else 0
     return state

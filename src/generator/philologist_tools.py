@@ -47,6 +47,18 @@ def build_philologist_tool_manifest() -> list[dict[str, Any]]:
             "input_schema": {"document_count": "int"},
             "output_schema": {"status": "str"},
         },
+        {
+            "name": "save_learning_memory",
+            "description": "Save accepted observations to memory and risky observations to quarantine.",
+            "input_schema": {"job_id": "str | None"},
+            "output_schema": {"candidate_count": "int", "quarantine_count": "int"},
+        },
+        {
+            "name": "save_agent_report",
+            "description": "Write the final human-readable agent report.",
+            "input_schema": {"job_id": "str | None"},
+            "output_schema": {"path": "str"},
+        },
     ]
 
 
