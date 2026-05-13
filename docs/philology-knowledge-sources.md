@@ -1,195 +1,209 @@
-# Philology Knowledge Sources
+# Источники знаний для агента-филолога
 
-This document describes which Russian-language knowledge sources are useful for
-the philologist agent, how we can use them legally and technically, and which
-sources should not be treated as a magic "grammar brain".
+Этот документ описывает, какие источники по русскому языку реально полезны для
+агента-филолога, как их можно использовать технически и юридически, а какие
+источники не стоит воспринимать как волшебный "мозг грамматики".
 
-The product workflow must stay simple: the user uploads data and templates only.
-All sources below are internal infrastructure for rules, RAG explanations,
-linguistic tools, tests, and admin review.
+Пользовательский сценарий должен оставаться простым: пользователь загружает
+только таблицу и шаблоны. Все источники ниже нужны внутри сервиса: для правил,
+RAG-пояснений, лингвистических инструментов, тестов и последующей настройки.
 
-## What We Need
+## Что Нам Нужно
 
-The philologist does not need a library of random books. It needs a controlled
-knowledge stack:
+Филологу не нужна случайная библиотека книг. Ему нужен управляемый стек знаний:
 
-- Deterministic project rules for safe fixes in КП, contracts, attachments, and
-  official-business wording.
-- Morphology and syntax tools for Russian word forms, names, organizations, and
-  place names.
-- RAG sources with short cited fragments that explain why a correction was made.
-- Logs and memory for cases where the system was unsure and needs later tuning.
+- Детерминированные проектные правила для безопасных исправлений в КП,
+  договорах, приложениях и официально-деловой формулировке.
+- Инструменты морфологии и синтаксиса для русских словоформ, ФИО, организаций и
+  географических названий.
+- RAG-источники с короткими цитируемыми фрагментами, которые объясняют, почему
+  исправление было сделано.
+- Логи и память для случаев, где система не уверена и требует последующей
+  настройки.
 
-## Priority 1: Use Now
+## Приоритет 1: Использовать Сейчас
 
-### 1. Project-Specific Rules
+### 1. Проектные Правила
 
-- Format: `data/knowledge/philology_rules.json`
-- Use for: direct rules, safe auto-fixes, RAG explanations.
-- Why: this is the most valuable layer because our documents have a narrow domain:
-  commercial offers, contracts, municipalities, official names, dates, and
-  attachments.
+- Формат: `data/knowledge/philology_rules.json`
+- Для чего: прямые правила, безопасные автоисправления, RAG-пояснения.
+- Почему важно: это самый ценный слой, потому что наши документы относятся к
+  узкой предметной области: коммерческие предложения, договоры, муниципальные
+  образования, официальные названия, даты и приложения.
 
-Recommended topics:
+Рекомендуемые темы:
 
-- Official names of municipalities.
-- Republics, districts, urban/rural settlements.
-- Head names, surnames, names, patronymics, and roles.
-- Document terms: договор, приложение, техническое задание, календарный план.
-- Uppercase/lowercase in contracts and running text.
-- Official-business style and recurring legal wording.
+- Официальные названия муниципальных образований.
+- Республики, районы, городские и сельские поселения.
+- ФИО глав, должности, фамилии, имена и отчества.
+- Термины документов: договор, приложение, техническое задание, календарный
+  план.
+- Прописные и строчные буквы в договорах и обычном тексте.
+- Официально-деловой стиль и повторяющиеся юридические формулировки.
 
-### 2. Gramota.ru Reference Materials
+### 2. Справочные Материалы Gramota.ru
 
 - URL: https://gramota.ru/
-- Use for: source-backed RAG snippets and manual rule extraction.
-- Strong areas: spelling, punctuation, uppercase/lowercase, difficult words,
-  Russian names, official document references.
-- Why useful: Gramota lists dictionaries and references such as Lopatin's
-  spelling rules, Rosenthal-style usage, proper-name references, and document
-  formatting topics.
-- Constraint: do not bulk-scrape blindly. Extract short cited snippets or convert
-  repeated findings into explicit internal rules.
+- Для чего: RAG-фрагменты с опорой на источник и ручное извлечение правил.
+- Сильные стороны: орфография, пунктуация, прописные/строчные буквы, трудные
+  слова, русские имена, оформление официальных документов.
+- Почему полезно: на Gramota.ru есть словари и справочники, включая правила
+  Лопатина, материалы по употреблению, собственным именам и оформлению
+  документов.
+- Ограничение: нельзя просто слепо выкачать весь сайт. Нужно брать короткие
+  цитируемые фрагменты или превращать повторяющиеся выводы в явные внутренние
+  правила.
 
-### 3. Orthographia / Lopatin Academic Rules
+### 3. Orthographia / Академический Справочник Лопатина
 
 - URL: https://www.orthographia.ru/
-- Use for: authoritative spelling and punctuation references.
-- Strong areas: normative orthography, punctuation, uppercase/lowercase.
-- Constraint: good for rule citations; less useful for municipality-specific
-  inflection.
+- Для чего: авторитетные справки по орфографии и пунктуации.
+- Сильные стороны: нормативное правописание, пунктуация, прописные/строчные
+  буквы.
+- Ограничение: хорошо подходит для цитирования правил, но хуже подходит для
+  склонения конкретных муниципальных названий.
 
 ### 4. OpenCorpora
 
 - URL: https://opencorpora.org/?page=downloads
-- License: CC BY-SA 3.0 is linked on the OpenCorpora downloads page.
-- Use for: morphology, dictionary support, word forms, test data.
-- Strong areas: lemmas, word forms, morph tags, disambiguated corpus.
-- Constraint: this is not a style guide and not an official grammar rule source.
-  It supports morphology and word-form checks, not document-style decisions.
+- Лицензия: на странице загрузок OpenCorpora указана CC BY-SA 3.0.
+- Для чего: морфология, словарная поддержка, словоформы, тестовые данные.
+- Сильные стороны: леммы, формы слов, морфологические теги, корпус со снятой
+  омонимией.
+- Ограничение: это не справочник стиля и не официальный источник правил. Он
+  помогает проверять словоформы, но не решает, как правильно оформить договор.
 
-### 5. Natasha and Yargy
+### 5. Natasha И Yargy
 
 - Natasha: https://github.com/natasha/natasha
 - Yargy: https://github.com/natasha/yargy
-- Use for: Russian NLP preprocessing, named entities, morphology/syntax signals,
-  and rule-based extraction of municipality names, districts, regions, and FIO.
-- Why useful: these are practical Russian NLP libraries. They help the agent
-  detect what a fragment is before deciding how to fix it.
-- Constraint: they are tools, not normative knowledge bases. They should feed
-  the decision layer, not replace our rules.
+- Для чего: предварительная обработка русского текста, именованные сущности,
+  морфологические/синтаксические сигналы, извлечение названий МО, районов,
+  регионов и ФИО по правилам.
+- Почему полезно: это практические NLP-инструменты для русского языка. Они
+  помогают агенту понять, что именно находится во фрагменте текста, перед тем
+  как принимать решение об исправлении.
+- Ограничение: это инструменты, а не нормативная база знаний. Они должны давать
+  сигналы в слой принятия решений, но не заменять наши правила.
 
-## Priority 2: Useful With Constraints
+## Приоритет 2: Полезно, Но С Ограничениями
 
 ### 6. Universal Dependencies Russian SynTagRus
 
 - URL: https://universaldependencies.org/treebanks/ru_syntagrus/index.html
-- License: CC BY-NC-SA 4.0 on the UD page.
-- Use for: syntax/morphology examples, tests, possible parser evaluation.
-- Constraint: the non-commercial/share-alike license means we should not bundle
-  it casually into a commercial product without legal review. Better as
-  reference/test data.
+- Лицензия: CC BY-NC-SA 4.0 указана на странице UD.
+- Для чего: примеры синтаксиса и морфологии, тесты, возможная оценка парсера.
+- Ограничение: из-за некоммерческой/share-alike лицензии нельзя без юридической
+  проверки просто встроить этот датасет в коммерческий продукт. Лучше
+  использовать как справочный или тестовый источник.
 
-### 7. SynTagRus License From RNC
+### 7. Лицензия SynTagRus От НКРЯ
 
 - URL: https://ruscorpora.ru/file/license_dataset_syntagrus_eng/
-- Use for: legal review before using the dataset directly.
-- Constraint: treat as a separate licensing item. Do not ingest into production
-  RAG until terms are explicitly accepted for our use case.
+- Для чего: юридическая проверка перед прямым использованием датасета.
+- Ограничение: считать отдельным лицензионным вопросом. Не загружать в
+  production-RAG, пока условия явно не приняты под наш сценарий.
 
 ### 8. LanguageTool
 
 - URL: https://github.com/languagetool-org/languagetool
-- Use for: optional additional grammar/style signal, not primary logic.
-- Strong areas: rule-based grammar and style checking.
-- Constraint: useful as a local service or reference for rule ideas, but our
-  legal-document rules should remain in our repository and be explainable.
+- Для чего: дополнительный сигнал грамматики/стиля, но не основная логика.
+- Сильные стороны: rule-based проверка грамматики и стиля.
+- Ограничение: полезен как локальный сервис или источник идей для правил, но
+  правила для наших юридических документов должны оставаться в нашем репозитории
+  и быть объяснимыми.
 
-## Priority 3: Mostly Not Useful For This Product
+## Приоритет 3: Почти Не Нужно Для Этого Продукта
 
-### 9. Ozhegov Dictionary
+### 9. Словарь Ожегова
 
-- Use for: word meaning checks if needed.
-- Not useful for: official-document inflection and contract phrasing.
-- Recommendation: do not prioritize.
+- Для чего может пригодиться: проверка значений слов.
+- Не подходит для: склонения официальных названий и договорных формулировок.
+- Рекомендация: не ставить в приоритет.
 
-### 10. Fasmer Etymological Dictionary
+### 10. Этимологический Словарь Фасмера
 
-- Use for: etymology only.
-- Not useful for: grammar, declension, business style.
-- Recommendation: skip.
+- Для чего может пригодиться: этимология.
+- Не подходит для: грамматики, склонения, официально-делового стиля.
+- Рекомендация: не использовать в текущей задаче.
 
-### 11. National Russian Corpus Web Interface
+### 11. Национальный Корпус Русского Языка
 
 - URL: https://ruscorpora.ru/
-- Use for: manual research and examples.
-- Constraint: do not assume automated bulk ingestion is allowed. Use only after
-  checking terms/API access.
+- Для чего: ручное исследование и примеры употребления.
+- Ограничение: нельзя автоматически считать, что массовая загрузка разрешена.
+  Использовать только после проверки условий/API-доступа.
 
-## Storage Plan
+## План Хранения
 
-### Short Rules
+### Короткие Правила
 
-Use `data/knowledge/philology_rules.json`:
+Используем `data/knowledge/philology_rules.json`:
 
 ```json
 {
   "id": "ru-mngp-001",
-  "title": "Document terms in running text",
-  "source": "Internal rule based on official-business style references",
-  "topic": "uppercase lowercase",
+  "title": "Термины документов в обычном тексте",
+  "source": "Внутреннее правило на основе официально-делового стиля",
+  "topic": "прописные и строчные буквы",
   "keywords": ["договор", "приложение", "техническое задание", "календарный план"],
-  "rule": "In running text, generic document terms are lowercase unless they are a formal title or sentence start.",
+  "rule": "В обычном тексте родовые названия документов пишутся со строчной буквы, если это не официальное название документа и не начало предложения.",
   "good_examples": ["техническим заданием (приложение № 1 к договору)"],
   "bad_examples": ["Техническим заданием (Приложение № 1 к Договору)"]
 }
 ```
 
-### Long Sources
+### Длинные Источники
 
-Use the ingestion command:
+Используем команду загрузки источника:
 
 ```bash
 python -m src.generator.ingest_philology_source path/to/source.txt \
-  --title "Source title" \
-  --source "Citation" \
-  --topic "official-business style" \
+  --title "Название источника" \
+  --source "Ссылка или библиографическое описание" \
+  --topic "официально-деловой стиль" \
   --keywords "договор, приложение, прописные буквы"
 ```
 
-This writes chunks to `data/knowledge/philology_sources.jsonl`.
+Команда записывает фрагменты в `data/knowledge/philology_sources.jsonl`.
 
-## Recommended Implementation Order
+## Рекомендуемый Порядок Внедрения
 
-1. Add 30-50 short project rules from our real document errors.
-2. Add Gramota/Lopatin snippets only where they directly support those rules.
-3. Add Yargy patterns for official names of municipalities, districts, regions,
-   and FIO.
-4. Use Natasha/Yargy detections as evidence for the philologist decision layer.
-5. Enable semantic RAG locally/server-side when model files are available.
-6. Consider LanguageTool as an optional external checker after core rules are
-   stable.
-7. Do not add Pinecone/APInita yet. Local JSONL + local semantic index is enough.
+1. Добавить 30-50 коротких проектных правил из реальных ошибок в наших
+   документах.
+2. Добавить фрагменты Gramota.ru/Лопатина только там, где они прямо
+   подтверждают эти правила.
+3. Добавить Yargy-паттерны для официальных названий МО, районов, регионов и
+   ФИО.
+4. Использовать сигналы Natasha/Yargy как доказательства для слоя принятия
+   решений филолога.
+5. Включить семантический RAG локально/на сервере, когда будут доступны файлы
+   модели.
+6. Рассмотреть LanguageTool как дополнительную проверку после стабилизации
+   основных правил.
+7. Пока не добавлять Pinecone/APInita. Локального JSONL и локального
+   семантического индекса достаточно.
 
-## Why Not Pinecone/APInita Now
+## Почему Сейчас Не Нужны Pinecone/APInita
 
-- Current knowledge volume is small.
-- Local RAG is easier to version, test, and explain.
-- External vector databases add credentials, cost, network dependency, and legal
-  uncertainty around uploaded text.
-- We can move to a vector DB later if the source base grows beyond local indexing.
+- Объем базы знаний пока небольшой.
+- Локальный RAG проще версионировать, тестировать и объяснять.
+- Внешние векторные базы добавляют креды, стоимость, сетевую зависимость и
+  юридическую неопределенность вокруг загруженных текстов.
+- Перейти на внешнюю векторную БД можно позже, если база источников вырастет.
 
-## What To Tell Stakeholders
+## Что Говорить Руководителю
 
-The agent is not "trained by books" in the human sense. Books and references are
-useful only after we convert them into machine-usable assets:
+Агент не "обучается книгами" в человеческом смысле. Книги и справочники полезны
+только после превращения в машиночитаемые элементы:
 
-- explicit rules;
-- cited RAG snippets;
-- dictionaries and morphology resources;
-- extraction patterns;
-- tests and logs of uncertain cases.
+- явные правила;
+- цитируемые RAG-фрагменты;
+- словари и морфологические ресурсы;
+- паттерны извлечения сущностей;
+- тесты и логи неуверенных случаев.
 
-Raw books are too broad, often copyrighted, and not structured as executable
-grammar logic. For this product, the highest accuracy will come from a curated
-domain-specific rule base plus Russian NLP tools and source-backed explanations.
+Сырые книги слишком широкие, часто защищены авторским правом и не являются
+исполняемой грамматической логикой. Для нашего продукта максимальную точность
+даст не склад книг, а курируемая доменная база правил + русскоязычные NLP-
+инструменты + объяснения с опорой на источники.
