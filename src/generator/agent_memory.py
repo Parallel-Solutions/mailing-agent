@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from src.generator.case_engine.overrides import upsert_override
+from src.generator.config_generator import AGENT_MEMORY_AUTO_APPROVE_SAFE_INFLECTIONS
 from src.generator.inflection_report import load_inflection_log
 from src.jobs import resolve_state_path
 from src.jobs.storage import resolve_job_paths
@@ -33,12 +35,62 @@ def build_learning_candidates(job_id: str | None = None) -> list[dict[str, Any]]
 
 def save_learning_memory(job_id: str | None = None) -> list[dict[str, Any]]:
     candidates = build_learning_candidates(job_id)
+    if AGENT_MEMORY_AUTO_APPROVE_SAFE_INFLECTIONS:
+        candidates.extend(auto_approve_safe_inflections(job_id))
     path = get_agent_memory_path(job_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for item in candidates:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
     return candidates
+
+
+def auto_approve_safe_inflections(job_id: str | None = None) -> list[dict[str, Any]]:
+    rows = load_inflection_log(job_id)
+    approvals: list[dict[str, Any]] = []
+    for row in rows:
+        decision = _safe_auto_approval_decision(row)
+        if not decision["allowed"]:
+            continue
+        try:
+            result = _upsert_auto_override(
+                entity_type=decision["entity_type"],
+                source_value=str(row.get("source_value") or ""),
+                target_case=str(row.get("target_case") or ""),
+                result_value=str(row.get("result_value") or ""),
+            )
+        except ValueError as exc:
+            approvals.append(_auto_approval_record(row, status="rejected", reason=str(exc)))
+            continue
+        approvals.append(
+            _auto_approval_record(
+                row,
+                status="auto_approved",
+                reason=decision["reason"],
+                extra={
+                    "entity_type": result["entity_type"],
+                    "source_value": result["source_value"],
+                    "result_value": result["result_value"],
+                    "previous_value": result["previous_value"],
+                },
+            )
+        )
+    return approvals
+
+
+def _upsert_auto_override(
+    *,
+    entity_type: str,
+    source_value: str,
+    target_case: str,
+    result_value: str,
+) -> dict[str, Any]:
+    return upsert_override(
+        entity_type=entity_type,
+        source_value=source_value,
+        target_case=target_case,
+        result_value=result_value,
+    )
 
 
 def save_learning_memory_csv(candidates: list[dict[str, Any]], csv_path: Path) -> None:
@@ -93,6 +145,74 @@ def _build_inflection_candidates(job_id: str | None) -> list[dict[str, Any]]:
             }
         )
     return candidates
+
+
+def _safe_auto_approval_decision(row: dict[str, Any]) -> dict[str, Any]:
+    field = str(row.get("field") or "")
+    source_value = str(row.get("source_value") or "").strip()
+    result_value = str(row.get("result_value") or "").strip()
+    target_case = str(row.get("target_case") or "").strip()
+    method = str(row.get("method") or "").strip()
+    confidence = str(row.get("confidence") or "").strip()
+    warning = str(row.get("warning") or "").strip()
+
+    entity_type = _field_to_entity_type(field)
+    if not entity_type:
+        return {"allowed": False, "entity_type": "", "reason": "unsupported_field"}
+    if warning:
+        return {"allowed": False, "entity_type": entity_type, "reason": "has_warning"}
+    if method not in {"legacy_rule", "legacy_morph"}:
+        return {"allowed": False, "entity_type": entity_type, "reason": "method_not_trusted_for_auto_approval"}
+    if confidence in {"empty", "no_morph", "low"}:
+        return {"allowed": False, "entity_type": entity_type, "reason": "low_confidence"}
+    if not source_value or not result_value or source_value == result_value:
+        return {"allowed": False, "entity_type": entity_type, "reason": "empty_or_unchanged_value"}
+    if target_case not in {"genitive", "dative", "prepositional", "project_genitive"}:
+        return {"allowed": False, "entity_type": entity_type, "reason": "unsupported_case"}
+    return {
+        "allowed": True,
+        "entity_type": entity_type,
+        "reason": "No warnings, trusted method, changed value, supported field and case.",
+    }
+
+
+def _field_to_entity_type(field: str) -> str:
+    if field.startswith("MUN_NAME_"):
+        return "municipality"
+    if field.startswith("HEAD_FIO_"):
+        return "fio"
+    if field == "SUB_RF_1":
+        return "subject_rf"
+    if field == "MUN_R_NAME_1":
+        return "municipal_district"
+    if field == "ADM_NAME_1":
+        return "administration"
+    return ""
+
+
+def _auto_approval_record(
+    row: dict[str, Any],
+    *,
+    status: str,
+    reason: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    record = {
+        "candidate_type": "inflection_auto_override",
+        "status": status,
+        "source": "agent_memory",
+        "row_id": row.get("row_id", ""),
+        "field": row.get("field", ""),
+        "source_value": row.get("source_value", ""),
+        "result_value": row.get("result_value", ""),
+        "method": row.get("method", ""),
+        "confidence": row.get("confidence", ""),
+        "reason": reason,
+        "warning": row.get("warning", ""),
+    }
+    if extra:
+        record.update(extra)
+    return record
 
 
 def _build_philologist_candidates(job_id: str | None) -> list[dict[str, Any]]:
