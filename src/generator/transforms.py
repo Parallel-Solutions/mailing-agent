@@ -2,7 +2,7 @@ from datetime import datetime
 import re
 from typing import Optional
 
-from src.generator.inflect import build_inflected_fields
+from src.generator.case_engine import build_inflected_fields_with_trace
 
 
 def normalize_display_text(value: str) -> str:
@@ -293,7 +293,7 @@ def build_document_context(row: dict, outgoing_number: int) -> dict:
     row_for_inflection["ADM_NAME"] = adm_name
     row_for_inflection["MUN_R_NAME"] = _capitalize_phrase_if_lower(row.get("MUN_R_NAME", ""))
     row_for_inflection["SUB_RF"] = _capitalize_phrase_if_lower(row.get("SUB_RF", ""))
-    inflected = build_inflected_fields(row_for_inflection)
+    inflected, _ = build_inflected_fields_with_trace(row_for_inflection)
     context = {
         "ID": row.get("ID"),
         "SUB_RF": row_for_inflection["SUB_RF"],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -125,8 +126,23 @@ def process_generator_row(
         "id": row.get("ID"),
         "status": "ok",
         "case_agent_status": context.get("CASE_AGENT_STATUS"),
+        "inflection_trace": context.get("INFLECTION_TRACE", []),
         "generated_files": generated_files,
     }
+
+
+def append_inflection_log(results: list[dict], *, log_path: Path | None) -> None:
+    if log_path is None:
+        return
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        for result in results:
+            for item in result.get("inflection_trace") or []:
+                payload = {
+                    "row_id": result.get("id"),
+                    **item,
+                }
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 def build_docx_jobs(results: list[dict]) -> list[dict[str, Path]]:
@@ -346,6 +362,10 @@ def run_generator_agent(
         finalize_generated_files(
             results,
             batch_pdf_dir=None if job_paths.uses_legacy_layout else job_paths.batch_pdf_dir,
+        )
+        append_inflection_log(
+            results,
+            log_path=None if job_paths.uses_legacy_layout else job_paths.root_dir / "state" / "inflection_log.jsonl",
         )
         review_handoffs = 0
         review_row_ids: list[str] = []
