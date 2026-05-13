@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from src.generator.config_generator import DATA_DIR
+from src.generator.philology_sources import source_chunks_as_rules
 
 
 PHILOLOGY_RULES_PATH = DATA_DIR / "knowledge" / "philology_rules.json"
@@ -27,13 +28,16 @@ def _tokens(value: Any) -> set[str]:
 
 
 def load_philology_rules() -> list[dict[str, Any]]:
+    rules: list[dict[str, Any]] = []
     if not PHILOLOGY_RULES_PATH.exists():
-        return []
+        return source_chunks_as_rules()
     try:
         payload = json.loads(PHILOLOGY_RULES_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return []
-    return [item for item in payload if isinstance(item, dict)]
+        payload = []
+    rules.extend(item for item in payload if isinstance(item, dict))
+    rules.extend(source_chunks_as_rules())
+    return rules
 
 
 def find_relevant_rules(text: str, *, limit: int = 4) -> list[dict[str, Any]]:
