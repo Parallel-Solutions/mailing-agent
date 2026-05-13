@@ -29,10 +29,10 @@
 
   <rect class="bg" x="0" y="0" width="1800" height="1280"/>
 
-  <text class="title" x="80" y="86">Архитектура AI-агента для mailing-agent</text>
-  <text class="subtitle" x="82" y="122">Генератор остается стабильным сборщиком, агентская логика живет в филологе и case-engine.</text>
+  <text class="title" x="80" y="86">Архитектура ИИ-агента для mailing-agent</text>
+  <text class="subtitle" x="82" y="122">Генератор остается стабильным сборщиком, агентская логика живет в филологе и движке падежей.</text>
 
-  <text class="section" x="80" y="185">1. Общий pipeline сервиса</text>
+  <text class="section" x="80" y="185">1. Общий процесс сервиса</text>
 
   <rect class="box" x="80" y="220" width="260" height="112"/>
   <text class="label" x="112" y="264">Загрузка</text>
@@ -45,9 +45,9 @@
   <text class="small" x="442" y="318">сборка документов</text>
 
   <rect class="box-green" x="760" y="220" width="300" height="112"/>
-  <text class="label" x="792" y="264">Case Engine</text>
+  <text class="label" x="792" y="264">Движок падежей</text>
   <text class="small" x="792" y="294">падежи, ФИО, МО</text>
-  <text class="small" x="792" y="318">trace + overrides</text>
+  <text class="small" x="792" y="318">трассировка + исключения</text>
 
   <rect class="box" x="1130" y="220" width="260" height="112"/>
   <text class="label" x="1162" y="264">DOCX / PDF</text>
@@ -75,7 +75,7 @@
   <text class="section" x="80" y="465">2. Инструменты филолога-агента</text>
 
   <rect class="box-dark" x="80" y="500" width="310" height="150"/>
-  <text class="label-dark" x="112" y="544">LLM / Reason</text>
+  <text class="label-dark" x="112" y="544">LLM / Рассуждение</text>
   <text class="small-dark" x="112" y="574">понимает фрагмент</text>
   <text class="small-dark" x="112" y="598">выбирает инструмент</text>
   <text class="small-dark" x="112" y="622">решает: править или нет</text>
@@ -87,13 +87,13 @@
   <text class="small" x="502" y="622">плейсхолдеры</text>
 
   <rect class="box-green" x="800" y="500" width="270" height="150"/>
-  <text class="label" x="832" y="544">case_engine</text>
+  <text class="label" x="832" y="544">движок падежей</text>
   <text class="small" x="832" y="574">склонение МО</text>
   <text class="small" x="832" y="598">склонение ФИО</text>
   <text class="small" x="832" y="622">словарь исключений</text>
 
   <rect class="box" x="1130" y="500" width="270" height="150"/>
-  <text class="label" x="1162" y="544">RAG / rules</text>
+  <text class="label" x="1162" y="544">RAG / правила</text>
   <text class="small" x="1162" y="574">правила языка</text>
   <text class="small" x="1162" y="598">история ошибок</text>
   <text class="small" x="1162" y="622">примеры правок</text>
@@ -117,14 +117,14 @@
   <text class="small" x="112" y="868">или ошибка стиля</text>
 
   <rect class="box-dark" x="410" y="770" width="260" height="112"/>
-  <text class="label-dark" x="442" y="814">Reason</text>
+  <text class="label-dark" x="442" y="814">Рассуждение</text>
   <text class="small-dark" x="442" y="844">какая проблема?</text>
   <text class="small-dark" x="442" y="868">какой инструмент?</text>
 
   <rect class="box-green" x="740" y="770" width="260" height="112"/>
   <text class="label" x="772" y="814">Act</text>
   <text class="small" x="772" y="844">lookup_override</text>
-  <text class="small" x="772" y="868">search_rag / inflect</text>
+  <text class="small" x="772" y="868">поиск RAG / склонение</text>
 
   <rect class="box" x="1070" y="770" width="260" height="112"/>
   <text class="label" x="1102" y="814">Decision</text>

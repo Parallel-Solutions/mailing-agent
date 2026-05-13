@@ -1,25 +1,35 @@
-# Agent stack choices
+# Выбор агентского стека
 
-This service should keep users out of the correction loop. Users upload data and templates;
-the service generates, checks, logs, sends to quarantine when needed, and reports.
+Сервис должен оставлять пользователя вне цикла исправлений. Пользователь
+загружает таблицу и шаблоны, а сервис сам генерирует документы, проверяет их,
+ведет логи, отправляет спорные случаи в карантин и формирует отчет.
 
-## What each layer does
+## Что Делает Каждый Слой
 
-- `n8n / no-code`: external orchestration only. It can upload files, call API endpoints, send notifications, and move artifacts. It should not contain grammar logic.
-- `Generator`: deterministic document assembly. It applies known rules and writes traces/warnings.
-- `Linguistic tools`: local Russian-language tools such as `pymorphy3`, optional `Natasha`, and optional `Yargy`.
-- `RAG`: retrieves relevant grammar/style rules and source chunks.
-- `LLM`: classifies ambiguous cases and explains decisions with retrieved context.
-- `Agent loop`: plan, tool call, observe, decide, fix, quarantine, report.
+- `n8n / no-code`: только внешняя оркестрация. Может загружать файлы, вызывать
+  API, отправлять уведомления и переносить артефакты. Грамматическая логика не
+  должна жить в `n8n`.
+- `Генератор`: детерминированная сборка документов. Применяет известные правила
+  и пишет трассировки/предупреждения.
+- `Лингвистические инструменты`: локальные инструменты для русского языка:
+  `pymorphy3`, опционально `Natasha`, опционально `Yargy`.
+- `RAG`: ищет релевантные правила грамматики/стиля и фрагменты источников.
+- `LLM`: классифицирует неоднозначные случаи и объясняет решения с учетом
+  найденного контекста.
+- `Агентский цикл`: планирование, вызов инструмента, наблюдение, решение,
+  исправление, карантин, отчет.
 
-## Current implementation
+## Текущая Реализация
 
-- `pymorphy3` is a required dependency and is used for morphology.
-- `Natasha` and `Yargy` are optional dependencies under `.[linguistics]`.
-- `rubert-tiny` semantic RAG is optional under `.[semantic-rag]`.
-- MCP exposes the internal tools for inspection and future external agent clients.
+- `pymorphy3` является обязательной зависимостью и используется для морфологии.
+- `Natasha` и `Yargy` являются опциональными зависимостями в группе
+  `.[linguistics]`.
+- Семантический RAG на `rubert-tiny` является опциональным в группе
+  `.[semantic-rag]`.
+- MCP открывает внутренние инструменты для проверки и будущих внешних
+  агентских клиентов.
 
-## Install options
+## Варианты Установки
 
 ```bash
 pip install ".[linguistics]"
@@ -27,9 +37,12 @@ pip install ".[semantic-rag]"
 pip install ".[agent-full]"
 ```
 
-If optional packages are missing, the service falls back to regex + `pymorphy3` + keyword RAG.
+Если опциональные пакеты не установлены, сервис откатывается на режим:
+регулярные выражения + `pymorphy3` + keyword-RAG.
 
-## Recommended direction
+## Рекомендуемое Направление
 
-Use `LangGraph` later only if the custom loop becomes hard to maintain. Do not move grammar
-logic into `n8n`; keep it in the service where it can be tested, logged, and versioned.
+`LangGraph` стоит подключать позже, только если наш собственный агентский цикл
+станет трудно поддерживать. Грамматическую логику не нужно переносить в `n8n`:
+она должна оставаться в сервисе, где ее можно тестировать, логировать и
+версионировать.
