@@ -110,10 +110,12 @@ def build_agent_report(
     ]
     plan = philologist_state.get("plan") or {}
     if isinstance(plan, dict) and plan:
+        execution = plan.get("execution") or {}
         lines.extend(
             [
                 "План агента:",
                 f"- Статус плана: {plan.get('status', 'unknown')}",
+                f"- Цикл исполнения: {execution.get('status', 'not_started') if isinstance(execution, dict) else 'not_started'}",
                 f"- Цель: {plan.get('goal', '')}",
             ]
         )
