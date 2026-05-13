@@ -13,6 +13,7 @@ class CaseDecision:
     method: str
     confidence: str
     warning: str = ""
+    reason: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
