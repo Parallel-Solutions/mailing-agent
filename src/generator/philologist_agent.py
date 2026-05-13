@@ -28,6 +28,7 @@ from src.generator.config_generator import DOCUMENT_REVIEW_MODEL, OUTPUT_DIR
 from src.generator.document_review_agent import review_docx
 from src.generator.inflection_report import format_inflection_report, load_inflection_log
 from src.generator.philology_knowledge import find_relevant_rules, format_rules_context
+from src.generator.philologist_tools import PhilologistToolRunner, build_philologist_tool_manifest
 from src.generator.pdf_converter import convert_docx_batch
 from src.generator.responsibility_matrix import diagnose_responsibility
 from src.jobs import load_agent_state, save_agent_state
@@ -50,6 +51,8 @@ PHILOLOGIST_STATE: dict[str, Any] = {
     "documents_with_issues": 0,
     "documents": [],
     "summary_text": "Агент-филолог ещё не запускался.",
+    "tool_manifest": build_philologist_tool_manifest(),
+    "tool_trace": [],
     "task_stats": {"total": 0, "pending": 0, "in_progress": 0, "done": 0, "blocked": 0},
     "tasks": [],
     "recent_events": [],
@@ -339,6 +342,19 @@ def _format_rule_details(message: str) -> str:
     return "\n".join(lines)
 
 
+def _format_tool_trace(tool_trace: list[dict[str, Any]], limit: int = 8) -> str:
+    if not tool_trace:
+        return ""
+    lines = ["Инструменты:"]
+    for record in tool_trace[-limit:]:
+        name = _safe_text(record.get("name")) or "tool"
+        status = _safe_text(record.get("status")) or "unknown"
+        elapsed = record.get("elapsed_seconds")
+        elapsed_text = f", {elapsed} сек." if isinstance(elapsed, (int, float)) else ""
+        lines.append(f"- {name}: {status}{elapsed_text}")
+    return "\n".join(lines)
+
+
 def _format_philologist_structured_reply(message: str, state: dict[str, Any]) -> str:
     documents = state.get("documents") or []
     if not documents:
@@ -356,6 +372,9 @@ def _format_philologist_structured_reply(message: str, state: dict[str, Any]) ->
     inflection_report = _safe_text(state.get("inflection_report"))
     if inflection_report:
         parts.append(inflection_report)
+    tool_trace = state.get("tool_trace") or []
+    if isinstance(tool_trace, list):
+        parts.append(_format_tool_trace(tool_trace))
     parts.append(_format_fixed_details(fixed, limit=5) if fixed else "Исправил:\nАвтоматических исправлений не было.")
     parts.append(_format_issue_details(issues, limit=5) if issues else "Остались замечания:\nКритичных языковых замечаний не осталось.")
     parts.append(_format_rule_details(message))
@@ -395,6 +414,12 @@ def run_philologist(
         row_ids=sorted(requested_row_ids) if requested_row_ids else None,
         job_id=job_id,
     )
+    tool_runner = PhilologistToolRunner()
+    inflection_rows = tool_runner.call(
+        "read_inflection_log",
+        {"job_id": job_id},
+        lambda: load_inflection_log(job_id),
+    )
 
     state = _load_philologist_state(job_id)
     state.update(
@@ -412,6 +437,10 @@ def run_philologist(
                 if not claimed_tasks
                 else f"Агент-филолог начал проверку документов и принял {len(claimed_tasks)} внутренних задач."
             ),
+            "inflection_report": format_inflection_report(inflection_rows, limit=8) if inflection_rows else "",
+            "inflection_log_count": len(inflection_rows),
+            "tool_manifest": build_philologist_tool_manifest(),
+            "tool_trace": tool_runner.as_state(),
             "task_stats": count_tasks_for_agent("philologist", job_id),
             "tasks": get_tasks_for_agent("philologist", job_id)[:20],
             "recent_events": get_recent_events(agent_name="philologist", limit=20, job_id=job_id),
@@ -422,9 +451,25 @@ def run_philologist(
     started_at = perf_counter()
     processed_documents: list[dict[str, Any]] = []
     for index, docx_path in enumerate(docx_paths, start=1):
-        review_result = review_docx(docx_path, ai_enabled=ai_enabled)
-        fix_result = _auto_fix_docx(docx_path, review_result)
-        pdf_path = _rebuild_pdf_for_docx(docx_path) if fix_result["applied_fix_count"] > 0 else None
+        review_result = tool_runner.call(
+            "review_docx",
+            {"path": str(docx_path), "ai_enabled": ai_enabled},
+            lambda docx_path=docx_path: review_docx(docx_path, ai_enabled=ai_enabled),
+        )
+        fix_result = tool_runner.call(
+            "apply_safe_fixes",
+            {"path": str(docx_path), "issue_count": int(review_result.get("issue_count", 0))},
+            lambda docx_path=docx_path, review_result=review_result: _auto_fix_docx(docx_path, review_result),
+        )
+        pdf_path = (
+            tool_runner.call(
+                "rebuild_pdf",
+                {"path": str(docx_path)},
+                lambda docx_path=docx_path: _rebuild_pdf_for_docx(docx_path),
+            )
+            if fix_result["applied_fix_count"] > 0
+            else None
+        )
 
         document_entry = {
             "index": index,
@@ -449,6 +494,7 @@ def run_philologist(
         state["fixed_documents"] = sum(1 for item in processed_documents if item.get("applied_fix_count", 0) > 0)
         state["documents_with_issues"] = sum(1 for item in processed_documents if item.get("issue_count", 0) > 0)
         state["summary_text"] = _format_summary(processed_documents)
+        state["tool_trace"] = tool_runner.as_state()
         _save_philologist_state(state, job_id)
 
     row_rollups: dict[str, dict[str, Any]] = {}
@@ -582,9 +628,15 @@ def run_philologist(
     state["tasks"] = get_tasks_for_agent("philologist", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="philologist", limit=20, job_id=job_id)
     state["summary_text"] = _format_run_summary(processed_documents, sender_handoffs=sender_handoffs)
-    inflection_rows = load_inflection_log(job_id)
     state["inflection_report"] = format_inflection_report(inflection_rows, limit=8) if inflection_rows else ""
     state["inflection_log_count"] = len(inflection_rows)
+    tool_runner.call(
+        "write_report",
+        {"document_count": len(processed_documents)},
+        lambda: {"status": "completed"},
+    )
+    state["tool_manifest"] = build_philologist_tool_manifest()
+    state["tool_trace"] = tool_runner.as_state()
     _save_philologist_state(state, job_id)
     return dict(state)
 
@@ -599,6 +651,8 @@ def get_philologist_status(job_id: str | None = None) -> dict[str, Any]:
     inflection_rows = load_inflection_log(job_id)
     state["inflection_report"] = format_inflection_report(inflection_rows, limit=8) if inflection_rows else ""
     state["inflection_log_count"] = len(inflection_rows)
+    state["tool_manifest"] = build_philologist_tool_manifest()
+    state["tool_trace"] = state.get("tool_trace") or []
     if state.get("status") == "idle":
         state["total_documents"] = len(list(target_dir.rglob("*.docx"))) if target_dir.exists() else 0
     return state
