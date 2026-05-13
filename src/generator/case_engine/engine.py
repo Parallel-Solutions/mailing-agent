@@ -73,6 +73,10 @@ def _join_warnings(*items: str) -> str:
     return " ".join(item.strip() for item in items if item and item.strip()).strip()
 
 
+def _inflection_warnings(result: legacy_inflect.InflectionResult) -> str:
+    return " ".join(str(item).strip() for item in getattr(result, "warnings", ()) or () if str(item).strip())
+
+
 def _postcheck_decision(
     *,
     entity_type: str,
@@ -158,11 +162,14 @@ def _decision_from_legacy(
         {"field": field, "source_value": source_value, "target_case": target_case},
         lambda: legacy(source_value),
     )
-    warning = ""
+    warning = _inflection_warnings(result)
     method = "legacy_rule" if result.confidence == "rule" else "legacy_morph"
     if result.confidence in {"empty", "no_morph"}:
         method = "fallback"
-        warning = f"Inflection confidence is {result.confidence}; source value was preserved or weakly transformed."
+        warning = _join_warnings(
+            warning,
+            f"Inflection confidence is {result.confidence}; source value was preserved or weakly transformed.",
+        )
     postcheck_warning = tool_runner.call(
         "postcheck_decision",
         {"field": field, "source_value": source_value, "result_value": result.value},
@@ -245,11 +252,14 @@ def _build_admin_decision(
     if source_value.count('"') > result_value.count('"'):
         result_value += '"'
 
-    warning = ""
+    warning = _inflection_warnings(adm_result)
     method = "legacy_rule" if adm_result.confidence == "rule" else "legacy_morph"
     if adm_result.confidence in {"empty", "no_morph"}:
         method = "fallback"
-        warning = f"Inflection confidence is {adm_result.confidence}; source value was preserved or weakly transformed."
+        warning = _join_warnings(
+            warning,
+            f"Inflection confidence is {adm_result.confidence}; source value was preserved or weakly transformed.",
+        )
     postcheck_warning = tool_runner.call(
         "postcheck_decision",
         {"field": "ADM_NAME_1", "source_value": source_value, "result_value": result_value},
