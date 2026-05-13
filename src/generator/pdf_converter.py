@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -21,6 +22,7 @@ try:
         ONLYOFFICE_CONVERTER_MODE,
         ONLYOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_JWT_SECRET,
+        ONLYOFFICE_PUBLIC_FILES_DIR,
         ONLYOFFICE_PUBLIC_FILES_URL,
         PDF_CHUNK_SIZE,
         PDF_CONVERTER,
@@ -34,6 +36,7 @@ except ImportError:  # pragma: no cover
         ONLYOFFICE_CONVERTER_MODE,
         ONLYOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_JWT_SECRET,
+        ONLYOFFICE_PUBLIC_FILES_DIR,
         ONLYOFFICE_PUBLIC_FILES_URL,
         PDF_CHUNK_SIZE,
         PDF_CONVERTER,
@@ -232,13 +235,23 @@ def _convert_with_onlyoffice_upload(docx_path: Path, output_dir: Path) -> Option
     return output_path if output_path.exists() else None
 
 
-def _convert_with_onlyoffice_url(docx_path: Path, output_dir: Path) -> Optional[Path]:
+def _stage_onlyoffice_public_file(docx_path: Path) -> tuple[str, Path]:
     public_prefix = ONLYOFFICE_PUBLIC_FILES_URL.rstrip("/")
     if not public_prefix:
         raise RuntimeError("ONLYOFFICE_PUBLIC_FILES_URL is required when ONLYOFFICE_CONVERTER_MODE=url.")
 
+    token = uuid4().hex
+    target_dir = ONLYOFFICE_PUBLIC_FILES_DIR / token
+    target_dir.mkdir(parents=True, exist_ok=True)
+    staged_path = target_dir / docx_path.name
+    shutil.copy2(docx_path, staged_path)
+    public_url = f"{public_prefix}/{token}/{quote(docx_path.name)}"
+    return public_url, target_dir
+
+
+def _convert_with_onlyoffice_url(docx_path: Path, output_dir: Path) -> Optional[Path]:
     file_key = uuid4().hex
-    public_url = f"{public_prefix}/{docx_path.name}"
+    public_url, staged_dir = _stage_onlyoffice_public_file(docx_path)
     payload = {
         "async": False,
         "filetype": docx_path.suffix.lstrip(".").lower(),
@@ -249,32 +262,37 @@ def _convert_with_onlyoffice_url(docx_path: Path, output_dir: Path) -> Optional[
     }
     timeout = httpx.Timeout(ONLYOFFICE_CONVERT_TIMEOUT_SECONDS, connect=10.0)
 
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        response = client.post(
-            _resolve_onlyoffice_converter_endpoint(file_key),
-            json=payload,
-            headers={
-                "Accept": "application/json",
-                **_onlyoffice_headers(payload),
-            },
-        )
-        response.raise_for_status()
-        data = _parse_onlyoffice_converter_response(response)
-        file_url = str(data.get("fileUrl") or "").strip()
-        if not data.get("endConvert") or not file_url:
-            raise RuntimeError(f"ONLYOFFICE converter did not return a PDF URL for {docx_path.name}.")
-        pdf_response = client.get(file_url)
-        pdf_response.raise_for_status()
-        output_path = output_dir / f"{docx_path.stem}.pdf"
-        output_path.write_bytes(pdf_response.content)
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.post(
+                _resolve_onlyoffice_converter_endpoint(file_key),
+                json=payload,
+                headers={
+                    "Accept": "application/json",
+                    **_onlyoffice_headers(payload),
+                },
+            )
+            response.raise_for_status()
+            data = _parse_onlyoffice_converter_response(response)
+            file_url = str(data.get("fileUrl") or "").strip()
+            if not data.get("endConvert") or not file_url:
+                raise RuntimeError(f"ONLYOFFICE converter did not return a PDF URL for {docx_path.name}.")
+            pdf_response = client.get(file_url)
+            pdf_response.raise_for_status()
+            if not pdf_response.content.startswith(b"%PDF"):
+                raise RuntimeError(f"ONLYOFFICE converter returned non-PDF payload for {docx_path.name}.")
+            output_path = output_dir / f"{docx_path.stem}.pdf"
+            output_path.write_bytes(pdf_response.content)
+    finally:
+        shutil.rmtree(staged_dir, ignore_errors=True)
     return output_path if output_path.exists() else None
 
 
 def _convert_onlyoffice_single(docx_path: Path, output_dir: Path) -> Tuple[Path, Optional[Path]]:
     try:
-        if ONLYOFFICE_CONVERTER_MODE == "url":
-            return docx_path, _convert_with_onlyoffice_url(docx_path, output_dir)
-        return docx_path, _convert_with_onlyoffice_upload(docx_path, output_dir)
+        if ONLYOFFICE_CONVERTER_MODE == "collabora-upload":
+            return docx_path, _convert_with_onlyoffice_upload(docx_path, output_dir)
+        return docx_path, _convert_with_onlyoffice_url(docx_path, output_dir)
     except Exception:
         return docx_path, None
 

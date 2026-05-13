@@ -65,7 +65,11 @@ WEB_CASE_AGENT_MAX_WORKERS = max(1, int(_read_env_override("WEB_CASE_AGENT_MAX_W
 PDF_CONVERTER = _read_env_override("PDF_CONVERTER", "libreoffice").strip().lower() or "libreoffice"
 PDF_CONVERTER_FALLBACK = _read_env_override("PDF_CONVERTER_FALLBACK", "").strip().lower()
 ONLYOFFICE_BASE_URL = _read_env_override("ONLYOFFICE_BASE_URL", "").strip().rstrip("/")
-ONLYOFFICE_CONVERTER_MODE = _read_env_override("ONLYOFFICE_CONVERTER_MODE", "upload").strip().lower() or "upload"
+ONLYOFFICE_CONVERTER_MODE = _read_env_override("ONLYOFFICE_CONVERTER_MODE", "url").strip().lower() or "url"
 ONLYOFFICE_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("ONLYOFFICE_CONVERT_TIMEOUT_SECONDS", "120"))
 ONLYOFFICE_JWT_SECRET = _read_env_override("ONLYOFFICE_JWT_SECRET", "").strip()
-ONLYOFFICE_PUBLIC_FILES_URL = _read_env_override("ONLYOFFICE_PUBLIC_FILES_URL", "").strip()
+ONLYOFFICE_PUBLIC_FILES_DIR = DATA_DIR / "_onlyoffice_public"
+ONLYOFFICE_PUBLIC_FILES_URL = _read_env_override(
+    "ONLYOFFICE_PUBLIC_FILES_URL",
+    "http://172.17.0.1:9806/public/onlyoffice",
+).strip().rstrip("/")
