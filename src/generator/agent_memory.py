@@ -16,6 +16,7 @@ MEMORY_JSONL_NAME = "agent_memory_candidates.jsonl"
 MEMORY_CSV_NAME = "agent_memory_candidates.csv"
 QUARANTINE_JSONL_NAME = "agent_quarantine.jsonl"
 QUARANTINE_CSV_NAME = "agent_quarantine.csv"
+AGENT_REPORT_NAME = "agent_report.txt"
 
 
 def get_agent_memory_path(job_id: str | None = None) -> Path:
@@ -38,6 +39,11 @@ def get_agent_quarantine_csv_path(job_id: str | None = None) -> Path:
     return job_paths.root_dir / "state" / QUARANTINE_CSV_NAME
 
 
+def get_agent_report_path(job_id: str | None = None) -> Path:
+    job_paths = resolve_job_paths(job_id)
+    return job_paths.root_dir / "state" / AGENT_REPORT_NAME
+
+
 def build_learning_candidates(job_id: str | None = None) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     candidates.extend(_build_inflection_candidates(job_id))
@@ -56,7 +62,73 @@ def save_learning_memory(job_id: str | None = None) -> list[dict[str, Any]]:
     with path.open("w", encoding="utf-8") as handle:
         for item in candidates:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+    save_agent_report(job_id, candidates=candidates, quarantine=quarantine)
     return candidates
+
+
+def build_agent_report(
+    job_id: str | None = None,
+    *,
+    candidates: list[dict[str, Any]] | None = None,
+    quarantine: list[dict[str, Any]] | None = None,
+) -> str:
+    candidates = build_learning_candidates(job_id) if candidates is None else candidates
+    quarantine = build_quarantine_items(job_id) if quarantine is None else quarantine
+    inflection_rows = load_inflection_log(job_id)
+    philologist_state = _load_philologist_state(job_id)
+
+    auto_verified = [
+        item for item in candidates
+        if item.get("candidate_type") == "inflection_auto_override"
+        and item.get("status") == "auto_approved_verified"
+    ]
+    auto_failed = [
+        item for item in candidates
+        if item.get("candidate_type") == "inflection_auto_override"
+        and item.get("status") != "auto_approved_verified"
+    ]
+    needs_review = [item for item in candidates if item.get("status") == "needs_human_review"]
+    observed = [item for item in candidates if item.get("status") == "observed"]
+
+    lines = [
+        "ОТЧЕТ АГЕНТА",
+        "",
+        "Сводка:",
+        f"- Склонений проверено: {len(inflection_rows)}",
+        f"- Автоматически утверждено и проверено: {len(auto_verified)}",
+        f"- Автоутверждений с ошибкой/отклонением: {len(auto_failed)}",
+        f"- В карантине: {len(quarantine)}",
+        f"- Кандидатов на ручную проверку: {len(needs_review)}",
+        f"- Безопасных правок филолога зафиксировано: {len(observed)}",
+        "",
+        "Филолог:",
+        f"- Статус: {philologist_state.get('status', 'idle')}",
+        f"- Проверено документов: {philologist_state.get('processed_documents', 0)}",
+        f"- Документов с замечаниями: {philologist_state.get('documents_with_issues', 0)}",
+        f"- Документов с автоправками: {philologist_state.get('fixed_documents', 0)}",
+        "",
+    ]
+
+    lines.extend(_format_report_section("Автоматически принято", auto_verified, limit=8))
+    lines.extend(_format_report_section("Карантин", quarantine, limit=8))
+    lines.extend(_format_report_section("Нужно проверить человеку", needs_review, limit=8))
+    lines.extend(_format_report_section("Ошибки автоутверждения", auto_failed, limit=8))
+    return "\n".join(lines).strip() + "\n"
+
+
+def save_agent_report(
+    job_id: str | None = None,
+    *,
+    candidates: list[dict[str, Any]] | None = None,
+    quarantine: list[dict[str, Any]] | None = None,
+) -> Path:
+    report_path = get_agent_report_path(job_id)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        build_agent_report(job_id, candidates=candidates, quarantine=quarantine),
+        encoding="utf-8",
+    )
+    return report_path
 
 
 def build_quarantine_items(job_id: str | None = None) -> list[dict[str, Any]]:
@@ -123,6 +195,27 @@ def save_quarantine_csv(items: list[dict[str, Any]], csv_path: Path) -> None:
         writer.writeheader()
         for item in items:
             writer.writerow({field: item.get(field, "") for field in fieldnames})
+
+
+def _format_report_section(title: str, items: list[dict[str, Any]], *, limit: int) -> list[str]:
+    lines = [f"{title}:"]
+    if not items:
+        lines.append("- нет")
+        lines.append("")
+        return lines
+    for item in items[:limit]:
+        field = item.get("field") or item.get("document") or "item"
+        source_value = item.get("source_value") or item.get("warning") or ""
+        result_value = item.get("result_value") or item.get("suggestion") or ""
+        reason = item.get("reason") or item.get("next_action") or ""
+        line = f"- {field}: {source_value} -> {result_value}"
+        if reason:
+            line += f" ({reason})"
+        lines.append(line)
+    if len(items) > limit:
+        lines.append(f"- ...и ещё {len(items) - limit}")
+    lines.append("")
+    return lines
 
 
 def auto_approve_safe_inflections(job_id: str | None = None) -> list[dict[str, Any]]:
