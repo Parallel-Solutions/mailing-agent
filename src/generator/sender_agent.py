@@ -43,7 +43,7 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MAIL_TEMPLATE_PATH = TEMPLATES_DIR / "mail_template.txt"
 MAIL_TEMPLATE_DOCX_PATH = TEMPLATES_DIR / "mail_template.docx"
 SENT_MAIL_LOG_PATH = DATA_DIR / "sent_mail_log.jsonl"
-DEFAULT_MAIL_SUBJECT = "Коммерческое предложение МНГП. Срок действия до 31.05.2026"
+DEFAULT_MAIL_SUBJECT = "Коммерческое предложение МНГП"
 DEFAULT_MAIL_BODY = (
     "Добрый день!\n"
     "Направляем для рассмотрения коммерческое предложение на выполнение работ по разработке проекта "
