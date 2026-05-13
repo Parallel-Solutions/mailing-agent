@@ -170,6 +170,18 @@ def _replace_fragment_in_paragraph(paragraph, fragment: str, replacement: str) -
     return _replace_paragraph_text(paragraph, new_text)
 
 
+def _replace_all_safe_fragments_in_paragraph(paragraph, fragment: str, replacement: str) -> bool:
+    changed = False
+    while True:
+        current_text = "".join(run.text for run in paragraph.runs) if paragraph.runs else paragraph.text
+        if fragment not in current_text:
+            break
+        if not _replace_fragment_in_paragraph(paragraph, fragment, replacement):
+            break
+        changed = True
+    return changed
+
+
 def _replace_fragment_inside_single_run(paragraph, fragment: str, replacement: str) -> bool:
     for run in paragraph.runs:
         if fragment not in run.text:
@@ -248,7 +260,7 @@ def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]
         if fragment and fragment in current_text:
             if not _paragraph_is_safe_for_text_rewrite(paragraph) and not _fragment_exists_inside_single_run(paragraph, fragment):
                 return {"applied": False, "reason": "unsafe_formatting"}
-            applied = _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+            applied = _replace_all_safe_fragments_in_paragraph(paragraph, fragment, suggestion)
             return {"applied": applied, "mode": "fragment_replace" if applied else "", "reason": "" if applied else "unsafe_or_missing_fragment"}
         if current_text.strip() == fragment.strip():
             if not _paragraph_is_safe_for_text_rewrite(paragraph):
@@ -266,7 +278,7 @@ def _apply_issue_to_document(location_map: dict[str, Any], issue: dict[str, Any]
         if fragment in current_text:
             if not _paragraph_is_safe_for_text_rewrite(paragraph) and not _fragment_exists_inside_single_run(paragraph, fragment):
                 return {"applied": False, "reason": "unsafe_formatting"}
-            applied = _replace_fragment_in_paragraph(paragraph, fragment, suggestion)
+            applied = _replace_all_safe_fragments_in_paragraph(paragraph, fragment, suggestion)
             return {"applied": applied, "mode": "fragment_replace" if applied else "", "reason": "" if applied else "unsafe_or_missing_fragment"}
         if current_text.strip() == fragment.strip():
             if not _paragraph_is_safe_for_text_rewrite(paragraph):
@@ -299,6 +311,9 @@ def _format_skipped_fix(
         "decision_action": _safe_text(decision.get("action")),
         "decision_reason": _safe_text(decision.get("reason")),
         "decision_confidence": _safe_text(decision.get("confidence")),
+        "rag_recommendation": _safe_text((decision.get("rag") or {}).get("recommendation")),
+        "rag_reason": _safe_text((decision.get("rag") or {}).get("reason")),
+        "rag_support_score": _safe_text((decision.get("rag") or {}).get("support_score")),
     }
 
 
@@ -339,6 +354,9 @@ def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, 
                     "decision_action": _safe_text(decision.get("action")),
                     "decision_reason": _safe_text(decision.get("reason")),
                     "decision_confidence": _safe_text(decision.get("confidence")),
+                    "rag_recommendation": _safe_text((decision.get("rag") or {}).get("recommendation")),
+                    "rag_reason": _safe_text((decision.get("rag") or {}).get("reason")),
+                    "rag_support_score": _safe_text((decision.get("rag") or {}).get("support_score")),
                 }
             )
         elif issue.get("suggestion"):
