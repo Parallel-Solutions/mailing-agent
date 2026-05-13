@@ -32,7 +32,7 @@ from src.generator.agent_handoff import (
 from src.generator.config_generator import DATA_DIR, DATA_XLSX_PATH, OUTPUT_DIR, START_OUTGOING_NUMBER, TEMPLATES_DIR
 from src.generator.excel_io import load_rows, save_workbook, update_status
 from src.generator.generator_agent import run_generator_agent
-from src.generator.inflect import build_inflected_fields
+from src.generator.case_engine import build_inflected_fields_with_trace
 from src.generator.philologist_agent import run_philologist
 from src.generator.responsibility_matrix import diagnose_responsibility
 from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
@@ -194,17 +194,20 @@ def _mail_outgoing_number(row: dict[str, Any]) -> str:
 
 def _mail_mun_name_genitive(mun_name: str, fallback: str = "") -> str:
     normalized = re.sub(r"\s+", " ", _safe_text(mun_name)).strip()
+    fallback = _safe_text(fallback)
+    if fallback:
+        return fallback
     if normalized.startswith("Городское поселение "):
         return f"Городского поселения {normalized[len('Городское поселение ') :].strip()}".strip()
     if normalized.startswith("Сельское поселение "):
         return f"Сельского поселения {normalized[len('Сельское поселение ') :].strip()}".strip()
-    return _safe_text(fallback) or normalized
+    return normalized
 
 
 def _mail_template_values(row: dict[str, Any]) -> dict[str, str]:
     outgoing_number = _mail_outgoing_number(row)
     try:
-        inflected = build_inflected_fields(row)
+        inflected, _ = build_inflected_fields_with_trace(row)
     except Exception:
         inflected = {}
     mun_name = _safe_text(row.get("MUN_NAME"))
