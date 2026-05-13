@@ -16,6 +16,8 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from docx import Document
+
 from src.generator.ai_case_agent import (
     OpenAI,
     _resolve_openai_api_key,
@@ -27,7 +29,7 @@ from src.generator.agent_handoff import (
     get_recent_events,
     get_tasks_for_agent,
 )
-from src.generator.config_generator import DATA_DIR, DATA_XLSX_PATH, OUTPUT_DIR, TEMPLATES_DIR
+from src.generator.config_generator import DATA_DIR, DATA_XLSX_PATH, OUTPUT_DIR, START_OUTGOING_NUMBER, TEMPLATES_DIR
 from src.generator.excel_io import load_rows, save_workbook, update_status
 from src.generator.generator_agent import run_generator_agent
 from src.generator.philologist_agent import run_philologist
@@ -38,6 +40,7 @@ from src.utils.config import settings
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MAIL_TEMPLATE_PATH = TEMPLATES_DIR / "mail_template.txt"
+MAIL_TEMPLATE_DOCX_PATH = TEMPLATES_DIR / "mail_template.docx"
 SENT_MAIL_LOG_PATH = DATA_DIR / "sent_mail_log.jsonl"
 DEFAULT_MAIL_SUBJECT = "Коммерческое предложение МНГП. Срок действия до 31.05.2026"
 DEFAULT_MAIL_BODY = (
@@ -125,16 +128,88 @@ def _safe_text(value: Any) -> str:
     return str(value).strip()
 
 
+class _SafeMailTemplateValues(dict[str, str]):
+    def __missing__(self, key: str) -> str:
+        return ""
+
+
+def _read_docx_mail_template(template_path: Path) -> str:
+    document = Document(template_path)
+    blocks: list[str] = []
+
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if text:
+            blocks.append(text)
+        elif blocks and blocks[-1] != "":
+            blocks.append("")
+
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                blocks.append("\t".join(cells))
+
+    return "\n".join(blocks).strip()
+
+
 def _read_mail_template(mail_template_path: Path | None = None) -> str:
-    template_path = mail_template_path or MAIL_TEMPLATE_PATH
-    if template_path.exists():
+    template_paths = [mail_template_path] if mail_template_path else [MAIL_TEMPLATE_DOCX_PATH, MAIL_TEMPLATE_PATH]
+    for template_path in [path for path in template_paths if path is not None]:
+        if not template_path.exists():
+            continue
         try:
-            text = template_path.read_text(encoding="utf-8-sig").strip()
+            if template_path.suffix.lower() == ".docx":
+                text = _read_docx_mail_template(template_path)
+            else:
+                text = template_path.read_text(encoding="utf-8-sig").strip()
             if text:
                 return text
         except OSError:
-            pass
+            continue
     return DEFAULT_MAIL_BODY
+
+
+def _mail_outgoing_number(row: dict[str, Any]) -> str:
+    raw_id = _safe_text(row.get("ID"))
+    try:
+        row_number = int(float(raw_id))
+    except (TypeError, ValueError):
+        return raw_id
+    return str(START_OUTGOING_NUMBER + row_number - 1)
+
+
+def _mail_template_values(row: dict[str, Any]) -> dict[str, str]:
+    outgoing_number = _mail_outgoing_number(row)
+    return {
+        "HEAD_FIO": _safe_text(row.get("HEAD_FIO")),
+        "ADM_NAME": _safe_text(row.get("ADM_NAME")),
+        "MUN_NAME": _safe_text(row.get("MUN_NAME")),
+        "DATE": datetime.now().strftime("%d.%m.%Y"),
+        "OUTGOING_NUMBER": outgoing_number,
+        "OUTGOING_NUMBER_KP": f"{outgoing_number}-КП" if outgoing_number else "",
+    }
+
+
+def _render_mail_template(template: str, row: dict[str, Any]) -> str:
+    values = _mail_template_values(row)
+    bracket_replacements = {
+        "наименование муниципального образования": values["MUN_NAME"],
+        "номер": values["OUTGOING_NUMBER"],
+        "номер кп": values["OUTGOING_NUMBER_KP"],
+        "дата": values["DATE"],
+    }
+
+    rendered = template
+    for placeholder, value in bracket_replacements.items():
+        rendered = re.sub(
+            rf"\[\s*{re.escape(placeholder)}\s*\]",
+            value,
+            rendered,
+            flags=re.IGNORECASE,
+        )
+
+    return rendered.format_map(_SafeMailTemplateValues(values))
 
 
 def _build_mail_footer_html(*, inline_image: bool = False) -> str:
@@ -523,11 +598,7 @@ def _build_message(
     *,
     mail_template_path: Path | None = None,
 ) -> EmailMessage:
-    body = _append_mail_footer_text(_read_mail_template(mail_template_path).format(
-        HEAD_FIO=_safe_text(row.get("HEAD_FIO")),
-        ADM_NAME=_safe_text(row.get("ADM_NAME")),
-        MUN_NAME=_safe_text(row.get("MUN_NAME")),
-    ))
+    body = _build_mail_body(row, mail_template_path=mail_template_path)
     message = EmailMessage()
     message["From"] = settings.smtp_sender_email
     message["To"] = recipient
@@ -559,11 +630,11 @@ def _build_message(
 
 
 def _build_mail_body(row: dict[str, Any], *, mail_template_path: Path | None = None) -> str:
-    return _append_mail_footer_text(_read_mail_template(mail_template_path).format(
-        HEAD_FIO=_safe_text(row.get("HEAD_FIO")),
-        ADM_NAME=_safe_text(row.get("ADM_NAME")),
-        MUN_NAME=_safe_text(row.get("MUN_NAME")),
-    ))
+    return _append_mail_footer_text(_render_mail_template(_read_mail_template(mail_template_path), row))
+
+
+def _build_mail_subject(subject_template: str, row: dict[str, Any]) -> str:
+    return _render_mail_template(_safe_text(subject_template) or DEFAULT_MAIL_SUBJECT, row).strip()
 
 
 def _append_sent_mail_log(
@@ -1011,8 +1082,16 @@ def run_sender(
     job_paths = resolve_job_paths(job_id)
     data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
     output_dir = None if job_paths.uses_legacy_layout else job_paths.output_dir
-    job_template_path = job_paths.templates_dir / "mail_template.txt"
-    mail_template_path = None if job_paths.uses_legacy_layout or not job_template_path.exists() else job_template_path
+    job_template_docx_path = job_paths.templates_dir / "mail_template.docx"
+    job_template_txt_path = job_paths.templates_dir / "mail_template.txt"
+    if job_paths.uses_legacy_layout:
+        mail_template_path = None
+    elif job_template_docx_path.exists():
+        mail_template_path = job_template_docx_path
+    elif job_template_txt_path.exists():
+        mail_template_path = job_template_txt_path
+    else:
+        mail_template_path = None
     sent_mail_log_path = None if job_paths.uses_legacy_layout else job_paths.sent_mail_log_path
     state = _load_sender_state(job_id)
     clear_sender_stop_request(job_id)
@@ -1272,6 +1351,7 @@ def run_sender(
             continue
 
         state["ready_rows"] += 1
+        row_subject = _build_mail_subject(subject, row)
 
         if not dry_run:
             _refresh_sender_stop_flag(state, job_id)
@@ -1289,7 +1369,7 @@ def run_sender(
                     row,
                     _allowed_send_recipients(email_decision),
                     attachments,
-                    subject,
+                    row_subject,
                     transport=effective_transport,
                     mail_template_path=mail_template_path,
                 )
@@ -1304,7 +1384,7 @@ def run_sender(
                     row=row,
                     recipient=entry["recipient"],
                     attachments=attachments,
-                    subject=subject,
+                    subject=row_subject,
                     transport=effective_transport,
                     warning=entry["warning"],
                     sent_mail_log_path=sent_mail_log_path,

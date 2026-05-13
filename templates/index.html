@@ -830,8 +830,8 @@
 
       <div class="grid2">
         <div class="field">
-          <label>Шаблон текста письма (.txt)</label>
-          <input type="file" id="upload-mail-input" accept=".txt" style="display:none" onchange="uploadTemplate(this, 'mail-btn', 'Шаблон письма', 'mail')">
+          <label>Шаблон текста письма (.txt/.docx)</label>
+          <input type="file" id="upload-mail-input" accept=".txt,.docx" style="display:none" onchange="uploadTemplate(this, 'mail-btn', 'Шаблон письма', 'mail')">
           <button class="file-btn" id="mail-btn" data-default-label="Выбрать файл" onclick="document.getElementById('upload-mail-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
