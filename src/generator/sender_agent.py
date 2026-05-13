@@ -185,6 +185,7 @@ def _mail_template_values(row: dict[str, Any]) -> dict[str, str]:
         "HEAD_FIO": _safe_text(row.get("HEAD_FIO")),
         "ADM_NAME": _safe_text(row.get("ADM_NAME")),
         "MUN_NAME": _safe_text(row.get("MUN_NAME")),
+        "MUN_R_NAME": _safe_text(row.get("MUN_R_NAME")) or _safe_text(row.get("MUN_NAME")),
         "DATE": datetime.now().strftime("%d.%m.%Y"),
         "OUTGOING_NUMBER": outgoing_number,
         "OUTGOING_NUMBER_KP": f"{outgoing_number}-КП" if outgoing_number else "",
@@ -195,6 +196,9 @@ def _render_mail_template(template: str, row: dict[str, Any]) -> str:
     values = _mail_template_values(row)
     bracket_replacements = {
         "наименование муниципального образования": values["MUN_NAME"],
+        "наименование муниципального образования в родительном падеже": values["MUN_R_NAME"],
+        "муниципальное образование в родительном падеже": values["MUN_R_NAME"],
+        "мун р": values["MUN_R_NAME"],
         "номер": values["OUTGOING_NUMBER"],
         "номер кп": values["OUTGOING_NUMBER_KP"],
         "дата": values["DATE"],
