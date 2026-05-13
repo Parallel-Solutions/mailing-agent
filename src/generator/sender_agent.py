@@ -205,6 +205,14 @@ def _render_mail_template(template: str, row: dict[str, Any]) -> str:
     }
 
     rendered = template
+    # Existing mail templates used the nominative placeholder after "проектирования",
+    # where Russian grammar requires the genitive form.
+    rendered = re.sub(
+        r"(градостроительного\s+проектирования\s*)\[\s*наименование\s+муниципального\s+образования\s*\]",
+        rf"\1{values['MUN_R_NAME']}",
+        rendered,
+        flags=re.IGNORECASE,
+    )
     for placeholder, value in bracket_replacements.items():
         rendered = re.sub(
             rf"\[\s*{re.escape(placeholder)}\s*\]",
