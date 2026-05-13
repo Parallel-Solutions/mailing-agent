@@ -18,6 +18,7 @@ from src.generator.agent_handoff import (
     mark_tasks_in_progress,
     set_task_statuses,
 )
+from src.generator.agent_memory import save_learning_memory
 from src.generator.ai_case_agent import (
     OpenAI,
     _extract_json_payload,
@@ -718,6 +719,7 @@ def run_philologist(
     state["tool_manifest"] = build_philologist_tool_manifest()
     state["tool_trace"] = tool_runner.as_state()
     _save_philologist_state(state, job_id)
+    save_learning_memory(job_id)
     return dict(state)
 
 
