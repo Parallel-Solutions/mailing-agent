@@ -55,6 +55,9 @@ CASE_AGENT_MODEL = _read_env_override("CASE_AGENT_MODEL", "gpt-4o-mini")
 CASE_AGENT_ONLY_SUSPICIOUS = _read_env_override("CASE_AGENT_ONLY_SUSPICIOUS", "0") == "1"
 CASE_AGENT_AUTO_FIX_MIN_CONFIDENCE = float(_read_env_override("CASE_AGENT_AUTO_FIX_MIN_CONFIDENCE", "0.9"))
 CASE_AGENT_OK_DEFAULT_CONFIDENCE = float(_read_env_override("CASE_AGENT_OK_DEFAULT_CONFIDENCE", "0.8"))
+AGENT_MEMORY_AUTO_APPROVE_SAFE_INFLECTIONS = (
+    _read_env_override("AGENT_MEMORY_AUTO_APPROVE_SAFE_INFLECTIONS", "1") == "1"
+)
 
 # AI-ревью готового документа
 ENABLE_DOCUMENT_REVIEW_AI = _read_env_override("ENABLE_DOCUMENT_REVIEW_AI", "1") == "1"
