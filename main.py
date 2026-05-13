@@ -242,6 +242,7 @@ from src.generator.agent_memory import (
     get_agent_memory_csv_path,
     save_learning_memory_csv,
 )
+from src.generator.case_engine.overrides import upsert_override
 from src.generator.inflection_report import load_inflection_log, save_inflection_csv
 from src.generator.generator_agent import get_generator_status, run_generator_agent
 from src.jobs import create_job_id, resolve_job_paths
@@ -540,6 +541,20 @@ async def download_agent_memory(job_id: str | None = None, username: str = Depen
         media_type="text/csv",
         filename="agent_memory_candidates.csv",
     )
+
+
+@app.post("/api/agent-memory/approve-inflection")
+async def approve_inflection_memory(payload: dict = Body(...), username: str = Depends(check_auth)):
+    try:
+        result = upsert_override(
+            entity_type=str(payload.get("entity_type") or ""),
+            source_value=str(payload.get("source_value") or ""),
+            target_case=str(payload.get("target_case") or ""),
+            result_value=str(payload.get("result_value") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "ok", "result": result}
 
 
 @app.post("/api/philologist/run")
