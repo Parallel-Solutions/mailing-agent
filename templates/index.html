@@ -974,11 +974,13 @@
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="g-fill" style="width:0%"></div></div>
           <div class="progress-label" id="g-label">0 из <span id="g-total-label">0</span> документов обработано, осталось 0</div>
+          <div class="progress-label" id="g-inflection-summary" style="margin-top:6px">Журнал склонений появится после генерации.</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="g-run" onclick="startGenerator()">Запустить генератор</button>
           <button class="btn-outline" id="g-pause" onclick="pauseGenerator()" style="display:none">Пауза</button>
         <button class="btn-outline" id="g-download-output" onclick="downloadWithJob('/api/download/output')">Скачать output.zip</button>
+        <button class="btn-outline" id="g-download-inflection" onclick="downloadWithJob('/api/download/inflection-log')">Скачать журнал склонений</button>
         </div>
       </div>
 
@@ -2095,6 +2097,23 @@
     if (downloadButton) downloadButton.disabled = !isEnabled;
   }
 
+  function setInflectionDownloadEnabled(isEnabled) {
+    const downloadButton = document.getElementById('g-download-inflection');
+    if (downloadButton) downloadButton.disabled = !isEnabled;
+  }
+
+  function formatInflectionSummary(summary = {}) {
+    const total = Number(summary.total || 0);
+    if (!total) return 'Журнал склонений появится после генерации.';
+    const byMethod = summary.by_method || {};
+    const overrideCount = Number(byMethod.override || 0);
+    const ruleCount = Number(byMethod.legacy_rule || 0);
+    const morphCount = Number(byMethod.legacy_morph || 0);
+    const fallbackCount = Number(byMethod.fallback || 0);
+    const warningCount = Number(summary.warning_count || 0);
+    return `Склонения: ${total} проверок, словарь ${overrideCount}, правила ${ruleCount}, морфология ${morphCount}, fallback ${fallbackCount}, предупреждений ${warningCount}.`;
+  }
+
   function setGeneratorUiState(result = {}) {
     const badge = document.getElementById('g-badge');
     const fill = document.getElementById('g-fill');
@@ -2106,12 +2125,17 @@
     const ok = Number(result.ok_rows || 0);
     const errors = Number(result.error_rows || 0);
     const outputFileCount = Number(result.output_file_count || 0);
+    const inflectionSummary = result.inflection_summary || {};
+    const inflectionTotal = Number(inflectionSummary.total || 0);
+    const inflectionSummaryEl = document.getElementById('g-inflection-summary');
     const status = result.status || 'idle';
     const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
     const canDownloadOutput = status === 'completed' && outputFileCount > 0;
 
     if (doneStat) doneStat.textContent = processed.toLocaleString('ru');
     if (errorStat) errorStat.textContent = errors.toLocaleString('ru');
+    if (inflectionSummaryEl) inflectionSummaryEl.textContent = formatInflectionSummary(inflectionSummary);
+    setInflectionDownloadEnabled(status === 'completed' && inflectionTotal > 0);
 
     if (status === 'running') {
       badge.textContent = 'Генерация';
@@ -2126,6 +2150,7 @@
       });
       setGeneratorButtonsBusy(true);
       setGeneratorDownloadEnabled(false);
+      setInflectionDownloadEnabled(false);
       setProgressVisual(fill, { percent, running: total > 0, indeterminate: false });
       return;
     }
