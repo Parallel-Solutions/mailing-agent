@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.generator.case_engine.overrides import upsert_override
+from src.generator.case_engine.overrides import lookup_override, upsert_override
 from src.generator.config_generator import AGENT_MEMORY_AUTO_APPROVE_SAFE_INFLECTIONS
 from src.generator.inflection_report import load_inflection_log
 from src.jobs import resolve_state_path
@@ -62,16 +62,24 @@ def auto_approve_safe_inflections(job_id: str | None = None) -> list[dict[str, A
         except ValueError as exc:
             approvals.append(_auto_approval_record(row, status="rejected", reason=str(exc)))
             continue
+        verified = _verify_auto_override(
+            entity_type=result["entity_type"],
+            source_value=result["source_value"],
+            target_case=result["target_case"],
+            expected_value=result["result_value"],
+        )
+        status = "auto_approved_verified" if verified["verified"] else "auto_approved_failed_self_check"
         approvals.append(
             _auto_approval_record(
                 row,
-                status="auto_approved",
-                reason=decision["reason"],
+                status=status,
+                reason=decision["reason"] if verified["verified"] else verified["reason"],
                 extra={
                     "entity_type": result["entity_type"],
                     "source_value": result["source_value"],
                     "result_value": result["result_value"],
                     "previous_value": result["previous_value"],
+                    "verified_value": verified["actual_value"],
                 },
             )
         )
@@ -93,6 +101,27 @@ def _upsert_auto_override(
     )
 
 
+def _verify_auto_override(
+    *,
+    entity_type: str,
+    source_value: str,
+    target_case: str,
+    expected_value: str,
+) -> dict[str, Any]:
+    actual_value = lookup_override(entity_type, source_value, target_case)
+    if actual_value == expected_value:
+        return {
+            "verified": True,
+            "actual_value": actual_value,
+            "reason": "lookup_override returned the newly approved value.",
+        }
+    return {
+        "verified": False,
+        "actual_value": actual_value,
+        "reason": "Self-check failed: lookup_override did not return the approved value.",
+    }
+
+
 def save_learning_memory_csv(candidates: list[dict[str, Any]], csv_path: Path) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
@@ -111,6 +140,8 @@ def save_learning_memory_csv(candidates: list[dict[str, Any]], csv_path: Path) -
         "issue",
         "reason",
         "warning",
+        "verified_value",
+        "previous_value",
     ]
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
