@@ -4,6 +4,16 @@ from dataclasses import dataclass
 from functools import lru_cache
 import re
 
+from src.generator.municipality_inflector import (
+    inflect_municipal_district_genitive as component_inflect_municipal_district_genitive,
+)
+from src.generator.municipality_inflector import (
+    inflect_municipality_name as component_inflect_municipality_name,
+)
+from src.generator.municipality_inflector import (
+    inflect_subject_rf_genitive as component_inflect_subject_rf_genitive,
+)
+
 
 try:
     import pymorphy3  # type: ignore
@@ -16,6 +26,7 @@ class InflectionResult:
     value: str
     changed: bool
     confidence: str
+    warnings: tuple[str, ...] = ()
 
 
 _MORPH = pymorphy3.MorphAnalyzer() if pymorphy3 else None
@@ -288,53 +299,13 @@ def inflect_fio_dative(fio: str) -> InflectionResult:
 
 
 def inflect_mun_name_genitive(name: str) -> InflectionResult:
-    normalized = _normalize_spaces(name)
-    if normalized.startswith("Сельское поселение село "):
-        locality = normalized[len("Сельское поселение село ") :].strip()
-        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
-        value = f"Сельского поселения село {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Сельское поселение Село "):
-        locality = normalized[len("Сельское поселение Село ") :].strip()
-        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
-        value = f"Сельского поселения село {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Сельское поселение "):
-        locality = normalized[len("Сельское поселение ") :].strip()
-        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
-        value = f"Сельского поселения {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Городское поселение город "):
-        locality = normalized[len("Городское поселение город ") :].strip()
-        locality = _normalize_city_or_settlement_locality(locality)
-        value = f"Городского поселения город {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Городское поселение города "):
-        locality = normalized[len("Городское поселение города ") :].strip()
-        locality = _normalize_city_or_settlement_locality(locality)
-        value = f"Городского поселения город {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Городское поселение поселок "):
-        locality = normalized[len("Городское поселение поселок ") :].strip()
-        locality = _normalize_city_or_settlement_locality(locality)
-        value = f"Городского поселения поселок {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Городское поселение Поселок "):
-        locality = normalized[len("Городское поселение Поселок ") :].strip()
-        locality = _normalize_city_or_settlement_locality(locality)
-        value = f"Городского поселения поселок {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Городское поселение поселка "):
-        locality = normalized[len("Городское поселение поселка ") :].strip()
-        locality = _normalize_city_or_settlement_locality(locality)
-        value = f"Городского поселения поселок {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Городское поселение "):
-        locality = normalized[len("Городское поселение ") :].strip()
-        locality = _inflect_locality_name(locality, {"gent"})
-        value = f"Городского поселения {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    return _phrase_inflect(name, {"gent"})
+    result = component_inflect_municipality_name(name, "genitive")
+    return InflectionResult(
+        value=result.value,
+        changed=result.changed,
+        confidence="rule" if result.confidence in {"component_rule", "conservative"} else result.confidence,
+        warnings=result.warnings,
+    )
 
 
 def inflect_mun_name_dative(name: str) -> InflectionResult:
@@ -342,78 +313,33 @@ def inflect_mun_name_dative(name: str) -> InflectionResult:
 
 
 def inflect_mun_name_prepositional(name: str) -> InflectionResult:
-    normalized = _normalize_spaces(name)
-    if normalized.startswith("Сельское поселение село "):
-        locality = normalized[len("Сельское поселение село ") :].strip()
-        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
-        value = f"Сельском поселении село {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Сельское поселение Село "):
-        locality = normalized[len("Сельское поселение Село ") :].strip()
-        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
-        value = f"Сельском поселении село {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Сельское поселение "):
-        locality = normalized[len("Сельское поселение ") :].strip()
-        locality = _normalize_mo_tail_case(locality) if locality == locality.lower() else locality
-        value = f"Сельском поселении {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Городское поселение город "):
-        locality = normalized[len("Городское поселение город ") :].strip()
-        locality = _normalize_city_or_settlement_locality(locality)
-        value = f"Городском поселении город {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    if normalized.startswith("Городское поселение поселок "):
-        locality = normalized[len("Городское поселение поселок ") :].strip()
-        locality = _normalize_city_or_settlement_locality(locality)
-        value = f"Городском поселении поселок {locality}"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-    return _phrase_inflect(name, {"loct"})
+    result = component_inflect_municipality_name(name, "prepositional")
+    return InflectionResult(
+        value=result.value,
+        changed=result.changed,
+        confidence="rule" if result.confidence in {"component_rule", "conservative"} else result.confidence,
+        warnings=result.warnings,
+    )
 
 
 def inflect_sub_rf_genitive(name: str) -> InflectionResult:
-    name = _normalize_spaces(name)
-    if name.startswith("Республика "):
-        tail = name[len("Республика ") :]
-        return InflectionResult(value=f"Республики {tail}", changed=True, confidence="rule")
-    return _phrase_inflect(name, {"gent"})
+    result = component_inflect_subject_rf_genitive(name)
+    return InflectionResult(
+        value=result.value,
+        changed=result.changed,
+        confidence="rule" if result.confidence == "component_rule" else result.confidence,
+        warnings=result.warnings,
+    )
 
 
 def inflect_mun_r_name_genitive(name: str) -> InflectionResult:
-    normalized = _normalize_spaces(name)
-    if not normalized:
-        return InflectionResult(value="", changed=False, confidence="empty")
-
-    if normalized.startswith("Муниципальный район "):
-        tail = normalized[len("Муниципальный район ") :].strip()
-        if tail.lower().endswith(" район"):
-            head = tail[: -len(" район")].strip()
-            head = _phrase_inflect(head, {"gent"}).value
-            value = f"{head} муниципального района"
-            return InflectionResult(value=value, changed=value != name, confidence="rule")
-        tail = _phrase_inflect(tail, {"gent"}).value
-        value = f"{tail} муниципального района"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-
-    if normalized.startswith("Муниципальный округ "):
-        tail = normalized[len("Муниципальный округ ") :].strip()
-        tail = _phrase_inflect(tail, {"gent"}).value
-        value = f"{tail} муниципального округа"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-
-    if normalized.endswith(" муниципальный район"):
-        head = normalized[: -len(" муниципальный район")].strip()
-        head = _phrase_inflect(head, {"gent"}).value
-        value = f"{head} муниципального района"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-
-    if normalized.endswith(" район"):
-        head = normalized[: -len(" район")].strip()
-        head = _phrase_inflect(head, {"gent"}).value
-        value = f"{head} муниципального района"
-        return InflectionResult(value=value, changed=value != name, confidence="rule")
-
-    return _phrase_inflect(name, {"gent"})
+    result = component_inflect_municipal_district_genitive(name)
+    return InflectionResult(
+        value=result.value,
+        changed=result.changed,
+        confidence="rule" if result.confidence == "component_rule" else result.confidence,
+        warnings=result.warnings,
+    )
 
 
 def inflect_mun_name_project_form(name: str) -> InflectionResult:
