@@ -238,10 +238,13 @@ from src.generator.autonomous_worker import (
     stop_autonomous_worker,
 )
 from src.generator.agent_memory import (
+    build_agent_report,
     build_quarantine_items,
     build_learning_candidates,
     get_agent_memory_csv_path,
     get_agent_quarantine_csv_path,
+    get_agent_report_path,
+    save_agent_report,
     save_learning_memory_csv,
     save_quarantine_csv,
 )
@@ -557,6 +560,20 @@ async def download_agent_quarantine(job_id: str | None = None, username: str = D
         report_path,
         media_type="text/csv",
         filename="agent_quarantine.csv",
+    )
+
+
+@app.get("/api/download/agent-report")
+async def download_agent_report(job_id: str | None = None, username: str = Depends(check_auth)):
+    report_text = build_agent_report(job_id)
+    if not report_text.strip():
+        raise HTTPException(status_code=404, detail="Отчет агента пока пуст.")
+    report_path = get_agent_report_path(job_id)
+    save_agent_report(job_id)
+    return FileResponse(
+        report_path,
+        media_type="text/plain; charset=utf-8",
+        filename="agent_report.txt",
     )
 
 
