@@ -15,6 +15,8 @@ app = FastAPI(title="Mailing Agent")
 security = HTTPBasic()
 _sender_threads: dict[str, threading.Thread] = {}
 _sender_threads_lock = threading.Lock()
+_philologist_threads: dict[str, threading.Thread] = {}
+_philologist_threads_lock = threading.Lock()
 
 
 @app.on_event("startup")
@@ -59,6 +61,10 @@ def _sender_job_key(job_id: str | None) -> str:
     return str(job_id or "__legacy__")
 
 
+def _philologist_job_key(job_id: str | None) -> str:
+    return str(job_id or "__legacy__")
+
+
 def _get_sender_thread(job_id: str | None) -> threading.Thread | None:
     key = _sender_job_key(job_id)
     with _sender_threads_lock:
@@ -69,9 +75,24 @@ def _get_sender_thread(job_id: str | None) -> threading.Thread | None:
         return thread
 
 
+def _get_philologist_thread(job_id: str | None) -> threading.Thread | None:
+    key = _philologist_job_key(job_id)
+    with _philologist_threads_lock:
+        thread = _philologist_threads.get(key)
+        if thread and not thread.is_alive():
+            _philologist_threads.pop(key, None)
+            return None
+        return thread
+
+
 def _register_sender_thread(job_id: str | None, thread: threading.Thread) -> None:
     with _sender_threads_lock:
         _sender_threads[_sender_job_key(job_id)] = thread
+
+
+def _register_philologist_thread(job_id: str | None, thread: threading.Thread) -> None:
+    with _philologist_threads_lock:
+        _philologist_threads[_philologist_job_key(job_id)] = thread
 
 
 def _run_sender_background(*, limit: int | None, transport: str | None, job_id: str | None) -> None:
@@ -84,6 +105,21 @@ def _run_sender_background(*, limit: int | None, transport: str | None, job_id: 
             _sender_threads.pop(_sender_job_key(job_id), None)
 
 
+def _run_philologist_background(*, ai_enabled: bool, job_id: str | None) -> None:
+    try:
+        run_philologist(ai_enabled=ai_enabled, job_id=job_id)
+    except Exception as exc:
+        logger.exception("philologist_background_failed", job_id=job_id)
+        state = _load_philologist_state(job_id)
+        state["status"] = "error"
+        state["completed_at"] = None
+        state["summary_text"] = f"Агент-филолог остановился с ошибкой: {type(exc).__name__}: {exc}"
+        _save_philologist_state(state, job_id)
+    finally:
+        with _philologist_threads_lock:
+            _philologist_threads.pop(_philologist_job_key(job_id), None)
+
+
 def _prime_sender_running_state(job_id: str | None, transport: str | None) -> dict:
     state = _load_sender_state(job_id)
     state["status"] = "running"
@@ -93,6 +129,23 @@ def _prime_sender_running_state(job_id: str | None, transport: str | None) -> di
     state["stop_requested"] = False
     state["stop_requested_at"] = None
     _save_sender_state(state, job_id)
+    return state
+
+
+def _prime_philologist_running_state(job_id: str | None) -> dict:
+    paths = resolve_job_paths(job_id)
+    output_dir = paths.output_dir
+    docx_count = len(list(output_dir.rglob("*.docx"))) if output_dir.exists() else 0
+    state = _load_philologist_state(job_id)
+    state["status"] = "running"
+    state["started_at"] = None
+    state["completed_at"] = None
+    state["total_documents"] = docx_count
+    state["processed_documents"] = 0
+    state["fixed_documents"] = 0
+    state["documents_with_issues"] = 0
+    state["summary_text"] = "Агент-филолог запущен в фоне и готовит документы к проверке."
+    _save_philologist_state(state, job_id)
     return state
 
 
@@ -209,6 +262,8 @@ from src.generator.ai_case_agent import (
     run_case_validation_agent,
 )
 from src.generator.philologist_agent import (
+    _load_philologist_state,
+    _save_philologist_state,
     chat_with_philologist,
     get_philologist_status,
     run_philologist,
@@ -599,8 +654,20 @@ async def philologist_run(
 ):
     ai_enabled = True if payload is None else bool(payload.get("ai_enabled", True))
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    result = run_philologist(ai_enabled=ai_enabled, job_id=job_id)
-    return {"status": "ok", "result": result}
+    existing_thread = _get_philologist_thread(job_id)
+    if existing_thread:
+        return {"status": "ok", "result": get_philologist_status(job_id)}
+
+    primed_state = _prime_philologist_running_state(job_id)
+    philologist_thread = threading.Thread(
+        target=_run_philologist_background,
+        kwargs={"ai_enabled": ai_enabled, "job_id": job_id},
+        daemon=True,
+        name=f"philologist-{_philologist_job_key(job_id)}",
+    )
+    _register_philologist_thread(job_id, philologist_thread)
+    philologist_thread.start()
+    return {"status": "ok", "result": primed_state}
 
 
 @app.get("/api/philologist/status")
