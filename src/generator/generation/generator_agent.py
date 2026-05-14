@@ -47,6 +47,13 @@ GENERATOR_STATE: dict[str, Any] = {
     "processed_rows": 0,
     "ok_rows": 0,
     "error_rows": 0,
+    "stage": "idle",
+    "stage_text": "Ожидание запуска генератора.",
+    "staged_docx_count": 0,
+    "staged_pdf_count": 0,
+    "pdf_total": 0,
+    "pdf_processed": 0,
+    "output_file_count": 0,
     "summary_text": "Агент-генератор ещё не запускался.",
     "results": [],
     "task_stats": {"total": 0, "pending": 0, "in_progress": 0, "done": 0, "blocked": 0},
@@ -238,11 +245,22 @@ def _validate_generated_result(result: dict[str, Any]) -> None:
         result["error"] = "Не созданы итоговые файлы: " + ", ".join(missing_outputs)
 
 
-def finalize_generated_files(results: list[dict], *, batch_pdf_dir: Path | None = None) -> None:
+def finalize_generated_files(
+    results: list[dict],
+    *,
+    batch_pdf_dir: Path | None = None,
+    progress_callback: Any | None = None,
+) -> None:
     jobs = build_docx_jobs(results)
     staged_docx_paths = [job["staged_docx"] for job in jobs]
     pdf_target_dir = batch_pdf_dir or BATCH_PDF_DIR
-    pdf_map = convert_docx_batch(staged_docx_paths, pdf_target_dir, chunk_size=100, worker_count=1)
+    pdf_map = convert_docx_batch(
+        staged_docx_paths,
+        pdf_target_dir,
+        chunk_size=100,
+        worker_count=1,
+        progress_callback=progress_callback,
+    )
 
     for job in jobs:
         staged_docx = job["staged_docx"]
@@ -292,6 +310,13 @@ def run_generator_agent(
             "processed_rows": 0,
             "ok_rows": 0,
             "error_rows": 0,
+            "stage": "render_docx",
+            "stage_text": "Создаю DOCX из шаблонов.",
+            "staged_docx_count": 0,
+            "staged_pdf_count": 0,
+            "pdf_total": 0,
+            "pdf_processed": 0,
+            "output_file_count": 0,
             "summary_text": (
                 "Агент-генератор начал обработку строк."
                 if not claimed_tasks
@@ -406,10 +431,38 @@ def run_generator_agent(
                     state["processed_rows"] += 1
                     _save_generator_state(state, job_id)
 
+        staged_docx_total = sum(
+            1
+            for result in results
+            for value in (result.get("generated_files") or {}).values()
+            if isinstance(value, Path) and value.suffix.lower() == ".docx" and value.exists()
+        )
+        state["stage"] = "convert_pdf"
+        state["stage_text"] = "DOCX созданы. Конвертирую документы в PDF."
+        state["staged_docx_count"] = staged_docx_total
+        state["pdf_total"] = staged_docx_total
+        _save_generator_state(state, job_id)
+
+        pdf_target_dir = None if job_paths.uses_legacy_layout else job_paths.batch_pdf_dir
+
+        def _save_pdf_progress() -> None:
+            target_dir = pdf_target_dir or BATCH_PDF_DIR
+            state["stage"] = "convert_pdf"
+            state["stage_text"] = "Конвертирую документы в PDF."
+            state["staged_docx_count"] = staged_docx_total
+            state["staged_pdf_count"] = len(list(target_dir.glob("*.pdf"))) if target_dir.exists() else 0
+            state["pdf_total"] = staged_docx_total
+            state["pdf_processed"] = state["staged_pdf_count"]
+            _save_generator_state(state, job_id)
+
         finalize_generated_files(
             results,
-            batch_pdf_dir=None if job_paths.uses_legacy_layout else job_paths.batch_pdf_dir,
+            batch_pdf_dir=pdf_target_dir,
+            progress_callback=_save_pdf_progress,
         )
+        state["stage"] = "finalize_output"
+        state["stage_text"] = "Собираю итоговую папку output."
+        _save_generator_state(state, job_id)
         inflection_log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
         save_inflection_log(
             results,
@@ -485,6 +538,8 @@ def run_generator_agent(
         state["completed_at"] = datetime.now().isoformat(timespec="seconds")
         state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
         state["status"] = "completed"
+        state["stage"] = "completed"
+        state["stage_text"] = "Генерация завершена."
         if isinstance(philologist_result, dict):
             state["philologist_result"] = {
                 "status": philologist_result.get("status"),
@@ -531,11 +586,30 @@ def get_generator_status(job_id: str | None = None) -> dict[str, Any]:
     state = _load_generator_state(job_id)
     job_paths = resolve_job_paths(job_id)
     output_dir = job_paths.output_dir if not job_paths.uses_legacy_layout else OUTPUT_DIR
+    batch_docx_dir = job_paths.batch_docx_dir
+    batch_pdf_dir = job_paths.batch_pdf_dir if not job_paths.uses_legacy_layout else BATCH_PDF_DIR
+    staged_docx_count = (
+        len(list(batch_docx_dir.glob("*.docx")))
+        if batch_docx_dir.exists()
+        else int(state.get("staged_docx_count") or 0)
+    )
+    staged_pdf_count = (
+        len(list(batch_pdf_dir.glob("*.pdf")))
+        if batch_pdf_dir.exists()
+        else int(state.get("staged_pdf_count") or 0)
+    )
+    state["staged_docx_count"] = staged_docx_count
+    state["staged_pdf_count"] = staged_pdf_count
+    state["pdf_total"] = int(state.get("pdf_total") or staged_docx_count or 0)
+    state["pdf_processed"] = staged_pdf_count
     state["output_file_count"] = (
         sum(1 for path in output_dir.rglob("*") if path.is_file())
         if output_dir.exists()
         else 0
     )
+    if state.get("status") == "running" and staged_docx_count and not state.get("stage"):
+        state["stage"] = "convert_pdf"
+        state["stage_text"] = "DOCX созданы. Конвертирую документы в PDF."
     state["task_stats"] = count_tasks_for_agent("generator", job_id)
     state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)

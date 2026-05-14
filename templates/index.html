@@ -2123,6 +2123,12 @@
     const ok = Number(result.ok_rows || 0);
     const errors = Number(result.error_rows || 0);
     const outputFileCount = Number(result.output_file_count || 0);
+    const stage = String(result.stage || '');
+    const stageText = String(result.stage_text || '').trim();
+    const stagedDocxCount = Number(result.staged_docx_count || 0);
+    const stagedPdfCount = Number(result.staged_pdf_count || 0);
+    const pdfTotal = Number(result.pdf_total || 0);
+    const pdfProcessed = Number(result.pdf_processed || stagedPdfCount || 0);
     const inflectionSummary = result.inflection_summary || {};
     const inflectionTotal = Number(inflectionSummary.total || 0);
     const inflectionSummaryEl = document.getElementById('g-inflection-summary');
@@ -2138,18 +2144,27 @@
     if (status === 'running') {
       badge.textContent = 'Генерация';
       badge.className = 'badge badge-running';
-      label.textContent = formatProgressText({
-        processed,
-        total,
-        noun: 'документов',
-        action: 'обработано',
-        extra: `успешно ${ok}, ошибок ${errors}`,
-        pendingText: 'Подготавливаю список документов для генерации...'
-      });
+      let runningPercent = percent;
+      if (stage === 'convert_pdf' && pdfTotal > 0) {
+        runningPercent = Math.max(0, Math.min(99, Math.round((pdfProcessed / pdfTotal) * 100)));
+        label.textContent = `${stageText || 'Конвертирую документы в PDF.'} PDF: ${pdfProcessed.toLocaleString('ru')} из ${pdfTotal.toLocaleString('ru')}, DOCX: ${stagedDocxCount.toLocaleString('ru')}, output: ${outputFileCount.toLocaleString('ru')}.`;
+      } else if (stage === 'finalize_output') {
+        runningPercent = 99;
+        label.textContent = `${stageText || 'Собираю итоговую папку output.'} Output: ${outputFileCount.toLocaleString('ru')} файлов.`;
+      } else {
+        label.textContent = formatProgressText({
+          processed,
+          total,
+          noun: 'строк',
+          action: 'обработано',
+          extra: `${stageText || `успешно ${ok}, ошибок ${errors}`}`,
+          pendingText: 'Подготавливаю список документов для генерации...'
+        });
+      }
       setGeneratorButtonsBusy(true);
       setGeneratorDownloadEnabled(false);
       setInflectionDownloadEnabled(false);
-      setProgressVisual(fill, { percent, running: total > 0, indeterminate: false });
+      setProgressVisual(fill, { percent: runningPercent, running: total > 0 || pdfTotal > 0, indeterminate: false });
       return;
     }
 
