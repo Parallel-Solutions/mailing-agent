@@ -4,9 +4,9 @@ from pathlib import Path
 
 from docx import Document
 
-from src.generator.document_review_agent import review_docx
-from src.generator.philologist_agent import _auto_fix_docx
-from src.generator.philologist_tools import PhilologistToolRunner
+from src.generator.philologist.document_review_agent import review_docx
+from src.generator.philologist.philologist_agent import _auto_fix_docx
+from src.generator.philologist.philologist_tools import PhilologistToolRunner
 
 
 class PhilologistRegressionTests(unittest.TestCase):

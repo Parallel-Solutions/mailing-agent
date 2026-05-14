@@ -1,9 +1,9 @@
 import unittest
 
-from src.generator.inflect import inflect_mun_name_genitive
-from src.generator.inflect import inflect_mun_name_prepositional
-from src.generator.inflect import inflect_mun_r_name_genitive
-from src.generator.inflect import inflect_sub_rf_genitive
+from src.generator.inflection.inflect import inflect_mun_name_genitive
+from src.generator.inflection.inflect import inflect_mun_name_prepositional
+from src.generator.inflection.inflect import inflect_mun_r_name_genitive
+from src.generator.inflection.inflect import inflect_sub_rf_genitive
 
 
 class MunicipalityInflectorTests(unittest.TestCase):
@@ -39,6 +39,30 @@ class MunicipalityInflectorTests(unittest.TestCase):
         self.assertEqual(
             inflect_mun_name_prepositional("Энемское городское поселение").value,
             "Энемском городском поселении",
+        )
+
+    def test_hyphenated_selsovet_tail_is_inflected(self) -> None:
+        self.assertEqual(
+            inflect_mun_name_genitive("Сельское поселение Кшлау-Елгинский сельсовет").value,
+            "Сельского поселения Кшлау-Елгинского сельсовета",
+        )
+        self.assertEqual(
+            inflect_mun_name_prepositional("Сельское поселение Кшлау-Елгинский сельсовет").value,
+            "Сельском поселении Кшлау-Елгинском сельсовете",
+        )
+
+    def test_hyphenated_proper_adjectives_preserve_name_components(self) -> None:
+        self.assertEqual(
+            inflect_mun_name_genitive("Мухор-Тархатинское сельское поселение").value,
+            "Мухор-Тархатинского сельского поселения",
+        )
+        self.assertEqual(
+            inflect_mun_name_prepositional("Усть-Мунинское сельское поселение").value,
+            "Усть-Мунинском сельском поселении",
+        )
+        self.assertEqual(
+            inflect_mun_r_name_genitive("Кош-Агачский муниципальный район").value,
+            "Кош-Агачского муниципального района",
         )
 
     def test_district_and_subject_are_preserved_as_components(self) -> None:

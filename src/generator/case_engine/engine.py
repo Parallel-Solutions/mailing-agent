@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 from typing import Callable
 
-from src.generator import inflect as legacy_inflect
+from src.generator.inflection import inflect as legacy_inflect
+from src.generator.case_engine.context import build_context_sentence, build_slot_instruction, fill_slot
 from src.generator.case_engine.models import CaseDecision
 from src.generator.case_engine.overrides import lookup_override
 from src.generator.case_engine.tools import CaseToolRunner, build_case_tool_manifest
@@ -292,6 +293,32 @@ def build_inflected_fields_with_trace(row: dict) -> tuple[dict, list[CaseDecisio
     decisions.append(admin_decision)
 
     fields = {decision.field: decision.result_value for decision in decisions}
+    context = {**row, **fields}
+    context["HEAD_MO_FRAGMENT"] = fields.get("MUN_NAME_1", "")
+    context["WORK_SCOPE_FRAGMENT"] = _safe_text(
+        f"{fields.get('MUN_NAME_2', '')} {fields.get('MUN_R_NAME_1', '')} {fields.get('SUB_RF_1', '')}"
+    )
+    enriched_decisions: list[CaseDecision] = []
+    for decision in decisions:
+        context_sentence = build_context_sentence(decision.field, context)
+        enriched_decisions.append(
+            CaseDecision(
+                field=decision.field,
+                source_field=decision.source_field,
+                source_value=decision.source_value,
+                result_value=decision.result_value,
+                target_case=decision.target_case,
+                method=decision.method,
+                confidence=decision.confidence,
+                warning=decision.warning,
+                reason=decision.reason,
+                context_sentence=context_sentence,
+                filled_sentence=fill_slot(context_sentence, decision.result_value),
+                source_sentence=fill_slot(context_sentence, decision.source_value),
+                slot_instruction=build_slot_instruction(decision.field),
+            )
+        )
+    decisions = enriched_decisions
     fields["INFLECTION_DEBUG"] = {decision.field: decision.confidence for decision in decisions}
     fields["INFLECTION_TRACE"] = [decision.to_dict() for decision in decisions]
     fields["INFLECTION_TOOL_MANIFEST"] = build_case_tool_manifest()

@@ -95,6 +95,48 @@ def _register_philologist_thread(job_id: str | None, thread: threading.Thread) -
         _philologist_threads[_philologist_job_key(job_id)] = thread
 
 
+def _compact_philologist_status(state: dict) -> dict:
+    documents = state.get("documents") or []
+    context_review = state.get("inflection_context_review") or {}
+    context_corrections = state.get("inflection_context_corrections") or {}
+    current_document = state.get("current_document")
+    if isinstance(current_document, dict):
+        current_document = {
+            "index": current_document.get("index"),
+            "total": current_document.get("total"),
+            "name": current_document.get("name"),
+        }
+
+    return {
+        "status": state.get("status", "idle"),
+        "started_at": state.get("started_at"),
+        "completed_at": state.get("completed_at"),
+        "elapsed_seconds": state.get("elapsed_seconds"),
+        "total_documents": state.get("total_documents", 0),
+        "processed_documents": state.get("processed_documents", 0),
+        "fixed_documents": state.get("fixed_documents", 0),
+        "documents_with_issues": state.get("documents_with_issues", 0),
+        "summary_text": state.get("summary_text", ""),
+        "mode": state.get("mode", ""),
+        "ai_review_enabled": state.get("ai_review_enabled", False),
+        "inflection_log_count": state.get("inflection_log_count", 0),
+        "current_document": current_document,
+        "document_count": len(documents),
+        "tool_trace_count": len(state.get("tool_trace") or []),
+        "inflection_context_review": {
+            "enabled": context_review.get("enabled", False),
+            "selected_count": context_review.get("selected_count", 0),
+            "checked_count": context_review.get("checked_count", 0),
+            "error": context_review.get("error", ""),
+        },
+        "inflection_context_corrections": {
+            "applied_count": context_corrections.get("applied_count", 0),
+        },
+        "task_stats": state.get("task_stats", {}),
+        "recent_events": (state.get("recent_events") or [])[:5],
+    }
+
+
 def _run_sender_background(*, limit: int | None, transport: str | None, job_id: str | None) -> None:
     try:
         run_sender(dry_run=False, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
@@ -105,9 +147,9 @@ def _run_sender_background(*, limit: int | None, transport: str | None, job_id: 
             _sender_threads.pop(_sender_job_key(job_id), None)
 
 
-def _run_philologist_background(*, ai_enabled: bool, job_id: str | None) -> None:
+def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: str | None) -> None:
     try:
-        run_philologist(ai_enabled=ai_enabled, job_id=job_id)
+        run_philologist(ai_enabled=ai_enabled, job_id=job_id, mode=mode)
     except Exception as exc:
         logger.exception("philologist_background_failed", job_id=job_id)
         state = _load_philologist_state(job_id)
@@ -132,7 +174,7 @@ def _prime_sender_running_state(job_id: str | None, transport: str | None) -> di
     return state
 
 
-def _prime_philologist_running_state(job_id: str | None) -> dict:
+def _prime_philologist_running_state(job_id: str | None, mode: str | None) -> dict:
     paths = resolve_job_paths(job_id)
     output_dir = paths.output_dir
     docx_count = len(list(output_dir.rglob("*.docx"))) if output_dir.exists() else 0
@@ -144,6 +186,7 @@ def _prime_philologist_running_state(job_id: str | None) -> dict:
     state["processed_documents"] = 0
     state["fixed_documents"] = 0
     state["documents_with_issues"] = 0
+    state["mode"] = mode or "fast"
     state["summary_text"] = "Агент-филолог запущен в фоне и готовит документы к проверке."
     _save_philologist_state(state, job_id)
     return state
@@ -244,55 +287,56 @@ async def upload_template(
         "job_id": paths.job_id,
     }
 
-from src.generator.excel_io import load_rows
-from src.generator.transforms import build_document_context
-from src.generator.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
-from src.generator.config_generator import (
+from src.generator.generation.excel_io import load_rows
+from src.generator.generation.transforms import build_document_context
+from src.generator.generation.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
+from src.generator.generation.config_generator import (
     BATCH_PDF_DIR,
     DOCX_WORKERS,
     ONLYOFFICE_PUBLIC_FILES_DIR,
     START_OUTGOING_NUMBER,
     WEB_CASE_AGENT_MAX_WORKERS,
 )
-from src.generator.pdf_converter import convert_docx_batch
-from src.generator.ai_case_agent import (
+from src.generator.generation.pdf_converter import convert_docx_batch
+from src.generator.inflection.ai_case_agent import (
     ENABLE_CASE_AGENT,
     CASE_AGENT_ONLY_SUSPICIOUS,
     apply_case_agent_result,
     run_case_validation_agent,
 )
-from src.generator.philologist_agent import (
+from src.generator.philologist.philologist_agent import (
     _load_philologist_state,
     _save_philologist_state,
     chat_with_philologist,
     get_philologist_status,
     run_philologist,
 )
-from src.generator.sender_agent import (
+from src.generator.delivery.sender_agent import (
     _load_sender_state,
     _save_sender_state,
     chat_with_sender,
     clear_sender_stop_request,
     get_sender_status,
+    get_unisender_history,
     preview_recipients,
     request_sender_stop,
     run_sender,
 )
-from src.generator.parser_agent import (
+from src.generator.orchestration.parser_agent import (
     chat_with_parser,
     get_parser_status,
     run_parser_agent,
 )
-from src.generator.orchestrator_agent import (
+from src.generator.orchestration.orchestrator_agent import (
     chat_with_orchestrator,
     get_orchestrator_status,
 )
-from src.generator.autonomous_worker import (
+from src.generator.orchestration.autonomous_worker import (
     get_autonomous_worker_state,
     start_autonomous_worker,
     stop_autonomous_worker,
 )
-from src.generator.agent_memory import (
+from src.generator.knowledge.agent_memory import (
     build_agent_report,
     build_quarantine_items,
     build_learning_candidates,
@@ -304,9 +348,9 @@ from src.generator.agent_memory import (
     save_quarantine_csv,
 )
 from src.generator.case_engine.overrides import upsert_override
-from src.generator.inflection_report import load_inflection_log, save_inflection_csv
-from src.generator.generator_agent import get_generator_status, run_generator_agent
-from src.generator.philologist_planner import build_philologist_plan
+from src.generator.inflection.inflection_report import load_inflection_log, save_inflection_csv
+from src.generator.generation.generator_agent import get_generator_status, run_generator_agent
+from src.generator.philologist.philologist_planner import build_philologist_plan
 from src.jobs import create_job_id, resolve_job_paths
 
 
@@ -654,14 +698,15 @@ async def philologist_run(
 ):
     ai_enabled = True if payload is None else bool(payload.get("ai_enabled", True))
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    mode = None if payload is None else str(payload.get("mode") or "").strip().lower() or None
     existing_thread = _get_philologist_thread(job_id)
     if existing_thread:
-        return {"status": "ok", "result": get_philologist_status(job_id)}
+        return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
 
-    primed_state = _prime_philologist_running_state(job_id)
+    primed_state = _prime_philologist_running_state(job_id, mode or "fast")
     philologist_thread = threading.Thread(
         target=_run_philologist_background,
-        kwargs={"ai_enabled": ai_enabled, "job_id": job_id},
+        kwargs={"ai_enabled": ai_enabled, "job_id": job_id, "mode": mode},
         daemon=True,
         name=f"philologist-{_philologist_job_key(job_id)}",
     )
@@ -672,7 +717,7 @@ async def philologist_run(
 
 @app.get("/api/philologist/status")
 async def philologist_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_philologist_status(job_id)}
+    return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
 
 
 @app.get("/api/philologist/plan")
@@ -761,6 +806,19 @@ async def sender_run(
 @app.get("/api/sender/status")
 async def sender_status(job_id: str | None = None, username: str = Depends(check_auth)):
     return {"status": "ok", "result": get_sender_status(job_id)}
+
+
+@app.get("/api/sender/unisender-history")
+async def sender_unisender_history(
+    job_id: str | None = None,
+    limit: int = 50,
+    refresh: bool = False,
+    username: str = Depends(check_auth),
+):
+    return {
+        "status": "ok",
+        "result": get_unisender_history(job_id=job_id, limit=limit, refresh=refresh),
+    }
 
 
 @app.post("/api/sender/stop")

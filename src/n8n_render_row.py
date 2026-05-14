@@ -10,10 +10,10 @@ import sys
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.generator.ai_case_agent import apply_case_agent_result
-from src.generator.config_generator import BATCH_PDF_DIR
-from src.generator.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
-from src.generator.pdf_converter import convert_docx_batch
+from src.generator.inflection.ai_case_agent import apply_case_agent_result
+from src.generator.generation.config_generator import BATCH_PDF_DIR
+from src.generator.generation.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
+from src.generator.generation.pdf_converter import convert_docx_batch
 
 
 def parse_args() -> argparse.Namespace:
