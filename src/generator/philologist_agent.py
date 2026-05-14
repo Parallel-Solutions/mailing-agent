@@ -80,14 +80,14 @@ def _build_llm_client():
     api_key = _resolve_openai_api_key()
     if not api_key:
         return None
-    client_kwargs: dict[str, Any] = {"api_key": api_key}
+    client_kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
     base_url = _resolve_openai_base_url()
     if base_url:
         client_kwargs["base_url"] = base_url
     if httpx:
         client_kwargs["http_client"] = httpx.Client(
             http2=False,
-            timeout=httpx.Timeout(connect=10, read=90, write=90, pool=90),
+            timeout=httpx.Timeout(connect=10, read=30, write=30, pool=30),
             trust_env=False,
         )
     return OpenAI(**client_kwargs)
@@ -97,6 +97,11 @@ def _safe_text(value: Any) -> str:
     if value is None:
         return ""
     return " ".join(str(value).split())
+
+
+def _is_llm_auth_error(value: Any) -> bool:
+    normalized = _safe_text(value).lower()
+    return "401" in normalized or "unauthorized" in normalized or "incorrect api key" in normalized
 
 
 def _iter_document_paragraphs(doc: Document) -> Iterable[tuple[str, Any]]:
@@ -1268,6 +1273,7 @@ def run_philologist(
     started_at = perf_counter()
     processed_documents: list[dict[str, Any]] = []
     react_client = _build_llm_client() if settings.orchestrator_mode == "agentic" else None
+    effective_ai_enabled = ai_enabled
     for index, docx_path in enumerate(docx_paths, start=1):
         agent_loop.observe(
             "document_start",
@@ -1277,7 +1283,7 @@ def run_philologist(
         )
         react_result = _run_docx_react_loop(
             docx_path=docx_path,
-            ai_enabled=ai_enabled,
+            ai_enabled=effective_ai_enabled,
             tool_runner=tool_runner,
             client=react_client,
         )
@@ -1285,6 +1291,15 @@ def run_philologist(
         fix_result = react_result["fix_result"]
         verification_result = react_result["verification_result"]
         pdf_path = react_result["pdf_path"]
+        if effective_ai_enabled and _is_llm_auth_error(review_result.get("ai_error")):
+            effective_ai_enabled = False
+            react_client = None
+            agent_loop.observe(
+                "ai_review_disabled",
+                "LLM-проверка отключена до конца запуска из-за ошибки авторизации API; продолжаю локальными правилами.",
+                step_id="review_docx",
+                data={"ai_error": review_result.get("ai_error")},
+            )
 
         document_entry = {
             "index": index,
