@@ -76,7 +76,10 @@ MAIL_FOOTER_HTML_TEMPLATE = """
   <tr><td style="padding:6px 0 0 0;font-family:Arial,'Helvetica Neue',Helvetica,sans-serif;font-size:13px;line-height:1.3"><a href="https://www.parresh.ru/" style="color:#1f5da8;text-decoration:underline">https://www.parresh.ru/</a></td></tr>
 </table>
 """.strip()
-STATUS_OK_VALUES = {"ОК", "OK", "SENT"}
+STATUS_SENT_VALUE = "Отправлено"
+STATUS_ERROR_VALUE = "Ошибка"
+STATUS_OK_VALUES = {"ОК", "OK", "SENT", "ОТПРАВЛЕНО", "ОТПРАВЛЕНО (ОК)"}
+MAX_STATUS_ERROR_LENGTH = 240
 UNISENDER_GO_SEND_PATH = "email/send.json"
 UNISENDER_CLASSIC_SEND_PATH = "sendEmail"
 
@@ -379,6 +382,41 @@ def _status_class(raw_status: Any) -> str:
     return "other"
 
 
+def _format_error_status(error: Any) -> str:
+    error_text = re.sub(r"\s+", " ", _safe_text(error)).strip()
+    if not error_text:
+        return STATUS_ERROR_VALUE
+    if len(error_text) > MAX_STATUS_ERROR_LENGTH:
+        error_text = error_text[: MAX_STATUS_ERROR_LENGTH - 3].rstrip() + "..."
+    return f"{STATUS_ERROR_VALUE}: {error_text}"
+
+
+def _persist_row_status(
+    workbook: Any,
+    worksheet: Any,
+    data_xlsx_path: Path,
+    row: dict[str, Any],
+    status_value: str,
+) -> str:
+    try:
+        update_status(worksheet, row["_row_index"], status_value)
+        save_workbook(workbook, data_xlsx_path)
+        row["STATUS"] = status_value
+        return ""
+    except Exception as exc:
+        return f"Не удалось сохранить статус строки в data.xlsx: {_safe_text(exc) or exc}"
+
+
+def _wait_sender_delay(delay_seconds: float, state: dict[str, Any], job_id: str | None = None) -> bool:
+    deadline = perf_counter() + max(0.0, delay_seconds)
+    while perf_counter() < deadline:
+        _refresh_sender_stop_flag(state, job_id)
+        if state.get("stop_requested"):
+            return False
+        sleep(min(1.0, max(0.0, deadline - perf_counter())))
+    return True
+
+
 def _collect_excel_stats(data_xlsx_path: Path | None = None) -> dict[str, int]:
     source_path = data_xlsx_path or DATA_XLSX_PATH
     if not source_path.exists():
@@ -410,7 +448,7 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
                 "но копию не удалось сохранить в папку «Отправленные»."
             )
         if state.get("remaining_rows", 0) > 0:
-            summary += f" Осталось строк без статуса ОК: {state.get('remaining_rows', 0)}."
+            summary += f" Осталось строк без статуса «Отправлено»: {state.get('remaining_rows', 0)}."
         return summary
     if state.get("total_rows", 0) == 0:
         return "В data.xlsx пока нет строк для отправки."
@@ -433,7 +471,7 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
             "но копию не удалось сохранить в папку «Отправленные»."
         )
     if state.get("remaining_rows", 0) > 0:
-        summary += f" После этой партии осталось строк без статуса ОК: {state.get('remaining_rows', 0)}."
+        summary += f" После этой партии осталось строк без статуса «Отправлено»: {state.get('remaining_rows', 0)}."
     return summary
 
 
@@ -713,6 +751,34 @@ def _append_sent_mail_log(
             f"{_safe_text(exc) or 'ошибка записи файла'}."
         )
     return None
+
+
+def _mail_key(value: Any) -> str:
+    return _safe_text(value).lower()
+
+
+def _load_sent_mail_recipients(sent_mail_log_path: Path | None = None) -> dict[str, set[str]]:
+    log_path = sent_mail_log_path or SENT_MAIL_LOG_PATH
+    sent_by_row: dict[str, set[str]] = {}
+    if not log_path.exists():
+        return sent_by_row
+
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return sent_by_row
+
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        row_id = _safe_text(item.get("row_id"))
+        recipient = _mail_key(item.get("recipient"))
+        if not row_id or not recipient:
+            continue
+        sent_by_row.setdefault(row_id, set()).add(recipient)
+    return sent_by_row
 
 
 def _save_sent_copy(message: EmailMessage) -> str | None:
@@ -1124,7 +1190,13 @@ def _send_with_transport(
         }
     failed_errors = [attempt["error"] for attempt in attempts if attempt.get("status") == "error" and attempt.get("error")]
     last_error = "; ".join(failed_errors) or "Не найден получатель для отправки."
-    return {"recipient": None, "attempts": attempts, "error": last_error, "warning": ""}
+    return {
+        "recipient": None,
+        "recipients": sent_recipients,
+        "attempts": attempts,
+        "error": last_error,
+        "warning": " ".join(warnings).strip(),
+    }
 
 
 def run_sender(
@@ -1205,6 +1277,7 @@ def run_sender(
     processed_entries: list[dict[str, Any]] = []
     started_at = perf_counter()
     subject = DEFAULT_MAIL_SUBJECT
+    sent_mail_recipients = _load_sent_mail_recipients(sent_mail_log_path) if not dry_run else {}
 
     for row in candidates:
         _refresh_sender_stop_flag(state, job_id)
@@ -1400,6 +1473,16 @@ def run_sender(
             "blocked_by_philologist",
             "error",
         }:
+            if not dry_run:
+                status_warning = _persist_row_status(
+                    workbook,
+                    worksheet,
+                    data_xlsx_path,
+                    row,
+                    _format_error_status(entry["error"] or entry["result"]),
+                )
+                if status_warning:
+                    entry["warning"] = f"{entry['warning']} {status_warning}".strip()
             state["error_rows"] += 1
             processed_entries.append(entry)
             state["processed_rows"] += 1
@@ -1422,53 +1505,121 @@ def run_sender(
                 _save_sender_state(state, job_id)
                 break
             try:
-                send_result = _send_with_transport(
-                    row,
-                    _allowed_send_recipients(email_decision),
-                    attachments,
-                    row_subject,
-                    transport=effective_transport,
-                    mail_template_path=mail_template_path,
-                )
-                entry["attempts"] = send_result["attempts"]
-                entry["warning"] = _safe_text(send_result.get("warning"))
-                if not send_result["recipient"]:
-                    raise RuntimeError(send_result["error"])
-                entry["recipient"] = send_result["recipient"]
-                entry["sent_recipients"] = send_result.get("recipients") or [entry["recipient"]]
-                if len(entry["sent_recipients"]) > 1:
-                    entry["decision_reason"] = "Письмо отправлено на основной и дополнительный email."
-                elif entry["email_strategy"] == "fallback_extra" or entry["recipient"] != email_decision["recipient"]:
-                    entry["decision_reason"] = "Письмо отправлено по резервному email после выбора лучшего доступного адреса."
-                for sent_recipient in entry["sent_recipients"]:
-                    log_warning = _append_sent_mail_log(
-                        row=row,
-                        recipient=sent_recipient,
-                        attachments=attachments,
-                        subject=row_subject,
-                        transport=effective_transport,
-                        warning=entry["warning"],
-                        sent_mail_log_path=sent_mail_log_path,
+                row_id_text = _safe_text(row_id)
+                already_logged = sent_mail_recipients.get(row_id_text, set())
+                intended_recipients = _allowed_send_recipients(email_decision)
+                recipients_to_send = [
+                    recipient
+                    for recipient in intended_recipients
+                    if _mail_key(recipient) not in already_logged
+                ]
+                if not recipients_to_send:
+                    entry["result"] = "skipped_logged_sent"
+                    entry["attempts"] = [
+                        {
+                            "recipient": recipient,
+                            "status": "already_sent",
+                            "error": "",
+                        }
+                        for recipient in intended_recipients
+                    ]
+                    entry["sent_recipients"] = intended_recipients
+                    entry["recipient"] = intended_recipients[0] if intended_recipients else entry["recipient"]
+                    entry["decision_reason"] = (
+                        "Статус восстановлен по локальному журналу: письмо уже было отправлено ранее."
                     )
-                    if log_warning:
-                        entry["warning"] = (
-                            f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
+                    status_warning = _persist_row_status(
+                        workbook,
+                        worksheet,
+                        data_xlsx_path,
+                        row,
+                        STATUS_SENT_VALUE,
+                    )
+                    if status_warning:
+                        entry["warning"] = f"{entry['warning']} {status_warning}".strip()
+                        entry["next_action"] = f"{entry['next_action']} {status_warning}".strip()
+                else:
+                    send_result = _send_with_transport(
+                        row,
+                        recipients_to_send,
+                        attachments,
+                        row_subject,
+                        transport=effective_transport,
+                        mail_template_path=mail_template_path,
+                    )
+                    entry["attempts"] = send_result["attempts"]
+                    entry["warning"] = _safe_text(send_result.get("warning"))
+                    partial_recipients = send_result.get("recipients") or []
+                    if partial_recipients and not send_result["recipient"]:
+                        for sent_recipient in partial_recipients:
+                            log_warning = _append_sent_mail_log(
+                                row=row,
+                                recipient=sent_recipient,
+                                attachments=attachments,
+                                subject=row_subject,
+                                transport=effective_transport,
+                                warning=entry["warning"],
+                                sent_mail_log_path=sent_mail_log_path,
+                            )
+                            sent_mail_recipients.setdefault(_safe_text(row_id), set()).add(_mail_key(sent_recipient))
+                            if log_warning:
+                                entry["warning"] = (
+                                    f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
+                                )
+                    if not send_result["recipient"]:
+                        raise RuntimeError(send_result["error"])
+                    entry["recipient"] = send_result["recipient"]
+                    entry["sent_recipients"] = send_result.get("recipients") or [entry["recipient"]]
+                    if len(entry["sent_recipients"]) > 1:
+                        entry["decision_reason"] = "Письмо отправлено на основной и дополнительный email."
+                    elif entry["email_strategy"] == "fallback_extra" or entry["recipient"] != email_decision["recipient"]:
+                        entry["decision_reason"] = "Письмо отправлено по резервному email после выбора лучшего доступного адреса."
+                    for sent_recipient in entry["sent_recipients"]:
+                        log_warning = _append_sent_mail_log(
+                            row=row,
+                            recipient=sent_recipient,
+                            attachments=attachments,
+                            subject=row_subject,
+                            transport=effective_transport,
+                            warning=entry["warning"],
+                            sent_mail_log_path=sent_mail_log_path,
                         )
+                        if log_warning:
+                            entry["warning"] = (
+                                f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
+                            )
+                        sent_mail_recipients.setdefault(_safe_text(row_id), set()).add(_mail_key(sent_recipient))
                 if entry["warning"]:
                     state["warning_rows"] += 1
                     entry["next_action"] = entry["warning"]
-                update_status(worksheet, row["_row_index"], "ОК")
+                status_warning = _persist_row_status(
+                    workbook,
+                    worksheet,
+                    data_xlsx_path,
+                    row,
+                    STATUS_SENT_VALUE,
+                )
+                if status_warning:
+                    entry["warning"] = f"{entry['warning']} {status_warning}".strip()
+                    entry["next_action"] = f"{entry['next_action']} {status_warning}".strip()
             except Exception as exc:
                 entry["result"] = "error_send"
                 entry["error"] = _safe_text(exc) or "Ошибка SMTP-отправки."
                 entry["next_action"] = "Повторить отправку позже или передать строку на ручную проверку."
                 state["ready_rows"] -= 1
                 state["error_rows"] += 1
+                status_warning = _persist_row_status(
+                    workbook,
+                    worksheet,
+                    data_xlsx_path,
+                    row,
+                    _format_error_status(entry["error"]),
+                )
+                if status_warning:
+                    entry["warning"] = f"{entry['warning']} {status_warning}".strip()
+                    entry["next_action"] = f"{entry['next_action']} {status_warning}".strip()
             else:
                 state["sent_rows"] += 1
-                delay_seconds = 0.0 if effective_transport == "unisender" else max(0.0, float(settings.sender_delay_seconds or 0))
-                if delay_seconds > 0 and state["processed_rows"] + 1 < state["total_rows"]:
-                    sleep(delay_seconds)
         else:
             entry["attempts"] = [
                 {
@@ -1483,10 +1634,24 @@ def run_sender(
         state["rows"] = processed_entries
         _save_sender_state(state, job_id)
 
+        if not dry_run and entry.get("result") == "sent":
+            delay_seconds = (
+                0.0
+                if effective_transport == "unisender"
+                else max(0.0, float(settings.sender_delay_seconds or 0))
+            )
+            if delay_seconds > 0 and state["processed_rows"] < state["total_rows"]:
+                if not _wait_sender_delay(delay_seconds, state, job_id):
+                    state["summary_text"] = (
+                        "Отправка остановлена пользователем во время паузы между письмами."
+                    )
+                    _save_sender_state(state, job_id)
+                    break
+
     if not dry_run:
         save_workbook(workbook, data_xlsx_path)
         state["stats"] = _collect_excel_stats(data_xlsx_path)
-        state["remaining_rows"] = int(state["stats"].get("pending", 0))
+        state["remaining_rows"] = int(state["stats"].get("pending", 0)) + int(state["stats"].get("error", 0))
     else:
         state["remaining_rows"] = max(0, len(rows) - len(candidates))
 

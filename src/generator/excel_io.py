@@ -46,7 +46,8 @@ def update_status(worksheet, row_index: int, status_value: str) -> None:
             status_column = header_map[header]
             break
     if status_column is None:
-        raise KeyError("STATUS")
+        status_column = worksheet.max_column + 1
+        worksheet.cell(row=HEADER_ROW, column=status_column).value = STATUS_HEADER_ALIASES[0]
     worksheet.cell(row=row_index, column=status_column).value = status_value
 
 
