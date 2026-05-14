@@ -48,6 +48,24 @@ def build_philologist_tool_manifest() -> list[dict[str, Any]]:
             "output_schema": {"applied_fix_count": "int"},
         },
         {
+            "name": "lookup_rag_rule",
+            "description": "Retrieve local philology rules and source fragments for a concrete issue/fix decision.",
+            "input_schema": {"issue": "dict", "base_decision": "dict"},
+            "output_schema": {"support_score": "int", "recommendation": "str"},
+        },
+        {
+            "name": "decide_fix_strategy",
+            "description": "Use the LLM ReAct strategy layer to choose auto_fix, quarantine, needs_human, or skip under safety gates.",
+            "input_schema": {"issue": "dict", "rag": "dict", "allowed_actions": "list[str]"},
+            "output_schema": {"action": "str", "source": "str", "reason": "str"},
+        },
+        {
+            "name": "quarantine_issue",
+            "description": "Record why a proposed fix is not safe for automatic editing.",
+            "input_schema": {"issue": "dict", "decision": "dict"},
+            "output_schema": {"status": "str", "reason": "str"},
+        },
+        {
             "name": "verify_safe_fixes",
             "description": "Compare DOCX before/after snapshots and verify that automatic fixes stayed local and style-safe.",
             "input_schema": {"path": "str", "applied_fix_count": "int"},
@@ -154,6 +172,11 @@ def _summarize_output(value: Any) -> Any:
             "updated_pdf",
             "verified",
             "warning_count",
+            "support_score",
+            "recommendation",
+            "action",
+            "source",
+            "reason",
         )
         summary = {key: value.get(key) for key in keys if key in value}
         if "issues" in value:

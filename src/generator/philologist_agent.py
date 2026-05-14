@@ -28,7 +28,7 @@ from src.generator.ai_case_agent import (
 from src.generator.config_generator import DOCUMENT_REVIEW_MODEL, OUTPUT_DIR
 from src.generator.document_review_agent import review_docx
 from src.generator.inflection_report import format_inflection_report, load_inflection_log
-from src.generator.philologist_decisions import AUTO_FIX, decide_issue_fix
+from src.generator.philologist_decisions import AUTO_FIX, NEEDS_HUMAN, QUARANTINE, decide_issue_fix
 from src.generator.philologist_executor import PhilologistAgentLoop, merge_plan_execution
 from src.generator.philologist_planner import build_philologist_plan
 from src.generator.philologist_rag import explain_fix_decision_with_rag
@@ -261,6 +261,143 @@ PHILOLOGIST_REACT_ACTIONS = (
     "finish_document",
 )
 
+PHILOLOGIST_FIX_STRATEGIES = (
+    AUTO_FIX,
+    QUARANTINE,
+    NEEDS_HUMAN,
+    "skip",
+)
+
+
+def _allowed_fix_strategy_actions(base_decision: dict[str, Any]) -> list[str]:
+    base_action = _safe_text(base_decision.get("action"))
+    if base_action == AUTO_FIX:
+        return [AUTO_FIX, QUARANTINE, NEEDS_HUMAN, "skip"]
+    if base_action == QUARANTINE:
+        return [QUARANTINE, NEEDS_HUMAN, "skip"]
+    if base_action == NEEDS_HUMAN:
+        return [NEEDS_HUMAN, QUARANTINE, "skip"]
+    return ["skip", NEEDS_HUMAN, QUARANTINE]
+
+
+def _fallback_fix_strategy(
+    base_decision: dict[str, Any],
+    rag: dict[str, Any],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    action = _safe_text(base_decision.get("action")) or "skip"
+    allowed = _allowed_fix_strategy_actions(base_decision)
+    if action not in allowed:
+        action = allowed[0]
+    return {
+        "action": action,
+        "thought": "Использую безопасное базовое решение, потому что агентная стратегия недоступна.",
+        "reason": reason or _safe_text(base_decision.get("reason")),
+        "confidence": float(base_decision.get("confidence") or 0.0),
+        "source": "fallback_strategy",
+        "allowed_actions": allowed,
+        "rag_recommendation": _safe_text(rag.get("recommendation")),
+        "rag_support_score": int(rag.get("support_score") or 0),
+    }
+
+
+def _react_decide_fix_strategy(
+    *,
+    client: Any,
+    issue: dict[str, Any],
+    current_text: str,
+    base_decision: dict[str, Any],
+    rag: dict[str, Any],
+) -> dict[str, Any]:
+    allowed = _allowed_fix_strategy_actions(base_decision)
+    if not client:
+        return _fallback_fix_strategy(
+            base_decision,
+            rag,
+            reason="LLM-клиент недоступен, стратегия выбрана по безопасным правилам.",
+        )
+
+    compact_rules = [
+        {
+            "id": rule.get("id", ""),
+            "title": rule.get("title", ""),
+            "score": rule.get("score", 0),
+            "matched_terms": rule.get("matched_terms", ""),
+            "rule": rule.get("rule", ""),
+        }
+        for rule in (rag.get("rules") or [])[:3]
+        if isinstance(rule, dict)
+    ]
+    prompt = (
+        "Ты ReAct-стратег агента-филолога. "
+        "Выбери, что делать с конкретной правкой DOCX. "
+        "Можно выбрать только action из allowed_actions. "
+        "auto_fix разрешен только если он есть в allowed_actions; если есть риск сломать стиль, выбирай quarantine или needs_human. "
+        "Ответ верни только JSON без markdown:\n"
+        "{\n"
+        '  "thought": "краткое рассуждение",\n'
+        '  "action": "auto_fix|quarantine|needs_human|skip",\n'
+        '  "reason": "почему выбран этот вариант",\n'
+        '  "confidence": 0.0\n'
+        "}\n\n"
+        f"allowed_actions: {json.dumps(allowed, ensure_ascii=False)}\n"
+        f"issue: {json.dumps(issue, ensure_ascii=False)}\n"
+        f"current_text: {json.dumps(_safe_text(current_text), ensure_ascii=False)}\n"
+        f"base_decision: {json.dumps(base_decision, ensure_ascii=False)}\n"
+        f"rag: {json.dumps({'support_score': rag.get('support_score'), 'recommendation': rag.get('recommendation'), 'reason': rag.get('reason'), 'rules': compact_rules}, ensure_ascii=False)}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model=DOCUMENT_REVIEW_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        payload = _extract_json_payload(_safe_text(response.choices[0].message.content))
+        parsed = json.loads(payload) if payload else {}
+    except Exception as exc:
+        decision = _fallback_fix_strategy(base_decision, rag, reason=f"LLM-стратегия недоступна: {_safe_text(exc)}")
+        decision["source"] = "fallback_strategy_after_llm_error"
+        return decision
+
+    action = _safe_text(parsed.get("action"))
+    if action not in allowed:
+        decision = _fallback_fix_strategy(
+            base_decision,
+            rag,
+            reason=f"LLM выбрала недопустимую стратегию `{action}`, применен безопасный fallback.",
+        )
+        decision["source"] = "fallback_invalid_strategy"
+        decision["llm_action"] = action
+        return decision
+
+    try:
+        confidence = float(parsed.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = float(base_decision.get("confidence") or 0.0)
+    return {
+        "action": action,
+        "thought": _safe_text(parsed.get("thought")),
+        "reason": _safe_text(parsed.get("reason")) or _safe_text(base_decision.get("reason")),
+        "confidence": max(0.0, min(1.0, confidence)),
+        "source": "llm_strategy",
+        "allowed_actions": allowed,
+        "rag_recommendation": _safe_text(rag.get("recommendation")),
+        "rag_support_score": int(rag.get("support_score") or 0),
+    }
+
+
+def _quarantine_issue_record(issue: dict[str, Any], decision: dict[str, Any]) -> dict[str, str]:
+    return {
+        "status": "quarantine",
+        "location": _safe_text(issue.get("location")),
+        "issue": _safe_text(issue.get("issue")),
+        "fragment": _safe_text(issue.get("fragment")),
+        "suggestion": _safe_text(issue.get("suggestion")),
+        "action": _safe_text(decision.get("action")),
+        "reason": _safe_text(decision.get("reason")),
+        "source": _safe_text(decision.get("strategy_source") or decision.get("source")),
+    }
+
 
 def _available_react_actions(context: dict[str, Any]) -> list[str]:
     if not context.get("review_done"):
@@ -433,7 +570,12 @@ def _run_docx_react_loop(
             fix_result = tool_runner.call(
                 "apply_safe_fixes",
                 {"path": str(docx_path), "issue_count": int(review_result.get("issue_count", 0))},
-                lambda docx_path=docx_path, review_result=review_result: _auto_fix_docx(docx_path, review_result),
+                lambda docx_path=docx_path, review_result=review_result, client=client, tool_runner=tool_runner: _auto_fix_docx(
+                    docx_path,
+                    review_result,
+                    client=client,
+                    tool_runner=tool_runner,
+                ),
             )
             context["fix_done"] = True
             context["applied_fix_count"] = int(fix_result.get("applied_fix_count", 0) or 0)
@@ -670,13 +812,21 @@ def _format_skipped_fix(
         "decision_action": _safe_text(decision.get("action")),
         "decision_reason": _safe_text(decision.get("reason")),
         "decision_confidence": _safe_text(decision.get("confidence")),
+        "strategy_source": _safe_text(decision.get("strategy_source")),
+        "strategy_reason": _safe_text(decision.get("strategy_reason")),
         "rag_recommendation": _safe_text((decision.get("rag") or {}).get("recommendation")),
         "rag_reason": _safe_text((decision.get("rag") or {}).get("reason")),
         "rag_support_score": _safe_text((decision.get("rag") or {}).get("support_score")),
     }
 
 
-def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, Any]:
+def _auto_fix_docx(
+    docx_path: Path,
+    review_result: dict[str, Any],
+    *,
+    client: Any = None,
+    tool_runner: PhilologistToolRunner | None = None,
+) -> dict[str, Any]:
     doc = Document(docx_path)
     location_map = {location: paragraph for location, paragraph in _iter_document_paragraphs(doc)}
     applied_fixes: list[dict[str, str]] = []
@@ -689,15 +839,63 @@ def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, 
         location = _safe_text(issue.get("location"))
         paragraph = location_map.get(location)
         current_text = paragraph.text if paragraph is not None else ""
-        decision = decide_issue_fix(issue, current_text=current_text).to_dict()
-        decision["rag"] = explain_fix_decision_with_rag(decision)
+        base_decision = decide_issue_fix(issue, current_text=current_text).to_dict()
+        if tool_runner:
+            rag = tool_runner.call(
+                "lookup_rag_rule",
+                {"issue": issue, "base_decision": base_decision},
+                lambda base_decision=base_decision: explain_fix_decision_with_rag(base_decision),
+            )
+            strategy = tool_runner.call(
+                "decide_fix_strategy",
+                {
+                    "issue": issue,
+                    "rag": rag,
+                    "allowed_actions": _allowed_fix_strategy_actions(base_decision),
+                },
+                lambda issue=issue, current_text=current_text, base_decision=base_decision, rag=rag: _react_decide_fix_strategy(
+                    client=client,
+                    issue=issue,
+                    current_text=current_text,
+                    base_decision=base_decision,
+                    rag=rag,
+                ),
+            )
+        else:
+            rag = explain_fix_decision_with_rag(base_decision)
+            strategy = _react_decide_fix_strategy(
+                client=client,
+                issue=issue,
+                current_text=current_text,
+                base_decision=base_decision,
+                rag=rag,
+            )
+        decision = dict(base_decision)
+        decision["base_action"] = base_decision.get("action")
+        decision["base_reason"] = base_decision.get("reason")
+        decision["action"] = strategy.get("action") or base_decision.get("action")
+        decision["reason"] = strategy.get("reason") or base_decision.get("reason")
+        decision["confidence"] = strategy.get("confidence", base_decision.get("confidence"))
+        decision["strategy_source"] = strategy.get("source", "")
+        decision["strategy_reason"] = strategy.get("reason", "")
+        decision["strategy_thought"] = strategy.get("thought", "")
+        decision["rag"] = rag
         fix_decisions.append(decision)
         if decision.get("action") != AUTO_FIX:
             if issue.get("suggestion"):
+                quarantine_record = (
+                    tool_runner.call(
+                        "quarantine_issue",
+                        {"issue": issue, "decision": decision},
+                        lambda issue=issue, decision=decision: _quarantine_issue_record(issue, decision),
+                    )
+                    if tool_runner
+                    else _quarantine_issue_record(issue, decision)
+                )
                 skipped_fixes.append(
                     _format_skipped_fix(
                         issue,
-                        {"reason": decision.get("action") or "not_auto_fix"},
+                        {"reason": quarantine_record.get("reason") or decision.get("action") or "not_auto_fix"},
                         decision,
                     )
                 )
@@ -714,6 +912,8 @@ def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, 
                     "decision_action": _safe_text(decision.get("action")),
                     "decision_reason": _safe_text(decision.get("reason")),
                     "decision_confidence": _safe_text(decision.get("confidence")),
+                    "strategy_source": _safe_text(decision.get("strategy_source")),
+                    "strategy_reason": _safe_text(decision.get("strategy_reason")),
                     "rag_recommendation": _safe_text((decision.get("rag") or {}).get("recommendation")),
                     "rag_reason": _safe_text((decision.get("rag") or {}).get("reason")),
                     "rag_support_score": _safe_text((decision.get("rag") or {}).get("support_score")),
@@ -852,11 +1052,13 @@ def _format_fix_decision_details(documents: list[dict[str, Any]], limit: int = 6
             action = _safe_text(decision.get("action")) or "unknown"
             reason = _safe_text(decision.get("reason"))
             issue = _safe_text(decision.get("issue")) or "правка"
+            strategy_source = _safe_text(decision.get("strategy_source"))
             rag = decision.get("rag") or {}
             rag_text = ""
             if isinstance(rag, dict) and rag.get("recommendation"):
                 rag_text = f"; RAG: {rag.get('recommendation')}, score={rag.get('support_score', 0)}"
-            lines.append(f"- {action}: {issue} ({reason}{rag_text})")
+            strategy_text = f"; strategy={strategy_source}" if strategy_source else ""
+            lines.append(f"- {action}: {issue} ({reason}{strategy_text}{rag_text})")
         if len(lines) >= limit:
             break
     if not lines:
