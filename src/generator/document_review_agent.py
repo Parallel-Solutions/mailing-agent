@@ -428,14 +428,14 @@ def _run_ai_review(blocks: list[tuple[str, str]], *, ai_enabled: bool = True) ->
     if not api_key:
         return []
 
-    client_kwargs = {"api_key": api_key}
+    client_kwargs = {"api_key": api_key, "max_retries": 0}
     base_url = _resolve_openai_base_url()
     if base_url:
         client_kwargs["base_url"] = base_url
     if httpx:
         client_kwargs["http_client"] = httpx.Client(
             http2=False,
-            timeout=httpx.Timeout(connect=10, read=60, write=60, pool=60),
+            timeout=httpx.Timeout(connect=10, read=30, write=30, pool=30),
             trust_env=False,
         )
     client = OpenAI(**client_kwargs)
