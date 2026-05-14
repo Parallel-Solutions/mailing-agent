@@ -135,11 +135,18 @@ def build_philologist_plan(
             depends_on=["review_docx"],
         ),
         _step(
+            "verify_safe_fixes",
+            tool="verify_safe_fixes",
+            status="done" if status == "completed" else ("blocked" if docx_count == 0 else "conditional"),
+            reason="После автоправок агент сравнивает DOCX до/после и проверяет, что стили не были повреждены.",
+            depends_on=["apply_safe_fixes"],
+        ),
+        _step(
             "rebuild_pdf",
             tool="rebuild_pdf",
             status="done" if fixed_documents > 0 else ("skipped" if status == "completed" else "conditional"),
             reason="PDF пересобирается только для документов, где были внесены правки.",
-            depends_on=["apply_safe_fixes"],
+            depends_on=["verify_safe_fixes"],
         ),
         _step(
             "update_memory",

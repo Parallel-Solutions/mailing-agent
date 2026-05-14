@@ -30,10 +30,22 @@ def build_philologist_tool_manifest() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "snapshot_docx",
+            "description": "Capture paragraph text and style fingerprints before automatic fixes.",
+            "input_schema": {"path": "str"},
+            "output_schema": {"paragraph_count": "int"},
+        },
+        {
             "name": "apply_safe_fixes",
             "description": "Apply only safe automatic fixes to the DOCX.",
             "input_schema": {"path": "str", "issue_count": "int"},
             "output_schema": {"applied_fix_count": "int"},
+        },
+        {
+            "name": "verify_safe_fixes",
+            "description": "Compare DOCX before/after snapshots and verify that automatic fixes stayed local and style-safe.",
+            "input_schema": {"path": "str", "applied_fix_count": "int"},
+            "output_schema": {"verified": "bool", "warning_count": "int"},
         },
         {
             "name": "rebuild_pdf",
@@ -134,6 +146,8 @@ def _summarize_output(value: Any) -> Any:
             "applied_fix_count",
             "skipped_fix_count",
             "updated_pdf",
+            "verified",
+            "warning_count",
         )
         summary = {key: value.get(key) for key in keys if key in value}
         if "issues" in value:
@@ -148,6 +162,12 @@ def _summarize_output(value: Any) -> Any:
         if "fix_decisions" in value:
             decisions = value.get("fix_decisions") or []
             summary["fix_decisions"] = {"count": len(decisions) if isinstance(decisions, list) else 0}
+        if "locations" in value:
+            locations = value.get("locations") or {}
+            summary["locations"] = {"count": len(locations) if isinstance(locations, dict) else 0}
+        if "warnings" in value:
+            warnings = value.get("warnings") or []
+            summary["warnings"] = {"count": len(warnings) if isinstance(warnings, list) else 0}
         return summary
     if isinstance(value, list):
         return {"count": len(value)}

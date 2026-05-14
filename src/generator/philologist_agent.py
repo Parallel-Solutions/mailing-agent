@@ -148,6 +148,110 @@ def _run_format_signature(run) -> tuple[Any, ...]:
     )
 
 
+def _paragraph_text(paragraph) -> str:
+    return "".join(run.text for run in paragraph.runs) if paragraph.runs else paragraph.text
+
+
+def _paragraph_style_fingerprint(paragraph) -> dict[str, Any]:
+    non_empty_runs = [run for run in paragraph.runs if run.text]
+    run_signatures = sorted(repr(_run_format_signature(run)) for run in non_empty_runs)
+    style_name = ""
+    try:
+        style_name = paragraph.style.name if paragraph.style is not None else ""
+    except Exception:
+        style_name = ""
+    return {
+        "paragraph_style": style_name,
+        "alignment": str(paragraph.alignment),
+        "run_styles": run_signatures,
+    }
+
+
+def _collect_docx_snapshot(docx_path: Path) -> dict[str, Any]:
+    doc = Document(docx_path)
+    locations: dict[str, dict[str, Any]] = {}
+    for location, paragraph in _iter_document_paragraphs(doc):
+        locations[location] = {
+            "text": _paragraph_text(paragraph),
+            "style": _paragraph_style_fingerprint(paragraph),
+        }
+    return {
+        "path": str(docx_path),
+        "paragraph_count": len(locations),
+        "locations": locations,
+    }
+
+
+def _verify_safe_fixes(
+    docx_path: Path,
+    before_snapshot: dict[str, Any],
+    fix_result: dict[str, Any],
+) -> dict[str, Any]:
+    after_snapshot = _collect_docx_snapshot(docx_path)
+    before_locations = before_snapshot.get("locations") or {}
+    after_locations = after_snapshot.get("locations") or {}
+    applied_fixes = [fix for fix in fix_result.get("applied_fixes", []) if isinstance(fix, dict)]
+    expected_locations = {_safe_text(fix.get("location")) for fix in applied_fixes if _safe_text(fix.get("location"))}
+    changed_locations = {
+        location
+        for location, before_item in before_locations.items()
+        if (after_locations.get(location) or {}).get("text") != before_item.get("text")
+    }
+    warnings: list[dict[str, str]] = []
+
+    for location in sorted(changed_locations - expected_locations):
+        warnings.append(
+            {
+                "location": location,
+                "reason": "unexpected_text_change",
+                "message": "Текст изменился вне списка применённых автоправок.",
+            }
+        )
+
+    for location in sorted(expected_locations - changed_locations):
+        warnings.append(
+            {
+                "location": location,
+                "reason": "expected_change_missing",
+                "message": "Автоправка заявлена, но текст в этой локации не изменился.",
+            }
+        )
+
+    for location in sorted(changed_locations):
+        before_style = (before_locations.get(location) or {}).get("style")
+        after_style = (after_locations.get(location) or {}).get("style")
+        if before_style != after_style:
+            warnings.append(
+                {
+                    "location": location,
+                    "reason": "style_fingerprint_changed",
+                    "message": "После автоправки изменился отпечаток стиля. Нужна ручная проверка.",
+                }
+            )
+
+    for fix in applied_fixes:
+        location = _safe_text(fix.get("location"))
+        suggestion = _safe_text(fix.get("suggestion"))
+        after_text = _safe_text((after_locations.get(location) or {}).get("text"))
+        if suggestion and suggestion not in after_text:
+            warnings.append(
+                {
+                    "location": location,
+                    "reason": "suggestion_not_found_after_fix",
+                    "message": "Предложенный текст не найден после применения правки.",
+                }
+            )
+
+    return {
+        "verified": not warnings,
+        "warning_count": len(warnings),
+        "warnings": warnings,
+        "changed_locations": sorted(changed_locations),
+        "expected_locations": sorted(expected_locations),
+        "after_paragraph_count": after_snapshot.get("paragraph_count", 0),
+    }
+
+
 def _paragraph_is_safe_for_text_rewrite(paragraph) -> bool:
     non_empty_runs = [run for run in paragraph.runs if run.text]
     if len(non_empty_runs) <= 1:
@@ -305,6 +409,7 @@ def _format_skipped_fix(
     decision = decision or {}
     return {
         "location": _safe_text(issue.get("location")),
+        "fragment": _safe_text(issue.get("fragment")),
         "issue": _safe_text(issue.get("issue")),
         "suggestion": _safe_text(issue.get("suggestion")),
         "reason": _safe_text(result.get("reason")) or "not_safe_to_apply",
@@ -348,6 +453,7 @@ def _auto_fix_docx(docx_path: Path, review_result: dict[str, Any]) -> dict[str, 
             applied_fixes.append(
                 {
                     "location": _safe_text(issue.get("location")),
+                    "fragment": _safe_text(issue.get("fragment")),
                     "issue": _safe_text(issue.get("issue")),
                     "suggestion": _safe_text(issue.get("suggestion")),
                     "mode": _safe_text(apply_result.get("mode")),
@@ -459,6 +565,28 @@ def _format_skipped_fix_details(documents: list[dict[str, Any]], limit: int = 5)
     return "Не применил автоматически:\n" + "\n".join(lines[: limit * 2])
 
 
+def _format_verification_details(documents: list[dict[str, Any]], limit: int = 5) -> str:
+    lines: list[str] = []
+    for item in documents:
+        warnings = item.get("verification_warnings") or []
+        if not warnings:
+            continue
+        lines.append(f"{item['name']}:")
+        for warning in warnings[:2]:
+            reason = _safe_text(warning.get("reason")) or "verification_warning"
+            message = _safe_text(warning.get("message"))
+            location = _safe_text(warning.get("location"))
+            details = f"{reason}: {message}" if message else reason
+            if location:
+                details = f"{location} - {details}"
+            lines.append(f"- {details}")
+        if len(lines) >= limit * 2:
+            break
+    if not lines:
+        return ""
+    return "Самопроверка после правок:\n" + "\n".join(lines[: limit * 2])
+
+
 def _format_fix_decision_details(documents: list[dict[str, Any]], limit: int = 6) -> str:
     lines: list[str] = []
     for item in documents:
@@ -560,6 +688,9 @@ def _format_philologist_structured_reply(message: str, state: dict[str, Any]) ->
     skipped_details = _format_skipped_fix_details(documents, limit=5)
     if skipped_details:
         parts.append(skipped_details)
+    verification_details = _format_verification_details(documents, limit=5)
+    if verification_details:
+        parts.append(verification_details)
     parts.append(_format_issue_details(issues, limit=5) if issues else "Остались замечания:\nКритичных языковых замечаний не осталось.")
     parts.append(_format_rule_details(message))
     return "\n\n".join(part for part in parts if part)
@@ -670,10 +801,24 @@ def run_philologist(
             {"path": str(docx_path), "ai_enabled": ai_enabled},
             lambda docx_path=docx_path: review_docx(docx_path, ai_enabled=ai_enabled),
         )
+        before_snapshot = tool_runner.call(
+            "snapshot_docx",
+            {"path": str(docx_path)},
+            lambda docx_path=docx_path: _collect_docx_snapshot(docx_path),
+        )
         fix_result = tool_runner.call(
             "apply_safe_fixes",
             {"path": str(docx_path), "issue_count": int(review_result.get("issue_count", 0))},
             lambda docx_path=docx_path, review_result=review_result: _auto_fix_docx(docx_path, review_result),
+        )
+        verification_result = tool_runner.call(
+            "verify_safe_fixes",
+            {"path": str(docx_path), "applied_fix_count": int(fix_result.get("applied_fix_count", 0))},
+            lambda docx_path=docx_path, before_snapshot=before_snapshot, fix_result=fix_result: _verify_safe_fixes(
+                docx_path,
+                before_snapshot,
+                fix_result,
+            ),
         )
         pdf_path = (
             tool_runner.call(
@@ -703,6 +848,9 @@ def run_philologist(
             "skipped_fixes": fix_result.get("skipped_fixes", []),
             "decision_count": fix_result.get("decision_count", 0),
             "fix_decisions": fix_result.get("fix_decisions", []),
+            "verification": verification_result,
+            "verification_warning_count": int(verification_result.get("warning_count", 0)),
+            "verification_warnings": verification_result.get("warnings", []),
             "updated_pdf": pdf_path,
         }
         processed_documents.append(document_entry)
@@ -744,6 +892,17 @@ def run_philologist(
                 "skipped_fixes": total_skipped,
             },
         )
+        verification_warnings = sum(int(item.get("verification_warning_count", 0) or 0) for item in processed_documents)
+        agent_loop.mark_step(
+            "verify_safe_fixes",
+            "done" if verification_warnings == 0 else "blocked",
+            (
+                "Самопроверка автоправок не нашла повреждений стилей или неожиданных изменений."
+                if verification_warnings == 0
+                else f"Самопроверка нашла предупреждения после автоправок: {verification_warnings}."
+            ),
+            data={"verification_warnings": verification_warnings},
+        )
         rebuilt_pdfs = sum(1 for item in processed_documents if item.get("updated_pdf"))
         agent_loop.mark_step(
             "rebuild_pdf",
@@ -758,6 +917,7 @@ def run_philologist(
     else:
         agent_loop.mark_step("review_docx", "blocked", "DOCX-файлы не найдены.")
         agent_loop.mark_step("apply_safe_fixes", "blocked", "Нет документов для применения правок.")
+        agent_loop.mark_step("verify_safe_fixes", "blocked", "Нет документов для самопроверки правок.")
         agent_loop.mark_step("rebuild_pdf", "blocked", "Нет документов для пересборки PDF.")
 
     row_rollups: dict[str, dict[str, Any]] = {}
@@ -772,10 +932,12 @@ def run_philologist(
                 "mun_name": _safe_text(item.get("mun_name")),
                 "issue_count": 0,
                 "applied_fix_count": 0,
+                "verification_warning_count": 0,
             },
         )
         row_entry["issue_count"] += int(item.get("issue_count", 0))
         row_entry["applied_fix_count"] += int(item.get("applied_fix_count", 0))
+        row_entry["verification_warning_count"] += int(item.get("verification_warning_count", 0))
 
     sender_handoffs = 0
     for row_entry in row_rollups.values():
@@ -783,7 +945,8 @@ def run_philologist(
         mun_name = row_entry["mun_name"]
         issue_count = int(row_entry["issue_count"])
         applied_fix_count = int(row_entry["applied_fix_count"])
-        unresolved_issue_count = max(0, issue_count - applied_fix_count)
+        verification_warning_count = int(row_entry.get("verification_warning_count", 0))
+        unresolved_issue_count = max(0, issue_count - applied_fix_count, verification_warning_count)
         note = (
             "Филолог завершил проверку документов."
             if unresolved_issue_count == 0
@@ -821,6 +984,7 @@ def run_philologist(
                 details={
                     "issue_count": issue_count,
                     "applied_fix_count": applied_fix_count,
+                    "verification_warning_count": verification_warning_count,
                     "unresolved_issue_count": unresolved_issue_count,
                     "reason": "Перед отправкой нужно учесть замечания филолога.",
                 },
@@ -857,6 +1021,7 @@ def run_philologist(
                 details={
                     "issue_count": issue_count,
                     "applied_fix_count": applied_fix_count,
+                    "verification_warning_count": verification_warning_count,
                     "reason": "После филологической проверки строку можно снова прогнать через отправщика.",
                 },
                 job_id=job_id,
