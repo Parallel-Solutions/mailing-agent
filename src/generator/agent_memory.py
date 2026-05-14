@@ -109,6 +109,7 @@ def build_agent_report(
         f"- Решений по правкам: {_count_fix_decisions(philologist_state)}",
         f"- RAG-объяснений правок: {_count_rag_explanations(philologist_state)}",
         f"- Предупреждений самопроверки: {_count_verification_warnings(philologist_state)}",
+        f"- ReAct-действий: {_count_react_actions(philologist_state)}",
         "",
     ]
     plan = philologist_state.get("plan") or {}
@@ -172,6 +173,13 @@ def _count_verification_warnings(philologist_state: dict[str, Any]) -> int:
     total = 0
     for document in philologist_state.get("documents") or []:
         total += int(document.get("verification_warning_count", 0) or 0)
+    return total
+
+
+def _count_react_actions(philologist_state: dict[str, Any]) -> int:
+    total = 0
+    for document in philologist_state.get("documents") or []:
+        total += len(document.get("react_trace") or [])
     return total
 
 
