@@ -15,6 +15,8 @@ app = FastAPI(title="Mailing Agent")
 security = HTTPBasic()
 _sender_threads: dict[str, threading.Thread] = {}
 _sender_threads_lock = threading.Lock()
+_philologist_threads: dict[str, threading.Thread] = {}
+_philologist_threads_lock = threading.Lock()
 
 
 @app.on_event("startup")
@@ -59,6 +61,10 @@ def _sender_job_key(job_id: str | None) -> str:
     return str(job_id or "__legacy__")
 
 
+def _philologist_job_key(job_id: str | None) -> str:
+    return str(job_id or "__legacy__")
+
+
 def _get_sender_thread(job_id: str | None) -> threading.Thread | None:
     key = _sender_job_key(job_id)
     with _sender_threads_lock:
@@ -69,9 +75,66 @@ def _get_sender_thread(job_id: str | None) -> threading.Thread | None:
         return thread
 
 
+def _get_philologist_thread(job_id: str | None) -> threading.Thread | None:
+    key = _philologist_job_key(job_id)
+    with _philologist_threads_lock:
+        thread = _philologist_threads.get(key)
+        if thread and not thread.is_alive():
+            _philologist_threads.pop(key, None)
+            return None
+        return thread
+
+
 def _register_sender_thread(job_id: str | None, thread: threading.Thread) -> None:
     with _sender_threads_lock:
         _sender_threads[_sender_job_key(job_id)] = thread
+
+
+def _register_philologist_thread(job_id: str | None, thread: threading.Thread) -> None:
+    with _philologist_threads_lock:
+        _philologist_threads[_philologist_job_key(job_id)] = thread
+
+
+def _compact_philologist_status(state: dict) -> dict:
+    documents = state.get("documents") or []
+    context_review = state.get("inflection_context_review") or {}
+    context_corrections = state.get("inflection_context_corrections") or {}
+    current_document = state.get("current_document")
+    if isinstance(current_document, dict):
+        current_document = {
+            "index": current_document.get("index"),
+            "total": current_document.get("total"),
+            "name": current_document.get("name"),
+        }
+
+    return {
+        "status": state.get("status", "idle"),
+        "started_at": state.get("started_at"),
+        "completed_at": state.get("completed_at"),
+        "elapsed_seconds": state.get("elapsed_seconds"),
+        "total_documents": state.get("total_documents", 0),
+        "processed_documents": state.get("processed_documents", 0),
+        "fixed_documents": state.get("fixed_documents", 0),
+        "documents_with_issues": state.get("documents_with_issues", 0),
+        "summary_text": state.get("summary_text", ""),
+        "mode": state.get("mode", ""),
+        "ai_review_enabled": state.get("ai_review_enabled", False),
+        "inflection_log_count": state.get("inflection_log_count", 0),
+        "current_document": current_document,
+        "document_count": len(documents),
+        "tool_trace_count": len(state.get("tool_trace") or []),
+        "inflection_context_review": {
+            "enabled": context_review.get("enabled", False),
+            "selected_count": context_review.get("selected_count", 0),
+            "checked_count": context_review.get("checked_count", 0),
+            "error": context_review.get("error", ""),
+        },
+        "inflection_context_corrections": {
+            "applied_count": context_corrections.get("applied_count", 0),
+        },
+        "task_stats": state.get("task_stats", {}),
+        "recent_events": (state.get("recent_events") or [])[:5],
+    }
 
 
 def _run_sender_background(*, limit: int | None, transport: str | None, job_id: str | None) -> None:
@@ -84,6 +147,21 @@ def _run_sender_background(*, limit: int | None, transport: str | None, job_id: 
             _sender_threads.pop(_sender_job_key(job_id), None)
 
 
+def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: str | None) -> None:
+    try:
+        run_philologist(ai_enabled=ai_enabled, job_id=job_id, mode=mode)
+    except Exception as exc:
+        logger.exception("philologist_background_failed", job_id=job_id)
+        state = _load_philologist_state(job_id)
+        state["status"] = "error"
+        state["completed_at"] = None
+        state["summary_text"] = f"Агент-филолог остановился с ошибкой: {type(exc).__name__}: {exc}"
+        _save_philologist_state(state, job_id)
+    finally:
+        with _philologist_threads_lock:
+            _philologist_threads.pop(_philologist_job_key(job_id), None)
+
+
 def _prime_sender_running_state(job_id: str | None, transport: str | None) -> dict:
     state = _load_sender_state(job_id)
     state["status"] = "running"
@@ -93,6 +171,24 @@ def _prime_sender_running_state(job_id: str | None, transport: str | None) -> di
     state["stop_requested"] = False
     state["stop_requested_at"] = None
     _save_sender_state(state, job_id)
+    return state
+
+
+def _prime_philologist_running_state(job_id: str | None, mode: str | None) -> dict:
+    paths = resolve_job_paths(job_id)
+    output_dir = paths.output_dir
+    docx_count = len(list(output_dir.rglob("*.docx"))) if output_dir.exists() else 0
+    state = _load_philologist_state(job_id)
+    state["status"] = "running"
+    state["started_at"] = None
+    state["completed_at"] = None
+    state["total_documents"] = docx_count
+    state["processed_documents"] = 0
+    state["fixed_documents"] = 0
+    state["documents_with_issues"] = 0
+    state["mode"] = mode or "fast"
+    state["summary_text"] = "Агент-филолог запущен в фоне и готовит документы к проверке."
+    _save_philologist_state(state, job_id)
     return state
 
 
@@ -191,53 +287,70 @@ async def upload_template(
         "job_id": paths.job_id,
     }
 
-from src.generator.excel_io import load_rows
-from src.generator.transforms import build_document_context
-from src.generator.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
-from src.generator.config_generator import (
+from src.generator.generation.excel_io import load_rows
+from src.generator.generation.transforms import build_document_context
+from src.generator.generation.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
+from src.generator.generation.config_generator import (
     BATCH_PDF_DIR,
     DOCX_WORKERS,
     ONLYOFFICE_PUBLIC_FILES_DIR,
     START_OUTGOING_NUMBER,
     WEB_CASE_AGENT_MAX_WORKERS,
 )
-from src.generator.pdf_converter import convert_docx_batch
-from src.generator.ai_case_agent import (
+from src.generator.generation.pdf_converter import convert_docx_batch
+from src.generator.inflection.ai_case_agent import (
     ENABLE_CASE_AGENT,
     CASE_AGENT_ONLY_SUSPICIOUS,
     apply_case_agent_result,
     run_case_validation_agent,
 )
-from src.generator.philologist_agent import (
+from src.generator.philologist.philologist_agent import (
+    _load_philologist_state,
+    _save_philologist_state,
     chat_with_philologist,
     get_philologist_status,
     run_philologist,
 )
-from src.generator.sender_agent import (
+from src.generator.delivery.sender_agent import (
     _load_sender_state,
     _save_sender_state,
     chat_with_sender,
     clear_sender_stop_request,
     get_sender_status,
+    get_unisender_history,
     preview_recipients,
     request_sender_stop,
     run_sender,
 )
-from src.generator.parser_agent import (
+from src.generator.orchestration.parser_agent import (
     chat_with_parser,
     get_parser_status,
     run_parser_agent,
 )
-from src.generator.orchestrator_agent import (
+from src.generator.orchestration.orchestrator_agent import (
     chat_with_orchestrator,
     get_orchestrator_status,
 )
-from src.generator.autonomous_worker import (
+from src.generator.orchestration.autonomous_worker import (
     get_autonomous_worker_state,
     start_autonomous_worker,
     stop_autonomous_worker,
 )
-from src.generator.generator_agent import get_generator_status, run_generator_agent
+from src.generator.knowledge.agent_memory import (
+    build_agent_report,
+    build_quarantine_items,
+    build_learning_candidates,
+    get_agent_memory_csv_path,
+    get_agent_quarantine_csv_path,
+    get_agent_report_path,
+    save_agent_report,
+    save_learning_memory_csv,
+    save_quarantine_csv,
+)
+from src.generator.case_engine.overrides import upsert_override
+from src.generator.inflection.inflection_report import load_inflection_log, save_inflection_csv
+from src.generator.generation.generator_agent import get_generator_status, run_generator_agent
+from src.generator.philologist.philologist_planner import build_philologist_plan
 from src.jobs import create_job_id, resolve_job_paths
 
 
@@ -404,6 +517,7 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
         "error_rows": result.get("error_rows"),
         "results": result.get("results", []),
         "summary_text": result.get("summary_text"),
+        "inflection_summary": result.get("inflection_summary"),
         "task_stats": result.get("task_stats"),
         "recent_events": result.get("recent_events"),
     }
@@ -493,6 +607,90 @@ async def download_sent_mail_log(job_id: str | None = None, username: str = Depe
     )
 
 
+@app.get("/api/download/inflection-log")
+async def download_inflection_log(job_id: str | None = None, username: str = Depends(check_auth)):
+    job_paths = resolve_job_paths(job_id)
+    log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
+    return FileResponse(
+        log_path,
+        media_type="application/x-ndjson",
+        filename="inflection_log.jsonl",
+    )
+
+
+@app.get("/api/download/inflection-report")
+async def download_inflection_report(job_id: str | None = None, username: str = Depends(check_auth)):
+    rows = load_inflection_log(job_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
+    job_paths = resolve_job_paths(job_id)
+    report_path = job_paths.root_dir / "state" / "inflection_report.csv"
+    save_inflection_csv(rows, report_path)
+    return FileResponse(
+        report_path,
+        media_type="text/csv",
+        filename="inflection_report.csv",
+    )
+
+
+@app.get("/api/download/agent-memory")
+async def download_agent_memory(job_id: str | None = None, username: str = Depends(check_auth)):
+    candidates = build_learning_candidates(job_id)
+    if not candidates:
+        raise HTTPException(status_code=404, detail="Кандидаты для памяти агента пока не найдены.")
+    report_path = get_agent_memory_csv_path(job_id)
+    save_learning_memory_csv(candidates, report_path)
+    return FileResponse(
+        report_path,
+        media_type="text/csv",
+        filename="agent_memory_candidates.csv",
+    )
+
+
+@app.get("/api/download/agent-quarantine")
+async def download_agent_quarantine(job_id: str | None = None, username: str = Depends(check_auth)):
+    items = build_quarantine_items(job_id)
+    if not items:
+        raise HTTPException(status_code=404, detail="Карантин агента пока пуст.")
+    report_path = get_agent_quarantine_csv_path(job_id)
+    save_quarantine_csv(items, report_path)
+    return FileResponse(
+        report_path,
+        media_type="text/csv",
+        filename="agent_quarantine.csv",
+    )
+
+
+@app.get("/api/download/agent-report")
+async def download_agent_report(job_id: str | None = None, username: str = Depends(check_auth)):
+    report_text = build_agent_report(job_id)
+    if not report_text.strip():
+        raise HTTPException(status_code=404, detail="Отчет агента пока пуст.")
+    report_path = get_agent_report_path(job_id)
+    save_agent_report(job_id)
+    return FileResponse(
+        report_path,
+        media_type="text/plain; charset=utf-8",
+        filename="agent_report.txt",
+    )
+
+
+@app.post("/api/agent-memory/approve-inflection")
+async def approve_inflection_memory(payload: dict = Body(...), username: str = Depends(check_auth)):
+    try:
+        result = upsert_override(
+            entity_type=str(payload.get("entity_type") or ""),
+            source_value=str(payload.get("source_value") or ""),
+            target_case=str(payload.get("target_case") or ""),
+            result_value=str(payload.get("result_value") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "ok", "result": result}
+
+
 @app.post("/api/philologist/run")
 async def philologist_run(
     payload: dict | None = Body(default=None),
@@ -500,13 +698,31 @@ async def philologist_run(
 ):
     ai_enabled = True if payload is None else bool(payload.get("ai_enabled", True))
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    result = run_philologist(ai_enabled=ai_enabled, job_id=job_id)
-    return {"status": "ok", "result": result}
+    mode = None if payload is None else str(payload.get("mode") or "").strip().lower() or None
+    existing_thread = _get_philologist_thread(job_id)
+    if existing_thread:
+        return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
+
+    primed_state = _prime_philologist_running_state(job_id, mode or "fast")
+    philologist_thread = threading.Thread(
+        target=_run_philologist_background,
+        kwargs={"ai_enabled": ai_enabled, "job_id": job_id, "mode": mode},
+        daemon=True,
+        name=f"philologist-{_philologist_job_key(job_id)}",
+    )
+    _register_philologist_thread(job_id, philologist_thread)
+    philologist_thread.start()
+    return {"status": "ok", "result": primed_state}
 
 
 @app.get("/api/philologist/status")
 async def philologist_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_philologist_status(job_id)}
+    return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
+
+
+@app.get("/api/philologist/plan")
+async def philologist_plan(job_id: str | None = None, username: str = Depends(check_auth)):
+    return {"status": "ok", "result": build_philologist_plan(job_id)}
 
 
 @app.post("/api/philologist/chat")
@@ -590,6 +806,19 @@ async def sender_run(
 @app.get("/api/sender/status")
 async def sender_status(job_id: str | None = None, username: str = Depends(check_auth)):
     return {"status": "ok", "result": get_sender_status(job_id)}
+
+
+@app.get("/api/sender/unisender-history")
+async def sender_unisender_history(
+    job_id: str | None = None,
+    limit: int = 50,
+    refresh: bool = False,
+    username: str = Depends(check_auth),
+):
+    return {
+        "status": "ok",
+        "result": get_unisender_history(job_id=job_id, limit=limit, refresh=refresh),
+    }
 
 
 @app.post("/api/sender/stop")

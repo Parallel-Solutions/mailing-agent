@@ -974,6 +974,7 @@
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="g-fill" style="width:0%"></div></div>
           <div class="progress-label" id="g-label">0 из <span id="g-total-label">0</span> документов обработано, осталось 0</div>
+          <div class="progress-label" id="g-inflection-summary" style="margin-top:6px">Журнал склонений появится после генерации.</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="g-run" onclick="startGenerator()">Запустить генератор</button>
@@ -1071,6 +1072,7 @@
             <button type="button" class="btn-outline" id="s-pause" style="display:none">Пауза</button>
             <button type="button" class="btn-danger" id="s-stop">Остановить</button>
             <button type="button" class="btn-outline" id="s-download-xlsx" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать data.xlsx со статусами</button>
+            <button type="button" class="btn-outline" id="s-unisender-history" onclick="showUnisenderHistory()">История UniSender</button>
           </div>
         </div>
 
@@ -1823,14 +1825,25 @@
     setPhilologistUiState({ status: 'running', total_documents: 0, processed_documents: 0 });
     appendChatMessage('g-chat', 'agent', 'Запускаю проверку документов. После завершения расскажу, что нашёл и что удалось исправить.');
     if (philologistStatusPoll) clearInterval(philologistStatusPoll);
-    philologistStatusPoll = setInterval(() => {
-      refreshPhilologistStatus({ silent: true });
+    philologistStatusPoll = setInterval(async () => {
+      const status = await refreshPhilologistStatus({ silent: true });
+      if (!status || status.status === 'running') return;
+      phRunning = false;
+      clearInterval(philologistStatusPoll);
+      philologistStatusPoll = null;
+      if (status.status === 'completed') {
+        showToast('Агент-филолог завершил работу');
+        appendChatMessage('g-chat', 'agent', status.summary_text || 'Агент-филолог завершил проверку документов.');
+      } else if (status.status === 'error') {
+        showToast('Ошибка агента-филолога');
+        appendChatMessage('g-chat', 'agent', status.summary_text || 'Проверка завершилась с ошибкой.');
+      }
     }, 3000);
     try {
       const res = await fetch('/api/philologist/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ ai_enabled: true })),
+        body: JSON.stringify(withJobPayload({ ai_enabled: true, mode: 'fast' })),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1838,28 +1851,17 @@
       }
 
       const result = data.result || {};
-      const total = result.total_documents || 0;
-      const processed = result.processed_documents || 0;
-      const fixed = result.fixed_documents || 0;
-      const issueDocs = result.documents_with_issues || 0;
       setPhilologistUiState(result);
-      showToast('Агент-филолог завершил работу');
-        appendChatMessage(
-          'g-chat',
-          'agent',
-          result.summary_text || `Проверено ${processed} документов. Замечания есть в ${issueDocs}, автоматически исправлено ${fixed}.`
-        );
-      } catch (err) {
-      setPhilologistUiState({ status: 'error', summary_text: 'Проверка не завершилась' });
-      appendChatMessage('g-chat', 'agent', 'Не удалось завершить проверку: ' + err.message);
-      showToast('Ошибка агента-филолога');
-    } finally {
+      appendChatMessage('g-chat', 'agent', result.summary_text || 'Фоновая проверка документов запущена.');
+    } catch (err) {
       phRunning = false;
       if (philologistStatusPoll) {
         clearInterval(philologistStatusPoll);
         philologistStatusPoll = null;
       }
-      await refreshPhilologistStatus({ silent: true });
+      setPhilologistUiState({ status: 'error', summary_text: 'Проверка не завершилась' });
+      appendChatMessage('g-chat', 'agent', 'Не удалось завершить проверку: ' + err.message);
+      showToast('Ошибка агента-филолога');
     }
   }
   function pausePhilologist() {
@@ -2095,6 +2097,21 @@
     if (downloadButton) downloadButton.disabled = !isEnabled;
   }
 
+  function setInflectionDownloadEnabled(isEnabled) {
+  }
+
+  function formatInflectionSummary(summary = {}) {
+    const total = Number(summary.total || 0);
+    if (!total) return 'Журнал склонений появится после генерации.';
+    const byMethod = summary.by_method || {};
+    const overrideCount = Number(byMethod.override || 0);
+    const ruleCount = Number(byMethod.legacy_rule || 0);
+    const morphCount = Number(byMethod.legacy_morph || 0);
+    const fallbackCount = Number(byMethod.fallback || 0);
+    const warningCount = Number(summary.warning_count || 0);
+    return `Склонения: ${total} проверок, словарь ${overrideCount}, правила ${ruleCount}, морфология ${morphCount}, fallback ${fallbackCount}, предупреждений ${warningCount}.`;
+  }
+
   function setGeneratorUiState(result = {}) {
     const badge = document.getElementById('g-badge');
     const fill = document.getElementById('g-fill');
@@ -2106,12 +2123,17 @@
     const ok = Number(result.ok_rows || 0);
     const errors = Number(result.error_rows || 0);
     const outputFileCount = Number(result.output_file_count || 0);
+    const inflectionSummary = result.inflection_summary || {};
+    const inflectionTotal = Number(inflectionSummary.total || 0);
+    const inflectionSummaryEl = document.getElementById('g-inflection-summary');
     const status = result.status || 'idle';
     const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
     const canDownloadOutput = status === 'completed' && outputFileCount > 0;
 
     if (doneStat) doneStat.textContent = processed.toLocaleString('ru');
     if (errorStat) errorStat.textContent = errors.toLocaleString('ru');
+    if (inflectionSummaryEl) inflectionSummaryEl.textContent = formatInflectionSummary(inflectionSummary);
+    setInflectionDownloadEnabled(status === 'completed' && inflectionTotal > 0);
 
     if (status === 'running') {
       badge.textContent = 'Генерация';
@@ -2126,6 +2148,7 @@
       });
       setGeneratorButtonsBusy(true);
       setGeneratorDownloadEnabled(false);
+      setInflectionDownloadEnabled(false);
       setProgressVisual(fill, { percent, running: total > 0, indeterminate: false });
       return;
     }
@@ -2431,9 +2454,47 @@
     }
   }
 
+  function formatUnisenderHistory(items) {
+    if (!Array.isArray(items) || !items.length) {
+      return 'История UniSender пока пустая. Она появится после реальной отправки через UniSender.';
+    }
+    return items.slice(0, 20).map(item => {
+      const sentAt = item.sent_at ? item.sent_at.replace('T', ' ') : 'без даты';
+      const rowId = item.row_id ? `строка ${item.row_id}` : 'строка ?';
+      const recipient = item.recipient || 'получатель не указан';
+      const status = item.provider_status_label || item.provider_status || 'статус неизвестен';
+      const providerId = item.provider_message_id || item.provider_job_id;
+      const providerText = providerId ? `, id ${providerId}` : '';
+      const munName = item.mun_name ? `, ${item.mun_name}` : '';
+      return `${sentAt} | ${rowId}${munName} | ${recipient} | ${status}${providerText}`;
+    }).join('\n');
+  }
+
+  async function showUnisenderHistory() {
+    try {
+      await ensureCurrentJobId();
+      showToast('Запрашиваю историю UniSender');
+      safeAppendChatMessage('s-chat', 'agent', 'Смотрю историю UniSender и обновляю статусы доставки, если у писем есть email_id.');
+      const res = await fetch(apiUrl('/api/sender/unisender-history?limit=50&refresh=1'));
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Не удалось получить историю UniSender');
+      const result = data.result || {};
+      safeAppendChatMessage(
+        's-chat',
+        'agent',
+        (result.summary_text || 'История UniSender получена.') + '\n' + formatUnisenderHistory(result.items || [])
+      );
+      showToast('История UniSender обновлена');
+    } catch (err) {
+      safeAppendChatMessage('s-chat', 'agent', 'Не удалось получить историю UniSender: ' + (err && err.message ? err.message : String(err)));
+      showToast('Ошибка истории UniSender');
+    }
+  }
+
   window.previewSender = previewSender;
   window.confirmAndSendSender = confirmAndSendSender;
   window.pauseSender = pauseSender;
+  window.showUnisenderHistory = showUnisenderHistory;
 
   async function refreshCounts() {
     try {
