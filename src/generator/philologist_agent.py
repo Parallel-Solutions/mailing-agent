@@ -25,7 +25,12 @@ from src.generator.ai_case_agent import (
     _resolve_openai_api_key,
     _resolve_openai_base_url,
 )
-from src.generator.config_generator import DOCUMENT_REVIEW_MODEL, OUTPUT_DIR
+from src.generator.config_generator import (
+    DOCUMENT_REVIEW_MODEL,
+    OUTPUT_DIR,
+    PHILOLOGIST_LLM_FIX_STRATEGY,
+    PHILOLOGIST_LLM_ROUTER,
+)
 from src.generator.document_review_agent import review_docx
 from src.generator.inflection_report import format_inflection_report, load_inflection_log
 from src.generator.philologist_decisions import AUTO_FIX, NEEDS_HUMAN, QUARANTINE, decide_issue_fix
@@ -314,13 +319,14 @@ def _react_decide_fix_strategy(
     current_text: str,
     base_decision: dict[str, Any],
     rag: dict[str, Any],
+    use_llm: bool = True,
 ) -> dict[str, Any]:
     allowed = _allowed_fix_strategy_actions(base_decision)
-    if not client:
+    if not use_llm or not client:
         return _fallback_fix_strategy(
             base_decision,
             rag,
-            reason="LLM-клиент недоступен, стратегия выбрана по безопасным правилам.",
+            reason="Стратегия выбрана по безопасным правилам без LLM-вызова.",
         )
 
     compact_rules = [
@@ -450,10 +456,11 @@ def _react_decide_next_action(
     client: Any,
     context: dict[str, Any],
     trace: list[dict[str, Any]],
+    use_llm: bool = True,
 ) -> dict[str, Any]:
     available = _available_react_actions(context)
-    if not client:
-        return _default_react_decision(context, reason="LLM-клиент недоступен, использую безопасный порядок.")
+    if not use_llm or not client:
+        return _default_react_decision(context, reason="Использую быстрый безопасный порядок без LLM-вызова.")
 
     prompt = (
         "Ты ReAct-контроллер агента-филолога. "
@@ -507,6 +514,8 @@ def _run_docx_react_loop(
     ai_enabled: bool,
     tool_runner: PhilologistToolRunner,
     client: Any,
+    use_llm_router: bool = True,
+    use_llm_fix_strategy: bool = True,
     max_iterations: int = 8,
 ) -> dict[str, Any]:
     context: dict[str, Any] = {
@@ -547,6 +556,7 @@ def _run_docx_react_loop(
                 client=client,
                 context=context,
                 trace=trace,
+                use_llm=use_llm_router,
             ),
         )
         if decision.get("source") == "fallback_after_llm_error":
@@ -580,6 +590,7 @@ def _run_docx_react_loop(
                     review_result,
                     client=client,
                     tool_runner=tool_runner,
+                    use_llm_strategy=use_llm_fix_strategy,
                 ),
             )
             context["fix_done"] = True
@@ -831,6 +842,7 @@ def _auto_fix_docx(
     *,
     client: Any = None,
     tool_runner: PhilologistToolRunner | None = None,
+    use_llm_strategy: bool = True,
 ) -> dict[str, Any]:
     doc = Document(docx_path)
     location_map = {location: paragraph for location, paragraph in _iter_document_paragraphs(doc)}
@@ -864,6 +876,7 @@ def _auto_fix_docx(
                     current_text=current_text,
                     base_decision=base_decision,
                     rag=rag,
+                    use_llm=use_llm_strategy,
                 ),
             )
         else:
@@ -874,6 +887,7 @@ def _auto_fix_docx(
                 current_text=current_text,
                 base_decision=base_decision,
                 rag=rag,
+                use_llm=use_llm_strategy,
             )
         decision = dict(base_decision)
         decision["base_action"] = base_decision.get("action")
@@ -1286,6 +1300,8 @@ def run_philologist(
             ai_enabled=effective_ai_enabled,
             tool_runner=tool_runner,
             client=react_client,
+            use_llm_router=PHILOLOGIST_LLM_ROUTER,
+            use_llm_fix_strategy=PHILOLOGIST_LLM_FIX_STRATEGY,
         )
         review_result = react_result["review_result"]
         fix_result = react_result["fix_result"]
