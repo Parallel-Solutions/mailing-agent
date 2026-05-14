@@ -252,6 +252,260 @@ def _verify_safe_fixes(
     }
 
 
+PHILOLOGIST_REACT_ACTIONS = (
+    "review_docx",
+    "snapshot_docx",
+    "apply_safe_fixes",
+    "verify_safe_fixes",
+    "rebuild_pdf",
+    "finish_document",
+)
+
+
+def _available_react_actions(context: dict[str, Any]) -> list[str]:
+    if not context.get("review_done"):
+        return ["review_docx"]
+    if not context.get("snapshot_done"):
+        return ["snapshot_docx"]
+    if not context.get("fix_done"):
+        return ["apply_safe_fixes"]
+    if not context.get("verify_done"):
+        return ["verify_safe_fixes"]
+    if context.get("applied_fix_count", 0) > 0 and not context.get("pdf_rebuilt"):
+        return ["rebuild_pdf"]
+    return ["finish_document"]
+
+
+def _default_react_decision(context: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    available = _available_react_actions(context)
+    action = available[0]
+    return {
+        "action": action,
+        "thought": "Выбираю следующий безопасный обязательный шаг.",
+        "reason": reason,
+        "source": "fallback",
+        "available_actions": available,
+    }
+
+
+def _compact_react_context(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "document": context.get("document"),
+        "review_done": bool(context.get("review_done")),
+        "snapshot_done": bool(context.get("snapshot_done")),
+        "fix_done": bool(context.get("fix_done")),
+        "verify_done": bool(context.get("verify_done")),
+        "pdf_rebuilt": bool(context.get("pdf_rebuilt")),
+        "issue_count": int(context.get("issue_count", 0) or 0),
+        "applied_fix_count": int(context.get("applied_fix_count", 0) or 0),
+        "skipped_fix_count": int(context.get("skipped_fix_count", 0) or 0),
+        "verification_warning_count": int(context.get("verification_warning_count", 0) or 0),
+    }
+
+
+def _react_decide_next_action(
+    *,
+    client: Any,
+    context: dict[str, Any],
+    trace: list[dict[str, Any]],
+) -> dict[str, Any]:
+    available = _available_react_actions(context)
+    if not client:
+        return _default_react_decision(context, reason="LLM-клиент недоступен, использую безопасный порядок.")
+
+    prompt = (
+        "Ты ReAct-контроллер агента-филолога. "
+        "Выбери ровно один следующий action из available_actions. "
+        "Нельзя придумывать новые tools. Нельзя пропускать самопроверку после правок. "
+        "Если документ уже проверен, правки применены и самопроверка завершена, выбирай finish_document. "
+        "Ответ верни только JSON без markdown:\n"
+        "{\n"
+        '  "thought": "краткое рассуждение",\n'
+        '  "action": "одно значение из available_actions",\n'
+        '  "reason": "почему выбран этот шаг"\n'
+        "}\n\n"
+        f"available_actions: {json.dumps(available, ensure_ascii=False)}\n"
+        f"document_state: {json.dumps(_compact_react_context(context), ensure_ascii=False)}\n"
+        f"recent_trace: {json.dumps(trace[-6:], ensure_ascii=False)}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model=DOCUMENT_REVIEW_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        payload = _extract_json_payload(_safe_text(response.choices[0].message.content))
+        parsed = json.loads(payload) if payload else {}
+    except Exception as exc:
+        decision = _default_react_decision(context, reason=f"LLM-решение недоступно: {_safe_text(exc)}")
+        decision["source"] = "fallback_after_llm_error"
+        return decision
+
+    action = _safe_text(parsed.get("action"))
+    if action not in available:
+        decision = _default_react_decision(
+            context,
+            reason=f"LLM выбрала недопустимый action `{action}`, применен безопасный fallback.",
+        )
+        decision["source"] = "fallback_invalid_llm_action"
+        decision["llm_action"] = action
+        return decision
+
+    return {
+        "action": action,
+        "thought": _safe_text(parsed.get("thought")),
+        "reason": _safe_text(parsed.get("reason")),
+        "source": "llm",
+        "available_actions": available,
+    }
+
+
+def _run_docx_react_loop(
+    *,
+    docx_path: Path,
+    ai_enabled: bool,
+    tool_runner: PhilologistToolRunner,
+    client: Any,
+    max_iterations: int = 8,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "document": docx_path.name,
+        "review_done": False,
+        "snapshot_done": False,
+        "fix_done": False,
+        "verify_done": False,
+        "pdf_rebuilt": False,
+        "issue_count": 0,
+        "applied_fix_count": 0,
+        "skipped_fix_count": 0,
+        "verification_warning_count": 0,
+    }
+    trace: list[dict[str, Any]] = []
+    review_result: dict[str, Any] = {"issues": [], "issue_count": 0, "local_issue_count": 0, "ai_issue_count": 0}
+    before_snapshot: dict[str, Any] = {}
+    fix_result: dict[str, Any] = {
+        "applied_fix_count": 0,
+        "applied_fixes": [],
+        "skipped_fix_count": 0,
+        "skipped_fixes": [],
+        "decision_count": 0,
+        "fix_decisions": [],
+    }
+    verification_result: dict[str, Any] = {
+        "verified": True,
+        "warning_count": 0,
+        "warnings": [],
+    }
+    pdf_path: str | None = None
+
+    for iteration in range(1, max_iterations + 1):
+        decision = tool_runner.call(
+            "react_decide_next_action",
+            {"available_actions": _available_react_actions(context), "document_state": _compact_react_context(context)},
+            lambda context=context, trace=trace: _react_decide_next_action(
+                client=client,
+                context=context,
+                trace=trace,
+            ),
+        )
+        if decision.get("source") == "fallback_after_llm_error":
+            client = None
+        action = decision["action"]
+        observation = ""
+
+        if action == "review_docx":
+            review_result = tool_runner.call(
+                "review_docx",
+                {"path": str(docx_path), "ai_enabled": ai_enabled},
+                lambda docx_path=docx_path: review_docx(docx_path, ai_enabled=ai_enabled),
+            )
+            context["review_done"] = True
+            context["issue_count"] = int(review_result.get("issue_count", 0) or 0)
+            observation = f"Найдено замечаний: {context['issue_count']}."
+        elif action == "snapshot_docx":
+            before_snapshot = tool_runner.call(
+                "snapshot_docx",
+                {"path": str(docx_path)},
+                lambda docx_path=docx_path: _collect_docx_snapshot(docx_path),
+            )
+            context["snapshot_done"] = True
+            observation = f"Snapshot создан, локаций: {before_snapshot.get('paragraph_count', 0)}."
+        elif action == "apply_safe_fixes":
+            fix_result = tool_runner.call(
+                "apply_safe_fixes",
+                {"path": str(docx_path), "issue_count": int(review_result.get("issue_count", 0))},
+                lambda docx_path=docx_path, review_result=review_result: _auto_fix_docx(docx_path, review_result),
+            )
+            context["fix_done"] = True
+            context["applied_fix_count"] = int(fix_result.get("applied_fix_count", 0) or 0)
+            context["skipped_fix_count"] = int(fix_result.get("skipped_fix_count", 0) or 0)
+            observation = (
+                f"Применено правок: {context['applied_fix_count']}; "
+                f"отложено: {context['skipped_fix_count']}."
+            )
+        elif action == "verify_safe_fixes":
+            verification_result = tool_runner.call(
+                "verify_safe_fixes",
+                {"path": str(docx_path), "applied_fix_count": int(fix_result.get("applied_fix_count", 0))},
+                lambda docx_path=docx_path, before_snapshot=before_snapshot, fix_result=fix_result: _verify_safe_fixes(
+                    docx_path,
+                    before_snapshot,
+                    fix_result,
+                ),
+            )
+            context["verify_done"] = True
+            context["verification_warning_count"] = int(verification_result.get("warning_count", 0) or 0)
+            observation = f"Самопроверка завершена, предупреждений: {context['verification_warning_count']}."
+        elif action == "rebuild_pdf":
+            pdf_path = tool_runner.call(
+                "rebuild_pdf",
+                {"path": str(docx_path)},
+                lambda docx_path=docx_path: _rebuild_pdf_for_docx(docx_path),
+            )
+            context["pdf_rebuilt"] = True
+            observation = f"PDF пересобран: {bool(pdf_path)}."
+        elif action == "finish_document":
+            observation = "Документальный цикл завершен."
+            trace.append(
+                {
+                    "iteration": iteration,
+                    **decision,
+                    "observation": observation,
+                    "state": _compact_react_context(context),
+                }
+            )
+            break
+
+        trace.append(
+            {
+                "iteration": iteration,
+                **decision,
+                "observation": observation,
+                "state": _compact_react_context(context),
+            }
+        )
+    else:
+        trace.append(
+            {
+                "iteration": max_iterations,
+                "action": "max_iterations",
+                "thought": "Цикл достиг лимита итераций.",
+                "reason": "Нужна ручная проверка, чтобы не зациклиться.",
+                "source": "system",
+                "observation": "Документ не был завершен через finish_document.",
+                "state": _compact_react_context(context),
+            }
+        )
+
+    return {
+        "review_result": review_result,
+        "fix_result": fix_result,
+        "verification_result": verification_result,
+        "pdf_path": pdf_path,
+        "react_trace": trace,
+        "react_context": _compact_react_context(context),
+    }
+
+
 def _paragraph_is_safe_for_text_rewrite(paragraph) -> bool:
     non_empty_runs = [run for run in paragraph.runs if run.text]
     if len(non_empty_runs) <= 1:
@@ -610,6 +864,25 @@ def _format_fix_decision_details(documents: list[dict[str, Any]], limit: int = 6
     return "Решения по правкам:\n" + "\n".join(lines[:limit])
 
 
+def _format_react_trace_details(documents: list[dict[str, Any]], limit: int = 5) -> str:
+    lines: list[str] = []
+    for item in documents:
+        trace = item.get("react_trace") or []
+        if not trace:
+            continue
+        actions = [
+            f"{_safe_text(step.get('action'))}:{_safe_text(step.get('source'))}"
+            for step in trace
+            if _safe_text(step.get("action"))
+        ]
+        lines.append(f"{item['name']}: " + " -> ".join(actions[:8]))
+        if len(lines) >= limit:
+            break
+    if not lines:
+        return ""
+    return "ReAct-цикл:\n" + "\n".join(lines)
+
+
 def _format_rule_details(message: str) -> str:
     rules = find_relevant_rules(message, limit=4)
     if not rules:
@@ -684,6 +957,9 @@ def _format_philologist_structured_reply(message: str, state: dict[str, Any]) ->
     decision_details = _format_fix_decision_details(documents, limit=6)
     if decision_details:
         parts.append(decision_details)
+    react_details = _format_react_trace_details(documents, limit=5)
+    if react_details:
+        parts.append(react_details)
     parts.append(_format_fixed_details(fixed, limit=5) if fixed else "Исправил:\nАвтоматических исправлений не было.")
     skipped_details = _format_skipped_fix_details(documents, limit=5)
     if skipped_details:
@@ -789,6 +1065,7 @@ def run_philologist(
 
     started_at = perf_counter()
     processed_documents: list[dict[str, Any]] = []
+    react_client = _build_llm_client() if settings.orchestrator_mode == "agentic" else None
     for index, docx_path in enumerate(docx_paths, start=1):
         agent_loop.observe(
             "document_start",
@@ -796,39 +1073,16 @@ def run_philologist(
             step_id="review_docx",
             data={"index": index, "path": str(docx_path)},
         )
-        review_result = tool_runner.call(
-            "review_docx",
-            {"path": str(docx_path), "ai_enabled": ai_enabled},
-            lambda docx_path=docx_path: review_docx(docx_path, ai_enabled=ai_enabled),
+        react_result = _run_docx_react_loop(
+            docx_path=docx_path,
+            ai_enabled=ai_enabled,
+            tool_runner=tool_runner,
+            client=react_client,
         )
-        before_snapshot = tool_runner.call(
-            "snapshot_docx",
-            {"path": str(docx_path)},
-            lambda docx_path=docx_path: _collect_docx_snapshot(docx_path),
-        )
-        fix_result = tool_runner.call(
-            "apply_safe_fixes",
-            {"path": str(docx_path), "issue_count": int(review_result.get("issue_count", 0))},
-            lambda docx_path=docx_path, review_result=review_result: _auto_fix_docx(docx_path, review_result),
-        )
-        verification_result = tool_runner.call(
-            "verify_safe_fixes",
-            {"path": str(docx_path), "applied_fix_count": int(fix_result.get("applied_fix_count", 0))},
-            lambda docx_path=docx_path, before_snapshot=before_snapshot, fix_result=fix_result: _verify_safe_fixes(
-                docx_path,
-                before_snapshot,
-                fix_result,
-            ),
-        )
-        pdf_path = (
-            tool_runner.call(
-                "rebuild_pdf",
-                {"path": str(docx_path)},
-                lambda docx_path=docx_path: _rebuild_pdf_for_docx(docx_path),
-            )
-            if fix_result["applied_fix_count"] > 0
-            else None
-        )
+        review_result = react_result["review_result"]
+        fix_result = react_result["fix_result"]
+        verification_result = react_result["verification_result"]
+        pdf_path = react_result["pdf_path"]
 
         document_entry = {
             "index": index,
@@ -851,6 +1105,8 @@ def run_philologist(
             "verification": verification_result,
             "verification_warning_count": int(verification_result.get("warning_count", 0)),
             "verification_warnings": verification_result.get("warnings", []),
+            "react_trace": react_result.get("react_trace", []),
+            "react_context": react_result.get("react_context", {}),
             "updated_pdf": pdf_path,
         }
         processed_documents.append(document_entry)

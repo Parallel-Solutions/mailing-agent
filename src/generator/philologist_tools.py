@@ -13,6 +13,12 @@ def build_philologist_tool_manifest() -> list[dict[str, Any]]:
     """Describe the internal tool contract in a shape that can later become MCP."""
     return [
         {
+            "name": "react_decide_next_action",
+            "description": "Use the LLM ReAct controller to choose the next safe philologist tool from the allowlist.",
+            "input_schema": {"available_actions": "list[str]", "document_state": "dict"},
+            "output_schema": {"action": "str", "thought": "str", "reason": "str"},
+        },
+        {
             "name": "read_inflection_log",
             "description": "Read generator inflection decisions for the current job.",
             "input_schema": {"job_id": "str | None"},
