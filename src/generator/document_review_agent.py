@@ -66,6 +66,11 @@ BAD_UPPERCASE_WORDS = {
     "ДОГОВОР": "Договор",
     "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ": "Коммерческое предложение",
 }
+PROTECTED_UPPERCASE_HEADINGS = {
+    "ДОГОВОР",
+    "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ",
+}
+PROTECTED_ATTACHMENT_HEADING_PATTERN = re.compile(r"^Приложение\s+№\s+\d+\b", re.IGNORECASE)
 LEGAL_TERM_CASE_REPLACEMENTS = {
     "Выполнение Работ": "Выполнение работ",
     "нахождения Исполнителя": "нахождения исполнителя",
@@ -145,6 +150,18 @@ def _population_with_unit(number_text: str) -> str:
 def _title_case_locality_name(name: str) -> str:
     parts = [part for part in name.split("-") if part]
     return "-".join(part[:1].upper() + part[1:] for part in parts)
+
+
+def _is_protected_uppercase_heading(text: str, source: str) -> bool:
+    normalized = _safe_text(text).strip()
+    return normalized == source and normalized in PROTECTED_UPPERCASE_HEADINGS
+
+
+def _is_protected_legal_term_context(text: str, source: str) -> bool:
+    normalized = _safe_text(text).strip()
+    if source == "Приложение №" and PROTECTED_ATTACHMENT_HEADING_PATTERN.search(normalized):
+        return True
+    return False
 
 
 def _iter_docx_blocks(doc: Document) -> Iterable[tuple[str, str]]:
@@ -247,6 +264,8 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
         for source, replacement in BAD_UPPERCASE_WORDS.items():
             if source not in text:
                 continue
+            if _is_protected_uppercase_heading(text, source):
+                continue
             _add_local_replacement_issue(
                 issues,
                 location=location,
@@ -256,18 +275,19 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
                 severity="warning",
             )
 
-        if "1.2." in text or "Выполнение Работ" in text:
-            for source, replacement in LEGAL_TERM_CASE_REPLACEMENTS.items():
-                if source not in text:
-                    continue
-                _add_local_replacement_issue(
-                    issues,
-                    location=location,
-                    fragment=source,
-                    replacement=replacement,
-                    issue="В середине предложения используется лишняя заглавная буква.",
-                    severity="warning",
-                )
+        for source, replacement in LEGAL_TERM_CASE_REPLACEMENTS.items():
+            if source not in text:
+                continue
+            if _is_protected_legal_term_context(text, source):
+                continue
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment=source,
+                replacement=replacement,
+                issue="В середине предложения используется лишняя заглавная буква.",
+                severity="warning",
+            )
 
         for match in LOWERCASE_LOCALITY_PATTERN.finditer(text):
             prefix = match.group("prefix")
