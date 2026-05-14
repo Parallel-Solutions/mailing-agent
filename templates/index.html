@@ -1829,8 +1829,19 @@
     setPhilologistUiState({ status: 'running', total_documents: 0, processed_documents: 0 });
     appendChatMessage('g-chat', 'agent', 'Запускаю проверку документов. После завершения расскажу, что нашёл и что удалось исправить.');
     if (philologistStatusPoll) clearInterval(philologistStatusPoll);
-    philologistStatusPoll = setInterval(() => {
-      refreshPhilologistStatus({ silent: true });
+    philologistStatusPoll = setInterval(async () => {
+      const status = await refreshPhilologistStatus({ silent: true });
+      if (!status || status.status === 'running') return;
+      phRunning = false;
+      clearInterval(philologistStatusPoll);
+      philologistStatusPoll = null;
+      if (status.status === 'completed') {
+        showToast('Агент-филолог завершил работу');
+        appendChatMessage('g-chat', 'agent', status.summary_text || 'Агент-филолог завершил проверку документов.');
+      } else if (status.status === 'error') {
+        showToast('Ошибка агента-филолога');
+        appendChatMessage('g-chat', 'agent', status.summary_text || 'Проверка завершилась с ошибкой.');
+      }
     }, 3000);
     try {
       const res = await fetch('/api/philologist/run', {
@@ -1844,28 +1855,17 @@
       }
 
       const result = data.result || {};
-      const total = result.total_documents || 0;
-      const processed = result.processed_documents || 0;
-      const fixed = result.fixed_documents || 0;
-      const issueDocs = result.documents_with_issues || 0;
       setPhilologistUiState(result);
-      showToast('Агент-филолог завершил работу');
-        appendChatMessage(
-          'g-chat',
-          'agent',
-          result.summary_text || `Проверено ${processed} документов. Замечания есть в ${issueDocs}, автоматически исправлено ${fixed}.`
-        );
-      } catch (err) {
-      setPhilologistUiState({ status: 'error', summary_text: 'Проверка не завершилась' });
-      appendChatMessage('g-chat', 'agent', 'Не удалось завершить проверку: ' + err.message);
-      showToast('Ошибка агента-филолога');
-    } finally {
+      appendChatMessage('g-chat', 'agent', result.summary_text || 'Фоновая проверка документов запущена.');
+    } catch (err) {
       phRunning = false;
       if (philologistStatusPoll) {
         clearInterval(philologistStatusPoll);
         philologistStatusPoll = null;
       }
-      await refreshPhilologistStatus({ silent: true });
+      setPhilologistUiState({ status: 'error', summary_text: 'Проверка не завершилась' });
+      appendChatMessage('g-chat', 'agent', 'Не удалось завершить проверку: ' + err.message);
+      showToast('Ошибка агента-филолога');
     }
   }
   function pausePhilologist() {
