@@ -8,10 +8,10 @@ import sys
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.generator.ai_case_agent import collect_case_reviews
-from src.generator.config_generator import DATA_XLSX_PATH
-from src.generator.excel_io import load_rows
-from src.generator.transforms import build_document_context
+from src.generator.inflection.ai_case_agent import collect_case_reviews
+from src.generator.generation.config_generator import DATA_XLSX_PATH
+from src.generator.generation.excel_io import load_rows
+from src.generator.generation.transforms import build_document_context
 
 
 def parse_args() -> argparse.Namespace:
