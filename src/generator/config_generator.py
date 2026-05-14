@@ -66,6 +66,8 @@ RAG_SEMANTIC_WEIGHT = int(_read_env_override("RAG_SEMANTIC_WEIGHT", "30"))
 # AI-ревью готового документа
 ENABLE_DOCUMENT_REVIEW_AI = _read_env_override("ENABLE_DOCUMENT_REVIEW_AI", "1") == "1"
 DOCUMENT_REVIEW_MODEL = _read_env_override("DOCUMENT_REVIEW_MODEL", CASE_AGENT_MODEL)
+PHILOLOGIST_LLM_ROUTER = _read_env_override("PHILOLOGIST_LLM_ROUTER", "0") == "1"
+PHILOLOGIST_LLM_FIX_STRATEGY = _read_env_override("PHILOLOGIST_LLM_FIX_STRATEGY", "0") == "1"
 WEB_CASE_AGENT_MAX_WORKERS = max(1, int(_read_env_override("WEB_CASE_AGENT_MAX_WORKERS", "1")))
 
 # PDF-конвертация
