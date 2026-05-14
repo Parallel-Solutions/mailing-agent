@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 import httpx
@@ -111,6 +111,9 @@ def _convert_libreoffice_chunk(args: Tuple[str, List[str], str, str]) -> List[Tu
     return results
 
 
+ProgressCallback = Callable[[], None]
+
+
 def _convert_with_libreoffice(
     docx_paths: List[Path],
     output_dir: Path,
@@ -118,6 +121,7 @@ def _convert_with_libreoffice(
     chunk_size: int,
     worker_count: int,
     profiles_root: Optional[Path],
+    progress_callback: ProgressCallback | None = None,
 ) -> Dict[Path, Optional[Path]]:
     soffice = find_soffice()
     result: Dict[Path, Optional[Path]] = {path: None for path in docx_paths}
@@ -140,6 +144,8 @@ def _convert_with_libreoffice(
         for chunk_results in executor.map(_convert_libreoffice_chunk, tasks):
             for docx_path_str, pdf_path_str in chunk_results:
                 result[Path(docx_path_str)] = Path(pdf_path_str) if pdf_path_str else None
+            if progress_callback:
+                progress_callback()
     return result
 
 
@@ -302,6 +308,7 @@ def _convert_with_onlyoffice(
     output_dir: Path,
     *,
     worker_count: int,
+    progress_callback: ProgressCallback | None = None,
 ) -> Dict[Path, Optional[Path]]:
     result: Dict[Path, Optional[Path]] = {path: None for path in docx_paths}
     if not docx_paths or not ONLYOFFICE_BASE_URL:
@@ -311,6 +318,8 @@ def _convert_with_onlyoffice(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for docx_path, pdf_path in executor.map(lambda path: _convert_onlyoffice_single(path, output_dir), docx_paths):
             result[docx_path] = pdf_path
+            if progress_callback:
+                progress_callback()
     return result
 
 
@@ -334,6 +343,7 @@ def _run_backend(
     chunk_size: int,
     worker_count: int,
     profiles_root: Optional[Path],
+    progress_callback: ProgressCallback | None = None,
 ) -> Dict[Path, Optional[Path]]:
     if backend == "libreoffice":
         return _convert_with_libreoffice(
@@ -342,9 +352,10 @@ def _run_backend(
             chunk_size=chunk_size,
             worker_count=worker_count,
             profiles_root=profiles_root,
+            progress_callback=progress_callback,
         )
     if backend == "onlyoffice":
-        return _convert_with_onlyoffice(docx_paths, output_dir, worker_count=worker_count)
+        return _convert_with_onlyoffice(docx_paths, output_dir, worker_count=worker_count, progress_callback=progress_callback)
     return {path: None for path in docx_paths}
 
 
@@ -358,6 +369,7 @@ def convert_docx_batch(
     chunk_size: int = PDF_CHUNK_SIZE,
     worker_count: int = PDF_WORKERS,
     profiles_root: Optional[Path] = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> Dict[Path, Optional[Path]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     result: Dict[Path, Optional[Path]] = {path: None for path in docx_paths}
@@ -375,6 +387,7 @@ def convert_docx_batch(
             chunk_size=chunk_size,
             worker_count=worker_count,
             profiles_root=profiles_root,
+            progress_callback=progress_callback,
         )
         for docx_path, pdf_path in backend_result.items():
             if pdf_path is not None:
