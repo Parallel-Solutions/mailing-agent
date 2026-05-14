@@ -108,6 +108,7 @@ def build_agent_report(
         f"- Документов с автоправками: {philologist_state.get('fixed_documents', 0)}",
         f"- Решений по правкам: {_count_fix_decisions(philologist_state)}",
         f"- RAG-объяснений правок: {_count_rag_explanations(philologist_state)}",
+        f"- Предупреждений самопроверки: {_count_verification_warnings(philologist_state)}",
         "",
     ]
     plan = philologist_state.get("plan") or {}
@@ -164,6 +165,13 @@ def _count_rag_explanations(philologist_state: dict[str, Any]) -> int:
         for decision in document.get("fix_decisions") or []:
             if isinstance(decision, dict) and decision.get("rag"):
                 total += 1
+    return total
+
+
+def _count_verification_warnings(philologist_state: dict[str, Any]) -> int:
+    total = 0
+    for document in philologist_state.get("documents") or []:
+        total += int(document.get("verification_warning_count", 0) or 0)
     return total
 
 
@@ -524,6 +532,9 @@ def _build_philologist_candidates(job_id: str | None) -> list[dict[str, Any]]:
         for decision in document.get("fix_decisions") or []:
             if isinstance(decision, dict) and decision.get("action") in {"quarantine", "needs_human"}:
                 candidates.append(_philologist_decision_candidate(document, decision))
+        for warning in document.get("verification_warnings") or []:
+            if isinstance(warning, dict):
+                candidates.append(_philologist_verification_candidate(document, warning))
     return candidates
 
 
@@ -566,6 +577,27 @@ def _philologist_decision_candidate(document: dict[str, Any], decision: dict[str
         "rag_reason": (decision.get("rag") or {}).get("reason", ""),
         "rag_support_score": (decision.get("rag") or {}).get("support_score", ""),
         "rag_rules": _format_rag_rules(decision.get("rag") or {}),
+    }
+
+
+def _philologist_verification_candidate(document: dict[str, Any], warning: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidate_type": "philology_verification_warning",
+        "status": "needs_human_review",
+        "source": "philologist_self_check",
+        "row_id": document.get("row_id", ""),
+        "document": document.get("name", ""),
+        "location": warning.get("location", ""),
+        "action": "manual_style_review",
+        "issue": warning.get("message", ""),
+        "fragment": "",
+        "suggestion": "",
+        "reason": warning.get("reason", ""),
+        "confidence": "medium",
+        "rag_recommendation": "keep_in_quarantine",
+        "rag_reason": "Самопроверка DOCX обнаружила риск повреждения стиля или неожиданного изменения.",
+        "rag_support_score": "",
+        "rag_rules": "",
     }
 
 
