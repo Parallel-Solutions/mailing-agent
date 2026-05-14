@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from docx import Document
 
-from src.generator.philologist_agent import (
+from src.generator.philologist.philologist_agent import (
     _auto_fix_docx,
     _collect_docx_snapshot,
     _react_decide_fix_strategy,
@@ -14,8 +14,8 @@ from src.generator.philologist_agent import (
     _run_docx_react_loop,
     _verify_safe_fixes,
 )
-from src.generator.philologist_decisions import AUTO_FIX, QUARANTINE
-from src.generator.philologist_tools import PhilologistToolRunner
+from src.generator.philologist.philologist_decisions import AUTO_FIX, QUARANTINE
+from src.generator.philologist.philologist_tools import PhilologistToolRunner
 
 
 def _ru(value: str) -> str:

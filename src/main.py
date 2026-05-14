@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.generator.config_generator import (
+from src.generator.generation.config_generator import (
     BENCHMARK_ROW_LIMIT,
     BATCH_PDF_DIR,
     DATA_XLSX_PATH,
@@ -18,12 +18,12 @@ from src.generator.config_generator import (
     PDF_WORKERS,
     START_OUTGOING_NUMBER,
 )
-from src.generator.ai_case_agent import apply_case_agent_result, run_case_validation_agent
-from src.generator.document_review_agent import review_docx
-from src.generator.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
-from src.generator.excel_io import load_rows
-from src.generator.pdf_converter import convert_docx_batch
-from src.generator.transforms import build_document_context
+from src.generator.inflection.ai_case_agent import apply_case_agent_result, run_case_validation_agent
+from src.generator.philologist.document_review_agent import review_docx
+from src.generator.generation.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
+from src.generator.generation.excel_io import load_rows
+from src.generator.generation.pdf_converter import convert_docx_batch
+from src.generator.generation.transforms import build_document_context
 
 
 def cleanup_batch_pdf_dir() -> None:

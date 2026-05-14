@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from src.generator.config_generator import DATA_DIR
+from src.generator.generation.config_generator import DATA_DIR
 
 
 OVERRIDES_PATH = DATA_DIR / "knowledge" / "inflection_overrides.json"
