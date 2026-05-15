@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(".env", ".env.local"),
+        env_file=(".env", "env", ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore"
     )
@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     unisender_sender_name: str = "ООО «ПР»"
     unisender_sender_email: str = ""
     unisender_list_id: int = 1
+    mail_signature_image_url: str = ""
 
     inter_agent_handoffs_enabled: bool = False
     autonomous_workers_enabled: bool = False

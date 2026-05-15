@@ -69,7 +69,7 @@ DEFAULT_MAIL_FOOTER_TEXT = (
     "ООО «Параллельные Решения»\n"
     "https://www.parresh.ru/"
 )
-MAIL_FOOTER_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "parresh-signature-logo.png"
+MAIL_FOOTER_LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "parresh-signature-logo.png"
 MAIL_FOOTER_LOGO_CID = "parresh-signature-logo"
 MAIL_FOOTER_HTML_TEMPLATE = """
 <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:16px;border-collapse:collapse">
@@ -268,6 +268,9 @@ def _build_mail_footer_html(*, inline_image: bool = False) -> str:
 def _mail_footer_image_src(*, inline: bool = False) -> str:
     if inline:
         return f"cid:{MAIL_FOOTER_LOGO_CID}"
+    signature_image_url = _safe_text(settings.mail_signature_image_url).rstrip("/")
+    if signature_image_url:
+        return signature_image_url
     public_base_url = _safe_text(settings.public_base_url).rstrip("/")
     if public_base_url:
         return f"{public_base_url}/public/mail-signature.png"
