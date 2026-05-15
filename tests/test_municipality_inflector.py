@@ -7,28 +7,32 @@ from src.generator.inflection.inflect import inflect_sub_rf_genitive
 
 
 class MunicipalityInflectorTests(unittest.TestCase):
-    def test_city_component_is_inflected(self) -> None:
+    def test_city_component_is_preserved_inside_official_urban_settlement_name(self) -> None:
         self.assertEqual(
             inflect_mun_name_genitive("Городское поселение город Белебей").value,
-            "Городского поселения города Белебея",
+            "городского поселения город Белебей",
         )
         self.assertEqual(
             inflect_mun_name_genitive("Городское поселение город Баймак").value,
-            "Городского поселения города Баймака",
+            "городского поселения город Баймак",
         )
 
     def test_risky_localities_are_preserved(self) -> None:
         self.assertEqual(
             inflect_mun_name_genitive("Городское поселение Энем").value,
-            "Городского поселения Энем",
+            "городского поселения Энем",
         )
         self.assertEqual(
             inflect_mun_name_genitive("Сельское поселение село Болхуны").value,
-            "Сельского поселения села Болхуны",
+            "сельского поселения села Болхуны",
         )
         self.assertEqual(
             inflect_mun_name_genitive("Городское поселение город Учалы").value,
-            "Городского поселения города Учалы",
+            "городского поселения город Учалы",
+        )
+        self.assertEqual(
+            inflect_mun_name_genitive("Городское поселение Благовещенск").value,
+            "городского поселения Благовещенск",
         )
 
     def test_suffix_municipality_names_are_inflected(self) -> None:
@@ -44,11 +48,11 @@ class MunicipalityInflectorTests(unittest.TestCase):
     def test_hyphenated_selsovet_tail_is_inflected(self) -> None:
         self.assertEqual(
             inflect_mun_name_genitive("Сельское поселение Кшлау-Елгинский сельсовет").value,
-            "Сельского поселения Кшлау-Елгинского сельсовета",
+            "сельского поселения Кшлау-Елгинского сельсовета",
         )
         self.assertEqual(
             inflect_mun_name_prepositional("Сельское поселение Кшлау-Елгинский сельсовет").value,
-            "Сельском поселении Кшлау-Елгинском сельсовете",
+            "сельском поселении Кшлау-Елгинском сельсовете",
         )
 
     def test_hyphenated_proper_adjectives_preserve_name_components(self) -> None:
@@ -73,6 +77,14 @@ class MunicipalityInflectorTests(unittest.TestCase):
         self.assertEqual(
             inflect_mun_r_name_genitive("Белебеевский район").value,
             "Белебеевского района",
+        )
+        self.assertEqual(
+            inflect_mun_r_name_genitive("Муниципальный район Баймакский район").value,
+            "муниципального района Баймакский район",
+        )
+        self.assertEqual(
+            inflect_mun_r_name_genitive("Городской округ города Махачкалы").value,
+            "городского округа города Махачкалы",
         )
         self.assertEqual(
             inflect_sub_rf_genitive("Республика Башкортостан").value,

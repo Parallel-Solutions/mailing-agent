@@ -1,12 +1,25 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.utils.env import LOCAL_ENV_PATH
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(".env", "env", ".env.local"),
+        env_file=(LOCAL_ENV_PATH,),
         env_file_encoding="utf-8",
         extra="ignore"
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        return init_settings, dotenv_settings, env_settings, file_secret_settings
 
     # СБИС
     sbis_login: str = ""
@@ -20,7 +33,7 @@ class Settings(BaseSettings):
     app_port: int = 8000
     public_base_url: str = "https://31-130-150-209.sslip.io"
 
-    openai_api_key: str = "sk-PK3lARaSCCuZ6-fKKecF0w"
+    openai_api_key: str = ""
     openai_base_url: str = "https://api.vsellm.ru/v1"
     case_agent_model: str = "gpt-4o"
     enable_case_agent: bool = True
