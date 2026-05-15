@@ -1399,6 +1399,23 @@
         if (previousJobId && currentJobId && previousJobId !== currentJobId) {
           appendChatMessage('p-chat', 'agent', `Рабочая сессия обновлена: ${previousJobId} → ${currentJobId}. Шаблоны и данные теперь привязаны к новому job.`);
         }
+        const verification = data.municipality_name_verification || {};
+        if (verification.status === 'ok') {
+          const samples = Array.isArray(verification.replacement_samples) ? verification.replacement_samples : [];
+          const sampleText = samples.length
+            ? '\n\nЗаменены названия:\n' + samples.map(item => {
+                const row = item.row_id ? `${item.row_id}. ` : '';
+                return `${row}${item.from || 'пусто'} → ${item.to || 'пусто'}`;
+              }).join('\n') + (Number(verification.updated_rows || 0) > samples.length ? `\n...и еще ${Number(verification.updated_rows || 0) - samples.length}` : '')
+            : '';
+          appendChatMessage(
+            'p-chat',
+            'agent',
+            `Проверил официальные названия МО: строк ${verification.total_rows || 0}, через официальный поиск проверено ${verification.official_site_checked_rows || 0}, источников найдено ${verification.official_site_found_rows || 0}, подтверждено ${verification.verified_rows || 0}, заменено в MUN_NAME ${verification.updated_rows || 0}, оставлено без изменений ${verification.kept_rows || 0}.${sampleText}`
+          );
+        } else if (verification.status === 'error') {
+          appendChatMessage('p-chat', 'agent', `Не смог проверить официальные названия МО: ${verification.reason || 'неизвестная ошибка'}. Таблица загружена без блокировки.`);
+        }
         await refreshCounts();
         await refreshParserStatus({ silent: true });
         await refreshGeneratorStatus({ silent: true });
@@ -2552,11 +2569,30 @@
 
   setScenario(1);
 
+  let statusAutoRefreshInFlight = false;
+
+  async function refreshAllModuleStatuses({ silent = true } = {}) {
+    if (!currentJobId || statusAutoRefreshInFlight) return;
+    statusAutoRefreshInFlight = true;
+    try {
+      await Promise.allSettled([
+        refreshCounts(),
+        refreshParserStatus({ silent }),
+        refreshGeneratorStatus({ silent }),
+        refreshPhilologistStatus({ silent }),
+        refreshSenderStatus({ silent }),
+      ]);
+    } finally {
+      statusAutoRefreshInFlight = false;
+    }
+  }
+
   refreshCounts();
   refreshParserStatus({ silent: true });
   refreshGeneratorStatus({ silent: true });
   refreshPhilologistStatus({ silent: true });
   refreshSenderStatus({ silent: true });
+  setInterval(() => refreshAllModuleStatuses({ silent: true }), 2500);
 
   const senderPreviewButton = document.getElementById('s-run');
   if (senderPreviewButton) {

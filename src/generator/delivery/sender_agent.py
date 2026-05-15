@@ -1875,7 +1875,7 @@ def run_sender(
         state["rows"] = processed_entries
         _save_sender_state(state, job_id)
 
-        if not dry_run and entry.get("result") == "sent":
+        if not dry_run and entry.get("result") == "sent" and effective_transport != "unisender":
             delay_seconds = max(0.0, float(settings.sender_delay_seconds or 0))
             if delay_seconds > 0 and state["processed_rows"] < state["total_rows"]:
                 if not _wait_sender_delay(delay_seconds, state, job_id):
