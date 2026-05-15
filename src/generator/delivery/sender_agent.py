@@ -827,7 +827,7 @@ def _check_unisender_classic_messages(email_ids: list[str]) -> dict[str, dict[st
         _build_unisender_classic_url(UNISENDER_CLASSIC_CHECK_PATH),
         data=urlencode(params).encode("utf-8", errors="ignore"),
         method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"},
     )
     with urlopen(request, timeout=30) as response:
         raw = response.read().decode("utf-8", errors="replace")
@@ -1207,7 +1207,7 @@ def _send_via_unisender_classic(
         _build_unisender_classic_url(UNISENDER_CLASSIC_SEND_PATH),
         data=urlencode(payload).encode("utf-8", errors="ignore"),
         method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"},
     )
     with urlopen(request, timeout=60) as response:
         raw = response.read().decode("utf-8", errors="replace")
