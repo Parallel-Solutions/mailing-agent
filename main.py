@@ -241,7 +241,30 @@ async def upload_data(
     dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
-    return {"status": "ok", "filename": file.filename, "job_id": paths.job_id}
+    try:
+        base_xlsx_path = paths.base_xlsx if paths.base_xlsx.exists() else None
+        verification_result = verify_municipality_names_in_workbook(
+            dest,
+            use_official_sites=False,
+            base_xlsx_path=base_xlsx_path,
+        )
+    except Exception as exc:
+        logger.exception("municipality_name_verification_failed", path=str(dest))
+        verification_result = {
+            "status": "error",
+            "updated_rows": 0,
+            "verified_rows": 0,
+            "kept_rows": 0,
+            "replacements": [],
+            "replacement_samples": [],
+            "reason": str(exc),
+        }
+    return {
+        "status": "ok",
+        "filename": file.filename,
+        "job_id": paths.job_id,
+        "municipality_name_verification": verification_result,
+    }
 
 
 @app.get("/api/data/info")
@@ -251,6 +274,27 @@ async def data_info(job_id: str | None = None, username: str = Depends(check_aut
         return {"loaded": False, "total": 0}
     _, _, rows = load_rows(data_path)
     return {"loaded": True, "total": len(rows)}
+
+
+@app.post("/api/data/verify-municipality-names")
+async def data_verify_municipality_names(
+    payload: dict | None = Body(default=None),
+    username: str = Depends(check_auth),
+):
+    job_id = (payload or {}).get("job_id")
+    data_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
+    if not data_path.exists():
+        raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
+    job_paths = resolve_job_paths(job_id)
+    base_xlsx_path = job_paths.base_xlsx if job_paths.base_xlsx.exists() else None
+    return {
+        "status": "ok",
+        "result": verify_municipality_names_in_workbook(
+            data_path,
+            use_official_sites=False,
+            base_xlsx_path=base_xlsx_path,
+        ),
+    }
 
 
 @app.post("/api/upload/template")
@@ -298,6 +342,7 @@ from src.generator.generation.config_generator import (
     WEB_CASE_AGENT_MAX_WORKERS,
 )
 from src.generator.generation.pdf_converter import convert_docx_batch
+from src.generator.verification.municipality_name_verifier import verify_municipality_names_in_workbook
 from src.generator.inflection.ai_case_agent import (
     ENABLE_CASE_AGENT,
     CASE_AGENT_ONLY_SUSPICIOUS,
@@ -321,6 +366,10 @@ from src.generator.delivery.sender_agent import (
     preview_recipients,
     request_sender_stop,
     run_sender,
+)
+from src.generator.delivery.sender_report import (
+    build_unisender_delivery_report_xlsx,
+    unisender_delivery_report_has_data,
 )
 from src.generator.orchestration.parser_agent import (
     chat_with_parser,
@@ -346,6 +395,10 @@ from src.generator.knowledge.agent_memory import (
     save_agent_report,
     save_learning_memory_csv,
     save_quarantine_csv,
+)
+from src.generator.knowledge.correction_report import (
+    build_correction_report_xlsx,
+    correction_report_has_data,
 )
 from src.generator.case_engine.overrides import upsert_override
 from src.generator.inflection.inflection_report import load_inflection_log, save_inflection_csv
@@ -607,6 +660,18 @@ async def download_sent_mail_log(job_id: str | None = None, username: str = Depe
     )
 
 
+@app.get("/api/download/sender-delivery-report")
+async def download_sender_delivery_report(job_id: str | None = None, username: str = Depends(check_auth)):
+    if not unisender_delivery_report_has_data(job_id):
+        raise HTTPException(status_code=404, detail="Журнал отправки UniSender пока пуст. Сначала запустите отправщик через UniSender.")
+    report_path = build_unisender_delivery_report_xlsx(job_id, refresh=True)
+    return FileResponse(
+        report_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="unisender_delivery_report.xlsx",
+    )
+
+
 @app.get("/api/download/inflection-log")
 async def download_inflection_log(job_id: str | None = None, username: str = Depends(check_auth)):
     job_paths = resolve_job_paths(job_id)
@@ -674,6 +739,18 @@ async def download_agent_report(job_id: str | None = None, username: str = Depen
         report_path,
         media_type="text/plain; charset=utf-8",
         filename="agent_report.txt",
+    )
+
+
+@app.get("/api/download/correction-report")
+async def download_correction_report(job_id: str | None = None, username: str = Depends(check_auth)):
+    if not correction_report_has_data(job_id):
+        raise HTTPException(status_code=404, detail="Журнал исправлений пока пуст. Сначала запустите генератор/филолога.")
+    report_path = build_correction_report_xlsx(job_id)
+    return FileResponse(
+        report_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="journal_corrections_report.xlsx",
     )
 
 

@@ -34,6 +34,7 @@ from src.generator.generation.excel_io import load_rows
 from src.generator.generation.pdf_converter import convert_docx_batch
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
 from src.generator.generation.transforms import build_document_context
+from src.generator.verification.municipality_name_verifier import verify_municipality_names_in_workbook
 from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
 from src.utils.config import settings
 from src.utils.logger import logger
@@ -324,6 +325,7 @@ def run_generator_agent(
             ),
             "results": [],
             "inflection_summary": {},
+            "municipality_name_verification": {},
             "philologist_result": None,
             "task_stats": count_tasks_for_agent("generator", job_id),
             "tasks": get_tasks_for_agent("generator", job_id)[:20],
@@ -337,6 +339,25 @@ def run_generator_agent(
         state["summary_text"] = "Файл data.xlsx не найден."
         _save_generator_state(state, job_id)
         return dict(state)
+
+    try:
+        base_xlsx_path = job_paths.base_xlsx if job_paths.base_xlsx.exists() else None
+        municipality_verification = verify_municipality_names_in_workbook(
+            source_path,
+            use_official_sites=False,
+            base_xlsx_path=base_xlsx_path,
+        )
+    except Exception as exc:
+        logger.exception("generator_municipality_name_verification_failed", path=str(source_path))
+        municipality_verification = {
+            "status": "error",
+            "updated_rows": 0,
+            "verified_rows": 0,
+            "kept_rows": 0,
+            "reason": str(exc),
+        }
+    state["municipality_name_verification"] = municipality_verification
+    _save_generator_state(state, job_id)
 
     _, _, rows = load_rows(source_path)
     if not rows:

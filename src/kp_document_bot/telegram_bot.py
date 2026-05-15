@@ -37,24 +37,12 @@ else:
 
 
 def _read_env_value_from_project(key_name: str) -> Optional[str]:
-    direct_value = os.environ.get(key_name)
-    if direct_value:
-        return direct_value
+    try:
+        from src.utils.env import resolve_env_value
+    except ImportError:
+        from utils.env import resolve_env_value
 
-    project_root = Path(__file__).resolve().parents[2]
-    for env_path in (project_root / ".env", project_root / ".env.local"):
-        try:
-            if not env_path.exists():
-                continue
-            for line in env_path.read_text(encoding="utf-8-sig").splitlines():
-                if not line or line.lstrip().startswith("#") or "=" not in line:
-                    continue
-                raw_key, raw_value = line.split("=", 1)
-                if raw_key.strip() == key_name:
-                    return raw_value.strip().strip('"').strip("'")
-        except OSError:
-            continue
-    return None
+    return resolve_env_value(key_name)
 
 
 STATE_DIR = DATA_DIR / "telegram_state"

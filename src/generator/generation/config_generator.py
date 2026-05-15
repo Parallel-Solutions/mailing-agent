@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from src.utils.env import resolve_env_value
+
 
 BASE_DIR = Path(__file__).resolve().parents[3]
 DATA_DIR = BASE_DIR / "data"
@@ -29,23 +31,7 @@ BENCHMARK_ROW_LIMIT = 10
 
 
 def _read_env_override(key_name: str, default: str) -> str:
-    direct_value = os.environ.get(key_name)
-    if direct_value is not None:
-        return direct_value
-
-    for env_path in (BASE_DIR / ".env", BASE_DIR / ".env.local"):
-        try:
-            if not env_path.exists():
-                continue
-            for line in env_path.read_text(encoding="utf-8-sig").splitlines():
-                if not line or line.lstrip().startswith("#") or "=" not in line:
-                    continue
-                raw_key, raw_value = line.split("=", 1)
-                if raw_key.strip() == key_name:
-                    return raw_value.strip().strip('"').strip("'")
-        except OSError:
-            continue
-    return default
+    return resolve_env_value(key_name, default) or default
 
 
 # AI-агент проверки падежей

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +22,7 @@ from src.generator.inflection.inflect import (
     inflect_mun_name_project_form,
 )
 from src.generator.generation.transforms import ensure_official_district_wording
+from src.utils.env import read_env_file_value, resolve_env_value
 
 try:
     from openai import OpenAI  # type: ignore
@@ -45,74 +45,22 @@ TARGET_FIELDS = (
 
 
 def _read_env_value_from_file(env_path: Path, key_name: str) -> Optional[str]:
-    try:
-        if not env_path.exists():
-            return None
-        # Read UTF-8 env files with BOM safely so the first key is not lost.
-        for line in env_path.read_text(encoding="utf-8-sig").splitlines():
-            if not line or line.lstrip().startswith("#") or "=" not in line:
-                continue
-            raw_key, raw_value = line.split("=", 1)
-            if raw_key.strip() == key_name:
-                return raw_value.strip().strip('"').strip("'")
-    except OSError:
-        return None
-    return None
+    return read_env_file_value(key_name, env_path)
 
 
 def _resolve_openai_api_key() -> Optional[str]:
-    direct_key = (
-        os.environ.get("GENERATOR_OPENAI_API_KEY")
-        or os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("KEY")
-    )
-    if direct_key:
-        return direct_key
-
-    project_root = Path(__file__).resolve().parents[2]
-    candidate_env_files = [
-        project_root / ".env",
-        project_root / ".env.local",
-    ]
-    extra_env_path = os.environ.get("OPENAI_ENV_FALLBACK_PATH")
-    if extra_env_path:
-        candidate_env_files.append(Path(extra_env_path))
-    for env_path in candidate_env_files:
-        key_value = _read_env_value_from_file(env_path, "GENERATOR_OPENAI_API_KEY")
-        if key_value:
-            return key_value
-        key_value = _read_env_value_from_file(env_path, "OPENAI_API_KEY")
-        if key_value:
-            return key_value
-        key_value = _read_env_value_from_file(env_path, "KEY")
+    for key_name in ("GENERATOR_OPENAI_API_KEY", "OPENAI_API_KEY", "KEY"):
+        key_value = resolve_env_value(key_name)
         if key_value:
             return key_value
     return None
 
 
 def _resolve_openai_base_url() -> Optional[str]:
-    direct_base_url = (
-        os.environ.get("GENERATOR_OPENAI_BASE_URL")
-        or os.environ.get("OPENAI_BASE_URL")
-        or os.environ.get("VSELLM_BASE_URL")
-        or os.environ.get("VLLM_BASE_URL")
-    )
-    if direct_base_url:
-        return direct_base_url.strip().rstrip("/")
-
-    project_root = Path(__file__).resolve().parents[2]
-    candidate_env_files = [
-        project_root / ".env",
-        project_root / ".env.local",
-    ]
-    extra_env_path = os.environ.get("OPENAI_ENV_FALLBACK_PATH")
-    if extra_env_path:
-        candidate_env_files.append(Path(extra_env_path))
-    for env_path in candidate_env_files:
-        for key_name in ("GENERATOR_OPENAI_BASE_URL", "OPENAI_BASE_URL", "VSELLM_BASE_URL", "VLLM_BASE_URL"):
-            base_url = _read_env_value_from_file(env_path, key_name)
-            if base_url:
-                return base_url.strip().rstrip("/")
+    for key_name in ("GENERATOR_OPENAI_BASE_URL", "OPENAI_BASE_URL", "VSELLM_BASE_URL", "VLLM_BASE_URL"):
+        base_url = resolve_env_value(key_name)
+        if base_url:
+            return base_url.strip().rstrip("/")
     return None
 
 
@@ -724,12 +672,11 @@ def _looks_like_mechanical_mo_phrase(value: str) -> bool:
     text = _safe_str(value).lower()
     if not text:
         return False
-    odd_fragments = (
-        "городского поселения город ",
-        "городского поселения поселок ",
-        "городского поселения посёлок ",
-    )
-    return any(fragment in text for fragment in odd_fragments)
+    if re.search(r"\bгородского\s+поселения\s+города\s+[а-яё-]+а\b", text):
+        return True
+    if re.search(r"\bгородского\s+поселения\s+пос[её]лка\s+[а-яё-]+[аиы]\b", text):
+        return True
+    return False
 
 
 def _is_suspicious_mo_or_admin_result(field: str, value: str, context: dict) -> bool:
@@ -819,6 +766,13 @@ def _build_agent_prompt(reviews: List[CaseFieldReview]) -> str:
         "Не ориентируйся на старые примеры из шаблона как на эталон. "
         "Если внутри конструкции есть устойчивое официальное наименование, не "
         "склоняй его автоматически целиком без явной необходимости. "
+        "Для официальных названий вида 'Городское поселение город Баймак' или "
+        "'Городское поселение поселок Онохой' в косвенном падеже склоняй только "
+        "родовой компонент: 'городского поселения город Баймак', а внутренний "
+        "компонент 'город Баймак' / 'поселок Онохой' сохраняй как часть официального названия. "
+        "Для названий районов вида 'Муниципальный район Баймакский район' используй "
+        "'муниципального района Баймакский район', не превращай это в "
+        "'Муниципального района Баймакского района'. "
         "Если во входной строке есть сокращения или неровные обозначения населенного пункта "
         "вроде 'пгт', 'г.', 'г', 'пос.', 'поселок', 'город', ты должен привести вставку к "
         "нормальной официально-деловой форме для итогового документа, а не просто копировать "

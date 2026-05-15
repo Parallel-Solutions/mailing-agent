@@ -62,29 +62,29 @@ _URBAN_LOCALITY_MARKERS = {
 
 _MUNICIPALITY_PREFIXES = {
     "городское поселение": {
-        "genitive": "Городского поселения",
-        "project_genitive": "Городского поселения",
-        "prepositional": "Городском поселении",
+        "genitive": "городского поселения",
+        "project_genitive": "городского поселения",
+        "prepositional": "городском поселении",
     },
     "сельское поселение": {
-        "genitive": "Сельского поселения",
-        "project_genitive": "Сельского поселения",
-        "prepositional": "Сельском поселении",
+        "genitive": "сельского поселения",
+        "project_genitive": "сельского поселения",
+        "prepositional": "сельском поселении",
     },
     "городской округ": {
-        "genitive": "Городского округа",
-        "project_genitive": "Городского округа",
-        "prepositional": "Городском округе",
+        "genitive": "городского округа",
+        "project_genitive": "городского округа",
+        "prepositional": "городском округе",
     },
     "муниципальный округ": {
-        "genitive": "Муниципального округа",
-        "project_genitive": "Муниципального округа",
-        "prepositional": "Муниципальном округе",
+        "genitive": "муниципального округа",
+        "project_genitive": "муниципального округа",
+        "prepositional": "муниципальном округе",
     },
     "муниципальный район": {
-        "genitive": "Муниципального района",
-        "project_genitive": "Муниципального района",
-        "prepositional": "Муниципальном районе",
+        "genitive": "муниципального района",
+        "project_genitive": "муниципального района",
+        "prepositional": "муниципальном районе",
     },
 }
 
@@ -128,6 +128,16 @@ def inflect_municipal_district_genitive(name: str) -> MunicipalityInflection:
         return MunicipalityInflection("", False, "empty")
 
     lowered = normalized.casefold()
+    for prefix, replacement in (
+        ("Муниципальный район ", "муниципального района"),
+        ("Муниципальный округ ", "муниципального округа"),
+        ("Городской округ ", "городского округа"),
+    ):
+        if _starts_with_ci(normalized, prefix):
+            tail = normalized[len(prefix) :].strip()
+            value = f"{replacement} {tail}".strip()
+            return MunicipalityInflection(value, value != normalized, "component_rule")
+
     for suffix, replacement in (
         (" муниципальный район", "муниципального района"),
         (" муниципальный округ", "муниципального округа"),
@@ -138,17 +148,6 @@ def inflect_municipal_district_genitive(name: str) -> MunicipalityInflection:
             head = normalized[: -len(suffix)].strip()
             head_value = _phrase_inflect(head, {"gent"}) if head else ""
             value = f"{head_value} {replacement}".strip()
-            return MunicipalityInflection(value, value != normalized, "component_rule")
-
-    for prefix, replacement in (
-        ("Муниципальный район ", "муниципального района"),
-        ("Муниципальный округ ", "муниципального округа"),
-        ("Городской округ ", "городского округа"),
-    ):
-        if _starts_with_ci(normalized, prefix):
-            tail = normalized[len(prefix) :].strip()
-            tail_value = _phrase_inflect(tail, {"gent"})
-            value = f"{tail_value} {replacement}".strip()
             return MunicipalityInflection(value, value != normalized, "component_rule")
 
     value = _phrase_inflect(normalized, {"gent"})
@@ -203,10 +202,7 @@ def _inflect_municipality_tail(tail: str, target_case: str) -> tuple[str, str, t
     if _is_safe_to_keep_locality(tail):
         return tail, "conservative", (f"Locality kept unchanged: {tail}",)
 
-    value = _inflect_locality_name(tail, _CASE_GRAMMEMES[target_case])
-    confidence = "component_rule" if value != tail else "conservative"
-    warnings = () if value != tail else (f"Locality kept unchanged: {tail}",)
-    return value, confidence, warnings
+    return tail, "conservative", (f"Official municipality tail kept unchanged: {tail}",)
 
 
 def _inflect_locality_marker_tail(tail: str, target_case: str) -> tuple[str, str, tuple[str, ...]] | None:
@@ -218,6 +214,9 @@ def _inflect_locality_marker_tail(tail: str, target_case: str) -> tuple[str, str
     marker_forms = _URBAN_LOCALITY_MARKERS.get(marker) or _RURAL_LOCALITY_MARKERS.get(marker)
     if not marker_forms:
         return None
+
+    if marker in _URBAN_LOCALITY_MARKERS:
+        return tail, "conservative", (f"Official urban locality marker kept unchanged: {tail}",)
 
     marker_value = marker_forms[target_case]
     if not rest:
