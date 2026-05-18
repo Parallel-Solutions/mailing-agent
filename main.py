@@ -223,6 +223,13 @@ def _clone_job_templates_if_present(source_job_id: str | None, target_job_id: st
             continue
         shutil.copy2(source_path, target_dir / source_path.name)
 
+
+def _build_oktmo_lookup() -> OktmoMunicipalityLookup:
+    return OktmoMunicipalityLookup(
+        csv_path=Path(settings.municipality_oktmo_csv_path) if settings.municipality_oktmo_csv_path else None,
+        verify_ssl=settings.municipality_oktmo_verify_ssl,
+    )
+
 @app.post("/api/upload/data")
 async def upload_data(
     file: UploadFile = File(...),
@@ -242,11 +249,12 @@ async def upload_data(
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     try:
-        base_xlsx_path = paths.base_xlsx if paths.base_xlsx.exists() else None
         verification_result = verify_municipality_names_in_workbook(
             dest,
-            use_official_sites=False,
-            base_xlsx_path=base_xlsx_path,
+            use_official_sites=settings.municipality_official_sites_enabled,
+            use_oktmo=settings.municipality_oktmo_lookup_enabled,
+            oktmo_lookup=_build_oktmo_lookup() if settings.municipality_oktmo_lookup_enabled else None,
+            use_minjust=settings.municipality_minjust_lookup_enabled,
         )
     except Exception as exc:
         logger.exception("municipality_name_verification_failed", path=str(dest))
@@ -285,14 +293,14 @@ async def data_verify_municipality_names(
     data_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
     if not data_path.exists():
         raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
-    job_paths = resolve_job_paths(job_id)
-    base_xlsx_path = job_paths.base_xlsx if job_paths.base_xlsx.exists() else None
     return {
         "status": "ok",
         "result": verify_municipality_names_in_workbook(
             data_path,
-            use_official_sites=False,
-            base_xlsx_path=base_xlsx_path,
+            use_official_sites=settings.municipality_official_sites_enabled,
+            use_oktmo=settings.municipality_oktmo_lookup_enabled,
+            oktmo_lookup=_build_oktmo_lookup() if settings.municipality_oktmo_lookup_enabled else None,
+            use_minjust=settings.municipality_minjust_lookup_enabled,
         ),
     }
 
@@ -343,6 +351,7 @@ from src.generator.generation.config_generator import (
 )
 from src.generator.generation.pdf_converter import convert_docx_batch
 from src.generator.verification.municipality_name_verifier import verify_municipality_names_in_workbook
+from src.generator.verification.oktmo_municipality_lookup import OktmoMunicipalityLookup
 from src.generator.inflection.ai_case_agent import (
     ENABLE_CASE_AGENT,
     CASE_AGENT_ONLY_SUSPICIOUS,

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import requests
 from openpyxl import load_workbook
+
+from src.generator.verification.minjust_municipality_lookup import MinjustMunicipalityLookup
+from src.generator.verification.oktmo_municipality_lookup import OktmoMunicipalityLookup
+from src.utils.config import settings
 
 
 HEADER_ROW = 2
@@ -32,9 +38,6 @@ VERIFICATION_COLUMNS = (
     URL_COLUMN,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_BASE_XLSX_PATH = PROJECT_ROOT / "service_docs" / "base.xlsx"
-
 ADMINISTRATION_PREFIX_RE = re.compile(
     r"^\s*(?:администрация|администрации)\s+(?:муниципального\s+образования\s+)?",
     re.IGNORECASE,
@@ -48,6 +51,11 @@ MUNICIPAL_FORM_RE = re.compile(
     re.IGNORECASE,
 )
 QUOTE_RE = re.compile(r"[\"«„](.*?)[\"»“]")
+LOCAL_ADMINISTRATION_WRAPPER_RE = re.compile(
+    r"^(?:муниципальное\s+учреждение\s+)?местная\s+администрация\s+"
+    r"(?:сельского|городского)\s+поселения\s+",
+    re.IGNORECASE,
+)
 OFFICIAL_SITE_EXCLUDED_DOMAINS = (
     "audit-it.ru",
     "checko.ru",
@@ -81,6 +89,11 @@ OFFICIAL_SITE_URL_HINTS = (
     "selsovet",
     "сельсовет",
 )
+FORBIDDEN_MUNICIPALITY_NAME_FRAGMENTS = (
+    "администрация",
+    "муниципальное учреждение",
+    "местная администрация",
+)
 
 
 @dataclass(frozen=True)
@@ -105,19 +118,96 @@ class OfficialSiteMatch:
     title: str
     content: str
     score: int
+    matched_name: str = ""
+    evidence: str = ""
 
 
 @dataclass(frozen=True)
-class BaseMunicipalityEntry:
-    sub_rf: str
-    mun_r_name: str
-    mun_name: str
+class SearchResultSnippet:
+    url: str
+    title: str
+    content: str
+
+
+class OfficialSiteLookup:
+    SEARCH_URL = "https://yandex.ru/search/?text={query}"
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 15.0,
+        verify_ssl: bool = True,
+        fetcher: Any | None = None,
+    ) -> None:
+        self.timeout_seconds = timeout_seconds
+        self.verify_ssl = verify_ssl
+        self.fetcher = fetcher
+        self.disabled_reason = ""
+
+    def confirm(
+        self,
+        row: dict[str, Any],
+        candidate_names: list[str],
+    ) -> OfficialSiteMatch | None:
+        queries = _build_official_site_queries(row, candidate_names)
+        if not queries:
+            return None
+
+        best_match: OfficialSiteMatch | None = None
+        for query in queries:
+            search_url = self.SEARCH_URL.format(query=requests.utils.quote(query))
+            search_html = self._fetch_text(search_url)
+            if not search_html:
+                continue
+            snippets = _parse_yandex_search_results(search_html)
+            for snippet in snippets[:8]:
+                page_title, page_content = self._load_page_context(snippet.url)
+                merged_title = page_title or snippet.title
+                merged_content = " ".join(part for part in (snippet.content, page_content) if part).strip()
+                match = _official_site_match_from_search_result(
+                    {
+                        "url": snippet.url,
+                        "title": merged_title,
+                        "content": merged_content,
+                    },
+                    row,
+                    candidate_names=candidate_names,
+                )
+                if not match:
+                    continue
+                if not best_match or match.score > best_match.score:
+                    best_match = match
+        return best_match
+
+    def _load_page_context(self, url: str) -> tuple[str, str]:
+        page_html = self._fetch_text(url)
+        if not page_html:
+            return "", ""
+        return _extract_html_title(page_html), _html_to_text(page_html, limit=12000)
+
+    def _fetch_text(self, url: str) -> str:
+        try:
+            if self.fetcher:
+                return str(self.fetcher(url, self.timeout_seconds, self.verify_ssl) or "")
+            response = requests.get(
+                url,
+                timeout=(5, self.timeout_seconds),
+                verify=self.verify_ssl,
+                headers={"User-Agent": "Mozilla/5.0 mailing-agent municipality verifier"},
+            )
+            response.raise_for_status()
+            response.encoding = response.encoding or "utf-8"
+            return response.text
+        except requests.RequestException as exc:
+            self.disabled_reason = str(exc) or exc.__class__.__name__
+            return ""
 
 
 def verify_municipality_name(
     row: dict[str, Any],
     *,
-    base_entries: list[BaseMunicipalityEntry] | None = None,
+    oktmo_lookup: OktmoMunicipalityLookup | None = None,
+    minjust_lookup: MinjustMunicipalityLookup | None = None,
 ) -> MunicipalityNameVerification:
     """Choose the best local official-name candidate from row data.
 
@@ -129,21 +219,19 @@ def verify_municipality_name(
     current_name = _clean(row.get(MUN_NAME_COLUMN))
     adm_name = _clean(row.get(ADM_NAME_COLUMN))
 
-    base_name = _find_base_municipality_name(row, base_entries or [])
-    if base_name:
-        return MunicipalityNameVerification(
-            row_id=_clean(row.get("ID")),
-            original_name=current_name,
-            official_name=normalize_municipality_display_name(base_name),
-            status="verified",
-            confidence="high",
-            source="base.xlsx",
-            reason="Название подтверждено локальной базой муниципальных образований по субъекту, району и типу МО.",
-        )
-
     quoted_candidate = _extract_quoted_municipality_name(adm_name, current_name)
     if quoted_candidate:
         normalized = normalize_municipality_display_name(quoted_candidate)
+        if not _candidate_is_safe_for_autoreplace(normalized, current_name):
+            return MunicipalityNameVerification(
+                row_id=_clean(row.get("ID")),
+                original_name=current_name,
+                official_name=normalize_municipality_display_name(current_name) or normalized,
+                status="kept",
+                confidence="medium",
+                source="ADM_NAME",
+                reason="Из ADM_NAME извлечен кандидат, но он слишком сильно расходится с исходным MUN_NAME или выглядит как название администрации; автозамена отключена до внешнего подтверждения.",
+            )
         return MunicipalityNameVerification(
             row_id=_clean(row.get("ID")),
             original_name=current_name,
@@ -153,6 +241,85 @@ def verify_municipality_name(
             source="ADM_NAME",
             reason="Название извлечено из кавычек в полном названии администрации.",
         )
+
+    adm_candidate = extract_municipality_name_from_administration(adm_name)
+    if adm_candidate:
+        normalized = normalize_municipality_display_name(adm_candidate)
+        if not _candidate_is_safe_for_autoreplace(normalized, current_name):
+            return MunicipalityNameVerification(
+                row_id=_clean(row.get("ID")),
+                original_name=current_name,
+                official_name=normalize_municipality_display_name(current_name) or normalized,
+                status="kept",
+                confidence="medium",
+                source="ADM_NAME",
+                reason="Из ADM_NAME извлечен кандидат, но автозамена отключена: название похоже на служебную формулировку или меняет основной топоним без внешнего подтверждения.",
+            )
+        if oktmo_lookup:
+            oktmo_result = oktmo_lookup.confirm(row, normalized)
+            if oktmo_result:
+                return MunicipalityNameVerification(
+                    row_id=_clean(row.get("ID")),
+                    original_name=current_name,
+                    official_name=normalize_municipality_display_name(oktmo_result.name),
+                    status="verified",
+                    confidence="high",
+                    source="oktmo+ADM_NAME",
+                    reason=(
+                        "Название извлечено из ADM_NAME и подтверждено официальным "
+                        f"классификатором ОКТМО Росстата; код ОКТМО {oktmo_result.oktmo_code}."
+                    ),
+                    source_url=oktmo_result.source_url,
+                )
+        if minjust_lookup:
+            minjust_result = minjust_lookup.confirm(row, normalized)
+            if minjust_result:
+                return MunicipalityNameVerification(
+                    row_id=_clean(row.get("ID")),
+                    original_name=current_name,
+                    official_name=normalize_municipality_display_name(minjust_result.name),
+                    status="verified",
+                    confidence="high",
+                    source="minjust",
+                    reason="Название извлечено из ADM_NAME и подтверждено реестром муниципальных образований Минюста России.",
+                    source_url=minjust_result.source_url,
+                )
+        if current_name and _normalize_for_match(current_name) == _normalize_for_match(normalized):
+            return MunicipalityNameVerification(
+                row_id=_clean(row.get("ID")),
+                original_name=current_name,
+                official_name=normalized,
+                status="verified",
+                confidence="medium",
+                source="ADM_NAME+MUN_NAME",
+                reason="Название извлечено из полного названия администрации без кавычек и совпадает с MUN_NAME; замена не требуется.",
+            )
+        return MunicipalityNameVerification(
+            row_id=_clean(row.get("ID")),
+            original_name=current_name,
+            official_name=normalized,
+            status="kept",
+            confidence="medium",
+            source="ADM_NAME",
+            reason="Кандидат извлечен из полного названия администрации без кавычек, но без сильного внешнего подтверждения исходный MUN_NAME оставлен.",
+        )
+
+    if current_name and oktmo_lookup:
+        oktmo_result = oktmo_lookup.confirm(row, current_name)
+        if oktmo_result:
+            return MunicipalityNameVerification(
+                row_id=_clean(row.get("ID")),
+                original_name=current_name,
+                official_name=normalize_municipality_display_name(oktmo_result.name),
+                status="verified",
+                confidence="high",
+                source="oktmo",
+                reason=(
+                    "Исходный MUN_NAME сверен с официальным классификатором ОКТМО Росстата; "
+                    f"код ОКТМО {oktmo_result.oktmo_code}."
+                ),
+                source_url=oktmo_result.source_url,
+            )
 
     if _adm_name_confirms_current_municipality(adm_name, current_name):
         return MunicipalityNameVerification(
@@ -204,7 +371,11 @@ def verify_municipality_names_in_workbook(
     xlsx_path: Path,
     *,
     use_official_sites: bool = False,
-    base_xlsx_path: Path | None = None,
+    use_oktmo: bool = False,
+    oktmo_lookup: OktmoMunicipalityLookup | None = None,
+    official_site_lookup: OfficialSiteLookup | None = None,
+    use_minjust: bool = True,
+    minjust_lookup: MinjustMunicipalityLookup | None = None,
 ) -> dict[str, Any]:
     """Update data.xlsx with municipality-name verification.
 
@@ -216,7 +387,18 @@ def verify_municipality_names_in_workbook(
     workbook = load_workbook(xlsx_path)
     worksheet = workbook[workbook.sheetnames[0]]
     header_map = _ensure_headers(worksheet)
-    base_entries = load_base_municipality_entries(base_xlsx_path)
+    oktmo_lookup = oktmo_lookup if use_oktmo else None
+    if use_oktmo and oktmo_lookup is None:
+        oktmo_lookup = OktmoMunicipalityLookup()
+    official_site_lookup = official_site_lookup if use_official_sites else None
+    if use_official_sites and official_site_lookup is None:
+        official_site_lookup = OfficialSiteLookup(
+            timeout_seconds=settings.municipality_official_sites_timeout_seconds,
+            verify_ssl=settings.municipality_official_sites_verify_ssl,
+        )
+    minjust_lookup = minjust_lookup if use_minjust else None
+    if use_minjust and minjust_lookup is None:
+        minjust_lookup = MinjustMunicipalityLookup()
 
     mun_col = header_map.get(MUN_NAME_COLUMN)
     if not mun_col:
@@ -241,8 +423,15 @@ def verify_municipality_names_in_workbook(
         "official_site_checked_rows": 0,
         "official_site_found_rows": 0,
         "official_site_error_rows": 0,
+        "official_site_lookup_enabled": bool(official_site_lookup),
+        "official_site_lookup_disabled_reason": "",
+        "oktmo_lookup_enabled": bool(oktmo_lookup),
+        "oktmo_lookup_disabled_reason": "",
+        "minjust_lookup_enabled": bool(minjust_lookup),
+        "minjust_lookup_disabled_reason": "",
         "replacements": [],
         "replacement_samples": [],
+        "decision_samples": [],
     }
 
     for row_index in range(DATA_START_ROW, worksheet.max_row + 1):
@@ -250,9 +439,9 @@ def verify_municipality_names_in_workbook(
         if not any(value not in (None, "") for value in row.values()):
             continue
         stats["total_rows"] += 1
-        verification = verify_municipality_name(row, base_entries=base_entries)
-        if use_official_sites:
-            verification = _verify_with_official_site(row, verification, stats)
+        verification = verify_municipality_name(row, oktmo_lookup=oktmo_lookup, minjust_lookup=minjust_lookup)
+        if official_site_lookup:
+            verification = _verify_with_official_site(row, verification, stats, official_site_lookup)
         _write_verification(worksheet, header_map, row_index, verification)
 
         if verification.status == "verified":
@@ -276,6 +465,27 @@ def verify_municipality_names_in_workbook(
             stats["replacements"].append(replacement)
             if len(stats["replacement_samples"]) < 20:
                 stats["replacement_samples"].append(replacement)
+        if len(stats["decision_samples"]) < 20:
+            stats["decision_samples"].append(
+                {
+                    "row_id": verification.row_id or str(row_index - HEADER_ROW),
+                    "original_name": current_name,
+                    "official_name": verification.official_name,
+                    "status": verification.status,
+                    "confidence": verification.confidence,
+                    "source": verification.source,
+                    "reason": verification.reason,
+                    "source_url": verification.source_url,
+                    "auto_replaced": bool(verification.should_replace and verification.official_name != current_name),
+                }
+            )
+
+    if official_site_lookup and official_site_lookup.disabled_reason:
+        stats["official_site_lookup_disabled_reason"] = official_site_lookup.disabled_reason
+    if oktmo_lookup and oktmo_lookup.disabled_reason:
+        stats["oktmo_lookup_disabled_reason"] = oktmo_lookup.disabled_reason
+    if minjust_lookup and minjust_lookup.disabled_reason:
+        stats["minjust_lookup_disabled_reason"] = minjust_lookup.disabled_reason
 
     workbook.save(xlsx_path)
     workbook.close()
@@ -286,10 +496,17 @@ def _verify_with_official_site(
     row: dict[str, Any],
     local_verification: MunicipalityNameVerification,
     stats: dict[str, Any],
+    official_site_lookup: OfficialSiteLookup,
 ) -> MunicipalityNameVerification:
+    if local_verification.should_replace:
+        return local_verification
     stats["official_site_checked_rows"] += 1
     try:
-        match = find_official_site_for_municipality(row)
+        match = find_official_site_for_municipality(
+            row,
+            verification=local_verification,
+            lookup=official_site_lookup,
+        )
     except Exception as exc:
         stats["official_site_error_rows"] += 1
         return _with_reason_suffix(
@@ -301,20 +518,27 @@ def _verify_with_official_site(
         return _with_reason_suffix(local_verification, "Официальный сайт по строке не найден.")
 
     stats["official_site_found_rows"] += 1
-    if local_verification.status == "verified":
+    current_name = _clean(row.get(MUN_NAME_COLUMN))
+    expected_name = normalize_municipality_display_name(local_verification.official_name)
+    matched_name = normalize_municipality_display_name(match.matched_name)
+    source_label = match.title or match.url
+
+    if matched_name and expected_name and _normalize_for_match(matched_name) == _normalize_for_match(expected_name):
         return MunicipalityNameVerification(
             row_id=local_verification.row_id,
             original_name=local_verification.original_name,
-            official_name=local_verification.official_name,
+            official_name=matched_name,
             status="verified",
-            confidence="high" if local_verification.confidence == "high" else "medium",
+            confidence="high",
             source=f"{local_verification.source}+official_site",
-            reason=f"{local_verification.reason} Найден официальный источник: {match.title or match.url}.",
+            reason=(
+                f"{local_verification.reason} Официальный сайт подтвердил форму "
+                f"«{matched_name}»: {source_label}. {match.evidence}".strip()
+            ),
             source_url=match.url,
         )
 
-    current_name = _clean(row.get(MUN_NAME_COLUMN))
-    if current_name and _text_contains_municipality_name(f"{match.title} {match.content}", current_name):
+    if matched_name and current_name and _normalize_for_match(matched_name) == _normalize_for_match(current_name):
         return MunicipalityNameVerification(
             row_id=local_verification.row_id,
             original_name=local_verification.original_name,
@@ -322,7 +546,7 @@ def _verify_with_official_site(
             status="verified",
             confidence="medium",
             source="official_site",
-            reason=f"MUN_NAME найден в официальном источнике: {match.title or match.url}. Замена не требуется.",
+            reason=f"MUN_NAME найден на официальном сайте: {source_label}. Замена не требуется. {match.evidence}".strip(),
             source_url=match.url,
         )
 
@@ -333,54 +557,118 @@ def _verify_with_official_site(
         status=local_verification.status,
         confidence=local_verification.confidence,
         source=f"{local_verification.source}+official_site",
-        reason=f"{local_verification.reason} Официальный источник найден, но название в сниппете не подтверждено автоматически.",
+        reason=(
+            f"{local_verification.reason} Официальный сайт найден ({source_label}), "
+            "но сильного подтверждения для автозамены не получено."
+        ),
         source_url=match.url,
     )
 
 
-def find_official_site_for_municipality(row: dict[str, Any]) -> OfficialSiteMatch | None:
-    try:
-        from tavily import TavilyClient
-        from src.utils.config import settings
-    except Exception:
-        return None
-
-    if not settings.tavily_api_key:
-        return None
-
-    query = _build_official_site_query(row)
-    if not query:
-        return None
-
-    client = TavilyClient(api_key=settings.tavily_api_key)
-    response = client.search(
-        query=query,
-        search_depth="basic",
-        max_results=8,
-        include_answer=False,
+def find_official_site_for_municipality(
+    row: dict[str, Any],
+    *,
+    verification: MunicipalityNameVerification | None = None,
+    lookup: OfficialSiteLookup | None = None,
+) -> OfficialSiteMatch | None:
+    lookup = lookup or OfficialSiteLookup(
+        timeout_seconds=settings.municipality_official_sites_timeout_seconds,
+        verify_ssl=settings.municipality_official_sites_verify_ssl,
     )
-    matches = [
-        match
-        for result in response.get("results", [])
-        if (match := _official_site_match_from_search_result(result, row))
-    ]
-    if not matches:
-        return None
-    return sorted(matches, key=lambda item: item.score, reverse=True)[0]
+    candidate_names = _build_official_site_candidates(row, verification)
+    return lookup.confirm(row, candidate_names)
 
 
-def _build_official_site_query(row: dict[str, Any]) -> str:
+def _build_official_site_query(row: dict[str, Any], candidate_name: str = "") -> str:
     adm_name = _clean(row.get(ADM_NAME_COLUMN))
     mun_name = _clean(row.get(MUN_NAME_COLUMN))
     sub_rf = _clean(row.get("SUB_RF"))
+    district = _clean(row.get("MUN_R_NAME"))
+    base_name = _clean(candidate_name) or mun_name
     if adm_name:
-        return f'"{adm_name}" официальный сайт администрация'
-    if mun_name:
-        return f'"{mun_name}" официальный сайт администрация {sub_rf}'.strip()
+        return f'"{adm_name}" официальный сайт администрация {sub_rf}'.strip()
+    if base_name:
+        return f'"{base_name}" официальный сайт администрация {district} {sub_rf}'.strip()
     return ""
 
 
-def _official_site_match_from_search_result(result: dict[str, Any], row: dict[str, Any]) -> OfficialSiteMatch | None:
+def _build_official_site_queries(row: dict[str, Any], candidate_names: list[str]) -> list[str]:
+    queries: list[str] = []
+    for candidate_name in candidate_names[:4]:
+        query = _build_official_site_query(row, candidate_name)
+        if query and query not in queries:
+            queries.append(query)
+    fallback_query = _build_official_site_query(row)
+    if fallback_query and fallback_query not in queries:
+        queries.append(fallback_query)
+    return queries
+
+
+def _build_official_site_candidates(
+    row: dict[str, Any],
+    verification: MunicipalityNameVerification | None = None,
+) -> list[str]:
+    candidates: list[str] = []
+    for value in (
+        verification.official_name if verification else "",
+        extract_municipality_name_from_administration(_clean(row.get(ADM_NAME_COLUMN))),
+        _extract_quoted_municipality_name(_clean(row.get(ADM_NAME_COLUMN)), _clean(row.get(MUN_NAME_COLUMN))),
+        _clean(row.get(MUN_NAME_COLUMN)),
+    ):
+        normalized = normalize_municipality_display_name(value)
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+    return candidates
+
+
+def _parse_yandex_search_results(search_html: str) -> list[SearchResultSnippet]:
+    snippets: list[SearchResultSnippet] = []
+    for match in re.finditer(r"<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>", search_html, re.IGNORECASE | re.DOTALL):
+        url = html.unescape(_clean(match.group(1)))
+        if not url.startswith("http"):
+            continue
+        title = _html_to_text(match.group(2), limit=300)
+        content = ""
+        snippets.append(SearchResultSnippet(url=url, title=title, content=content))
+        if len(snippets) >= 20:
+            break
+    return snippets
+
+
+def _extract_html_title(page_html: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", page_html, re.IGNORECASE | re.DOTALL)
+    return _html_to_text(match.group(1), limit=300) if match else ""
+
+
+def _html_to_text(value: str, *, limit: int = 4000) -> str:
+    text = re.sub(r"(?is)<script.*?>.*?</script>", " ", value)
+    text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def _pick_matching_candidate_name(text: str, candidate_names: list[str]) -> str:
+    normalized_text = _normalize_for_match(text)
+    best_match = ""
+    best_len = 0
+    for candidate_name in candidate_names:
+        normalized_candidate = _normalize_for_match(candidate_name)
+        if not normalized_candidate:
+            continue
+        if normalized_candidate in normalized_text and len(normalized_candidate) > best_len:
+            best_match = normalize_municipality_display_name(candidate_name)
+            best_len = len(normalized_candidate)
+    return best_match
+
+
+def _official_site_match_from_search_result(
+    result: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    candidate_names: list[str] | None = None,
+) -> OfficialSiteMatch | None:
     url = _clean(result.get("url"))
     if not url:
         return None
@@ -392,21 +680,39 @@ def _official_site_match_from_search_result(result: dict[str, Any], row: dict[st
     content = _clean(result.get("content"))
     haystack = f"{title} {content}".lower()
     score = 0
+    evidence: list[str] = []
     if any(hint in domain for hint in OFFICIAL_SITE_DOMAIN_HINTS):
         score += 5
+        evidence.append("домен похож на официальный")
     if any(hint in url.lower() for hint in OFFICIAL_SITE_URL_HINTS):
         score += 3
+        evidence.append("url похож на сайт администрации")
     if "официальный" in haystack:
         score += 2
+        evidence.append("есть слово «официальный»")
     if "администрац" in haystack:
         score += 2
+        evidence.append("упомянута администрация")
     if _text_contains_municipality_name(f"{title} {content}", _clean(row.get(MUN_NAME_COLUMN))):
         score += 3
+        evidence.append("есть текущее MUN_NAME")
     if _adm_name_mentions_search_result(_clean(row.get(ADM_NAME_COLUMN)), f"{title} {content}"):
         score += 3
+        evidence.append("сайт совпадает с ADM_NAME")
+    matched_name = _pick_matching_candidate_name(f"{title} {content}", candidate_names or [])
+    if matched_name:
+        score += 6
+        evidence.append(f"найдено название «{matched_name}»")
     if score < 3:
         return None
-    return OfficialSiteMatch(url=url, title=title, content=content, score=score)
+    return OfficialSiteMatch(
+        url=url,
+        title=title,
+        content=content,
+        score=score,
+        matched_name=matched_name,
+        evidence="; ".join(evidence),
+    )
 
 
 def _text_contains_municipality_name(text: str, municipality_name: str) -> bool:
@@ -440,121 +746,6 @@ def _with_reason_suffix(
         reason=f"{verification.reason} {suffix}",
         source_url=verification.source_url,
     )
-
-
-def load_base_municipality_entries(base_xlsx_path: Path | None = None) -> list[BaseMunicipalityEntry]:
-    path = base_xlsx_path or DEFAULT_BASE_XLSX_PATH
-    if not path.exists():
-        return []
-    try:
-        workbook = load_workbook(path, read_only=True, data_only=True)
-    except OSError:
-        return []
-
-    try:
-        worksheet = workbook[workbook.sheetnames[0]]
-        rows = worksheet.iter_rows(values_only=True)
-        headers = [_clean(value) for value in (next(rows, None) or [])]
-        sub_index = _find_header_index(headers, "Субъект РФ")
-        district_index = _find_header_index(headers, "Муниципальный район")
-        municipality_index = _find_header_index(headers, "Муниципальное образование")
-        if sub_index is None or district_index is None or municipality_index is None:
-            return []
-
-        entries: list[BaseMunicipalityEntry] = []
-        for row in rows:
-            sub_rf = _clean(_row_value(row, sub_index))
-            mun_r_name = _clean(_row_value(row, district_index))
-            mun_name = _clean(_row_value(row, municipality_index))
-            if not sub_rf or not mun_name or not _looks_like_municipality(mun_name):
-                continue
-            entries.append(BaseMunicipalityEntry(sub_rf=sub_rf, mun_r_name=mun_r_name, mun_name=mun_name))
-        return entries
-    finally:
-        workbook.close()
-
-
-def _find_base_municipality_name(row: dict[str, Any], entries: list[BaseMunicipalityEntry]) -> str:
-    if not entries:
-        return ""
-
-    sub_rf = _normalize_for_match(row.get("SUB_RF"))
-    mun_r_name = _normalize_for_match(row.get("MUN_R_NAME"))
-    candidates = [
-        _clean(row.get(MUN_NAME_COLUMN)),
-        _extract_quoted_municipality_name(_clean(row.get(ADM_NAME_COLUMN)), _clean(row.get(MUN_NAME_COLUMN))),
-        _extract_from_administration_name(_clean(row.get(ADM_NAME_COLUMN))),
-    ]
-    candidates = [candidate for candidate in dict.fromkeys(candidates) if candidate]
-    if not candidates:
-        return ""
-
-    best_name = ""
-    best_score = 0
-    for entry in entries:
-        if sub_rf and _normalize_for_match(entry.sub_rf) != sub_rf:
-            continue
-        if mun_r_name and _normalize_for_match(entry.mun_r_name) != mun_r_name:
-            continue
-        score = _score_base_municipality_match(entry.mun_name, candidates)
-        if score > best_score:
-            best_score = score
-            best_name = entry.mun_name
-
-    return best_name if best_score >= 80 else ""
-
-
-def _score_base_municipality_match(base_name: str, candidates: list[str]) -> int:
-    base_norm = _normalize_for_match(base_name)
-    base_keyword = _municipality_keyword_base(base_norm)
-    base_type = _municipality_type(base_name)
-    best_score = 0
-    for candidate in candidates:
-        candidate_norm = _normalize_for_match(candidate)
-        candidate_keyword = _municipality_keyword_base(candidate_norm)
-        candidate_type = _municipality_type(candidate)
-        score = 0
-        if candidate_norm == base_norm:
-            score += 100
-        if candidate_keyword and base_keyword and _adjective_bases_match(candidate_keyword, base_keyword):
-            score += 55
-        if candidate_type and base_type and candidate_type == base_type:
-            score += 35
-        elif candidate_type and base_type and candidate_type != base_type:
-            score -= 50
-        if candidate_norm and (candidate_norm in base_norm or base_norm in candidate_norm):
-            score += 20
-        best_score = max(best_score, score)
-    return best_score
-
-
-def _municipality_type(value: str) -> str:
-    lowered = _normalize_for_match(value)
-    type_patterns = (
-        ("urban_settlement", "городское поселение"),
-        ("rural_settlement", "сельское поселение"),
-        ("municipal_district", "муниципальный район"),
-        ("municipal_district", "муниципального района"),
-        ("municipal_okrug", "муниципальный округ"),
-        ("urban_okrug", "городской округ"),
-        ("selsovet", "сельсовет"),
-    )
-    for result, marker in type_patterns:
-        if marker in lowered:
-            return result
-    return ""
-
-
-def _find_header_index(headers: list[str], expected: str) -> int | None:
-    expected_norm = _normalize_for_match(expected)
-    for index, header in enumerate(headers):
-        if expected_norm and expected_norm in _normalize_for_match(header):
-            return index
-    return None
-
-
-def _row_value(row: tuple[Any, ...], index: int) -> Any:
-    return row[index] if index < len(row) else None
 
 
 def normalize_municipality_display_name(value: Any) -> str:
@@ -615,14 +806,21 @@ def _extract_quoted_municipality_name(adm_name: str, current_name: str = "") -> 
         return ""
     for match in QUOTE_RE.finditer(adm_name):
         candidate = _clean(match.group(1))
-        if _looks_like_municipality(candidate):
-            if _is_bare_locality_name(candidate) and _looks_like_settlement(current_name):
-                contextual_candidate = _compose_contextual_quoted_name(adm_name, candidate)
-                if contextual_candidate and _looks_like_municipality(contextual_candidate):
-                    return contextual_candidate
+        unwrapped_candidate = _unwrap_local_administration_candidate(candidate)
+        if unwrapped_candidate and not _looks_like_municipality(unwrapped_candidate):
+            contextual_candidate = _compose_contextual_quoted_name(adm_name, unwrapped_candidate)
+            if contextual_candidate and _looks_like_municipality(contextual_candidate) and not _candidate_contains_forbidden_fragments(contextual_candidate):
+                return contextual_candidate
+        if unwrapped_candidate and _looks_like_municipality(unwrapped_candidate) and not _candidate_contains_forbidden_fragments(unwrapped_candidate):
+            return unwrapped_candidate
+        if _is_bare_locality_name(candidate) and _looks_like_settlement(current_name):
+            contextual_candidate = _compose_contextual_quoted_name(adm_name, candidate)
+            if contextual_candidate and _looks_like_municipality(contextual_candidate) and not _candidate_contains_forbidden_fragments(contextual_candidate):
+                return contextual_candidate
+        if _looks_like_municipality(candidate) and not _candidate_contains_forbidden_fragments(candidate):
             return candidate
         contextual_candidate = _compose_contextual_quoted_name(adm_name, candidate)
-        if contextual_candidate and _looks_like_municipality(contextual_candidate):
+        if contextual_candidate and _looks_like_municipality(contextual_candidate) and not _candidate_contains_forbidden_fragments(contextual_candidate):
             return contextual_candidate
     return ""
 
@@ -632,8 +830,83 @@ def _extract_from_administration_name(adm_name: str) -> str:
         return ""
     without_prefix = ADMINISTRATION_PREFIX_RE.sub("", adm_name).strip()
     without_prefix = without_prefix.strip("\"«»“”„")
-    if without_prefix and without_prefix != adm_name and _looks_like_municipality(without_prefix):
+    if (
+        without_prefix
+        and without_prefix != adm_name
+        and _looks_like_municipality(without_prefix)
+        and not _candidate_contains_forbidden_fragments(without_prefix)
+        and not _candidate_contains_region_tail(without_prefix)
+    ):
         return without_prefix
+    return ""
+
+
+def extract_municipality_name_from_administration(adm_name: str) -> str:
+    """Extract an unquoted municipality name from a full administration title."""
+
+    text = _clean(adm_name)
+    if not text:
+        return ""
+
+    prefixed_patterns = (
+        (
+            r"\bадминистрация\s+([а-яё-]+)\s+сельского\s+поселения\b",
+            "Сельское поселение",
+        ),
+        (
+            r"\bадминистрация\s+([а-яё-]+)\s+городского\s+поселения\b",
+            "Городское поселение",
+        ),
+    )
+    for pattern, prefix in prefixed_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        tail = _normalize_adjective_settlement_name(match.group(1))
+        candidate = f"{prefix} {tail}".strip()
+        if _looks_like_municipality(candidate):
+            return candidate
+
+    patterns = (
+        (
+            r"\bгородского\s+поселения\s+((?:город|пос[её]лок|пгт)\s+.+?)"
+            r"(?=\s+муниципального\s+района|\s+муниципальный\s+район|\s+республики\b|\s+области\b|\s+края\b|$)",
+            "Городское поселение",
+        ),
+        (
+            r"\bгородского\s+поселения\s+((?:[а-яё-]+(?:\s+[а-яё-]+){0,3}))"
+            r"(?=\s+муниципального\s+района|\s+муниципальный\s+район|\s+республики\b|\s+области\b|\s+края\b|$)",
+            "Городское поселение",
+        ),
+        (
+            r"\bсельского\s+поселения\s+((?:село|деревня|станица|аул)\s+.+?)"
+            r"(?=\s+муниципального\s+района|\s+муниципальный\s+район|\s+республики\b|\s+области\b|\s+края\b|$)",
+            "Сельское поселение",
+        ),
+        (
+            r"\bсельского\s+поселения\s+((?:[а-яё-]+(?:\s+[а-яё-]+){0,3}))"
+            r"(?=\s+муниципального\s+района|\s+муниципальный\s+район|\s+республики\b|\s+области\b|\s+края\b|$)",
+            "Сельское поселение",
+        ),
+        (
+            r"\bгородского\s+округа\s+(.+?)"
+            r"(?=\s+муниципального\s+района|\s+муниципальный\s+район|\s+республики\b|\s+области\b|\s+края\b|$)",
+            "Городской округ",
+        ),
+        (
+            r"\bмуниципального\s+округа\s+(.+?)"
+            r"(?=\s+муниципального\s+района|\s+муниципальный\s+район|\s+республики\b|\s+области\b|\s+края\b|$)",
+            "Муниципальный округ",
+        ),
+    )
+    for pattern, prefix in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        tail = _normalize_locality_fragment(match.group(1))
+        candidate = f"{prefix} {tail}".strip()
+        if _looks_like_municipality(candidate) and not _candidate_contains_region_tail(candidate):
+            return candidate
     return ""
 
 
@@ -661,9 +934,20 @@ def _compose_contextual_quoted_name(adm_name: str, candidate: str) -> str:
     return ""
 
 
+def _unwrap_local_administration_candidate(value: str) -> str:
+    text = _clean(value)
+    if not text:
+        return ""
+    stripped = LOCAL_ADMINISTRATION_WRAPPER_RE.sub("", text).strip()
+    return stripped if stripped and stripped != text else ""
+
+
 def _normalize_locality_fragment(value: str) -> str:
     text = _clean(value).strip("\"«»“”„")
     text = re.sub(r"(?i)^п\.\s*", "поселок ", text)
+    text = re.sub(r"(?i)^пос\.\s*", "поселок ", text)
+    text = re.sub(r"(?i)^пос\.\s*([а-яё])", lambda m: "поселок " + m.group(1), text)
+    text = re.sub(r"(?i)^г\.\s*", "город ", text)
     if _is_mostly_upper(text):
         text = text.lower()
     words = text.split()
@@ -674,6 +958,116 @@ def _normalize_locality_fragment(value: str) -> str:
         words[1:] = [_readable_capitalized_word(word) for word in words[1:]]
         return " ".join(words)
     return " ".join(_readable_capitalized_word(word) for word in words)
+
+
+def _normalize_adjective_settlement_name(value: str) -> str:
+    word = _clean(value)
+    if not word:
+        return ""
+    lower = word.lower().replace("ё", "е")
+    replacements = (
+        ("ского", "ское"),
+        ("цкого", "цкое"),
+        ("ого", "ое"),
+        ("его", "ее"),
+        ("ий", "ий"),
+        ("ый", "ый"),
+        ("ой", "ой"),
+    )
+    for source, target in replacements:
+        if lower.endswith(source) and len(lower) > len(source) + 1:
+            return _capitalize_hyphenated(lower[: -len(source)] + target)
+    return _readable_capitalized_word(word)
+
+
+def _candidate_contains_region_tail(value: str) -> bool:
+    normalized = _normalize_for_match(value)
+    blocked_tokens = (
+        "района",
+        "район",
+        "области",
+        "область",
+        "республики",
+        "республика",
+        "края",
+        "край",
+    )
+    return any(token in normalized.split() for token in blocked_tokens)
+
+
+def _candidate_contains_forbidden_fragments(value: str) -> bool:
+    normalized = _normalize_for_match(value)
+    return any(fragment in normalized for fragment in FORBIDDEN_MUNICIPALITY_NAME_FRAGMENTS)
+
+
+def _candidate_is_safe_for_autoreplace(candidate_name: str, current_name: str) -> bool:
+    candidate_name = normalize_municipality_display_name(candidate_name)
+    current_name = normalize_municipality_display_name(current_name)
+    if not candidate_name:
+        return False
+    if _candidate_contains_forbidden_fragments(candidate_name):
+        return False
+    if _candidate_contains_region_tail(candidate_name):
+        return False
+    if _has_bad_short_form(candidate_name):
+        return False
+    if current_name and _drops_municipality_type(current_name, candidate_name):
+        return False
+    if current_name and not _same_primary_toponym(current_name, candidate_name):
+        return False
+    return True
+
+
+def _has_bad_short_form(value: str) -> bool:
+    normalized = _clean(value).lower()
+    return any(token in normalized for token in ("пос.", "г.", "п.")) and "поселок " not in normalized and "город " not in normalized
+
+
+def _drops_municipality_type(current_name: str, candidate_name: str) -> bool:
+    current_type = _municipality_type_label(current_name)
+    candidate_type = _municipality_type_label(candidate_name)
+    return bool(current_type and candidate_type and current_type != candidate_type) or bool(current_type and not candidate_type)
+
+
+def _municipality_type_label(value: str) -> str:
+    lowered = _normalize_for_match(value)
+    for label in (
+        "городское поселение",
+        "сельское поселение",
+        "городской округ",
+        "муниципальный округ",
+        "муниципальное образование",
+    ):
+        if label in lowered:
+            return label
+    return ""
+
+
+def _same_primary_toponym(left: str, right: str) -> bool:
+    left_tokens = _primary_toponym_tokens(left)
+    right_tokens = _primary_toponym_tokens(right)
+    if not left_tokens or not right_tokens:
+        return True
+    if left_tokens == right_tokens:
+        return True
+    if len(left_tokens) == 1 and len(right_tokens) == 1:
+        return _adjective_bases_match(_adjective_base(left_tokens[0]), _adjective_base(right_tokens[0]))
+    left_joined = " ".join(left_tokens)
+    right_joined = " ".join(right_tokens)
+    return left_joined == right_joined
+
+
+def _primary_toponym_tokens(value: str) -> list[str]:
+    normalized = _normalize_for_match(value)
+    words = [
+        word for word in normalized.split()
+        if word not in {
+            "городское", "сельское", "поселение", "городской", "муниципальный",
+            "округ", "муниципальное", "образование", "город", "поселок", "поселок",
+            "поселок", "поселок", "поселок", "сельсовет", "поссовет", "поселок",
+        }
+    ]
+    return words[:3]
 
 
 def _adm_name_confirms_current_municipality(adm_name: str, current_name: str) -> bool:
