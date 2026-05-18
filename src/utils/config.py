@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     sender_max_batch_size: int = 100
     sender_delay_seconds: float = 30.0
     sender_transport: str = "smtp"
+    sender_unisender_concurrency: int = 5
     unisender_api_key: str = ""
     unisender_api_base_url: str = "https://goapi.unisender.ru/ru/transactional/api/v1"
     unisender_sender_name: str = "ООО «ПР»"

@@ -7,13 +7,14 @@ import re
 import base64
 import mimetypes
 import secrets
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from email.message import EmailMessage
 from html import escape
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -115,6 +116,12 @@ SENDER_STATE: dict[str, Any] = {
     "transport": "smtp",
 }
 
+SENDER_STATE_ROWS_LIMIT = 200
+SENDER_WORKBOOK_SAVE_EVERY = 25
+UNISENDER_RETRY_ATTEMPTS = 3
+UNISENDER_RETRY_BASE_SECONDS = 2.0
+UNISENDER_RETRYABLE_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+
 
 def _load_sender_state(job_id: str | None = None) -> dict[str, Any]:
     return load_agent_state("sender", SENDER_STATE, job_id)
@@ -122,6 +129,69 @@ def _load_sender_state(job_id: str | None = None) -> dict[str, Any]:
 
 def _save_sender_state(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
     return save_agent_state("sender", state, job_id)
+
+
+def _state_rows_snapshot(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(rows) <= SENDER_STATE_ROWS_LIMIT:
+        return list(rows)
+    return list(rows[-SENDER_STATE_ROWS_LIMIT:])
+
+
+def _flush_sender_workbook(workbook: Any, data_xlsx_path: Path) -> str:
+    try:
+        save_workbook(workbook, data_xlsx_path)
+        return ""
+    except Exception as exc:
+        return f"Не удалось сохранить изменения в data.xlsx: {_safe_text(exc) or exc}"
+
+
+def _should_flush_sender_workbook(*, dirty: bool, processed_rows: int, total_rows: int) -> bool:
+    if not dirty:
+        return False
+    if processed_rows <= 0:
+        return False
+    if processed_rows >= total_rows:
+        return True
+    return processed_rows % SENDER_WORKBOOK_SAVE_EVERY == 0
+
+
+def _sleep_sender_retry(delay_seconds: float) -> None:
+    if delay_seconds <= 0:
+        return
+    sleep(delay_seconds)
+
+
+def _is_retryable_unisender_exception(exc: Exception) -> bool:
+    if isinstance(exc, HTTPError):
+        return int(exc.code) in UNISENDER_RETRYABLE_HTTP_CODES
+    return isinstance(exc, (TimeoutError, URLError, OSError))
+
+
+def _run_unisender_request(request: Request, *, timeout: float, request_label: str) -> str:
+    last_error: Exception | None = None
+    for attempt in range(1, UNISENDER_RETRY_ATTEMPTS + 1):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            if attempt < UNISENDER_RETRY_ATTEMPTS and _is_retryable_unisender_exception(exc):
+                _sleep_sender_retry(UNISENDER_RETRY_BASE_SECONDS * attempt)
+                last_error = RuntimeError(
+                    f"{request_label} временно недоступен (HTTP {exc.code}), повтор {attempt}."
+                )
+                continue
+            exc.raw_body = raw  # type: ignore[attr-defined]
+            raise
+        except Exception as exc:
+            if attempt < UNISENDER_RETRY_ATTEMPTS and _is_retryable_unisender_exception(exc):
+                _sleep_sender_retry(UNISENDER_RETRY_BASE_SECONDS * attempt)
+                last_error = exc
+                continue
+            raise
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"{request_label} не ответил после повторных попыток.")
 
 
 def _resolve_sender_data_xlsx_path(job_id: str | None = None) -> Path:
@@ -402,11 +472,14 @@ def _persist_row_status(
     data_xlsx_path: Path,
     row: dict[str, Any],
     status_value: str,
+    *,
+    flush: bool = True,
 ) -> str:
     try:
         update_status(worksheet, row["_row_index"], status_value)
-        save_workbook(workbook, data_xlsx_path)
         row["STATUS"] = status_value
+        if flush:
+            save_workbook(workbook, data_xlsx_path)
         return ""
     except Exception as exc:
         return f"Не удалось сохранить статус строки в data.xlsx: {_safe_text(exc) or exc}"
@@ -1212,8 +1285,18 @@ def _send_via_unisender_classic(
         method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"},
     )
-    with urlopen(request, timeout=60) as response:
-        raw = response.read().decode("utf-8", errors="replace")
+    try:
+        raw = _run_unisender_request(request, timeout=60, request_label="UniSender")
+    except HTTPError as exc:
+        raw = getattr(exc, "raw_body", "")
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"UniSender вернул HTTP {exc.code}: {raw[:300]}") from exc
+        error_message = _safe_text(data.get("error"))
+        if error_message:
+            raise RuntimeError(error_message) from exc
+        raise RuntimeError(f"UniSender вернул HTTP {exc.code}: {raw[:300]}") from exc
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -1325,10 +1408,9 @@ def _send_via_unisender(
         },
     )
     try:
-        with urlopen(request, timeout=60) as response:
-            raw = response.read().decode("utf-8", errors="replace")
+        raw = _run_unisender_request(request, timeout=60, request_label="UniSender Go")
     except HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
+        raw = getattr(exc, "raw_body", "")
         try:
             data = json.loads(raw)
             message = _safe_text(data.get("message"))
@@ -1441,6 +1523,159 @@ def _provider_for_recipient(attempts: list[dict[str, Any]], recipient: str) -> d
     return {}
 
 
+def _unisender_parallel_workers(*, dry_run: bool, transport: str) -> int:
+    if dry_run or transport != "unisender":
+        return 1
+    return max(1, int(settings.sender_unisender_concurrency or 1))
+
+
+def _build_parallel_send_job(
+    *,
+    row: dict[str, Any],
+    entry: dict[str, Any],
+    email_decision: dict[str, Any],
+    recipients_to_send: list[str],
+    attachments: list[str],
+    subject: str,
+    transport: str,
+    mail_template_path: Path | None,
+) -> dict[str, Any]:
+    return {
+        "row": row,
+        "entry": entry,
+        "email_decision": email_decision,
+        "recipients_to_send": recipients_to_send,
+        "attachments": attachments,
+        "subject": subject,
+        "transport": transport,
+        "mail_template_path": mail_template_path,
+    }
+
+
+def _run_parallel_send_job(job: dict[str, Any]) -> dict[str, Any]:
+    send_result = _send_with_transport(
+        job["row"],
+        job["recipients_to_send"],
+        job["attachments"],
+        job["subject"],
+        transport=job["transport"],
+        mail_template_path=job["mail_template_path"],
+    )
+    return {"job": job, "send_result": send_result}
+
+
+def _restore_sent_from_local_log(
+    *,
+    entry: dict[str, Any],
+    intended_recipients: list[str],
+    row: dict[str, Any],
+    workbook: Any,
+    worksheet: Any,
+    data_xlsx_path: Path,
+) -> bool:
+    entry["result"] = "skipped_logged_sent"
+    entry["attempts"] = [
+        {
+            "recipient": recipient,
+            "status": "already_sent",
+            "error": "",
+        }
+        for recipient in intended_recipients
+    ]
+    entry["sent_recipients"] = intended_recipients
+    entry["recipient"] = intended_recipients[0] if intended_recipients else entry["recipient"]
+    entry["decision_reason"] = "Статус восстановлен по локальному журналу: письмо уже было отправлено ранее."
+    status_warning = _persist_row_status(
+        workbook,
+        worksheet,
+        data_xlsx_path,
+        row,
+        STATUS_SENT_VALUE,
+        flush=False,
+    )
+    if status_warning:
+        entry["warning"] = f"{entry['warning']} {status_warning}".strip()
+        entry["next_action"] = f"{entry['next_action']} {status_warning}".strip()
+        return False
+    return True
+
+
+def _apply_send_result_to_entry(
+    *,
+    entry: dict[str, Any],
+    send_result: dict[str, Any],
+    row: dict[str, Any],
+    email_decision: dict[str, Any],
+    attachments: list[str],
+    row_subject: str,
+    effective_transport: str,
+    sent_mail_log_path: Path | None,
+    sent_mail_recipients: dict[str, set[str]],
+    workbook: Any,
+    worksheet: Any,
+    data_xlsx_path: Path,
+) -> bool:
+    entry["attempts"] = send_result["attempts"]
+    entry["warning"] = _safe_text(send_result.get("warning"))
+    partial_recipients = send_result.get("recipients") or []
+    row_id_text = _safe_text(row.get("ID"))
+
+    if partial_recipients and not send_result["recipient"]:
+        for sent_recipient in partial_recipients:
+            log_warning = _append_sent_mail_log(
+                row=row,
+                recipient=sent_recipient,
+                attachments=attachments,
+                subject=row_subject,
+                transport=effective_transport,
+                warning=entry["warning"],
+                provider=_provider_for_recipient(entry["attempts"], sent_recipient),
+                sent_mail_log_path=sent_mail_log_path,
+            )
+            sent_mail_recipients.setdefault(row_id_text, set()).add(_mail_key(sent_recipient))
+            if log_warning:
+                entry["warning"] = f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
+
+    if not send_result["recipient"]:
+        raise RuntimeError(send_result["error"])
+
+    entry["recipient"] = send_result["recipient"]
+    entry["sent_recipients"] = send_result.get("recipients") or [entry["recipient"]]
+    if len(entry["sent_recipients"]) > 1:
+        entry["decision_reason"] = "Письмо отправлено на основной и дополнительный email."
+    elif entry["email_strategy"] == "fallback_extra" or entry["recipient"] != email_decision["recipient"]:
+        entry["decision_reason"] = "Письмо отправлено по резервному email после выбора лучшего доступного адреса."
+
+    for sent_recipient in entry["sent_recipients"]:
+        log_warning = _append_sent_mail_log(
+            row=row,
+            recipient=sent_recipient,
+            attachments=attachments,
+            subject=row_subject,
+            transport=effective_transport,
+            warning=entry["warning"],
+            provider=_provider_for_recipient(entry["attempts"], sent_recipient),
+            sent_mail_log_path=sent_mail_log_path,
+        )
+        if log_warning:
+            entry["warning"] = f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
+        sent_mail_recipients.setdefault(row_id_text, set()).add(_mail_key(sent_recipient))
+
+    status_warning = _persist_row_status(
+        workbook,
+        worksheet,
+        data_xlsx_path,
+        row,
+        STATUS_SENT_VALUE,
+        flush=False,
+    )
+    if status_warning:
+        entry["warning"] = f"{entry['warning']} {status_warning}".strip()
+        entry["next_action"] = f"{entry['next_action']} {status_warning}".strip()
+        return False
+    return True
+
+
 def run_sender(
     *,
     dry_run: bool = True,
@@ -1517,9 +1752,13 @@ def run_sender(
     _save_sender_state(state, job_id)
 
     processed_entries: list[dict[str, Any]] = []
+    runtime_warnings: list[str] = []
+    workbook_dirty = False
     started_at = perf_counter()
     subject = DEFAULT_MAIL_SUBJECT
     sent_mail_recipients = _load_sent_mail_recipients(sent_mail_log_path) if not dry_run else {}
+    parallel_workers = _unisender_parallel_workers(dry_run=dry_run, transport=effective_transport)
+    parallel_send_jobs: list[dict[str, Any]] = []
 
     for row in candidates:
         _refresh_sender_stop_flag(state, job_id)
@@ -1554,7 +1793,7 @@ def run_sender(
             processed_entries.append(entry)
             state["skipped_rows"] += 1
             state["processed_rows"] += 1
-            state["rows"] = processed_entries
+            state["rows"] = _state_rows_snapshot(processed_entries)
             _save_sender_state(state, job_id)
             continue
 
@@ -1722,13 +1961,27 @@ def run_sender(
                     data_xlsx_path,
                     row,
                     _format_error_status(entry["error"] or entry["result"]),
+                    flush=False,
                 )
+                workbook_dirty = workbook_dirty or not bool(status_warning)
                 if status_warning:
                     entry["warning"] = f"{entry['warning']} {status_warning}".strip()
             state["error_rows"] += 1
             processed_entries.append(entry)
             state["processed_rows"] += 1
-            state["rows"] = processed_entries
+            if _should_flush_sender_workbook(
+                dirty=workbook_dirty,
+                processed_rows=state["processed_rows"],
+                total_rows=state["total_rows"],
+            ):
+                flush_warning = _flush_sender_workbook(workbook, data_xlsx_path)
+                if flush_warning:
+                    entry["warning"] = f"{entry['warning']} {flush_warning}".strip()
+                    entry["next_action"] = f"{entry['next_action']} {flush_warning}".strip()
+                    runtime_warnings.append(flush_warning)
+                else:
+                    workbook_dirty = False
+            state["rows"] = _state_rows_snapshot(processed_entries)
             _save_sender_state(state, job_id)
             continue
 
@@ -1743,7 +1996,7 @@ def run_sender(
                 state["ready_rows"] -= 1
                 processed_entries.append(entry)
                 state["processed_rows"] += 1
-                state["rows"] = processed_entries
+                state["rows"] = _state_rows_snapshot(processed_entries)
                 _save_sender_state(state, job_id)
                 break
             try:
@@ -1756,30 +2009,33 @@ def run_sender(
                     if _mail_key(recipient) not in already_logged
                 ]
                 if not recipients_to_send:
-                    entry["result"] = "skipped_logged_sent"
-                    entry["attempts"] = [
-                        {
-                            "recipient": recipient,
-                            "status": "already_sent",
-                            "error": "",
-                        }
-                        for recipient in intended_recipients
-                    ]
-                    entry["sent_recipients"] = intended_recipients
-                    entry["recipient"] = intended_recipients[0] if intended_recipients else entry["recipient"]
-                    entry["decision_reason"] = (
-                        "Статус восстановлен по локальному журналу: письмо уже было отправлено ранее."
+                    workbook_dirty = (
+                        _restore_sent_from_local_log(
+                            entry=entry,
+                            intended_recipients=intended_recipients,
+                            row=row,
+                            workbook=workbook,
+                            worksheet=worksheet,
+                            data_xlsx_path=data_xlsx_path,
+                        )
+                        or workbook_dirty
                     )
-                    status_warning = _persist_row_status(
-                        workbook,
-                        worksheet,
-                        data_xlsx_path,
-                        row,
-                        STATUS_SENT_VALUE,
+                    state["sent_rows"] += 1
+                elif parallel_workers > 1:
+                    parallel_send_jobs.append(
+                        _build_parallel_send_job(
+                            row=row,
+                            entry=entry,
+                            email_decision=email_decision,
+                            recipients_to_send=recipients_to_send,
+                            attachments=attachments,
+                            subject=row_subject,
+                            transport=effective_transport,
+                            mail_template_path=mail_template_path,
+                        )
                     )
-                    if status_warning:
-                        entry["warning"] = f"{entry['warning']} {status_warning}".strip()
-                        entry["next_action"] = f"{entry['next_action']} {status_warning}".strip()
+                    entry["result"] = "queued_parallel_send"
+                    entry["next_action"] = "Письмо поставлено в очередь на параллельную отправку через UniSender."
                 else:
                     send_result = _send_with_transport(
                         row,
@@ -1789,63 +2045,27 @@ def run_sender(
                         transport=effective_transport,
                         mail_template_path=mail_template_path,
                     )
-                    entry["attempts"] = send_result["attempts"]
-                    entry["warning"] = _safe_text(send_result.get("warning"))
-                    partial_recipients = send_result.get("recipients") or []
-                    if partial_recipients and not send_result["recipient"]:
-                        for sent_recipient in partial_recipients:
-                            log_warning = _append_sent_mail_log(
-                                row=row,
-                                recipient=sent_recipient,
-                                attachments=attachments,
-                                subject=row_subject,
-                                transport=effective_transport,
-                                warning=entry["warning"],
-                                provider=_provider_for_recipient(entry["attempts"], sent_recipient),
-                                sent_mail_log_path=sent_mail_log_path,
-                            )
-                            sent_mail_recipients.setdefault(_safe_text(row_id), set()).add(_mail_key(sent_recipient))
-                            if log_warning:
-                                entry["warning"] = (
-                                    f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
-                                )
-                    if not send_result["recipient"]:
-                        raise RuntimeError(send_result["error"])
-                    entry["recipient"] = send_result["recipient"]
-                    entry["sent_recipients"] = send_result.get("recipients") or [entry["recipient"]]
-                    if len(entry["sent_recipients"]) > 1:
-                        entry["decision_reason"] = "Письмо отправлено на основной и дополнительный email."
-                    elif entry["email_strategy"] == "fallback_extra" or entry["recipient"] != email_decision["recipient"]:
-                        entry["decision_reason"] = "Письмо отправлено по резервному email после выбора лучшего доступного адреса."
-                    for sent_recipient in entry["sent_recipients"]:
-                        log_warning = _append_sent_mail_log(
+                    workbook_dirty = (
+                        _apply_send_result_to_entry(
+                            entry=entry,
+                            send_result=send_result,
                             row=row,
-                            recipient=sent_recipient,
+                            email_decision=email_decision,
                             attachments=attachments,
-                            subject=row_subject,
-                            transport=effective_transport,
-                            warning=entry["warning"],
-                            provider=_provider_for_recipient(entry["attempts"], sent_recipient),
+                            row_subject=row_subject,
+                            effective_transport=effective_transport,
                             sent_mail_log_path=sent_mail_log_path,
+                            sent_mail_recipients=sent_mail_recipients,
+                            workbook=workbook,
+                            worksheet=worksheet,
+                            data_xlsx_path=data_xlsx_path,
                         )
-                        if log_warning:
-                            entry["warning"] = (
-                                f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
-                            )
-                        sent_mail_recipients.setdefault(_safe_text(row_id), set()).add(_mail_key(sent_recipient))
+                        or workbook_dirty
+                    )
+                    state["sent_rows"] += 1
                 if entry["warning"]:
                     state["warning_rows"] += 1
                     entry["next_action"] = entry["warning"]
-                status_warning = _persist_row_status(
-                    workbook,
-                    worksheet,
-                    data_xlsx_path,
-                    row,
-                    STATUS_SENT_VALUE,
-                )
-                if status_warning:
-                    entry["warning"] = f"{entry['warning']} {status_warning}".strip()
-                    entry["next_action"] = f"{entry['next_action']} {status_warning}".strip()
             except Exception as exc:
                 entry["result"] = "error_send"
                 entry["error"] = _safe_text(exc) or "Ошибка SMTP-отправки."
@@ -1858,12 +2078,12 @@ def run_sender(
                     data_xlsx_path,
                     row,
                     _format_error_status(entry["error"]),
+                    flush=False,
                 )
+                workbook_dirty = workbook_dirty or not bool(status_warning)
                 if status_warning:
                     entry["warning"] = f"{entry['warning']} {status_warning}".strip()
                     entry["next_action"] = f"{entry['next_action']} {status_warning}".strip()
-            else:
-                state["sent_rows"] += 1
         else:
             entry["attempts"] = [
                 {
@@ -1873,9 +2093,26 @@ def run_sender(
                 }
             ]
 
+        if entry.get("result") == "queued_parallel_send":
+            state["rows"] = _state_rows_snapshot(processed_entries)
+            _save_sender_state(state, job_id)
+            continue
+
         processed_entries.append(entry)
         state["processed_rows"] += 1
-        state["rows"] = processed_entries
+        if _should_flush_sender_workbook(
+            dirty=workbook_dirty,
+            processed_rows=state["processed_rows"],
+            total_rows=state["total_rows"],
+        ):
+            flush_warning = _flush_sender_workbook(workbook, data_xlsx_path)
+            if flush_warning:
+                entry["warning"] = f"{entry['warning']} {flush_warning}".strip()
+                entry["next_action"] = f"{entry['next_action']} {flush_warning}".strip()
+                runtime_warnings.append(flush_warning)
+            else:
+                workbook_dirty = False
+        state["rows"] = _state_rows_snapshot(processed_entries)
         _save_sender_state(state, job_id)
 
         if not dry_run and entry.get("result") == "sent" and effective_transport != "unisender":
@@ -1888,14 +2125,117 @@ def run_sender(
                     _save_sender_state(state, job_id)
                     break
 
+    if parallel_send_jobs and not dry_run:
+        max_workers = parallel_workers
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="unisender-send") as executor:
+            pending_futures: dict[Future, dict[str, Any]] = {}
+            next_job_index = 0
+            stop_submitting = False
+
+            while next_job_index < len(parallel_send_jobs) and len(pending_futures) < max_workers:
+                job = parallel_send_jobs[next_job_index]
+                pending_futures[executor.submit(_run_parallel_send_job, job)] = job
+                next_job_index += 1
+
+            while pending_futures:
+                _refresh_sender_stop_flag(state, job_id)
+                if state.get("stop_requested"):
+                    stop_submitting = True
+                done_futures, _ = wait(list(pending_futures.keys()), return_when=FIRST_COMPLETED)
+                for future in done_futures:
+                    job = pending_futures.pop(future)
+                    entry = job["entry"]
+                    row = job["row"]
+                    try:
+                        outcome = future.result()
+                        send_result = outcome["send_result"]
+                        workbook_dirty = (
+                            _apply_send_result_to_entry(
+                                entry=entry,
+                                send_result=send_result,
+                                row=row,
+                                email_decision=job["email_decision"],
+                                attachments=job["attachments"],
+                                row_subject=job["subject"],
+                                effective_transport=effective_transport,
+                                sent_mail_log_path=sent_mail_log_path,
+                                sent_mail_recipients=sent_mail_recipients,
+                                workbook=workbook,
+                                worksheet=worksheet,
+                                data_xlsx_path=data_xlsx_path,
+                            )
+                            or workbook_dirty
+                        )
+                        state["sent_rows"] += 1
+                        if entry["warning"]:
+                            state["warning_rows"] += 1
+                            entry["next_action"] = entry["warning"]
+                        entry["result"] = "sent"
+                    except Exception as exc:
+                        entry["result"] = "error_send"
+                        entry["error"] = _safe_text(exc) or "Ошибка UniSender-отправки."
+                        entry["next_action"] = "Повторить отправку позже или передать строку на ручную проверку."
+                        state["ready_rows"] -= 1
+                        state["error_rows"] += 1
+                        status_warning = _persist_row_status(
+                            workbook,
+                            worksheet,
+                            data_xlsx_path,
+                            row,
+                            _format_error_status(entry["error"]),
+                            flush=False,
+                        )
+                        workbook_dirty = workbook_dirty or not bool(status_warning)
+                        if status_warning:
+                            entry["warning"] = f"{entry['warning']} {status_warning}".strip()
+                            entry["next_action"] = f"{entry['next_action']} {status_warning}".strip()
+
+                    processed_entries.append(entry)
+                    state["processed_rows"] += 1
+                    if _should_flush_sender_workbook(
+                        dirty=workbook_dirty,
+                        processed_rows=state["processed_rows"],
+                        total_rows=state["total_rows"],
+                    ):
+                        flush_warning = _flush_sender_workbook(workbook, data_xlsx_path)
+                        if flush_warning:
+                            entry["warning"] = f"{entry['warning']} {flush_warning}".strip()
+                            entry["next_action"] = f"{entry['next_action']} {flush_warning}".strip()
+                            runtime_warnings.append(flush_warning)
+                        else:
+                            workbook_dirty = False
+                    state["rows"] = _state_rows_snapshot(processed_entries)
+                    _save_sender_state(state, job_id)
+
+                while not stop_submitting and next_job_index < len(parallel_send_jobs) and len(pending_futures) < max_workers:
+                    job = parallel_send_jobs[next_job_index]
+                    pending_futures[executor.submit(_run_parallel_send_job, job)] = job
+                    next_job_index += 1
+
+                if stop_submitting and next_job_index < len(parallel_send_jobs):
+                    remaining_jobs = parallel_send_jobs[next_job_index:]
+                    for job in remaining_jobs:
+                        entry = job["entry"]
+                        entry["result"] = "stopped_before_send"
+                        entry["next_action"] = "Отправка этой и следующих строк остановлена по запросу пользователя."
+                        state["ready_rows"] -= 1
+                        processed_entries.append(entry)
+                        state["processed_rows"] += 1
+                    state["rows"] = _state_rows_snapshot(processed_entries)
+                    _save_sender_state(state, job_id)
+                    next_job_index = len(parallel_send_jobs)
+
     if not dry_run:
-        save_workbook(workbook, data_xlsx_path)
+        if workbook_dirty:
+            final_flush_warning = _flush_sender_workbook(workbook, data_xlsx_path)
+            if final_flush_warning:
+                runtime_warnings.append(final_flush_warning)
         state["stats"] = _collect_excel_stats(data_xlsx_path)
         state["remaining_rows"] = int(state["stats"].get("pending", 0)) + int(state["stats"].get("error", 0))
     else:
         state["remaining_rows"] = max(0, len(rows) - len(candidates))
 
-    state["rows"] = processed_entries
+    state["rows"] = _state_rows_snapshot(processed_entries)
     state["completed_at"] = datetime.now().isoformat(timespec="seconds")
     state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
     state["status"] = "stopped" if state.get("stop_requested") else "completed"
@@ -1903,6 +2243,10 @@ def run_sender(
     state["tasks"] = get_tasks_for_agent("sender", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="sender", limit=20, job_id=job_id)
     state["summary_text"] = _format_sender_summary(state)
+    if runtime_warnings:
+        unique_warnings = list(dict.fromkeys(item for item in runtime_warnings if item))
+        if unique_warnings:
+            state["summary_text"] = f"{state['summary_text']} {' '.join(unique_warnings)}".strip()
     _save_sender_state(state, job_id)
     return dict(state)
 

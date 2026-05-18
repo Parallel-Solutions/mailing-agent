@@ -224,12 +224,6 @@ def _clone_job_templates_if_present(source_job_id: str | None, target_job_id: st
         shutil.copy2(source_path, target_dir / source_path.name)
 
 
-def _build_oktmo_lookup() -> OktmoMunicipalityLookup:
-    return OktmoMunicipalityLookup(
-        csv_path=Path(settings.municipality_oktmo_csv_path) if settings.municipality_oktmo_csv_path else None,
-        verify_ssl=settings.municipality_oktmo_verify_ssl,
-    )
-
 @app.post("/api/upload/data")
 async def upload_data(
     file: UploadFile = File(...),
@@ -248,30 +242,10 @@ async def upload_data(
     dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
-    try:
-        verification_result = verify_municipality_names_in_workbook(
-            dest,
-            use_official_sites=settings.municipality_official_sites_enabled,
-            use_oktmo=settings.municipality_oktmo_lookup_enabled,
-            oktmo_lookup=_build_oktmo_lookup() if settings.municipality_oktmo_lookup_enabled else None,
-            use_minjust=settings.municipality_minjust_lookup_enabled,
-        )
-    except Exception as exc:
-        logger.exception("municipality_name_verification_failed", path=str(dest))
-        verification_result = {
-            "status": "error",
-            "updated_rows": 0,
-            "verified_rows": 0,
-            "kept_rows": 0,
-            "replacements": [],
-            "replacement_samples": [],
-            "reason": str(exc),
-        }
     return {
         "status": "ok",
         "filename": file.filename,
         "job_id": paths.job_id,
-        "municipality_name_verification": verification_result,
     }
 
 
@@ -295,13 +269,7 @@ async def data_verify_municipality_names(
         raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
     return {
         "status": "ok",
-        "result": verify_municipality_names_in_workbook(
-            data_path,
-            use_official_sites=settings.municipality_official_sites_enabled,
-            use_oktmo=settings.municipality_oktmo_lookup_enabled,
-            oktmo_lookup=_build_oktmo_lookup() if settings.municipality_oktmo_lookup_enabled else None,
-            use_minjust=settings.municipality_minjust_lookup_enabled,
-        ),
+        "result": run_parser_municipality_verification(job_id),
     }
 
 
@@ -350,8 +318,6 @@ from src.generator.generation.config_generator import (
     WEB_CASE_AGENT_MAX_WORKERS,
 )
 from src.generator.generation.pdf_converter import convert_docx_batch
-from src.generator.verification.municipality_name_verifier import verify_municipality_names_in_workbook
-from src.generator.verification.oktmo_municipality_lookup import OktmoMunicipalityLookup
 from src.generator.inflection.ai_case_agent import (
     ENABLE_CASE_AGENT,
     CASE_AGENT_ONLY_SUSPICIOUS,
@@ -382,8 +348,10 @@ from src.generator.delivery.sender_report import (
 )
 from src.generator.orchestration.parser_agent import (
     chat_with_parser,
+    format_municipality_verification_for_chat,
     get_parser_status,
     run_parser_agent,
+    run_parser_municipality_verification,
 )
 from src.generator.orchestration.orchestrator_agent import (
     chat_with_orchestrator,
@@ -836,7 +804,16 @@ async def parser_chat_v2(payload: dict = Body(...), username: str = Depends(chec
 @app.post("/api/parser/start")
 async def parser_start(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    result = run_batch_parser(job_id=job_id)
+    verification_result = run_parser_municipality_verification(job_id)
+    parser_result = run_batch_parser(job_id=job_id)
+    verification_summary = format_municipality_verification_for_chat(verification_result, max_samples=20)
+    parser_reply = str(parser_result.get("reply") or "").strip()
+    summary_parts = [part for part in [verification_summary, parser_reply] if part]
+    result = {
+        **parser_result,
+        "summary_text": "\n\n".join(summary_parts).strip() or "Парсер завершил обработку.",
+        "municipality_name_verification": verification_result,
+    }
     return {"status": "ok", "result": result}
 
 @app.get("/api/parser/memory")

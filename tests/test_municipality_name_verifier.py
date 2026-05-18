@@ -8,7 +8,12 @@ from src.generator.verification.minjust_municipality_lookup import MinjustMunici
 from src.generator.verification.oktmo_municipality_lookup import OktmoMunicipalityResult
 from src.generator.verification.municipality_name_verifier import (
     OfficialSiteLookup,
+    _build_official_site_queries,
+    _candidate_is_safe_for_autoreplace,
+    _needs_abbreviation_resolution,
     _official_site_match_from_search_result,
+    _search_name_variants,
+    _should_use_official_site_followup,
     extract_municipality_name_from_administration,
     verify_municipality_name,
     verify_municipality_names_in_workbook,
@@ -84,10 +89,10 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
-        self.assertEqual(result.confidence, "high")
+        self.assertEqual(result.status, "kept")
+        self.assertEqual(result.confidence, "medium")
         self.assertEqual(result.official_name, "Яблоновское городское поселение")
-        self.assertTrue(result.should_replace)
+        self.assertFalse(result.should_replace)
 
     def test_restores_readable_case_for_uppercase_official_name(self) -> None:
         result = verify_municipality_name(
@@ -121,8 +126,9 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status, "verified")
-        self.assertEqual(result.confidence, "high")
+        self.assertEqual(result.confidence, "medium")
         self.assertEqual(result.official_name, "Городское поселение поселок Онохой")
+        self.assertFalse(result.should_replace)
 
     def test_rebuilds_city_settlement_from_contextual_quoted_adjective(self) -> None:
         result = verify_municipality_name(
@@ -136,7 +142,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status, "verified")
-        self.assertEqual(result.confidence, "high")
+        self.assertEqual(result.confidence, "medium")
         self.assertEqual(result.official_name, "Городское поселение Бабушкинское")
 
     def test_unwraps_local_administration_from_quoted_name(self) -> None:
@@ -152,8 +158,9 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status, "verified")
+        self.assertEqual(result.confidence, "medium")
         self.assertEqual(result.official_name, "Сельское поселение Джулат")
-        self.assertTrue(result.should_replace)
+        self.assertFalse(result.should_replace)
 
     def test_does_not_replace_settlement_with_quoted_district(self) -> None:
         result = verify_municipality_name(
@@ -479,6 +486,153 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
         assert match is not None
         self.assertEqual(match.matched_name, "Городское поселение город Туймазы")
         self.assertIn("официальный", match.evidence.lower())
+
+    def test_official_site_queries_include_ustav_and_municipality_pages(self) -> None:
+        queries = _build_official_site_queries(
+            {
+                "MUN_NAME": "Городское поселение Туймазы",
+                "ADM_NAME": "АДМИНИСТРАЦИЯ ГОРОДСКОГО ПОСЕЛЕНИЯ ГОРОД ТУЙМАЗЫ",
+                "SUB_RF": "Республика Башкортостан",
+                "MUN_R_NAME": "Туймазинский район",
+            },
+            ["Городское поселение город Туймазы"],
+        )
+
+        self.assertTrue(any("устав муниципального образования" in item.lower() for item in queries))
+        self.assertTrue(any("о муниципальном образовании" in item.lower() for item in queries))
+
+    def test_official_site_match_scores_legal_municipality_page_higher(self) -> None:
+        match = _official_site_match_from_search_result(
+            {
+                "url": "https://adm.example.ru/ustav/o-munitsipalnom-obrazovanii",
+                "title": "Устав муниципального образования",
+                "content": "Официальный сайт муниципального образования Городское поселение город Туймазы",
+            },
+            {
+                "MUN_NAME": "Городское поселение Туймазы",
+                "ADM_NAME": "АДМИНИСТРАЦИЯ ГОРОДСКОГО ПОСЕЛЕНИЯ ГОРОД ТУЙМАЗЫ",
+            },
+            candidate_names=["Городское поселение город Туймазы"],
+        )
+
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertGreaterEqual(match.score, 10)
+        self.assertIn("устава", match.evidence.lower())
+
+    def test_search_name_variants_expand_common_settlement_abbreviations(self) -> None:
+        variants = _search_name_variants("рп Ордынское")
+
+        self.assertIn("рп Ордынское", variants)
+        self.assertIn("рабочий поселок Ордынское", variants)
+
+        variants = _search_name_variants("пгт Кормиловка")
+        self.assertIn("поселок городского типа Кормиловка", variants)
+
+    def test_official_site_match_handles_abbreviation_variants(self) -> None:
+        match = _official_site_match_from_search_result(
+            {
+                "url": "https://adm-ordynskoe.ru/ustav",
+                "title": "Устав муниципального образования",
+                "content": "Городское поселение рабочий поселок Ордынское официальный сайт администрации",
+            },
+            {
+                "MUN_NAME": "рп Ордынское",
+                "ADM_NAME": "АДМИНИСТРАЦИЯ Р.П. ОРДЫНСКОЕ",
+            },
+            candidate_names=["рп Ордынское"],
+        )
+
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertEqual(match.matched_name, "рабочий поселок Ордынское")
+
+    def test_abbreviation_resolution_helpers_allow_same_toponym(self) -> None:
+        self.assertTrue(_needs_abbreviation_resolution("пгт Духовницкое рп"))
+        self.assertTrue(
+            _candidate_is_safe_for_autoreplace(
+                "Городское поселение рабочий поселок Духовницкое",
+                "пгт Духовницкое рп",
+            )
+        )
+
+    def test_official_site_followup_is_required_for_abbreviation_row(self) -> None:
+        verification = verify_municipality_name(
+            {
+                "MUN_NAME": "пгт Духовницкое рп",
+                "ADM_NAME": "АДМИНИСТРАЦИЯ Р.П. ДУХОВНИЦКОЕ",
+            }
+        )
+
+        self.assertTrue(
+            _should_use_official_site_followup(
+                {"MUN_NAME": "пгт Духовницкое рп", "ADM_NAME": "АДМИНИСТРАЦИЯ Р.П. ДУХОВНИЦКОЕ"},
+                verification,
+            )
+        )
+
+    def test_official_site_followup_is_skipped_for_strong_autoreplace(self) -> None:
+        verification = verify_municipality_name(
+            {
+                "MUN_NAME": "Городское поселение Туймазы",
+                "ADM_NAME": (
+                    "АДМИНИСТРАЦИЯ ГОРОДСКОГО ПОСЕЛЕНИЯ ГОРОД ТУЙМАЗЫ "
+                    "МУНИЦИПАЛЬНОГО РАЙОНА ТУЙМАЗИНСКИЙ РАЙОН РЕСПУБЛИКИ БАШКОРТОСТАН"
+                ),
+            },
+            oktmo_lookup=FakeOktmoLookup("Городское поселение город Туймазы"),
+        )
+
+        self.assertFalse(
+            _should_use_official_site_followup(
+                {
+                    "MUN_NAME": "Городское поселение Туймазы",
+                    "ADM_NAME": (
+                        "АДМИНИСТРАЦИЯ ГОРОДСКОГО ПОСЕЛЕНИЯ ГОРОД ТУЙМАЗЫ "
+                        "МУНИЦИПАЛЬНОГО РАЙОНА ТУЙМАЗИНСКИЙ РАЙОН РЕСПУБЛИКИ БАШКОРТОСТАН"
+                    ),
+                },
+                verification,
+            )
+        )
+
+    def test_expands_abbreviated_locality_name_without_external_lookup(self) -> None:
+        result = verify_municipality_name(
+            {
+                "MUN_NAME": "пгт Духовницкое рп",
+                "ADM_NAME": "",
+            }
+        )
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.confidence, "high")
+        self.assertEqual(result.source, "normalization")
+        self.assertEqual(result.official_name, "поселок городского типа Духовницкое рабочий поселок")
+        self.assertTrue(result.should_replace)
+
+    def test_updates_workbook_with_expanded_locality_abbreviation(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path(r"C:\tmp")) as tmp_dir:
+            path = Path(tmp_dir) / "abbrev-data.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.cell(row=2, column=1).value = "ID"
+            worksheet.cell(row=2, column=2).value = "MUN_NAME"
+            worksheet.cell(row=2, column=3).value = "ADM_NAME"
+            worksheet.cell(row=3, column=1).value = 1
+            worksheet.cell(row=3, column=2).value = "рп Ордынское"
+            worksheet.cell(row=3, column=3).value = ""
+            workbook.save(path)
+            workbook.close()
+
+            stats = verify_municipality_names_in_workbook(path)
+
+            self.assertEqual(stats["updated_rows"], 1)
+            updated = load_workbook(path)
+            sheet = updated.active
+            headers = {sheet.cell(row=2, column=i).value: i for i in range(1, sheet.max_column + 1)}
+            self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME"]).value, "рабочий поселок Ордынское")
+            self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME_VERIFICATION_SOURCE"]).value, "normalization")
+            updated.close()
 
     def test_updates_workbook_and_preserves_original_name(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp_dir:
