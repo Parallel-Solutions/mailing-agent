@@ -83,11 +83,43 @@ OFFICIAL_SITE_DOMAIN_HINTS = (
 OFFICIAL_SITE_URL_HINTS = (
     "adm",
     "admin",
+    "ustav",
     "mo-",
     "mun",
+    "municip",
     "poselen",
     "selsovet",
     "сельсовет",
+)
+OFFICIAL_SITE_STRONG_URL_HINTS = (
+    "ustav",
+    "o-munitsipalnom-obrazovanii",
+    "munitsipalnoe-obrazovanie",
+    "municzipalnoe-obrazovanie",
+    "about",
+    "obshchie-svedeniya",
+    "general-information",
+)
+OFFICIAL_SITE_LEGAL_PHRASES = (
+    "устав муниципального образования",
+    "о муниципальном образовании",
+    "муниципальное образование",
+    "официальный сайт администрации",
+    "официальный сайт муниципального образования",
+)
+SEARCH_ABBREVIATION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bр\.?\s*п\.?\b", re.IGNORECASE), "рабочий поселок"),
+    (re.compile(r"\bп\.?\s*г\.?\s*т\.?\b", re.IGNORECASE), "поселок городского типа"),
+    (re.compile(r"\bг\.?\s*п\.?\b", re.IGNORECASE), "городское поселение"),
+    (re.compile(r"\bг\.\b", re.IGNORECASE), "город"),
+)
+DISPLAY_LOCALITY_ABBREVIATION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bр\.?\s*п\.?\b", re.IGNORECASE), "рабочий поселок"),
+    (re.compile(r"\bп\.?\s*г\.?\s*т\.?\b", re.IGNORECASE), "поселок городского типа"),
+    (re.compile(r"\bг\.\b", re.IGNORECASE), "город"),
+    (re.compile(r"\bс\.\b", re.IGNORECASE), "село"),
+    (re.compile(r"\bд\.\b", re.IGNORECASE), "деревня"),
+    (re.compile(r"\bп\.\b", re.IGNORECASE), "поселок"),
 )
 FORBIDDEN_MUNICIPALITY_NAME_FRAGMENTS = (
     "администрация",
@@ -131,6 +163,11 @@ class SearchResultSnippet:
 
 class OfficialSiteLookup:
     SEARCH_URL = "https://yandex.ru/search/?text={query}"
+    MAX_FETCH_BYTES = 512 * 1024
+    MAX_QUERIES_PER_ROW = 3
+    MAX_SNIPPETS_PER_QUERY = 6
+    MAX_PAGE_FETCHES_PER_QUERY = 2
+    MIN_SNIPPET_SCORE = 3
 
     def __init__(
         self,
@@ -154,14 +191,27 @@ class OfficialSiteLookup:
             return None
 
         best_match: OfficialSiteMatch | None = None
-        for query in queries:
+        for query in queries[: self.MAX_QUERIES_PER_ROW]:
             search_url = self.SEARCH_URL.format(query=requests.utils.quote(query))
             search_html = self._fetch_text(search_url)
             if not search_html:
                 continue
             snippets = _parse_yandex_search_results(search_html)
-            for snippet in snippets[:8]:
+            page_fetches = 0
+            for snippet in snippets[: self.MAX_SNIPPETS_PER_QUERY]:
+                snippet_match = _official_site_match_from_search_result(
+                    {
+                        "url": snippet.url,
+                        "title": snippet.title,
+                        "content": snippet.content,
+                    },
+                    row,
+                    candidate_names=candidate_names,
+                )
+                if not snippet_match or snippet_match.score < self.MIN_SNIPPET_SCORE:
+                    continue
                 page_title, page_content = self._load_page_context(snippet.url)
+                page_fetches += 1
                 merged_title = page_title or snippet.title
                 merged_content = " ".join(part for part in (snippet.content, page_content) if part).strip()
                 match = _official_site_match_from_search_result(
@@ -174,33 +224,62 @@ class OfficialSiteLookup:
                     candidate_names=candidate_names,
                 )
                 if not match:
+                    if page_fetches >= self.MAX_PAGE_FETCHES_PER_QUERY:
+                        break
                     continue
                 if not best_match or match.score > best_match.score:
                     best_match = match
+                if best_match and best_match.score >= 12:
+                    break
+                if page_fetches >= self.MAX_PAGE_FETCHES_PER_QUERY:
+                    break
+            if best_match and best_match.score >= 12:
+                break
         return best_match
 
     def _load_page_context(self, url: str) -> tuple[str, str]:
-        page_html = self._fetch_text(url)
+        page_html = self._fetch_text(url, connect_timeout=3, read_timeout=min(6.0, self.timeout_seconds))
         if not page_html:
             return "", ""
         return _extract_html_title(page_html), _html_to_text(page_html, limit=12000)
 
-    def _fetch_text(self, url: str) -> str:
+    def _fetch_text(self, url: str, *, connect_timeout: float = 5, read_timeout: float | None = None) -> str:
+        response = None
         try:
             if self.fetcher:
                 return str(self.fetcher(url, self.timeout_seconds, self.verify_ssl) or "")
+            timeout_read = self.timeout_seconds if read_timeout is None else read_timeout
             response = requests.get(
                 url,
-                timeout=(5, self.timeout_seconds),
+                timeout=(connect_timeout, timeout_read),
                 verify=self.verify_ssl,
                 headers={"User-Agent": "Mozilla/5.0 mailing-agent municipality verifier"},
+                stream=True,
             )
             response.raise_for_status()
             response.encoding = response.encoding or "utf-8"
-            return response.text
+            chunks: list[bytes] = []
+            remaining = self.MAX_FETCH_BYTES
+            for chunk in response.iter_content(chunk_size=16384, decode_unicode=False):
+                if not chunk:
+                    continue
+                if len(chunk) >= remaining:
+                    chunks.append(chunk[:remaining])
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+                if remaining <= 0:
+                    break
+            payload = b"".join(chunks)
+            return payload.decode(response.encoding or "utf-8", errors="ignore")
         except requests.RequestException as exc:
             self.disabled_reason = str(exc) or exc.__class__.__name__
             return ""
+        finally:
+            try:
+                response.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
 
 
 def verify_municipality_name(
@@ -211,9 +290,9 @@ def verify_municipality_name(
 ) -> MunicipalityNameVerification:
     """Choose the best local official-name candidate from row data.
 
-    This is the deterministic first layer. It only trusts explicit wording in
-    the uploaded table, primarily quoted names from ADM_NAME. External official
-    website search can be layered on top later without changing this contract.
+    This is the deterministic first layer. It extracts candidates from the
+    uploaded table, including quoted names from ADM_NAME, but only allows
+    automatic replacement after stronger confirmation.
     """
 
     current_name = _clean(row.get(MUN_NAME_COLUMN))
@@ -232,14 +311,53 @@ def verify_municipality_name(
                 source="ADM_NAME",
                 reason="Из ADM_NAME извлечен кандидат, но он слишком сильно расходится с исходным MUN_NAME или выглядит как название администрации; автозамена отключена до внешнего подтверждения.",
             )
+        if oktmo_lookup:
+            oktmo_result = oktmo_lookup.confirm(row, normalized)
+            if oktmo_result:
+                return MunicipalityNameVerification(
+                    row_id=_clean(row.get("ID")),
+                    original_name=current_name,
+                    official_name=normalize_municipality_display_name(oktmo_result.name),
+                    status="verified",
+                    confidence="high",
+                    source="oktmo+ADM_NAME",
+                    reason=(
+                        "Название извлечено из кавычек в ADM_NAME и подтверждено официальным "
+                        f"классификатором ОКТМО Росстата; код ОКТМО {oktmo_result.oktmo_code}."
+                    ),
+                    source_url=oktmo_result.source_url,
+                )
+        if minjust_lookup:
+            minjust_result = minjust_lookup.confirm(row, normalized)
+            if minjust_result:
+                return MunicipalityNameVerification(
+                    row_id=_clean(row.get("ID")),
+                    original_name=current_name,
+                    official_name=normalize_municipality_display_name(minjust_result.name),
+                    status="verified",
+                    confidence="high",
+                    source="minjust",
+                    reason="Название извлечено из кавычек в ADM_NAME и подтверждено реестром муниципальных образований Минюста России.",
+                    source_url=minjust_result.source_url,
+                )
+        if current_name and _normalize_for_match(current_name) == _normalize_for_match(normalized):
+            return MunicipalityNameVerification(
+                row_id=_clean(row.get("ID")),
+                original_name=current_name,
+                official_name=normalized,
+                status="verified",
+                confidence="medium",
+                source="ADM_NAME+MUN_NAME",
+                reason="Название извлечено из кавычек в полном названии администрации и совпадает с MUN_NAME; замена не требуется.",
+            )
         return MunicipalityNameVerification(
             row_id=_clean(row.get("ID")),
             original_name=current_name,
             official_name=normalized,
-            status="verified",
-            confidence="high",
+            status="kept",
+            confidence="medium",
             source="ADM_NAME",
-            reason="Название извлечено из кавычек в полном названии администрации.",
+            reason="Название извлечено из кавычек в полном названии администрации, но без внешнего подтверждения исходный MUN_NAME оставлен.",
         )
 
     adm_candidate = extract_municipality_name_from_administration(adm_name)
@@ -345,6 +463,18 @@ def verify_municipality_name(
             reason="Название получено после удаления слова «Администрация», но без явного официального подтверждения; исходный MUN_NAME оставлен.",
         )
 
+    expanded_current_name = _expand_locality_abbreviations_for_display(current_name)
+    if current_name and expanded_current_name and expanded_current_name != normalize_municipality_display_name(current_name):
+        return MunicipalityNameVerification(
+            row_id=_clean(row.get("ID")),
+            original_name=current_name,
+            official_name=expanded_current_name,
+            status="verified",
+            confidence="high",
+            source="normalization",
+            reason="Сокращенная форма населенного пункта автоматически раскрыта до полного читаемого вида.",
+        )
+
     if current_name:
         return MunicipalityNameVerification(
             row_id=_clean(row.get("ID")),
@@ -440,7 +570,7 @@ def verify_municipality_names_in_workbook(
             continue
         stats["total_rows"] += 1
         verification = verify_municipality_name(row, oktmo_lookup=oktmo_lookup, minjust_lookup=minjust_lookup)
-        if official_site_lookup:
+        if official_site_lookup and _should_use_official_site_followup(row, verification):
             verification = _verify_with_official_site(row, verification, stats, official_site_lookup)
         _write_verification(worksheet, header_map, row_index, verification)
 
@@ -550,6 +680,27 @@ def _verify_with_official_site(
             source_url=match.url,
         )
 
+    if (
+        matched_name
+        and _needs_abbreviation_resolution(current_name, local_verification.official_name)
+        and match.score >= 10
+        and _contains_legal_municipality_evidence(f"{match.title} {match.content}")
+        and _candidate_is_safe_for_autoreplace(matched_name, current_name)
+    ):
+        return MunicipalityNameVerification(
+            row_id=local_verification.row_id,
+            original_name=local_verification.original_name,
+            official_name=matched_name,
+            status="verified",
+            confidence="high",
+            source="official_site",
+            reason=(
+                f"Сокращенная форма в MUN_NAME уточнена по официальному сайту: {source_label}. "
+                f"{match.evidence}"
+            ).strip(),
+            source_url=match.url,
+        )
+
     return MunicipalityNameVerification(
         row_id=local_verification.row_id,
         original_name=local_verification.original_name,
@@ -563,6 +714,25 @@ def _verify_with_official_site(
         ),
         source_url=match.url,
     )
+
+
+def _should_use_official_site_followup(
+    row: dict[str, Any],
+    verification: MunicipalityNameVerification,
+) -> bool:
+    if verification.should_replace:
+        return False
+    if verification.status == "missing":
+        return False
+    if _needs_abbreviation_resolution(
+        _clean(row.get(MUN_NAME_COLUMN)),
+        verification.official_name,
+        _clean(row.get(ADM_NAME_COLUMN)),
+    ):
+        return True
+    if verification.status == "kept":
+        return True
+    return verification.confidence in {"low", "medium"}
 
 
 def find_official_site_for_municipality(
@@ -595,9 +765,16 @@ def _build_official_site_query(row: dict[str, Any], candidate_name: str = "") ->
 def _build_official_site_queries(row: dict[str, Any], candidate_names: list[str]) -> list[str]:
     queries: list[str] = []
     for candidate_name in candidate_names[:4]:
-        query = _build_official_site_query(row, candidate_name)
-        if query and query not in queries:
-            queries.append(query)
+        for suffix in (
+            "официальный сайт администрация",
+            "устав муниципального образования",
+            "о муниципальном образовании",
+        ):
+            sub_rf = _clean(row.get("SUB_RF"))
+            district = _clean(row.get("MUN_R_NAME"))
+            query = f'"{candidate_name}" {suffix} {district} {sub_rf}'.strip()
+            if query and query not in queries:
+                queries.append(query)
     fallback_query = _build_official_site_query(row)
     if fallback_query and fallback_query not in queries:
         queries.append(fallback_query)
@@ -615,9 +792,9 @@ def _build_official_site_candidates(
         _extract_quoted_municipality_name(_clean(row.get(ADM_NAME_COLUMN)), _clean(row.get(MUN_NAME_COLUMN))),
         _clean(row.get(MUN_NAME_COLUMN)),
     ):
-        normalized = normalize_municipality_display_name(value)
-        if normalized and normalized not in candidates:
-            candidates.append(normalized)
+        for variant in _search_name_variants(value):
+            if variant and variant not in candidates:
+                candidates.append(variant)
     return candidates
 
 
@@ -654,13 +831,19 @@ def _pick_matching_candidate_name(text: str, candidate_names: list[str]) -> str:
     best_match = ""
     best_len = 0
     for candidate_name in candidate_names:
-        normalized_candidate = _normalize_for_match(candidate_name)
-        if not normalized_candidate:
-            continue
-        if normalized_candidate in normalized_text and len(normalized_candidate) > best_len:
-            best_match = normalize_municipality_display_name(candidate_name)
-            best_len = len(normalized_candidate)
+        for variant in _search_name_variants(candidate_name):
+            normalized_candidate = _normalize_for_match(variant)
+            if not normalized_candidate:
+                continue
+            if normalized_candidate in normalized_text and len(normalized_candidate) > best_len:
+                best_match = normalize_municipality_display_name(variant)
+                best_len = len(normalized_candidate)
     return best_match
+
+
+def _contains_legal_municipality_evidence(text: str) -> bool:
+    normalized_text = _normalize_for_match(text)
+    return any(_normalize_for_match(phrase) in normalized_text for phrase in OFFICIAL_SITE_LEGAL_PHRASES)
 
 
 def _official_site_match_from_search_result(
@@ -687,12 +870,18 @@ def _official_site_match_from_search_result(
     if any(hint in url.lower() for hint in OFFICIAL_SITE_URL_HINTS):
         score += 3
         evidence.append("url похож на сайт администрации")
+    if any(hint in url.lower() for hint in OFFICIAL_SITE_STRONG_URL_HINTS):
+        score += 4
+        evidence.append("url похож на страницу устава или описания МО")
     if "официальный" in haystack:
         score += 2
         evidence.append("есть слово «официальный»")
     if "администрац" in haystack:
         score += 2
         evidence.append("упомянута администрация")
+    if _contains_legal_municipality_evidence(f"{title} {content}"):
+        score += 4
+        evidence.append("есть юридически сильная формулировка про МО или устав")
     if _text_contains_municipality_name(f"{title} {content}", _clean(row.get(MUN_NAME_COLUMN))):
         score += 3
         evidence.append("есть текущее MUN_NAME")
@@ -717,10 +906,21 @@ def _official_site_match_from_search_result(
 
 def _text_contains_municipality_name(text: str, municipality_name: str) -> bool:
     normalized_text = _normalize_for_match(text)
-    keyword = _municipality_keyword_base(_normalize_for_match(municipality_name))
-    if not normalized_text or not keyword:
+    if not normalized_text:
         return False
-    return keyword in normalized_text or keyword.removesuffix("ск") in normalized_text
+    for variant in _search_name_variants(municipality_name):
+        keyword = _municipality_keyword_base(_normalize_for_match(variant))
+        if keyword and (keyword in normalized_text or keyword.removesuffix("ск") in normalized_text):
+            return True
+    return False
+
+
+def _needs_abbreviation_resolution(*values: str) -> bool:
+    for value in values:
+        normalized = _normalize_for_match(value)
+        if any(pattern.search(normalized) for pattern, _ in SEARCH_ABBREVIATION_PATTERNS):
+            return True
+    return False
 
 
 def _adm_name_mentions_search_result(adm_name: str, text: str) -> bool:
@@ -758,6 +958,34 @@ def normalize_municipality_display_name(value: Any) -> str:
         text = _restore_municipality_capitalization(text)
     text = _normalize_quotes_spacing(text)
     return text
+
+
+def _expand_locality_abbreviations_for_display(value: Any) -> str:
+    text = normalize_municipality_display_name(value)
+    if not text:
+        return ""
+    expanded = text
+    for pattern, replacement in DISPLAY_LOCALITY_ABBREVIATION_PATTERNS:
+        expanded = re.sub(pattern, replacement, expanded)
+    expanded = re.sub(r"\s+", " ", expanded).strip()
+    return normalize_municipality_display_name(expanded)
+
+
+def _search_name_variants(value: Any) -> list[str]:
+    normalized = normalize_municipality_display_name(value)
+    if not normalized:
+        return []
+    variants = [normalized]
+    queue = [normalized]
+    while queue:
+        current = queue.pop(0)
+        for pattern, replacement in SEARCH_ABBREVIATION_PATTERNS:
+            expanded = re.sub(pattern, replacement, current)
+            expanded = normalize_municipality_display_name(expanded)
+            if expanded and expanded not in variants:
+                variants.append(expanded)
+                queue.append(expanded)
+    return variants
 
 
 def _ensure_headers(worksheet) -> dict[str, int]:
@@ -1065,6 +1293,7 @@ def _primary_toponym_tokens(value: str) -> list[str]:
             "городское", "сельское", "поселение", "городской", "муниципальный",
             "округ", "муниципальное", "образование", "город", "поселок", "поселок",
             "поселок", "поселок", "поселок", "сельсовет", "поссовет", "поселок",
+            "рп", "пгт", "гп", "г", "рабочий", "типа",
         }
     ]
     return words[:3]
