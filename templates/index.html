@@ -1403,16 +1403,21 @@
         const verification = data.municipality_name_verification || {};
         if (verification.status === 'ok') {
           const samples = Array.isArray(verification.replacement_samples) ? verification.replacement_samples : [];
+          const officialSitesChecked = Number(verification.official_site_checked_rows || 0);
+          const officialSitesFound = Number(verification.official_site_found_rows || 0);
           const sampleText = samples.length
             ? '\n\nЗаменены названия:\n' + samples.map(item => {
                 const row = item.row_id ? `${item.row_id}. ` : '';
                 return `${row}${item.from || 'пусто'} → ${item.to || 'пусто'}`;
               }).join('\n') + (Number(verification.updated_rows || 0) > samples.length ? `\n...и еще ${Number(verification.updated_rows || 0) - samples.length}` : '')
             : '';
+          const officialSiteText = officialSitesChecked
+            ? ` Проверка по официальным сайтам: просмотрено ${officialSitesChecked}, найдено подходящих ${officialSitesFound}.`
+            : '';
           appendChatMessage(
             'p-chat',
             'agent',
-            `Проверил названия МО по данным парсера/таблицы: строк ${verification.total_rows || 0}, подтверждено ${verification.verified_rows || 0}, заменено в MUN_NAME ${verification.updated_rows || 0}, оставлено без изменений ${verification.kept_rows || 0}.${sampleText}`
+            `Проверил названия МО: строк ${verification.total_rows || 0}, подтверждено ${verification.verified_rows || 0}, заменено в MUN_NAME ${verification.updated_rows || 0}, оставлено без изменений ${verification.kept_rows || 0}.${officialSiteText}${sampleText}`
           );
         } else if (verification.status === 'error') {
           appendChatMessage('p-chat', 'agent', `Не смог проверить официальные названия МО: ${verification.reason || 'неизвестная ошибка'}. Таблица загружена без блокировки.`);

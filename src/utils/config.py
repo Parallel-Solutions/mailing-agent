@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     unisender_list_id: int = 1
     mail_signature_image_url: str = ""
 
+    municipality_oktmo_lookup_enabled: bool = True
+    municipality_oktmo_csv_path: str = ""
+    municipality_oktmo_verify_ssl: bool = False
+    municipality_official_sites_enabled: bool = True
+    municipality_official_sites_verify_ssl: bool = True
+    municipality_official_sites_timeout_seconds: float = 15.0
+    municipality_minjust_lookup_enabled: bool = False
+
     inter_agent_handoffs_enabled: bool = False
     autonomous_workers_enabled: bool = False
     philologist_auto_run_enabled: bool = False
