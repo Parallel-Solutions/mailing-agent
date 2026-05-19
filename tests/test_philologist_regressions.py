@@ -30,7 +30,7 @@ class PhilologistRegressionTests(unittest.TestCase):
         doc = Document(path)
         return "\n".join(paragraph.text for paragraph in doc.paragraphs)
 
-    def test_contract_body_legal_terms_are_lowercased_without_removing_links(self) -> None:
+    def test_contract_body_keeps_defined_contract_terms_capitalized(self) -> None:
         path = self._docx(
             "legal_terms.docx",
             (
@@ -46,15 +46,13 @@ class PhilologistRegressionTests(unittest.TestCase):
         result = _auto_fix_docx(path, review, client=None, tool_runner=PhilologistToolRunner())
         text = self._text(path)
 
-        self.assertGreaterEqual(result["applied_fix_count"], 8)
+        self.assertGreaterEqual(result["applied_fix_count"], 2)
         self.assertIn("Выполнение работ", text)
         self.assertIn("нахождения исполнителя", text)
-        self.assertIn("настоящим договором", text)
-        self.assertIn("техническим заданием (приложение № 1 к договору)", text)
-        self.assertIn("календарным планом выполнения работ (приложение № 2 к договору)", text)
-        self.assertIn("настоящего договора", text)
-        self.assertIn("приложение № 1", text)
-        self.assertIn("приложение № 2", text)
+        self.assertIn("настоящим Договором", text)
+        self.assertIn("Техническим заданием (Приложение № 1 к Договору)", text)
+        self.assertIn("Календарным планом выполнения работ (Приложение № 2 к Договору)", text)
+        self.assertIn("настоящего Договора", text)
 
     def test_uppercase_commercial_offer_heading_is_not_lowercased(self) -> None:
         path = self._docx("heading.docx", "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ")
@@ -72,8 +70,8 @@ class PhilologistRegressionTests(unittest.TestCase):
         review = review_docx(path, ai_enabled=False)
         result = _auto_fix_docx(path, review, client=None, tool_runner=PhilologistToolRunner())
 
-        self.assertEqual(result["applied_fix_count"], 1)
-        self.assertEqual(self._text(path), "Приложение № 1 к договору")
+        self.assertEqual(result["applied_fix_count"], 0)
+        self.assertEqual(self._text(path), "Приложение № 1 к Договору")
 
 
 if __name__ == "__main__":
