@@ -874,66 +874,47 @@
       </div>
     </div>
 
-    <!-- ПАРСЕР -->
     <div class="screen" id="s-parser">
       <div class="page-title">Модуль 1 — Парсер данных</div>
       <div class="page-sub">Сбор информации по муниципальным образованиям</div>
 
-      <!-- Сценарии -->
-      <div style="display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap">
-        <div class="scenario-btn active" id="sc-1" onclick="setScenario(1)">📥 Загрузить готовый файл</div>
-        <div class="scenario-btn" id="sc-2" onclick="setScenario(2)">🔍 Парсить с нуля</div>
-        <div class="scenario-btn" id="sc-3" onclick="setScenario(3)">📥 + 🔍 Загрузить и дополнить</div>
+      <!-- Краткая инструкция -->
+      <div class="info-box" style="margin-top:14px">
+        <strong>Как пользоваться:</strong><br>
+        • Просто напишите агенту в чате что вы хотите найти<br>
+        • Для пакетной обработки прикрепите Excel файл кнопкой 📎 и попросите "дозаполни строки"<br>
+        • После обработки нажмите "Скачать результат" чтобы получить файл
       </div>
 
-      <!-- Сценарий 1 и 3: загрузка файла -->
-      <div id="sc-upload-block">
-        <div class="upload-zone" id="upload-zone-data" onclick="document.getElementById('upload-data-input').click()">
-          <input type="file" id="upload-data-input" accept=".xlsx" style="display:none" onchange="uploadData(this)">
-          <p id="upload-data-label">Нажмите чтобы выбрать файл data.xlsx</p>
-          <span id="upload-data-hint">Файл будет загружен на сервер</span>
-        </div>
-        <div id="upload-data-status" style="display:none;margin:8px 0 0;padding:10px 14px;background:#f0f7ea;border:1px solid #b7d9a0;border-radius:8px;font-size:13px;color:#2d6a0e">
-          ✓ Файл загружен: <span id="upload-data-filename"></span> — <span id="upload-data-rows"></span> записей
-          <button onclick="clearDataFile()" style="margin-left:12px;background:none;border:none;color:#888;cursor:pointer;font-size:12px">✕ Заменить</button>
-        </div>
-      </div>
-
-      <!-- Сценарий 2 и 3: парсер -->
-      <div id="sc-parser-block">
-        <div class="info-box" style="margin-top:14px">
-          Парсер обращается к API checko.ru и заполняет data.xlsx: ИНН, КПП, ОГРН, ФИО главы, email, адрес.
-        </div>
-        <div class="module-card" style="margin-top:14px">
-          <div class="module-header">
-            <span class="module-num">Основной источник — checko.ru</span>
-            <span class="badge badge-idle" id="p-badge">Ожидание</span>
-          </div>
-          <div class="module-title">Автоматический сбор данных</div>
-          <div class="progress-wrap" style="margin-top:10px">
-            <div class="progress-bar"><div class="progress-fill" id="p-fill" style="width:0%"></div></div>
-            <div class="progress-label" id="p-label">0 / <span id="p-total">0</span> записей</div>
-          </div>
-          <div class="module-actions" style="margin-top:12px">
-            <button class="btn-primary" id="p-run" onclick="startParser()">Запустить парсер</button>
-            <button class="btn-outline" id="p-pause" onclick="pauseParser()" style="display:none">Пауза</button>
-            <button class="btn-outline" id="p-merge" onclick="startMergeRmz()">Слияние RMZ7KH</button>
-            <button class="btn-outline" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать data.xlsx</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="chat-section" style="margin-top:18px">
+      <!-- Чат с агентом -->
+      <div class="chat-section" style="margin-top:14px">
         <div class="chat-header">
-          <div class="dot-green"></div> Чат с агентом
+          <div class="dot-green"></div> Чат с агентом-парсером
         </div>
         <div class="chat-messages" id="p-chat-messages">
-          <div class="chat-msg agent">Привет! Я агент-парсер. Выбери сценарий работы выше или задай мне вопрос про любое МО.</div>
+          <div class="chat-msg agent">Привет! Я помогу найти данные по администрациям МО — реквизиты, контакты, главу. Задайте вопрос или прикрепите файл для пакетной обработки.</div>
         </div>
+
+        <!-- Чип с прикреплённым файлом (показывается только если файл прикреплён) -->
+        <div id="p-attached-file" style="display:none;margin:8px 0;padding:8px 14px;background:#f0f7ea;border:1px solid #b7d9a0;border-radius:8px;font-size:13px;color:#2d6a0e">
+          📎 <span id="p-attached-name"></span>
+          <button onclick="clearAttachedFile()" style="margin-left:12px;background:none;border:none;color:#888;cursor:pointer;font-size:12px">✕ Убрать</button>
+        </div>
+
         <div class="chat-input-row">
+          <!-- Скрытый input для файла -->
+          <input type="file" id="p-attach-input" accept=".xlsx" style="display:none" onchange="attachFile(this)">
+          <!-- Кнопка прикрепления -->
+          <button class="btn-outline" type="button" onclick="document.getElementById('p-attach-input').click()" title="Прикрепить Excel файл" style="padding:8px 12px">📎</button>
           <input type="text" id="p-chat-input" placeholder="Напишите вопрос агенту..." onkeydown="if(event.key==='Enter') sendChat('p-chat')">
           <button onclick="sendChat('p-chat')">Отправить</button>
         </div>
+      </div>
+
+      <!-- Кнопка скачать результат (показывается после batch обработки) -->
+      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn-primary" type="button" onclick="downloadWithJob('/api/parser/download-result')">📥 Скачать результат</button>
+        <button class="btn-outline" type="button" onclick="downloadWithJob('/api/parser/download-failed')">📥 Скачать непроверенные</button>
       </div>
 
       <div class="step-nav">
@@ -1642,6 +1623,45 @@
         appendChatMessage(chatId, 'agent', 'Не удалось получить ответ агента: ' + err.message);
       });
   }
+  async function attachFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+ 
+  // Сначала создаём job_id если его нет
+  await ensureCurrentJobId();
+ 
+  // Загружаем файл через существующий эндпоинт upload/data
+  const form = new FormData();
+  form.append('file', file);
+  appendJobId(form);
+ 
+  // Показываем что загружается
+  document.getElementById('p-attached-name').textContent = 'Загрузка ' + file.name + '...';
+  document.getElementById('p-attached-file').style.display = 'block';
+ 
+  try {
+    const res = await fetch('/api/upload/data', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Ошибка загрузки');
+ 
+    if (data.job_id) setCurrentJobId(data.job_id);
+ 
+    // Показываем что файл загружен
+    document.getElementById('p-attached-name').textContent = file.name;
+    appendChatMessage('p-chat', 'agent', `Файл ${file.name} загружен. Теперь напишите что нужно сделать.`);
+ 
+  } catch (err) {
+    document.getElementById('p-attached-file').style.display = 'none';
+    appendChatMessage('p-chat', 'agent', 'Не удалось загрузить файл: ' + err.message);
+  }
+}
+ 
+// Убрать прикреплённый файл
+function clearAttachedFile() {
+  document.getElementById('p-attached-file').style.display = 'none';
+  document.getElementById('p-attach-input').value = '';
+  document.getElementById('p-attached-name').textContent = '';
+}
 
   // PARSER
   let parserRunning = false;
