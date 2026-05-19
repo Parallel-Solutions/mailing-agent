@@ -1220,10 +1220,21 @@
 
   // UPLOAD
   function setScenario(n) {
-    [1,2,3].forEach(i => document.getElementById('sc-'+i).classList.remove('active'));
-    document.getElementById('sc-'+n).classList.add('active');
+    const scenarioButtons = [1, 2, 3]
+      .map(i => document.getElementById('sc-' + i))
+      .filter(Boolean);
+    const activeButton = document.getElementById('sc-' + n);
     const uploadBlock = document.getElementById('sc-upload-block');
     const parserBlock = document.getElementById('sc-parser-block');
+
+    // New parser UI no longer renders the legacy scenario blocks.
+    // Keep old initialization calls from crashing the whole page.
+    if (!scenarioButtons.length || !activeButton || !uploadBlock || !parserBlock) {
+      return;
+    }
+
+    scenarioButtons.forEach(btn => btn.classList.remove('active'));
+    activeButton.classList.add('active');
     if (n === 1) { uploadBlock.style.display = ''; parserBlock.style.display = 'none'; }
     if (n === 2) { uploadBlock.style.display = 'none'; parserBlock.style.display = ''; }
     if (n === 3) { uploadBlock.style.display = ''; parserBlock.style.display = ''; }
