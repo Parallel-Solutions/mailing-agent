@@ -619,6 +619,58 @@ async def download_data_xlsx(job_id: str | None = None, username: str = Depends(
         filename="data.xlsx",
     )
 
+@app.get("/api/parser/download-result")
+async def download_parser_result(job_id: str | None = None, username: str = Depends(check_auth)):
+    """Скачать последний обработанный файл из batch_processor."""
+    paths = resolve_job_paths(job_id)
+    output_dir = paths.output_dir
+ 
+    if not output_dir.exists():
+        raise HTTPException(status_code=404, detail="Результаты ещё не готовы")
+ 
+    # Ищем самый свежий batch_*.xlsx (но НЕ batch_FAILED_*)
+    batch_files = sorted(
+        [f for f in output_dir.glob("batch_*.xlsx") if "FAILED" not in f.name],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+ 
+    if not batch_files:
+        raise HTTPException(status_code=404, detail="Файл результата не найден")
+ 
+    latest = batch_files[0]
+    return FileResponse(
+        latest,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=latest.name,
+    )
+ 
+ 
+@app.get("/api/parser/download-failed")
+async def download_parser_failed(job_id: str | None = None, username: str = Depends(check_auth)):
+    """Скачать файл с непроверенными МО (FAILED)."""
+    paths = resolve_job_paths(job_id)
+    output_dir = paths.output_dir
+ 
+    if not output_dir.exists():
+        raise HTTPException(status_code=404, detail="Результаты ещё не готовы")
+ 
+    failed_files = sorted(
+        output_dir.glob("batch_FAILED_*.xlsx"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+ 
+    if not failed_files:
+        raise HTTPException(status_code=404, detail="Файл непроверенных не найден")
+ 
+    latest = failed_files[0]
+    return FileResponse(
+        latest,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=latest.name,
+    )
+
 
 @app.get("/api/download/sent-mail-log")
 async def download_sent_mail_log(job_id: str | None = None, username: str = Depends(check_auth)):
@@ -975,7 +1027,7 @@ async def parser_chat(
     if not message:
         raise HTTPException(status_code=400, detail="Пустое сообщение")
     job_id = str(payload.get("job_id") or "").strip() or None
-    return {"status": "ok", **chat_with_parser(message, job_id=job_id)}
+    return {"status": "ok", **chat(message, job_id=job_id)}
 
 
 @app.get("/api/orchestrator/status")
