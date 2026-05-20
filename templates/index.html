@@ -1731,13 +1731,45 @@ async function attachFile(input) {
     if (previousJobId && currentJobId && previousJobId !== currentJobId) {
       appendChatMessage('p-chat', 'agent', `Рабочая сессия обновлена: ${previousJobId} → ${currentJobId}.`);
     }
+    appendChatMessage('p-chat', 'agent', `Файл ${file.name} загружен. Сразу запускаю проверку официальных названий МО.`);
+    setParserUiState({
+      status: 'idle',
+      municipality_name_verification_state: {
+        status: 'running',
+        summary_text: 'Идёт проверка официальных названий МО после загрузки таблицы.'
+      }
+    });
+    const verifyRes = await fetch('/api/data/verify-municipality-names', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withJobPayload({}))
+    });
+    const verifyData = await verifyRes.json();
+    if (!verifyRes.ok) throw new Error(verifyData.detail || 'Ошибка проверки названий МО');
+    const verification = verifyData.result || {};
+    if (verification.status === 'ok') {
+      const samples = Array.isArray(verification.replacement_samples) ? verification.replacement_samples : [];
+      const sampleText = samples.length
+        ? '\n\nЗаменены названия:\n' + samples.map(item => {
+            const row = item.row_id ? `${item.row_id}. ` : '';
+            return `${row}${item.from || 'пусто'} → ${item.to || 'пусто'}`;
+          }).join('\n') + (Number(verification.updated_rows || 0) > samples.length ? `\n...и еще ${Number(verification.updated_rows || 0) - samples.length}` : '')
+        : '';
+      appendChatMessage(
+        'p-chat',
+        'agent',
+        `Проверил названия МО: строк ${verification.total_rows || 0}, подтверждено ${verification.verified_rows || 0}, заменено в MUN_NAME ${verification.updated_rows || 0}, оставлено без изменений ${verification.kept_rows || 0}.${sampleText}`
+      );
+    } else if (verification.status === 'error') {
+      appendChatMessage('p-chat', 'agent', `Не смог проверить официальные названия МО: ${verification.reason || 'неизвестная ошибка'}.`);
+    }
     await refreshCounts();
     await refreshModuleReadiness();
     await refreshParserStatus({ silent: true });
     await refreshGeneratorStatus({ silent: true });
     await refreshPhilologistStatus({ silent: true });
     await refreshSenderStatus({ silent: true });
-    appendChatMessage('p-chat', 'agent', `Файл ${file.name} загружен. Теперь напишите что нужно сделать.`);
+    appendChatMessage('p-chat', 'agent', `Файл ${file.name} готов. Теперь можно перейти к генерации или дать парсеру дополнительную задачу.`);
  
   } catch (err) {
     if (attachedFile) attachedFile.style.display = 'none';
