@@ -1644,12 +1644,13 @@
         appendChatMessage(chatId, 'agent', 'Не удалось получить ответ агента: ' + err.message);
       });
   }
-  async function attachFile(input) {
+async function attachFile(input) {
   const file = input.files[0];
   if (!file) return;
  
   // Сначала создаём job_id если его нет
   await ensureCurrentJobId();
+  const previousJobId = currentJobId;
  
   // Загружаем файл через существующий эндпоинт upload/data
   const form = new FormData();
@@ -1666,9 +1667,19 @@
     if (!res.ok) throw new Error(data.detail || 'Ошибка загрузки');
  
     if (data.job_id) setCurrentJobId(data.job_id);
+    resetModuleUiForNewDataUpload();
  
     // Показываем что файл загружен
     document.getElementById('p-attached-name').textContent = file.name;
+    if (previousJobId && currentJobId && previousJobId !== currentJobId) {
+      appendChatMessage('p-chat', 'agent', `Рабочая сессия обновлена: ${previousJobId} → ${currentJobId}.`);
+    }
+    await refreshCounts();
+    await refreshModuleReadiness();
+    await refreshParserStatus({ silent: true });
+    await refreshGeneratorStatus({ silent: true });
+    await refreshPhilologistStatus({ silent: true });
+    await refreshSenderStatus({ silent: true });
     appendChatMessage('p-chat', 'agent', `Файл ${file.name} загружен. Теперь напишите что нужно сделать.`);
  
   } catch (err) {
