@@ -350,6 +350,16 @@ def verify_municipality_name(
                 source="ADM_NAME+MUN_NAME",
                 reason="Название извлечено из кавычек в полном названии администрации и совпадает с MUN_NAME; замена не требуется.",
             )
+        if _candidate_is_safe_for_autoreplace(normalized, current_name):
+            return MunicipalityNameVerification(
+                row_id=_clean(row.get("ID")),
+                original_name=current_name,
+                official_name=normalized,
+                status="verified",
+                confidence="medium",
+                source="ADM_NAME",
+                reason="Название извлечено из кавычек в полном названии администрации и признано безопасным для автозамены.",
+            )
         return MunicipalityNameVerification(
             row_id=_clean(row.get("ID")),
             original_name=current_name,
