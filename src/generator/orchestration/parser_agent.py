@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from time import perf_counter
 from pathlib import Path
 from typing import Any
 
@@ -175,6 +176,7 @@ def _municipality_verification_source_label(source: str) -> str:
 
 
 def run_parser_municipality_verification(job_id: str | None = None, *, source: str = "api") -> dict[str, Any]:
+    overall_started = perf_counter()
     data_xlsx_path = _parser_data_xlsx_path(job_id)
     started_at = datetime.now().isoformat(timespec="seconds")
     source_label = _municipality_verification_source_label(source)
@@ -210,6 +212,7 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
         return result
 
     use_official_sites = settings.municipality_official_sites_enabled and source != "parser"
+    verification_started = perf_counter()
     result = verify_municipality_names_in_workbook(
         data_xlsx_path,
         use_official_sites=use_official_sites,
@@ -217,6 +220,13 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
         oktmo_lookup=_build_oktmo_lookup(),
         use_minjust=settings.municipality_minjust_lookup_enabled,
     )
+    result["timings"] = {
+        "verification_seconds": round(perf_counter() - verification_started, 3),
+        "overall_seconds": round(perf_counter() - overall_started, 3),
+        "source": source,
+        "use_official_sites": use_official_sites,
+        "use_oktmo": True,
+    }
     verification_summary = format_municipality_verification_for_chat(result)
     final_summary = (
         verification_summary
