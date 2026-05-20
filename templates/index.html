@@ -1753,6 +1753,9 @@ async function attachFile(input) {
         'agent',
         `Проверил названия МО: строк ${verification.total_rows || 0}, подтверждено ${verification.verified_rows || 0}, заменено в MUN_NAME ${verification.updated_rows || 0}, оставлено без изменений ${verification.kept_rows || 0}.${sampleText}`
       );
+      const downloadUrl = data.data_download_url || (currentJobId ? `/api/download/data-xlsx?job_id=${encodeURIComponent(currentJobId)}` : '/api/download/data-xlsx');
+      appendChatMessage('p-chat', 'agent', 'Обновлённый data.xlsx готов. Можешь скачать его и проверить названия МО.');
+      appendDownloadMessage('p-chat', [{ url: downloadUrl, label: 'Скачать обновлённый data.xlsx' }]);
     } else if (verification.status === 'error') {
       appendChatMessage('p-chat', 'agent', `Не смог проверить официальные названия МО: ${verification.reason || 'неизвестная ошибка'}.`);
     }
