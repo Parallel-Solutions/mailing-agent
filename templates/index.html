@@ -288,6 +288,49 @@
     background: #fff;
   }
 
+  .mo-verification-indicator {
+    position: fixed;
+    right: 22px;
+    bottom: 22px;
+    z-index: 1000;
+    display: none;
+    align-items: center;
+    gap: 10px;
+    max-width: 360px;
+    padding: 12px 14px;
+    border: 1px solid #d7e7c4;
+    border-radius: 12px;
+    background: rgba(247, 252, 241, 0.97);
+    color: #2f4c11;
+    box-shadow: 0 10px 30px rgba(35, 55, 14, 0.12);
+    backdrop-filter: blur(6px);
+  }
+
+  .mo-verification-indicator.visible {
+    display: flex;
+  }
+
+  .mo-verification-pulse {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: #5a9e1f;
+    box-shadow: 0 0 0 rgba(90, 158, 31, 0.45);
+    animation: moPulse 1.3s infinite;
+    flex-shrink: 0;
+  }
+
+  .mo-verification-text {
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  @keyframes moPulse {
+    0% { box-shadow: 0 0 0 0 rgba(90, 158, 31, 0.45); }
+    70% { box-shadow: 0 0 0 10px rgba(90, 158, 31, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(90, 158, 31, 0); }
+  }
+
   .module-header {
     display: flex;
     align-items: center;
@@ -1715,6 +1758,19 @@ function clearAttachedFile() {
   // PARSER
   let parserRunning = false;
 
+  function setMunicipalityVerificationIndicator(result = {}) {
+    const indicator = document.getElementById('mo-verification-indicator');
+    const text = document.getElementById('mo-verification-text');
+    if (!indicator || !text) return;
+    const verificationState = result.municipality_name_verification_state || {};
+    if ((verificationState.status || '') === 'running') {
+      text.textContent = verificationState.summary_text || 'Идёт проверка официальных названий МО.';
+      indicator.classList.add('visible');
+      return;
+    }
+    indicator.classList.remove('visible');
+  }
+
   function setParserUiState(result = {}) {
     const badge = document.getElementById('p-badge');
     const fill = document.getElementById('p-fill');
@@ -1727,10 +1783,25 @@ function clearAttachedFile() {
     const claimed = inProgress + pending;
     const percent = total > 0 ? Math.round((claimed / total) * 100) : 0;
     const status = result.status || 'idle';
+    const verificationState = result.municipality_name_verification_state || {};
+    const verificationStatus = verificationState.status || 'idle';
 
     if (fill) fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
     const totalEl = document.getElementById('p-total');
     if (totalEl) totalEl.textContent = total.toLocaleString('ru');
+    setMunicipalityVerificationIndicator(result);
+
+    if (verificationStatus === 'running') {
+      if (badge) {
+        badge.textContent = 'Проверка МО';
+        badge.className = 'badge badge-running';
+      }
+      if (label) {
+        label.textContent = verificationState.summary_text || 'Идёт проверка официальных названий МО.';
+      }
+      if (runButton) runButton.disabled = true;
+      return;
+    }
 
     if (status === 'running') {
       if (badge) {
@@ -2815,6 +2886,11 @@ function clearAttachedFile() {
     senderStopButton.addEventListener('click', () => pauseSender());
   }
 </script>
+
+<div id="mo-verification-indicator" class="mo-verification-indicator" aria-live="polite">
+  <span class="mo-verification-pulse"></span>
+  <span id="mo-verification-text" class="mo-verification-text">Идёт проверка официальных названий МО.</span>
+</div>
 
 </body>
 </html>
