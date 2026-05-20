@@ -37,6 +37,12 @@ class OktmoEntry:
     subject_name: str
     parent_name: str
     oktmo_code: str
+    name_norm: str
+    official_name_norm: str
+    tail_norm: str
+    subject_norm: str
+    parent_tokens: frozenset[str]
+    tail_tokens: frozenset[str]
 
 
 class OktmoMunicipalityLookup:
@@ -56,6 +62,11 @@ class OktmoMunicipalityLookup:
         self.verify_ssl = verify_ssl
         self.disabled_reason = ""
         self._entries: list[OktmoEntry] | None = None
+        self._entries_by_type: dict[str, list[OktmoEntry]] = {}
+        self._entries_by_type_subject: dict[tuple[str, str], list[OktmoEntry]] = {}
+        self._official_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
+        self._name_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
+        self._tail_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
 
     def confirm(self, row: dict[str, Any], candidate_name: str) -> OktmoMunicipalityResult | None:
         candidate_name = _clean(candidate_name)
@@ -69,35 +80,39 @@ class OktmoMunicipalityLookup:
         candidate_tail = _municipality_tail(candidate_name)
         candidate_norm = _normalize_for_match(candidate_name)
         subject_norm = _normalize_for_match(row.get("SUB_RF"))
-        district_norm = _normalize_for_match(row.get("MUN_R_NAME"))
+        district_tokens = _keyword_tokens(row.get("MUN_R_NAME"))
 
+        scoped_entries = self._scoped_entries(candidate_type, subject_norm) or entries
+        direct_matches = self._exact_matches(
+            candidate_type=candidate_type,
+            subject_norm=subject_norm,
+            candidate_norm=candidate_norm,
+            candidate_tail=candidate_tail,
+        )
+        if direct_matches:
+            scoped_entries = direct_matches
+
+        candidate_tail_tokens = _keyword_tokens(candidate_tail)
         scored: list[tuple[int, OktmoEntry]] = []
-        for entry in entries:
-            if candidate_type and entry.municipality_type and candidate_type != entry.municipality_type:
-                continue
-            if subject_norm and not _same_subject(subject_norm, entry.subject_name):
-                continue
-            if district_norm and entry.parent_name and not _same_municipality_keyword(district_norm, entry.parent_name):
+        for entry in scoped_entries:
+            if district_tokens and entry.parent_tokens and not (district_tokens & entry.parent_tokens):
                 continue
 
             score = 0
-            entry_official_norm = _normalize_for_match(entry.official_name)
-            entry_name_norm = _normalize_for_match(entry.name)
-            entry_tail = _municipality_tail(entry.official_name)
-            if candidate_norm == entry_official_norm:
+            if candidate_norm == entry.official_name_norm:
                 score += 100
-            elif candidate_norm == entry_name_norm:
+            elif candidate_norm == entry.name_norm:
                 score += 90
-            elif candidate_tail and candidate_tail == entry_tail:
+            elif candidate_tail and candidate_tail == entry.tail_norm:
                 score += 80
-            elif candidate_tail and _same_municipality_keyword(candidate_tail, entry_tail):
+            elif candidate_tail_tokens and entry.tail_tokens and (candidate_tail_tokens & entry.tail_tokens):
                 score += 65
 
             if candidate_type and candidate_type == entry.municipality_type:
                 score += 20
-            if subject_norm and _same_subject(subject_norm, entry.subject_name):
+            if subject_norm and subject_norm == entry.subject_norm:
                 score += 10
-            if district_norm and entry.parent_name and _same_municipality_keyword(district_norm, entry.parent_name):
+            if district_tokens and entry.parent_tokens and (district_tokens & entry.parent_tokens):
                 score += 10
 
             if score >= 90:
@@ -128,10 +143,69 @@ class OktmoMunicipalityLookup:
             return self._entries
         try:
             self._entries = parse_oktmo_csv(self.csv_path)
+            self._build_indexes(self._entries)
         except (OSError, csv.Error) as exc:
             self.disabled_reason = str(exc) or exc.__class__.__name__
             self._entries = []
         return self._entries
+
+    def _build_indexes(self, entries: list[OktmoEntry]) -> None:
+        self._entries_by_type.clear()
+        self._entries_by_type_subject.clear()
+        self._official_index.clear()
+        self._name_index.clear()
+        self._tail_index.clear()
+        for entry in entries:
+            self._entries_by_type.setdefault(entry.municipality_type, []).append(entry)
+            if entry.subject_norm:
+                self._entries_by_type_subject.setdefault((entry.municipality_type, entry.subject_norm), []).append(entry)
+            self._official_index.setdefault(
+                (entry.municipality_type, entry.subject_norm, entry.official_name_norm),
+                [],
+            ).append(entry)
+            self._name_index.setdefault(
+                (entry.municipality_type, entry.subject_norm, entry.name_norm),
+                [],
+            ).append(entry)
+            self._tail_index.setdefault(
+                (entry.municipality_type, entry.subject_norm, entry.tail_norm),
+                [],
+            ).append(entry)
+
+    def _scoped_entries(self, candidate_type: str, subject_norm: str) -> list[OktmoEntry]:
+        if candidate_type and subject_norm:
+            return self._entries_by_type_subject.get((candidate_type, subject_norm), [])
+        if candidate_type:
+            return self._entries_by_type.get(candidate_type, [])
+        return []
+
+    def _exact_matches(
+        self,
+        *,
+        candidate_type: str,
+        subject_norm: str,
+        candidate_norm: str,
+        candidate_tail: str,
+    ) -> list[OktmoEntry]:
+        if not candidate_type:
+            return []
+        keys = []
+        if subject_norm:
+            keys.append((candidate_type, subject_norm))
+        else:
+            keys.append((candidate_type, ""))
+        matches: list[OktmoEntry] = []
+        for type_key, subject_key in keys:
+            matches.extend(self._official_index.get((type_key, subject_key, candidate_norm), []))
+            matches.extend(self._name_index.get((type_key, subject_key, candidate_norm), []))
+            if candidate_tail:
+                matches.extend(self._tail_index.get((type_key, subject_key, candidate_tail), []))
+        if matches:
+            unique: dict[str, OktmoEntry] = {}
+            for entry in matches:
+                unique[entry.oktmo_code] = entry
+            return list(unique.values())
+        return []
 
     def _download_csv(self) -> bool:
         try:
@@ -192,6 +266,12 @@ def parse_oktmo_csv(path: Path) -> list[OktmoEntry]:
                 subject_name=subject_by_ter.get(ter, ""),
                 parent_name=parent_by_area.get((ter, kod1), ""),
                 oktmo_code=f"{ter}{kod1}{kod2}{kod3}{kc}",
+                name_norm=_normalize_for_match(name),
+                official_name_norm=_normalize_for_match(official_name),
+                tail_norm=_municipality_tail(official_name),
+                subject_norm=_normalize_for_match(subject_by_ter.get(ter, "")),
+                parent_tokens=frozenset(_keyword_tokens(parent_by_area.get((ter, kod1), ""))),
+                tail_tokens=frozenset(_keyword_tokens(_municipality_tail(official_name))),
             )
         )
     return entries
