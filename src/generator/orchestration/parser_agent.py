@@ -32,6 +32,13 @@ PARSER_STATE: dict[str, Any] = {
     "tasks": [],
     "row_count": 0,
     "municipality_name_verification": {},
+    "municipality_name_verification_state": {
+        "status": "idle",
+        "source": "",
+        "started_at": None,
+        "completed_at": None,
+        "summary_text": "",
+    },
 }
 
 
@@ -132,10 +139,57 @@ def format_municipality_verification_for_chat(result: dict[str, Any], *, max_sam
     return "\n\n".join(part for part in parts if part).strip()
 
 
-def run_parser_municipality_verification(job_id: str | None = None) -> dict[str, Any]:
+def _update_municipality_verification_state(
+    job_id: str | None,
+    *,
+    status: str,
+    source: str = "",
+    summary_text: str = "",
+    started_at: str | None = None,
+    completed_at: str | None = None,
+    result: dict[str, Any] | None = None,
+) -> None:
+    state = _load_parser_state(job_id)
+    verification_state = dict(state.get("municipality_name_verification_state") or {})
+    verification_state.update(
+        {
+            "status": status,
+            "source": source,
+            "summary_text": summary_text,
+            "started_at": started_at,
+            "completed_at": completed_at,
+        }
+    )
+    state["municipality_name_verification_state"] = verification_state
+    if result is not None:
+        state["municipality_name_verification"] = result
+    _save_parser_state(state, job_id)
+
+
+def _municipality_verification_source_label(source: str) -> str:
+    if source == "generator":
+        return "перед генерацией документов"
+    if source == "parser":
+        return "после работы парсера"
+    if source == "api":
+        return "по отдельному запуску"
+    return "в текущем job"
+
+
+def run_parser_municipality_verification(job_id: str | None = None, *, source: str = "api") -> dict[str, Any]:
     data_xlsx_path = _parser_data_xlsx_path(job_id)
+    started_at = datetime.now().isoformat(timespec="seconds")
+    source_label = _municipality_verification_source_label(source)
+    _update_municipality_verification_state(
+        job_id,
+        status="running",
+        source=source,
+        summary_text=f"Идёт проверка официальных названий МО {source_label}.",
+        started_at=started_at,
+        completed_at=None,
+    )
     if not data_xlsx_path.exists():
-        return {
+        result = {
             "status": "error",
             "updated_rows": 0,
             "verified_rows": 0,
@@ -146,18 +200,45 @@ def run_parser_municipality_verification(job_id: str | None = None) -> dict[str,
             "decision_samples": [],
             "reason": "Файл data.xlsx не найден.",
         }
-    return verify_municipality_names_in_workbook(
+        _update_municipality_verification_state(
+            job_id,
+            status="error",
+            source=source,
+            summary_text="Проверка официальных названий МО не запустилась: файл data.xlsx не найден.",
+            started_at=started_at,
+            completed_at=datetime.now().isoformat(timespec="seconds"),
+            result=result,
+        )
+        return result
+
+    result = verify_municipality_names_in_workbook(
         data_xlsx_path,
         use_official_sites=settings.municipality_official_sites_enabled,
         use_oktmo=settings.municipality_oktmo_lookup_enabled,
         oktmo_lookup=_build_oktmo_lookup(),
         use_minjust=settings.municipality_minjust_lookup_enabled,
     )
+    verification_summary = format_municipality_verification_for_chat(result)
+    final_summary = (
+        verification_summary
+        if verification_summary
+        else "Проверка официальных названий МО завершена."
+    )
+    _update_municipality_verification_state(
+        job_id,
+        status="completed" if result.get("status") != "error" else "error",
+        source=source,
+        summary_text=final_summary,
+        started_at=started_at,
+        completed_at=datetime.now().isoformat(timespec="seconds"),
+        result=result,
+    )
+    return result
 
 
 def run_parser_agent(*, limit: int | None = None, job_id: str | None = None) -> dict[str, Any]:
     started_at = datetime.now().isoformat(timespec="seconds")
-    verification_result = run_parser_municipality_verification(job_id)
+    verification_result = run_parser_municipality_verification(job_id, source="parser")
     claimed_tasks = mark_tasks_in_progress("parser", limit=limit, job_id=job_id)
     task_stats = count_tasks_for_agent("parser", job_id=job_id)
     tasks = get_tasks_for_agent("parser", job_id=job_id)
