@@ -660,10 +660,6 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
     xlsx_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
     if not xlsx_path.exists():
         raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
-    # If the user skips parser and uploads a ready table manually, run the
-    # municipality normalization before generation so documents use the latest
-    # verified MUN_NAME values from the current job.
-    run_parser_municipality_verification(job_id, source="generator")
     result = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
     if result.get("status") == "error":
         raise HTTPException(status_code=400, detail=result.get("summary_text") or "Ошибка генерации")
