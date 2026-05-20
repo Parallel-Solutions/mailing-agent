@@ -2115,6 +2115,7 @@ function clearAttachedFile() {
   async function startGenerator() {
     await ensureCurrentJobId();
     setGeneratorUiState({ status: 'running', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
+    appendChatMessage('g-chat', 'agent', 'Запускаю генератор документов. Сначала подготовлю строки и посчитаю общий объём, потом начну сборку DOCX и PDF.');
     if (generatorStatusPoll) clearInterval(generatorStatusPoll);
     generatorStatusPoll = setInterval(() => {
       refreshGeneratorStatus({ silent: true });
