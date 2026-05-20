@@ -619,6 +619,18 @@ async def download_data_xlsx(job_id: str | None = None, username: str = Depends(
         filename="data.xlsx",
     )
 
+@app.get("/api/parser/debug-path")
+async def debug_path(username: str = Depends(check_auth)):
+    p = Path(__file__).parent / "src" / "parser_new" / "output" / "latest"
+    files = list(p.glob("*.xlsx")) if p.exists() else []
+    return {
+        "__file__": str(Path(__file__)),
+        "parent": str(Path(__file__).parent),
+        "output_dir": str(p),
+        "exists": p.exists(),
+        "files": [f.name for f in files],
+    }
+
 @app.get("/api/parser/download-result")
 async def download_parser_result(job_id: str | None = None, username: str = Depends(check_auth)):
     """Скачать последний обработанный файл."""

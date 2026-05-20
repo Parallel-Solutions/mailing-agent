@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Загружаем .env из корня проекта
-load_dotenv()
+load_dotenv(r"C:\mailing-agent\.env")
 
 
 # ==============================

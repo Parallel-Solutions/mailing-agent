@@ -17,3 +17,15 @@ PARSER_OPENAI_BASE_URL=https://api.vsellm.ru/v1
 PARSER_MODEL=gpt-4o
 GENERATOR_OPENAI_API_KEY=sk-ZtCRBj6XasV0DP-g5zKKyA
 GENERATOR_OPENAI_BASE_URL=https://api.openai.com/v1
+ANTHROPIC_API_KEY=sk-MauNMjrblEWy3G5fSh3b4g
+LLM_BASE_URL=https://api.vsellm.ru/v1
+TAVILY_API_KEY=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          # https://tavily.com
+CHECKO_API_KEY=pfaUtlySP5IWfCwI
+REDIS_URL=redis://localhost:6379
+AGENT_MODEL=gpt-4o # модель LLM
+AGENT_MAX_ITERATIONS=150              # макс шагов за одну задачу
+AGENT_VERBOSE=true                    # показывать ли шаги агента
+
+# --- Пути ---
+OUTPUT_DIR=output                    # куда сохранять результаты
+MEMORY_DIR=memory

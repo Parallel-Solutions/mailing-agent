@@ -14,6 +14,11 @@ from src.parser_new import config
 
 
 def _build_llm():
+    import os
+    # Принудительно устанавливаем переменную окружения
+    os.environ["OPENAI_API_KEY"] = config.ANTHROPIC_API_KEY
+    os.environ["OPENAI_BASE_URL"] = config.LLM_BASE_URL
+    
     return ChatOpenAI(
         model=config.AGENT_MODEL,
         api_key=config.ANTHROPIC_API_KEY,
