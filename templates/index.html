@@ -2063,6 +2063,37 @@ function clearAttachedFile() {
     button.title = isEnabled ? '' : reason;
   }
 
+  function inferLocalModuleReadiness() {
+    const kpButton = document.getElementById('kp-btn');
+    const contractButton = document.getElementById('contract-btn');
+    const mailButton = document.getElementById('mail-btn');
+    const uploadStatus = document.getElementById('upload-data-status');
+    const attachedFile = document.getElementById('p-attached-file');
+    const dataLoaded = !!(
+      (uploadStatus && uploadStatus.style.display !== 'none')
+      || (attachedFile && attachedFile.style.display !== 'none')
+    );
+    const kpLoaded = !!(kpButton && kpButton.classList.contains('uploaded'));
+    const contractLoaded = !!(contractButton && contractButton.classList.contains('uploaded'));
+    const mailLoaded = !!(mailButton && mailButton.classList.contains('uploaded'));
+    const generatorCompleted = document.getElementById('g-badge')?.textContent?.trim() === 'Готово';
+
+    return {
+      data_loaded: dataLoaded,
+      kp_template_loaded: kpLoaded,
+      contract_template_loaded: contractLoaded,
+      mail_template_loaded: mailLoaded,
+      generator_ready: dataLoaded && kpLoaded && contractLoaded,
+      philologist_ready: generatorCompleted,
+      sender_ready: false,
+      generator_reason: dataLoaded
+        ? ((kpLoaded && contractLoaded) ? '' : 'Для генератора нужны шаблон КП и шаблон договора.')
+        : 'Сначала загрузите data.xlsx.',
+      philologist_reason: generatorCompleted ? '' : 'Филолог станет доступен после генерации документов.',
+      sender_reason: 'Отправщик станет доступен после генерации PDF-вложений.',
+    };
+  }
+
   function applyModuleReadiness() {
     const generatorRunButton = document.getElementById('g-run');
     const philologistRunButton = document.getElementById('ph-run');
@@ -2100,6 +2131,7 @@ function clearAttachedFile() {
       if (requestedJobId !== currentJobId) return null;
       moduleReadiness = { ...moduleReadiness, ...(data.result || {}) };
     } catch (e) {
+      moduleReadiness = { ...moduleReadiness, ...inferLocalModuleReadiness() };
     }
     applyModuleReadiness();
     return moduleReadiness;
