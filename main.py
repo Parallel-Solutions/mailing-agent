@@ -258,6 +258,99 @@ async def data_info(job_id: str | None = None, username: str = Depends(check_aut
     return {"loaded": True, "total": len(rows)}
 
 
+@app.get("/api/job/readiness")
+async def job_readiness(job_id: str | None = None, username: str = Depends(check_auth)):
+    paths = resolve_job_paths(job_id)
+    data_path = _prefer_existing_file(paths.data_xlsx, Path("data/data.xlsx"))
+    row_count = 0
+    if data_path.exists():
+        try:
+            _, _, rows = load_rows(data_path)
+            row_count = len(rows)
+        except Exception:
+            row_count = 0
+
+    templates_dir = paths.templates_dir
+    kp_template_loaded = (templates_dir / "kp_template_source.docx").exists()
+    contract_template_loaded = (templates_dir / "contract_template_source.docx").exists()
+    mail_template_loaded = any(
+        (templates_dir / name).exists()
+        for name in ("mail_template.docx", "mail_template.txt")
+    )
+
+    output_dir = paths.output_dir
+    output_docx_count = (
+        sum(1 for path in output_dir.rglob("*.docx") if path.is_file())
+        if output_dir.exists()
+        else 0
+    )
+    output_pdf_count = (
+        sum(1 for path in output_dir.rglob("*.pdf") if path.is_file())
+        if output_dir.exists()
+        else 0
+    )
+
+    parser_state = get_parser_status(job_id)
+    generator_state = get_generator_status(job_id)
+    philologist_state = get_philologist_status(job_id)
+
+    parser_running = str(parser_state.get("status") or "") == "running"
+    generator_running = str(generator_state.get("status") or "") == "running"
+    philologist_running = str(philologist_state.get("status") or "") == "running"
+
+    generator_reasons: list[str] = []
+    philologist_reasons: list[str] = []
+    sender_reasons: list[str] = []
+
+    if not data_path.exists():
+        generator_reasons.append("Не загружен data.xlsx.")
+        sender_reasons.append("Не загружен data.xlsx.")
+    elif row_count <= 0:
+        generator_reasons.append("В data.xlsx нет строк для обработки.")
+        sender_reasons.append("В data.xlsx нет строк для отправки.")
+
+    if not kp_template_loaded:
+        generator_reasons.append("Не загружен шаблон КП.")
+    if not contract_template_loaded:
+        generator_reasons.append("Не загружен шаблон договора.")
+    if parser_running:
+        generator_reasons.append("Парсер ещё работает.")
+
+    if output_docx_count <= 0:
+        philologist_reasons.append("Нет готовых DOCX-документов.")
+    if generator_running:
+        philologist_reasons.append("Генератор ещё работает.")
+
+    if output_pdf_count <= 0:
+        sender_reasons.append("Нет готовых PDF-вложений.")
+    if generator_running:
+        sender_reasons.append("Генератор ещё работает.")
+    if philologist_running:
+        sender_reasons.append("Филолог ещё работает.")
+
+    return {
+        "status": "ok",
+        "result": {
+            "data_loaded": data_path.exists(),
+            "row_count": row_count,
+            "kp_template_loaded": kp_template_loaded,
+            "contract_template_loaded": contract_template_loaded,
+            "mail_template_loaded": mail_template_loaded,
+            "output_docx_count": output_docx_count,
+            "output_pdf_count": output_pdf_count,
+            "parser_running": parser_running,
+            "generator_running": generator_running,
+            "philologist_running": philologist_running,
+            "generator_ready": not generator_reasons,
+            "philologist_ready": not philologist_reasons,
+            "sender_ready": not sender_reasons,
+            "generator_reason": " ".join(generator_reasons).strip(),
+            "philologist_reason": " ".join(philologist_reasons).strip(),
+            "sender_reason": " ".join(sender_reasons).strip(),
+        },
+    }
+
+
 @app.post("/api/data/verify-municipality-names")
 async def data_verify_municipality_names(
     payload: dict | None = Body(default=None),
