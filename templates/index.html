@@ -2176,6 +2176,8 @@ function clearAttachedFile() {
     const label = document.getElementById('g-label');
     const doneStat = document.getElementById('g-done');
     const errorStat = document.getElementById('g-err');
+    const totalStat = document.getElementById('g-total');
+    const totalLabel = document.getElementById('g-total-label');
     const total = Number(result.total_rows || 0);
     const processed = Number(result.processed_rows || 0);
     const ok = Number(result.ok_rows || 0);
@@ -2194,6 +2196,8 @@ function clearAttachedFile() {
     const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
     const canDownloadOutput = status === 'completed' && outputFileCount > 0;
 
+    if (totalStat && total > 0) totalStat.textContent = total.toLocaleString('ru');
+    if (totalLabel && total > 0) totalLabel.textContent = total.toLocaleString('ru');
     if (doneStat) doneStat.textContent = processed.toLocaleString('ru');
     if (errorStat) errorStat.textContent = errors.toLocaleString('ru');
     if (inflectionSummaryEl) inflectionSummaryEl.textContent = formatInflectionSummary(inflectionSummary);
