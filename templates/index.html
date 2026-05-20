@@ -1341,16 +1341,9 @@
     chatSessions['o-chat'] = '';
     setCurrentJobId('');
 
-    try {
-      const res = await fetch('/api/jobs', { method: 'POST' });
-      const data = await res.json();
-      if (res.ok && data.job_id) {
-        setCurrentJobId(data.job_id);
-      }
-    } catch (e) {}
-
     resetSettingsFormFields();
     clearDataFile();
+    clearAttachedFile();
     resetTemplateButton('mail-btn', 'upload-mail-input');
     resetTemplateButton('kp-btn', 'upload-kp-input');
     resetTemplateButton('contract-btn', 'upload-contract-input');
@@ -1362,17 +1355,25 @@
     lastAgentEventIds.generator = '';
     lastAgentEventIds.philologist = '';
     lastAgentEventIds.sender = '';
+    showToast('Все поля и состояния модулей очищены');
+    goToScreen('settings');
+
+    try {
+      const res = await fetch('/api/jobs', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.job_id) {
+        setCurrentJobId(data.job_id);
+      }
+    } catch (e) {}
 
     if (currentJobId) {
       await refreshCounts();
+      await refreshModuleReadiness();
       await refreshParserStatus({ silent: true });
       await refreshGeneratorStatus({ silent: true });
       await refreshPhilologistStatus({ silent: true });
       await refreshSenderStatus({ silent: true });
     }
-
-    showToast('Все поля и состояния модулей очищены');
-    goToScreen('settings');
   }
 
   async function uploadData(input) {
