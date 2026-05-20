@@ -946,7 +946,7 @@
       <div class="module-card">
         <div class="module-header">
           <span class="module-num">Генерация PDF из шаблонов Word</span>
-          <span class="badge badge-idle" id="g-badge">Ожидание</span>
+          <span class="badge badge-idle" id="g-badge">Готов к запуску</span>
         </div>
         <div class="module-title">Создание пакета документов</div>
         <div class="module-desc">
@@ -954,7 +954,7 @@
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="g-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="g-label">0 из <span id="g-total-label">0</span> документов обработано, осталось 0</div>
+          <div class="progress-label" id="g-label">Генератор ещё не запускался.</div>
           <div class="progress-label" id="g-inflection-summary" style="margin-top:6px">Журнал склонений появится после генерации.</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
@@ -1031,7 +1031,7 @@
       <div class="module-card">
         <div class="module-header">
           <span class="module-num">SMTP рассылка с вложениями</span>
-          <span class="badge badge-idle" id="s-badge">Ожидание</span>
+          <span class="badge badge-idle" id="s-badge">Готов к проверке</span>
         </div>
         <div class="module-title">Отправка писем с КП и договором</div>
         <div class="module-desc">
@@ -1046,7 +1046,7 @@
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="s-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="s-label">0 из 0 строк проверено, осталось 0</div>
+          <div class="progress-label" id="s-label">Проверка адресов и готовности ещё не запускалась.</div>
         </div>
           <div class="module-actions" style="margin-top:12px">
             <button type="button" class="btn-primary" id="s-run">Проверить адреса и готовность</button>
@@ -1711,7 +1711,7 @@ function clearAttachedFile() {
       return;
     }
 
-    badge.textContent = 'Ожидание';
+    badge.textContent = 'Готов к запуску';
     badge.className = 'badge badge-idle';
     label.textContent = total > 0 ? `0 / ${total} записей` : '0 / 0 записей';
   }
@@ -2275,7 +2275,7 @@ function clearAttachedFile() {
           action: 'обработано',
           extra: `успешно ${ok}, ошибок ${errors}`
         })
-      : '0 из 0 документов обработано, осталось 0';
+      : 'Генератор ещё не запускался.';
     setProgressVisual(fill, { percent: 0, running: false });
   }
 
@@ -2383,11 +2383,11 @@ function clearAttachedFile() {
         return;
       }
 
-      badge.textContent = 'Ожидание';
+      badge.textContent = 'Готов к проверке';
       badge.className = 'badge badge-idle';
       label.textContent = total > 0
         ? formatProgressText({ processed: 0, total, noun: 'строк', action: 'проверено' })
-        : '0 из 0 строк проверено, осталось 0';
+        : 'Проверка адресов и готовности ещё не запускалась.';
       setProgressVisual(fill, { percent: 0, running: false, indeterminate: false });
   }
 
