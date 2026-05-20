@@ -62,11 +62,14 @@ class OktmoMunicipalityLookup:
         self.verify_ssl = verify_ssl
         self.disabled_reason = ""
         self._entries: list[OktmoEntry] | None = None
+        self._confirm_cache: dict[tuple[str, str, str, str], OktmoMunicipalityResult | None] = {}
         self._entries_by_type: dict[str, list[OktmoEntry]] = {}
         self._entries_by_type_subject: dict[tuple[str, str], list[OktmoEntry]] = {}
         self._official_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
         self._name_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
         self._tail_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
+        self._parent_token_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
+        self._tail_token_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
 
     def confirm(self, row: dict[str, Any], candidate_name: str) -> OktmoMunicipalityResult | None:
         candidate_name = _clean(candidate_name)
@@ -81,6 +84,14 @@ class OktmoMunicipalityLookup:
         candidate_norm = _normalize_for_match(candidate_name)
         subject_norm = _normalize_for_match(row.get("SUB_RF"))
         district_tokens = _keyword_tokens(row.get("MUN_R_NAME"))
+        cache_key = (
+            candidate_norm,
+            candidate_type,
+            subject_norm,
+            " ".join(sorted(district_tokens)),
+        )
+        if cache_key in self._confirm_cache:
+            return self._confirm_cache[cache_key]
 
         scoped_entries = self._scoped_entries(candidate_type, subject_norm) or entries
         direct_matches = self._exact_matches(
@@ -93,7 +104,19 @@ class OktmoMunicipalityLookup:
             scoped_entries = direct_matches
 
         candidate_tail_tokens = _keyword_tokens(candidate_tail)
-        scored: list[tuple[int, OktmoEntry]] = []
+        narrowed_entries = self._narrow_entries(
+            scoped_entries=scoped_entries,
+            candidate_type=candidate_type,
+            subject_norm=subject_norm,
+            district_tokens=district_tokens,
+            candidate_tail_tokens=candidate_tail_tokens,
+        )
+        if narrowed_entries:
+            scoped_entries = narrowed_entries
+
+        best_score = -1
+        best_entry: OktmoEntry | None = None
+        duplicate_best = False
         for entry in scoped_entries:
             if district_tokens and entry.parent_tokens and not (district_tokens & entry.parent_tokens):
                 continue
@@ -115,18 +138,20 @@ class OktmoMunicipalityLookup:
             if district_tokens and entry.parent_tokens and (district_tokens & entry.parent_tokens):
                 score += 10
 
-            if score >= 90:
-                scored.append((score, entry))
+            if score < 90:
+                continue
+            if score > best_score:
+                best_score = score
+                best_entry = entry
+                duplicate_best = False
+            elif score == best_score and best_entry and entry.oktmo_code != best_entry.oktmo_code:
+                duplicate_best = True
 
-        if not scored:
+        if not best_entry or duplicate_best:
+            self._confirm_cache[cache_key] = None
             return None
 
-        scored.sort(key=lambda item: item[0], reverse=True)
-        best_score, best_entry = scored[0]
-        if len(scored) > 1 and scored[1][0] == best_score and scored[1][1].oktmo_code != best_entry.oktmo_code:
-            return None
-
-        return OktmoMunicipalityResult(
+        result = OktmoMunicipalityResult(
             name=best_entry.official_name,
             source_url=OKTMO_DATASET_PAGE_URL,
             oktmo_code=best_entry.oktmo_code,
@@ -134,6 +159,8 @@ class OktmoMunicipalityLookup:
             subject_name=best_entry.subject_name,
             parent_name=best_entry.parent_name,
         )
+        self._confirm_cache[cache_key] = result
+        return result
 
     def _load_entries(self) -> list[OktmoEntry]:
         if self._entries is not None:
@@ -155,6 +182,8 @@ class OktmoMunicipalityLookup:
         self._official_index.clear()
         self._name_index.clear()
         self._tail_index.clear()
+        self._parent_token_index.clear()
+        self._tail_token_index.clear()
         for entry in entries:
             self._entries_by_type.setdefault(entry.municipality_type, []).append(entry)
             if entry.subject_norm:
@@ -171,6 +200,10 @@ class OktmoMunicipalityLookup:
                 (entry.municipality_type, entry.subject_norm, entry.tail_norm),
                 [],
             ).append(entry)
+            for token in entry.parent_tokens:
+                self._parent_token_index.setdefault((entry.municipality_type, entry.subject_norm, token), []).append(entry)
+            for token in entry.tail_tokens:
+                self._tail_token_index.setdefault((entry.municipality_type, entry.subject_norm, token), []).append(entry)
 
     def _scoped_entries(self, candidate_type: str, subject_norm: str) -> list[OktmoEntry]:
         if candidate_type and subject_norm:
@@ -206,6 +239,46 @@ class OktmoMunicipalityLookup:
                 unique[entry.oktmo_code] = entry
             return list(unique.values())
         return []
+
+    def _narrow_entries(
+        self,
+        *,
+        scoped_entries: list[OktmoEntry],
+        candidate_type: str,
+        subject_norm: str,
+        district_tokens: set[str],
+        candidate_tail_tokens: set[str],
+    ) -> list[OktmoEntry]:
+        if not candidate_type or not subject_norm:
+            return []
+
+        candidate_sets: list[set[str]] = []
+        if district_tokens:
+            parent_matches: set[str] = set()
+            for token in district_tokens:
+                for entry in self._parent_token_index.get((candidate_type, subject_norm, token), []):
+                    parent_matches.add(entry.oktmo_code)
+            if parent_matches:
+                candidate_sets.append(parent_matches)
+        if candidate_tail_tokens:
+            tail_matches: set[str] = set()
+            for token in candidate_tail_tokens:
+                for entry in self._tail_token_index.get((candidate_type, subject_norm, token), []):
+                    tail_matches.add(entry.oktmo_code)
+            if tail_matches:
+                candidate_sets.append(tail_matches)
+
+        if not candidate_sets:
+            return []
+
+        narrowed_codes = candidate_sets[0]
+        for code_set in candidate_sets[1:]:
+            intersection = narrowed_codes & code_set
+            narrowed_codes = intersection or narrowed_codes
+
+        if not narrowed_codes or len(narrowed_codes) >= len(scoped_entries):
+            return []
+        return [entry for entry in scoped_entries if entry.oktmo_code in narrowed_codes]
 
     def _download_csv(self) -> bool:
         try:
