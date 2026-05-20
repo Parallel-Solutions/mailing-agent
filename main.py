@@ -242,10 +242,12 @@ async def upload_data(
     dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
+    municipality_name_verification = run_parser_municipality_verification(paths.job_id, source="parser")
     return {
         "status": "ok",
         "filename": file.filename,
         "job_id": paths.job_id,
+        "municipality_name_verification": municipality_name_verification,
     }
 
 
