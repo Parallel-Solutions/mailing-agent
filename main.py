@@ -554,6 +554,10 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
     xlsx_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
     if not xlsx_path.exists():
         raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
+    # If the user skips parser and uploads a ready table manually, run the
+    # municipality normalization before generation so documents use the latest
+    # verified MUN_NAME values from the current job.
+    run_parser_municipality_verification(job_id)
     result = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
     if result.get("status") == "error":
         raise HTTPException(status_code=400, detail=result.get("summary_text") or "Ошибка генерации")
@@ -889,8 +893,10 @@ async def parser_chat_v2(payload: dict = Body(...), username: str = Depends(chec
 @app.post("/api/parser/start")
 async def parser_start(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    verification_result = run_parser_municipality_verification(job_id)
     parser_result = run_batch_parser(job_id=job_id)
+    verification_result = {}
+    if parser_result.get("status") != "error":
+        verification_result = run_parser_municipality_verification(job_id)
     verification_summary = format_municipality_verification_for_chat(verification_result, max_samples=20)
     parser_reply = str(parser_result.get("reply") or "").strip()
     summary_parts = [part for part in [verification_summary, parser_reply] if part]
