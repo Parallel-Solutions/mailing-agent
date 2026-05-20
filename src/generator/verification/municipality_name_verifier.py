@@ -356,7 +356,7 @@ def verify_municipality_name(
                 original_name=current_name,
                 official_name=normalized,
                 status="verified",
-                confidence="medium",
+                confidence="high",
                 source="ADM_NAME",
                 reason="Название извлечено из кавычек в полном названии администрации и признано безопасным для автозамены.",
             )
