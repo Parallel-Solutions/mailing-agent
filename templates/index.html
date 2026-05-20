@@ -1246,10 +1246,14 @@
   }
 
   function clearDataFile() {
-    document.getElementById('upload-data-status').style.display = 'none';
-    document.getElementById('upload-zone-data').style.display = '';
-    document.getElementById('upload-data-label').textContent = 'Нажмите чтобы выбрать файл data.xlsx';
-    document.getElementById('upload-data-hint').textContent = 'Файл будет загружен на сервер';
+    const uploadStatus = document.getElementById('upload-data-status');
+    const uploadZone = document.getElementById('upload-zone-data');
+    const uploadLabel = document.getElementById('upload-data-label');
+    const uploadHint = document.getElementById('upload-data-hint');
+    if (uploadStatus) uploadStatus.style.display = 'none';
+    if (uploadZone) uploadZone.style.display = '';
+    if (uploadLabel) uploadLabel.textContent = 'Нажмите чтобы выбрать файл data.xlsx';
+    if (uploadHint) uploadHint.textContent = 'Файл будет загружен на сервер';
     const filename = document.getElementById('upload-data-filename');
     const rows = document.getElementById('upload-data-rows');
     if (filename) filename.textContent = '';
@@ -1383,7 +1387,8 @@
     const form = new FormData();
     form.append('file', file);
     appendJobId(form);
-    document.getElementById('upload-data-label').textContent = 'Загрузка...';
+    const uploadLabel = document.getElementById('upload-data-label');
+    if (uploadLabel) uploadLabel.textContent = 'Загрузка...';
     try {
       const res = await fetch('/api/upload/data', { method: 'POST', body: form });
       const data = await res.json();
@@ -1393,10 +1398,14 @@
         resetModuleUiForNewDataUpload();
         const info = await fetch(apiUrl('/api/data/info')).then(r => r.json());
         const rows = info.loaded ? info.total : '?';
-        document.getElementById('upload-data-filename').textContent = file.name;
-        document.getElementById('upload-data-rows').textContent = rows + ' записей';
-        document.getElementById('upload-data-status').style.display = 'block';
-        document.getElementById('upload-zone-data').style.display = 'none';
+        const uploadFilename = document.getElementById('upload-data-filename');
+        const uploadRows = document.getElementById('upload-data-rows');
+        const uploadStatus = document.getElementById('upload-data-status');
+        const uploadZone = document.getElementById('upload-zone-data');
+        if (uploadFilename) uploadFilename.textContent = file.name;
+        if (uploadRows) uploadRows.textContent = rows + ' записей';
+        if (uploadStatus) uploadStatus.style.display = 'block';
+        if (uploadZone) uploadZone.style.display = 'none';
         showToast('Файл загружен: ' + rows + ' записей');
         if (previousJobId && currentJobId && previousJobId !== currentJobId) {
           appendChatMessage('p-chat', 'agent', `Рабочая сессия обновлена: ${previousJobId} → ${currentJobId}. Шаблоны и данные теперь привязаны к новому job.`);
@@ -1432,11 +1441,13 @@
         await refreshSenderStatus({ silent: true });
         appendChatMessage('p-chat', 'agent', `Файл «${file.name}» загружен, ${rows} записей. Можешь перейти к генерации или дополнить данные через парсер.`);
       } else {
-        document.getElementById('upload-data-label').textContent = 'Нажмите чтобы выбрать файл data.xlsx';
+        const uploadLabelError = document.getElementById('upload-data-label');
+        if (uploadLabelError) uploadLabelError.textContent = 'Нажмите чтобы выбрать файл data.xlsx';
         showToast('Ошибка загрузки');
       }
     } catch(e) {
-      document.getElementById('upload-data-label').textContent = 'Нажмите чтобы выбрать файл data.xlsx';
+      const uploadLabelCatch = document.getElementById('upload-data-label');
+      if (uploadLabelCatch) uploadLabelCatch.textContent = 'Нажмите чтобы выбрать файл data.xlsx';
       showToast('Ошибка соединения');
     }
     input.value = '';
@@ -1659,8 +1670,10 @@ async function attachFile(input) {
   appendJobId(form);
  
   // Показываем что загружается
-  document.getElementById('p-attached-name').textContent = 'Загрузка ' + file.name + '...';
-  document.getElementById('p-attached-file').style.display = 'block';
+  const attachedName = document.getElementById('p-attached-name');
+  const attachedFile = document.getElementById('p-attached-file');
+  if (attachedName) attachedName.textContent = 'Загрузка ' + file.name + '...';
+  if (attachedFile) attachedFile.style.display = 'block';
  
   try {
     const res = await fetch('/api/upload/data', { method: 'POST', body: form });
@@ -1671,7 +1684,7 @@ async function attachFile(input) {
     resetModuleUiForNewDataUpload();
  
     // Показываем что файл загружен
-    document.getElementById('p-attached-name').textContent = file.name;
+    if (attachedName) attachedName.textContent = file.name;
     if (previousJobId && currentJobId && previousJobId !== currentJobId) {
       appendChatMessage('p-chat', 'agent', `Рабочая сессия обновлена: ${previousJobId} → ${currentJobId}.`);
     }
@@ -1684,16 +1697,19 @@ async function attachFile(input) {
     appendChatMessage('p-chat', 'agent', `Файл ${file.name} загружен. Теперь напишите что нужно сделать.`);
  
   } catch (err) {
-    document.getElementById('p-attached-file').style.display = 'none';
+    if (attachedFile) attachedFile.style.display = 'none';
     appendChatMessage('p-chat', 'agent', 'Не удалось загрузить файл: ' + err.message);
   }
 }
  
 // Убрать прикреплённый файл
 function clearAttachedFile() {
-  document.getElementById('p-attached-file').style.display = 'none';
-  document.getElementById('p-attach-input').value = '';
-  document.getElementById('p-attached-name').textContent = '';
+  const attachedFile = document.getElementById('p-attached-file');
+  const attachInput = document.getElementById('p-attach-input');
+  const attachedName = document.getElementById('p-attached-name');
+  if (attachedFile) attachedFile.style.display = 'none';
+  if (attachInput) attachInput.value = '';
+  if (attachedName) attachedName.textContent = '';
 }
 
   // PARSER
@@ -1712,7 +1728,7 @@ function clearAttachedFile() {
     const percent = total > 0 ? Math.round((claimed / total) * 100) : 0;
     const status = result.status || 'idle';
 
-    fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
+    if (fill) fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
     const totalEl = document.getElementById('p-total');
     if (totalEl) totalEl.textContent = total.toLocaleString('ru');
 
