@@ -1030,19 +1030,12 @@
 
       <div class="module-card">
         <div class="module-header">
-          <span class="module-num">SMTP рассылка с вложениями</span>
+          <span class="module-num">UniSender рассылка с вложениями</span>
           <span class="badge badge-idle" id="s-badge">Готов к проверке</span>
         </div>
         <div class="module-title">Отправка писем с КП и договором</div>
         <div class="module-desc">
           Читает data.xlsx, умеет заранее показать адреса получателей, проверяет готовность вложений и только после подтверждения может переходить к реальной отправке.
-        </div>
-        <div class="field" style="margin-bottom:12px; max-width:280px">
-          <label>Канал отправки</label>
-          <select id="s-transport">
-            <option value="smtp">Обычная отправка</option>
-            <option value="unisender">UniSender</option>
-          </select>
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="s-fill" style="width:0%"></div></div>
@@ -1129,6 +1122,14 @@
     's-chat': 'Привет! Я агент-отправщик. Могу заранее показать адреса из data.xlsx, сказать где нет почты, где будет выбран резервный адрес и что готово к отправке.',
   };
   let currentJobId = localStorage.getItem(JOB_STORAGE_KEY) || '';
+  let moduleReadiness = {
+    generator_ready: false,
+    philologist_ready: false,
+    sender_ready: false,
+    generator_reason: '',
+    philologist_reason: '',
+    sender_reason: '',
+  };
 
   function setCurrentJobId(jobId) {
     currentJobId = String(jobId || '').trim();
@@ -1262,10 +1263,19 @@
     parserRunning = false;
     phRunning = false;
     senderRunning = false;
+    moduleReadiness = {
+      generator_ready: false,
+      philologist_ready: false,
+      sender_ready: false,
+      generator_reason: '',
+      philologist_reason: '',
+      sender_reason: '',
+    };
     setParserUiState({ status: 'idle', row_count: 0, task_stats: {} });
     setGeneratorUiState({ status: 'idle', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
     setPhilologistUiState({ status: 'idle', total_documents: 0, processed_documents: 0, fixed_documents: 0, documents_with_issues: 0 });
     setSenderUiState({ status: 'idle', total_rows: 0, processed_rows: 0, ready_rows: 0, error_rows: 0, stats: { total: 0, sent: 0, error: 0, pending: 0 } });
+    applyModuleReadiness();
   }
 
   function resetTemplateButton(buttonId, inputId) {
@@ -1296,13 +1306,11 @@
     const subject = document.getElementById('settings-mail-subject');
     const senderEmail = document.getElementById('settings-sender-email');
     const senderPassword = document.getElementById('settings-sender-password');
-    const transport = document.getElementById('s-transport');
 
     if (workType) workType.selectedIndex = 0;
     if (subject) subject.value = 'Коммерческое предложение на разработку МНГП.';
     if (senderEmail) senderEmail.value = '';
     if (senderPassword) senderPassword.value = '';
-    if (transport) transport.value = 'smtp';
   }
 
   function resetModuleCountCards() {
@@ -1416,6 +1424,7 @@
           appendChatMessage('p-chat', 'agent', `Не смог проверить официальные названия МО: ${verification.reason || 'неизвестная ошибка'}. Таблица загружена без блокировки.`);
         }
         await refreshCounts();
+        await refreshModuleReadiness();
         await refreshParserStatus({ silent: true });
         await refreshGeneratorStatus({ silent: true });
         await refreshPhilologistStatus({ silent: true });
@@ -1450,6 +1459,7 @@
         btn.innerHTML = '<span class="file-icon">✓</span> ' + (file.name || label);
         btn.classList.add('uploaded');
         showToast(label + ' загружен успешно');
+        await refreshModuleReadiness();
       } else {
         btn.innerHTML = '<span class="file-icon">📎</span> Выбрать файл';
         showToast('Ошибка загрузки шаблона');
@@ -1818,10 +1828,14 @@ function clearAttachedFile() {
       });
       setProgressVisual(fill, { percent, running: total > 0, indeterminate: false });
       runButton.disabled = true;
+      runButton.title = '';
       return;
     }
 
-    runButton.disabled = !!phRunning;
+    runButton.disabled = !!phRunning || !moduleReadiness.philologist_ready;
+    runButton.title = (!phRunning && !moduleReadiness.philologist_ready)
+      ? (moduleReadiness.philologist_reason || 'Филолог пока нельзя запускать.')
+      : '';
 
     if (status === 'completed') {
       badge.textContent = 'Готово';
@@ -2000,8 +2014,53 @@ function clearAttachedFile() {
   }
 
   function getSenderTransport() {
-    const select = document.getElementById('s-transport');
-    return select ? String(select.value || 'smtp') : 'smtp';
+    return 'unisender';
+  }
+
+  function applyButtonReadiness(button, isEnabled, reason = '') {
+    if (!button) return;
+    button.disabled = !isEnabled;
+    button.title = isEnabled ? '' : reason;
+  }
+
+  function applyModuleReadiness() {
+    const generatorRunButton = document.getElementById('g-run');
+    const philologistRunButton = document.getElementById('ph-run');
+    const senderRunButton = document.getElementById('s-run');
+    const senderConfirmButton = document.getElementById('s-confirm-send');
+
+    applyButtonReadiness(
+      generatorRunButton,
+      !!moduleReadiness.generator_ready && !parserRunning,
+      moduleReadiness.generator_reason || 'Генератор пока нельзя запускать.'
+    );
+    applyButtonReadiness(
+      philologistRunButton,
+      !!moduleReadiness.philologist_ready && !phRunning,
+      moduleReadiness.philologist_reason || 'Филолог пока нельзя запускать.'
+    );
+    applyButtonReadiness(
+      senderRunButton,
+      !!moduleReadiness.sender_ready && !senderRunning,
+      moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.'
+    );
+    applyButtonReadiness(
+      senderConfirmButton,
+      !!moduleReadiness.sender_ready && !senderRunning && !senderConfirmButton.disabled,
+      moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.'
+    );
+  }
+
+  async function refreshModuleReadiness() {
+    try {
+      const res = await fetch(apiUrl('/api/job/readiness'));
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Не удалось получить готовность модулей');
+      moduleReadiness = { ...moduleReadiness, ...(data.result || {}) };
+    } catch (e) {
+    }
+    applyModuleReadiness();
+    return moduleReadiness;
   }
 
   function safeAppendChatMessage(chatId, role, text) {
@@ -2147,7 +2206,12 @@ function clearAttachedFile() {
 
   function setGeneratorButtonsBusy(isBusy) {
     const runButton = document.getElementById('g-run');
-    if (runButton) runButton.disabled = !!isBusy;
+    if (runButton) {
+      runButton.disabled = !!isBusy || !moduleReadiness.generator_ready;
+      runButton.title = (!isBusy && !moduleReadiness.generator_ready)
+        ? (moduleReadiness.generator_reason || 'Генератор пока нельзя запускать.')
+        : '';
+    }
   }
 
   function setGeneratorDownloadEnabled(isEnabled) {
@@ -2283,8 +2347,18 @@ function clearAttachedFile() {
     const runButton = document.getElementById('s-run');
     const confirmButton = document.getElementById('s-confirm-send');
     const stopButton = document.getElementById('s-stop');
-    if (runButton) runButton.disabled = !!running;
-    if (confirmButton) confirmButton.disabled = running || !canConfirm;
+    if (runButton) {
+      runButton.disabled = !!running || !moduleReadiness.sender_ready;
+      runButton.title = (!running && !moduleReadiness.sender_ready)
+        ? (moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.')
+        : '';
+    }
+    if (confirmButton) {
+      confirmButton.disabled = running || !canConfirm || !moduleReadiness.sender_ready;
+      confirmButton.title = (!running && !moduleReadiness.sender_ready)
+        ? (moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.')
+        : '';
+    }
     if (stopButton) stopButton.disabled = !canStop;
   }
 
@@ -2444,7 +2518,7 @@ function clearAttachedFile() {
       if (!previewRes.ok) throw new Error(previewData.detail || 'Ошибка предпросмотра адресов');
 
       safeSetSenderUiState({ status: 'running', total_rows: 0, processed_rows: 0, stats: {} });
-      safeAppendChatMessage('s-chat', 'agent', `Сначала покажу адреса и проверю готовность вложений без реальной отправки. Канал отправки: ${transport === 'unisender' ? 'UniSender' : 'обычная отправка'}.`);
+      safeAppendChatMessage('s-chat', 'agent', 'Сначала покажу адреса и проверю готовность вложений без реальной отправки. Канал отправки: UniSender.');
       senderPreviewState = previewData.result || {};
       safeAppendChatMessage('s-chat', 'agent', (senderPreviewState.summary_text || 'Предпросмотр адресов готов.') + '\n' + formatSenderPreviewRows(senderPreviewState.rows || [], 10));
 
@@ -2483,7 +2557,7 @@ function clearAttachedFile() {
         }
       senderRunning = true;
       setSenderButtonsState({ running: true, canConfirm: false, canStop: true });
-      safeAppendChatMessage('s-chat', 'agent', `Подтверждение получено. Запускаю реальную отправку через ${transport === 'unisender' ? 'UniSender' : 'обычный канал'}.`);
+      safeAppendChatMessage('s-chat', 'agent', 'Подтверждение получено. Запускаю реальную отправку через UniSender.');
 
       const res = await fetch('/api/sender/run', {
         method: 'POST',
@@ -2622,6 +2696,7 @@ function clearAttachedFile() {
     try {
       await Promise.allSettled([
         refreshCounts(),
+        refreshModuleReadiness(),
         refreshParserStatus({ silent }),
         refreshGeneratorStatus({ silent }),
         refreshPhilologistStatus({ silent }),
@@ -2633,6 +2708,7 @@ function clearAttachedFile() {
   }
 
   refreshCounts();
+  refreshModuleReadiness();
   refreshParserStatus({ silent: true });
   refreshGeneratorStatus({ silent: true });
   refreshPhilologistStatus({ silent: true });
