@@ -519,7 +519,28 @@ async def counts(job_id: str | None = None, username: str = Depends(check_auth))
         _, _, rows = load_rows(data_path)
         generator_total = len(rows)
 
-    sender_total = generator_total
+    # After restarts the UI can recover module states earlier than it can
+    # reliably re-read every source file. Use persisted agent state as a
+    # fallback so the counters stay in sync with the real job progress.
+    generator_state = get_generator_status(job_id)
+    philologist_state = get_philologist_status(job_id)
+    sender_state = get_sender_status(job_id)
+
+    generator_total = max(
+        generator_total,
+        int(generator_state.get("total_rows", 0) or 0),
+    )
+    if generator_total <= 0:
+        philologist_total = int(philologist_state.get("total_documents", 0) or 0)
+        if philologist_total > 0:
+            # Philologist works on both KP and contract DOCX/PDF files.
+            generator_total = max(generator_total, philologist_total // 2)
+
+    sender_total = max(
+        generator_total,
+        int(sender_state.get("total_rows", 0) or 0),
+        int((sender_state.get("stats") or {}).get("total", 0) or 0),
+    )
     
     return {
         "parser_total": parser_total,
