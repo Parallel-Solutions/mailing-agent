@@ -621,24 +621,31 @@ async def download_data_xlsx(job_id: str | None = None, username: str = Depends(
 
 @app.get("/api/parser/download-result")
 async def download_parser_result(job_id: str | None = None, username: str = Depends(check_auth)):
-    """Скачать последний обработанный файл из batch_processor."""
-    paths = resolve_job_paths(job_id)
-    output_dir = paths.output_dir
- 
-    if not output_dir.exists():
-        raise HTTPException(status_code=404, detail="Результаты ещё не готовы")
- 
-    # Ищем самый свежий batch_*.xlsx (но НЕ batch_FAILED_*)
-    batch_files = sorted(
-        [f for f in output_dir.glob("batch_*.xlsx") if "FAILED" not in f.name],
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
- 
-    if not batch_files:
+    """Скачать последний обработанный файл."""
+    search_dirs = []
+
+    # Папка job_id (если есть)
+    try:
+        paths = resolve_job_paths(job_id)
+        if paths.output_dir.exists():
+            search_dirs.append(paths.output_dir)
+    except Exception:
+        pass
+
+    # Папка нашего парсера
+    parser_output = Path("src/parser_new/output/latest")
+    if parser_output.exists():
+        search_dirs.append(parser_output)
+
+    # Ищем самый свежий xlsx во всех папках
+    all_files = []
+    for d in search_dirs:
+        all_files.extend([f for f in d.glob("*.xlsx") if "FAILED" not in f.name])
+
+    if not all_files:
         raise HTTPException(status_code=404, detail="Файл результата не найден")
- 
-    latest = batch_files[0]
+
+    latest = max(all_files, key=lambda p: p.stat().st_mtime)
     return FileResponse(
         latest,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -648,23 +655,28 @@ async def download_parser_result(job_id: str | None = None, username: str = Depe
  
 @app.get("/api/parser/download-failed")
 async def download_parser_failed(job_id: str | None = None, username: str = Depends(check_auth)):
-    """Скачать файл с непроверенными МО (FAILED)."""
-    paths = resolve_job_paths(job_id)
-    output_dir = paths.output_dir
- 
-    if not output_dir.exists():
-        raise HTTPException(status_code=404, detail="Результаты ещё не готовы")
- 
-    failed_files = sorted(
-        output_dir.glob("batch_FAILED_*.xlsx"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
- 
-    if not failed_files:
+    """Скачать файл с непроверенными МО."""
+    search_dirs = []
+
+    try:
+        paths = resolve_job_paths(job_id)
+        if paths.output_dir.exists():
+            search_dirs.append(paths.output_dir)
+    except Exception:
+        pass
+
+    parser_output = Path("src/parser_new/output/latest")
+    if parser_output.exists():
+        search_dirs.append(parser_output)
+
+    all_files = []
+    for d in search_dirs:
+        all_files.extend(d.glob("*FAILED*.xlsx"))
+
+    if not all_files:
         raise HTTPException(status_code=404, detail="Файл непроверенных не найден")
- 
-    latest = failed_files[0]
+
+    latest = max(all_files, key=lambda p: p.stat().st_mtime)
     return FileResponse(
         latest,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
