@@ -2478,14 +2478,16 @@ function clearAttachedFile() {
         runningPercent = 99;
         label.textContent = `${stageText || 'Собираю итоговую папку output.'} Output: ${outputFileCount.toLocaleString('ru')} файлов.`;
       } else {
-        label.textContent = formatProgressText({
-          processed,
-          total,
-          noun: 'строк',
-          action: 'обработано',
-          extra: `${stageText || `успешно ${ok}, ошибок ${errors}`}`,
-          pendingText: 'Подготавливаю список документов для генерации...'
-        });
+        label.textContent = total > 0
+          ? formatProgressText({
+              processed,
+              total,
+              noun: 'строк',
+              action: 'обработано',
+              extra: `${stageText || `успешно ${ok}, ошибок ${errors}`}`,
+              pendingText: 'Подготавливаю список документов для генерации...'
+            })
+          : 'Подготавливаю список документов для генерации. Общее количество строк ещё считается, поэтому прогресс-бар пока пустой.';
       }
       setGeneratorButtonsBusy(true);
       setGeneratorDownloadEnabled(false);
