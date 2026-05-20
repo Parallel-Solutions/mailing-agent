@@ -230,6 +230,7 @@ async def upload_data(
     job_id: str | None = Form(default=None),
     username: str = Depends(check_auth),
 ):
+    request_started = perf_counter()
     paths = resolve_job_paths(job_id)
     if not paths.uses_legacy_layout and paths.data_xlsx.exists():
         fresh_job_id = create_job_id()
@@ -240,14 +241,23 @@ async def upload_data(
     paths.ensure_dirs()
     dest = paths.data_xlsx
     dest.parent.mkdir(parents=True, exist_ok=True)
+    file_save_started = perf_counter()
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
+    file_save_seconds = round(perf_counter() - file_save_started, 3)
+    verification_started = perf_counter()
     municipality_name_verification = run_parser_municipality_verification(paths.job_id, source="parser")
+    verification_seconds = round(perf_counter() - verification_started, 3)
     return {
         "status": "ok",
         "filename": file.filename,
         "job_id": paths.job_id,
         "data_download_url": f"/api/download/data-xlsx?job_id={paths.job_id}",
+        "timings": {
+            "file_save_seconds": file_save_seconds,
+            "verification_seconds": verification_seconds,
+            "request_seconds": round(perf_counter() - request_started, 3),
+        },
         "municipality_name_verification": municipality_name_verification,
     }
 

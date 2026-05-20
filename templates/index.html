@@ -1702,6 +1702,7 @@
 async function attachFile(input) {
   const file = input.files[0];
   if (!file) return;
+  const uploadStartedAt = performance.now();
  
   // Сначала создаём job_id если его нет
   await ensureCurrentJobId();
@@ -1722,6 +1723,14 @@ async function attachFile(input) {
     const res = await fetch('/api/upload/data', { method: 'POST', body: form });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Ошибка загрузки');
+    const uploadFinishedAt = performance.now();
+    console.log('[parser-upload] response', {
+      file: file.name,
+      client_request_seconds: Number(((uploadFinishedAt - uploadStartedAt) / 1000).toFixed(3)),
+      server_timings: data.timings || null,
+      verification_timings: (data.municipality_name_verification || {}).timings || null,
+      verification_summary: data.municipality_name_verification || null,
+    });
  
     if (data.job_id) setCurrentJobId(data.job_id);
     resetModuleUiForNewDataUpload();
