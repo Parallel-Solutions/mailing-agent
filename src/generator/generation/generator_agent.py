@@ -301,37 +301,6 @@ def run_generator_agent(
     source_path = xlsx_path or (job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH)
     claimed_tasks = mark_tasks_in_progress("generator", limit=limit, job_id=job_id)
     state = _load_generator_state(job_id)
-    state.update(
-        {
-            "status": "running",
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-            "completed_at": None,
-            "total_rows": 0,
-            "processed_rows": 0,
-            "ok_rows": 0,
-            "error_rows": 0,
-            "stage": "render_docx",
-            "stage_text": "Создаю DOCX из шаблонов.",
-            "staged_docx_count": 0,
-            "staged_pdf_count": 0,
-            "pdf_total": 0,
-            "pdf_processed": 0,
-            "output_file_count": 0,
-            "summary_text": (
-                "Агент-генератор начал обработку строк."
-                if not claimed_tasks
-                else f"Агент-генератор начал обработку строк и принял {len(claimed_tasks)} внутренних задач."
-            ),
-            "results": [],
-            "inflection_summary": {},
-            "municipality_name_verification": {},
-            "philologist_result": None,
-            "task_stats": count_tasks_for_agent("generator", job_id),
-            "tasks": get_tasks_for_agent("generator", job_id)[:20],
-            "recent_events": get_recent_events(agent_name="generator", limit=20, job_id=job_id),
-        }
-    )
-    _save_generator_state(state, job_id)
 
     if not source_path.exists():
         state["status"] = "error"
@@ -360,6 +329,38 @@ def run_generator_agent(
         state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
         _save_generator_state(state, job_id)
         return dict(state)
+
+    state.update(
+        {
+            "status": "running",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "completed_at": None,
+            "total_rows": len(rows),
+            "processed_rows": 0,
+            "ok_rows": 0,
+            "error_rows": 0,
+            "stage": "render_docx",
+            "stage_text": "Создаю DOCX из шаблонов.",
+            "staged_docx_count": 0,
+            "staged_pdf_count": 0,
+            "pdf_total": 0,
+            "pdf_processed": 0,
+            "output_file_count": 0,
+            "summary_text": (
+                f"Агент-генератор запущен. Подготовил {len(rows)} строк к обработке."
+                if not claimed_tasks
+                else f"Агент-генератор запущен. Подготовил {len(rows)} строк и принял {len(claimed_tasks)} внутренних задач."
+            ),
+            "results": [],
+            "inflection_summary": {},
+            "municipality_name_verification": {},
+            "philologist_result": None,
+            "task_stats": count_tasks_for_agent("generator", job_id),
+            "tasks": get_tasks_for_agent("generator", job_id)[:20],
+            "recent_events": get_recent_events(agent_name="generator", limit=20, job_id=job_id),
+        }
+    )
+    _save_generator_state(state, job_id)
 
     cleanup_batch_docx_dir(job_paths.batch_docx_dir if not job_paths.uses_legacy_layout else None)
     cleanup_batch_pdf_dir(job_paths.batch_pdf_dir if not job_paths.uses_legacy_layout else None)
