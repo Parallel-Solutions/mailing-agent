@@ -1733,25 +1733,31 @@ function clearAttachedFile() {
     if (totalEl) totalEl.textContent = total.toLocaleString('ru');
 
     if (status === 'running') {
-      badge.textContent = 'Работает';
-      badge.className = 'badge badge-running';
-      label.textContent = `Задач на дозаполнение: ${pending}, в работе: ${inProgress}`;
-      runButton.disabled = true;
+      if (badge) {
+        badge.textContent = 'Работает';
+        badge.className = 'badge badge-running';
+      }
+      if (label) label.textContent = `Задач на дозаполнение: ${pending}, в работе: ${inProgress}`;
+      if (runButton) runButton.disabled = true;
       return;
     }
 
-    runButton.disabled = false;
+    if (runButton) runButton.disabled = false;
 
     if (status === 'completed') {
-      badge.textContent = 'Готово';
-      badge.className = 'badge badge-done';
-      label.textContent = `Задач в очереди: ${pending}, в работе: ${inProgress}`;
+      if (badge) {
+        badge.textContent = 'Готово';
+        badge.className = 'badge badge-done';
+      }
+      if (label) label.textContent = `Задач в очереди: ${pending}, в работе: ${inProgress}`;
       return;
     }
 
-    badge.textContent = 'Готов к запуску';
-    badge.className = 'badge badge-idle';
-    label.textContent = total > 0 ? `0 / ${total} записей` : '0 / 0 записей';
+    if (badge) {
+      badge.textContent = 'Готов к запуску';
+      badge.className = 'badge badge-idle';
+    }
+    if (label) label.textContent = total > 0 ? `0 / ${total} записей` : '0 / 0 записей';
   }
 
   async function refreshParserStatus({ silent = false } = {}) {
@@ -2699,8 +2705,10 @@ function clearAttachedFile() {
   async function startMergeRmz() {
     await ensureCurrentJobId();
     const btn = document.getElementById('p-merge');
-    btn.disabled = true;
-    btn.textContent = 'Выполняется...';
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Выполняется...';
+    }
     appendChatMessage('p-chat', 'agent', 'Запускаю слияние с RMZ7KH...');
     try {
       const res = await fetch('/api/parser/merge-rmz', {
@@ -2721,8 +2729,10 @@ function clearAttachedFile() {
       appendChatMessage('p-chat', 'agent', 'Ошибка слияния: ' + e.message);
       showToast('Ошибка слияния');
     } finally {
-      btn.disabled = false;
-      btn.textContent = 'Слияние RMZ7KH';
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Слияние RMZ7KH';
+      }
     }
   }
 
