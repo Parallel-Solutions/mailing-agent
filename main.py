@@ -247,6 +247,7 @@ async def upload_data(
         "status": "ok",
         "filename": file.filename,
         "job_id": paths.job_id,
+        "data_download_url": f"/api/download/data-xlsx?job_id={paths.job_id}",
         "municipality_name_verification": municipality_name_verification,
     }
 
