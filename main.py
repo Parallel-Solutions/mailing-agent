@@ -633,7 +633,7 @@ async def download_parser_result(job_id: str | None = None, username: str = Depe
         pass
 
     # Папка нашего парсера
-    parser_output = Path("src/parser_new/output/latest")
+    parser_output = Path(__file__).parent / "src" / "parser_new" / "output" / "latest"
     if parser_output.exists():
         search_dirs.append(parser_output)
 
@@ -665,7 +665,7 @@ async def download_parser_failed(job_id: str | None = None, username: str = Depe
     except Exception:
         pass
 
-    parser_output = Path("src/parser_new/output/latest")
+    parser_output = Path(__file__).parent / "src" / "parser_new" / "output" / "latest"
     if parser_output.exists():
         search_dirs.append(parser_output)
 
