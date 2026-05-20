@@ -1727,10 +1727,12 @@ function clearAttachedFile() {
   }
 
   async function refreshParserStatus({ silent = false } = {}) {
+    const requestedJobId = currentJobId;
     try {
-      const res = await fetch(apiUrl('/api/parser/status'));
+      const res = await fetch(requestedJobId ? `/api/parser/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/parser/status');
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус парсера');
+      if (requestedJobId !== currentJobId) return null;
       const result = data.result || {};
       setParserUiState(result);
       return result;
@@ -1876,10 +1878,12 @@ function clearAttachedFile() {
   }
 
   async function refreshPhilologistStatus({ silent = false } = {}) {
+    const requestedJobId = currentJobId;
     try {
-      const res = await fetch(apiUrl('/api/philologist/status'));
+      const res = await fetch(requestedJobId ? `/api/philologist/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/philologist/status');
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус агента-филолога');
+      if (requestedJobId !== currentJobId) return null;
       const result = data.result || {};
       setPhilologistUiState(result);
       return result;
@@ -1945,10 +1949,12 @@ function clearAttachedFile() {
   let generatorStatusPoll = null;
 
   async function refreshGeneratorStatus({ silent = false } = {}) {
+    const requestedJobId = currentJobId;
     try {
-      const res = await fetch(apiUrl('/api/generator/status'));
+      const res = await fetch(requestedJobId ? `/api/generator/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/generator/status');
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус генератора');
+      if (requestedJobId !== currentJobId) return null;
       const result = data.result || {};
       setGeneratorUiState(result);
       return result;
@@ -2052,10 +2058,12 @@ function clearAttachedFile() {
   }
 
   async function refreshModuleReadiness() {
+    const requestedJobId = currentJobId;
     try {
-      const res = await fetch(apiUrl('/api/job/readiness'));
+      const res = await fetch(requestedJobId ? `/api/job/readiness?job_id=${encodeURIComponent(requestedJobId)}` : '/api/job/readiness');
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить готовность модулей');
+      if (requestedJobId !== currentJobId) return null;
       moduleReadiness = { ...moduleReadiness, ...(data.result || {}) };
     } catch (e) {
     }
@@ -2466,10 +2474,12 @@ function clearAttachedFile() {
   }
 
   async function refreshSenderStatus({ silent = false } = {}) {
+    const requestedJobId = currentJobId;
     try {
-      const res = await fetch(apiUrl('/api/sender/status'));
+      const res = await fetch(requestedJobId ? `/api/sender/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/sender/status');
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус отправщика');
+      if (requestedJobId !== currentJobId) return null;
       const result = data.result || {};
       setSenderUiState(result);
       return result;
@@ -2648,8 +2658,10 @@ function clearAttachedFile() {
   window.showUnisenderHistory = showUnisenderHistory;
 
   async function refreshCounts() {
+    const requestedJobId = currentJobId;
     try {
-      const data = await fetch(apiUrl('/api/counts')).then(r => r.json());
+      const data = await fetch(requestedJobId ? `/api/counts?job_id=${encodeURIComponent(requestedJobId)}` : '/api/counts').then(r => r.json());
+      if (requestedJobId !== currentJobId) return;
       document.getElementById('p-total').textContent = data.parser_total.toLocaleString('ru');
       document.getElementById('g-total').textContent = data.generator_total.toLocaleString('ru');
       document.getElementById('g-total-label').textContent = data.generator_total.toLocaleString('ru');
