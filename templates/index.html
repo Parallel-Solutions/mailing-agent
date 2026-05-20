@@ -1985,6 +1985,7 @@ function clearAttachedFile() {
           })
         : 'Проверка завершена';
       setProgressVisual(fill, { percent: 100, running: false });
+      syncModuleReadinessFromUi();
       return;
     }
 
@@ -2008,6 +2009,7 @@ function clearAttachedFile() {
         })
       : 'Проверка документов ещё не запускалась.';
     setProgressVisual(fill, { percent: 0, running: false, indeterminate: false });
+    syncModuleReadinessFromUi();
   }
 
   async function refreshPhilologistStatus({ silent = false } = {}) {
@@ -2043,6 +2045,7 @@ function clearAttachedFile() {
       if (status.status === 'completed') {
         showToast('Агент-филолог завершил работу');
         appendChatMessage('g-chat', 'agent', status.summary_text || 'Агент-филолог завершил проверку документов.');
+        await refreshModuleReadiness();
       } else if (status.status === 'error') {
         showToast('Ошибка агента-филолога');
         appendChatMessage('g-chat', 'agent', status.summary_text || 'Проверка завершилась с ошибкой.');
@@ -2140,6 +2143,9 @@ function clearAttachedFile() {
         generatorStatusPoll = null;
       }
       await refreshGeneratorStatus({ silent: true });
+      await refreshModuleReadiness();
+      await refreshPhilologistStatus({ silent: true });
+      await refreshSenderStatus({ silent: true });
     }
   }
   function pauseGenerator() {}
@@ -2197,6 +2203,12 @@ function clearAttachedFile() {
       philologist_reason: generatorCompleted ? '' : 'Филолог станет доступен после генерации документов.',
       sender_reason: senderReady ? '' : 'Отправщик станет доступен после генерации PDF-вложений.',
     };
+  }
+
+  function syncModuleReadinessFromUi() {
+    moduleReadiness = { ...moduleReadiness, ...inferLocalModuleReadiness() };
+    applyModuleReadiness();
+    return moduleReadiness;
   }
 
   function applyModuleReadiness() {
@@ -2489,6 +2501,7 @@ function clearAttachedFile() {
           })
         : 'Генерация завершена';
       setProgressVisual(fill, { percent: 100, running: false });
+      syncModuleReadinessFromUi();
       return;
     }
 
