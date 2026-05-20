@@ -87,8 +87,6 @@ def _parser_data_xlsx_path(job_id: str | None = None):
 
 
 def _build_oktmo_lookup() -> OktmoMunicipalityLookup | None:
-    if not settings.municipality_oktmo_lookup_enabled:
-        return None
     return OktmoMunicipalityLookup(
         csv_path=None if not settings.municipality_oktmo_csv_path else Path(settings.municipality_oktmo_csv_path),
         verify_ssl=settings.municipality_oktmo_verify_ssl,
@@ -211,10 +209,11 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
         )
         return result
 
+    use_official_sites = settings.municipality_official_sites_enabled and source != "parser"
     result = verify_municipality_names_in_workbook(
         data_xlsx_path,
-        use_official_sites=settings.municipality_official_sites_enabled,
-        use_oktmo=settings.municipality_oktmo_lookup_enabled,
+        use_official_sites=use_official_sites,
+        use_oktmo=True,
         oktmo_lookup=_build_oktmo_lookup(),
         use_minjust=settings.municipality_minjust_lookup_enabled,
     )
