@@ -71,10 +71,12 @@ PROTECTED_UPPERCASE_HEADINGS = {
     "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ",
 }
 PROTECTED_ATTACHMENT_HEADING_PATTERN = re.compile(r"^Приложение\s+№\s+\d+\b", re.IGNORECASE)
-LEGAL_TERM_CASE_REPLACEMENTS = {
-    "Выполнение Работ": "Выполнение работ",
-    "нахождения Исполнителя": "нахождения исполнителя",
-}
+PROTECTED_LEGAL_TERM_PATTERNS = (
+    re.compile(r"\bисполнитель\w*\b", re.IGNORECASE),
+    re.compile(r"\bзаказчик\w*\b", re.IGNORECASE),
+    re.compile(r"\bработ\w*\b", re.IGNORECASE),
+    re.compile(r"\bподрядчик\w*\b", re.IGNORECASE),
+)
 
 
 @dataclass
@@ -156,6 +158,20 @@ def _is_protected_legal_term_context(text: str, source: str) -> bool:
     if source == "Приложение №" and PROTECTED_ATTACHMENT_HEADING_PATTERN.search(normalized):
         return True
     return False
+
+
+def _contains_protected_legal_term(text: str) -> bool:
+    normalized = _safe_text(text)
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in PROTECTED_LEGAL_TERM_PATTERNS)
+
+
+def _is_protected_legal_term_issue(fragment: str, suggestion: str, issue: str) -> bool:
+    issue_text = _safe_text(issue).lower()
+    if "заглав" not in issue_text and "строчн" not in issue_text and "капс" not in issue_text:
+        return False
+    return _contains_protected_legal_term(fragment) or _contains_protected_legal_term(suggestion)
 
 
 def _iter_docx_blocks(doc: Document) -> Iterable[tuple[str, str]]:
@@ -266,20 +282,6 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
                 fragment=source,
                 replacement=replacement,
                 issue="Есть неудачное использование капса в текстовом блоке.",
-                severity="warning",
-            )
-
-        for source, replacement in LEGAL_TERM_CASE_REPLACEMENTS.items():
-            if source not in text:
-                continue
-            if _is_protected_legal_term_context(text, source):
-                continue
-            _add_local_replacement_issue(
-                issues,
-                location=location,
-                fragment=source,
-                replacement=replacement,
-                issue="В середине предложения используется лишняя заглавная буква.",
                 severity="warning",
             )
 
@@ -453,12 +455,15 @@ def _run_ai_review(blocks: list[tuple[str, str]], *, ai_enabled: bool = True) ->
         suggestion = _safe_text(item.get("suggestion"))
         if _looks_like_editorial_instruction(suggestion) or _is_overlong_replacement(fragment, suggestion):
             suggestion = ""
+        issue_text = _safe_text(item.get("issue"))
+        if _is_protected_legal_term_issue(fragment, suggestion, issue_text):
+            continue
         result.append(
             ReviewIssue(
                 source="ai",
                 location=_safe_text(item.get("location")),
                 fragment=fragment,
-                issue=_safe_text(item.get("issue")),
+                issue=issue_text,
                 suggestion=suggestion,
                 severity=_safe_text(item.get("severity")) or "warning",
             )
