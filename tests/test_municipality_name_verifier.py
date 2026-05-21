@@ -104,6 +104,18 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
 
         self.assertEqual(result.official_name, "Энемское городское поселение")
 
+    def test_keeps_administration_spelling_when_oktmo_confirms_candidate(self) -> None:
+        result = verify_municipality_name(
+            {
+                "MUN_NAME": "Городское поселение Энем",
+                "ADM_NAME": 'АДМИНИСТРАЦИЯ МУНИЦИПАЛЬНОГО ОБРАЗОВАНИЯ "ЭНЕМСКОЕ ГОРОДСКОЕ ПОСЕЛЕНИЕ"',
+            },
+            oktmo_lookup=FakeOktmoLookup("Городское поселение Энем"),
+        )
+
+        self.assertTrue(result.should_replace)
+        self.assertEqual(result.official_name, "Энемское городское поселение")
+
     def test_restores_readable_case_for_city_type_name(self) -> None:
         result = verify_municipality_name(
             {
@@ -417,8 +429,50 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             sheet = updated.active
             headers = {sheet.cell(row=2, column=i).value: i for i in range(1, sheet.max_column + 1)}
             self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME"]).value, "Городское поселение город Туймазы")
-            self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME_VERIFICATION_SOURCE"]).value, "ADM_NAME+official_site")
-            self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME_VERIFICATION_CONFIDENCE"]).value, "high")
+            self.assertNotIn("MUN_NAME_VERIFICATION_SOURCE", headers)
+            self.assertEqual(stats["replacement_samples"][0]["source"], "ADM_NAME+official_site")
+            self.assertEqual(stats["replacement_samples"][0]["confidence"], "high")
+            updated.close()
+
+    def test_workbook_verification_reuses_result_for_duplicate_rows(self) -> None:
+        tmp_root = Path("C:/tmp")
+        tmp_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=tmp_root) as tmp_dir:
+            path = Path(tmp_dir) / "duplicate-rows.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            headers = ["ID", "MUN_NAME", "ADM_NAME", "SUB_RF", "MUN_R_NAME"]
+            for column_index, header in enumerate(headers, start=1):
+                worksheet.cell(row=2, column=column_index).value = header
+            for row_index in range(3, 103):
+                worksheet.cell(row=row_index, column=1).value = row_index - 2
+                worksheet.cell(row=row_index, column=2).value = "Городское поселение Энем"
+                worksheet.cell(row=row_index, column=3).value = (
+                    'АДМИНИСТРАЦИЯ МУНИЦИПАЛЬНОГО ОБРАЗОВАНИЯ "ЭНЕМСКОЕ ГОРОДСКОЕ ПОСЕЛЕНИЕ"'
+                )
+                worksheet.cell(row=row_index, column=4).value = "Республика Адыгея"
+                worksheet.cell(row=row_index, column=5).value = "Тахтамукайский район"
+            workbook.save(path)
+            workbook.close()
+
+            lookup = FakeOktmoLookup("Городское поселение Энем")
+            stats = verify_municipality_names_in_workbook(
+                path,
+                use_oktmo=True,
+                oktmo_lookup=lookup,
+                use_minjust=False,
+            )
+
+            self.assertEqual(stats["total_rows"], 100)
+            self.assertEqual(stats["unique_verification_keys"], 1)
+            self.assertEqual(stats["cached_verification_rows"], 99)
+            self.assertEqual(len(lookup.calls), 1)
+            self.assertEqual(stats["updated_rows"], 100)
+            updated = load_workbook(path)
+            sheet = updated.active
+            header_map = {sheet.cell(row=2, column=i).value: i for i in range(1, sheet.max_column + 1)}
+            self.assertEqual(sheet.cell(row=3, column=header_map["MUN_NAME"]).value, "Энемское городское поселение")
+            self.assertEqual(sheet.cell(row=102, column=header_map["MUN_NAME"]).value, "Энемское городское поселение")
             updated.close()
 
     def test_official_site_can_confirm_current_name_without_replacement(self) -> None:
@@ -449,7 +503,8 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             sheet = updated.active
             headers = {sheet.cell(row=2, column=i).value: i for i in range(1, sheet.max_column + 1)}
             self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME"]).value, "Дубровское сельское поселение")
-            self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME_VERIFICATION_STATUS"]).value, "verified")
+            self.assertNotIn("MUN_NAME_VERIFICATION_STATUS", headers)
+            self.assertEqual(stats["verified_rows"], 1)
             updated.close()
 
     def test_yandex_lookup_parses_search_and_page_html(self) -> None:
@@ -631,11 +686,12 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             sheet = updated.active
             headers = {sheet.cell(row=2, column=i).value: i for i in range(1, sheet.max_column + 1)}
             self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME"]).value, "рабочий поселок Ордынское")
-            self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME_VERIFICATION_SOURCE"]).value, "normalization")
+            self.assertNotIn("MUN_NAME_VERIFICATION_SOURCE", headers)
+            self.assertEqual(stats["replacement_samples"][0]["source"], "normalization")
             updated.close()
 
     def test_updates_workbook_and_preserves_original_name(self) -> None:
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp_dir:
+        with tempfile.TemporaryDirectory(dir=Path(r"C:\tmp")) as tmp_dir:
             path = Path(tmp_dir) / "data.xlsx"
             workbook = Workbook()
             worksheet = workbook.active
@@ -660,11 +716,8 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             sheet = updated.active
             headers = {sheet.cell(row=2, column=i).value: i for i in range(1, sheet.max_column + 1)}
             self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME"]).value, "Яблоновское городское поселение")
-            self.assertEqual(
-                sheet.cell(row=3, column=headers["MUN_NAME_SOURCE_ORIGINAL"]).value,
-                "Городское поселение Яблоновский",
-            )
-            self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME_VERIFICATION_STATUS"]).value, "verified")
+            self.assertNotIn("MUN_NAME_SOURCE_ORIGINAL", headers)
+            self.assertNotIn("MUN_NAME_VERIFICATION_STATUS", headers)
             updated.close()
 
 
