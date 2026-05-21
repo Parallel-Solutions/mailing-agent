@@ -195,9 +195,27 @@ def _run_generator_background(*, xlsx_path: Path, job_id: str | None) -> None:
 
 def _prime_sender_running_state(job_id: str | None, transport: str | None) -> dict:
     state = _load_sender_state(job_id)
+    stats = _collect_excel_stats(resolve_job_paths(job_id).data_xlsx)
+    total_rows = int(state.get("total_rows") or stats.get("total", 0) or 0)
     state["status"] = "running"
     state["mode"] = "send"
     state["transport"] = transport or state.get("transport") or "smtp"
+    state["started_at"] = datetime.now().isoformat(timespec="seconds")
+    state["completed_at"] = None
+    state["processed_rows"] = 0
+    state["ready_rows"] = 0
+    state["sent_rows"] = int(stats.get("sent", 0))
+    state["error_rows"] = 0
+    state["skipped_rows"] = 0
+    state["warning_rows"] = 0
+    state["handoff_rows"] = 0
+    state["generator_handoff_rows"] = 0
+    state["philology_blocked_rows"] = 0
+    state["autonomous_recovery_rows"] = 0
+    state["rows"] = []
+    state["stats"] = stats
+    state["total_rows"] = total_rows
+    state["remaining_rows"] = total_rows
     state["summary_text"] = "Агент-отправщик начал отправку писем."
     state["stop_requested"] = False
     state["stop_requested_at"] = None
@@ -479,6 +497,7 @@ from src.generator.philologist.philologist_agent import (
     run_philologist,
 )
 from src.generator.delivery.sender_agent import (
+    _collect_excel_stats,
     _load_sender_state,
     _save_sender_state,
     chat_with_sender,
