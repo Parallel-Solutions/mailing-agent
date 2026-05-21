@@ -78,6 +78,7 @@ PHILOLOGIST_STATE: dict[str, Any] = {
     "recent_events": [],
     "stop_requested": False,
     "stop_requested_at": None,
+    "template_memory": {},
 }
 
 
@@ -113,6 +114,63 @@ def _refresh_philologist_stop_flag(state: dict[str, Any], job_id: str | None = N
     state["stop_requested"] = bool(persisted.get("stop_requested", False))
     state["stop_requested_at"] = persisted.get("stop_requested_at")
     return state
+
+
+def _sorted_locations(locations: set[str]) -> list[str]:
+    return sorted(location for location in locations if _safe_text(location))
+
+
+def _update_template_memory(
+    template_memory: dict[str, Any],
+    *,
+    document_name: str,
+    review_result: dict[str, Any],
+    fix_result: dict[str, Any],
+) -> dict[str, Any]:
+    template_fingerprint = _safe_text(review_result.get("template_fingerprint"))
+    if not template_fingerprint:
+        return template_memory
+
+    entry = template_memory.get(template_fingerprint)
+    if not isinstance(entry, dict):
+        entry = {}
+
+    risky_locations = {
+        _safe_text(item.get("location"))
+        for item in review_result.get("issues", [])
+        if isinstance(item, dict) and _safe_text(item.get("location"))
+    }
+    risky_locations.update(
+        _safe_text(item.get("location"))
+        for item in fix_result.get("applied_fixes", [])
+        if isinstance(item, dict) and _safe_text(item.get("location"))
+    )
+    risky_locations.update(
+        _safe_text(item.get("location"))
+        for item in fix_result.get("skipped_fixes", [])
+        if isinstance(item, dict) and _safe_text(item.get("location"))
+    )
+    preserved_locations = {
+        _safe_text(location)
+        for location in entry.get("risky_locations", [])
+        if _safe_text(location)
+    }
+    merged_locations = preserved_locations | risky_locations
+
+    entry.update(
+        {
+            "documents_seen": int(entry.get("documents_seen", 0) or 0) + 1,
+            "documents_with_issues": int(entry.get("documents_with_issues", 0) or 0)
+            + (1 if int(review_result.get("issue_count", 0) or 0) > 0 else 0),
+            "risky_locations": _sorted_locations(merged_locations)[:200],
+            "last_document_name": document_name,
+            "last_review_mode": _safe_text(review_result.get("review_mode")) or "full",
+            "total_block_count": int(review_result.get("total_block_count", 0) or 0),
+            "last_reviewed_block_count": int(review_result.get("reviewed_block_count", 0) or 0),
+        }
+    )
+    template_memory[template_fingerprint] = entry
+    return template_memory
 
 
 def _build_llm_client():
@@ -748,10 +806,14 @@ def _quarantine_issue_record(issue: dict[str, Any], decision: dict[str, Any]) ->
 def _available_react_actions(context: dict[str, Any]) -> list[str]:
     if not context.get("review_done"):
         return ["review_docx"]
+    if int(context.get("issue_count", 0) or 0) <= 0:
+        return ["finish_document"]
     if not context.get("snapshot_done"):
         return ["snapshot_docx"]
     if not context.get("fix_done"):
         return ["apply_safe_fixes"]
+    if int(context.get("applied_fix_count", 0) or 0) <= 0:
+        return ["finish_document"]
     if not context.get("verify_done"):
         return ["verify_safe_fixes"]
     if (
@@ -857,6 +919,7 @@ def _run_docx_react_loop(
     use_llm_fix_strategy: bool = True,
     rebuild_pdf_enabled: bool = False,
     use_rag_decisions: bool = True,
+    template_memory: dict[str, Any] | None = None,
     max_iterations: int = 8,
 ) -> dict[str, Any]:
     context: dict[str, Any] = {
@@ -910,11 +973,22 @@ def _run_docx_react_loop(
             review_result = tool_runner.call(
                 "review_docx",
                 {"path": str(docx_path), "ai_enabled": ai_enabled},
-                lambda docx_path=docx_path: review_docx(docx_path, ai_enabled=ai_enabled),
+                lambda docx_path=docx_path, template_memory=template_memory: review_docx(
+                    docx_path,
+                    ai_enabled=ai_enabled,
+                    template_memory=template_memory,
+                ),
             )
             context["review_done"] = True
             context["issue_count"] = int(review_result.get("issue_count", 0) or 0)
-            observation = f"Найдено замечаний: {context['issue_count']}."
+            review_mode = _safe_text(review_result.get("review_mode")) or "full"
+            reviewed_block_count = int(review_result.get("reviewed_block_count", 0) or 0)
+            total_block_count = int(review_result.get("total_block_count", 0) or 0)
+            observation = (
+                f"Найдено замечаний: {context['issue_count']}. "
+                f"Режим проверки: {'прицельный' if review_mode == 'targeted' else 'полный'} "
+                f"({reviewed_block_count}/{total_block_count} блоков)."
+            )
         elif action == "snapshot_docx":
             before_snapshot = tool_runner.call(
                 "snapshot_docx",
@@ -1625,6 +1699,9 @@ def run_philologist(
     was_stopped = str(state.get("status") or "") == "stopped"
     processed_documents: list[dict[str, Any]] = list(state.get("documents") or []) if was_stopped else []
     processed_paths = {str(item.get("path")) for item in processed_documents if str(item.get("path") or "").strip()}
+    template_memory: dict[str, Any] = (
+        dict(state.get("template_memory") or {}) if isinstance(state.get("template_memory"), dict) else {}
+    )
     if was_stopped:
         docx_paths = [path for path in docx_paths if str(path) not in processed_paths]
     state.update(
@@ -1663,6 +1740,7 @@ def run_philologist(
             "recent_events": get_recent_events(agent_name="philologist", limit=20, job_id=job_id),
             "stop_requested": False,
             "stop_requested_at": None,
+            "template_memory": template_memory,
         }
     )
     _save_philologist_state(state, job_id)
@@ -1749,6 +1827,7 @@ def run_philologist(
                 use_llm_fix_strategy=PHILOLOGIST_LLM_FIX_STRATEGY,
                 rebuild_pdf_enabled=PHILOLOGIST_REBUILD_PDF,
                 use_rag_decisions=run_mode == "deep",
+                template_memory=template_memory,
             )
         except Exception as exc:
             logger.exception("philologist_document_failed", job_id=job_id, path=str(docx_path))
@@ -1785,6 +1864,12 @@ def run_philologist(
         fix_result = react_result["fix_result"]
         verification_result = react_result["verification_result"]
         pdf_path = react_result["pdf_path"]
+        template_memory = _update_template_memory(
+            template_memory,
+            document_name=docx_path.name,
+            review_result=review_result,
+            fix_result=fix_result,
+        )
         if effective_ai_enabled and _is_llm_auth_error(review_result.get("ai_error")):
             effective_ai_enabled = False
             react_client = None
@@ -1806,6 +1891,11 @@ def run_philologist(
             "local_issue_count": int(review_result.get("local_issue_count", 0)),
             "ai_issue_count": int(review_result.get("ai_issue_count", 0)),
             "ai_error": review_result.get("ai_error"),
+            "template_fingerprint": review_result.get("template_fingerprint"),
+            "review_mode": review_result.get("review_mode"),
+            "reviewed_block_count": int(review_result.get("reviewed_block_count", 0)),
+            "total_block_count": int(review_result.get("total_block_count", 0)),
+            "focused_locations": review_result.get("focus_locations", []),
             "issues": review_result.get("issues", []),
             "applied_fix_count": fix_result["applied_fix_count"],
             "applied_fixes": fix_result["applied_fixes"],
@@ -1828,6 +1918,7 @@ def run_philologist(
         state["documents_with_issues"] = sum(1 for item in processed_documents if item.get("issue_count", 0) > 0)
         state["summary_text"] = _format_summary(processed_documents)
         state["current_document"] = None
+        state["template_memory"] = template_memory
         state["tool_trace"] = tool_runner.as_state()
         state["plan"] = agent_loop.as_plan()
         state["agent_loop"] = state["plan"].get("execution")
