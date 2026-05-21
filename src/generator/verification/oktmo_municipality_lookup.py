@@ -364,10 +364,31 @@ def parse_oktmo_csv(path: Path) -> list[OktmoEntry]:
 
 def _official_name_from_oktmo_entry(name: str, municipality_type: str) -> str:
     if municipality_type == "urban_settlement":
-        return f"Городское поселение {normalize_oktmo_display_name(name)}"
+        return _compose_settlement_official_name(normalize_oktmo_display_name(name), "городское поселение")
     if municipality_type == "rural_settlement":
-        return f"Сельское поселение {normalize_oktmo_display_name(name)}"
+        return _compose_settlement_official_name(normalize_oktmo_display_name(name), "сельское поселение")
     return normalize_oktmo_display_name(name)
+
+
+def _compose_settlement_official_name(tail: str, settlement_type: str) -> str:
+    normalized_tail = _clean(tail)
+    if not normalized_tail:
+        return settlement_type.capitalize()
+    lowered_tail = _normalize_for_match(normalized_tail)
+    locality_prefixes = (
+        "город ",
+        "поселок ",
+        "посёлок ",
+        "рабочий поселок ",
+        "рабочий посёлок ",
+        "село ",
+        "деревня ",
+        "станица ",
+        "аул ",
+    )
+    if lowered_tail.startswith(locality_prefixes):
+        return f"{settlement_type.capitalize()} {normalized_tail}"
+    return f"{normalized_tail} {settlement_type}"
 
 
 def normalize_oktmo_display_name(value: Any) -> str:
