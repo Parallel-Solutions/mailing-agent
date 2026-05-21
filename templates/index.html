@@ -1159,12 +1159,16 @@
 <script>
   const chatSessions = {};
   const JOB_STORAGE_KEY = 'mailing-agent-current-job-id';
+  const ACTIVE_SCREEN_STORAGE_KEY = 'mailing-agent-active-screen';
+  const UI_STATE_STORAGE_KEY_PREFIX = 'mailing-agent-ui-state-v1:';
   const INITIAL_CHAT_MESSAGES = {
     'p-chat': 'Привет! Я агент-парсер. Выбери сценарий работы выше или задай мне вопрос про любое МО.',
     'g-chat': 'Привет! Я агент-филолог. Могу проверить готовые документы, исправить безопасные ошибки и объяснить замечания с опорой на локальную базу правил русского языка.',
     's-chat': 'Привет! Я агент-отправщик. Могу заранее показать адреса из data.xlsx, сказать где нет почты, где будет выбран резервный адрес и что готово к отправке.',
   };
   let currentJobId = localStorage.getItem(JOB_STORAGE_KEY) || '';
+  let activeScreenId = localStorage.getItem(ACTIVE_SCREEN_STORAGE_KEY) || 'settings';
+  let uiPersistenceEnabled = false;
   let moduleReadiness = {
     generator_ready: false,
     philologist_ready: false,
@@ -1183,6 +1187,176 @@
   }
 
   let flowNotificationState = createFlowNotificationState();
+  let lastParserUiState = {};
+  let lastGeneratorUiState = {};
+  let lastPhilologistUiState = {};
+  let lastSenderUiState = {};
+
+  function getUiStateStorageKey(jobId = currentJobId) {
+    const safeJobId = String(jobId || '').trim();
+    return safeJobId ? `${UI_STATE_STORAGE_KEY_PREFIX}${safeJobId}` : '';
+  }
+
+  function serializeChatHtml(chatId) {
+    const messages = document.getElementById(`${chatId}-messages`);
+    if (!messages) return '';
+    const clone = messages.cloneNode(true);
+    clone.querySelectorAll('[data-typing="true"]').forEach(node => node.remove());
+    return clone.innerHTML;
+  }
+
+  function collectChatHtmlSnapshot() {
+    return ['p-chat', 'g-chat', 's-chat', 'o-chat'].reduce((acc, chatId) => {
+      const html = serializeChatHtml(chatId);
+      if (html) acc[chatId] = html;
+      return acc;
+    }, {});
+  }
+
+  function collectTemplateButtonSnapshot(buttonId) {
+    const button = document.getElementById(buttonId);
+    if (!button) return null;
+    return {
+      uploaded: button.classList.contains('uploaded'),
+      html: button.innerHTML,
+      defaultLabel: button.dataset.defaultLabel || 'Выбрать файл',
+    };
+  }
+
+  function collectUiStateSnapshot() {
+    const attachedFile = document.getElementById('p-attached-file');
+    const attachedName = document.getElementById('p-attached-name');
+    const countIds = ['p-total', 'g-total', 'g-total-label'];
+    return {
+      activeScreen: activeScreenId,
+      moduleReadiness,
+      parserUiState: lastParserUiState,
+      generatorUiState: lastGeneratorUiState,
+      philologistUiState: lastPhilologistUiState,
+      senderUiState: lastSenderUiState,
+      senderPreviewState,
+      parserRunning,
+      phRunning,
+      senderRunning,
+      currentStatuses: {
+        generator: currentGeneratorStatus,
+        philologist: currentPhilologistStatus,
+        sender: currentSenderStatus,
+      },
+      flowNotificationState,
+      lastAgentEventIds,
+      chatSessions,
+      chats: collectChatHtmlSnapshot(),
+      templates: {
+        mail: collectTemplateButtonSnapshot('mail-btn'),
+        kp: collectTemplateButtonSnapshot('kp-btn'),
+        contract: collectTemplateButtonSnapshot('contract-btn'),
+      },
+      attachedFile: {
+        visible: !!(attachedFile && attachedFile.style.display !== 'none'),
+        name: attachedName ? attachedName.textContent : '',
+      },
+      counts: countIds.reduce((acc, id) => {
+        const el = document.getElementById(id);
+        acc[id] = el ? el.textContent : '0';
+        return acc;
+      }, {}),
+    };
+  }
+
+  function saveUiState() {
+    if (!uiPersistenceEnabled) return;
+    if (!currentJobId) return;
+    const key = getUiStateStorageKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(collectUiStateSnapshot()));
+      localStorage.setItem(ACTIVE_SCREEN_STORAGE_KEY, activeScreenId);
+    } catch (e) {}
+  }
+
+  function scheduleUiStateSave() {
+    Promise.resolve().then(() => saveUiState());
+  }
+
+  function loadUiState(jobId = currentJobId) {
+    const key = getUiStateStorageKey(jobId);
+    if (!key) return null;
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function clearSavedUiState(jobId) {
+    const key = getUiStateStorageKey(jobId);
+    if (!key) return;
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {}
+  }
+
+  function applyTemplateButtonSnapshot(buttonId, snapshot) {
+    const button = document.getElementById(buttonId);
+    if (!button || !snapshot) return;
+    if (snapshot.uploaded) {
+      button.classList.add('uploaded');
+      button.innerHTML = snapshot.html || `<span class="file-icon">✓</span> ${snapshot.defaultLabel || 'Файл загружен'}`;
+    } else {
+      button.classList.remove('uploaded');
+      button.innerHTML = `<span class="file-icon">📎</span> ${snapshot.defaultLabel || 'Выбрать файл'}`;
+    }
+  }
+
+  function restoreChatHtmlSnapshot(chats = {}) {
+    Object.entries(chats || {}).forEach(([chatId, html]) => {
+      const messages = document.getElementById(`${chatId}-messages`);
+      if (!messages || typeof html !== 'string') return;
+      messages.innerHTML = html;
+      messages.querySelectorAll('[data-typing="true"]').forEach(node => node.remove());
+      messages.scrollTop = messages.scrollHeight;
+    });
+  }
+
+  function restoreUiState(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    if (snapshot.moduleReadiness && typeof snapshot.moduleReadiness === 'object') {
+      moduleReadiness = { ...moduleReadiness, ...snapshot.moduleReadiness };
+    }
+    senderPreviewState = snapshot.senderPreviewState || null;
+    parserRunning = !!snapshot.parserRunning;
+    phRunning = !!snapshot.phRunning;
+    senderRunning = !!snapshot.senderRunning;
+    flowNotificationState = snapshot.flowNotificationState || createFlowNotificationState();
+    Object.assign(lastAgentEventIds, snapshot.lastAgentEventIds || {});
+    Object.assign(chatSessions, snapshot.chatSessions || {});
+
+    restoreChatHtmlSnapshot(snapshot.chats || {});
+    applyTemplateButtonSnapshot('mail-btn', snapshot.templates && snapshot.templates.mail);
+    applyTemplateButtonSnapshot('kp-btn', snapshot.templates && snapshot.templates.kp);
+    applyTemplateButtonSnapshot('contract-btn', snapshot.templates && snapshot.templates.contract);
+
+    const attachedFile = document.getElementById('p-attached-file');
+    const attachedName = document.getElementById('p-attached-name');
+    if (attachedFile) attachedFile.style.display = snapshot.attachedFile && snapshot.attachedFile.visible ? 'block' : 'none';
+    if (attachedName) attachedName.textContent = (snapshot.attachedFile && snapshot.attachedFile.name) || '';
+    Object.entries(snapshot.counts || {}).forEach(([id, value]) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    });
+
+    if (snapshot.parserUiState) setParserUiState(snapshot.parserUiState);
+    if (snapshot.generatorUiState) setGeneratorUiState(snapshot.generatorUiState);
+    if (snapshot.philologistUiState) setPhilologistUiState(snapshot.philologistUiState);
+    if (snapshot.senderUiState) setSenderUiState(snapshot.senderUiState);
+
+    if (snapshot.activeScreen) {
+      goToScreen(snapshot.activeScreen, { scroll: false, persist: false });
+    }
+    applyModuleReadiness();
+  }
 
   function resetFlowNotificationState() {
     flowNotificationState = createFlowNotificationState();
@@ -1343,6 +1517,7 @@
     } else {
       localStorage.removeItem(JOB_STORAGE_KEY);
     }
+    saveUiState();
   }
 
   async function ensureCurrentJobId() {
@@ -1375,34 +1550,48 @@
     window.location.href = apiUrl(path);
   }
 
-  function show(id, el) {
-    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    document.getElementById('s-' + id).classList.add('active');
-    el.classList.add('active');
-  }
-
-  function goToScreen(id) {
+  function activateScreen(id, { scroll = true, persist = true, navElement = null } = {}) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     const screen = document.getElementById('s-' + id);
     if (screen) screen.classList.add('active');
-    const navMap = {
-      settings: 0,
-      parser: 1,
-      generator: 2,
-      sender: 3,
-      status: 4,
-    };
-    const navItems = Array.from(document.querySelectorAll('.nav-item'));
-    const navIndex = navMap[id];
-    if (typeof navIndex === 'number' && navItems[navIndex]) {
-      navItems[navIndex].classList.add('active');
+    if (navElement) {
+      navElement.classList.add('active');
+    } else {
+      const navMap = {
+        settings: 0,
+        parser: 1,
+        generator: 2,
+        sender: 3,
+        status: 4,
+      };
+      const navItems = Array.from(document.querySelectorAll('.nav-item'));
+      const navIndex = navMap[id];
+      if (typeof navIndex === 'number' && navItems[navIndex]) {
+        navItems[navIndex].classList.add('active');
+      }
     }
-    const content = document.querySelector('.content');
-    if (content && typeof content.scrollTo === 'function') {
-      content.scrollTo({ top: 0, behavior: 'smooth' });
+    activeScreenId = id;
+    if (persist) {
+      try {
+        localStorage.setItem(ACTIVE_SCREEN_STORAGE_KEY, activeScreenId);
+      } catch (e) {}
+      saveUiState();
     }
+    if (scroll) {
+      const content = document.querySelector('.content');
+      if (content && typeof content.scrollTo === 'function') {
+        content.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }
+  }
+
+  function show(id, el) {
+    activateScreen(id, { navElement: el });
+  }
+
+  function goToScreen(id, options = {}) {
+    activateScreen(id, options);
   }
 
   function toggleFile(btn, name) {
@@ -1508,6 +1697,7 @@
     if (initialText) {
       appendChatMessage(chatId, 'agent', initialText);
     }
+    saveUiState();
   }
 
   function resetSettingsFormFields() {
@@ -1533,6 +1723,7 @@
   async function resetAllMailingState() {
     const confirmed = window.confirm('Очистить все поля и начать заново?');
     if (!confirmed) return;
+    const previousJobIdForCleanup = currentJobId;
 
     if (generatorStatusPoll) {
       clearInterval(generatorStatusPoll);
@@ -1548,6 +1739,7 @@
     phRunning = false;
     senderPreviewState = null;
     chatSessions['o-chat'] = '';
+    clearSavedUiState(previousJobIdForCleanup);
     setCurrentJobId('');
     resetFlowNotificationState();
 
@@ -1678,13 +1870,16 @@
         btn.classList.add('uploaded');
         showToast(label + ' загружен успешно');
         await refreshModuleReadiness();
+        saveUiState();
       } else {
         btn.innerHTML = '<span class="file-icon">📎</span> Выбрать файл';
         showToast('Ошибка загрузки шаблона');
+        saveUiState();
       }
     } catch(e) {
       btn.innerHTML = '<span class="file-icon">📎</span> Выбрать файл';
       showToast('Ошибка соединения');
+      saveUiState();
     }
     input.value = '';
   }
@@ -1697,6 +1892,7 @@
     msg.textContent = text;
     messages.appendChild(msg);
     messages.scrollTop = messages.scrollHeight;
+    saveUiState();
   }
 
   function appendTypingIndicator(chatId) {
@@ -1713,7 +1909,10 @@
   function removeTypingIndicator(chatId) {
     const messages = document.getElementById(chatId + '-messages');
     const typing = messages.querySelector('[data-typing="true"]');
-    if (typing) typing.remove();
+    if (typing) {
+      typing.remove();
+      saveUiState();
+    }
   }
 
   function appendDownloadMessage(chatId, downloads) {
@@ -1735,6 +1934,7 @@
     msg.appendChild(wrap);
     messages.appendChild(msg);
     messages.scrollTop = messages.scrollHeight;
+    saveUiState();
   }
 
   function appendStructuredOrchestratorMessage(state) {
@@ -1805,6 +2005,7 @@
     msg.appendChild(wrap);
     messages.appendChild(msg);
     messages.scrollTop = messages.scrollHeight;
+    saveUiState();
   }
 
   function sendChat(chatId) {
@@ -1888,6 +2089,7 @@ async function attachFile(input) {
       summary_text: 'Идёт проверка официальных названий МО после загрузки таблицы.'
     }
   });
+  saveUiState();
  
   try {
     const res = await fetch('/api/upload/data', { method: 'POST', body: form });
@@ -1967,6 +2169,7 @@ function clearAttachedFile() {
   if (attachedFile) attachedFile.style.display = 'none';
   if (attachInput) attachInput.value = '';
   if (attachedName) attachedName.textContent = '';
+  saveUiState();
 }
 
   // PARSER
@@ -1986,6 +2189,8 @@ function clearAttachedFile() {
   }
 
   function setParserUiState(result = {}) {
+    lastParserUiState = { ...result };
+    scheduleUiStateSave();
     const badge = document.getElementById('p-badge');
     const fill = document.getElementById('p-fill');
     const label = document.getElementById('p-label');
@@ -2125,6 +2330,8 @@ function clearAttachedFile() {
   let currentSenderStatus = 'idle';
 
   function setPhilologistUiState(result = {}) {
+    lastPhilologistUiState = { ...result };
+    scheduleUiStateSave();
     const badge = document.getElementById('ph-badge');
     const fill = document.getElementById('ph-fill');
     const label = document.getElementById('ph-label');
@@ -2421,6 +2628,7 @@ function clearAttachedFile() {
   function syncModuleReadinessFromUi() {
     moduleReadiness = { ...moduleReadiness, ...inferLocalModuleReadiness() };
     applyModuleReadiness();
+    saveUiState();
     return moduleReadiness;
   }
 
@@ -2454,6 +2662,7 @@ function clearAttachedFile() {
       !!moduleReadiness.sender_ready && !senderRunningNow && senderCanConfirmNow,
       moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.'
     );
+    scheduleUiStateSave();
   }
 
   async function refreshModuleReadiness() {
@@ -2468,6 +2677,7 @@ function clearAttachedFile() {
       moduleReadiness = { ...moduleReadiness, ...inferLocalModuleReadiness() };
     }
     applyModuleReadiness();
+    saveUiState();
     return moduleReadiness;
   }
 
@@ -2643,6 +2853,8 @@ function clearAttachedFile() {
   }
 
   function setGeneratorUiState(result = {}) {
+    lastGeneratorUiState = { ...result };
+    scheduleUiStateSave();
     const badge = document.getElementById('g-badge');
     const fill = document.getElementById('g-fill');
     const label = document.getElementById('g-label');
@@ -2806,6 +3018,8 @@ function clearAttachedFile() {
   }
 
   function setSenderUiState(result = {}) {
+        lastSenderUiState = { ...result };
+        scheduleUiStateSave();
         const badge = document.getElementById('s-badge');
         const fill = document.getElementById('s-fill');
         const label = document.getElementById('s-label');
@@ -3099,6 +3313,7 @@ function clearAttachedFile() {
       document.getElementById('p-total').textContent = data.parser_total.toLocaleString('ru');
       document.getElementById('g-total').textContent = data.generator_total.toLocaleString('ru');
       document.getElementById('g-total-label').textContent = data.generator_total.toLocaleString('ru');
+      saveUiState();
     } catch(e) {}
   }
 
@@ -3137,6 +3352,21 @@ function clearAttachedFile() {
   }
 
   setScenario(1);
+
+  function restoreInitialUiState() {
+    const snapshot = currentJobId ? loadUiState(currentJobId) : null;
+    if (snapshot) {
+      restoreUiState(snapshot);
+      return;
+    }
+    if (activeScreenId) {
+      goToScreen(activeScreenId, { scroll: false, persist: false });
+    }
+  }
+
+  restoreInitialUiState();
+  uiPersistenceEnabled = true;
+  saveUiState();
 
   let statusAutoRefreshInFlight = false;
 
