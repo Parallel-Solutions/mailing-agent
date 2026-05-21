@@ -1085,9 +1085,6 @@
         </div>
           <div class="module-actions" style="margin-top:12px">
             <button type="button" class="btn-primary" id="s-run">Проверить адреса и готовность</button>
-            <button type="button" class="btn-outline" id="s-confirm-send">Подтвердить и отправить</button>
-            <button type="button" class="btn-outline" id="s-pause" style="display:none">Пауза</button>
-            <button type="button" class="btn-danger" id="s-stop">Остановить</button>
             <button type="button" class="btn-outline" id="s-download-xlsx" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать data.xlsx со статусами</button>
             <button type="button" class="btn-outline" id="s-delivery-report" onclick="downloadWithJob('/api/download/sender-delivery-report')">Скачать журнал отправки</button>
           </div>
@@ -2714,12 +2711,8 @@ function clearAttachedFile() {
   function applyModuleReadiness() {
     const generatorRunButton = document.getElementById('g-run');
     const philologistRunButton = document.getElementById('ph-run');
-    const senderRunButton = document.getElementById('s-run');
-    const senderConfirmButton = document.getElementById('s-confirm-send');
     const generatorRunningNow = currentGeneratorStatus === 'running';
     const philologistRunningNow = currentPhilologistStatus === 'running';
-    const senderRunningNow = currentSenderStatus === 'running';
-    const senderCanConfirmNow = senderConfirmButton?.dataset.canConfirm === 'true';
 
     applyButtonReadiness(
       generatorRunButton,
@@ -2731,16 +2724,13 @@ function clearAttachedFile() {
       (!!moduleReadiness.philologist_ready || currentPhilologistStatus === 'stopped') && !philologistRunningNow,
       moduleReadiness.philologist_reason || 'Филолог пока нельзя запускать.'
     );
-    applyButtonReadiness(
-      senderRunButton,
-      !!moduleReadiness.sender_ready && !senderRunningNow,
-      moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.'
-    );
-    applyButtonReadiness(
-      senderConfirmButton,
-      !!moduleReadiness.sender_ready && !senderRunningNow && senderCanConfirmNow,
-      moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.'
-    );
+    setSenderButtonsState({
+      status: currentSenderStatus,
+      mode: String(lastSenderUiState.mode || 'dry_run'),
+      canConfirm: currentSenderStatus === 'completed'
+        && String(lastSenderUiState.mode || 'dry_run') === 'dry_run'
+        && !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length),
+    });
     scheduleUiStateSave();
   }
 
@@ -3201,24 +3191,86 @@ function clearAttachedFile() {
     setProgressVisual(fill, { percent: 0, running: false });
   }
 
-  function setSenderButtonsState({ running = false, canConfirm = false, canStop = false } = {}) {
+  function setSenderButtonsState({ status = 'idle', mode = 'dry_run', canConfirm = false } = {}) {
     const runButton = document.getElementById('s-run');
-    const confirmButton = document.getElementById('s-confirm-send');
-    const stopButton = document.getElementById('s-stop');
     if (runButton) {
-      runButton.disabled = !!running || !moduleReadiness.sender_ready;
-      runButton.title = (!running && !moduleReadiness.sender_ready)
+      runButton.dataset.action = 'preview';
+      runButton.className = 'btn-primary';
+      runButton.disabled = false;
+      runButton.title = '';
+
+      if (status === 'running') {
+        runButton.dataset.action = 'stop';
+        runButton.textContent = mode === 'send' ? 'Остановить отправку' : 'Остановить проверку';
+        runButton.className = 'btn-danger';
+        return;
+      }
+
+      if (status === 'completed' && mode === 'dry_run' && canConfirm) {
+        runButton.dataset.action = 'send';
+        runButton.textContent = 'Подтвердить и отправить';
+        runButton.className = 'btn-primary';
+        runButton.disabled = !moduleReadiness.sender_ready;
+        runButton.title = !moduleReadiness.sender_ready
+          ? (moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.')
+          : '';
+        return;
+      }
+
+      if (status === 'stopped') {
+        runButton.dataset.action = mode === 'send' ? 'send' : 'preview';
+        runButton.textContent = mode === 'send' ? 'Продолжить отправку' : 'Продолжить проверку';
+        runButton.className = 'btn-primary';
+        runButton.disabled = !moduleReadiness.sender_ready;
+        runButton.title = !moduleReadiness.sender_ready
+          ? (moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.')
+          : '';
+        return;
+      }
+
+      if (status === 'completed' && mode === 'send') {
+        runButton.dataset.action = 'done';
+        runButton.textContent = 'Отправка завершена';
+        runButton.className = 'btn-outline';
+        runButton.disabled = true;
+        runButton.title = 'Письма уже отправлены.';
+        return;
+      }
+
+      if (status === 'error') {
+        runButton.dataset.action = mode === 'send' ? 'send' : 'preview';
+        runButton.textContent = mode === 'send' ? 'Повторить отправку' : 'Проверить заново';
+        runButton.className = 'btn-primary';
+        runButton.disabled = !moduleReadiness.sender_ready;
+        runButton.title = !moduleReadiness.sender_ready
+          ? (moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.')
+          : '';
+        return;
+      }
+
+      runButton.dataset.action = 'preview';
+      runButton.textContent = 'Проверить адреса и готовность';
+      runButton.className = 'btn-primary';
+      runButton.disabled = !moduleReadiness.sender_ready;
+      runButton.title = !moduleReadiness.sender_ready
         ? (moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.')
         : '';
     }
-    if (confirmButton) {
-      confirmButton.dataset.canConfirm = canConfirm ? 'true' : 'false';
-      confirmButton.disabled = running || !canConfirm || !moduleReadiness.sender_ready;
-      confirmButton.title = (!running && !moduleReadiness.sender_ready)
-        ? (moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.')
-        : '';
+  }
+
+  async function handleSenderPrimaryAction() {
+    const action = document.getElementById('s-run')?.dataset.action || 'preview';
+    if (action === 'stop') {
+      await pauseSender();
+      return;
     }
-    if (stopButton) stopButton.disabled = !canStop;
+    if (action === 'send') {
+      await confirmAndSendSender();
+      return;
+    }
+    if (action === 'preview') {
+      await previewSender();
+    }
   }
 
   function setSenderDownloadEnabled(isEnabled) {
@@ -3287,7 +3339,7 @@ function clearAttachedFile() {
           extra: mode === 'send' ? `отправлено ${sent}, ошибок ${errors}` : `готово ${ready}, ошибок ${errors}`,
           pendingText: 'Подготавливаю строки к отправке...'
         });
-        setSenderButtonsState({ running: true, canConfirm: false, canStop: true });
+        setSenderButtonsState({ status: 'running', mode, canConfirm: false });
         return;
       }
 
@@ -3296,18 +3348,17 @@ function clearAttachedFile() {
         badge.textContent = 'Остановлено';
         badge.className = 'badge badge-wait';
         label.textContent = result.summary_text || 'Отправка остановлена пользователем';
-        setSenderButtonsState({ running: false, canConfirm, canStop: false });
+        setSenderButtonsState({ status: 'stopped', mode, canConfirm });
         return;
       }
 
-      setSenderButtonsState({ running: false, canConfirm, canStop: false });
+      setSenderButtonsState({ status, mode, canConfirm });
 
       if (status === 'completed') {
         senderRunning = false;
         const isFailedSend = mode === 'send' && sent === 0 && errors > 0;
         badge.textContent = mode === 'dry_run' ? 'Проверено' : (isFailedSend ? 'Ошибка' : 'Готово');
         badge.className = isFailedSend ? 'badge badge-error' : 'badge badge-done';
-        setSenderButtonsState({ running: false, canConfirm: mode === 'dry_run' ? canConfirm : false, canStop: false });
         label.textContent = total > 0
           ? formatProgressText({
               processed: mode === 'send' ? processed : total,
@@ -3383,7 +3434,7 @@ function clearAttachedFile() {
       const transport = getSenderTransport();
       showToast('Запускаю предпросмотр отправки');
       senderRunning = true;
-      setSenderButtonsState({ running: true, canConfirm: false, canStop: true });
+      setSenderButtonsState({ status: 'running', mode: 'dry_run', canConfirm: false });
       const previewRes = await fetch('/api/sender/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3432,7 +3483,7 @@ function clearAttachedFile() {
           return;
         }
       senderRunning = true;
-      setSenderButtonsState({ running: true, canConfirm: false, canStop: true });
+      setSenderButtonsState({ status: 'running', mode: 'send', canConfirm: false });
       safeAppendChatMessage('s-chat', 'agent', 'Подтверждение получено. Запускаю реальную отправку через UniSender.');
 
       const res = await fetch('/api/sender/run', {
@@ -3617,19 +3668,7 @@ function clearAttachedFile() {
   const senderPreviewButton = document.getElementById('s-run');
   if (senderPreviewButton) {
     senderPreviewButton.onclick = null;
-    senderPreviewButton.addEventListener('click', () => previewSender());
-  }
-
-  const senderConfirmButton = document.getElementById('s-confirm-send');
-  if (senderConfirmButton) {
-    senderConfirmButton.onclick = null;
-    senderConfirmButton.addEventListener('click', () => confirmAndSendSender());
-  }
-
-  const senderStopButton = document.getElementById('s-stop');
-  if (senderStopButton) {
-    senderStopButton.onclick = null;
-    senderStopButton.addEventListener('click', () => pauseSender());
+    senderPreviewButton.addEventListener('click', () => handleSenderPrimaryAction());
   }
 </script>
 
