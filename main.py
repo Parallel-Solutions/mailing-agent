@@ -210,15 +210,23 @@ def _prime_philologist_running_state(job_id: str | None, mode: str | None) -> di
     output_dir = paths.output_dir
     docx_count = len(list(output_dir.rglob("*.docx"))) if output_dir.exists() else 0
     state = _load_philologist_state(job_id)
-    state["status"] = "running"
-    state["started_at"] = None
-    state["completed_at"] = None
-    state["total_documents"] = docx_count
-    state["processed_documents"] = 0
-    state["fixed_documents"] = 0
-    state["documents_with_issues"] = 0
-    state["mode"] = mode or "fast"
-    state["summary_text"] = "Агент-филолог запущен в фоне и готовит документы к проверке."
+    if str(state.get("status") or "") == "stopped":
+        state["status"] = "running"
+        state["completed_at"] = None
+        state["mode"] = mode or state.get("mode") or "fast"
+        state["summary_text"] = "Продолжаю работу агента-филолога с сохраненного места."
+    else:
+        state["status"] = "running"
+        state["started_at"] = None
+        state["completed_at"] = None
+        state["total_documents"] = docx_count
+        state["processed_documents"] = 0
+        state["fixed_documents"] = 0
+        state["documents_with_issues"] = 0
+        state["mode"] = mode or "fast"
+        state["summary_text"] = "Агент-филолог запущен в фоне и готовит документы к проверке."
+    state["stop_requested"] = False
+    state["stop_requested_at"] = None
     _save_philologist_state(state, job_id)
     return state
 
@@ -465,7 +473,9 @@ from src.generator.philologist.philologist_agent import (
     _load_philologist_state,
     _save_philologist_state,
     chat_with_philologist,
+    clear_philologist_stop_request,
     get_philologist_status,
+    request_philologist_stop,
     run_philologist,
 )
 from src.generator.delivery.sender_agent import (
@@ -516,7 +526,13 @@ from src.generator.knowledge.correction_report import (
 )
 from src.generator.case_engine.overrides import upsert_override
 from src.generator.inflection.inflection_report import load_inflection_log, save_inflection_csv
-from src.generator.generation.generator_agent import get_generator_status, prime_generator_state, run_generator_agent
+from src.generator.generation.generator_agent import (
+    clear_generator_stop_request,
+    get_generator_status,
+    prime_generator_state,
+    request_generator_stop,
+    run_generator_agent,
+)
 from src.generator.philologist.philologist_planner import build_philologist_plan
 from src.jobs import create_job_id, resolve_job_paths
 
@@ -695,7 +711,15 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
     if existing_thread is not None:
         return {"status": "ok", "result": get_generator_status(job_id)}
 
-    primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id)
+    existing_state = get_generator_status(job_id)
+    if str(existing_state.get("status") or "") == "stopped":
+        clear_generator_stop_request(job_id)
+        primed_state = existing_state
+        primed_state["status"] = "running"
+        primed_state["completed_at"] = None
+        primed_state["summary_text"] = "Продолжаю генерацию с сохраненного места."
+    else:
+        primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id)
     if primed_state.get("status") == "error":
         raise HTTPException(status_code=400, detail=primed_state.get("summary_text") or "Ошибка генерации")
 
@@ -716,6 +740,12 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
 @app.get("/api/generator/status")
 async def generator_status(job_id: str | None = None, username: str = Depends(check_auth)):
     return {"status": "ok", "result": get_generator_status(job_id)}
+
+
+@app.post("/api/generator/stop")
+async def generator_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    return {"status": "ok", "result": request_generator_stop(job_id)}
 
 
 from fastapi.responses import FileResponse
@@ -981,6 +1011,7 @@ async def philologist_run(
     if existing_thread:
         return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
 
+    clear_philologist_stop_request(job_id)
     primed_state = _prime_philologist_running_state(job_id, mode or "fast")
     philologist_thread = threading.Thread(
         target=_run_philologist_background,
@@ -996,6 +1027,12 @@ async def philologist_run(
 @app.get("/api/philologist/status")
 async def philologist_status(job_id: str | None = None, username: str = Depends(check_auth)):
     return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
+
+
+@app.post("/api/philologist/stop")
+async def philologist_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    return {"status": "ok", "result": _compact_philologist_status(request_philologist_stop(job_id))}
 
 
 @app.get("/api/philologist/plan")
