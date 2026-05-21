@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime
 from time import perf_counter
 from pathlib import Path
@@ -42,6 +43,9 @@ PARSER_STATE: dict[str, Any] = {
         "summary_text": "",
     },
 }
+
+_OKTMO_LOOKUP: OktmoMunicipalityLookup | None = None
+_OKTMO_LOOKUP_LOCK = threading.Lock()
 
 
 def _load_parser_state(job_id: str | None = None) -> dict[str, Any]:
@@ -89,10 +93,15 @@ def _parser_data_xlsx_path(job_id: str | None = None):
 
 
 def _build_oktmo_lookup() -> OktmoMunicipalityLookup | None:
-    return OktmoMunicipalityLookup(
-        csv_path=None if not settings.municipality_oktmo_csv_path else Path(settings.municipality_oktmo_csv_path),
-        verify_ssl=settings.municipality_oktmo_verify_ssl,
-    )
+    global _OKTMO_LOOKUP
+    with _OKTMO_LOOKUP_LOCK:
+        csv_path = None if not settings.municipality_oktmo_csv_path else Path(settings.municipality_oktmo_csv_path)
+        if _OKTMO_LOOKUP is None or _OKTMO_LOOKUP.csv_path != (csv_path or _OKTMO_LOOKUP.csv_path):
+            _OKTMO_LOOKUP = OktmoMunicipalityLookup(
+                csv_path=csv_path,
+                verify_ssl=settings.municipality_oktmo_verify_ssl,
+            )
+        return _OKTMO_LOOKUP
 
 
 def format_municipality_verification_for_chat(result: dict[str, Any], *, max_samples: int = 20) -> str:
@@ -220,7 +229,7 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
         )
         return result
 
-    use_official_sites = settings.municipality_official_sites_enabled and source != "parser"
+    use_official_sites = settings.municipality_official_sites_enabled and source not in {"parser", "upload"}
     verification_started = perf_counter()
     result = verify_municipality_names_in_workbook(
         data_xlsx_path,
