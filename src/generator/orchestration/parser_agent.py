@@ -5,6 +5,7 @@ from datetime import datetime
 from time import perf_counter
 from pathlib import Path
 from typing import Any
+from src.utils.logger import logger
 
 from src.generator.orchestration.agent_handoff import (
     count_tasks_for_agent,
@@ -166,6 +167,8 @@ def _update_municipality_verification_state(
 
 
 def _municipality_verification_source_label(source: str) -> str:
+    if source == "upload":
+        return "после загрузки таблицы"
     if source == "generator":
         return "перед генерацией документов"
     if source == "parser":
@@ -180,6 +183,12 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
     data_xlsx_path = _parser_data_xlsx_path(job_id)
     started_at = datetime.now().isoformat(timespec="seconds")
     source_label = _municipality_verification_source_label(source)
+    logger.info(
+        "municipality_verification_started",
+        job_id=job_id,
+        source=source,
+        data_xlsx_path=str(data_xlsx_path),
+    )
     _update_municipality_verification_state(
         job_id,
         status="running",
@@ -227,6 +236,17 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
         "use_official_sites": use_official_sites,
         "use_oktmo": True,
     }
+    logger.info(
+        "municipality_verification_completed",
+        job_id=job_id,
+        source=source,
+        status=result.get("status"),
+        total_rows=result.get("total_rows"),
+        updated_rows=result.get("updated_rows"),
+        verified_rows=result.get("verified_rows"),
+        kept_rows=result.get("kept_rows"),
+        overall_seconds=result["timings"].get("overall_seconds"),
+    )
     verification_summary = format_municipality_verification_for_chat(result)
     final_summary = (
         verification_summary
