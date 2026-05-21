@@ -1131,7 +1131,7 @@
     return {
       parser: { lastVerificationStatus: 'idle', announcedStart: false },
       generator: { announcedStart: false, terminalAnnounced: false, lastStatus: 'idle', lastStage: '', milestones: {}, stageMilestones: {} },
-      philologist: { announcedStart: false, terminalAnnounced: false, lastStatus: 'idle', milestones: {} },
+      philologist: { announcedStart: false, terminalAnnounced: false, finalizingAnnounced: false, lastStatus: 'idle', milestones: {} },
       sender: { announcedStart: false, terminalAnnounced: false, lastStatus: 'idle', lastMode: '', milestones: {} },
     };
   }
@@ -1343,7 +1343,7 @@
   }
 
   function wasRunningBefore(state) {
-    return String(state.lastStatus || 'idle') === 'running';
+    return ['running', 'finalizing'].includes(String(state.lastStatus || 'idle'));
   }
 
   function maybeAnnounceGeneratorFlow(result = {}) {
@@ -1446,7 +1446,7 @@
     const processed = Number(result.processed_documents || 0);
     const state = flowNotificationState.philologist;
 
-    if (status !== 'running') {
+    if (status !== 'running' && status !== 'finalizing') {
       if (wasRunningBefore(state) && !state.terminalAnnounced) {
         if (status === 'completed') {
           announceProcessStep(
@@ -1474,6 +1474,19 @@
     }
 
     state.terminalAnnounced = false;
+
+    if (status === 'finalizing') {
+      if (!state.finalizingAnnounced) {
+        state.finalizingAnnounced = true;
+        announceProcessStep(
+          'g-chat',
+          'Филолог завершает работу',
+          result.summary_text || 'Документы проверены. Формирую журнал исправлений и итоговый отчет.'
+        );
+      }
+      state.lastStatus = status;
+      return;
+    }
 
     if (total > 0 && !state.announcedStart) {
       state.announcedStart = true;
@@ -2432,9 +2445,9 @@ function clearAttachedFile() {
     const elapsedSeconds = Number(nextState.elapsed_seconds || 0);
     const status = nextState.status || 'idle';
     currentPhilologistStatus = status;
-    phRunning = status === 'running';
+    phRunning = status === 'running' || status === 'finalizing';
     const percent = total > 0 ? Math.round((processed / total) * 100) : (status === 'completed' ? 100 : 0);
-    if (reportButton) reportButton.disabled = status === 'running' || (!processed && !inflectionCount);
+    if (reportButton) reportButton.disabled = ['running', 'finalizing'].includes(status) || (!processed && !inflectionCount);
 
     if (status === 'running') {
       badge.textContent = 'Проверка';
@@ -2457,6 +2470,29 @@ function clearAttachedFile() {
         pauseButton.disabled = false;
         pauseButton.textContent = 'Остановить';
         pauseButton.title = '';
+      }
+      return;
+    }
+
+    if (status === 'finalizing') {
+      badge.textContent = 'Завершение';
+      badge.className = 'badge badge-running';
+      label.textContent = nextState.summary_text || formatProgressText({
+        processed: total || processed,
+        total: total || processed,
+        noun: 'документов',
+        action: 'проверено',
+        extra: `с замечаниями ${withIssues}, исправлено ${fixed}`,
+        pendingText: 'Формирую итоговый отчет...'
+      });
+      setProgressVisual(fill, { percent: total > 0 ? 100 : percent, running: true, indeterminate: false });
+      runButton.disabled = true;
+      runButton.textContent = 'Формирую отчёт';
+      runButton.title = '';
+      if (pauseButton) {
+        pauseButton.disabled = true;
+        pauseButton.textContent = 'Остановить';
+        pauseButton.title = 'Документы уже проверены, сейчас сохраняется итоговый отчет.';
       }
       return;
     }
@@ -2559,7 +2595,7 @@ function clearAttachedFile() {
     if (philologistStatusPoll) clearInterval(philologistStatusPoll);
     philologistStatusPoll = setInterval(async () => {
       const status = await refreshPhilologistStatus({ silent: true });
-      if (!status || status.status === 'running') return;
+      if (!status || ['running', 'finalizing'].includes(status.status)) return;
       phRunning = false;
       clearInterval(philologistStatusPoll);
       philologistStatusPoll = null;
@@ -2990,6 +3026,7 @@ function clearAttachedFile() {
     if (status === 'completed') return 50;
     if (status === 'error') return 45;
     if (status === 'stopped') return 40;
+    if (status === 'finalizing') return 35;
     if (status === 'running') return 30;
     return 10;
   }
