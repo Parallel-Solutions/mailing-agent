@@ -70,6 +70,7 @@ class OktmoMunicipalityLookup:
         self._tail_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
         self._parent_token_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
         self._tail_token_index: dict[tuple[str, str, str], list[OktmoEntry]] = {}
+        self._scoped_entries_cache: dict[tuple[str, str], list[OktmoEntry]] = {}
 
     def confirm(self, row: dict[str, Any], candidate_name: str) -> OktmoMunicipalityResult | None:
         candidate_name = _clean(candidate_name)
@@ -184,6 +185,7 @@ class OktmoMunicipalityLookup:
         self._tail_index.clear()
         self._parent_token_index.clear()
         self._tail_token_index.clear()
+        self._scoped_entries_cache.clear()
         for entry in entries:
             self._entries_by_type.setdefault(entry.municipality_type, []).append(entry)
             if entry.subject_norm:
@@ -206,17 +208,26 @@ class OktmoMunicipalityLookup:
                 self._tail_token_index.setdefault((entry.municipality_type, entry.subject_norm, token), []).append(entry)
 
     def _scoped_entries(self, candidate_type: str, subject_norm: str) -> list[OktmoEntry]:
+        cache_key = (candidate_type, subject_norm)
+        if cache_key in self._scoped_entries_cache:
+            return self._scoped_entries_cache[cache_key]
         if candidate_type and subject_norm:
             exact_entries = self._entries_by_type_subject.get((candidate_type, subject_norm), [])
             if exact_entries:
+                self._scoped_entries_cache[cache_key] = exact_entries
                 return exact_entries
-            return [
+            scoped_entries = [
                 entry
                 for entry in self._entries_by_type.get(candidate_type, [])
                 if _same_subject(entry.subject_norm, subject_norm)
             ]
+            self._scoped_entries_cache[cache_key] = scoped_entries
+            return scoped_entries
         if candidate_type:
-            return self._entries_by_type.get(candidate_type, [])
+            scoped_entries = self._entries_by_type.get(candidate_type, [])
+            self._scoped_entries_cache[cache_key] = scoped_entries
+            return scoped_entries
+        self._scoped_entries_cache[cache_key] = []
         return []
 
     def _exact_matches(
@@ -237,9 +248,7 @@ class OktmoMunicipalityLookup:
             if candidate_tail:
                 matches.extend(self._tail_index.get((candidate_type, subject_key, candidate_tail), []))
         if not matches and subject_norm:
-            for entry in self._entries_by_type.get(candidate_type, []):
-                if not _same_subject(entry.subject_norm, subject_norm):
-                    continue
+            for entry in self._scoped_entries(candidate_type, subject_norm):
                 if candidate_norm == entry.official_name_norm or candidate_norm == entry.name_norm:
                     matches.append(entry)
                     continue
@@ -388,7 +397,34 @@ def _compose_settlement_official_name(tail: str, settlement_type: str) -> str:
     )
     if lowered_tail.startswith(locality_prefixes):
         return f"{settlement_type.capitalize()} {normalized_tail}"
-    return f"{normalized_tail} {settlement_type}"
+    if " " in normalized_tail:
+        return f"{settlement_type.capitalize()} {normalized_tail}"
+    adjective_tail = _settlement_adjective_tail(normalized_tail)
+    return f"{adjective_tail} {settlement_type}"
+
+
+def _settlement_adjective_tail(value: str) -> str:
+    """Build a readable neuter adjective form for bare OKTMO settlement names."""
+
+    word = _capitalize_word(_clean(value))
+    lowered = word.lower().replace("ё", "е")
+    if lowered.endswith(("ское", "цкое", "ое", "ее")):
+        return word
+    if lowered.endswith(("ский", "цкий")):
+        return word[:-2] + "ое"
+    if lowered.endswith(("ый", "ой", "ий")):
+        return word[:-2] + "ое"
+    if lowered.endswith(("ово", "ево", "ино", "ыно")):
+        return word[:-1] + "ское"
+    if lowered.endswith("ка") and len(word) > 4:
+        return word[:-2] + "ское"
+    if lowered.endswith("ск"):
+        return word + "ое"
+    if lowered.endswith(("а", "я")):
+        return word[:-1] + "ское"
+    if lowered.endswith("ь"):
+        return word[:-1] + "ское"
+    return word + "ское"
 
 
 def normalize_oktmo_display_name(value: Any) -> str:

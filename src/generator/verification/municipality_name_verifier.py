@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -317,7 +317,7 @@ def verify_municipality_name(
                 return MunicipalityNameVerification(
                     row_id=_clean(row.get("ID")),
                     original_name=current_name,
-                    official_name=normalize_municipality_display_name(oktmo_result.name),
+                    official_name=normalized,
                     status="verified",
                     confidence="high",
                     source="oktmo+ADM_NAME",
@@ -389,7 +389,7 @@ def verify_municipality_name(
                 return MunicipalityNameVerification(
                     row_id=_clean(row.get("ID")),
                     original_name=current_name,
-                    official_name=normalize_municipality_display_name(oktmo_result.name),
+                    official_name=normalized,
                     status="verified",
                     confidence="high",
                     source="oktmo+ADM_NAME",
@@ -556,6 +556,8 @@ def verify_municipality_names_in_workbook(
     stats = {
         "status": "ok",
         "total_rows": 0,
+        "unique_verification_keys": 0,
+        "cached_verification_rows": 0,
         "updated_rows": 0,
         "verified_rows": 0,
         "kept_rows": 0,
@@ -574,12 +576,29 @@ def verify_municipality_names_in_workbook(
         "decision_samples": [],
     }
 
-    for row_index in range(DATA_START_ROW, worksheet.max_row + 1):
-        row = _read_row(worksheet, header_map, row_index)
+    verification_cache: dict[tuple[str, ...], MunicipalityNameVerification] = {}
+    max_column = worksheet.max_column
+    for offset, row_values in enumerate(
+        worksheet.iter_rows(
+            min_row=DATA_START_ROW,
+            max_row=worksheet.max_row,
+            max_col=max_column,
+            values_only=True,
+        )
+    ):
+        row_index = DATA_START_ROW + offset
+        row = _read_row_from_values(header_map, row_values)
         if not any(value not in (None, "") for value in row.values()):
             continue
         stats["total_rows"] += 1
-        verification = verify_municipality_name(row, oktmo_lookup=oktmo_lookup, minjust_lookup=minjust_lookup)
+        cache_key = _verification_cache_key(row)
+        cached_verification = verification_cache.get(cache_key)
+        if cached_verification:
+            verification = replace(cached_verification, row_id=_clean(row.get("ID")))
+            stats["cached_verification_rows"] += 1
+        else:
+            verification = verify_municipality_name(row, oktmo_lookup=oktmo_lookup, minjust_lookup=minjust_lookup)
+            verification_cache[cache_key] = verification
         if official_site_lookup and _should_use_official_site_followup(row, verification):
             verification = _verify_with_official_site(row, verification, stats, official_site_lookup)
         _write_verification(worksheet, header_map, row_index, verification)
@@ -620,6 +639,7 @@ def verify_municipality_names_in_workbook(
                 }
             )
 
+    stats["unique_verification_keys"] = len(verification_cache)
     if official_site_lookup and official_site_lookup.disabled_reason:
         stats["official_site_lookup_disabled_reason"] = official_site_lookup.disabled_reason
     if oktmo_lookup and oktmo_lookup.disabled_reason:
@@ -627,6 +647,7 @@ def verify_municipality_names_in_workbook(
     if minjust_lookup and minjust_lookup.disabled_reason:
         stats["minjust_lookup_disabled_reason"] = minjust_lookup.disabled_reason
 
+    _remove_verification_columns(worksheet)
     workbook.save(xlsx_path)
     workbook.close()
     return stats
@@ -1004,12 +1025,6 @@ def _ensure_headers(worksheet) -> dict[str, int]:
         for column_index in range(1, worksheet.max_column + 1)
         if worksheet.cell(row=HEADER_ROW, column=column_index).value
     }
-    next_column = worksheet.max_column + 1
-    for header in VERIFICATION_COLUMNS:
-        if header not in header_map:
-            worksheet.cell(row=HEADER_ROW, column=next_column).value = header
-            header_map[header] = next_column
-            next_column += 1
     return header_map
 
 
@@ -1020,23 +1035,40 @@ def _read_row(worksheet, header_map: dict[str, int], row_index: int) -> dict[str
     }
 
 
+def _read_row_from_values(header_map: dict[str, int], row_values: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        header: row_values[column_index - 1] if column_index <= len(row_values) else None
+        for header, column_index in header_map.items()
+    }
+
+
+def _verification_cache_key(row: dict[str, Any]) -> tuple[str, ...]:
+    return (
+        _normalize_for_match(row.get("SUB_RF")),
+        _normalize_for_match(row.get("MUN_R_NAME")),
+        _normalize_for_match(row.get(MUN_NAME_COLUMN)),
+        _normalize_for_match(row.get(ADM_NAME_COLUMN)),
+    )
+
+
 def _write_verification(
     worksheet,
     header_map: dict[str, int],
     row_index: int,
     verification: MunicipalityNameVerification,
 ) -> None:
-    values = {
-        ORIGINAL_COLUMN: verification.original_name,
-        OFFICIAL_COLUMN: verification.official_name,
-        STATUS_COLUMN: verification.status,
-        CONFIDENCE_COLUMN: verification.confidence,
-        SOURCE_COLUMN: verification.source,
-        REASON_COLUMN: verification.reason,
-        URL_COLUMN: verification.source_url,
-    }
-    for header, value in values.items():
-        worksheet.cell(row=row_index, column=header_map[header]).value = value
+    return
+
+
+def _remove_verification_columns(worksheet) -> None:
+    headers_to_remove = set(VERIFICATION_COLUMNS)
+    columns_to_delete = [
+        column_index
+        for column_index in range(1, worksheet.max_column + 1)
+        if _clean(worksheet.cell(row=HEADER_ROW, column=column_index).value) in headers_to_remove
+    ]
+    for column_index in sorted(columns_to_delete, reverse=True):
+        worksheet.delete_cols(column_index)
 
 
 def _extract_quoted_municipality_name(adm_name: str, current_name: str = "") -> str:
