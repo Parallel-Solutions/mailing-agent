@@ -2219,6 +2219,7 @@ function clearAttachedFile() {
     currentParserStatus = status;
     const verificationState = nextState.municipality_name_verification_state || {};
     const verificationStatus = verificationState.status || 'idle';
+    parserRunning = status === 'running' || verificationStatus === 'running';
 
     if (fill) fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
     const totalEl = document.getElementById('p-total');
@@ -2368,6 +2369,7 @@ function clearAttachedFile() {
     const elapsedSeconds = Number(nextState.elapsed_seconds || 0);
     const status = nextState.status || 'idle';
     currentPhilologistStatus = status;
+    phRunning = status === 'running';
     const percent = total > 0 ? Math.round((processed / total) * 100) : (status === 'completed' ? 100 : 0);
     if (reportButton) reportButton.disabled = status === 'running' || (!processed && !inflectionCount);
 
@@ -2761,7 +2763,7 @@ function clearAttachedFile() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить готовность модулей');
       if (requestedJobId !== currentJobId) return null;
-      moduleReadiness = { ...moduleReadiness, ...(data.result || {}) };
+      moduleReadiness = { ...moduleReadiness, ...(data.result || {}), ...inferLocalModuleReadiness() };
     } catch (e) {
       moduleReadiness = { ...moduleReadiness, ...inferLocalModuleReadiness() };
     }
