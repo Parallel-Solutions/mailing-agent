@@ -1172,6 +1172,7 @@
 
   function createFlowNotificationState() {
     return {
+      parser: { lastVerificationStatus: 'idle', announcedStart: false },
       generator: { announcedStart: false, lastStage: '', milestones: {} },
       philologist: { announcedStart: false, milestones: {} },
       sender: { announcedStart: false, lastMode: '', milestones: {} },
@@ -1510,6 +1511,51 @@
         );
       });
     }
+  }
+
+  function maybeAnnounceParserFlow(result = {}) {
+    const verificationState = result.municipality_name_verification_state || {};
+    const verificationStatus = String(verificationState.status || 'idle');
+    const verificationResult = result.municipality_name_verification || {};
+    const state = flowNotificationState.parser;
+
+    if (verificationStatus === 'running') {
+      if (!state.announcedStart) {
+        state.announcedStart = true;
+        announceProcessStep(
+          'p-chat',
+          'Проверка МО запущена',
+          verificationState.summary_text || 'Файл загружен. Начинаю проверку официальных названий МО в фоне.'
+        );
+      }
+      state.lastVerificationStatus = 'running';
+      return;
+    }
+
+    if (state.lastVerificationStatus === 'running' && verificationStatus === 'completed') {
+      const samples = Array.isArray(verificationResult.replacement_samples) ? verificationResult.replacement_samples : [];
+      const sampleText = samples.length
+        ? '\n\nЗаменены названия:\n' + samples.map(item => {
+            const row = item.row_id ? `${item.row_id}. ` : '';
+            return `${row}${item.from || 'пусто'} → ${item.to || 'пусто'}`;
+          }).join('\n') + (Number(verificationResult.updated_rows || 0) > samples.length ? `\n...и еще ${Number(verificationResult.updated_rows || 0) - samples.length}` : '')
+        : '';
+      const summaryText = `Проверил названия МО: строк ${verificationResult.total_rows || 0}, подтверждено ${verificationResult.verified_rows || 0}, заменено в MUN_NAME ${verificationResult.updated_rows || 0}, оставлено без изменений ${verificationResult.kept_rows || 0}.${sampleText}`;
+      announceProcessStep('p-chat', 'Проверка МО завершена', summaryText);
+      const downloadUrl = currentJobId ? `/api/download/data-xlsx?job_id=${encodeURIComponent(currentJobId)}` : '/api/download/data-xlsx';
+      appendChatMessage('p-chat', 'agent', 'Обновлённый data.xlsx готов. Можешь скачать его и проверить названия МО.');
+      appendDownloadMessage('p-chat', [{ url: downloadUrl, label: 'Скачать обновлённый data.xlsx' }]);
+      state.announcedStart = false;
+    } else if (state.lastVerificationStatus === 'running' && verificationStatus === 'error') {
+      announceProcessStep(
+        'p-chat',
+        'Ошибка проверки МО',
+        `Не смог проверить официальные названия МО: ${verificationResult.reason || verificationState.summary_text || 'неизвестная ошибка'}.`
+      );
+      state.announcedStart = false;
+    }
+
+    state.lastVerificationStatus = verificationStatus;
   }
 
   function setCurrentJobId(jobId) {
@@ -2074,31 +2120,18 @@ async function attachFile(input) {
   if (!file) return;
   const uploadStartedAt = performance.now();
  
-  // Сначала создаём job_id если его нет
-  await ensureCurrentJobId();
-  const previousJobId = currentJobId;
- 
-  // Загружаем файл через существующий эндпоинт upload/data
-  const form = new FormData();
-  form.append('file', file);
-  appendJobId(form);
- 
-  // Показываем что загружается
   const attachedName = document.getElementById('p-attached-name');
   const attachedFile = document.getElementById('p-attached-file');
   if (attachedName) attachedName.textContent = 'Загрузка ' + file.name + '...';
   if (attachedFile) attachedFile.style.display = 'block';
-  setParserUiState({
-    force: true,
-    status: 'idle',
-    municipality_name_verification_state: {
-      status: 'running',
-      summary_text: 'Идёт проверка официальных названий МО после загрузки таблицы.'
-    }
-  });
   saveUiState();
  
   try {
+    await ensureCurrentJobId();
+    const previousJobId = currentJobId;
+    const form = new FormData();
+    form.append('file', file);
+    appendJobId(form);
     const res = await fetch('/api/upload/data', { method: 'POST', body: form });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Ошибка загрузки');
@@ -2107,62 +2140,32 @@ async function attachFile(input) {
       file: file.name,
       client_request_seconds: Number(((uploadFinishedAt - uploadStartedAt) / 1000).toFixed(3)),
       server_timings: data.timings || null,
-      verification_timings: (data.municipality_name_verification || {}).timings || null,
-      verification_summary: data.municipality_name_verification || null,
+      verification_background: !!data.verification_background,
+      verification_state: data.municipality_name_verification_state || null,
     });
  
     if (data.job_id) setCurrentJobId(data.job_id);
     resetModuleUiForNewDataUpload();
  
-    // Показываем что файл загружен
     if (attachedName) attachedName.textContent = file.name;
     if (previousJobId && currentJobId && previousJobId !== currentJobId) {
       appendChatMessage('p-chat', 'agent', `Рабочая сессия обновлена: ${previousJobId} → ${currentJobId}.`);
     }
-    appendChatMessage('p-chat', 'agent', `Файл ${file.name} загружен. Сразу запускаю проверку официальных названий МО.`);
-    const verification = data.municipality_name_verification || {};
-    if (verification.status === 'ok') {
-      setParserUiState({
-        force: true,
-        status: 'idle',
-        municipality_name_verification_state: {
-          status: 'completed',
-          summary_text: `Проверка официальных названий МО завершена: строк ${verification.total_rows || 0}, заменено ${verification.updated_rows || 0}.`
-        }
-      });
-      const samples = Array.isArray(verification.replacement_samples) ? verification.replacement_samples : [];
-      const sampleText = samples.length
-        ? '\n\nЗаменены названия:\n' + samples.map(item => {
-            const row = item.row_id ? `${item.row_id}. ` : '';
-            return `${row}${item.from || 'пусто'} → ${item.to || 'пусто'}`;
-          }).join('\n') + (Number(verification.updated_rows || 0) > samples.length ? `\n...и еще ${Number(verification.updated_rows || 0) - samples.length}` : '')
-        : '';
-      appendChatMessage(
-        'p-chat',
-        'agent',
-        `Проверил названия МО: строк ${verification.total_rows || 0}, подтверждено ${verification.verified_rows || 0}, заменено в MUN_NAME ${verification.updated_rows || 0}, оставлено без изменений ${verification.kept_rows || 0}.${sampleText}`
-      );
-      const downloadUrl = data.data_download_url || (currentJobId ? `/api/download/data-xlsx?job_id=${encodeURIComponent(currentJobId)}` : '/api/download/data-xlsx');
-      appendChatMessage('p-chat', 'agent', 'Обновлённый data.xlsx готов. Можешь скачать его и проверить названия МО.');
-      appendDownloadMessage('p-chat', [{ url: downloadUrl, label: 'Скачать обновлённый data.xlsx' }]);
-    } else if (verification.status === 'error') {
-      setParserUiState({
-        force: true,
-        status: 'idle',
-        municipality_name_verification_state: {
-          status: 'error',
-          summary_text: verification.reason || 'Проверка официальных названий МО завершилась с ошибкой.'
-        }
-      });
-      appendChatMessage('p-chat', 'agent', `Не смог проверить официальные названия МО: ${verification.reason || 'неизвестная ошибка'}.`);
-    }
+    appendChatMessage('p-chat', 'agent', `Файл ${file.name} загружен на сервер. Проверка официальных названий МО запущена в фоне, о завершении сообщу отдельно.`);
+    setParserUiState({
+      force: true,
+      status: 'idle',
+      municipality_name_verification_state: data.municipality_name_verification_state || {
+        status: 'running',
+        summary_text: 'Файл загружен. Идёт проверка официальных названий МО после загрузки таблицы.'
+      }
+    });
     await refreshCounts();
     await refreshModuleReadiness();
     await refreshParserStatus({ silent: true });
     await refreshGeneratorStatus({ silent: true });
     await refreshPhilologistStatus({ silent: true });
     await refreshSenderStatus({ silent: true });
-    appendChatMessage('p-chat', 'agent', `Файл ${file.name} готов. Теперь можно перейти к генерации или дать парсеру дополнительную задачу.`);
  
   } catch (err) {
     if (attachedFile) attachedFile.style.display = 'none';
@@ -2275,6 +2278,7 @@ function clearAttachedFile() {
       if (requestedJobId !== currentJobId) return null;
       const result = data.result || {};
       setParserUiState(result);
+      maybeAnnounceParserFlow(result);
       return result;
     } catch (err) {
       if (!silent) {
