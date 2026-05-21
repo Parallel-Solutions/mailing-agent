@@ -2692,19 +2692,18 @@ function clearAttachedFile() {
     const mailButton = document.getElementById('mail-btn');
     const uploadStatus = document.getElementById('upload-data-status');
     const attachedFile = document.getElementById('p-attached-file');
-    const generatorBadge = document.getElementById('g-badge');
-    const philologistBadge = document.getElementById('ph-badge');
-    const generatorDownloadButton = document.getElementById('g-download-output');
     const dataLoaded = !!(
       (uploadStatus && uploadStatus.style.display !== 'none')
       || (attachedFile && attachedFile.style.display !== 'none')
+      || Number(lastParserUiState.row_count || 0) > 0
     );
     const kpLoaded = !!(kpButton && kpButton.classList.contains('uploaded'));
     const contractLoaded = !!(contractButton && contractButton.classList.contains('uploaded'));
     const mailLoaded = !!(mailButton && mailButton.classList.contains('uploaded'));
-    const generatorCompleted = generatorBadge?.textContent?.trim() === 'Готово';
-    const philologistCompleted = philologistBadge?.textContent?.trim() === 'Готово';
-    const outputReady = !!(generatorDownloadButton && !generatorDownloadButton.disabled && (generatorCompleted || philologistCompleted));
+    const generatorCompleted = currentGeneratorStatus === 'completed' || String(lastGeneratorUiState.status || '') === 'completed';
+    const philologistCompleted = currentPhilologistStatus === 'completed' || String(lastPhilologistUiState.status || '') === 'completed';
+    const generatorOutputReady = generatorCompleted && Number(lastGeneratorUiState.output_file_count || 0) > 0;
+    const outputReady = !!(generatorOutputReady || philologistCompleted);
     const senderReady = !!(dataLoaded && outputReady);
 
     return {
