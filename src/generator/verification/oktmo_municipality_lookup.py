@@ -207,7 +207,14 @@ class OktmoMunicipalityLookup:
 
     def _scoped_entries(self, candidate_type: str, subject_norm: str) -> list[OktmoEntry]:
         if candidate_type and subject_norm:
-            return self._entries_by_type_subject.get((candidate_type, subject_norm), [])
+            exact_entries = self._entries_by_type_subject.get((candidate_type, subject_norm), [])
+            if exact_entries:
+                return exact_entries
+            return [
+                entry
+                for entry in self._entries_by_type.get(candidate_type, [])
+                if _same_subject(entry.subject_norm, subject_norm)
+            ]
         if candidate_type:
             return self._entries_by_type.get(candidate_type, [])
         return []
@@ -222,17 +229,22 @@ class OktmoMunicipalityLookup:
     ) -> list[OktmoEntry]:
         if not candidate_type:
             return []
-        keys = []
-        if subject_norm:
-            keys.append((candidate_type, subject_norm))
-        else:
-            keys.append((candidate_type, ""))
+        subject_keys = [subject_norm] if subject_norm else [""]
         matches: list[OktmoEntry] = []
-        for type_key, subject_key in keys:
-            matches.extend(self._official_index.get((type_key, subject_key, candidate_norm), []))
-            matches.extend(self._name_index.get((type_key, subject_key, candidate_norm), []))
+        for subject_key in subject_keys:
+            matches.extend(self._official_index.get((candidate_type, subject_key, candidate_norm), []))
+            matches.extend(self._name_index.get((candidate_type, subject_key, candidate_norm), []))
             if candidate_tail:
-                matches.extend(self._tail_index.get((type_key, subject_key, candidate_tail), []))
+                matches.extend(self._tail_index.get((candidate_type, subject_key, candidate_tail), []))
+        if not matches and subject_norm:
+            for entry in self._entries_by_type.get(candidate_type, []):
+                if not _same_subject(entry.subject_norm, subject_norm):
+                    continue
+                if candidate_norm == entry.official_name_norm or candidate_norm == entry.name_norm:
+                    matches.append(entry)
+                    continue
+                if candidate_tail and candidate_tail == entry.tail_norm:
+                    matches.append(entry)
         if matches:
             unique: dict[str, OktmoEntry] = {}
             for entry in matches:
