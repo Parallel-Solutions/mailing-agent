@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import Any, Iterable, List
 
 from docx import Document
 
@@ -77,6 +78,18 @@ PROTECTED_LEGAL_TERM_PATTERNS = (
     re.compile(r"\bработ\w*\b", re.IGNORECASE),
     re.compile(r"\bподрядчик\w*\b", re.IGNORECASE),
 )
+EMAIL_PATTERN = re.compile(r"\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b", re.IGNORECASE)
+URL_PATTERN = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+DATE_PATTERN = re.compile(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b")
+PHONE_PATTERN = re.compile(r"\+?\d[\d()\-\s]{8,}\d")
+LONG_NUMBER_PATTERN = re.compile(r"\b\d{5,}\b")
+NUMBER_PATTERN = re.compile(r"\b\d+(?:[.,]\d+)?\b")
+QUOTED_TEXT_PATTERN = re.compile(r"[\"“”«][^\"“”»]{2,}[\"”»]")
+TITLECASE_SEQUENCE_PATTERN = re.compile(
+    r"\b[А-ЯЁA-Z][а-яёa-z-]+(?:\s+[А-ЯЁA-Z][а-яёa-z-]+){1,5}\b"
+)
+TARGETED_REVIEW_FULL_INTERVAL = 25
+TARGETED_REVIEW_MAX_LOCATIONS = 120
 
 
 @dataclass
@@ -93,6 +106,60 @@ def _safe_text(value) -> str:
     if value is None:
         return ""
     return " ".join(str(value).split())
+
+
+def _mask_dynamic_text(text: str) -> str:
+    normalized = _safe_text(text)
+    if not normalized:
+        return ""
+    normalized = QUOTED_TEXT_PATTERN.sub("<quoted>", normalized)
+    normalized = EMAIL_PATTERN.sub("<email>", normalized)
+    normalized = URL_PATTERN.sub("<url>", normalized)
+    normalized = DATE_PATTERN.sub("<date>", normalized)
+    normalized = PHONE_PATTERN.sub("<phone>", normalized)
+    normalized = TITLECASE_SEQUENCE_PATTERN.sub("<entity>", normalized)
+    normalized = LONG_NUMBER_PATTERN.sub("<longnum>", normalized)
+    normalized = NUMBER_PATTERN.sub("<num>", normalized)
+    return normalized.lower()
+
+
+def _build_template_fingerprint(blocks: list[tuple[str, str]]) -> str:
+    if not blocks:
+        return "empty"
+    payload = [f"{location}|{_mask_dynamic_text(text)}" for location, text in blocks]
+    digest = hashlib.sha1("\n".join(payload).encode("utf-8")).hexdigest()
+    return f"tpl-{digest[:16]}"
+
+
+def _resolve_review_scope(
+    blocks: list[tuple[str, str]],
+    *,
+    template_memory: dict[str, Any] | None = None,
+    force_full_review: bool = False,
+) -> tuple[str, list[tuple[str, str]], str, int, list[str]]:
+    template_fingerprint = _build_template_fingerprint(blocks)
+    memory_entry = (template_memory or {}).get(template_fingerprint) if isinstance(template_memory, dict) else None
+    if not isinstance(memory_entry, dict):
+        return template_fingerprint, blocks, "full", 0, []
+
+    block_map = {location: text for location, text in blocks}
+    risky_locations = [
+        location
+        for location in memory_entry.get("risky_locations", [])
+        if isinstance(location, str) and location in block_map
+    ]
+    documents_seen = int(memory_entry.get("documents_seen", 0) or 0)
+    if (
+        force_full_review
+        or not risky_locations
+        or documents_seen <= 0
+        or documents_seen % TARGETED_REVIEW_FULL_INTERVAL == 0
+    ):
+        return template_fingerprint, blocks, "full", documents_seen, risky_locations
+
+    focused_locations = risky_locations[:TARGETED_REVIEW_MAX_LOCATIONS]
+    focused_blocks = [(location, block_map[location]) for location in focused_locations]
+    return template_fingerprint, focused_blocks, "targeted", documents_seen, focused_locations
 
 
 EDITORIAL_SUGGESTION_PREFIXES = (
@@ -471,20 +538,43 @@ def _run_ai_review(blocks: list[tuple[str, str]], *, ai_enabled: bool = True) ->
     return result
 
 
-def review_docx(document_path: Path, *, ai_enabled: bool = True) -> dict:
+def review_docx(
+    document_path: Path,
+    *,
+    ai_enabled: bool = True,
+    template_memory: dict[str, Any] | None = None,
+    force_full_review: bool = False,
+) -> dict:
     doc = Document(document_path)
     blocks = list(_iter_docx_blocks(doc))
-    local_issues = _run_local_checks(blocks)
+    (
+        template_fingerprint,
+        review_blocks,
+        review_mode,
+        template_documents_seen,
+        focus_locations,
+    ) = _resolve_review_scope(
+        blocks,
+        template_memory=template_memory,
+        force_full_review=force_full_review,
+    )
+    local_issues = _run_local_checks(review_blocks)
     ai_issues: list[ReviewIssue] = []
     ai_error = None
     try:
-        ai_issues = _run_ai_review(blocks, ai_enabled=ai_enabled)
+        ai_issues = _run_ai_review(review_blocks, ai_enabled=ai_enabled)
     except Exception as exc:  # pragma: no cover
         ai_error = f"{type(exc).__name__}: {exc}"
 
     issues = local_issues + ai_issues
     return {
         "document": str(document_path),
+        "template_fingerprint": template_fingerprint,
+        "template_documents_seen": template_documents_seen,
+        "review_mode": review_mode,
+        "total_block_count": len(blocks),
+        "reviewed_block_count": len(review_blocks),
+        "focus_locations": focus_locations,
         "issue_count": len(issues),
         "local_issue_count": len(local_issues),
         "ai_issue_count": len(ai_issues),
