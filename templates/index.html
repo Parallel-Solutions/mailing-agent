@@ -1174,8 +1174,170 @@
     sender_reason: '',
   };
 
+  function createFlowNotificationState() {
+    return {
+      generator: { announcedStart: false, lastStage: '', milestones: {} },
+      philologist: { announcedStart: false, milestones: {} },
+      sender: { announcedStart: false, lastMode: '', milestones: {} },
+    };
+  }
+
+  let flowNotificationState = createFlowNotificationState();
+
+  function resetFlowNotificationState() {
+    flowNotificationState = createFlowNotificationState();
+  }
+
+  function announceProcessStep(chatId, toastText, chatText = '') {
+    if (toastText) showToast(toastText);
+    if (chatText) appendChatMessage(chatId, 'agent', chatText);
+  }
+
+  function maybeAnnounceMilestone(state, percent, callback) {
+    const milestones = [25, 50, 75];
+    milestones.forEach(step => {
+      if (percent >= step && !state.milestones[step]) {
+        state.milestones[step] = true;
+        callback(step);
+      }
+    });
+  }
+
+  function maybeAnnounceGeneratorFlow(result = {}) {
+    const status = String(result.status || 'idle');
+    const stage = String(result.stage || '');
+    const total = Number(result.total_rows || 0);
+    const processed = Number(result.processed_rows || 0);
+    const pdfTotal = Number(result.pdf_total || 0);
+    const pdfProcessed = Number(result.pdf_processed || 0);
+    const state = flowNotificationState.generator;
+
+    if (status !== 'running') return;
+
+    if (total > 0 && !state.announcedStart) {
+      state.announcedStart = true;
+      announceProcessStep(
+        'g-chat',
+        `Генератор принял ${total.toLocaleString('ru')} строк`,
+        `Генератор принял ${total.toLocaleString('ru')} строк. Начинаю собирать DOCX-документы.`
+      );
+    }
+
+    if (stage && stage !== state.lastStage) {
+      if (stage === 'convert_pdf') {
+        announceProcessStep(
+          'g-chat',
+          'DOCX готовы, начинаю PDF',
+          `DOCX созданы. Начинаю конвертацию документов в PDF.${pdfTotal > 0 ? ` Всего PDF: ${pdfTotal.toLocaleString('ru')}.` : ''}`
+        );
+      } else if (stage === 'finalize_output') {
+        announceProcessStep(
+          'g-chat',
+          'PDF готовы, собираю output',
+          'PDF готовы. Собираю итоговую папку output и подготавливаю файлы к скачиванию.'
+        );
+      }
+      state.lastStage = stage;
+    }
+
+    if (stage === 'render_docx' && total > 0) {
+      const percent = Math.round((processed / total) * 100);
+      maybeAnnounceMilestone(state, percent, milestone => {
+        announceProcessStep(
+          'g-chat',
+          `Генерация DOCX: ${milestone}%`,
+          `Генерация DOCX дошла до ${milestone}%: обработано ${processed.toLocaleString('ru')} из ${total.toLocaleString('ru')} строк.`
+        );
+      });
+    }
+
+    if (stage === 'convert_pdf' && pdfTotal > 0) {
+      const percent = Math.round((pdfProcessed / pdfTotal) * 100);
+      maybeAnnounceMilestone(state, percent, milestone => {
+        announceProcessStep(
+          'g-chat',
+          `Конвертация PDF: ${milestone}%`,
+          `Конвертация PDF дошла до ${milestone}%: готово ${pdfProcessed.toLocaleString('ru')} из ${pdfTotal.toLocaleString('ru')} документов.`
+        );
+      });
+    }
+  }
+
+  function maybeAnnouncePhilologistFlow(result = {}) {
+    const status = String(result.status || 'idle');
+    const total = Number(result.total_documents || 0);
+    const processed = Number(result.processed_documents || 0);
+    const state = flowNotificationState.philologist;
+
+    if (status !== 'running') return;
+
+    if (total > 0 && !state.announcedStart) {
+      state.announcedStart = true;
+      announceProcessStep(
+        'g-chat',
+        `Филолог принял ${total.toLocaleString('ru')} документов`,
+        `Филолог принял ${total.toLocaleString('ru')} документов в проверку. Начинаю языковую проверку и безопасные исправления.`
+      );
+    }
+
+    if (total > 0) {
+      const percent = Math.round((processed / total) * 100);
+      maybeAnnounceMilestone(state, percent, milestone => {
+        announceProcessStep(
+          'g-chat',
+          `Филолог: ${milestone}%`,
+          `Проверка филолога дошла до ${milestone}%: проверено ${processed.toLocaleString('ru')} из ${total.toLocaleString('ru')} документов.`
+        );
+      });
+    }
+  }
+
+  function maybeAnnounceSenderFlow(result = {}) {
+    const status = String(result.status || 'idle');
+    const mode = String(result.mode || 'dry_run');
+    const total = Number((result.stats || {}).total || result.total_rows || 0);
+    const processed = Number(result.processed_rows || 0);
+    const state = flowNotificationState.sender;
+
+    if (status !== 'running') return;
+
+    if (mode !== state.lastMode) {
+      state.announcedStart = false;
+      state.milestones = {};
+      state.lastMode = mode;
+    }
+
+    if (total > 0 && !state.announcedStart) {
+      state.announcedStart = true;
+      announceProcessStep(
+        's-chat',
+        mode === 'send' ? `Отправка приняла ${total.toLocaleString('ru')} строк` : `Проверка приняла ${total.toLocaleString('ru')} строк`,
+        mode === 'send'
+          ? `Отправщик принял ${total.toLocaleString('ru')} строк и начал реальную отправку писем.`
+          : `Отправщик принял ${total.toLocaleString('ru')} строк и начал проверку адресов и вложений.`
+      );
+    }
+
+    if (total > 0) {
+      const percent = Math.round((processed / total) * 100);
+      maybeAnnounceMilestone(state, percent, milestone => {
+        announceProcessStep(
+          's-chat',
+          mode === 'send' ? `Отправка: ${milestone}%` : `Проверка отправки: ${milestone}%`,
+          mode === 'send'
+            ? `Реальная отправка дошла до ${milestone}%: обработано ${processed.toLocaleString('ru')} из ${total.toLocaleString('ru')} строк.`
+            : `Проверка готовности дошла до ${milestone}%: обработано ${processed.toLocaleString('ru')} из ${total.toLocaleString('ru')} строк.`
+        );
+      });
+    }
+  }
+
   function setCurrentJobId(jobId) {
-    currentJobId = String(jobId || '').trim();
+    const nextJobId = String(jobId || '').trim();
+    if (nextJobId !== currentJobId) {
+      resetFlowNotificationState();
+    }
+    currentJobId = nextJobId;
     if (currentJobId) {
       localStorage.setItem(JOB_STORAGE_KEY, currentJobId);
     } else {
@@ -1387,6 +1549,7 @@
     senderPreviewState = null;
     chatSessions['o-chat'] = '';
     setCurrentJobId('');
+    resetFlowNotificationState();
 
     resetSettingsFormFields();
     clearDataFile();
@@ -2048,6 +2211,7 @@ function clearAttachedFile() {
       if (requestedJobId !== currentJobId) return null;
       const result = data.result || {};
       setPhilologistUiState(result);
+      maybeAnnouncePhilologistFlow(result);
       return result;
     } catch (err) {
       if (!silent) {
@@ -2091,6 +2255,7 @@ function clearAttachedFile() {
 
       const result = data.result || {};
       setPhilologistUiState(result);
+      maybeAnnouncePhilologistFlow(result);
       appendChatMessage('g-chat', 'agent', result.summary_text || 'Фоновая проверка документов запущена.');
     } catch (err) {
       phRunning = false;
@@ -2148,6 +2313,7 @@ function clearAttachedFile() {
       if (requestedJobId !== currentJobId) return null;
       const result = data.result || {};
       setGeneratorUiState(result);
+      maybeAnnounceGeneratorFlow(result);
       if (generatorStatusPoll && result.status && result.status !== 'running') {
         await finalizeGeneratorPolling(result);
       }
@@ -2185,6 +2351,7 @@ function clearAttachedFile() {
       }
       const result = data.result || {};
       setGeneratorUiState(result);
+      maybeAnnounceGeneratorFlow(result);
       if (result.status && result.status !== 'running') {
         await finalizeGeneratorPolling(result);
       }
@@ -2721,6 +2888,7 @@ function clearAttachedFile() {
       if (requestedJobId !== currentJobId) return null;
       const result = data.result || {};
       setSenderUiState(result);
+      maybeAnnounceSenderFlow(result);
       return result;
     } catch (err) {
       if (!silent) {
@@ -2780,6 +2948,7 @@ function clearAttachedFile() {
       if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
         const result = data.result || {};
         safeSetSenderUiState(result);
+        maybeAnnounceSenderFlow(result);
         showToast('Проверка готовности завершена');
         safeAppendChatMessage('s-chat', 'agent', (result.summary_text || 'Проверка готовности завершена.') + '\nЕсли адреса верные, нажми «Подтвердить и отправить».');
       } catch (err) {
@@ -2817,6 +2986,7 @@ function clearAttachedFile() {
       if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');
         const result = data.result || {};
         safeSetSenderUiState(result);
+        maybeAnnounceSenderFlow(result);
         if (result.status === 'running') {
           const finalResult = await waitForSenderCompletion();
           safeSetSenderUiState(finalResult || {});
