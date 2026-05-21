@@ -10,6 +10,7 @@ import shutil
 import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from time import perf_counter
+import time
 
 app = FastAPI(title="Mailing Agent")
 security = HTTPBasic()
@@ -133,6 +134,26 @@ def _resolve_cached_output_archive(job_id: str | None) -> tuple[Path, bool]:
     except OSError:
         return archive_path, False
     return archive_path, archive_mtime >= _latest_tree_mtime(output_dir)
+
+
+def _is_cache_fresh(cache_path: Path, source_paths: list[Path], *, max_age_seconds: int | None = None) -> bool:
+    if not cache_path.exists():
+        return False
+    try:
+        cache_mtime = cache_path.stat().st_mtime
+    except OSError:
+        return False
+    if max_age_seconds is not None and (time.time() - cache_mtime) > max_age_seconds:
+        return False
+    for source_path in source_paths:
+        if not source_path.exists():
+            continue
+        try:
+            if source_path.stat().st_mtime > cache_mtime:
+                return False
+        except OSError:
+            continue
+    return True
 
 
 def _get_sender_thread(job_id: str | None) -> threading.Thread | None:
@@ -966,7 +987,15 @@ async def download_sent_mail_log(job_id: str | None = None, username: str = Depe
 async def download_sender_delivery_report(job_id: str | None = None, username: str = Depends(check_auth)):
     if not unisender_delivery_report_has_data(job_id):
         raise HTTPException(status_code=404, detail="Журнал отправки UniSender пока пуст. Сначала запустите отправщик через UniSender.")
-    report_path = build_unisender_delivery_report_xlsx(job_id, refresh=True)
+    job_paths = resolve_job_paths(job_id)
+    report_path = _job_state_dir(job_id) / "unisender_delivery_report.xlsx"
+    sent_log_path = (
+        job_paths.sent_mail_log_path
+        if not job_paths.uses_legacy_layout
+        else Path("data/sent_mail_log.jsonl")
+    )
+    if not _is_cache_fresh(report_path, [sent_log_path], max_age_seconds=180):
+        report_path = build_unisender_delivery_report_xlsx(job_id, refresh=True)
     return FileResponse(
         report_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -994,7 +1023,9 @@ async def download_inflection_report(job_id: str | None = None, username: str = 
         raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
     job_paths = resolve_job_paths(job_id)
     report_path = job_paths.root_dir / "state" / "inflection_report.csv"
-    save_inflection_csv(rows, report_path)
+    log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
+    if not _is_cache_fresh(report_path, [log_path]):
+        save_inflection_csv(rows, report_path)
     return FileResponse(
         report_path,
         media_type="text/csv",
@@ -1048,7 +1079,13 @@ async def download_agent_report(job_id: str | None = None, username: str = Depen
 async def download_correction_report(job_id: str | None = None, username: str = Depends(check_auth)):
     if not correction_report_has_data(job_id):
         raise HTTPException(status_code=404, detail="Журнал исправлений пока пуст. Сначала запустите генератор/филолога.")
-    report_path = build_correction_report_xlsx(job_id)
+    report_path = _job_state_dir(job_id) / "journal_corrections_report.xlsx"
+    source_paths = [
+        _job_state_dir(job_id) / "philologist.json",
+        _job_state_dir(job_id) / "inflection_log.jsonl",
+    ]
+    if not _is_cache_fresh(report_path, source_paths):
+        report_path = build_correction_report_xlsx(job_id)
     return FileResponse(
         report_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
