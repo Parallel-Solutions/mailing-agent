@@ -7,6 +7,7 @@ import re
 import base64
 import mimetypes
 import secrets
+import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from email.message import EmailMessage
@@ -121,6 +122,10 @@ SENDER_WORKBOOK_SAVE_EVERY = 25
 UNISENDER_RETRY_ATTEMPTS = 3
 UNISENDER_RETRY_BASE_SECONDS = 2.0
 UNISENDER_RETRYABLE_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+UNISENDER_REQUESTS_PER_MINUTE = 60
+UNISENDER_MIN_REQUEST_INTERVAL_SECONDS = 60.0 / UNISENDER_REQUESTS_PER_MINUTE
+_UNISENDER_RATE_LIMIT_LOCK = threading.Lock()
+_last_unisender_request_at = 0.0
 
 
 def _load_sender_state(job_id: str | None = None) -> dict[str, Any]:
@@ -167,10 +172,21 @@ def _is_retryable_unisender_exception(exc: Exception) -> bool:
     return isinstance(exc, (TimeoutError, URLError, OSError))
 
 
+def _wait_unisender_api_slot() -> None:
+    global _last_unisender_request_at
+    with _UNISENDER_RATE_LIMIT_LOCK:
+        now = perf_counter()
+        wait_seconds = UNISENDER_MIN_REQUEST_INTERVAL_SECONDS - (now - _last_unisender_request_at)
+        if wait_seconds > 0:
+            sleep(wait_seconds)
+        _last_unisender_request_at = perf_counter()
+
+
 def _run_unisender_request(request: Request, *, timeout: float, request_label: str) -> str:
     last_error: Exception | None = None
     for attempt in range(1, UNISENDER_RETRY_ATTEMPTS + 1):
         try:
+            _wait_unisender_api_slot()
             with urlopen(request, timeout=timeout) as response:
                 return response.read().decode("utf-8", errors="replace")
         except HTTPError as exc:
@@ -1538,7 +1554,7 @@ def _provider_for_recipient(attempts: list[dict[str, Any]], recipient: str) -> d
 def _unisender_parallel_workers(*, dry_run: bool, transport: str) -> int:
     if dry_run or transport != "unisender":
         return 1
-    return max(1, int(settings.sender_unisender_concurrency or 1))
+    return 1
 
 
 def _build_parallel_send_job(
