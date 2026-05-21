@@ -8,6 +8,7 @@ from src.utils.config import settings
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form
 import shutil
 import threading
+from multiprocessing import Process
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from time import perf_counter
 import time
@@ -20,8 +21,9 @@ _philologist_threads: dict[str, threading.Thread] = {}
 _philologist_threads_lock = threading.Lock()
 _generator_threads: dict[str, threading.Thread] = {}
 _generator_threads_lock = threading.Lock()
-_parser_verification_threads: dict[str, threading.Thread] = {}
-_parser_verification_threads_lock = threading.Lock()
+_parser_verification_processes: dict[str, Process] = {}
+_parser_verification_processes_lock = threading.Lock()
+PARSER_VERIFICATION_TIMEOUT_SECONDS = 15 * 60
 
 
 @app.on_event("startup")
@@ -192,14 +194,14 @@ def _get_generator_thread(job_id: str | None) -> threading.Thread | None:
         return thread
 
 
-def _get_parser_verification_thread(job_id: str | None) -> threading.Thread | None:
+def _get_parser_verification_process(job_id: str | None) -> Process | None:
     key = _parser_job_key(job_id)
-    with _parser_verification_threads_lock:
-        thread = _parser_verification_threads.get(key)
-        if thread and not thread.is_alive():
-            _parser_verification_threads.pop(key, None)
+    with _parser_verification_processes_lock:
+        process = _parser_verification_processes.get(key)
+        if process and not process.is_alive():
+            _parser_verification_processes.pop(key, None)
             return None
-        return thread
+        return process
 
 
 def _register_sender_thread(job_id: str | None, thread: threading.Thread) -> None:
@@ -217,9 +219,9 @@ def _register_generator_thread(job_id: str | None, thread: threading.Thread) -> 
         _generator_threads[_generator_job_key(job_id)] = thread
 
 
-def _register_parser_verification_thread(job_id: str | None, thread: threading.Thread) -> None:
-    with _parser_verification_threads_lock:
-        _parser_verification_threads[_parser_job_key(job_id)] = thread
+def _register_parser_verification_process(job_id: str | None, process: Process) -> None:
+    with _parser_verification_processes_lock:
+        _parser_verification_processes[_parser_job_key(job_id)] = process
 
 
 def _compact_philologist_status(state: dict) -> dict:
@@ -316,9 +318,47 @@ def _run_parser_verification_background(*, job_id: str | None, source: str) -> N
         )
     except Exception:
         logger.exception("parser_upload_verification_background_failed", job_id=job_id, source=source)
-    finally:
-        with _parser_verification_threads_lock:
-            _parser_verification_threads.pop(_parser_job_key(job_id), None)
+
+
+def _watch_parser_verification_process(*, job_id: str | None, source: str, process: Process) -> None:
+    process.join(PARSER_VERIFICATION_TIMEOUT_SECONDS)
+    key = _parser_job_key(job_id)
+    if process.is_alive():
+        logger.error(
+            "parser_upload_verification_timeout",
+            job_id=job_id,
+            source=source,
+            pid=process.pid,
+            timeout_seconds=PARSER_VERIFICATION_TIMEOUT_SECONDS,
+        )
+        process.terminate()
+        process.join(10)
+        if process.is_alive():
+            process.kill()
+            process.join(5)
+        mark_municipality_verification_failed(
+            job_id,
+            source=source,
+            reason=f"превышен лимит времени {PARSER_VERIFICATION_TIMEOUT_SECONDS // 60} минут",
+        )
+    else:
+        logger.info(
+            "parser_upload_verification_process_finished",
+            job_id=job_id,
+            source=source,
+            pid=process.pid,
+            exitcode=process.exitcode,
+        )
+        if process.exitcode not in (0, None):
+            mark_municipality_verification_failed(
+                job_id,
+                source=source,
+                reason=f"процесс проверки завершился с кодом {process.exitcode}",
+            )
+    with _parser_verification_processes_lock:
+        current = _parser_verification_processes.get(key)
+        if current is process:
+            _parser_verification_processes.pop(key, None)
 
 
 def _prime_sender_running_state(job_id: str | None, transport: str | None) -> dict:
@@ -439,19 +479,36 @@ async def upload_data(
         request_seconds=round(perf_counter() - request_started, 3),
     )
 
-    existing_thread = _get_parser_verification_thread(paths.job_id)
-    if existing_thread is None:
-        verification_thread = threading.Thread(
+    existing_process = _get_parser_verification_process(paths.job_id)
+    if existing_process is None:
+        verification_process = Process(
             target=_run_parser_verification_background,
             kwargs={"job_id": paths.job_id, "source": "upload"},
             daemon=True,
             name=f"parser-verify-{_parser_job_key(paths.job_id)}",
         )
-        _register_parser_verification_thread(paths.job_id, verification_thread)
-        verification_thread.start()
-        logger.info("upload_data_verification_scheduled", filename=file.filename, job_id=paths.job_id)
+        verification_process.start()
+        _register_parser_verification_process(paths.job_id, verification_process)
+        watcher_thread = threading.Thread(
+            target=_watch_parser_verification_process,
+            kwargs={"job_id": paths.job_id, "source": "upload", "process": verification_process},
+            daemon=True,
+            name=f"parser-verify-watch-{_parser_job_key(paths.job_id)}",
+        )
+        watcher_thread.start()
+        logger.info(
+            "upload_data_verification_scheduled",
+            filename=file.filename,
+            job_id=paths.job_id,
+            pid=verification_process.pid,
+        )
     else:
-        logger.info("upload_data_verification_already_running", filename=file.filename, job_id=paths.job_id)
+        logger.info(
+            "upload_data_verification_already_running",
+            filename=file.filename,
+            job_id=paths.job_id,
+            pid=existing_process.pid,
+        )
 
     return {
         "status": "ok",
@@ -668,6 +725,7 @@ from src.generator.orchestration.parser_agent import (
     chat_with_parser,
     format_municipality_verification_for_chat,
     get_parser_status,
+    mark_municipality_verification_failed,
     run_parser_agent,
     run_parser_municipality_verification,
 )
