@@ -3034,6 +3034,34 @@ function clearAttachedFile() {
     currentGeneratorStatus = status;
     const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
     const canDownloadOutput = status === 'completed' && outputFileCount > 0;
+    const overallGeneratorPercent = (() => {
+      const clamp = (value) => Math.max(0, Math.min(100, Math.round(value || 0)));
+      if (status === 'completed') return 100;
+      if (stage === 'review_templates') return 5;
+      if (stage === 'render_docx') {
+        const docxPercent = total > 0 ? (processed / total) : 0;
+        return clamp(5 + (docxPercent * 55));
+      }
+      if (stage === 'convert_pdf') {
+        const pdfStageTotal = pdfTotal > 0 ? pdfTotal : Math.max(stagedDocxCount, total, 1);
+        const pdfStageProcessed = pdfProcessed > 0 ? pdfProcessed : stagedPdfCount;
+        const pdfPercent = pdfStageTotal > 0 ? (pdfStageProcessed / pdfStageTotal) : 0;
+        return clamp(60 + (pdfPercent * 35));
+      }
+      if (stage === 'finalize_output') return 97;
+      if (status === 'stopped' || status === 'error') {
+        if (pdfTotal > 0 || stage === 'convert_pdf' || stage === 'finalize_output') {
+          const pdfStageTotal = pdfTotal > 0 ? pdfTotal : Math.max(stagedDocxCount, total, 1);
+          const pdfStageProcessed = pdfProcessed > 0 ? pdfProcessed : stagedPdfCount;
+          const pdfPercent = pdfStageTotal > 0 ? (pdfStageProcessed / pdfStageTotal) : 0;
+          return clamp(60 + (pdfPercent * 35));
+        }
+        if (total > 0) {
+          return clamp(5 + ((processed / total) * 55));
+        }
+      }
+      return clamp(percent);
+    })();
 
     let doneValue = 0;
     let doneLabel = 'Готово полностью';
@@ -3070,18 +3098,15 @@ function clearAttachedFile() {
       if (runButton) runButton.textContent = 'Идёт генерация';
       badge.textContent = 'Генерация';
       badge.className = 'badge badge-running';
-      let runningPercent = percent;
       if (stage === 'review_templates') {
         label.textContent = result.summary_text || stageText || 'Проверяю и безопасно исправляю шаблоны перед генерацией.';
       } else if (stage === 'convert_pdf' && pdfTotal > 0) {
-        runningPercent = Math.max(0, Math.min(99, Math.round((pdfProcessed / pdfTotal) * 100)));
         const etaSeconds = calculateEta({ processed: pdfProcessed, total: pdfTotal, elapsedSeconds });
         label.textContent = appendEtaText(
           `${stageText || 'Конвертирую документы в PDF.'} PDF: ${pdfProcessed.toLocaleString('ru')} из ${pdfTotal.toLocaleString('ru')}, DOCX: ${stagedDocxCount.toLocaleString('ru')}, output: ${outputFileCount.toLocaleString('ru')}.`,
           etaSeconds,
         );
       } else if (stage === 'finalize_output') {
-        runningPercent = 99;
         label.textContent = `${stageText || 'Собираю итоговую папку output.'} Output: ${outputFileCount.toLocaleString('ru')} файлов.`;
       } else {
         if (total > 0) {
@@ -3102,7 +3127,7 @@ function clearAttachedFile() {
       setGeneratorButtonsBusy(true);
       setGeneratorDownloadEnabled(false);
       setInflectionDownloadEnabled(false);
-      setProgressVisual(fill, { percent: runningPercent, running: total > 0 || pdfTotal > 0, indeterminate: false });
+      setProgressVisual(fill, { percent: overallGeneratorPercent, running: total > 0 || pdfTotal > 0 || stage === 'review_templates', indeterminate: false });
       if (pauseButton) {
         pauseButton.disabled = false;
         pauseButton.textContent = 'Остановить';
@@ -3146,7 +3171,7 @@ function clearAttachedFile() {
       badge.textContent = 'Остановлено';
       badge.className = 'badge badge-wait';
       label.textContent = result.summary_text || 'Генерация остановлена. Можно продолжить с сохраненного места.';
-      setProgressVisual(fill, { percent: total > 0 ? percent : (pdfTotal > 0 ? Math.round((pdfProcessed / pdfTotal) * 100) : 0), running: false });
+      setProgressVisual(fill, { percent: overallGeneratorPercent, running: false });
       if (pauseButton) {
         pauseButton.disabled = true;
         pauseButton.textContent = 'Остановить';
@@ -3160,7 +3185,7 @@ function clearAttachedFile() {
       badge.textContent = 'Ошибка';
       badge.className = 'badge badge-error';
       label.textContent = result.summary_text || 'Генерация завершилась с ошибкой';
-      setProgressVisual(fill, { percent, running: false, indeterminate: false });
+      setProgressVisual(fill, { percent: overallGeneratorPercent, running: false, indeterminate: false });
       return;
     }
 
@@ -3168,7 +3193,7 @@ function clearAttachedFile() {
       badge.textContent = 'Ошибка';
       badge.className = 'badge badge-error';
       label.textContent = result.summary_text || 'Генерация завершилась с ошибкой';
-      setProgressVisual(fill, { percent: total > 0 ? percent : 0, running: false });
+      setProgressVisual(fill, { percent: overallGeneratorPercent, running: false });
       return;
     }
 
