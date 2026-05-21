@@ -1919,6 +1919,10 @@
           appendChatMessage('p-chat', 'agent', `Рабочая сессия обновлена: ${previousJobId} → ${currentJobId}. Шаблоны и данные теперь привязаны к новому job.`);
         }
         appendChatMessage('p-chat', 'agent', 'Таблица загружена. Проверку официальных названий МО теперь запускает парсер и покажет полный отчет в этом чате.');
+        if (data.verification_background) {
+          flowNotificationState.parser.announcedStart = true;
+          flowNotificationState.parser.lastVerificationStatus = 'running';
+        }
         const verification = data.municipality_name_verification || {};
         if (verification.status === 'ok') {
           const samples = Array.isArray(verification.replacement_samples) ? verification.replacement_samples : [];
@@ -2210,6 +2214,8 @@ async function attachFile(input) {
       appendChatMessage('p-chat', 'agent', `Рабочая сессия обновлена: ${previousJobId} → ${currentJobId}.`);
     }
     appendChatMessage('p-chat', 'agent', `Файл ${file.name} загружен на сервер. Проверка официальных названий МО запущена в фоне, о завершении сообщу отдельно.`);
+    flowNotificationState.parser.announcedStart = true;
+    flowNotificationState.parser.lastVerificationStatus = 'running';
     setParserUiState({
       force: true,
       status: 'idle',
