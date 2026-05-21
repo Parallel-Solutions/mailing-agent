@@ -3509,7 +3509,7 @@ function clearAttachedFile() {
     setProgressVisual(fill, { percent: 0, running: false });
   }
 
-  function setSenderButtonsState({ status = 'idle', mode = 'dry_run', canConfirm = false } = {}) {
+  function setSenderButtonsState({ status = 'idle', mode = 'dry_run', canConfirm = false, hasPendingRows = false } = {}) {
     const runButton = document.getElementById('s-run');
     if (runButton) {
       runButton.dataset.action = 'preview';
@@ -3547,6 +3547,16 @@ function clearAttachedFile() {
       }
 
       if (status === 'completed' && mode === 'send') {
+        if (hasPendingRows) {
+          runButton.dataset.action = 'send';
+          runButton.textContent = 'Доотправить оставшиеся';
+          runButton.className = 'btn-primary';
+          runButton.disabled = !moduleReadiness.sender_ready;
+          runButton.title = !moduleReadiness.sender_ready
+            ? (moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.')
+            : 'Остались строки без статуса «Отправлено». Нажмите, чтобы продолжить отправку.';
+          return;
+        }
         runButton.dataset.action = 'done';
         runButton.textContent = 'Отправка завершена';
         runButton.className = 'btn-outline';
@@ -3659,7 +3669,7 @@ function clearAttachedFile() {
           extra: mode === 'send' ? `отправлено ${sent}, ошибок ${errors}` : `готово ${ready}, ошибок ${errors}`,
           pendingText: 'Подготавливаю строки к отправке...'
         });
-        setSenderButtonsState({ status: 'running', mode, canConfirm: false });
+        setSenderButtonsState({ status: 'running', mode, canConfirm: false, hasPendingRows });
         return;
       }
 
@@ -3668,11 +3678,11 @@ function clearAttachedFile() {
         badge.textContent = 'Остановлено';
         badge.className = 'badge badge-wait';
         label.textContent = nextState.summary_text || 'Отправка остановлена пользователем';
-        setSenderButtonsState({ status: 'stopped', mode, canConfirm });
+        setSenderButtonsState({ status: 'stopped', mode, canConfirm, hasPendingRows });
         return;
       }
 
-      setSenderButtonsState({ status, mode, canConfirm });
+      setSenderButtonsState({ status, mode, canConfirm, hasPendingRows });
 
       if (status === 'completed') {
         senderRunning = false;
