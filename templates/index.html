@@ -1718,6 +1718,13 @@ async function attachFile(input) {
   const attachedFile = document.getElementById('p-attached-file');
   if (attachedName) attachedName.textContent = 'Загрузка ' + file.name + '...';
   if (attachedFile) attachedFile.style.display = 'block';
+  setParserUiState({
+    status: 'idle',
+    municipality_name_verification_state: {
+      status: 'running',
+      summary_text: 'Идёт проверка официальных названий МО после загрузки таблицы.'
+    }
+  });
  
   try {
     const res = await fetch('/api/upload/data', { method: 'POST', body: form });
