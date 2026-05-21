@@ -2108,6 +2108,18 @@ def run_philologist(
                 job_id=job_id,
             )
 
+    state["status"] = "finalizing"
+    state["current_document"] = None
+    state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
+    state["task_stats"] = count_tasks_for_agent("philologist", job_id)
+    state["tasks"] = get_tasks_for_agent("philologist", job_id)[:20]
+    state["recent_events"] = get_recent_events(agent_name="philologist", limit=20, job_id=job_id)
+    state["summary_text"] = "Документы проверены. Формирую журнал исправлений и итоговый отчет."
+    state["tool_trace"] = tool_runner.as_state()
+    state["plan"] = agent_loop.as_plan()
+    state["agent_loop"] = state["plan"].get("execution")
+    _save_philologist_state(state, job_id)
+
     state["status"] = "completed"
     state["completed_at"] = datetime.now().isoformat(timespec="seconds")
     state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
