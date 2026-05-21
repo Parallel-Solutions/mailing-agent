@@ -2810,6 +2810,22 @@ function clearAttachedFile() {
     button.title = isEnabled ? '' : reason;
   }
 
+  function getSenderOutstandingRows(state = {}) {
+    const stats = state.stats || {};
+    const statsTotal = Number(stats.total || 0);
+    const statsOutstanding = Math.max(0, Number(stats.pending || 0) + Number(stats.error || 0));
+    const status = String(state.status || 'idle');
+    const mode = String(state.mode || 'dry_run');
+    if (status === 'completed' && mode === 'send' && statsTotal > 0) {
+      return statsOutstanding;
+    }
+    const remainingRows = Number(state.remaining_rows || 0);
+    if (remainingRows > 0) {
+      return Math.max(0, remainingRows);
+    }
+    return statsTotal > 0 ? statsOutstanding : 0;
+  }
+
   function inferLocalModuleReadiness() {
     const kpButton = document.getElementById('kp-btn');
     const contractButton = document.getElementById('contract-btn');
@@ -2872,6 +2888,7 @@ function clearAttachedFile() {
     setSenderButtonsState({
       status: currentSenderStatus,
       mode: String(lastSenderUiState.mode || 'dry_run'),
+      hasPendingRows: getSenderOutstandingRows(lastSenderUiState) > 0,
       canConfirm: currentSenderStatus === 'completed'
         && String(lastSenderUiState.mode || 'dry_run') === 'dry_run'
         && !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length),
@@ -3627,15 +3644,11 @@ function clearAttachedFile() {
       const sent = Math.max(Number(nextState.sent_rows || 0), Number(stats.sent || 0));
       const totalFromStats = Number(stats.total || total);
       const errorFromStats = Number(stats.error || 0);
-      const pending = Number(
-        nextState.remaining_rows != null
-          ? nextState.remaining_rows
-          : (stats.pending != null ? stats.pending : Math.max(0, total - processed))
-      );
       const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
         const status = nextState.status || 'idle';
         currentSenderStatus = status;
         const mode = nextState.mode || 'dry_run';
+        const pending = getSenderOutstandingRows(nextState);
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
         const hasPendingRows = Math.max(0, pending) > 0;
         const hasReadyRows = ready > 0;
