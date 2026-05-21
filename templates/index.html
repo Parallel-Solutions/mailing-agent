@@ -2336,6 +2336,7 @@ function clearAttachedFile() {
     const fill = document.getElementById('ph-fill');
     const label = document.getElementById('ph-label');
     const runButton = document.getElementById('ph-run');
+    const pauseButton = document.getElementById('ph-pause');
     const reportButton = document.getElementById('ph-download-report');
     const total = Number(result.total_documents || 0);
     const processed = Number(result.processed_documents || 0);
@@ -2360,16 +2361,27 @@ function clearAttachedFile() {
       });
       setProgressVisual(fill, { percent, running: total > 0, indeterminate: false });
       runButton.disabled = true;
+      runButton.textContent = 'Идёт проверка';
       runButton.title = '';
+      if (pauseButton) {
+        pauseButton.style.display = '';
+        pauseButton.disabled = false;
+        pauseButton.textContent = 'Остановить';
+      }
       return;
     }
 
-    runButton.disabled = !!phRunning || !moduleReadiness.philologist_ready;
-    runButton.title = (!phRunning && !moduleReadiness.philologist_ready)
+    runButton.disabled = !!phRunning || (!moduleReadiness.philologist_ready && status !== 'stopped');
+    runButton.title = (!phRunning && !moduleReadiness.philologist_ready && status !== 'stopped')
       ? (moduleReadiness.philologist_reason || 'Филолог пока нельзя запускать.')
       : '';
+    if (pauseButton) {
+      pauseButton.style.display = 'none';
+      pauseButton.disabled = true;
+    }
 
     if (status === 'completed') {
+      runButton.textContent = 'Запустить агента-филолога';
       badge.textContent = 'Готово';
       badge.className = 'badge badge-done';
       label.textContent = total > 0
@@ -2386,7 +2398,17 @@ function clearAttachedFile() {
       return;
     }
 
+    if (status === 'stopped') {
+      runButton.textContent = 'Продолжить проверку';
+      badge.textContent = 'Остановлено';
+      badge.className = 'badge badge-wait';
+      label.textContent = result.summary_text || 'Проверка остановлена. Можно продолжить с сохраненного места.';
+      setProgressVisual(fill, { percent, running: false, indeterminate: false });
+      return;
+    }
+
     if (status === 'error') {
+      runButton.textContent = 'Запустить агента-филолога';
       badge.textContent = 'Ошибка';
       badge.className = 'badge badge-error';
       label.textContent = result.summary_text || 'Проверка завершилась с ошибкой';
@@ -2394,6 +2416,7 @@ function clearAttachedFile() {
       return;
     }
 
+    runButton.textContent = 'Запустить агента-филолога';
     badge.textContent = 'Готов к проверке';
     badge.className = 'badge badge-idle';
     label.textContent = total > 0
@@ -2430,9 +2453,12 @@ function clearAttachedFile() {
 
   async function startPhilologist() {
     await ensureCurrentJobId();
+    const isResume = currentPhilologistStatus === 'stopped';
     phRunning = true;
     setPhilologistUiState({ status: 'running', total_documents: 0, processed_documents: 0 });
-    appendChatMessage('g-chat', 'agent', 'Запускаю проверку документов. После завершения расскажу, что нашёл и что удалось исправить.');
+    appendChatMessage('g-chat', 'agent', isResume
+      ? 'Продолжаю проверку документов с сохраненного места.'
+      : 'Запускаю проверку документов. После завершения расскажу, что нашёл и что удалось исправить.');
     if (philologistStatusPoll) clearInterval(philologistStatusPoll);
     philologistStatusPoll = setInterval(async () => {
       const status = await refreshPhilologistStatus({ silent: true });
@@ -2444,6 +2470,9 @@ function clearAttachedFile() {
         showToast('Агент-филолог завершил работу');
         appendChatMessage('g-chat', 'agent', status.summary_text || 'Агент-филолог завершил проверку документов.');
         await refreshModuleReadiness();
+      } else if (status.status === 'stopped') {
+        showToast('Проверка остановлена');
+        appendChatMessage('g-chat', 'agent', status.summary_text || 'Проверка остановлена. Можно продолжить позже.');
       } else if (status.status === 'error') {
         showToast('Ошибка агента-филолога');
         appendChatMessage('g-chat', 'agent', status.summary_text || 'Проверка завершилась с ошибкой.');
@@ -2475,8 +2504,22 @@ function clearAttachedFile() {
       showToast('Ошибка агента-филолога');
     }
   }
-  function pausePhilologist() {
-    appendChatMessage('g-chat', 'agent', 'Пауза для агента-филолога пока не поддерживается. Можно дождаться завершения текущей проверки.');
+  async function pausePhilologist() {
+    try {
+      const res = await fetch('/api/philologist/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withJobPayload({})),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Не удалось остановить филолога');
+      setPhilologistUiState(data.result || {});
+      appendChatMessage('g-chat', 'agent', 'Останавливаю филолога после текущего документа.');
+      showToast('Остановка филолога запрошена');
+    } catch (err) {
+      appendChatMessage('g-chat', 'agent', 'Не удалось остановить филолога: ' + (err && err.message ? err.message : String(err)));
+      showToast('Ошибка остановки филолога');
+    }
   }
 
   refreshPhilologistStatus({ silent: true });
@@ -2502,6 +2545,9 @@ function clearAttachedFile() {
     if (result.status === 'completed') {
       showToast('Генерация завершена: ' + total + ' документов');
       appendChatMessage('g-chat', 'agent', result.summary_text || (`Генерация завершена: ${total} документов.`));
+    } else if (result.status === 'stopped') {
+      showToast('Генерация остановлена');
+      appendChatMessage('g-chat', 'agent', result.summary_text || 'Генерация остановлена. Можно продолжить позже.');
     } else if (result.status === 'error') {
       showToast('Генерация завершилась с ошибкой');
       appendChatMessage('g-chat', 'agent', result.summary_text || 'Генерация завершилась с ошибкой.');
@@ -2536,8 +2582,11 @@ function clearAttachedFile() {
   // GENERATOR
   async function startGenerator() {
     await ensureCurrentJobId();
+    const isResume = currentGeneratorStatus === 'stopped';
     setGeneratorUiState({ status: 'running', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
-    appendChatMessage('g-chat', 'agent', 'Запускаю генератор документов. Сначала подготовлю строки и посчитаю общий объём, потом начну сборку DOCX и PDF.');
+    appendChatMessage('g-chat', 'agent', isResume
+      ? 'Продолжаю генерацию с сохраненного места.'
+      : 'Запускаю генератор документов. Сначала подготовлю строки и посчитаю общий объём, потом начну сборку DOCX и PDF.');
     generatorCompletionAnnounced = false;
     stopGeneratorPolling();
     generatorStatusPoll = setInterval(() => {
@@ -2568,7 +2617,23 @@ function clearAttachedFile() {
       stopGeneratorPolling();
     }
   }
-  function pauseGenerator() {}
+  async function pauseGenerator() {
+    try {
+      const res = await fetch('/api/generator/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withJobPayload({})),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Не удалось остановить генератор');
+      setGeneratorUiState(data.result || {});
+      appendChatMessage('g-chat', 'agent', 'Останавливаю генератор после текущего безопасного шага.');
+      showToast('Остановка генератора запрошена');
+    } catch (err) {
+      appendChatMessage('g-chat', 'agent', 'Не удалось остановить генератор: ' + (err && err.message ? err.message : String(err)));
+      showToast('Ошибка остановки генератора');
+    }
+  }
 
   // SENDER
   let senderRunning = false;
@@ -2644,12 +2709,12 @@ function clearAttachedFile() {
 
     applyButtonReadiness(
       generatorRunButton,
-      !!moduleReadiness.generator_ready && !parserRunning && !generatorRunningNow,
+      (!!moduleReadiness.generator_ready || currentGeneratorStatus === 'stopped') && !parserRunning && !generatorRunningNow,
       moduleReadiness.generator_reason || 'Генератор пока нельзя запускать.'
     );
     applyButtonReadiness(
       philologistRunButton,
-      !!moduleReadiness.philologist_ready && !philologistRunningNow,
+      (!!moduleReadiness.philologist_ready || currentPhilologistStatus === 'stopped') && !philologistRunningNow,
       moduleReadiness.philologist_reason || 'Филолог пока нельзя запускать.'
     );
     applyButtonReadiness(
@@ -2824,11 +2889,16 @@ function clearAttachedFile() {
 
   function setGeneratorButtonsBusy(isBusy) {
     const runButton = document.getElementById('g-run');
+    const pauseButton = document.getElementById('g-pause');
     if (runButton) {
       runButton.disabled = !!isBusy || !moduleReadiness.generator_ready;
       runButton.title = (!isBusy && !moduleReadiness.generator_ready)
         ? (moduleReadiness.generator_reason || 'Генератор пока нельзя запускать.')
         : '';
+    }
+    if (pauseButton) {
+      pauseButton.style.display = isBusy ? '' : 'none';
+      pauseButton.disabled = !isBusy;
     }
   }
 
@@ -2858,6 +2928,8 @@ function clearAttachedFile() {
     const badge = document.getElementById('g-badge');
     const fill = document.getElementById('g-fill');
     const label = document.getElementById('g-label');
+    const runButton = document.getElementById('g-run');
+    const pauseButton = document.getElementById('g-pause');
     const doneStat = document.getElementById('g-done');
     const doneLabelStat = document.getElementById('g-done-label');
     const errorStat = document.getElementById('g-err');
@@ -2914,6 +2986,7 @@ function clearAttachedFile() {
     setInflectionDownloadEnabled(status === 'completed' && inflectionTotal > 0);
 
     if (status === 'running') {
+      if (runButton) runButton.textContent = 'Идёт генерация';
       badge.textContent = 'Генерация';
       badge.className = 'badge badge-running';
       let runningPercent = percent;
@@ -2944,8 +3017,14 @@ function clearAttachedFile() {
 
     setGeneratorButtonsBusy(false);
     setGeneratorDownloadEnabled(canDownloadOutput);
+    if (pauseButton) {
+      pauseButton.style.display = 'none';
+      pauseButton.disabled = true;
+      pauseButton.textContent = 'Остановить';
+    }
 
     if (status === 'completed') {
+      if (runButton) runButton.textContent = 'Запустить генератор';
       badge.textContent = 'Готово';
       badge.className = 'badge badge-done';
       label.textContent = total > 0
@@ -2962,7 +3041,21 @@ function clearAttachedFile() {
       return;
     }
 
+    if (status === 'stopped') {
+      if (runButton) {
+        runButton.textContent = 'Продолжить генератор';
+        runButton.disabled = false;
+        runButton.title = '';
+      }
+      badge.textContent = 'Остановлено';
+      badge.className = 'badge badge-wait';
+      label.textContent = result.summary_text || 'Генерация остановлена. Можно продолжить с сохраненного места.';
+      setProgressVisual(fill, { percent: total > 0 ? percent : (pdfTotal > 0 ? Math.round((pdfProcessed / pdfTotal) * 100) : 0), running: false });
+      return;
+    }
+
     if (status === 'error') {
+      if (runButton) runButton.textContent = 'Запустить генератор';
       badge.textContent = 'Ошибка';
       badge.className = 'badge badge-error';
       label.textContent = result.summary_text || 'Генерация завершилась с ошибкой';
@@ -2980,6 +3073,7 @@ function clearAttachedFile() {
 
     badge.textContent = 'Готов к запуску';
     badge.className = 'badge badge-idle';
+    if (runButton) runButton.textContent = 'Запустить генератор';
     label.textContent = total > 0
       ? formatProgressText({
           processed,

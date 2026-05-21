@@ -76,6 +76,8 @@ PHILOLOGIST_STATE: dict[str, Any] = {
     "task_stats": {"total": 0, "pending": 0, "in_progress": 0, "done": 0, "blocked": 0},
     "tasks": [],
     "recent_events": [],
+    "stop_requested": False,
+    "stop_requested_at": None,
 }
 
 
@@ -85,6 +87,32 @@ def _load_philologist_state(job_id: str | None = None) -> dict[str, Any]:
 
 def _save_philologist_state(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
     return save_agent_state("philologist", state, job_id)
+
+
+def request_philologist_stop(job_id: str | None = None) -> dict[str, Any]:
+    state = _load_philologist_state(job_id)
+    state["stop_requested"] = True
+    state["stop_requested_at"] = datetime.now().isoformat(timespec="seconds")
+    if state.get("status") == "running":
+        state["summary_text"] = (
+            "Получен запрос на остановку. Филолог завершит текущий документ и остановится."
+        )
+    _save_philologist_state(state, job_id)
+    return get_philologist_status(job_id)
+
+
+def clear_philologist_stop_request(job_id: str | None = None) -> None:
+    state = _load_philologist_state(job_id)
+    state["stop_requested"] = False
+    state["stop_requested_at"] = None
+    _save_philologist_state(state, job_id)
+
+
+def _refresh_philologist_stop_flag(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
+    persisted = _load_philologist_state(job_id)
+    state["stop_requested"] = bool(persisted.get("stop_requested", False))
+    state["stop_requested_at"] = persisted.get("stop_requested_at")
+    return state
 
 
 def _build_llm_client():
@@ -1594,20 +1622,28 @@ def run_philologist(
     )
 
     state = _load_philologist_state(job_id)
+    was_stopped = str(state.get("status") or "") == "stopped"
+    processed_documents: list[dict[str, Any]] = list(state.get("documents") or []) if was_stopped else []
+    processed_paths = {str(item.get("path")) for item in processed_documents if str(item.get("path") or "").strip()}
+    if was_stopped:
+        docx_paths = [path for path in docx_paths if str(path) not in processed_paths]
     state.update(
         {
             "status": "running",
-            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "started_at": state.get("started_at") if was_stopped and state.get("started_at") else datetime.now().isoformat(timespec="seconds"),
             "completed_at": None,
-            "total_documents": len(docx_paths),
-            "processed_documents": 0,
-            "fixed_documents": 0,
-            "documents_with_issues": 0,
-            "documents": [],
+            "total_documents": (len(processed_documents) + len(docx_paths)) if was_stopped else len(docx_paths),
+            "processed_documents": len(processed_documents) if was_stopped else 0,
+            "fixed_documents": sum(1 for item in processed_documents if item.get("applied_fix_count", 0) > 0) if was_stopped else 0,
+            "documents_with_issues": sum(1 for item in processed_documents if item.get("issue_count", 0) > 0) if was_stopped else 0,
+            "documents": processed_documents,
             "mode": run_mode,
             "ai_review_enabled": bool(ai_enabled and run_mode == "deep"),
             "summary_text": (
                 (
+                    f"Агент-филолог продолжает проверку с сохраненного места. Уже обработано {len(processed_documents)} документов."
+                    if was_stopped
+                    else
                     "Агент-филолог начал быструю массовую проверку документов: "
                     "локальные правила, безопасные автоправки и карантин спорных мест."
                     if run_mode == "fast"
@@ -1625,6 +1661,8 @@ def run_philologist(
             "task_stats": count_tasks_for_agent("philologist", job_id),
             "tasks": get_tasks_for_agent("philologist", job_id)[:20],
             "recent_events": get_recent_events(agent_name="philologist", limit=20, job_id=job_id),
+            "stop_requested": False,
+            "stop_requested_at": None,
         }
     )
     _save_philologist_state(state, job_id)
@@ -1664,25 +1702,36 @@ def run_philologist(
     _save_philologist_state(state, job_id)
 
     started_at = perf_counter()
-    processed_documents: list[dict[str, Any]] = []
     react_client = _build_llm_client() if settings.orchestrator_mode == "agentic" else None
     effective_ai_enabled = bool(ai_enabled and run_mode == "deep")
     for index, docx_path in enumerate(docx_paths, start=1):
+        _refresh_philologist_stop_flag(state, job_id)
+        if state.get("stop_requested"):
+            state["status"] = "stopped"
+            state["completed_at"] = None
+            state["summary_text"] = "Проверка остановлена. Можно продолжить с сохраненного места."
+            state["current_document"] = None
+            state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
+            state["tool_trace"] = tool_runner.as_state()
+            state["plan"] = agent_loop.as_plan()
+            state["agent_loop"] = state["plan"].get("execution")
+            _save_philologist_state(state, job_id)
+            return dict(state)
         agent_loop.observe(
             "document_start",
-            f"Проверяю документ {index} из {len(docx_paths)}: {docx_path.name}.",
+            f"Проверяю документ {len(processed_documents) + 1} из {state.get('total_documents', len(docx_paths))}: {docx_path.name}.",
             step_id="review_docx",
-            data={"index": index, "path": str(docx_path)},
+            data={"index": len(processed_documents) + 1, "path": str(docx_path)},
         )
         state["current_document"] = {
-            "index": index,
-            "total": len(docx_paths),
+            "index": len(processed_documents) + 1,
+            "total": state.get("total_documents", len(docx_paths)),
             "name": docx_path.name,
             "path": str(docx_path),
         }
-        state["processed_documents"] = index - 1
+        state["processed_documents"] = len(processed_documents)
         state["summary_text"] = (
-            f"Агент-филолог проверяет документ {index} из {len(docx_paths)}: {docx_path.name}. "
+            f"Агент-филолог проверяет документ {len(processed_documents) + 1} из {state.get('total_documents', len(docx_paths))}: {docx_path.name}. "
             f"Режим: {'быстрый' if run_mode == 'fast' else 'глубокий LLM'}."
         )
         state["tool_trace"] = tool_runner.as_state()
@@ -1773,7 +1822,7 @@ def run_philologist(
         }
         processed_documents.append(document_entry)
 
-        state["processed_documents"] = index
+        state["processed_documents"] = len(processed_documents)
         state["documents"] = processed_documents
         state["fixed_documents"] = sum(1 for item in processed_documents if item.get("applied_fix_count", 0) > 0)
         state["documents_with_issues"] = sum(1 for item in processed_documents if item.get("issue_count", 0) > 0)
