@@ -688,10 +688,14 @@ def preview_recipients(*, limit: int | None = None, job_id: str | None = None) -
     missing_count = 0
     fallback_count = 0
     invalid_count = 0
+    extra_rows_count = 0
+    extra_addresses_count = 0
 
     for row in candidates:
         email_decision = _choose_recipient(row)
         status_class = _status_class(row.get("STATUS"))
+        primary_emails = _parse_emails(row.get("EMAIL_OSN"))
+        extra_emails = _parse_emails(row.get("EMAIL_DOP"))
         entry = {
             "id": row.get("ID"),
             "mun_name": _safe_text(row.get("MUN_NAME")),
@@ -700,8 +704,8 @@ def preview_recipients(*, limit: int | None = None, job_id: str | None = None) -
             "recipient": email_decision["recipient"],
             "email_strategy": email_decision["strategy"],
             "decision_reason": email_decision["decision_reason"],
-            "primary_emails": _parse_emails(row.get("EMAIL_OSN")),
-            "extra_emails": _parse_emails(row.get("EMAIL_DOP")),
+            "primary_emails": primary_emails,
+            "extra_emails": extra_emails,
             "invalid_emails": email_decision["invalid_emails"],
             "fallback_candidates": email_decision["fallback_candidates"],
         }
@@ -709,13 +713,19 @@ def preview_recipients(*, limit: int | None = None, job_id: str | None = None) -
             missing_count += 1
         if entry["email_strategy"] == "fallback_extra":
             fallback_count += 1
+        if extra_emails:
+            extra_rows_count += 1
+            extra_addresses_count += len(extra_emails)
         if entry["invalid_emails"]:
             invalid_count += 1
         preview_rows.append(entry)
 
     summary_text = (
         f"Предпросмотр адресов: строк {len(preview_rows)}, "
-        f"без адреса {missing_count}, с резервным адресом {fallback_count}, "
+        f"без адреса {missing_count}, "
+        f"с дополнительными адресами {extra_rows_count}, "
+        f"дополнительных адресов всего {extra_addresses_count}, "
+        f"где EMAIL_DOP стал основным {fallback_count}, "
         f"с невалидными значениями {invalid_count}."
     )
     return {
@@ -726,6 +736,8 @@ def preview_recipients(*, limit: int | None = None, job_id: str | None = None) -
         "effective_limit": effective_limit,
         "missing_count": missing_count,
         "fallback_count": fallback_count,
+        "extra_rows_count": extra_rows_count,
+        "extra_addresses_count": extra_addresses_count,
         "invalid_count": invalid_count,
     }
 
