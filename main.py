@@ -17,6 +17,8 @@ _sender_threads: dict[str, threading.Thread] = {}
 _sender_threads_lock = threading.Lock()
 _philologist_threads: dict[str, threading.Thread] = {}
 _philologist_threads_lock = threading.Lock()
+_generator_threads: dict[str, threading.Thread] = {}
+_generator_threads_lock = threading.Lock()
 
 
 @app.on_event("startup")
@@ -65,6 +67,10 @@ def _philologist_job_key(job_id: str | None) -> str:
     return str(job_id or "__legacy__")
 
 
+def _generator_job_key(job_id: str | None) -> str:
+    return str(job_id or "__legacy__")
+
+
 def _get_sender_thread(job_id: str | None) -> threading.Thread | None:
     key = _sender_job_key(job_id)
     with _sender_threads_lock:
@@ -85,6 +91,16 @@ def _get_philologist_thread(job_id: str | None) -> threading.Thread | None:
         return thread
 
 
+def _get_generator_thread(job_id: str | None) -> threading.Thread | None:
+    key = _generator_job_key(job_id)
+    with _generator_threads_lock:
+        thread = _generator_threads.get(key)
+        if thread and not thread.is_alive():
+            _generator_threads.pop(key, None)
+            return None
+        return thread
+
+
 def _register_sender_thread(job_id: str | None, thread: threading.Thread) -> None:
     with _sender_threads_lock:
         _sender_threads[_sender_job_key(job_id)] = thread
@@ -93,6 +109,11 @@ def _register_sender_thread(job_id: str | None, thread: threading.Thread) -> Non
 def _register_philologist_thread(job_id: str | None, thread: threading.Thread) -> None:
     with _philologist_threads_lock:
         _philologist_threads[_philologist_job_key(job_id)] = thread
+
+
+def _register_generator_thread(job_id: str | None, thread: threading.Thread) -> None:
+    with _generator_threads_lock:
+        _generator_threads[_generator_job_key(job_id)] = thread
 
 
 def _compact_philologist_status(state: dict) -> dict:
@@ -160,6 +181,16 @@ def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: s
     finally:
         with _philologist_threads_lock:
             _philologist_threads.pop(_philologist_job_key(job_id), None)
+
+
+def _run_generator_background(*, xlsx_path: Path, job_id: str | None) -> None:
+    try:
+        run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
+    except Exception:
+        logger.exception("generator_background_failed", job_id=job_id)
+    finally:
+        with _generator_threads_lock:
+            _generator_threads.pop(_generator_job_key(job_id), None)
 
 
 def _prime_sender_running_state(job_id: str | None, transport: str | None) -> dict:
@@ -485,7 +516,7 @@ from src.generator.knowledge.correction_report import (
 )
 from src.generator.case_engine.overrides import upsert_override
 from src.generator.inflection.inflection_report import load_inflection_log, save_inflection_csv
-from src.generator.generation.generator_agent import get_generator_status, run_generator_agent
+from src.generator.generation.generator_agent import get_generator_status, prime_generator_state, run_generator_agent
 from src.generator.philologist.philologist_planner import build_philologist_plan
 from src.jobs import create_job_id, resolve_job_paths
 
@@ -660,24 +691,26 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
     xlsx_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
     if not xlsx_path.exists():
         raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
-    result = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
-    if result.get("status") == "error":
-        raise HTTPException(status_code=400, detail=result.get("summary_text") or "Ошибка генерации")
-    if int(result.get("ok_rows", 0) or 0) == 0 and int(result.get("error_rows", 0) or 0) > 0:
-        raise HTTPException(status_code=400, detail=result.get("summary_text") or "Генерация не создала ни одного комплекта документов")
-    return {
-        "status": result.get("status"),
-        "total": len(result.get("results", [])),
-        "total_rows": result.get("total_rows"),
-        "processed_rows": result.get("processed_rows"),
-        "ok_rows": result.get("ok_rows"),
-        "error_rows": result.get("error_rows"),
-        "results": result.get("results", []),
-        "summary_text": result.get("summary_text"),
-        "inflection_summary": result.get("inflection_summary"),
-        "task_stats": result.get("task_stats"),
-        "recent_events": result.get("recent_events"),
-    }
+    existing_thread = _get_generator_thread(job_id)
+    if existing_thread is not None:
+        return {"status": "ok", "result": get_generator_status(job_id)}
+
+    primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id)
+    if primed_state.get("status") == "error":
+        raise HTTPException(status_code=400, detail=primed_state.get("summary_text") or "Ошибка генерации")
+
+    if primed_state.get("status") == "completed":
+        return {"status": "ok", "result": primed_state}
+
+    thread = threading.Thread(
+        target=_run_generator_background,
+        kwargs={"xlsx_path": xlsx_path, "job_id": job_id},
+        daemon=True,
+        name=f"generator-{_generator_job_key(job_id)}",
+    )
+    _register_generator_thread(job_id, thread)
+    thread.start()
+    return {"status": "ok", "result": primed_state}
 
 
 @app.get("/api/generator/status")

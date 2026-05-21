@@ -290,6 +290,75 @@ def finalize_generated_files(
         result.pop("generated_files", None)
 
 
+def prime_generator_state(
+    *,
+    xlsx_path: Path | None = None,
+    limit: int | None = None,
+    row_ids: list[str] | None = None,
+    job_id: str | None = None,
+) -> dict[str, Any]:
+    job_paths = resolve_job_paths(job_id)
+    source_path = xlsx_path or (job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH)
+    state = _load_generator_state(job_id)
+
+    if not source_path.exists():
+        state["status"] = "error"
+        state["summary_text"] = "Файл data.xlsx не найден."
+        _save_generator_state(state, job_id)
+        return dict(state)
+
+    _, _, rows = load_rows(source_path)
+    if not rows:
+        state["status"] = "error"
+        state["summary_text"] = "Нет данных для генерации."
+        _save_generator_state(state, job_id)
+        return dict(state)
+
+    requested_row_ids = {str(item).strip() for item in (row_ids or []) if str(item).strip()}
+    if requested_row_ids:
+        rows = [row for row in rows if str(row.get("ID")).strip() in requested_row_ids]
+    if limit:
+        rows = rows[:limit]
+
+    if not rows:
+        state["status"] = "completed"
+        state["summary_text"] = "Для генератора не нашлось строк под текущую задачу."
+        state["task_stats"] = count_tasks_for_agent("generator", job_id)
+        state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
+        state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
+        _save_generator_state(state, job_id)
+        return dict(state)
+
+    state.update(
+        {
+            "status": "running",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "completed_at": None,
+            "total_rows": len(rows),
+            "processed_rows": 0,
+            "ok_rows": 0,
+            "error_rows": 0,
+            "stage": "render_docx",
+            "stage_text": "Создаю DOCX из шаблонов.",
+            "staged_docx_count": 0,
+            "staged_pdf_count": 0,
+            "pdf_total": 0,
+            "pdf_processed": 0,
+            "output_file_count": 0,
+            "summary_text": f"Агент-генератор запущен. Подготовил {len(rows)} строк к обработке.",
+            "results": [],
+            "inflection_summary": {},
+            "municipality_name_verification": {},
+            "philologist_result": None,
+            "task_stats": count_tasks_for_agent("generator", job_id),
+            "tasks": get_tasks_for_agent("generator", job_id)[:20],
+            "recent_events": get_recent_events(agent_name="generator", limit=20, job_id=job_id),
+        }
+    )
+    _save_generator_state(state, job_id)
+    return dict(state)
+
+
 def run_generator_agent(
     *,
     xlsx_path: Path | None = None,
