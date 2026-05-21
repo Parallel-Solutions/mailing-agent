@@ -1649,6 +1649,16 @@
     return currentJobId ? { ...payload, job_id: currentJobId } : { ...payload };
   }
 
+  async function readJsonOrText(res) {
+    const text = await res.text();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      return { detail: text };
+    }
+  }
+
   function appendJobId(formData) {
     if (currentJobId) {
       formData.append('job_id', currentJobId);
@@ -3714,7 +3724,7 @@ function clearAttachedFile() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({ limit })),
       });
-      const previewData = await previewRes.json();
+      const previewData = await readJsonOrText(previewRes);
       if (!previewRes.ok) throw new Error(previewData.detail || 'Ошибка предпросмотра адресов');
 
       safeSetSenderUiState({ status: 'running', total_rows: 0, processed_rows: 0, stats: {} });
@@ -3727,7 +3737,7 @@ function clearAttachedFile() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport })),
       });
-      const data = await res.json();
+      const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
         const result = data.result || {};
         safeSetSenderUiState(result);
@@ -3774,7 +3784,7 @@ function clearAttachedFile() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport })),
       });
-      const data = await res.json();
+      const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');
         const result = data.result || {};
         safeSetSenderUiState(result);
@@ -3811,7 +3821,7 @@ function clearAttachedFile() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({})),
       });
-      const data = await res.json();
+      const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось остановить отправку');
       safeSetSenderUiState(data.result || {});
       safeAppendChatMessage('s-chat', 'agent', 'Остановку приняла. Завершу текущую строку и не буду брать следующие письма.');

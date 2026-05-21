@@ -10,6 +10,7 @@ import shutil
 import threading
 from multiprocessing import Process
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime
 from time import perf_counter
 import time
 
@@ -269,8 +270,13 @@ def _compact_philologist_status(state: dict) -> dict:
 def _run_sender_background(*, limit: int | None, transport: str | None, job_id: str | None) -> None:
     try:
         run_sender(dry_run=False, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
-    except Exception:
+    except Exception as exc:
         logger.exception("sender_background_failed", job_id=job_id, transport=transport)
+        state = _load_sender_state(job_id)
+        state["status"] = "error"
+        state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        state["summary_text"] = f"Агент-отправщик остановился с ошибкой: {type(exc).__name__}: {exc}"
+        _save_sender_state(state, job_id)
     finally:
         with _sender_threads_lock:
             _sender_threads.pop(_sender_job_key(job_id), None)
@@ -1355,23 +1361,31 @@ async def sender_run(
     transport = None if payload is None else payload.get("transport")
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
     if dry_run:
-        result = run_sender(dry_run=True, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
+        try:
+            result = run_sender(dry_run=True, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
+        except Exception as exc:
+            logger.exception("sender_dry_run_failed", job_id=job_id, transport=transport)
+            raise HTTPException(status_code=500, detail=f"Не удалось проверить отправку: {type(exc).__name__}: {exc}") from exc
         return {"status": "ok", "result": result}
 
     existing_thread = _get_sender_thread(job_id)
     if existing_thread:
         return {"status": "ok", "result": get_sender_status(job_id)}
 
-    clear_sender_stop_request(job_id)
-    primed_state = _prime_sender_running_state(job_id, transport)
-    sender_thread = threading.Thread(
-        target=_run_sender_background,
-        kwargs={"limit": limit, "transport": transport, "job_id": job_id},
-        daemon=True,
-        name=f"sender-{_sender_job_key(job_id)}",
-    )
-    _register_sender_thread(job_id, sender_thread)
-    sender_thread.start()
+    try:
+        clear_sender_stop_request(job_id)
+        primed_state = _prime_sender_running_state(job_id, transport)
+        sender_thread = threading.Thread(
+            target=_run_sender_background,
+            kwargs={"limit": limit, "transport": transport, "job_id": job_id},
+            daemon=True,
+            name=f"sender-{_sender_job_key(job_id)}",
+        )
+        _register_sender_thread(job_id, sender_thread)
+        sender_thread.start()
+    except Exception as exc:
+        logger.exception("sender_run_start_failed", job_id=job_id, transport=transport)
+        raise HTTPException(status_code=500, detail=f"Не удалось запустить отправку: {type(exc).__name__}: {exc}") from exc
     return {"status": "ok", "result": primed_state}
 
 
