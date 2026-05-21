@@ -26,6 +26,7 @@ from src.generator.generation.config_generator import (
     BATCH_PDF_DIR,
     DATA_XLSX_PATH,
     DOCX_WORKERS,
+    OUTPUT_DIR,
     START_OUTGOING_NUMBER,
     WEB_CASE_AGENT_MAX_WORKERS,
 )
