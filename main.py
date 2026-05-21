@@ -5,7 +5,7 @@ import secrets
 import re
 from src.utils.logger import logger
 from src.utils.config import settings
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form, BackgroundTasks
 import shutil
 import threading
 from multiprocessing import Process
@@ -320,6 +320,42 @@ def _run_parser_verification_background(*, job_id: str | None, source: str) -> N
         logger.exception("parser_upload_verification_background_failed", job_id=job_id, source=source)
 
 
+def _start_parser_verification_process(*, job_id: str | None, filename: str, source: str = "upload") -> None:
+    started_at = perf_counter()
+    existing_process = _get_parser_verification_process(job_id)
+    if existing_process is not None:
+        logger.info(
+            "upload_data_verification_already_running",
+            filename=filename,
+            job_id=job_id,
+            pid=existing_process.pid,
+        )
+        return
+
+    verification_process = Process(
+        target=_run_parser_verification_background,
+        kwargs={"job_id": job_id, "source": source},
+        daemon=True,
+        name=f"parser-verify-{_parser_job_key(job_id)}",
+    )
+    verification_process.start()
+    _register_parser_verification_process(job_id, verification_process)
+    watcher_thread = threading.Thread(
+        target=_watch_parser_verification_process,
+        kwargs={"job_id": job_id, "source": source, "process": verification_process},
+        daemon=True,
+        name=f"parser-verify-watch-{_parser_job_key(job_id)}",
+    )
+    watcher_thread.start()
+    logger.info(
+        "upload_data_verification_scheduled",
+        filename=filename,
+        job_id=job_id,
+        pid=verification_process.pid,
+        schedule_seconds=round(perf_counter() - started_at, 3),
+    )
+
+
 def _watch_parser_verification_process(*, job_id: str | None, source: str, process: Process) -> None:
     process.join(PARSER_VERIFICATION_TIMEOUT_SECONDS)
     key = _parser_job_key(job_id)
@@ -451,6 +487,7 @@ def _clone_job_templates_if_present(source_job_id: str | None, target_job_id: st
 
 @app.post("/api/upload/data")
 async def upload_data(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     job_id: str | None = Form(default=None),
     username: str = Depends(check_auth),
@@ -479,36 +516,12 @@ async def upload_data(
         request_seconds=round(perf_counter() - request_started, 3),
     )
 
-    existing_process = _get_parser_verification_process(paths.job_id)
-    if existing_process is None:
-        verification_process = Process(
-            target=_run_parser_verification_background,
-            kwargs={"job_id": paths.job_id, "source": "upload"},
-            daemon=True,
-            name=f"parser-verify-{_parser_job_key(paths.job_id)}",
-        )
-        verification_process.start()
-        _register_parser_verification_process(paths.job_id, verification_process)
-        watcher_thread = threading.Thread(
-            target=_watch_parser_verification_process,
-            kwargs={"job_id": paths.job_id, "source": "upload", "process": verification_process},
-            daemon=True,
-            name=f"parser-verify-watch-{_parser_job_key(paths.job_id)}",
-        )
-        watcher_thread.start()
-        logger.info(
-            "upload_data_verification_scheduled",
-            filename=file.filename,
-            job_id=paths.job_id,
-            pid=verification_process.pid,
-        )
-    else:
-        logger.info(
-            "upload_data_verification_already_running",
-            filename=file.filename,
-            job_id=paths.job_id,
-            pid=existing_process.pid,
-        )
+    background_tasks.add_task(
+        _start_parser_verification_process,
+        job_id=paths.job_id,
+        filename=file.filename or "",
+        source="upload",
+    )
 
     return {
         "status": "ok",
