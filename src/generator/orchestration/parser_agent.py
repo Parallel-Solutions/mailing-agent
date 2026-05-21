@@ -257,14 +257,16 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
         )
         return result
 
-    use_official_sites = settings.municipality_official_sites_enabled and source not in {"parser", "upload"}
+    use_external_sources = source not in {"parser", "upload"}
+    use_official_sites = settings.municipality_official_sites_enabled and use_external_sources
+    use_minjust = settings.municipality_minjust_lookup_enabled and use_external_sources
     verification_started = perf_counter()
     result = verify_municipality_names_in_workbook(
         data_xlsx_path,
         use_official_sites=use_official_sites,
         use_oktmo=True,
         oktmo_lookup=_build_oktmo_lookup(),
-        use_minjust=settings.municipality_minjust_lookup_enabled,
+        use_minjust=use_minjust,
     )
     result["timings"] = {
         "verification_seconds": round(perf_counter() - verification_started, 3),
@@ -272,6 +274,7 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
         "source": source,
         "use_official_sites": use_official_sites,
         "use_oktmo": True,
+        "use_minjust": use_minjust,
     }
     logger.info(
         "municipality_verification_completed",
