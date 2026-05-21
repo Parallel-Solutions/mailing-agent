@@ -958,9 +958,9 @@
           <div class="progress-label" id="g-inflection-summary" style="margin-top:6px">Журнал склонений появится после генерации.</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
-          <button class="btn-primary" id="g-run" onclick="startGenerator()">Запустить генератор</button>
+          <button class="btn-primary" id="g-run" onclick="startGenerator()">Создать документы</button>
           <button class="btn-outline" id="g-pause" onclick="pauseGenerator()" disabled>Остановить</button>
-        <button class="btn-outline" id="g-download-output" onclick="downloadWithJob('/api/download/output')">Скачать output.zip</button>
+        <button class="btn-outline" id="g-download-output" onclick="downloadWithJob('/api/download/output')">Скачать готовые документы</button>
         </div>
       </div>
 
@@ -1037,9 +1037,9 @@
           <div class="progress-label" id="s-label">Проверка адресов и готовности ещё не запускалась.</div>
         </div>
           <div class="module-actions" style="margin-top:12px">
-            <button type="button" class="btn-primary" id="s-run">Проверить адреса и готовность</button>
-            <button type="button" class="btn-outline" id="s-download-xlsx" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать data.xlsx со статусами</button>
-            <button type="button" class="btn-outline" id="s-delivery-report" onclick="downloadWithJob('/api/download/sender-delivery-report')">Скачать журнал отправки</button>
+            <button type="button" class="btn-primary" id="s-run">Проверить получателей</button>
+            <button type="button" class="btn-outline" id="s-download-xlsx" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать таблицу со статусами</button>
+            <button type="button" class="btn-outline" id="s-delivery-report" onclick="downloadWithJob('/api/download/sender-delivery-report')">Скачать отчёт отправки</button>
           </div>
         </div>
 
@@ -1094,7 +1094,7 @@
       </div>
 
       <div style="display:flex; gap:8px; flex-wrap:wrap">
-        <button class="btn-outline" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать data.xlsx со статусами</button>
+        <button class="btn-outline" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать таблицу со статусами</button>
         <button class="btn-outline" onclick="showToast('Повторная отправка будет доступна в финальной версии')">Повторить письма с ошибкой</button>
         <button class="btn-outline" onclick="showToast('Обновлено')">Обновить статусы</button>
       </div>
@@ -3413,7 +3413,7 @@ function clearAttachedFile() {
     }
 
     if (status === 'completed') {
-      if (runButton) runButton.textContent = 'Запустить генератор';
+      if (runButton) runButton.textContent = 'Создать документы';
       badge.textContent = 'Готово';
       badge.className = 'badge badge-done';
       label.textContent = total > 0
@@ -3449,7 +3449,7 @@ function clearAttachedFile() {
     }
 
     if (status === 'error') {
-      if (runButton) runButton.textContent = 'Запустить генератор';
+      if (runButton) runButton.textContent = 'Создать документы';
       badge.textContent = 'Ошибка';
       badge.className = 'badge badge-error';
       label.textContent = nextState.summary_text || 'Генерация завершилась с ошибкой';
@@ -3459,7 +3459,7 @@ function clearAttachedFile() {
 
     badge.textContent = 'Готов к запуску';
     badge.className = 'badge badge-idle';
-    if (runButton) runButton.textContent = 'Запустить генератор';
+    if (runButton) runButton.textContent = 'Создать документы';
     label.textContent = total > 0
       ? formatProgressText({
           processed,
@@ -3489,7 +3489,7 @@ function clearAttachedFile() {
 
       if (status === 'completed' && mode === 'dry_run' && canConfirm) {
         runButton.dataset.action = 'send';
-        runButton.textContent = 'Подтвердить и отправить';
+        runButton.textContent = 'Отправить письма';
         runButton.className = 'btn-primary';
         runButton.disabled = !moduleReadiness.sender_ready;
         runButton.title = !moduleReadiness.sender_ready
@@ -3520,7 +3520,7 @@ function clearAttachedFile() {
 
       if (status === 'error') {
         runButton.dataset.action = mode === 'send' ? 'send' : 'preview';
-        runButton.textContent = mode === 'send' ? 'Повторить отправку' : 'Проверить заново';
+        runButton.textContent = mode === 'send' ? 'Продолжить отправку' : 'Проверить получателей заново';
         runButton.className = 'btn-primary';
         runButton.disabled = !moduleReadiness.sender_ready;
         runButton.title = !moduleReadiness.sender_ready
@@ -3530,7 +3530,7 @@ function clearAttachedFile() {
       }
 
       runButton.dataset.action = 'preview';
-      runButton.textContent = 'Проверить адреса и готовность';
+      runButton.textContent = 'Проверить получателей';
       runButton.className = 'btn-primary';
       runButton.disabled = !moduleReadiness.sender_ready;
       runButton.title = !moduleReadiness.sender_ready
@@ -3743,7 +3743,7 @@ function clearAttachedFile() {
         safeSetSenderUiState(result);
         maybeAnnounceSenderFlow(result);
         showToast('Проверка готовности завершена');
-        safeAppendChatMessage('s-chat', 'agent', (result.summary_text || 'Проверка готовности завершена.') + '\nЕсли адреса верные, нажми «Подтвердить и отправить».');
+        safeAppendChatMessage('s-chat', 'agent', (result.summary_text || 'Проверка готовности завершена.') + '\nЕсли адреса верные, нажми «Отправить письма».');
       } catch (err) {
       safeSetSenderUiState({ status: 'error', summary_text: 'Проверка отправщика не завершилась' });
       safeAppendChatMessage('s-chat', 'agent', 'Не удалось подготовить отправку: ' + (err && err.message ? err.message : String(err)));
