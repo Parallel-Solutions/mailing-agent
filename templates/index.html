@@ -977,7 +977,7 @@
         </div>
         <div class="stat">
           <div class="stat-n" id="g-done" style="color:#2d6e0a">0</div>
-          <div class="stat-l">Обработано</div>
+          <div class="stat-l" id="g-done-label">Готово полностью</div>
         </div>
         <div class="stat">
           <div class="stat-n" id="g-err" style="color:#a02020">0</div>
@@ -2647,6 +2647,7 @@ function clearAttachedFile() {
     const fill = document.getElementById('g-fill');
     const label = document.getElementById('g-label');
     const doneStat = document.getElementById('g-done');
+    const doneLabelStat = document.getElementById('g-done-label');
     const errorStat = document.getElementById('g-err');
     const totalStat = document.getElementById('g-total');
     const totalLabel = document.getElementById('g-total-label');
@@ -2669,9 +2670,33 @@ function clearAttachedFile() {
     const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
     const canDownloadOutput = status === 'completed' && outputFileCount > 0;
 
+    let doneValue = 0;
+    let doneLabel = 'Готово полностью';
+    if (status === 'running') {
+      if (stage === 'convert_pdf' || stage === 'finalize_output') {
+        doneValue = pdfProcessed;
+        doneLabel = 'PDF готово';
+      } else {
+        doneValue = processed;
+        doneLabel = 'DOCX готово';
+      }
+    } else if (status === 'completed') {
+      doneValue = total;
+      doneLabel = 'Готово полностью';
+    } else if (status === 'error') {
+      if (stage === 'convert_pdf' || stage === 'finalize_output') {
+        doneValue = pdfProcessed;
+        doneLabel = 'PDF готово';
+      } else {
+        doneValue = processed;
+        doneLabel = 'DOCX готово';
+      }
+    }
+
     if (totalStat && total > 0) totalStat.textContent = total.toLocaleString('ru');
     if (totalLabel && total > 0) totalLabel.textContent = total.toLocaleString('ru');
-    if (doneStat) doneStat.textContent = processed.toLocaleString('ru');
+    if (doneStat) doneStat.textContent = doneValue.toLocaleString('ru');
+    if (doneLabelStat) doneLabelStat.textContent = doneLabel;
     if (errorStat) errorStat.textContent = errors.toLocaleString('ru');
     if (inflectionSummaryEl) inflectionSummaryEl.textContent = formatInflectionSummary(inflectionSummary);
     setInflectionDownloadEnabled(status === 'completed' && inflectionTotal > 0);
