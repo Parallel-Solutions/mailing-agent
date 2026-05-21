@@ -2772,6 +2772,52 @@ function clearAttachedFile() {
     } catch (e) {}
   }
 
+  function parseUiTimestamp(value) {
+    const timestamp = Date.parse(String(value || ''));
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function senderStatusRank(status = 'idle') {
+    if (status === 'completed') return 50;
+    if (status === 'error') return 45;
+    if (status === 'stopped') return 40;
+    if (status === 'running') return 30;
+    return 10;
+  }
+
+  function senderStateVersion(state = {}) {
+    const baseTimestamp = parseUiTimestamp(state.completed_at || state.started_at);
+    return (baseTimestamp * 100) + senderStatusRank(String(state.status || 'idle'));
+  }
+
+  function shouldAcceptSenderUiState(next = {}, current = {}) {
+    const currentKeys = current && typeof current === 'object' ? Object.keys(current) : [];
+    if (!currentKeys.length) return true;
+
+    const nextStatus = String(next.status || 'idle');
+    const currentStatus = String(current.status || 'idle');
+    const nextVersion = senderStateVersion(next);
+    const currentVersion = senderStateVersion(current);
+
+    if (nextVersion > currentVersion) return true;
+    if (nextVersion < currentVersion) return false;
+
+    if (nextStatus === currentStatus) {
+      const nextProcessed = Number(next.processed_rows || 0);
+      const currentProcessed = Number(current.processed_rows || 0);
+      if (nextProcessed !== currentProcessed) return nextProcessed >= currentProcessed;
+
+      const nextSent = Number(next.sent_rows || (next.stats || {}).sent || 0);
+      const currentSent = Number(current.sent_rows || (current.stats || {}).sent || 0);
+      if (nextSent !== currentSent) return nextSent >= currentSent;
+    }
+
+    if (currentStatus === 'completed' && nextStatus !== 'completed') return false;
+    if (currentStatus === 'error' && nextStatus === 'running') return false;
+
+    return senderStatusRank(nextStatus) >= senderStatusRank(currentStatus);
+  }
+
   function humanAgentName(agent) {
     if (agent === 'generator') return 'агент-генератор';
     if (agent === 'philologist') return 'агент-филолог';
@@ -3181,6 +3227,10 @@ function clearAttachedFile() {
   }
 
   function setSenderUiState(result = {}) {
+        const previousSenderUiState = lastSenderUiState || {};
+        if (!shouldAcceptSenderUiState(result, previousSenderUiState)) {
+          return;
+        }
         lastSenderUiState = { ...result };
         scheduleUiStateSave();
         const badge = document.getElementById('s-badge');
@@ -3226,6 +3276,7 @@ function clearAttachedFile() {
       setSenderDownloadEnabled(canDownloadStatuses);
 
       if (status === 'running') {
+        senderRunning = true;
         badge.textContent = 'Проверяет';
         badge.className = 'badge badge-running';
         label.textContent = formatProgressText({
@@ -3241,6 +3292,7 @@ function clearAttachedFile() {
       }
 
       if (status === 'stopped') {
+        senderRunning = false;
         badge.textContent = 'Остановлено';
         badge.className = 'badge badge-wait';
         label.textContent = result.summary_text || 'Отправка остановлена пользователем';
@@ -3251,9 +3303,11 @@ function clearAttachedFile() {
       setSenderButtonsState({ running: false, canConfirm, canStop: false });
 
       if (status === 'completed') {
+        senderRunning = false;
         const isFailedSend = mode === 'send' && sent === 0 && errors > 0;
         badge.textContent = mode === 'dry_run' ? 'Проверено' : (isFailedSend ? 'Ошибка' : 'Готово');
         badge.className = isFailedSend ? 'badge badge-error' : 'badge badge-done';
+        setSenderButtonsState({ running: false, canConfirm: mode === 'dry_run' ? canConfirm : false, canStop: false });
         label.textContent = total > 0
           ? formatProgressText({
               processed: mode === 'send' ? processed : total,
@@ -3267,12 +3321,14 @@ function clearAttachedFile() {
       }
 
       if (status === 'error') {
+        senderRunning = false;
         badge.textContent = 'Ошибка';
         badge.className = 'badge badge-error';
         label.textContent = result.summary_text || 'Проверка завершилась с ошибкой';
         return;
       }
 
+      senderRunning = false;
       badge.textContent = 'Готов к проверке';
       badge.className = 'badge badge-idle';
       label.textContent = total > 0
