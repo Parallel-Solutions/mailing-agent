@@ -1950,6 +1950,9 @@ function clearAttachedFile() {
 
   // PHILOLOGIST
   let phRunning = false, philologistStatusPoll = null;
+  let currentGeneratorStatus = 'idle';
+  let currentPhilologistStatus = 'idle';
+  let currentSenderStatus = 'idle';
 
   function setPhilologistUiState(result = {}) {
     const badge = document.getElementById('ph-badge');
@@ -1963,6 +1966,7 @@ function clearAttachedFile() {
     const withIssues = Number(result.documents_with_issues || 0);
     const inflectionCount = Number(result.inflection_log_count || 0);
     const status = result.status || 'idle';
+    currentPhilologistStatus = status;
     const percent = total > 0 ? Math.round((processed / total) * 100) : (status === 'completed' ? 100 : 0);
     if (reportButton) reportButton.disabled = status === 'running' || (!processed && !inflectionCount);
 
@@ -2251,25 +2255,29 @@ function clearAttachedFile() {
     const philologistRunButton = document.getElementById('ph-run');
     const senderRunButton = document.getElementById('s-run');
     const senderConfirmButton = document.getElementById('s-confirm-send');
+    const generatorRunningNow = currentGeneratorStatus === 'running';
+    const philologistRunningNow = currentPhilologistStatus === 'running';
+    const senderRunningNow = currentSenderStatus === 'running';
+    const senderCanConfirmNow = senderConfirmButton?.dataset.canConfirm === 'true';
 
     applyButtonReadiness(
       generatorRunButton,
-      !!moduleReadiness.generator_ready && !parserRunning,
+      !!moduleReadiness.generator_ready && !parserRunning && !generatorRunningNow,
       moduleReadiness.generator_reason || 'Генератор пока нельзя запускать.'
     );
     applyButtonReadiness(
       philologistRunButton,
-      !!moduleReadiness.philologist_ready && !phRunning,
+      !!moduleReadiness.philologist_ready && !philologistRunningNow,
       moduleReadiness.philologist_reason || 'Филолог пока нельзя запускать.'
     );
     applyButtonReadiness(
       senderRunButton,
-      !!moduleReadiness.sender_ready && !senderRunning,
+      !!moduleReadiness.sender_ready && !senderRunningNow,
       moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.'
     );
     applyButtonReadiness(
       senderConfirmButton,
-      !!moduleReadiness.sender_ready && !senderRunning && !senderConfirmButton.disabled,
+      !!moduleReadiness.sender_ready && !senderRunningNow && senderCanConfirmNow,
       moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.'
     );
   }
@@ -2483,6 +2491,7 @@ function clearAttachedFile() {
     const inflectionTotal = Number(inflectionSummary.total || 0);
     const inflectionSummaryEl = document.getElementById('g-inflection-summary');
     const status = result.status || 'idle';
+    currentGeneratorStatus = status;
     const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
     const canDownloadOutput = status === 'completed' && outputFileCount > 0;
 
@@ -2583,6 +2592,7 @@ function clearAttachedFile() {
         : '';
     }
     if (confirmButton) {
+      confirmButton.dataset.canConfirm = canConfirm ? 'true' : 'false';
       confirmButton.disabled = running || !canConfirm || !moduleReadiness.sender_ready;
       confirmButton.title = (!running && !moduleReadiness.sender_ready)
         ? (moduleReadiness.sender_reason || 'Отправщик пока нельзя запускать.')
@@ -2616,6 +2626,7 @@ function clearAttachedFile() {
       );
       const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
         const status = result.status || 'idle';
+        currentSenderStatus = status;
         const mode = result.mode || 'dry_run';
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
         const hasPendingRows = Math.max(0, pending) > 0;
