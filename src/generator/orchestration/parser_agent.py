@@ -175,6 +175,34 @@ def _update_municipality_verification_state(
     _save_parser_state(state, job_id)
 
 
+def mark_municipality_verification_failed(
+    job_id: str | None,
+    *,
+    source: str,
+    reason: str,
+) -> dict[str, Any]:
+    result = {
+        "status": "error",
+        "updated_rows": 0,
+        "verified_rows": 0,
+        "kept_rows": 0,
+        "missing_rows": 0,
+        "replacements": [],
+        "replacement_samples": [],
+        "decision_samples": [],
+        "reason": reason,
+    }
+    _update_municipality_verification_state(
+        job_id,
+        status="error",
+        source=source,
+        summary_text=f"Проверка официальных названий МО остановлена: {reason}",
+        completed_at=datetime.now().isoformat(timespec="seconds"),
+        result=result,
+    )
+    return result
+
+
 def _municipality_verification_source_label(source: str) -> str:
     if source == "upload":
         return "после загрузки таблицы"
