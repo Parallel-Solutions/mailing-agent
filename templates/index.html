@@ -1183,6 +1183,7 @@
   let lastGeneratorUiState = {};
   let lastPhilologistUiState = {};
   let lastSenderUiState = {};
+  let isRestoringUiState = false;
 
   function getUiStateStorageKey(jobId = currentJobId) {
     const safeJobId = String(jobId || '').trim();
@@ -1258,6 +1259,7 @@
 
   function saveUiState() {
     if (!uiPersistenceEnabled) return;
+    if (isRestoringUiState) return;
     if (!currentJobId) return;
     const key = getUiStateStorageKey();
     if (!key) return;
@@ -1268,6 +1270,7 @@
   }
 
   function scheduleUiStateSave() {
+    if (isRestoringUiState) return;
     Promise.resolve().then(() => saveUiState());
   }
 
@@ -1314,13 +1317,7 @@
 
   function restoreUiState(snapshot) {
     if (!snapshot || typeof snapshot !== 'object') return;
-    if (snapshot.moduleReadiness && typeof snapshot.moduleReadiness === 'object') {
-      moduleReadiness = { ...moduleReadiness, ...snapshot.moduleReadiness };
-    }
     senderPreviewState = snapshot.senderPreviewState || null;
-    parserRunning = !!snapshot.parserRunning;
-    phRunning = !!snapshot.phRunning;
-    senderRunning = !!snapshot.senderRunning;
     flowNotificationState = snapshot.flowNotificationState || createFlowNotificationState();
     Object.assign(lastAgentEventIds, snapshot.lastAgentEventIds || {});
     Object.assign(chatSessions, snapshot.chatSessions || {});
@@ -1339,10 +1336,21 @@
       if (el) el.textContent = value;
     });
 
-    if (snapshot.parserUiState) setParserUiState(snapshot.parserUiState);
-    if (snapshot.generatorUiState) setGeneratorUiState(snapshot.generatorUiState);
-    if (snapshot.philologistUiState) setPhilologistUiState(snapshot.philologistUiState);
-    if (snapshot.senderUiState) setSenderUiState(snapshot.senderUiState);
+    isRestoringUiState = true;
+    try {
+      if (snapshot.parserUiState) setParserUiState({ ...snapshot.parserUiState, from_restore: true });
+      if (snapshot.generatorUiState) setGeneratorUiState({ ...snapshot.generatorUiState, from_restore: true });
+      if (snapshot.philologistUiState) setPhilologistUiState({ ...snapshot.philologistUiState, from_restore: true });
+      if (snapshot.senderUiState) setSenderUiState({ ...snapshot.senderUiState, from_restore: true });
+    } finally {
+      isRestoringUiState = false;
+    }
+
+    const parserVerificationStatus = String((lastParserUiState.municipality_name_verification_state || {}).status || 'idle');
+    parserRunning = currentParserStatus === 'running' || parserVerificationStatus === 'running';
+    phRunning = currentPhilologistStatus === 'running';
+    senderRunning = currentSenderStatus === 'running';
+    moduleReadiness = { ...moduleReadiness, ...inferLocalModuleReadiness() };
 
     if (snapshot.activeScreen) {
       goToScreen(snapshot.activeScreen, { scroll: false, persist: false });
@@ -1667,10 +1675,10 @@
       philologist_reason: '',
       sender_reason: '',
     };
-    setParserUiState({ status: 'idle', row_count: 0, task_stats: {} });
-    setGeneratorUiState({ status: 'idle', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
-    setPhilologistUiState({ status: 'idle', total_documents: 0, processed_documents: 0, fixed_documents: 0, documents_with_issues: 0 });
-    setSenderUiState({ status: 'idle', total_rows: 0, processed_rows: 0, ready_rows: 0, error_rows: 0, stats: { total: 0, sent: 0, error: 0, pending: 0 } });
+    setParserUiState({ force: true, status: 'idle', row_count: 0, task_stats: {} });
+    setGeneratorUiState({ force: true, status: 'idle', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
+    setPhilologistUiState({ force: true, status: 'idle', total_documents: 0, processed_documents: 0, fixed_documents: 0, documents_with_issues: 0 });
+    setSenderUiState({ force: true, status: 'idle', total_rows: 0, processed_rows: 0, ready_rows: 0, error_rows: 0, stats: { total: 0, sent: 0, error: 0, pending: 0 } });
     applyModuleReadiness();
   }
 
@@ -2081,6 +2089,7 @@ async function attachFile(input) {
   if (attachedName) attachedName.textContent = 'Загрузка ' + file.name + '...';
   if (attachedFile) attachedFile.style.display = 'block';
   setParserUiState({
+    force: true,
     status: 'idle',
     municipality_name_verification_state: {
       status: 'running',
@@ -2114,6 +2123,7 @@ async function attachFile(input) {
     const verification = data.municipality_name_verification || {};
     if (verification.status === 'ok') {
       setParserUiState({
+        force: true,
         status: 'idle',
         municipality_name_verification_state: {
           status: 'completed',
@@ -2137,6 +2147,7 @@ async function attachFile(input) {
       appendDownloadMessage('p-chat', [{ url: downloadUrl, label: 'Скачать обновлённый data.xlsx' }]);
     } else if (verification.status === 'error') {
       setParserUiState({
+        force: true,
         status: 'idle',
         municipality_name_verification_state: {
           status: 'error',
@@ -2187,20 +2198,26 @@ function clearAttachedFile() {
   }
 
   function setParserUiState(result = {}) {
-    lastParserUiState = { ...result };
+    const force = !!result.force;
+    const nextState = stripUiStateMeta(result);
+    if (!force && !shouldAcceptParserUiState(nextState, lastParserUiState)) {
+      return;
+    }
+    lastParserUiState = { ...nextState };
     scheduleUiStateSave();
     const badge = document.getElementById('p-badge');
     const fill = document.getElementById('p-fill');
     const label = document.getElementById('p-label');
     const runButton = document.getElementById('p-run');
-    const total = Number(result.row_count || 0);
-    const taskStats = result.task_stats || {};
+    const total = Number(nextState.row_count || 0);
+    const taskStats = nextState.task_stats || {};
     const inProgress = Number(taskStats.in_progress || 0);
     const pending = Number(taskStats.pending || 0);
     const claimed = inProgress + pending;
     const percent = total > 0 ? Math.round((claimed / total) * 100) : 0;
-    const status = result.status || 'idle';
-    const verificationState = result.municipality_name_verification_state || {};
+    const status = nextState.status || 'idle';
+    currentParserStatus = status;
+    const verificationState = nextState.municipality_name_verification_state || {};
     const verificationStatus = verificationState.status || 'idle';
 
     if (fill) fill.style.width = `${Math.max(0, Math.min(percent, 100))}%`;
@@ -2269,7 +2286,7 @@ function clearAttachedFile() {
   async function startParser() {
     await ensureCurrentJobId();
     parserRunning = true;
-    setParserUiState({ status: 'running', row_count: 0, task_stats: {} });
+    setParserUiState({ force: true, status: 'running', row_count: 0, task_stats: {} });
     appendChatMessage('p-chat', 'agent', 'Запускаю парсерский контур. Сейчас он примет задачи на дозаполнение от других агентов и покажет очередь на обработку.');
     try {
         const res = await fetch('/api/parser/start', {
@@ -2323,12 +2340,19 @@ function clearAttachedFile() {
 
   // PHILOLOGIST
   let phRunning = false, philologistStatusPoll = null;
+  let currentParserStatus = 'idle';
   let currentGeneratorStatus = 'idle';
   let currentPhilologistStatus = 'idle';
   let currentSenderStatus = 'idle';
 
   function setPhilologistUiState(result = {}) {
-    lastPhilologistUiState = { ...result };
+    const force = !!result.force;
+    const fromRestore = !!result.from_restore;
+    const nextState = stripUiStateMeta(result);
+    if (!force && !shouldAcceptPhilologistUiState(nextState, lastPhilologistUiState)) {
+      return;
+    }
+    lastPhilologistUiState = { ...nextState };
     scheduleUiStateSave();
     const badge = document.getElementById('ph-badge');
     const fill = document.getElementById('ph-fill');
@@ -2336,13 +2360,13 @@ function clearAttachedFile() {
     const runButton = document.getElementById('ph-run');
     const pauseButton = document.getElementById('ph-pause');
     const reportButton = document.getElementById('ph-download-report');
-    const total = Number(result.total_documents || 0);
-    const processed = Number(result.processed_documents || 0);
-    const fixed = Number(result.fixed_documents || 0);
-    const withIssues = Number(result.documents_with_issues || 0);
-    const inflectionCount = Number(result.inflection_log_count || 0);
-    const elapsedSeconds = Number(result.elapsed_seconds || 0);
-    const status = result.status || 'idle';
+    const total = Number(nextState.total_documents || 0);
+    const processed = Number(nextState.processed_documents || 0);
+    const fixed = Number(nextState.fixed_documents || 0);
+    const withIssues = Number(nextState.documents_with_issues || 0);
+    const inflectionCount = Number(nextState.inflection_log_count || 0);
+    const elapsedSeconds = Number(nextState.elapsed_seconds || 0);
+    const status = nextState.status || 'idle';
     currentPhilologistStatus = status;
     const percent = total > 0 ? Math.round((processed / total) * 100) : (status === 'completed' ? 100 : 0);
     if (reportButton) reportButton.disabled = status === 'running' || (!processed && !inflectionCount);
@@ -2396,7 +2420,7 @@ function clearAttachedFile() {
           })
         : 'Проверка завершена';
       setProgressVisual(fill, { percent: 100, running: false });
-      syncModuleReadinessFromUi();
+      if (!fromRestore && !isRestoringUiState) syncModuleReadinessFromUi();
       return;
     }
 
@@ -2404,7 +2428,7 @@ function clearAttachedFile() {
       runButton.textContent = 'Продолжить проверку';
       badge.textContent = 'Остановлено';
       badge.className = 'badge badge-wait';
-      label.textContent = result.summary_text || 'Проверка остановлена. Можно продолжить с сохраненного места.';
+      label.textContent = nextState.summary_text || 'Проверка остановлена. Можно продолжить с сохраненного места.';
       setProgressVisual(fill, { percent, running: false, indeterminate: false });
       if (pauseButton) {
         pauseButton.disabled = true;
@@ -2418,7 +2442,7 @@ function clearAttachedFile() {
       runButton.textContent = 'Запустить агента-филолога';
       badge.textContent = 'Ошибка';
       badge.className = 'badge badge-error';
-      label.textContent = result.summary_text || 'Проверка завершилась с ошибкой';
+      label.textContent = nextState.summary_text || 'Проверка завершилась с ошибкой';
       setProgressVisual(fill, { percent: total > 0 ? percent : 0, running: false });
       return;
     }
@@ -2436,7 +2460,7 @@ function clearAttachedFile() {
         })
       : 'Проверка документов ещё не запускалась.';
     setProgressVisual(fill, { percent: 0, running: false, indeterminate: false });
-    syncModuleReadinessFromUi();
+    if (!fromRestore && !isRestoringUiState) syncModuleReadinessFromUi();
   }
 
   async function refreshPhilologistStatus({ silent = false } = {}) {
@@ -2462,7 +2486,7 @@ function clearAttachedFile() {
     await ensureCurrentJobId();
     const isResume = currentPhilologistStatus === 'stopped';
     phRunning = true;
-    setPhilologistUiState({ status: 'running', total_documents: 0, processed_documents: 0 });
+    setPhilologistUiState({ force: true, status: 'running', total_documents: 0, processed_documents: 0 });
     appendChatMessage('g-chat', 'agent', isResume
       ? 'Продолжаю проверку документов с сохраненного места.'
       : 'Запускаю проверку документов. После завершения расскажу, что нашёл и что удалось исправить.');
@@ -2506,7 +2530,7 @@ function clearAttachedFile() {
         clearInterval(philologistStatusPoll);
         philologistStatusPoll = null;
       }
-      setPhilologistUiState({ status: 'error', summary_text: 'Проверка не завершилась' });
+      setPhilologistUiState({ force: true, status: 'error', summary_text: 'Проверка не завершилась' });
       appendChatMessage('g-chat', 'agent', 'Не удалось завершить проверку: ' + err.message);
       showToast('Ошибка агента-филолога');
     }
@@ -2590,7 +2614,7 @@ function clearAttachedFile() {
   async function startGenerator() {
     await ensureCurrentJobId();
     const isResume = currentGeneratorStatus === 'stopped';
-    setGeneratorUiState({ status: 'running', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
+    setGeneratorUiState({ force: true, status: 'running', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
     appendChatMessage('g-chat', 'agent', isResume
       ? 'Продолжаю генерацию с сохраненного места.'
       : 'Запускаю генератор документов. Сначала подготовлю строки и посчитаю общий объём, потом начну сборку DOCX и PDF.');
@@ -2608,7 +2632,7 @@ function clearAttachedFile() {
       const data = await res.json();
       if (!res.ok) {
         showToast('Ошибка: ' + (data.detail || 'неизвестная ошибка'));
-        setGeneratorUiState({ status: 'error', summary_text: data.detail || 'неизвестная ошибка' });
+        setGeneratorUiState({ force: true, status: 'error', summary_text: data.detail || 'неизвестная ошибка' });
         stopGeneratorPolling();
         return;
       }
@@ -2620,7 +2644,7 @@ function clearAttachedFile() {
       }
       } catch(e) {
       showToast('Ошибка соединения с сервером');
-      setGeneratorUiState({ status: 'error', summary_text: 'Ошибка соединения с сервером' });
+      setGeneratorUiState({ force: true, status: 'error', summary_text: 'Ошибка соединения с сервером' });
       stopGeneratorPolling();
     }
   }
@@ -2761,6 +2785,155 @@ function clearAttachedFile() {
   function parseUiTimestamp(value) {
     const timestamp = Date.parse(String(value || ''));
     return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function stripUiStateMeta(state = {}) {
+    const next = { ...state };
+    delete next.force;
+    delete next.from_restore;
+    return next;
+  }
+
+  function parserVerificationRank(status = 'idle') {
+    if (status === 'completed') return 60;
+    if (status === 'error') return 55;
+    if (status === 'running') return 50;
+    return 10;
+  }
+
+  function parserStatusRank(status = 'idle') {
+    if (status === 'completed') return 40;
+    if (status === 'error') return 35;
+    if (status === 'running') return 30;
+    return 10;
+  }
+
+  function parserStateVersion(state = {}) {
+    const taskStats = state.task_stats || {};
+    const verification = state.municipality_name_verification_state || {};
+    const claimed = Number(taskStats.in_progress || 0) + Number(taskStats.pending || 0);
+    return (
+      (parserVerificationRank(String(verification.status || 'idle')) * 1000000)
+      + (parserStatusRank(String(state.status || 'idle')) * 10000)
+      + (Number(state.row_count || 0) * 100)
+      + claimed
+    );
+  }
+
+  function shouldAcceptParserUiState(next = {}, current = {}) {
+    const currentKeys = current && typeof current === 'object' ? Object.keys(current) : [];
+    if (!currentKeys.length) return true;
+
+    const nextVersion = parserStateVersion(next);
+    const currentVersion = parserStateVersion(current);
+    if (nextVersion > currentVersion) return true;
+    if (nextVersion < currentVersion) return false;
+
+    const nextVerification = String((next.municipality_name_verification_state || {}).status || 'idle');
+    const currentVerification = String((current.municipality_name_verification_state || {}).status || 'idle');
+    if (nextVerification !== currentVerification) {
+      return parserVerificationRank(nextVerification) >= parserVerificationRank(currentVerification);
+    }
+
+    const nextClaimed = Number((next.task_stats || {}).in_progress || 0) + Number((next.task_stats || {}).pending || 0);
+    const currentClaimed = Number((current.task_stats || {}).in_progress || 0) + Number((current.task_stats || {}).pending || 0);
+    if (nextClaimed !== currentClaimed) return nextClaimed >= currentClaimed;
+
+    return Number(next.row_count || 0) >= Number(current.row_count || 0);
+  }
+
+  function generatorStatusRank(status = 'idle') {
+    if (status === 'completed') return 50;
+    if (status === 'error') return 45;
+    if (status === 'stopped') return 40;
+    if (status === 'running') return 30;
+    return 10;
+  }
+
+  function generatorStageRank(stage = '') {
+    if (stage === 'finalize_output') return 40;
+    if (stage === 'convert_pdf') return 30;
+    if (stage === 'render_docx') return 20;
+    if (stage === 'review_templates') return 10;
+    return 0;
+  }
+
+  function generatorStateVersion(state = {}) {
+    const baseTimestamp = parseUiTimestamp(state.completed_at || state.started_at);
+    return (
+      (baseTimestamp * 1000)
+      + (generatorStatusRank(String(state.status || 'idle')) * 10)
+      + generatorStageRank(String(state.stage || ''))
+    );
+  }
+
+  function shouldAcceptGeneratorUiState(next = {}, current = {}) {
+    const currentKeys = current && typeof current === 'object' ? Object.keys(current) : [];
+    if (!currentKeys.length) return true;
+
+    const nextStatus = String(next.status || 'idle');
+    const currentStatus = String(current.status || 'idle');
+    const nextVersion = generatorStateVersion(next);
+    const currentVersion = generatorStateVersion(current);
+
+    if (nextVersion > currentVersion) return true;
+    if (nextVersion < currentVersion) return false;
+
+    const nextStageValue = generatorStageRank(String(next.stage || ''));
+    const currentStageValue = generatorStageRank(String(current.stage || ''));
+    if (nextStageValue !== currentStageValue) return nextStageValue >= currentStageValue;
+
+    const nextProcessed = Number(next.processed_rows || 0);
+    const currentProcessed = Number(current.processed_rows || 0);
+    if (nextProcessed !== currentProcessed) return nextProcessed >= currentProcessed;
+
+    const nextPdfProcessed = Number(next.pdf_processed || next.staged_pdf_count || 0);
+    const currentPdfProcessed = Number(current.pdf_processed || current.staged_pdf_count || 0);
+    if (nextPdfProcessed !== currentPdfProcessed) return nextPdfProcessed >= currentPdfProcessed;
+
+    if (currentStatus === 'completed' && nextStatus !== 'completed') return false;
+    if (currentStatus === 'error' && nextStatus === 'running') return false;
+
+    return generatorStatusRank(nextStatus) >= generatorStatusRank(currentStatus);
+  }
+
+  function philologistStatusRank(status = 'idle') {
+    if (status === 'completed') return 50;
+    if (status === 'error') return 45;
+    if (status === 'stopped') return 40;
+    if (status === 'running') return 30;
+    return 10;
+  }
+
+  function philologistStateVersion(state = {}) {
+    const baseTimestamp = parseUiTimestamp(state.completed_at || state.started_at);
+    return (baseTimestamp * 100) + philologistStatusRank(String(state.status || 'idle'));
+  }
+
+  function shouldAcceptPhilologistUiState(next = {}, current = {}) {
+    const currentKeys = current && typeof current === 'object' ? Object.keys(current) : [];
+    if (!currentKeys.length) return true;
+
+    const nextStatus = String(next.status || 'idle');
+    const currentStatus = String(current.status || 'idle');
+    const nextVersion = philologistStateVersion(next);
+    const currentVersion = philologistStateVersion(current);
+
+    if (nextVersion > currentVersion) return true;
+    if (nextVersion < currentVersion) return false;
+
+    const nextProcessed = Number(next.processed_documents || 0);
+    const currentProcessed = Number(current.processed_documents || 0);
+    if (nextProcessed !== currentProcessed) return nextProcessed >= currentProcessed;
+
+    const nextFixed = Number(next.fixed_documents || 0);
+    const currentFixed = Number(current.fixed_documents || 0);
+    if (nextFixed !== currentFixed) return nextFixed >= currentFixed;
+
+    if (currentStatus === 'completed' && nextStatus !== 'completed') return false;
+    if (currentStatus === 'error' && nextStatus === 'running') return false;
+
+    return philologistStatusRank(nextStatus) >= philologistStatusRank(currentStatus);
   }
 
   function senderStatusRank(status = 'idle') {
@@ -3003,7 +3176,13 @@ function clearAttachedFile() {
   }
 
   function setGeneratorUiState(result = {}) {
-    lastGeneratorUiState = { ...result };
+    const force = !!result.force;
+    const fromRestore = !!result.from_restore;
+    const nextState = stripUiStateMeta(result);
+    if (!force && !shouldAcceptGeneratorUiState(nextState, lastGeneratorUiState)) {
+      return;
+    }
+    lastGeneratorUiState = { ...nextState };
     scheduleUiStateSave();
     const badge = document.getElementById('g-badge');
     const fill = document.getElementById('g-fill');
@@ -3015,22 +3194,22 @@ function clearAttachedFile() {
     const errorStat = document.getElementById('g-err');
     const totalStat = document.getElementById('g-total');
     const totalLabel = document.getElementById('g-total-label');
-    const total = Number(result.total_rows || 0);
-    const processed = Number(result.processed_rows || 0);
-    const ok = Number(result.ok_rows || 0);
-    const errors = Number(result.error_rows || 0);
-    const outputFileCount = Number(result.output_file_count || 0);
-    const stage = String(result.stage || '');
-    const stageText = String(result.stage_text || '').trim();
-    const stagedDocxCount = Number(result.staged_docx_count || 0);
-    const stagedPdfCount = Number(result.staged_pdf_count || 0);
-    const pdfTotal = Number(result.pdf_total || 0);
-    const pdfProcessed = Number(result.pdf_processed || stagedPdfCount || 0);
-    const elapsedSeconds = Number(result.elapsed_seconds || 0);
-    const inflectionSummary = result.inflection_summary || {};
+    const total = Number(nextState.total_rows || 0);
+    const processed = Number(nextState.processed_rows || 0);
+    const ok = Number(nextState.ok_rows || 0);
+    const errors = Number(nextState.error_rows || 0);
+    const outputFileCount = Number(nextState.output_file_count || 0);
+    const stage = String(nextState.stage || '');
+    const stageText = String(nextState.stage_text || '').trim();
+    const stagedDocxCount = Number(nextState.staged_docx_count || 0);
+    const stagedPdfCount = Number(nextState.staged_pdf_count || 0);
+    const pdfTotal = Number(nextState.pdf_total || 0);
+    const pdfProcessed = Number(nextState.pdf_processed || stagedPdfCount || 0);
+    const elapsedSeconds = Number(nextState.elapsed_seconds || 0);
+    const inflectionSummary = nextState.inflection_summary || {};
     const inflectionTotal = Number(inflectionSummary.total || 0);
     const inflectionSummaryEl = document.getElementById('g-inflection-summary');
-    const status = result.status || 'idle';
+    const status = nextState.status || 'idle';
     currentGeneratorStatus = status;
     const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
     const canDownloadOutput = status === 'completed' && outputFileCount > 0;
@@ -3099,7 +3278,7 @@ function clearAttachedFile() {
       badge.textContent = 'Генерация';
       badge.className = 'badge badge-running';
       if (stage === 'review_templates') {
-        label.textContent = result.summary_text || stageText || 'Проверяю и безопасно исправляю шаблоны перед генерацией.';
+        label.textContent = nextState.summary_text || stageText || 'Проверяю и безопасно исправляю шаблоны перед генерацией.';
       } else if (stage === 'convert_pdf' && pdfTotal > 0) {
         const etaSeconds = calculateEta({ processed: pdfProcessed, total: pdfTotal, elapsedSeconds });
         label.textContent = appendEtaText(
@@ -3158,7 +3337,7 @@ function clearAttachedFile() {
           })
         : 'Генерация завершена';
       setProgressVisual(fill, { percent: 100, running: false });
-      syncModuleReadinessFromUi();
+      if (!fromRestore && !isRestoringUiState) syncModuleReadinessFromUi();
       return;
     }
 
@@ -3170,7 +3349,7 @@ function clearAttachedFile() {
       }
       badge.textContent = 'Остановлено';
       badge.className = 'badge badge-wait';
-      label.textContent = result.summary_text || 'Генерация остановлена. Можно продолжить с сохраненного места.';
+      label.textContent = nextState.summary_text || 'Генерация остановлена. Можно продолжить с сохраненного места.';
       setProgressVisual(fill, { percent: overallGeneratorPercent, running: false });
       if (pauseButton) {
         pauseButton.disabled = true;
@@ -3184,16 +3363,8 @@ function clearAttachedFile() {
       if (runButton) runButton.textContent = 'Запустить генератор';
       badge.textContent = 'Ошибка';
       badge.className = 'badge badge-error';
-      label.textContent = result.summary_text || 'Генерация завершилась с ошибкой';
+      label.textContent = nextState.summary_text || 'Генерация завершилась с ошибкой';
       setProgressVisual(fill, { percent: overallGeneratorPercent, running: false, indeterminate: false });
-      return;
-    }
-
-    if (status === 'error') {
-      badge.textContent = 'Ошибка';
-      badge.className = 'badge badge-error';
-      label.textContent = result.summary_text || 'Генерация завершилась с ошибкой';
-      setProgressVisual(fill, { percent: overallGeneratorPercent, running: false });
       return;
     }
 
@@ -3300,45 +3471,47 @@ function clearAttachedFile() {
   }
 
   function setSenderUiState(result = {}) {
+        const force = !!result.force;
+        const nextState = stripUiStateMeta(result);
         const previousSenderUiState = lastSenderUiState || {};
-        if (!shouldAcceptSenderUiState(result, previousSenderUiState)) {
+        if (!force && !shouldAcceptSenderUiState(nextState, previousSenderUiState)) {
           return;
         }
-        lastSenderUiState = { ...result };
+        lastSenderUiState = { ...nextState };
         scheduleUiStateSave();
         const badge = document.getElementById('s-badge');
         const fill = document.getElementById('s-fill');
         const label = document.getElementById('s-label');
-      const processed = Number(result.processed_rows || 0);
-      const totalRaw = Number(result.total_rows || 0);
+      const processed = Number(nextState.processed_rows || 0);
+      const totalRaw = Number(nextState.total_rows || 0);
       const total = totalRaw > 0 ? totalRaw : (processed > 0 ? processed : 0);
-      const ready = Number(result.ready_rows || 0);
-      const errors = Number(result.error_rows || 0);
-      const stats = result.stats || {};
-      const sent = Math.max(Number(result.sent_rows || 0), Number(stats.sent || 0));
+      const ready = Number(nextState.ready_rows || 0);
+      const errors = Number(nextState.error_rows || 0);
+      const stats = nextState.stats || {};
+      const sent = Math.max(Number(nextState.sent_rows || 0), Number(stats.sent || 0));
       const totalFromStats = Number(stats.total || total);
       const errorFromStats = Number(stats.error || 0);
       const pending = Number(
-        result.remaining_rows != null
-          ? result.remaining_rows
+        nextState.remaining_rows != null
+          ? nextState.remaining_rows
           : (stats.pending != null ? stats.pending : Math.max(0, total - processed))
       );
       const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
-        const status = result.status || 'idle';
+        const status = nextState.status || 'idle';
         currentSenderStatus = status;
-        const mode = result.mode || 'dry_run';
+        const mode = nextState.mode || 'dry_run';
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
         const hasPendingRows = Math.max(0, pending) > 0;
         const hasReadyRows = ready > 0;
-        const isDryRunReady = status === 'completed' && result.mode === 'dry_run' && hasReadyRows;
+        const isDryRunReady = status === 'completed' && mode === 'dry_run' && hasReadyRows;
         const canResumeStopped = status === 'stopped' && hasPendingRows;
         const canConfirm = hasPreviewRows || isDryRunReady || canResumeStopped;
         const canDownloadStatuses = sent > 0;
 
-        if ((!senderPreviewState || !Array.isArray(senderPreviewState.rows) || !senderPreviewState.rows.length) && Array.isArray(result.rows) && result.rows.length) {
+        if ((!senderPreviewState || !Array.isArray(senderPreviewState.rows) || !senderPreviewState.rows.length) && Array.isArray(nextState.rows) && nextState.rows.length) {
           senderPreviewState = {
-            rows: result.rows,
-            summary_text: result.summary_text || ''
+            rows: nextState.rows,
+            summary_text: nextState.summary_text || ''
           };
         }
 
@@ -3368,7 +3541,7 @@ function clearAttachedFile() {
         senderRunning = false;
         badge.textContent = 'Остановлено';
         badge.className = 'badge badge-wait';
-        label.textContent = result.summary_text || 'Отправка остановлена пользователем';
+        label.textContent = nextState.summary_text || 'Отправка остановлена пользователем';
         setSenderButtonsState({ status: 'stopped', mode, canConfirm });
         return;
       }
@@ -3396,7 +3569,7 @@ function clearAttachedFile() {
         senderRunning = false;
         badge.textContent = 'Ошибка';
         badge.className = 'badge badge-error';
-        label.textContent = result.summary_text || 'Проверка завершилась с ошибкой';
+        label.textContent = nextState.summary_text || 'Проверка завершилась с ошибкой';
         return;
       }
 
