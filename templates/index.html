@@ -1002,7 +1002,7 @@
         </div>
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="g-run" onclick="startGenerator()">Запустить генератор</button>
-          <button class="btn-outline" id="g-pause" onclick="pauseGenerator()" style="display:none">Пауза</button>
+          <button class="btn-outline" id="g-pause" onclick="pauseGenerator()" disabled>Остановить</button>
         <button class="btn-outline" id="g-download-output" onclick="downloadWithJob('/api/download/output')">Скачать output.zip</button>
         </div>
       </div>
@@ -1022,7 +1022,7 @@
         </div>
         <div class="module-actions" style="margin-top:12px">
           <button class="btn-primary" id="ph-run" onclick="startPhilologist()">Запустить агента-филолога</button>
-          <button class="btn-outline" id="ph-pause" onclick="pausePhilologist()" style="display:none">Пауза</button>
+          <button class="btn-outline" id="ph-pause" onclick="pausePhilologist()" disabled>Остановить</button>
           <button class="btn-outline" id="ph-download-report" onclick="downloadWithJob('/api/download/correction-report')" disabled>Скачать журнал исправлений</button>
         </div>
       </div>
@@ -2364,9 +2364,9 @@ function clearAttachedFile() {
       runButton.textContent = 'Идёт проверка';
       runButton.title = '';
       if (pauseButton) {
-        pauseButton.style.display = '';
         pauseButton.disabled = false;
         pauseButton.textContent = 'Остановить';
+        pauseButton.title = '';
       }
       return;
     }
@@ -2376,8 +2376,9 @@ function clearAttachedFile() {
       ? (moduleReadiness.philologist_reason || 'Филолог пока нельзя запускать.')
       : '';
     if (pauseButton) {
-      pauseButton.style.display = 'none';
       pauseButton.disabled = true;
+      pauseButton.textContent = 'Остановить';
+      pauseButton.title = 'Остановка станет доступна после запуска проверки.';
     }
 
     if (status === 'completed') {
@@ -2404,6 +2405,11 @@ function clearAttachedFile() {
       badge.className = 'badge badge-wait';
       label.textContent = result.summary_text || 'Проверка остановлена. Можно продолжить с сохраненного места.';
       setProgressVisual(fill, { percent, running: false, indeterminate: false });
+      if (pauseButton) {
+        pauseButton.disabled = true;
+        pauseButton.textContent = 'Остановить';
+        pauseButton.title = 'Проверка уже остановлена. Можно продолжить с сохраненного места.';
+      }
       return;
     }
 
@@ -2897,8 +2903,9 @@ function clearAttachedFile() {
         : '';
     }
     if (pauseButton) {
-      pauseButton.style.display = isBusy ? '' : 'none';
+      pauseButton.textContent = 'Остановить';
       pauseButton.disabled = !isBusy;
+      pauseButton.title = isBusy ? '' : 'Остановка станет доступна после запуска генератора.';
     }
   }
 
@@ -3012,15 +3019,20 @@ function clearAttachedFile() {
       setGeneratorDownloadEnabled(false);
       setInflectionDownloadEnabled(false);
       setProgressVisual(fill, { percent: runningPercent, running: total > 0 || pdfTotal > 0, indeterminate: false });
+      if (pauseButton) {
+        pauseButton.disabled = false;
+        pauseButton.textContent = 'Остановить';
+        pauseButton.title = '';
+      }
       return;
     }
 
     setGeneratorButtonsBusy(false);
     setGeneratorDownloadEnabled(canDownloadOutput);
     if (pauseButton) {
-      pauseButton.style.display = 'none';
       pauseButton.disabled = true;
       pauseButton.textContent = 'Остановить';
+      pauseButton.title = 'Остановка станет доступна после запуска генератора.';
     }
 
     if (status === 'completed') {
@@ -3051,6 +3063,11 @@ function clearAttachedFile() {
       badge.className = 'badge badge-wait';
       label.textContent = result.summary_text || 'Генерация остановлена. Можно продолжить с сохраненного места.';
       setProgressVisual(fill, { percent: total > 0 ? percent : (pdfTotal > 0 ? Math.round((pdfProcessed / pdfTotal) * 100) : 0), running: false });
+      if (pauseButton) {
+        pauseButton.disabled = true;
+        pauseButton.textContent = 'Остановить';
+        pauseButton.title = 'Генерация уже остановлена. Можно продолжить с сохраненного места.';
+      }
       return;
     }
 
