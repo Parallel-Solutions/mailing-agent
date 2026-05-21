@@ -20,6 +20,8 @@ _philologist_threads: dict[str, threading.Thread] = {}
 _philologist_threads_lock = threading.Lock()
 _generator_threads: dict[str, threading.Thread] = {}
 _generator_threads_lock = threading.Lock()
+_parser_verification_threads: dict[str, threading.Thread] = {}
+_parser_verification_threads_lock = threading.Lock()
 
 
 @app.on_event("startup")
@@ -69,6 +71,10 @@ def _philologist_job_key(job_id: str | None) -> str:
 
 
 def _generator_job_key(job_id: str | None) -> str:
+    return str(job_id or "__legacy__")
+
+
+def _parser_job_key(job_id: str | None) -> str:
     return str(job_id or "__legacy__")
 
 
@@ -186,6 +192,16 @@ def _get_generator_thread(job_id: str | None) -> threading.Thread | None:
         return thread
 
 
+def _get_parser_verification_thread(job_id: str | None) -> threading.Thread | None:
+    key = _parser_job_key(job_id)
+    with _parser_verification_threads_lock:
+        thread = _parser_verification_threads.get(key)
+        if thread and not thread.is_alive():
+            _parser_verification_threads.pop(key, None)
+            return None
+        return thread
+
+
 def _register_sender_thread(job_id: str | None, thread: threading.Thread) -> None:
     with _sender_threads_lock:
         _sender_threads[_sender_job_key(job_id)] = thread
@@ -199,6 +215,11 @@ def _register_philologist_thread(job_id: str | None, thread: threading.Thread) -
 def _register_generator_thread(job_id: str | None, thread: threading.Thread) -> None:
     with _generator_threads_lock:
         _generator_threads[_generator_job_key(job_id)] = thread
+
+
+def _register_parser_verification_thread(job_id: str | None, thread: threading.Thread) -> None:
+    with _parser_verification_threads_lock:
+        _parser_verification_threads[_parser_job_key(job_id)] = thread
 
 
 def _compact_philologist_status(state: dict) -> dict:
@@ -276,6 +297,28 @@ def _run_generator_background(*, xlsx_path: Path, job_id: str | None) -> None:
     finally:
         with _generator_threads_lock:
             _generator_threads.pop(_generator_job_key(job_id), None)
+
+
+def _run_parser_verification_background(*, job_id: str | None, source: str) -> None:
+    logger.info("parser_upload_verification_background_started", job_id=job_id, source=source)
+    try:
+        result = run_parser_municipality_verification(job_id, source=source)
+        logger.info(
+            "parser_upload_verification_background_completed",
+            job_id=job_id,
+            source=source,
+            status=result.get("status"),
+            total_rows=result.get("total_rows"),
+            updated_rows=result.get("updated_rows"),
+            verified_rows=result.get("verified_rows"),
+            kept_rows=result.get("kept_rows"),
+            duration_seconds=(result.get("timings") or {}).get("overall_seconds"),
+        )
+    except Exception:
+        logger.exception("parser_upload_verification_background_failed", job_id=job_id, source=source)
+    finally:
+        with _parser_verification_threads_lock:
+            _parser_verification_threads.pop(_parser_job_key(job_id), None)
 
 
 def _prime_sender_running_state(job_id: str | None, transport: str | None) -> dict:
@@ -373,6 +416,7 @@ async def upload_data(
     username: str = Depends(check_auth),
 ):
     request_started = perf_counter()
+    logger.info("upload_data_request_started", filename=file.filename, requested_job_id=job_id)
     paths = resolve_job_paths(job_id)
     if not paths.uses_legacy_layout and paths.data_xlsx.exists():
         fresh_job_id = create_job_id()
@@ -387,20 +431,43 @@ async def upload_data(
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     file_save_seconds = round(perf_counter() - file_save_started, 3)
-    verification_started = perf_counter()
-    municipality_name_verification = run_parser_municipality_verification(paths.job_id, source="parser")
-    verification_seconds = round(perf_counter() - verification_started, 3)
+    logger.info(
+        "upload_data_file_saved",
+        filename=file.filename,
+        job_id=paths.job_id,
+        file_save_seconds=file_save_seconds,
+        request_seconds=round(perf_counter() - request_started, 3),
+    )
+
+    existing_thread = _get_parser_verification_thread(paths.job_id)
+    if existing_thread is None:
+        verification_thread = threading.Thread(
+            target=_run_parser_verification_background,
+            kwargs={"job_id": paths.job_id, "source": "upload"},
+            daemon=True,
+            name=f"parser-verify-{_parser_job_key(paths.job_id)}",
+        )
+        _register_parser_verification_thread(paths.job_id, verification_thread)
+        verification_thread.start()
+        logger.info("upload_data_verification_scheduled", filename=file.filename, job_id=paths.job_id)
+    else:
+        logger.info("upload_data_verification_already_running", filename=file.filename, job_id=paths.job_id)
+
     return {
         "status": "ok",
         "filename": file.filename,
         "job_id": paths.job_id,
         "data_download_url": f"/api/download/data-xlsx?job_id={paths.job_id}",
+        "verification_background": True,
+        "municipality_name_verification_state": {
+            "status": "running",
+            "source": "upload",
+            "summary_text": "Файл загружен. Идёт проверка официальных названий МО после загрузки таблицы.",
+        },
         "timings": {
             "file_save_seconds": file_save_seconds,
-            "verification_seconds": verification_seconds,
             "request_seconds": round(perf_counter() - request_started, 3),
         },
-        "municipality_name_verification": municipality_name_verification,
     }
 
 
