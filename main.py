@@ -71,6 +71,70 @@ def _generator_job_key(job_id: str | None) -> str:
     return str(job_id or "__legacy__")
 
 
+def _latest_matching_file(
+    directories: list[Path],
+    *,
+    pattern: str,
+    exclude_substring: str | None = None,
+) -> Path | None:
+    latest_path: Path | None = None
+    latest_mtime = -1.0
+    for directory in directories:
+        if not directory.exists():
+            continue
+        for path in directory.glob(pattern):
+            if exclude_substring and exclude_substring in path.name:
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime >= latest_mtime:
+                latest_mtime = mtime
+                latest_path = path
+    return latest_path
+
+
+def _latest_tree_mtime(root: Path) -> float:
+    latest_mtime = 0.0
+    if not root.exists():
+        return latest_mtime
+    try:
+        latest_mtime = root.stat().st_mtime
+    except OSError:
+        latest_mtime = 0.0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            latest_mtime = max(latest_mtime, path.stat().st_mtime)
+        except OSError:
+            continue
+    return latest_mtime
+
+
+def _job_state_dir(job_id: str | None) -> Path:
+    paths = resolve_job_paths(job_id)
+    state_dir = paths.root_dir / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir
+
+
+def _resolve_cached_output_archive(job_id: str | None) -> tuple[Path, bool]:
+    job_paths = resolve_job_paths(job_id)
+    output_dir = job_paths.output_dir
+    archive_path = _job_state_dir(job_id) / "output.zip"
+    if not output_dir.exists():
+        return archive_path, False
+    if not archive_path.exists():
+        return archive_path, False
+    try:
+        archive_mtime = archive_path.stat().st_mtime
+    except OSError:
+        return archive_path, False
+    return archive_path, archive_mtime >= _latest_tree_mtime(output_dir)
+
+
 def _get_sender_thread(job_id: str | None) -> threading.Thread | None:
     key = _sender_job_key(job_id)
     with _sender_threads_lock:
@@ -769,7 +833,6 @@ async def generator_stop(payload: dict | None = Body(default=None), username: st
 
 from fastapi.responses import FileResponse
 import zipfile
-import tempfile
 
 PUBLIC_ASSETS_DIR = Path("src/generator/assets")
 
@@ -803,15 +866,16 @@ async def download_output(job_id: str | None = None, username: str = Depends(che
     output_dir = resolve_job_paths(job_id).output_dir
     if not output_dir.exists() or not list(output_dir.rglob("*.*")):
         raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
-    
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in output_dir.rglob("*"):
-            if f.is_file():
-                zf.write(f, f.relative_to(output_dir))
-    
+
+    archive_path, cache_is_fresh = _resolve_cached_output_archive(job_id)
+    if not cache_is_fresh:
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in output_dir.rglob("*"):
+                if f.is_file():
+                    zf.write(f, f.relative_to(output_dir))
+
     return FileResponse(
-        tmp.name,
+        archive_path,
         media_type="application/zip",
         filename="output.zip"
     )
@@ -831,9 +895,8 @@ async def download_data_xlsx(job_id: str | None = None, username: str = Depends(
 @app.get("/api/parser/download-result")
 async def download_parser_result(job_id: str | None = None, username: str = Depends(check_auth)):
     """Скачать последний обработанный файл."""
-    search_dirs = []
+    search_dirs: list[Path] = []
 
-    # Папка job_id (если есть)
     try:
         paths = resolve_job_paths(job_id)
         if paths.output_dir.exists():
@@ -841,31 +904,25 @@ async def download_parser_result(job_id: str | None = None, username: str = Depe
     except Exception:
         pass
 
-    # Папка нашего парсера
     parser_output = Path(__file__).parent / "src" / "parser_new" / "output" / "latest"
     if parser_output.exists():
         search_dirs.append(parser_output)
 
-    # Ищем самый свежий xlsx во всех папках
-    all_files = []
-    for d in search_dirs:
-        all_files.extend([f for f in d.glob("*.xlsx") if "FAILED" not in f.name])
-
-    if not all_files:
+    latest = _latest_matching_file(search_dirs, pattern="*.xlsx", exclude_substring="FAILED")
+    if latest is None:
         raise HTTPException(status_code=404, detail="Файл результата не найден")
 
-    latest = max(all_files, key=lambda p: p.stat().st_mtime)
     return FileResponse(
         latest,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=latest.name,
     )
- 
- 
+
+
 @app.get("/api/parser/download-failed")
 async def download_parser_failed(job_id: str | None = None, username: str = Depends(check_auth)):
     """Скачать файл с непроверенными МО."""
-    search_dirs = []
+    search_dirs: list[Path] = []
 
     try:
         paths = resolve_job_paths(job_id)
@@ -878,20 +935,15 @@ async def download_parser_failed(job_id: str | None = None, username: str = Depe
     if parser_output.exists():
         search_dirs.append(parser_output)
 
-    all_files = []
-    for d in search_dirs:
-        all_files.extend(d.glob("*FAILED*.xlsx"))
-
-    if not all_files:
+    latest = _latest_matching_file(search_dirs, pattern="*FAILED*.xlsx")
+    if latest is None:
         raise HTTPException(status_code=404, detail="Файл непроверенных не найден")
 
-    latest = max(all_files, key=lambda p: p.stat().st_mtime)
     return FileResponse(
         latest,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=latest.name,
     )
-
 
 @app.get("/api/download/sent-mail-log")
 async def download_sent_mail_log(job_id: str | None = None, username: str = Depends(check_auth)):
