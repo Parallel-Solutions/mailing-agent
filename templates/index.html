@@ -3472,14 +3472,22 @@ function clearAttachedFile() {
         const limit = getSenderBatchLimit();
         const transport = getSenderTransport();
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
+        const hasPreviousSendProgress = Number((lastSenderUiState && lastSenderUiState.sent_rows) || 0) > 0
+          || Number((((lastSenderUiState && lastSenderUiState.stats) || {}).sent) || 0) > 0;
         if (!hasPreviewRows) {
           safeAppendChatMessage('s-chat', 'agent', 'Продолжаю отправку с первой строки без статуса ОК. Уже отправленные письма повторно не уйдут.');
         }
-        if (!confirm('Запустить реальную отправку писем?')) {
+        const confirmText = hasPreviousSendProgress
+          ? 'Запустить доотправку писем? data.xlsx и журнал отправки обновятся по новым письмам, уже отправленные повторно не уйдут.'
+          : 'Запустить реальную отправку писем?';
+        if (!confirm(confirmText)) {
           return;
         }
       senderRunning = true;
       setSenderButtonsState({ status: 'running', mode: 'send', canConfirm: false });
+      if (hasPreviousSendProgress) {
+        safeAppendChatMessage('s-chat', 'agent', 'Запускаю доотправку. По новым письмам обновятся STATUS в data.xlsx и журнал отправки, уже отправленные письма повторно не уйдут.');
+      }
       safeAppendChatMessage('s-chat', 'agent', 'Подтверждение получено. Запускаю реальную отправку через UniSender.');
 
       const res = await fetch('/api/sender/run', {
