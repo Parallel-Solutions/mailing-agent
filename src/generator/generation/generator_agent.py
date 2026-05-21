@@ -29,11 +29,18 @@ from src.generator.generation.config_generator import (
     START_OUTGOING_NUMBER,
     WEB_CASE_AGENT_MAX_WORKERS,
 )
-from src.generator.generation.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
+from src.generator.generation.document_builder import (
+    CONTRACT_TEMPLATE_FILENAME,
+    KP_TEMPLATE_FILENAME,
+    cleanup_batch_docx_dir,
+    generate_documents_for_row,
+)
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.pdf_converter import convert_docx_batch
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
 from src.generator.generation.transforms import build_document_context
+from src.generator.philologist.document_review_agent import review_docx
+from src.generator.philologist.philologist_agent import _auto_fix_docx
 from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
 from src.utils.config import settings
 from src.utils.logger import logger
@@ -56,6 +63,7 @@ GENERATOR_STATE: dict[str, Any] = {
     "output_file_count": 0,
     "summary_text": "Агент-генератор ещё не запускался.",
     "results": [],
+    "template_review": {},
     "completed_result_indices": [],
     "stop_requested": False,
     "stop_requested_at": None,
@@ -130,6 +138,14 @@ def _format_generator_summary(
         f"Агент-генератор завершил обработку: всего {state.get('total_rows', 0)}, "
         f"успешно {state.get('ok_rows', 0)}, ошибок {state.get('error_rows', 0)}."
     )
+    template_review = state.get("template_review") or {}
+    template_applied = int(template_review.get("applied_fix_count", 0) or 0)
+    template_documents = int(template_review.get("checked_templates", 0) or 0)
+    if template_documents > 0:
+        base += (
+            f" Перед генерацией проверено шаблонов: {template_documents}, "
+            f"исправлено мест в шаблонах: {template_applied}."
+        )
     inflection_summary = state.get("inflection_summary") or {}
     if inflection_summary.get("total"):
         by_method = inflection_summary.get("by_method") or {}
@@ -141,6 +157,67 @@ def _format_generator_summary(
     if philologist_started_rows > 0:
         base += f" Филолог автоматически запущен по {philologist_started_rows} строкам."
     return base
+
+
+def _template_review_report_items(template_review: dict[str, Any]) -> list[str]:
+    items: list[str] = []
+    for item in template_review.get("templates", []) or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "Шаблон")
+        issue_count = int(item.get("issue_count", 0) or 0)
+        applied = int(item.get("applied_fix_count", 0) or 0)
+        skipped = int(item.get("skipped_fix_count", 0) or 0)
+        items.append(f"{label}: найдено {issue_count}, исправлено {applied}, оставлено на ручную проверку {skipped}")
+    return items
+
+
+def review_templates_before_generation(job_id: str | None) -> dict[str, Any]:
+    job_paths = resolve_job_paths(job_id)
+    templates_dir = None if job_paths.uses_legacy_layout else job_paths.templates_dir
+    if templates_dir is None:
+        return {"checked_templates": 0, "applied_fix_count": 0, "skipped_fix_count": 0, "issue_count": 0, "templates": []}
+
+    templates = [
+        ("КП", templates_dir / KP_TEMPLATE_FILENAME),
+        ("Договор", templates_dir / CONTRACT_TEMPLATE_FILENAME),
+    ]
+    report: dict[str, Any] = {
+        "checked_templates": 0,
+        "issue_count": 0,
+        "applied_fix_count": 0,
+        "skipped_fix_count": 0,
+        "templates": [],
+    }
+    for label, path in templates:
+        if not path.exists():
+            continue
+        review_result = review_docx(path, ai_enabled=False, force_full_review=True)
+        fix_result = _auto_fix_docx(
+            path,
+            review_result,
+            client=None,
+            tool_runner=None,
+            use_llm_strategy=False,
+            use_rag_decisions=False,
+        )
+        report["checked_templates"] += 1
+        report["issue_count"] += int(review_result.get("issue_count", 0) or 0)
+        report["applied_fix_count"] += int(fix_result.get("applied_fix_count", 0) or 0)
+        report["skipped_fix_count"] += int(fix_result.get("skipped_fix_count", 0) or 0)
+        report["templates"].append(
+            {
+                "label": label,
+                "path": str(path),
+                "issue_count": int(review_result.get("issue_count", 0) or 0),
+                "applied_fix_count": int(fix_result.get("applied_fix_count", 0) or 0),
+                "skipped_fix_count": int(fix_result.get("skipped_fix_count", 0) or 0),
+                "applied_fixes": fix_result.get("applied_fixes", []),
+                "skipped_fixes": fix_result.get("skipped_fixes", []),
+            }
+        )
+    report["summary_lines"] = _template_review_report_items(report)
+    return report
 
 
 def cleanup_batch_pdf_dir(batch_pdf_dir: Path | None = None) -> None:
@@ -405,15 +482,16 @@ def prime_generator_state(
             "processed_rows": 0,
             "ok_rows": 0,
             "error_rows": 0,
-            "stage": "render_docx",
-            "stage_text": "Создаю DOCX из шаблонов.",
+            "stage": "review_templates",
+            "stage_text": "Проверяю и исправляю шаблоны перед генерацией.",
             "staged_docx_count": 0,
             "staged_pdf_count": 0,
             "pdf_total": 0,
             "pdf_processed": 0,
             "output_file_count": 0,
-            "summary_text": f"Агент-генератор запущен. Подготовил {len(rows)} строк к обработке.",
+            "summary_text": f"Агент-генератор запущен. Сначала проверю шаблоны, затем подготовлю {len(rows)} строк к обработке.",
             "results": [],
+            "template_review": {},
             "inflection_summary": {},
             "municipality_name_verification": {},
             "philologist_result": None,
@@ -489,17 +567,24 @@ def run_generator_agent(
             "ok_rows": state.get("ok_rows", 0) if was_stopped else 0,
             "error_rows": state.get("error_rows", 0) if was_stopped else 0,
             "stage": resume_stage,
-            "stage_text": "Создаю DOCX из шаблонов." if resume_stage == "render_docx" else str(state.get("stage_text") or ""),
+            "stage_text": (
+                "Проверяю и исправляю шаблоны перед генерацией."
+                if resume_stage == "review_templates"
+                else "Создаю DOCX из шаблонов."
+                if resume_stage == "render_docx"
+                else str(state.get("stage_text") or "")
+            ),
             "summary_text": (
                 f"Продолжаю генерацию с сохраненного места. Уже обработано {len(completed_result_indices)} из {len(rows)} строк."
                 if was_stopped
                 else (
-                    f"Агент-генератор запущен. Подготовил {len(rows)} строк к обработке."
+                    f"Агент-генератор запущен. Сначала проверю шаблоны, затем подготовлю {len(rows)} строк к обработке."
                     if not claimed_tasks
                     else f"Агент-генератор запущен. Подготовил {len(rows)} строк и принял {len(claimed_tasks)} внутренних задач."
                 )
             ),
             "results": restored_results,
+            "template_review": state.get("template_review", {}) if was_stopped else {},
             "completed_result_indices": sorted(completed_result_indices),
             "stop_requested": False,
             "stop_requested_at": None,
@@ -537,6 +622,26 @@ def run_generator_agent(
     _save_generator_state(state, job_id)
 
     try:
+        if resume_stage == "review_templates":
+            _refresh_generator_stop_flag(state, job_id)
+            if state.get("stop_requested"):
+                raise GeneratorStopRequested("Генерация остановлена до начала обработки строк.")
+            template_review = review_templates_before_generation(job_id)
+            state["template_review"] = template_review
+            state["stage"] = "render_docx"
+            state["stage_text"] = "Создаю DOCX из шаблонов."
+            if int(template_review.get("applied_fix_count", 0) or 0) > 0:
+                state["summary_text"] = (
+                    "Шаблоны проверены и безопасные правки применены. "
+                    + " ".join(template_review.get("summary_lines", [])[:2])
+                ).strip()
+            elif int(template_review.get("checked_templates", 0) or 0) > 0:
+                state["summary_text"] = (
+                    f"Шаблоны проверены: {template_review.get('checked_templates', 0)}. "
+                    "Критичных языковых правок в шаблонах не понадобилось."
+                )
+            _save_generator_state(state, job_id)
+
         remaining_payloads = [payload for payload in payloads if payload[0] not in completed_result_indices]
 
         if resume_stage == "render_docx" and ENABLE_CASE_AGENT:
