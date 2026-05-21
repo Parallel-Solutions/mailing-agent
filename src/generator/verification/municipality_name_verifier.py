@@ -317,7 +317,7 @@ def verify_municipality_name(
                 return MunicipalityNameVerification(
                     row_id=_clean(row.get("ID")),
                     original_name=current_name,
-                    official_name=normalized,
+                    official_name=normalize_municipality_display_name(oktmo_result.name),
                     status="verified",
                     confidence="high",
                     source="oktmo+ADM_NAME",
@@ -389,7 +389,7 @@ def verify_municipality_name(
                 return MunicipalityNameVerification(
                     row_id=_clean(row.get("ID")),
                     original_name=current_name,
-                    official_name=normalized,
+                    official_name=normalize_municipality_display_name(oktmo_result.name),
                     status="verified",
                     confidence="high",
                     source="oktmo+ADM_NAME",
@@ -1225,7 +1225,31 @@ def _compose_settlement_name(prefix: str, tail: str) -> str:
     )
     if lowered_tail.startswith(locality_prefixes):
         return f"{normalized_prefix} {normalized_tail}".strip()
-    return f"{normalized_tail} {normalized_prefix.lower()}".strip()
+    if " " in normalized_tail:
+        return f"{normalized_prefix} {normalized_tail}".strip()
+    return f"{_settlement_adjective_tail(normalized_tail)} {normalized_prefix.lower()}".strip()
+
+
+def _settlement_adjective_tail(value: str) -> str:
+    word = _readable_capitalized_word(_clean(value))
+    lowered = word.lower().replace("ё", "е")
+    if lowered.endswith(("ское", "цкое", "ое", "ее")):
+        return word
+    if lowered.endswith(("ский", "цкий")):
+        return word[:-2] + "ое"
+    if lowered.endswith(("ый", "ой", "ий")):
+        return word[:-2] + "ое"
+    if lowered.endswith(("ово", "ево", "ино", "ыно")):
+        return word[:-1] + "ское"
+    if lowered.endswith("ка") and len(word) > 4:
+        return word[:-2] + "ское"
+    if lowered.endswith("ск"):
+        return word + "ое"
+    if lowered.endswith(("а", "я")):
+        return word[:-1] + "ское"
+    if lowered.endswith("ь"):
+        return word[:-1] + "ское"
+    return word + "ское"
 
 
 def _unwrap_local_administration_candidate(value: str) -> str:
