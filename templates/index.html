@@ -1397,7 +1397,13 @@
     }
 
     if (stage && stage !== state.lastStage) {
-      if (stage === 'convert_pdf') {
+      if (stage === 'review_templates') {
+        announceProcessStep(
+          'g-chat',
+          'Проверяю шаблоны',
+          'Сначала проверяю и безопасно исправляю сами шаблоны документов, чтобы не повторять одни и те же языковые ошибки в каждом файле.'
+        );
+      } else if (stage === 'convert_pdf') {
         announceProcessStep(
           'g-chat',
           'DOCX готовы, начинаю PDF',
@@ -3033,7 +3039,9 @@ function clearAttachedFile() {
       badge.textContent = 'Генерация';
       badge.className = 'badge badge-running';
       let runningPercent = percent;
-      if (stage === 'convert_pdf' && pdfTotal > 0) {
+      if (stage === 'review_templates') {
+        label.textContent = result.summary_text || stageText || 'Проверяю и безопасно исправляю шаблоны перед генерацией.';
+      } else if (stage === 'convert_pdf' && pdfTotal > 0) {
         runningPercent = Math.max(0, Math.min(99, Math.round((pdfProcessed / pdfTotal) * 100)));
         const etaSeconds = calculateEta({ processed: pdfProcessed, total: pdfTotal, elapsedSeconds });
         label.textContent = appendEtaText(
