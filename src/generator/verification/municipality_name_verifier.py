@@ -334,10 +334,10 @@ def verify_municipality_name(
                     row_id=_clean(row.get("ID")),
                     original_name=current_name,
                     official_name=normalize_municipality_display_name(minjust_result.name),
-                    status="verified",
-                    confidence="high",
+                    status="kept",
+                    confidence="medium",
                     source="minjust",
-                    reason="Название извлечено из кавычек в ADM_NAME и подтверждено реестром муниципальных образований Минюста России.",
+                    reason="Название выглядит корректным и даже подтверждается Минюстом, но без подтверждения через ОКТМО автозамена отключена.",
                     source_url=minjust_result.source_url,
                 )
         if current_name and _normalize_for_match(current_name) == _normalize_for_match(normalized):
@@ -345,20 +345,20 @@ def verify_municipality_name(
                 row_id=_clean(row.get("ID")),
                 original_name=current_name,
                 official_name=normalized,
-                status="verified",
+                status="kept",
                 confidence="medium",
                 source="ADM_NAME+MUN_NAME",
-                reason="Название извлечено из кавычек в полном названии администрации и совпадает с MUN_NAME; замена не требуется.",
+                reason="Название извлечено из кавычек в полном названии администрации и совпадает с MUN_NAME, но без подтверждения через ОКТМО не считается подтвержденным.",
             )
         if _candidate_is_safe_for_autoreplace(normalized, current_name):
             return MunicipalityNameVerification(
                 row_id=_clean(row.get("ID")),
                 original_name=current_name,
                 official_name=normalized,
-                status="verified",
-                confidence="high",
+                status="kept",
+                confidence="medium",
                 source="ADM_NAME",
-                reason="Название извлечено из кавычек в полном названии администрации и признано безопасным для автозамены.",
+                reason="Название извлечено из кавычек в полном названии администрации и выглядит безопасным, но без подтверждения через ОКТМО автозамена отключена.",
             )
         return MunicipalityNameVerification(
             row_id=_clean(row.get("ID")),
@@ -406,10 +406,10 @@ def verify_municipality_name(
                     row_id=_clean(row.get("ID")),
                     original_name=current_name,
                     official_name=normalize_municipality_display_name(minjust_result.name),
-                    status="verified",
-                    confidence="high",
+                    status="kept",
+                    confidence="medium",
                     source="minjust",
-                    reason="Название извлечено из ADM_NAME и подтверждено реестром муниципальных образований Минюста России.",
+                    reason="Название выглядит корректным и даже подтверждается Минюстом, но без подтверждения через ОКТМО автозамена отключена.",
                     source_url=minjust_result.source_url,
                 )
         if current_name and _normalize_for_match(current_name) == _normalize_for_match(normalized):
@@ -417,10 +417,10 @@ def verify_municipality_name(
                 row_id=_clean(row.get("ID")),
                 original_name=current_name,
                 official_name=normalized,
-                status="verified",
+                status="kept",
                 confidence="medium",
                 source="ADM_NAME+MUN_NAME",
-                reason="Название извлечено из полного названия администрации без кавычек и совпадает с MUN_NAME; замена не требуется.",
+                reason="Название извлечено из полного названия администрации без кавычек и совпадает с MUN_NAME, но без подтверждения через ОКТМО не считается подтвержденным.",
             )
         return MunicipalityNameVerification(
             row_id=_clean(row.get("ID")),
@@ -454,10 +454,10 @@ def verify_municipality_name(
             row_id=_clean(row.get("ID")),
             original_name=current_name,
             official_name=normalize_municipality_display_name(current_name),
-            status="verified",
+            status="kept",
             confidence="medium",
             source="ADM_NAME+MUN_NAME",
-            reason="MUN_NAME согласован с названием администрации; замена не требуется.",
+            reason="MUN_NAME согласован с названием администрации, но без подтверждения через ОКТМО не считается подтвержденным.",
         )
 
     stripped_candidate = _extract_from_administration_name(adm_name)
@@ -479,10 +479,10 @@ def verify_municipality_name(
             row_id=_clean(row.get("ID")),
             original_name=current_name,
             official_name=expanded_current_name,
-            status="verified",
-            confidence="high",
+            status="kept",
+            confidence="medium",
             source="normalization",
-            reason="Сокращенная форма населенного пункта автоматически раскрыта до полного читаемого вида.",
+            reason="Сокращенная форма населенного пункта распознана, но без подтверждения через ОКТМО автоматическая замена отключена.",
         )
 
     if current_name:
@@ -1101,7 +1101,7 @@ def extract_municipality_name_from_administration(adm_name: str) -> str:
         if not match:
             continue
         tail = _normalize_adjective_settlement_name(match.group(1))
-        candidate = f"{prefix} {tail}".strip()
+        candidate = _compose_settlement_name(prefix, tail)
         if _looks_like_municipality(candidate):
             return candidate
 
@@ -1142,7 +1142,7 @@ def extract_municipality_name_from_administration(adm_name: str) -> str:
         if not match:
             continue
         tail = _normalize_locality_fragment(match.group(1))
-        candidate = f"{prefix} {tail}".strip()
+        candidate = _compose_settlement_name(prefix, tail)
         if _looks_like_municipality(candidate) and not _candidate_contains_region_tail(candidate):
             return candidate
     return ""
@@ -1166,10 +1166,34 @@ def _is_bare_locality_name(value: str) -> bool:
 def _compose_contextual_quoted_name(adm_name: str, candidate: str) -> str:
     adm_text = _clean(adm_name).lower()
     if "городского поселения" in adm_text or "городское поселение" in adm_text:
-        return f"Городское поселение {_normalize_locality_fragment(candidate)}".strip()
+        return _compose_settlement_name("Городское поселение", _normalize_locality_fragment(candidate))
     if "сельского поселения" in adm_text or "сельское поселение" in adm_text:
-        return f"Сельское поселение {_normalize_locality_fragment(candidate)}".strip()
+        return _compose_settlement_name("Сельское поселение", _normalize_locality_fragment(candidate))
     return ""
+
+
+def _compose_settlement_name(prefix: str, tail: str) -> str:
+    normalized_tail = _clean(tail)
+    normalized_prefix = _clean(prefix)
+    if not normalized_prefix:
+        return normalized_tail
+    if not normalized_tail:
+        return normalized_prefix
+    lowered_tail = _normalize_for_match(normalized_tail)
+    locality_prefixes = (
+        "город ",
+        "поселок ",
+        "посёлок ",
+        "рабочий поселок ",
+        "рабочий посёлок ",
+        "село ",
+        "деревня ",
+        "станица ",
+        "аул ",
+    )
+    if lowered_tail.startswith(locality_prefixes):
+        return f"{normalized_prefix} {normalized_tail}".strip()
+    return f"{normalized_tail} {normalized_prefix.lower()}".strip()
 
 
 def _unwrap_local_administration_candidate(value: str) -> str:
