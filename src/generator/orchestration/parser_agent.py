@@ -345,9 +345,26 @@ def get_parser_status(job_id: str | None = None) -> dict[str, Any]:
     state["task_stats"] = count_tasks_for_agent("parser", job_id=job_id)
     state["tasks"] = get_tasks_for_agent("parser", job_id=job_id)[:50]
     state["row_count"] = _row_count(job_id)
+    verification_result = state.get("municipality_name_verification") or {}
+    verification_state = dict(state.get("municipality_name_verification_state") or {})
+    if (
+        verification_result.get("status") == "ok"
+        and verification_state.get("status") not in {"running", "completed", "error"}
+    ):
+        verification_summary = format_municipality_verification_for_chat(verification_result)
+        verification_state.update(
+            {
+                "status": "completed",
+                "source": verification_state.get("source") or (verification_result.get("timings") or {}).get("source") or "upload",
+                "summary_text": verification_summary or "Проверка официальных названий МО завершена.",
+                "started_at": verification_state.get("started_at"),
+                "completed_at": verification_state.get("completed_at") or datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        state["municipality_name_verification_state"] = verification_state
     if state["status"] == "idle":
         verification_summary = format_municipality_verification_for_chat(
-            state.get("municipality_name_verification") or {}
+            verification_result
         )
         idle_summary = (
             f"В data.xlsx сейчас {state['row_count']} строк. "
