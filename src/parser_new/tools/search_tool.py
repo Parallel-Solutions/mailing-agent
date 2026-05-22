@@ -1,112 +1,104 @@
 """
-tools/search_tool.py — инструмент веб-поиска через Tavily.
+tools/search_tool.py — инструмент веб-поиска через Яндекс Search API.
 Используется агентом когда нужно найти что-то в интернете:
 официальный сайт организации, общую информацию, новости и т.д.
 """
 from __future__ import annotations
 
+import re
 import httpx
 from langchain.tools import tool
-from tenacity import retry, stop_after_attempt, wait_fixed
 
 from src.parser_new import config
 from src.parser_new.logger import logger
 
 
 # ==============================
-# НИЗКОУРОВНЕВЫЙ КЛИЕНТ TAVILY
+# ЯНДЕКС SEARCH API
 # ==============================
 
-TAVILY_URL = "https://api.tavily.com/search"
+_yandex_sdk = None
+_yandex_search = None
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-def _tavily_request(query: str, max_results: int, search_depth: str) -> dict:
+def _get_yandex_search():
+    global _yandex_sdk, _yandex_search
+    if _yandex_search is None:
+        from yandex_ai_studio_sdk import AIStudio
+        _yandex_sdk = AIStudio(
+            folder_id=config.YANDEX_FOLDER_ID,
+            auth=config.YANDEX_API_KEY,
+        )
+        _yandex_search = _yandex_sdk.search_api.web("RU", groups_on_page=5)
+    return _yandex_search
+
+
+def _parse_yandex_xml(xml_bytes: bytes) -> list[dict]:
+    """Парсит XML ответ Яндекса, возвращает список {url, title, content}."""
+    try:
+        xml_text = xml_bytes.decode("utf-8")
+    except Exception:
+        return []
+
+    results = []
+    for doc in re.findall(r"<doc>(.*?)</doc>", xml_text, re.DOTALL):
+        url_m = re.search(r"<url>(.*?)</url>", doc)
+        if not url_m:
+            continue
+        title_m = re.search(r"<title>(.*?)</title>", doc, re.DOTALL)
+        snippet_m = re.search(r"<passages>(.*?)</passages>", doc, re.DOTALL)
+
+        url = url_m.group(1).strip()
+        title = re.sub(r"<[^>]+>", "", title_m.group(1)).strip() if title_m else ""
+        content = re.sub(r"<[^>]+>", "", snippet_m.group(1)).strip() if snippet_m else ""
+        results.append({"url": url, "title": title, "content": content[:500]})
+    return results
+
+
+def web_search(query: str, max_results: int = 5, include_domains: list[str] | None = None) -> dict:
     """
-    Делает запрос к Tavily API.
-    Отдельная функция чтобы retry работал чисто.
-    """
-    response = httpx.post(
-        TAVILY_URL,
-        json={
-            "api_key":      config.TAVILY_API_KEY,
-            "query":        query,
-            "max_results":  max_results,
-            "search_depth": search_depth,   # "basic" быстро, "advanced" глубже
-            "include_answer":      True,    # Tavily сам формулирует краткий ответ
-            "include_raw_content": False,   # сырой HTML не нужен
-        },
-        timeout=20,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def web_search(query: str, max_results: int = 5, deep: bool = False) -> dict:
-    """
-    Выполняет поиск и возвращает структурированный результат.
+    Выполняет поиск через Яндекс и возвращает структурированный результат.
 
     Args:
-        query:       поисковый запрос
-        max_results: сколько результатов вернуть (1–10)
-        deep:        True = глубокий поиск, медленнее но точнее
+        query:          поисковый запрос
+        max_results:    сколько результатов вернуть (1–10)
+        include_domains: список доменов для ограничения поиска (например ["rusprofile.ru"])
 
     Returns:
         {
             "success": bool,
-            "answer":  str,          # краткий ответ от Tavily
-            "results": [             # список найденных страниц
+            "results": [
                 {
                     "title":   str,
                     "url":     str,
                     "content": str,  # фрагмент текста
-                    "score":   float # релевантность 0..1
                 },
                 ...
             ],
             "error": str  # только если success=False
         }
     """
-    if not config.TAVILY_API_KEY:
-        return {"success": False, "error": "TAVILY_API_KEY не задан в .env"}
+    if not config.YANDEX_API_KEY or not config.YANDEX_FOLDER_ID:
+        return {"success": False, "error": "YANDEX_API_KEY или YANDEX_FOLDER_ID не заданы в .env"}
 
     try:
-        logger.debug(f"[search] Запрос: {query!r} | deep={deep}")
+        search_query = query
+        if include_domains:
+            domain_filter = " OR ".join(f"site:{d}" for d in include_domains)
+            search_query = f"({domain_filter}) {query}"
 
-        data = _tavily_request(
-            query=query,
-            max_results=max_results,
-            search_depth="advanced" if deep else "basic",
-        )
+        logger.debug(f"[search] Яндекс запрос: {search_query!r}")
 
-        results = [
-            {
-                "title":   r.get("title", ""),
-                "url":     r.get("url", ""),
-                "content": r.get("content", "")[:500],  # обрезаем длинные фрагменты
-                "score":   round(r.get("score", 0), 3),
-            }
-            for r in data.get("results", [])
-        ]
+        search = _get_yandex_search()
+        xml_result = search.run(search_query, format="xml", page=0)
+        results = _parse_yandex_xml(xml_result)[:max_results]
 
         logger.info(f"[search] Найдено {len(results)} результатов для: {query!r}")
 
-        return {
-            "success": True,
-            "answer":  data.get("answer", ""),
-            "results": results,
-        }
-
-    except httpx.TimeoutException:
-        logger.warning(f"[search] Таймаут для запроса: {query!r}")
-        return {"success": False, "error": "Таймаут — Tavily не ответил за 20 секунд"}
-
-    except httpx.HTTPStatusError as e:
-        logger.error(f"[search] HTTP {e.response.status_code} для: {query!r}")
-        return {"success": False, "error": f"HTTP ошибка: {e.response.status_code}"}
+        return {"success": True, "results": results}
 
     except Exception as e:
-        logger.error(f"[search] Неожиданная ошибка: {e}")
+        logger.error(f"[search] Ошибка: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -117,25 +109,19 @@ def web_search(query: str, max_results: int = 5, deep: bool = False) -> dict:
 @tool
 def search_tool(query: str) -> str:
     """
-    Ищет информацию в интернете по запросу.
+    Ищет информацию в интернете по запросу через Яндекс.
     Используй когда нужно:
     - найти официальный сайт организации или администрации
     - найти общую информацию о чём-либо
     - найти контакты или адрес если других источников нет
-    Возвращает краткий ответ и список найденных страниц с URL.
+    Возвращает список найденных страниц с URL и фрагментами текста.
     """
     result = web_search(query, max_results=5)
 
     if not result["success"]:
         return f"Поиск не удался: {result['error']}"
 
-    # Форматируем для агента
-    lines = []
-
-    if result["answer"]:
-        lines.append(f"Краткий ответ: {result['answer']}\n")
-
-    lines.append("Найденные страницы:")
+    lines = ["Найденные страницы:"]
     for i, r in enumerate(result["results"], 1):
         lines.append(f"{i}. {r['title']}")
         lines.append(f"   URL: {r['url']}")
@@ -148,22 +134,17 @@ def search_tool(query: str) -> str:
 @tool
 def search_deep_tool(query: str) -> str:
     """
-    Глубокий поиск в интернете — медленнее но точнее обычного поиска.
+    Расширенный поиск в интернете через Яндекс — возвращает больше результатов.
     Используй когда обычный поиск не дал нужного результата,
     или когда задача требует точных данных (официальные документы,
     реквизиты, контакты конкретной организации).
     """
-    result = web_search(query, max_results=8, deep=True)
+    result = web_search(query, max_results=10)
 
     if not result["success"]:
-        return f"Глубокий поиск не удался: {result['error']}"
+        return f"Поиск не удался: {result['error']}"
 
-    lines = []
-
-    if result["answer"]:
-        lines.append(f"Краткий ответ: {result['answer']}\n")
-
-    lines.append("Найденные страницы:")
+    lines = ["Найденные страницы:"]
     for i, r in enumerate(result["results"], 1):
         lines.append(f"{i}. {r['title']}")
         lines.append(f"   URL: {r['url']}")
@@ -178,37 +159,31 @@ def search_official_site_tool(adm_name: str, fields_needed: str = "email тел�
     """
     Ищет официальный сайт администрации и извлекает недостающие контактные данные.
     Используй после checko_company_tool если email или телефон не найдены.
-    Исключает rusprofile.ru из поиска — ищет только официальные сайты.
+    Исключает rusprofile.ru из результатов — ищет только официальные сайты.
 
     Параметры:
       adm_name:      полное название администрации из столбца E
       fields_needed: какие поля ищем (например "email телефон глава")
     """
-    result = web_search(
-        f"{adm_name} официальный сайт",
-        max_results=5,
-        deep=True
-    )
+    result = web_search(f"{adm_name} официальный сайт", max_results=5)
 
     if not result["success"] or not result["results"]:
         return f"Официальный сайт не найден для: {adm_name}"
 
-    # Фильтруем rusprofile и похожие агрегаторы
+    # Фильтруем агрегаторы
     skip_domains = ["rusprofile.ru", "egrul.ru", "checko.ru", "sbis.ru",
                     "list-org.com", "orgpage.ru", "kartoteka.ru"]
 
-    official_urls = []
-    for r in result["results"]:
-        url = r["url"]
-        if not any(d in url for d in skip_domains):
-            official_urls.append(r)
+    official_urls = [
+        r for r in result["results"]
+        if not any(d in r["url"] for d in skip_domains)
+    ]
 
     if not official_urls:
         return f"Официальный сайт не найден (только агрегаторы) для: {adm_name}"
 
     # Парсим первый официальный сайт
     from src.parser_new.tools.scraper_tool import scrape_smart
-    import re
 
     best_url = official_urls[0]["url"]
     scrape_result = scrape_smart(best_url)

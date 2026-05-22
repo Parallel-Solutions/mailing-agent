@@ -56,6 +56,9 @@ def _build_tools() -> list:
     # from src.parser_new.tools.gov_tool import gov_tool
     # tools.append(gov_tool)
 
+    from src.parser_new.tools.batch_tool import batch_search_tool
+    tools.append(batch_search_tool)
+
     logger.info(f"Загружено инструментов: {len(tools)}")
     return tools
 

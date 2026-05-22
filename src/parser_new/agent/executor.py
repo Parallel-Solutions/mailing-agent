@@ -60,7 +60,7 @@ def get_agent():
 def _run_single_batch(task: str, chat_history: list[dict]) -> tuple[str, list[LogEntry]]:
     """Запускает одну задачу агента. Возвращает (текст_ответа, лог)."""
     log = []
-    history = format_chat_history(chat_history[:-1])
+    history = format_chat_history(chat_history)
     messages = history + [HumanMessage(content=task)]
     result = get_agent().invoke({"messages": messages})
     all_messages = result.get("messages", [])
