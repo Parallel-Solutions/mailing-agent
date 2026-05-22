@@ -318,8 +318,8 @@ def scraper_links_tool(url: str) -> str:
 @tool
 def rusprofile_tool(mun_name: str, district: str, region: str) -> str:
     """
-    Проверяет статус администрации МО на rusprofile.ru через Tavily.
-    Статус определяется из сниппета Tavily — без захода на страницу.
+    Проверяет статус администрации МО на rusprofile.ru через Яндекс Search API.
+    Статус определяется из сниппета — без захода на страницу.
     ИНН извлекается из сниппета или со страницы.
 
     Параметры:
@@ -330,38 +330,63 @@ def rusprofile_tool(mun_name: str, district: str, region: str) -> str:
     from bs4 import BeautifulSoup
     import httpx
     import re as _re
-    from tavily import TavilyClient
+    import time
 
     def check_org_valid(name: str) -> bool:
         name_lower = name.lower()
-        bad = ["культур","досуг","библиотек","музей","школ","больниц",
-               "спорт","казначейств","налогов","пенсион","соцзащит","мфц",
-               "водоканал","жкх","электросет","колхоз","совхоз"]
+        bad = ["культур", "досуг", "библиотек", "музей", "школ", "больниц",
+               "спорт", "казначейств", "налогов", "пенсион", "соцзащит", "мфц",
+               "водоканал", "жкх", "электросет", "колхоз", "совхоз"]
         if any(k in name_lower for k in bad):
             return False
-        good = ["администрац","сельсовет","поселени","мэри","управ","округ"]
+        good = ["администрац", "сельсовет", "поселени", "мэри", "управ", "округ"]
         return any(k in name_lower for k in good)
 
-    try:
-        client = TavilyClient(config.TAVILY_API_KEY)
-        query = f"{region} {district} {mun_name} администрация"
-        logger.info(f"[rusprofile] Поиск: {query}")
-
-        response = client.search(
-            query=query,
-            search_depth="advanced",
-            include_domains=["rusprofile.ru"],
-            max_results=5,
+    def check_liquidated(text: str) -> bool:
+        t = text.lower()
+        return bool(
+            _re.search(r"статус[:\s]+ликвидирован", t) or
+            _re.search(r"организация ликвидирована", t) or
+            _re.search(r"ликвидирована с \d{2}\.\d{2}\.\d{4}", t)
         )
 
-        results = response.get("results", [])
-        if not results:
-            return f"RUSPROFILE_NOT_FOUND: {mun_name}"
+    def parse_yandex_xml(xml_bytes: bytes) -> list[dict]:
+        try:
+            xml_text = xml_bytes.decode("utf-8")
+        except Exception:
+            return []
+        results = []
+        for doc in _re.findall(r"<doc>(.*?)</doc>", xml_text, _re.DOTALL):
+            url_m = _re.search(r"<url>(.*?)</url>", doc)
+            if not url_m:
+                continue
+            title_m = _re.search(r"<title>(.*?)</title>", doc, _re.DOTALL)
+            snippet_m = _re.search(r"<passages>(.*?)</passages>", doc, _re.DOTALL)
+            url = url_m.group(1).strip()
+            title = _re.sub(r"<[^>]+>", "", title_m.group(1)).strip() if title_m else ""
+            snippet = _re.sub(r"<[^>]+>", "", snippet_m.group(1)).strip() if snippet_m else ""
+            results.append({"url": url, "title": title, "snippet": snippet})
+        return results
 
-        # Берём лучший результат с /id/ в URL
+    if not config.YANDEX_API_KEY or not config.YANDEX_FOLDER_ID:
+        return f"RUSPROFILE_NOT_FOUND: YANDEX_API_KEY или YANDEX_FOLDER_ID не заданы в .env"
+
+    try:
+        from yandex_ai_studio_sdk import AIStudio
+        sdk = AIStudio(folder_id=config.YANDEX_FOLDER_ID, auth=config.YANDEX_API_KEY)
+        search = sdk.search_api.web("RU", groups_on_page=5)
+
+        query = f"site:rusprofile.ru {region} {district} {mun_name} администрация"
+        logger.info(f"[rusprofile] Яндекс поиск: {query}")
+
+        time.sleep(0.5)
+        xml_result = search.run(query, format="xml", page=0)
+        parsed = parse_yandex_xml(xml_result)
+
+        # Берём первый подходящий результат с /id/ в URL
         best = None
-        for r in sorted(results, key=lambda x: x.get("score", 0), reverse=True):
-            if "/id/" in r.get("url", ""):
+        for r in parsed:
+            if "rusprofile.ru" in r["url"] and "/id/" in r["url"]:
                 best = r
                 break
 
@@ -370,36 +395,47 @@ def rusprofile_tool(mun_name: str, district: str, region: str) -> str:
 
         company_url = best["url"]
         title = best.get("title", "")
-        snippet = best.get("content", "")
-        logger.info(f"[rusprofile] Лучший результат: {title} (score={best.get('score', 0):.3f})")
+        snippet = best.get("snippet", "")
+        logger.info(f"[rusprofile] Лучший результат: {title}")
 
         # Проверяем что это орган власти
         if title and not check_org_valid(title):
             logger.warning(f"[rusprofile] Нерелевантная организация: {title}")
             return f"RUSPROFILE_NOT_FOUND: нерелевантная организация ({title})"
 
-        # Определяем статус ТОЛЬКО из сниппета Tavily
-        # Ищем явное упоминание ликвидации рядом с названием организации
-        snippet_lower = snippet.lower()
+        full_text = title + " " + snippet
 
-        # Паттерн: "Статус: ликвидирован" или "организация ликвидирована с"
-        liquidated = bool(
-            _re.search(r"статус[:\s]+ликвидирован", snippet_lower) or
-            _re.search(r"организация ликвидирована", snippet_lower) or
-            _re.search(r"ликвидирована с \d{2}\.\d{2}\.\d{4}", snippet_lower)
-        )
+        # Определяем статус из сниппета
+        if check_liquidated(full_text):
+            logger.info(f"[rusprofile] Ликвидирована (из сниппета): {title}")
+            return (
+                f"ЛИКВИДИРОВАНА: {title}\n"
+                f"ДЕЙСТВИЕ: записать ADM_NAME=ликвидирована, перейти к следующему МО"
+            )
 
-        # Извлекаем ИНН из сниппета Tavily (быстро, без захода на страницу)
+        # Извлекаем ИНН из сниппета
         inn = ""
-        inn_match = _re.search(r"ИНН[/\s:]+(\d{10})", snippet)
+        inn_match = _re.search(r"ИНН[/\s:]+(\d{10})", full_text)
         if inn_match:
             inn = inn_match.group(1)
 
-        # Если ИНН не в сниппете — заходим на страницу только за ИНН
-        if not inn and not liquidated:
+        # Если ИНН не в сниппете — заходим на страницу
+        if not inn:
             try:
+                time.sleep(2)
                 resp = httpx.get(company_url, headers=HEADERS, timeout=10, follow_redirects=True)
                 soup = BeautifulSoup(resp.text, "lxml")
+
+                # Проверяем статус на странице
+                status_el = soup.select_one(".warning-text")
+                if status_el and ("ликвид" in status_el.get_text().lower() or
+                                  "не действ" in status_el.get_text().lower()):
+                    logger.info(f"[rusprofile] Ликвидирована (со страницы): {title}")
+                    return (
+                        f"ЛИКВИДИРОВАНА: {title}\n"
+                        f"ДЕЙСТВИЕ: записать ADM_NAME=ликвидирована, перейти к следующему МО"
+                    )
+
                 for row in soup.select(".company-row"):
                     txt = row.get_text()
                     if "ИНН" in txt:
@@ -407,22 +443,15 @@ def rusprofile_tool(mun_name: str, district: str, region: str) -> str:
                         if m:
                             inn = m.group()
                             break
-            except Exception:
-                pass
-
-        if liquidated:
-            logger.info(f"[rusprofile] Ликвидирована: {title}")
-            return (
-                f"ЛИКВИДИРОВАНА: {title}\n"
-                f"ДЕЙСТВИЕ: записать ADM_NAME=ликвидирована, перейти к следующему МО"
-            )
+            except Exception as e:
+                logger.debug(f"[rusprofile] Ошибка при заходе на страницу: {e}")
 
         logger.info(f"[rusprofile] Действует: {title}, ИНН: {inn}")
         if inn:
             return (
                 f"ДЕЙСТВУЕТ: {title}\n"
                 f"ИНН: {inn}\n"
-                f"ДЕЙСТВИЕ: вызови checko_company_tool(\'{inn}\')"
+                f"ДЕЙСТВИЕ: вызови checko_company_tool('{inn}')"
             )
         return f"ДЕЙСТВУЕТ: {title}\nИНН не найден — используй checko_search_tool"
 

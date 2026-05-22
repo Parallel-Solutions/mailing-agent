@@ -45,6 +45,8 @@ AGENT_VERBOSE      = os.getenv("AGENT_VERBOSE", "true").lower() == "true"
 TAVILY_API_KEY  = os.getenv("TAVILY_API_KEY", "")
 CHECKO_API_KEY  = os.getenv("CHECKO_API_KEY", "")
 TWOGIS_API_KEY  = os.getenv("TWOGIS_API_KEY", "")
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "")
+YANDEX_API_KEY   = os.getenv("YANDEX_API_KEY", "")
 
 
 # ==============================

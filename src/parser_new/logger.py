@@ -1,7 +1,3 @@
-"""
-logger.py — единый логгер для всего проекта.
-Используй везде: from src.parser_new.logger import logger
-"""
 import sys
 from loguru import logger
 from src.parser_new.config import LOG_FILE

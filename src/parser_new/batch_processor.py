@@ -3,31 +3,43 @@ batch_processor.py — детерминированный скрипт для з
 
 Работает БЕЗ LLM в основном цикле:
   1. Читает Excel — находит незаполненные строки
-  2. Для каждой строки: Tavily → rusprofile → ИНН → Checko → данные
+  2. Для каждой строки: Yandex Search → rusprofile → ИНН → Checko → данные
   3. Дополняет только пустые поля
-  4. Сохраняет прогресс после каждой строки
+  4. Сохраняет прогресс каждые N строк
 
-Запуск: python batch_processor.py --file путь/к/файлу.xlsx
+Запуск из консоли:
+  python batch_processor.py --file путь.xlsx
+  python batch_processor.py --file путь.xlsx --max-cycles 3
+
+Запуск из FastAPI:
+  from batch_processor import run
+  result = run(file_path, output_dir=str(job_output_dir))
 """
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import httpx
 from bs4 import BeautifulSoup
 from openpyxl import load_workbook
-from tavily import TavilyClient
 
 sys.path.insert(0, str(Path(__file__).parent))
-from src.parser_new import config
-from src.parser_new.logger import logger
+
+# Импорты адаптируются к контексту запуска
+try:
+    from src.parser_new import config
+    from src.parser_new.logger import logger
+    from src.parser_new.tools.regions import get_region_code
+except ImportError:
+    import config
+    from logger import logger
+    from tools.regions import get_region_code
 
 
 # ==============================
@@ -43,30 +55,15 @@ HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9",
 }
 
-# Колонки файла (индексы 1-based)
 COL = {
-    "ID":               1,
-    "SUB_RF":           2,
-    "MUN_R_NAME":       3,
-    "MUN_NAME":         4,
-    "ADM_NAME":         5,
-    "ADRES":            6,
-    "HEAD_FIO":         7,
-    "POPULATION":       8,
-    "EMAIL_OSN":        9,
-    "EMAIL_DOP":        10,
-    "TEL_OSN":          11,
-    "TEL_DOP":          12,
-    "REQUISITES_INN":   13,
-    "REQUISITES_KPP":   14,
-    "REQUISITES_OGRN":  15,
-    "REQUISITES_OKPO":  16,
-    "REQUISITES_OKTMO": 17,
-    "STATUS":           18,
-    "NOTE":             19,
+    "ID": 1, "SUB_RF": 2, "MUN_R_NAME": 3, "MUN_NAME": 4,
+    "ADM_NAME": 5, "ADRES": 6, "HEAD_FIO": 7, "POPULATION": 8,
+    "EMAIL_OSN": 9, "EMAIL_DOP": 10, "TEL_OSN": 11, "TEL_DOP": 12,
+    "REQUISITES_INN": 13, "REQUISITES_KPP": 14, "REQUISITES_OGRN": 15,
+    "REQUISITES_OKPO": 16, "REQUISITES_OKTMO": 17, "STATUS": 18, "NOTE": 19,
 }
 
-DATA_START_ROW = 3  # данные начинаются с 3-й строки (шапка 2 строки)
+DATA_START_ROW = 3
 
 
 # ==============================
@@ -75,40 +72,33 @@ DATA_START_ROW = 3  # данные начинаются с 3-й строки (ш
 
 @dataclass
 class MORecord:
-    """Данные одной строки из Excel."""
-    excel_row:    int
-    sub_rf:       str = ""
-    mun_r_name:   str = ""
-    mun_name:     str = ""
-    adm_name:     str = ""
-    adres:        str = ""
-    head_fio:     str = ""
-    population:   str = ""
-    email_osn:    str = ""
-    email_dop:    str = ""
-    tel_osn:      str = ""
-    tel_dop:      str = ""
-    inn:          str = ""
-    kpp:          str = ""
-    ogrn:         str = ""
-    okpo:         str = ""
-    oktmo:        str = ""
-    status:       str = ""
-    note:         str = ""
+    excel_row: int
+    sub_rf: str = ""
+    mun_r_name: str = ""
+    mun_name: str = ""
+    adm_name: str = ""
+    adres: str = ""
+    head_fio: str = ""
+    population: str = ""
+    email_osn: str = ""
+    email_dop: str = ""
+    tel_osn: str = ""
+    tel_dop: str = ""
+    inn: str = ""
+    kpp: str = ""
+    ogrn: str = ""
+    okpo: str = ""
+    oktmo: str = ""
+    status: str = ""
+    note: str = ""
 
     def missing_fields(self) -> list[str]:
-        """Возвращает список незаполненных полей."""
         checks = {
-            "ADM_NAME":         self.adm_name,
-            "ADRES":            self.adres,
-            "HEAD_FIO":         self.head_fio,
-            "EMAIL_OSN":        self.email_osn,
-            "TEL_OSN":          self.tel_osn,
-            "REQUISITES_INN":   self.inn,
-            "REQUISITES_KPP":   self.kpp,
-            "REQUISITES_OGRN":  self.ogrn,
-            "REQUISITES_OKPO":  self.okpo,
-            "REQUISITES_OKTMO": self.oktmo,
+            "ADM_NAME": self.adm_name, "ADRES": self.adres,
+            "HEAD_FIO": self.head_fio, "EMAIL_OSN": self.email_osn,
+            "TEL_OSN": self.tel_osn, "REQUISITES_INN": self.inn,
+            "REQUISITES_KPP": self.kpp, "REQUISITES_OGRN": self.ogrn,
+            "REQUISITES_OKPO": self.okpo, "REQUISITES_OKTMO": self.oktmo,
         }
         return [k for k, v in checks.items() if not v]
 
@@ -116,261 +106,342 @@ class MORecord:
         return len(self.missing_fields()) == 0
 
     def needs_processing(self) -> bool:
-        """Строка требует обработки если есть незаполненные поля."""
         return bool(self.mun_name or self.adm_name) and not self.is_complete()
 
 
 # ==============================
-# ЧТЕНИЕ EXCEL
+# ЧТЕНИЕ / ЗАПИСЬ EXCEL
 # ==============================
 
 def read_excel(file_path: str) -> tuple[object, list[MORecord]]:
-    """Читает Excel и возвращает (workbook, список строк требующих обработки)."""
     wb = load_workbook(file_path)
     ws = wb.active
-
     records = []
     for row_idx in range(DATA_START_ROW, ws.max_row + 1):
         def v(col_name: str) -> str:
             val = ws.cell(row_idx, COL[col_name]).value
             return str(val).strip() if val else ""
-
         rec = MORecord(
-            excel_row   = row_idx,
-            sub_rf      = v("SUB_RF"),
-            mun_r_name  = v("MUN_R_NAME"),
-            mun_name    = v("MUN_NAME"),
-            adm_name    = v("ADM_NAME"),
-            adres       = v("ADRES"),
-            head_fio    = v("HEAD_FIO"),
-            population  = v("POPULATION"),
-            email_osn   = v("EMAIL_OSN"),
-            email_dop   = v("EMAIL_DOP"),
-            tel_osn     = v("TEL_OSN"),
-            tel_dop     = v("TEL_DOP"),
-            inn         = v("REQUISITES_INN"),
-            kpp         = v("REQUISITES_KPP"),
-            ogrn        = v("REQUISITES_OGRN"),
-            okpo        = v("REQUISITES_OKPO"),
-            oktmo       = v("REQUISITES_OKTMO"),
-            status      = v("STATUS"),
-            note        = v("NOTE"),
+            excel_row=row_idx, sub_rf=v("SUB_RF"), mun_r_name=v("MUN_R_NAME"),
+            mun_name=v("MUN_NAME"), adm_name=v("ADM_NAME"), adres=v("ADRES"),
+            head_fio=v("HEAD_FIO"), population=v("POPULATION"),
+            email_osn=v("EMAIL_OSN"), email_dop=v("EMAIL_DOP"),
+            tel_osn=v("TEL_OSN"), tel_dop=v("TEL_DOP"),
+            inn=v("REQUISITES_INN"), kpp=v("REQUISITES_KPP"),
+            ogrn=v("REQUISITES_OGRN"), okpo=v("REQUISITES_OKPO"),
+            oktmo=v("REQUISITES_OKTMO"), status=v("STATUS"), note=v("NOTE"),
         )
-
         if rec.needs_processing():
             records.append(rec)
-
     logger.info(f"Найдено строк для обработки: {len(records)}")
     return wb, records
 
 
-# ==============================
-# ЗАПИСЬ В EXCEL
-# ==============================
-
 def write_record(ws, rec: MORecord) -> None:
-    """Записывает данные записи в Excel — только пустые ячейки."""
     updates = {
-        "ADM_NAME":         rec.adm_name,
-        "ADRES":            rec.adres,
-        "HEAD_FIO":         rec.head_fio,
-        "EMAIL_OSN":        rec.email_osn,
-        "EMAIL_DOP":        rec.email_dop,
-        "TEL_OSN":          rec.tel_osn,
-        "TEL_DOP":          rec.tel_dop,
-        "REQUISITES_INN":   rec.inn,
-        "REQUISITES_KPP":   rec.kpp,
-        "REQUISITES_OGRN":  rec.ogrn,
-        "REQUISITES_OKPO":  rec.okpo,
-        "REQUISITES_OKTMO": rec.oktmo,
-        "NOTE":             rec.note,
+        "ADM_NAME": rec.adm_name, "ADRES": rec.adres, "HEAD_FIO": rec.head_fio,
+        "EMAIL_OSN": rec.email_osn, "EMAIL_DOP": rec.email_dop,
+        "TEL_OSN": rec.tel_osn, "TEL_DOP": rec.tel_dop,
+        "REQUISITES_INN": rec.inn, "REQUISITES_KPP": rec.kpp,
+        "REQUISITES_OGRN": rec.ogrn, "REQUISITES_OKPO": rec.okpo,
+        "REQUISITES_OKTMO": rec.oktmo, "NOTE": rec.note,
     }
     for col_name, value in updates.items():
-        if value:  # не перезаписываем пустыми значениями
+        if value:
             existing = ws.cell(rec.excel_row, COL[col_name]).value
-            if not existing:  # только если ячейка пустая
+            if not existing:
                 ws.cell(rec.excel_row, COL[col_name], value)
 
 
 # ==============================
-# ПОИСК НА RUSPROFILE
+# УТИЛИТЫ ПОИСКА
 # ==============================
 
-def search_rusprofile(rec: MORecord) -> tuple[str | None, bool]:
-    """
-    Ищет организацию на rusprofile через Tavily.
-    Возвращает (ИНН, ликвидирована).
-    """
-    if not config.TAVILY_API_KEY:
+def _is_valid_admin(title: str) -> bool:
+    t = title.lower()
+    bad = [
+        "потребительск", "общество", "колхоз", "совхоз", "культур", "досуг",
+        "библиотек", "музей", "школ", "больниц", "спорт", "казначейств",
+        "налогов", "пенсион", "соцзащит", "мфц", "водоканал", "жкх",
+    ]
+    if any(k in t for k in bad):
+        return False
+    good = [
+        "администрац", "сельсовет", "поселени", "мэри", "управ",
+        "исполком", "исполнител", "комитет", "округ", "сельского",
+    ]
+    return any(k in t for k in good)
+
+
+def _extract_key_words(text: str) -> list[str]:
+    text = text.lower()
+    for sw in [
+        "сельское поселение", "городское поселение", "муниципальный район",
+        "муниципальное образование", "сельсовет", "посёлок", "поселок",
+        "село", "город", "район", "поселение", "администрация", "мо",
+        "республика", "край", "область", "округ",
+    ]:
+        text = text.replace(sw, " ")
+    return [w.strip() for w in text.split() if len(w.strip()) > 3]
+
+
+def _check_mun_match(combined: str, mun_keywords: list[str]) -> bool:
+    if not mun_keywords:
+        return True
+    for kw in mun_keywords:
+        root = kw[:max(5, len(kw) - 3)]
+        if root in combined:
+            return True
+    return False
+
+
+def _extract_inn_from_text(text: str) -> str | None:
+    """Извлекает ИНН организации (10 цифр), игнорируя ИНН людей (12 цифр)."""
+    for pat in [
+        r"[Оо]рганизации присвоен ИНН\s*(\d{10})\b",
+        r"[Оо]рганизации[^.]*?ИНН[\s/:]+(\d{10})\b",
+        r"присвоен ИНН\s*(\d{10})\b",
+        r"ИНН/КПП[\s\n:]+(\d{10})\b",
+        r"ИНН:\s*(\d{10})\b",
+    ]:
+        m = re.search(pat, text)
+        if m:
+            candidate = m.group(1)
+            pos = m.end()
+            if pos < len(text) and text[pos:pos + 2].isdigit():
+                continue
+            return candidate
+    clean_text = re.sub(r"\b\d{12}\b", "XXXXXXXXXXXX", text)
+    m = re.search(r"ИНН[\s/:]+(\d{10})\b", clean_text)
+    if m:
+        candidate = m.group(1)
+        pos = m.end()
+        if pos < len(clean_text) and clean_text[pos:pos + 2].isdigit():
+            return None
+        return candidate
+    return None
+
+
+def _check_liquidated(text: str) -> bool:
+    t = text.lower()
+    return bool(
+        re.search(r"статус[:\s]+ликвидирован", t)
+        or re.search(r"организация ликвидирована", t)
+        or re.search(r"ликвидирована с \d{2}\.\d{2}\.\d{4}", t)
+    )
+
+
+def validate_org_matches(org_name: str, rec: MORecord) -> bool:
+    if not org_name:
+        return False
+    org_lower = org_name.lower()
+    mun_keywords = _extract_key_words(rec.mun_name)
+    if not mun_keywords:
+        return True
+    for kw in mun_keywords:
+        root = kw[:max(5, len(kw) - 3)]
+        if root in org_lower:
+            return True
+    return False
+
+
+def _parse_rusprofile_page(soup) -> dict:
+    """Извлекает название, статус и ИНН со страницы rusprofile."""
+    result = {"name": "", "liquidated": False, "inn": None}
+
+    name_el = soup.select_one("[itemprop='legalName'] .copy_target")
+    result["name"] = name_el.get_text(strip=True) if name_el else ""
+
+    status_el = soup.select_one(".warning-text")
+    if status_el:
+        st = status_el.get_text().lower()
+        if "ликвид" in st or "не действ" in st:
+            result["liquidated"] = True
+            return result
+
+    page_text = soup.get_text()
+    result["inn"] = _extract_inn_from_text(page_text)
+    return result
+
+
+# ==============================
+# YANDEX SEARCH API
+# ==============================
+
+_yandex_sdk = None
+_yandex_search = None
+
+
+def _get_yandex_search():
+    global _yandex_sdk, _yandex_search
+    if _yandex_search is None:
+        from yandex_ai_studio_sdk import AIStudio
+        _yandex_sdk = AIStudio(
+            folder_id=config.YANDEX_FOLDER_ID,
+            auth=config.YANDEX_API_KEY,
+        )
+        _yandex_search = _yandex_sdk.search_api.web("RU", groups_on_page=5)
+    return _yandex_search
+
+
+def _parse_yandex_xml(xml_bytes: bytes) -> list[dict]:
+    """Парсит XML ответ Яндекса, возвращает список {url, title, snippet}."""
+    try:
+        xml_text = xml_bytes.decode("utf-8")
+    except Exception:
+        return []
+
+    results = []
+    for doc in re.findall(r"<doc>(.*?)</doc>", xml_text, re.DOTALL):
+        url_m = re.search(r"<url>(.*?)</url>", doc)
+        if not url_m:
+            continue
+        title_m = re.search(r"<title>(.*?)</title>", doc, re.DOTALL)
+        snippet_m = re.search(r"<passages>(.*?)</passages>", doc, re.DOTALL)
+
+        url = url_m.group(1).strip()
+        title = re.sub(r"<[^>]+>", "", title_m.group(1)).strip() if title_m else ""
+        snippet = re.sub(r"<[^>]+>", "", snippet_m.group(1)).strip() if snippet_m else ""
+        results.append({"url": url, "title": title, "snippet": snippet})
+    return results
+
+
+def _search_yandex(rec: MORecord) -> tuple[str | None, bool]:
+    """Ищет администрацию МО через Yandex Search API → rusprofile."""
+    if not config.YANDEX_API_KEY or not config.YANDEX_FOLDER_ID:
         return None, False
 
     try:
-        client = TavilyClient(config.TAVILY_API_KEY)
-        query = f"{rec.sub_rf} {rec.mun_r_name} {rec.mun_name} администрация"
+        search = _get_yandex_search()
+        query = f"site:rusprofile.ru {rec.sub_rf} {rec.mun_r_name} {rec.mun_name} администрация"
+        logger.debug(f"[yandex] Запрос: {query}")
 
-        response = client.search(
-            query=query,
-            search_depth="advanced",
-            include_domains=["rusprofile.ru"],
-            max_results=3,
-        )
+        time.sleep(0.5)
+        xml_result = search.run(query, format="xml", page=0)
+        parsed = _parse_yandex_xml(xml_result)
 
-        results = response.get("results", [])
-        if not results:
-            return None, False
+        logger.debug(f"[yandex] Результатов из XML: {len(parsed)}")
+        for i, r in enumerate(parsed):
+            logger.debug(f"[yandex]   {i+1}. {r['url'][:60]}  title={r['title'][:50]}")
 
-        # Берём лучший результат с /id/ ПРОВЕРЯЯ что это орган власти
-        def is_valid_admin(title: str) -> bool:
-            t = title.lower()
-            bad = ["потребительск", "общество", "колхоз", "совхоз",
-                   "культур", "досуг", "библиотек", "музей", "школ",
-                   "больниц", "спорт", "казначейств", "налогов",
-                   "пенсион", "соцзащит", "мфц", "водоканал", "жкх"]
-            if any(k in t for k in bad):
-                return False
-            good = ["администрац", "сельсовет", "поселени", "мэри",
-                    "управ", "исполком", "округ", "сельского"]
-            return any(k in t for k in good)
-
-        # Извлекаем ключевые слова из названия МО (имя села/сельсовета)
         mun_keywords = _extract_key_words(rec.mun_name)
 
-        # Собираем все подходящие результаты, потом выберем лучший
+        # Способ 1: ищем по title/snippet из XML
         candidates = []
-        for r in sorted(results, key=lambda x: x.get("score", 0), reverse=True):
-            if "/id/" not in r.get("url", ""):
+        for r in parsed:
+            if "rusprofile.ru" not in r["url"] or "/id/" not in r["url"]:
                 continue
-            title = r.get("title", "")
-            content_text = r.get("content", "")
-            combined = (title + " " + content_text).lower()
-
-            if not is_valid_admin(title):
+            combined = (r["title"] + " " + r["snippet"]).lower()
+            if not _is_valid_admin(r["title"]) and not _is_valid_admin(r["snippet"]):
                 continue
-
-            # Проверка соответствия МО — по корням слов
-            if mun_keywords:
-                ok = False
-                for kw in mun_keywords:
-                    root = kw[:max(5, len(kw) - 3)]
-                    if root in combined:
-                        ok = True
-                        break
-                if not ok:
-                    continue
-
+            if not _check_mun_match(combined, mun_keywords):
+                continue
             candidates.append(r)
 
-        if not candidates:
+        if candidates:
+            # Приоритет: администрация / исполнительный комитет
+            prio = [c for c in candidates if any(k in c["title"].lower() for k in ["администрац", "исполнител", "комитет"])]
+            best = (prio + [c for c in candidates if c not in prio])[0]
+            full_text = best["title"] + " " + best["snippet"]
+
+            if _check_liquidated(full_text):
+                logger.info(f"[yandex] Ликвидирована (из XML): {best['title'][:60]}")
+                return None, True
+
+            inn = _extract_inn_from_text(full_text)
+            if inn:
+                logger.info(f"[yandex] ИНН из XML: {inn} ({best['title'][:50]})")
+                return inn, False
+
+            # ИНН не в сниппете — заходим на страницу
+            logger.debug(f"[yandex] ИНН не в XML, открываю: {best['url']}")
+            time.sleep(2)
+            resp = httpx.get(best["url"], headers=HEADERS, timeout=10, follow_redirects=True)
+            page = _parse_rusprofile_page(BeautifulSoup(resp.text, "lxml"))
+            if page["liquidated"]:
+                return None, True
+            if page["inn"]:
+                logger.info(f"[yandex] ИНН со страницы: {page['inn']} ({page['name'][:50]})")
+                return page["inn"], False
             return None, False
 
-        # Приоритет: сначала "АДМИНИСТРАЦИЯ", потом всё остальное
-        admin_first = [c for c in candidates if "администрац" in c.get("title", "").lower()]
-        others = [c for c in candidates if "администрац" not in c.get("title", "").lower()]
-        best = (admin_first + others)[0]
+        # Способ 2: XML не дал title — заходим на первую /id/ ссылку
+        rusprofile_urls = [r["url"] for r in parsed if "rusprofile.ru" in r["url"] and "/id/" in r["url"]]
+        if not rusprofile_urls:
+            # Также пробуем из raw URL (на случай если XML парсинг пуст)
+            raw_urls = re.findall(r"<url>(.*?)</url>", xml_result.decode("utf-8", errors="ignore"))
+            rusprofile_urls = [u for u in raw_urls if "rusprofile.ru" in u and "/id/" in u]
 
-        snippet = best.get("content", "").lower()
-        title   = best.get("title", "")
+        if rusprofile_urls:
+            url = rusprofile_urls[0]
+            logger.debug(f"[yandex] Пробуем первую ссылку: {url}")
+            time.sleep(2)
+            try:
+                resp = httpx.get(url, headers=HEADERS, timeout=10, follow_redirects=True)
+                page = _parse_rusprofile_page(BeautifulSoup(resp.text, "lxml"))
+                logger.debug(f"[yandex] Со страницы: name={page['name'][:60]}, liq={page['liquidated']}, inn={page['inn']}")
 
-        # Проверяем статус из сниппета
-        liquidated = bool(
-            re.search(r"статус[:\s]+ликвидирован", snippet) or
-            re.search(r"организация ликвидирована", snippet) or
-            re.search(r"ликвидирована с \d{2}\.\d{2}\.\d{4}", snippet)
-        )
+                if page["name"] and _is_valid_admin(page["name"]) and _check_mun_match(page["name"].lower(), mun_keywords):
+                    if page["liquidated"]:
+                        logger.info(f"[yandex] Ликвидирована: {page['name'][:60]}")
+                        return None, True
+                    if page["inn"]:
+                        logger.info(f"[yandex] ИНН найден: {page['inn']} ({page['name'][:50]})")
+                        return page["inn"], False
+                    logger.warning(f"[yandex] Организация найдена но ИНН не извлечён: {page['name'][:60]}")
+            except Exception as e:
+                logger.debug(f"[yandex] Ошибка при заходе на страницу: {e}")
 
-        if liquidated:
-            return None, True
-
-        # Извлекаем ИНН организации из сниппета
-        # ВАЖНО: ИНН руководителя — 12 цифр, ИНН организации — 10 цифр
-        # Ищем именно по контексту "Организации присвоен ИНН" или "ИНН организации"
-        content_text = best.get("content", "")
-
-        # Сначала ищем по контексту
-        inn = None
-        patterns = [
-            r"[Оо]рганизации присвоен ИНН[\s]*(\d{10})\b",
-            r"[Оо]рганизации[^.]*?ИНН[\s/:]+(\d{10})\b",
-            r"присвоен ИНН[\s]*(\d{10})\b",
-        ]
-        for pat in patterns:
-            m = re.search(pat, content_text)
-            if m:
-                inn = m.group(1)
-                break
-
-        # Если контекст не сработал — берём ВСЕ 10-значные ИНН
-        # и фильтруем 12-значные (это ИНН людей)
-        if not inn:
-            # Заменяем 12-значные числа на пустоту чтобы они не мешали
-            clean_text = re.sub(r"\b\d{12}\b", "", content_text)
-            m = re.search(r"ИНН[\s/:]+(\d{10})\b", clean_text)
-            if m:
-                inn = m.group(1)
-
-        if inn:
-            return inn, False
-
-        # Если ИНН не в сниппете — заходим на страницу
-        url = best["url"]
-        resp = httpx.get(url, headers=HEADERS, timeout=10, follow_redirects=True)
-        soup = BeautifulSoup(resp.text, "lxml")
-        for row in soup.select(".company-row"):
-            txt = row.get_text()
-            if "ИНН" in txt and "КПП" in txt:  # блок реквизитов организации
-                m = re.search(r"\b(\d{10})\b", txt)
-                if m:
-                    return m.group(), False
-
+        logger.debug(f"[yandex] Подходящих результатов не найдено для: {rec.mun_name}")
         return None, False
 
     except Exception as e:
-        logger.warning(f"[rusprofile] Ошибка для {rec.mun_name}: {e}")
+        logger.warning(f"[yandex] Ошибка для {rec.mun_name}: {e}")
         return None, False
 
 
 # ==============================
-# ЗАПРОС К CHECKO
+# ОСНОВНАЯ ФУНКЦИЯ ПОИСКА
+# ==============================
+
+def search_rusprofile(rec: MORecord) -> tuple[str | None, bool]:
+    """Ищет администрацию МО через Yandex Search API."""
+    return _search_yandex(rec)
+
+
+# ==============================
+# CHECKO API
 # ==============================
 
 _checko_cache: dict[str, dict] = {}
 
 
 def fetch_checko_by_inn(inn: str) -> dict | None:
-    """Получает данные организации из Checko по ИНН."""
     if inn in _checko_cache:
         return _checko_cache[inn]
-
     if not config.CHECKO_API_KEY:
         return None
-
     try:
         resp = httpx.get(
-            f"https://api.checko.ru/v2/company",
+            "https://api.checko.ru/v2/company",
             params={"key": config.CHECKO_API_KEY, "inn": inn},
             timeout=15,
         )
         data = resp.json()
-
         if data.get("meta", {}).get("status") == "error":
             return None
-
         org = data.get("data", {})
         if not org:
             return None
 
-        # Парсим нужные поля
         contacts = org.get("Контакты", {}) or {}
-        phones   = contacts.get("Тел", []) or []
-        emails   = contacts.get("Емэйл", []) or []
-
+        phones = contacts.get("Тел", []) or []
+        emails = contacts.get("Емэйл", []) or []
         oktmo = org.get("ОКТМО", {}) or {}
-
         adres = org.get("ЮрАдрес", "")
         if isinstance(adres, dict):
             adres = adres.get("АдресРФ", "") or str(adres)
 
-        # Руководитель
         head_fio = ""
         for r in (org.get("Руковод", []) or []):
             if not r.get("Недост") and not r.get("ДисквЛицо"):
@@ -379,50 +450,41 @@ def fetch_checko_by_inn(inn: str) -> dict | None:
 
         result = {
             "adm_name": org.get("НаимПолн", ""),
-            "adres":    adres,
+            "adres": adres,
             "head_fio": head_fio,
             "email_osn": emails[0] if emails else "",
             "email_dop": ", ".join(emails[1:]) if len(emails) > 1 else "",
-            "tel_osn":   phones[0] if phones else "",
-            "tel_dop":   ", ".join(phones[1:]) if len(phones) > 1 else "",
-            "inn":       org.get("ИНН", inn),
-            "kpp":       org.get("КПП", ""),
-            "ogrn":      org.get("ОГРН", ""),
-            "okpo":      org.get("ОКПО", ""),
-            "oktmo":     oktmo.get("Код", ""),
+            "tel_osn": phones[0] if phones else "",
+            "tel_dop": ", ".join(phones[1:]) if len(phones) > 1 else "",
+            "inn": org.get("ИНН", inn),
+            "kpp": org.get("КПП", ""),
+            "ogrn": org.get("ОГРН", ""),
+            "okpo": org.get("ОКПО", ""),
+            "oktmo": oktmo.get("Код", ""),
         }
         _checko_cache[inn] = result
         return result
-
     except Exception as e:
         logger.warning(f"[checko] Ошибка для ИНН {inn}: {e}")
         return None
 
 
 def search_checko_by_name(rec: MORecord) -> str | None:
-    """Ищет ИНН в Checko по названию МО."""
-    from src.parser_new.tools.regions import get_region_code
-
     region_code = get_region_code(rec.sub_rf)
     if not region_code:
         return None
-
     try:
         resp = httpx.get(
             "https://api.checko.ru/v2/search",
             params={
-                "key":    config.CHECKO_API_KEY,
-                "by":     "name",
-                "obj":    "org",
-                "query":  rec.mun_name,
-                "region": region_code,
+                "key": config.CHECKO_API_KEY, "by": "name",
+                "obj": "org", "query": rec.mun_name, "region": region_code,
             },
             timeout=15,
         )
         data = resp.json()
         records = data.get("data", {}).get("Записи", []) or []
-
-        admin_keywords = ["администрац", "сельсовет", "поселени"]
+        admin_kw = ["администрац", "сельсовет", "поселени", "исполнител", "комитет"]
         district_key = rec.mun_r_name.lower().replace("муниципальный район", "").strip()
         district_words = [w for w in district_key.split() if len(w) > 3]
 
@@ -431,183 +493,111 @@ def search_checko_by_name(rec: MORecord) -> str | None:
             if "не действует" in status or "ликвид" in status:
                 continue
             name = (r.get("НаимПолн", "") or r.get("НаимСокр", "") or "").lower()
-            if not any(k in name for k in admin_keywords):
+            if not any(k in name for k in admin_kw):
                 continue
             if district_words and not any(w in name for w in district_words):
                 continue
             return r.get("ИНН")
-
         return None
-
     except Exception as e:
         logger.warning(f"[checko/search] Ошибка для {rec.mun_name}: {e}")
         return None
 
 
 # ==============================
-# ПОИСК КОНТАКТОВ НА САЙТЕ
+# ПОИСК КОНТАКТОВ (через Yandex вместо Tavily)
 # ==============================
 
 def search_contacts_online(adm_name: str) -> dict:
-    """Ищет контакты администрации на официальном сайте."""
-    if not config.TAVILY_API_KEY or not adm_name:
+    """Ищет контакты администрации на официальном сайте через Yandex."""
+    if not config.YANDEX_API_KEY or not config.YANDEX_FOLDER_ID or not adm_name:
         return {}
-
     try:
-        client = TavilyClient(config.TAVILY_API_KEY)
-        response = client.search(
-            query=f"{adm_name} официальный сайт",
-            search_depth="basic",
-            exclude_domains=["rusprofile.ru", "egrul.ru", "checko.ru",
-                             "sbis.ru", "list-org.com"],
-            max_results=3,
-        )
+        search = _get_yandex_search()
+        query = f"{adm_name} официальный сайт контакты"
+        xml_result = search.run(query, format="xml", page=0)
+        parsed = _parse_yandex_xml(xml_result)
 
-        results = response.get("results", [])
-        if not results:
+        # Фильтруем агрегаторы
+        skip = ["rusprofile.ru", "egrul.ru", "checko.ru", "sbis.ru", "list-org.com"]
+        official = [r for r in parsed if not any(d in r["url"] for d in skip)]
+        if not official:
             return {}
 
-        # Парсим первый результат
-        url = results[0]["url"]
+        url = official[0]["url"]
+        time.sleep(1)
         resp = httpx.get(url, headers=HEADERS, timeout=10, follow_redirects=True)
-        soup = BeautifulSoup(resp.text, "lxml")
+        text = BeautifulSoup(resp.text, "lxml").get_text()
 
-        text = soup.get_text()
         phones = re.findall(
-            r'(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
-            text
+            r"(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}", text
         )
         emails = re.findall(
-            r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}',
-            text
+            r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", text
         )
-
         return {
-            "tel_osn":   phones[0] if phones else "",
-            "tel_dop":   phones[1] if len(phones) > 1 else "",
+            "tel_osn": phones[0] if phones else "",
+            "tel_dop": phones[1] if len(phones) > 1 else "",
             "email_osn": emails[0] if emails else "",
             "email_dop": ", ".join(emails[1:3]) if len(emails) > 1 else "",
         }
-
     except Exception:
         return {}
 
 
 # ==============================
-# ВАЛИДАЦИЯ СООТВЕТСТВИЯ ОРГАНИЗАЦИИ
-# ==============================
-
-def _extract_key_words(text: str) -> list[str]:
-    """Извлекает ключевые слова из названия МО или района."""
-    text = text.lower()
-    # Убираем общие слова
-    stop_words = [
-        "сельское поселение", "городское поселение", "муниципальный район",
-        "муниципальное образование", "сельсовет", "посёлок", "поселок",
-        "село", "город", "район", "поселение", "администрация", "мо",
-        "республика", "край", "область", "округ"
-    ]
-    for sw in stop_words:
-        text = text.replace(sw, " ")
-    # Берём слова длиннее 3 символов
-    words = [w.strip() for w in text.split() if len(w.strip()) > 3]
-    return words
-
-
-def validate_org_matches(org_name: str, rec: MORecord) -> bool:
-    """
-    Проверяет что найденная организация соответствует МО.
-    Сравнивает по корням слов (учитывает склонения).
-    Например: "Челмужское" и "Челмужского" — одно и то же.
-    """
-    if not org_name:
-        return False
-
-    org_lower = org_name.lower()
-    mun_keywords = _extract_key_words(rec.mun_name)
-
-    if not mun_keywords:
-        return True  # нет ключевых слов для проверки — пропускаем
-
-    # Сравниваем по корням — берём первые 5-6 букв слова
-    for kw in mun_keywords:
-        # Корень слова — без окончаний
-        root = kw[:max(5, len(kw) - 3)]
-        if root in org_lower:
-            return True
-
-    return False
-
-
-# ==============================
-# ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ
+# ОБРАБОТКА ОДНОЙ СТРОКИ
 # ==============================
 
 def process_record(rec: MORecord) -> MORecord:
-    """
-    Обрабатывает одну строку — заполняет пустые поля.
-    Не трогает уже заполненные.
-    """
-    # Шаг 1: ищем ИНН если нет
     inn = rec.inn
-    inn_from_user = bool(inn)  # ИНН был в файле или мы его нашли?
+    inn_from_user = bool(inn)
 
     if not inn:
-        # Сначала rusprofile
         found_inn, liquidated = search_rusprofile(rec)
-
         if liquidated:
             if not rec.adm_name:
                 rec.adm_name = "ликвидирована"
             rec.note = "ликвидирована"
             return rec
-
         if found_inn:
             inn = found_inn
         else:
-            # Fallback: Checko поиск по названию
             inn = search_checko_by_name(rec)
-
         if not inn:
             rec.note = "не найдено"
             return rec
 
-    # Шаг 2: получаем данные из Checko по ИНН
     checko_data = fetch_checko_by_inn(inn)
     if not checko_data:
         rec.note = "ИНН найден но данные Checko недоступны"
         rec.inn = inn
         return rec
 
-    # Валидация только если ИНН был найден поиском (не от пользователя)
     if not inn_from_user:
         found_name = checko_data.get("adm_name", "")
         if not validate_org_matches(found_name, rec):
-            logger.warning(
-                f"Несоответствие: искали '{rec.mun_name}', нашли '{found_name}'"
-            )
+            logger.warning(f"Несоответствие: искали '{rec.mun_name}', нашли '{found_name}'")
             rec.note = f"проверить вручную: нашли {found_name[:80]}"
             return rec
 
-    # Заполняем только пустые поля
-    if not rec.inn:          rec.inn      = checko_data["inn"]
-    if not rec.adm_name:     rec.adm_name = checko_data["adm_name"]
-    if not rec.adres:        rec.adres    = checko_data["adres"]
-    if not rec.head_fio:     rec.head_fio = checko_data["head_fio"]
-    if not rec.email_osn:    rec.email_osn = checko_data["email_osn"]
-    if not rec.email_dop:    rec.email_dop = checko_data["email_dop"]
-    if not rec.tel_osn:      rec.tel_osn  = checko_data["tel_osn"]
-    if not rec.tel_dop:      rec.tel_dop  = checko_data["tel_dop"]
-    if not rec.kpp:          rec.kpp      = checko_data["kpp"]
-    if not rec.ogrn:         rec.ogrn     = checko_data["ogrn"]
-    if not rec.okpo:         rec.okpo     = checko_data["okpo"]
-    if not rec.oktmo:        rec.oktmo    = checko_data["oktmo"]
+    if not rec.inn:       rec.inn = checko_data["inn"]
+    if not rec.adm_name:  rec.adm_name = checko_data["adm_name"]
+    if not rec.adres:     rec.adres = checko_data["adres"]
+    if not rec.head_fio:  rec.head_fio = checko_data["head_fio"]
+    if not rec.email_osn: rec.email_osn = checko_data["email_osn"]
+    if not rec.email_dop: rec.email_dop = checko_data["email_dop"]
+    if not rec.tel_osn:   rec.tel_osn = checko_data["tel_osn"]
+    if not rec.tel_dop:   rec.tel_dop = checko_data["tel_dop"]
+    if not rec.kpp:       rec.kpp = checko_data["kpp"]
+    if not rec.ogrn:      rec.ogrn = checko_data["ogrn"]
+    if not rec.okpo:      rec.okpo = checko_data["okpo"]
+    if not rec.oktmo:     rec.oktmo = checko_data["oktmo"]
 
-    # Шаг 3: если нет контактов — ищем на официальном сайте
     if not rec.email_osn or not rec.tel_osn:
-        name_for_search = rec.adm_name or checko_data.get("adm_name", "")
-        if name_for_search:
-            contacts = search_contacts_online(name_for_search)
+        name = rec.adm_name or checko_data.get("adm_name", "")
+        if name:
+            contacts = search_contacts_online(name)
             if not rec.email_osn and contacts.get("email_osn"):
                 rec.email_osn = contacts["email_osn"]
             if not rec.email_dop and contacts.get("email_dop"):
@@ -620,8 +610,11 @@ def process_record(rec: MORecord) -> MORecord:
     return rec
 
 
+# ==============================
+# УТИЛИТЫ
+# ==============================
+
 def _copy_row_to_failed(ws_src, ws_dst, src_row: int, dst_row: int) -> None:
-    """Копирует строку из основного файла в файл непроверенных."""
     for col_idx in range(1, len(COL) + 1):
         value = ws_src.cell(src_row, col_idx).value
         if value is not None:
@@ -632,29 +625,30 @@ def _copy_row_to_failed(ws_src, ws_dst, src_row: int, dst_row: int) -> None:
 # ГЛАВНАЯ ФУНКЦИЯ
 # ==============================
 
-def run(file_path: str, save_every: int = 10) -> None:
-    """
-    Основной цикл обработки.
+def run(
+    file_path: str,
+    save_every: int = 10,
+    output_dir: str | None = None,
+) -> dict:
+    import shutil
 
-    Args:
-        file_path:  путь к Excel файлу
-        save_every: сохранять файл каждые N строк
-    """
     path = Path(file_path)
     if not path.exists():
         logger.error(f"Файл не найден: {file_path}")
-        return
+        return {"error": f"Файл не найден: {file_path}"}
 
-    # Создаём копию для работы — не трогаем оригинал
-    out_dir = Path(config.OUTPUT_DIR) / "latest"
+    # Определяем папку для результатов
+    if output_dir:
+        out_dir = Path(output_dir)
+    else:
+        out_dir = Path(config.OUTPUT_DIR) / "latest"
     out_dir.mkdir(parents=True, exist_ok=True)
+
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     out_path = out_dir / f"batch_{timestamp}.xlsx"
     failed_path = out_dir / f"batch_FAILED_{timestamp}.xlsx"
 
-    import shutil
     shutil.copy2(str(path), str(out_path))
-    # Создаём пустой файл для непроверенных строк со структурой как у оригинала
     shutil.copy2(str(path), str(failed_path))
     logger.info(f"Рабочая копия: {out_path}")
     logger.info(f"Файл для непроверенных: {failed_path}")
@@ -662,18 +656,14 @@ def run(file_path: str, save_every: int = 10) -> None:
     wb, records = read_excel(str(out_path))
     ws = wb.active
 
-    # Открываем файл для непроверенных и удаляем все строки данных
     wb_failed = load_workbook(str(failed_path))
     ws_failed = wb_failed.active
     if ws_failed.max_row >= DATA_START_ROW:
         ws_failed.delete_rows(DATA_START_ROW, ws_failed.max_row)
-    failed_row_idx = DATA_START_ROW  # текущая строка в файле непроверенных
+    failed_row_idx = DATA_START_ROW
 
-    total     = len(records)
-    processed = 0
-    found     = 0
-    not_found = 0
-    liquidated_count = 0
+    total = len(records)
+    processed = found = not_found = liquidated_count = 0
 
     logger.info(f"Начинаю обработку {total} строк...")
     print(f"\n{'='*50}")
@@ -683,17 +673,10 @@ def run(file_path: str, save_every: int = 10) -> None:
 
     for i, rec in enumerate(records, 1):
         try:
-            print(f"[{i}/{total}] {rec.sub_rf} | {rec.mun_name[:40]}...", end=" ", flush=True)
+            print(f"[{i}/{total}] {rec.sub_rf} | {rec.mun_r_name} | {rec.mun_name[:40]}...", end=" ", flush=True)
 
             updated = process_record(rec)
             write_record(ws, updated)
-
-            # Если строка не нашлась или требует проверки — копируем в failed файл
-            is_failed = (
-                updated.note in ("не найдено", "ликвидирована")
-                or "проверить вручную" in updated.note
-                or "недоступны" in updated.note
-            )
 
             if updated.note == "ликвидирована":
                 liquidated_count += 1
@@ -719,13 +702,11 @@ def run(file_path: str, save_every: int = 10) -> None:
 
             processed += 1
 
-            # Сохраняем прогресс
             if i % save_every == 0:
                 wb.save(str(out_path))
                 wb_failed.save(str(failed_path))
                 logger.info(f"Прогресс сохранён: {i}/{total}")
 
-            # Небольшая задержка чтобы не долбить API
             time.sleep(0.5)
 
         except KeyboardInterrupt:
@@ -733,7 +714,12 @@ def run(file_path: str, save_every: int = 10) -> None:
             wb.save(str(out_path))
             wb_failed.save(str(failed_path))
             print(f"\n\nПрервано. Обработано {processed}/{total}. Файл сохранён.")
-            return
+            return {
+                "processed": processed, "found": found, "not_found": not_found,
+                "liquidated": liquidated_count,
+                "output_path": str(out_path), "failed_path": str(failed_path),
+                "interrupted": True,
+            }
 
         except Exception as e:
             logger.error(f"Ошибка для строки {rec.excel_row}: {e}")
@@ -745,11 +731,28 @@ def run(file_path: str, save_every: int = 10) -> None:
     wb.save(str(out_path))
     wb_failed.save(str(failed_path))
 
-    # Архивная копия
-    arc_dir = Path(config.OUTPUT_DIR) / "archive" / datetime.now().strftime("%Y-%m-%d")
-    arc_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(str(out_path), str(arc_dir / out_path.name))
-    shutil.copy2(str(failed_path), str(arc_dir / failed_path.name))
+    # Постпроверка
+    try:
+        from src.generator.verification.municipality_name_verifier import (
+            verify_municipality_names_in_workbook,
+        )
+        logger.info("Запуск постпроверки названий МО...")
+        verify_result = verify_municipality_names_in_workbook(out_path)
+        verified = verify_result.get("verified_rows", 0)
+        replaced = verify_result.get("updated_rows", 0)
+        logger.info(f"Постпроверка: проверено {verified}, исправлено {replaced}")
+        print(f"   Постпроверка: проверено {verified}, исправлено {replaced}")
+    except ImportError:
+        logger.warning("Модуль municipality_name_verifier не найден — постпроверка пропущена")
+    except Exception as e:
+        logger.warning(f"Ошибка постпроверки: {e}")
+
+    # Архив (только если не job-папка)
+    if not output_dir:
+        arc_dir = Path(config.OUTPUT_DIR) / "archive" / datetime.now().strftime("%Y-%m-%d")
+        arc_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(out_path), str(arc_dir / out_path.name))
+        shutil.copy2(str(failed_path), str(arc_dir / failed_path.name))
 
     print(f"\n{'='*50}")
     print(f"✅ Готово!")
@@ -761,6 +764,12 @@ def run(file_path: str, save_every: int = 10) -> None:
     print(f"   Непроверенные: {failed_path}")
     print(f"{'='*50}\n")
 
+    return {
+        "processed": processed, "found": found, "not_found": not_found,
+        "liquidated": liquidated_count,
+        "output_path": str(out_path), "failed_path": str(failed_path),
+    }
+
 
 # ==============================
 # ТОЧКА ВХОДА
@@ -771,6 +780,30 @@ if __name__ == "__main__":
     parser.add_argument("--file", required=True, help="Путь к Excel файлу")
     parser.add_argument("--save-every", type=int, default=10,
                         help="Сохранять каждые N строк (по умолчанию 10)")
+    parser.add_argument("--max-cycles", type=int, default=1,
+                        help="Максимум циклов обработки (по умолчанию 1, макс 3)")
     args = parser.parse_args()
 
-    run(args.file, args.save_every)
+    max_cycles = min(args.max_cycles, 3)
+    current_file = args.file
+
+    for cycle in range(1, max_cycles + 1):
+        print(f"\n{'='*50}")
+        print(f"ЦИКЛ {cycle}/{max_cycles}")
+        print(f"{'='*50}")
+
+        result = run(current_file, args.save_every)
+        if not result:
+            break
+
+        not_found_count = result.get("not_found", 0)
+        if not_found_count == 0:
+            print(f"\n✅ Все строки обработаны, повторный цикл не нужен")
+            break
+
+        if cycle < max_cycles:
+            current_file = result.get("output_path", current_file)
+            print(f"\n🔄 Осталось необработанных: {not_found_count}, запускаю цикл {cycle + 1}...")
+            time.sleep(2)
+        else:
+            print(f"\n⚠️  Осталось необработанных: {not_found_count} (достигнут лимит циклов)")
