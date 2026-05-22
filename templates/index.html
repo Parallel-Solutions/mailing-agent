@@ -1586,8 +1586,11 @@
 
   function maybeAnnounceParserFlow(result = {}) {
     const verificationState = result.municipality_name_verification_state || {};
-    const verificationStatus = String(verificationState.status || 'idle');
     const verificationResult = result.municipality_name_verification || {};
+    const hasCompletedVerificationResult = verificationResult.status === 'ok' && Number(verificationResult.total_rows || 0) > 0;
+    const verificationStatus = hasCompletedVerificationResult && String(verificationState.status || 'idle') !== 'running'
+      ? 'completed'
+      : String(verificationState.status || 'idle');
     const state = flowNotificationState.parser;
 
     if (verificationStatus === 'running') {
