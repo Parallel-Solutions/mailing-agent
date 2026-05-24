@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -51,6 +53,26 @@ from src.generator.orchestration.responsibility_matrix import diagnose_responsib
 from src.jobs import load_agent_state, save_agent_state
 from src.jobs.storage import resolve_job_paths
 from src.utils.logger import logger
+
+
+_STATUS_FILE_COUNT_CACHE_LOCK = threading.Lock()
+_STATUS_FILE_COUNT_CACHE: dict[str, dict[str, float | int]] = {}
+STATUS_FILE_COUNT_CACHE_TTL_SECONDS = 10.0
+
+
+def _cached_docx_count(directory: Path) -> int:
+    if not directory.exists():
+        return 0
+    cache_key = str(directory.resolve())
+    now = time.monotonic()
+    with _STATUS_FILE_COUNT_CACHE_LOCK:
+        cached = _STATUS_FILE_COUNT_CACHE.get(cache_key)
+        if cached and now - float(cached.get("cached_at") or 0.0) <= STATUS_FILE_COUNT_CACHE_TTL_SECONDS:
+            return int(cached.get("count") or 0)
+    count = sum(1 for path in directory.rglob("*.docx") if path.is_file())
+    with _STATUS_FILE_COUNT_CACHE_LOCK:
+        _STATUS_FILE_COUNT_CACHE[cache_key] = {"cached_at": now, "count": count}
+    return count
 from src.utils.config import settings
 
 try:
@@ -68,7 +90,7 @@ PHILOLOGIST_STATE: dict[str, Any] = {
     "fixed_documents": 0,
     "documents_with_issues": 0,
     "documents": [],
-    "summary_text": "Агент-филолог ещё не запускался.",
+    "summary_text": "Проверка текстов ещё не запускалась.",
     "tool_manifest": build_philologist_tool_manifest(),
     "tool_trace": [],
     "plan": None,
@@ -1405,18 +1427,16 @@ def _format_summary(documents: list[dict[str, Any]]) -> str:
     if total == 0:
         return "Готовые документы для проверки пока не найдены."
     if with_issues == 0:
-        return f"Проверил {total} документов. Явных языковых ошибок не нашёл."
-    return (
-        f"Проверил {total} документов. "
-        f"Замечания нашёл в {with_issues}, автоматически исправил {fixed}. "
-        "Если хочешь, могу показать, что именно исправил и где остались спорные места."
-    )
+        return "Документы проверены. Критичных ошибок не найдено."
+    if fixed > 0:
+        return "Документы проверены, безопасные правки внесены. Можно переходить к отправке."
+    return "Документы проверены. В некоторых местах лучше посмотреть текст вручную."
 
 
 def _format_run_summary(documents: list[dict[str, Any]], *, sender_handoffs: int = 0) -> str:
     base = _format_summary(documents)
     if sender_handoffs > 0:
-        return base + f" Передал отправщику задач на дополнительную проверку перед отправкой: {sender_handoffs}."
+        return base + " Перед отправкой есть несколько комплектов, которые лучше проверить вручную."
     return base
 
 
@@ -1718,16 +1738,16 @@ def run_philologist(
             "ai_review_enabled": bool(ai_enabled and run_mode == "deep"),
             "summary_text": (
                 (
-                    f"Агент-филолог продолжает проверку с сохраненного места. Уже обработано {len(processed_documents)} документов."
+                    f"Продолжаю проверку текстов с сохраненного места. Уже проверено {len(processed_documents)} документов."
                     if was_stopped
                     else
-                    "Агент-филолог начал быструю массовую проверку документов: "
+                    "Начинаю быструю проверку документов: "
                     "локальные правила, безопасные автоправки и карантин спорных мест."
                     if run_mode == "fast"
-                    else "Агент-филолог начал глубокую LLM-проверку документов."
+                    else "Начинаю глубокую проверку документов."
                 )
                 if not claimed_tasks
-                else f"Агент-филолог начал проверку документов и принял {len(claimed_tasks)} внутренних задач."
+                else "Начинаю проверку документов."
             ),
             "inflection_report": format_inflection_report(inflection_rows, limit=8) if inflection_rows else "",
             "inflection_log_count": len(inflection_rows),
@@ -1809,8 +1829,7 @@ def run_philologist(
         }
         state["processed_documents"] = len(processed_documents)
         state["summary_text"] = (
-            f"Агент-филолог проверяет документ {len(processed_documents) + 1} из {state.get('total_documents', len(docx_paths))}: {docx_path.name}. "
-            f"Режим: {'быстрый' if run_mode == 'fast' else 'глубокий LLM'}."
+            f"Проверяю документ {len(processed_documents) + 1} из {state.get('total_documents', len(docx_paths))}: {docx_path.name}."
         )
         state["tool_trace"] = tool_runner.as_state()
         state["plan"] = agent_loop.as_plan()
@@ -1979,6 +1998,15 @@ def run_philologist(
         agent_loop.mark_step("verify_safe_fixes", "blocked", "Нет документов для самопроверки правок.")
         agent_loop.mark_step("rebuild_pdf", "blocked", "Нет документов для пересборки PDF.")
 
+    state["status"] = "finalizing"
+    state["current_document"] = None
+    state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
+    state["summary_text"] = "Документы проверены. Формирую журнал исправлений и итоговый отчет."
+    state["tool_trace"] = tool_runner.as_state()
+    state["plan"] = agent_loop.as_plan()
+    state["agent_loop"] = state["plan"].get("execution")
+    _save_philologist_state(state, job_id)
+
     row_rollups: dict[str, dict[str, Any]] = {}
     for item in processed_documents:
         row_id = _safe_text(item.get("row_id"))
@@ -2108,13 +2136,10 @@ def run_philologist(
                 job_id=job_id,
             )
 
-    state["status"] = "finalizing"
-    state["current_document"] = None
     state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
     state["task_stats"] = count_tasks_for_agent("philologist", job_id)
     state["tasks"] = get_tasks_for_agent("philologist", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="philologist", limit=20, job_id=job_id)
-    state["summary_text"] = "Документы проверены. Формирую журнал исправлений и итоговый отчет."
     state["tool_trace"] = tool_runner.as_state()
     state["plan"] = agent_loop.as_plan()
     state["agent_loop"] = state["plan"].get("execution")
@@ -2193,7 +2218,7 @@ def get_philologist_status(job_id: str | None = None) -> dict[str, Any]:
     )
     state["agent_loop"] = (state.get("plan") or {}).get("execution")
     if state.get("status") == "idle":
-        state["total_documents"] = len(list(target_dir.rglob("*.docx"))) if target_dir.exists() else 0
+        state["total_documents"] = _cached_docx_count(target_dir)
     return state
 
 

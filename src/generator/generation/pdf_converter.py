@@ -18,6 +18,7 @@ import httpx
 try:
     from src.generator.generation.config_generator import (
         BATCH_LIBREOFFICE_PROFILES_DIR,
+        LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_BASE_URL,
         ONLYOFFICE_CONVERTER_MODE,
         ONLYOFFICE_CONVERT_TIMEOUT_SECONDS,
@@ -32,6 +33,7 @@ try:
 except ImportError:  # pragma: no cover
     from generator.generation.config_generator import (
         BATCH_LIBREOFFICE_PROFILES_DIR,
+        LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_BASE_URL,
         ONLYOFFICE_CONVERTER_MODE,
         ONLYOFFICE_CONVERT_TIMEOUT_SECONDS,
@@ -87,23 +89,27 @@ def _convert_libreoffice_chunk(args: Tuple[str, List[str], str, str]) -> List[Tu
     profile_uri = Path(profile_dir).resolve().as_uri()
     pdf_filter = _build_writer_pdf_filter()
 
-    subprocess.run(
-        [
-            soffice,
-            f"-env:UserInstallation={profile_uri}",
-            "--headless",
-            "--convert-to",
-            pdf_filter,
-            "--outdir",
-            output_dir,
-            *chunk_paths,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
     results: List[Tuple[str, Optional[str]]] = []
+    try:
+        subprocess.run(
+            [
+                soffice,
+                f"-env:UserInstallation={profile_uri}",
+                "--headless",
+                "--convert-to",
+                pdf_filter,
+                "--outdir",
+                output_dir,
+                *chunk_paths,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return [(docx_path_str, None) for docx_path_str in chunk_paths]
+
     for docx_path_str in chunk_paths:
         docx_path = Path(docx_path_str)
         pdf_path = Path(output_dir) / f"{docx_path.stem}.pdf"

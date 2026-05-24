@@ -25,13 +25,15 @@ SEND_DELAY_MAX_SECONDS = 40
 
 # Производительность
 DOCX_WORKERS = max(1, min(6, (os.cpu_count() or 2) - 1))
-PDF_WORKERS = 1
-PDF_CHUNK_SIZE = 100
 BENCHMARK_ROW_LIMIT = 10
 
 
 def _read_env_override(key_name: str, default: str) -> str:
     return resolve_env_value(key_name, default) or default
+
+
+PDF_WORKERS = max(1, int(_read_env_override("PDF_WORKERS", "2")))
+PDF_CHUNK_SIZE = max(1, int(_read_env_override("PDF_CHUNK_SIZE", "50")))
 
 
 # AI-агент проверки падежей
@@ -68,6 +70,7 @@ PDF_CONVERTER_FALLBACK = _read_env_override("PDF_CONVERTER_FALLBACK", "").strip(
 ONLYOFFICE_BASE_URL = _read_env_override("ONLYOFFICE_BASE_URL", "").strip().rstrip("/")
 ONLYOFFICE_CONVERTER_MODE = _read_env_override("ONLYOFFICE_CONVERTER_MODE", "url").strip().lower() or "url"
 ONLYOFFICE_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("ONLYOFFICE_CONVERT_TIMEOUT_SECONDS", "120"))
+LIBREOFFICE_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("LIBREOFFICE_CONVERT_TIMEOUT_SECONDS", "180"))
 ONLYOFFICE_JWT_SECRET = _read_env_override("ONLYOFFICE_JWT_SECRET", "").strip()
 ONLYOFFICE_PUBLIC_FILES_DIR = DATA_DIR / "_onlyoffice_public"
 ONLYOFFICE_PUBLIC_FILES_URL = _read_env_override(

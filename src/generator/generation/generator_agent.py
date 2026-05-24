@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import shutil
 import json
+import threading
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +29,8 @@ from src.generator.generation.config_generator import (
     DATA_XLSX_PATH,
     DOCX_WORKERS,
     OUTPUT_DIR,
+    PDF_CHUNK_SIZE,
+    PDF_WORKERS,
     START_OUTGOING_NUMBER,
     WEB_CASE_AGENT_MAX_WORKERS,
 )
@@ -56,13 +60,13 @@ GENERATOR_STATE: dict[str, Any] = {
     "ok_rows": 0,
     "error_rows": 0,
     "stage": "idle",
-    "stage_text": "Ожидание запуска генератора.",
+    "stage_text": "Подготовка документов ещё не запускалась.",
     "staged_docx_count": 0,
     "staged_pdf_count": 0,
     "pdf_total": 0,
     "pdf_processed": 0,
     "output_file_count": 0,
-    "summary_text": "Агент-генератор ещё не запускался.",
+    "summary_text": "Подготовка документов ещё не запускалась.",
     "results": [],
     "template_review": {},
     "completed_result_indices": [],
@@ -72,6 +76,9 @@ GENERATOR_STATE: dict[str, Any] = {
     "tasks": [],
     "recent_events": [],
 }
+_STATUS_FILE_COUNT_CACHE_LOCK = threading.Lock()
+_STATUS_FILE_COUNT_CACHE: dict[str, dict[str, float | int]] = {}
+STATUS_FILE_COUNT_CACHE_TTL_SECONDS = 10.0
 
 
 class GeneratorStopRequested(RuntimeError):
@@ -86,13 +93,29 @@ def _save_generator_state(state: dict[str, Any], job_id: str | None = None) -> d
     return save_agent_state("generator", state, job_id)
 
 
+def _cached_file_count(directory: Path, pattern: str, *, recursive: bool = False) -> int:
+    if not directory.exists():
+        return 0
+    cache_key = f"{directory.resolve()}::{pattern}::{int(recursive)}"
+    now = time.monotonic()
+    with _STATUS_FILE_COUNT_CACHE_LOCK:
+        cached = _STATUS_FILE_COUNT_CACHE.get(cache_key)
+        if cached and now - float(cached.get("cached_at") or 0.0) <= STATUS_FILE_COUNT_CACHE_TTL_SECONDS:
+            return int(cached.get("count") or 0)
+    iterator = directory.rglob(pattern) if recursive else directory.glob(pattern)
+    count = sum(1 for path in iterator if path.is_file())
+    with _STATUS_FILE_COUNT_CACHE_LOCK:
+        _STATUS_FILE_COUNT_CACHE[cache_key] = {"cached_at": now, "count": count}
+    return count
+
+
 def request_generator_stop(job_id: str | None = None) -> dict[str, Any]:
     state = _load_generator_state(job_id)
     state["stop_requested"] = True
     state["stop_requested_at"] = datetime.now().isoformat(timespec="seconds")
     if state.get("status") == "running":
         state["summary_text"] = (
-            "Получен запрос на остановку. Генератор завершит текущий безопасный шаг и остановится."
+            "Остановку приняла. Завершу текущий безопасный шаг и остановлю подготовку документов."
         )
     _save_generator_state(state, job_id)
     return get_generator_status(job_id)
@@ -135,28 +158,34 @@ def _format_generator_summary(
     review_handoffs: int = 0,
     philologist_started_rows: int = 0,
 ) -> str:
-    base = (
-        f"Агент-генератор завершил обработку: всего {state.get('total_rows', 0)}, "
-        f"успешно {state.get('ok_rows', 0)}, ошибок {state.get('error_rows', 0)}."
-    )
+    total_rows = int(state.get("total_rows", 0) or 0)
+    ok_rows = int(state.get("ok_rows", 0) or 0)
+    error_rows = int(state.get("error_rows", 0) or 0)
+
+    if error_rows > 0:
+        base = (
+            "Документы подготовлены не полностью. "
+            "Часть строк требует внимания, подробности можно посмотреть в журнале."
+        )
+    elif ok_rows > 0 or total_rows > 0:
+        base = "Документы подготовлены и тексты проверены. Можно переходить к отправке."
+    else:
+        base = "Подготовка документов завершена."
+
     template_review = state.get("template_review") or {}
     template_applied = int(template_review.get("applied_fix_count", 0) or 0)
     template_documents = int(template_review.get("checked_templates", 0) or 0)
-    if template_documents > 0:
-        base += (
-            f" Перед генерацией проверено шаблонов: {template_documents}, "
-            f"исправлено мест в шаблонах: {template_applied}."
-        )
+    if template_documents > 0 and template_applied > 0:
+        base += " Шаблоны были аккуратно исправлены перед подготовкой документов."
     inflection_summary = state.get("inflection_summary") or {}
     if inflection_summary.get("total"):
-        by_method = inflection_summary.get("by_method") or {}
-        override_count = int(by_method.get("override", 0) or 0)
         warning_count = int(inflection_summary.get("warning_count", 0) or 0)
-        base += f" Склонения: проверено {inflection_summary['total']}, по словарю {override_count}, предупреждений {warning_count}."
+        if warning_count > 0:
+            base += " В некоторых местах лучше проверить текст вручную."
     if review_handoffs > 0:
-        base += f" Подготовил для филолога {review_handoffs} задач на проверку."
+        base += " Тексты переданы на дополнительную проверку."
     if philologist_started_rows > 0:
-        base += f" Филолог автоматически запущен по {philologist_started_rows} строкам."
+        base += " Проверка текстов запущена."
     return base
 
 
@@ -379,7 +408,8 @@ def finalize_generated_files(
     batch_pdf_dir: Path | None = None,
     progress_callback: Any | None = None,
     should_stop: Any | None = None,
-    chunk_size: int = 1,
+    chunk_size: int = PDF_CHUNK_SIZE,
+    worker_count: int = PDF_WORKERS,
 ) -> None:
     jobs = build_docx_jobs(results)
     pending_pdf_jobs = []
@@ -401,7 +431,7 @@ def finalize_generated_files(
         staged_docx_paths,
         pdf_target_dir,
         chunk_size=chunk_size,
-        worker_count=1,
+        worker_count=worker_count,
         progress_callback=progress_callback,
     )
 
@@ -467,7 +497,7 @@ def prime_generator_state(
 
     if not rows:
         state["status"] = "completed"
-        state["summary_text"] = "Для генератора не нашлось строк под текущую задачу."
+        state["summary_text"] = "В таблице не нашлось клиентов для подготовки документов."
         state["task_stats"] = count_tasks_for_agent("generator", job_id)
         state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
         state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
@@ -484,13 +514,13 @@ def prime_generator_state(
             "ok_rows": 0,
             "error_rows": 0,
             "stage": "review_templates",
-            "stage_text": "Проверяю и исправляю шаблоны перед генерацией.",
+            "stage_text": "Проверяю шаблоны перед подготовкой документов.",
             "staged_docx_count": 0,
             "staged_pdf_count": 0,
             "pdf_total": 0,
             "pdf_processed": 0,
             "output_file_count": 0,
-            "summary_text": f"Агент-генератор запущен. Сначала проверю шаблоны, затем подготовлю {len(rows)} строк к обработке.",
+            "summary_text": f"Начинаю подготовку документов для {len(rows)} клиентов. Сначала проверю шаблоны.",
             "results": [],
             "template_review": {},
             "inflection_summary": {},
@@ -539,7 +569,7 @@ def run_generator_agent(
 
     if not rows:
         state["status"] = "completed"
-        state["summary_text"] = "Для генератора не нашлось строк под текущую задачу."
+        state["summary_text"] = "В таблице не нашлось клиентов для подготовки документов."
         state["task_stats"] = count_tasks_for_agent("generator", job_id)
         state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
         state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
@@ -569,19 +599,19 @@ def run_generator_agent(
             "error_rows": state.get("error_rows", 0) if was_stopped else 0,
             "stage": resume_stage,
             "stage_text": (
-                "Проверяю и исправляю шаблоны перед генерацией."
+                "Проверяю шаблоны перед подготовкой документов."
                 if resume_stage == "review_templates"
-                else "Создаю DOCX из шаблонов."
+                else "Создаю документы по шаблонам."
                 if resume_stage == "render_docx"
                 else str(state.get("stage_text") or "")
             ),
             "summary_text": (
-                f"Продолжаю генерацию с сохраненного места. Уже обработано {len(completed_result_indices)} из {len(rows)} строк."
+                f"Продолжаю подготовку документов с сохраненного места. Уже готово {len(completed_result_indices)} из {len(rows)} клиентов."
                 if was_stopped
                 else (
-                    f"Агент-генератор запущен. Сначала проверю шаблоны, затем подготовлю {len(rows)} строк к обработке."
+                    f"Начинаю подготовку документов для {len(rows)} клиентов. Сначала проверю шаблоны."
                     if not claimed_tasks
-                    else f"Агент-генератор запущен. Подготовил {len(rows)} строк и принял {len(claimed_tasks)} внутренних задач."
+                    else f"Начинаю подготовку документов для {len(rows)} клиентов."
                 )
             ),
             "results": restored_results,
@@ -630,7 +660,7 @@ def run_generator_agent(
             template_review = review_templates_before_generation(job_id)
             state["template_review"] = template_review
             state["stage"] = "render_docx"
-            state["stage_text"] = "Создаю DOCX из шаблонов."
+            state["stage_text"] = "Создаю документы по шаблонам."
             if int(template_review.get("applied_fix_count", 0) or 0) > 0:
                 state["summary_text"] = (
                     "Шаблоны проверены и безопасные правки применены. "
@@ -732,7 +762,7 @@ def run_generator_agent(
             if isinstance(value, Path) and value.suffix.lower() == ".docx" and value.exists()
         )
         state["stage"] = "convert_pdf"
-        state["stage_text"] = "DOCX созданы. Конвертирую документы в PDF."
+        state["stage_text"] = "Документы созданы. Сохраняю их в PDF."
         state["staged_docx_count"] = staged_docx_total
         state["pdf_total"] = staged_docx_total
         _save_generator_state(state, job_id)
@@ -757,10 +787,11 @@ def run_generator_agent(
             batch_pdf_dir=pdf_target_dir,
             progress_callback=_save_pdf_progress,
             should_stop=lambda: bool(_refresh_generator_stop_flag(state, job_id).get("stop_requested")),
-            chunk_size=1,
+            chunk_size=PDF_CHUNK_SIZE,
+            worker_count=PDF_WORKERS,
         )
         state["stage"] = "finalize_output"
-        state["stage_text"] = "Собираю итоговую папку output."
+        state["stage_text"] = "Подготавливаю готовые файлы к скачиванию."
         _save_generator_state(state, job_id)
         inflection_log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
         save_inflection_log(
@@ -782,7 +813,7 @@ def run_generator_agent(
                     row_id=result.get("id"),
                     new_status="done",
                     note="Генератор пересобрал или подтвердил комплект документов.",
-                    resolution_summary="Комплект документов собран и сохранён в output.",
+                    resolution_summary="Комплект документов готов.",
                     job_id=job_id,
                 )
                 if settings.inter_agent_handoffs_enabled:
@@ -898,28 +929,31 @@ def get_generator_status(job_id: str | None = None) -> dict[str, Any]:
     output_dir = job_paths.output_dir if not job_paths.uses_legacy_layout else OUTPUT_DIR
     batch_docx_dir = job_paths.batch_docx_dir
     batch_pdf_dir = job_paths.batch_pdf_dir if not job_paths.uses_legacy_layout else BATCH_PDF_DIR
-    staged_docx_count = (
-        len(list(batch_docx_dir.glob("*.docx")))
-        if batch_docx_dir.exists()
-        else int(state.get("staged_docx_count") or 0)
-    )
-    staged_pdf_count = (
-        len(list(batch_pdf_dir.glob("*.pdf")))
-        if batch_pdf_dir.exists()
-        else int(state.get("staged_pdf_count") or 0)
-    )
+    is_running = state.get("status") == "running"
+    if is_running:
+        staged_docx_count = int(state.get("staged_docx_count") or 0)
+        staged_pdf_count = int(state.get("staged_pdf_count") or 0)
+        output_file_count = int(state.get("output_file_count") or 0)
+    else:
+        staged_docx_count = (
+            _cached_file_count(batch_docx_dir, "*.docx")
+            if batch_docx_dir.exists()
+            else int(state.get("staged_docx_count") or 0)
+        )
+        staged_pdf_count = (
+            _cached_file_count(batch_pdf_dir, "*.pdf")
+            if batch_pdf_dir.exists()
+            else int(state.get("staged_pdf_count") or 0)
+        )
+        output_file_count = _cached_file_count(output_dir, "*", recursive=True) if output_dir.exists() else 0
     state["staged_docx_count"] = staged_docx_count
     state["staged_pdf_count"] = staged_pdf_count
     state["pdf_total"] = int(state.get("pdf_total") or staged_docx_count or 0)
     state["pdf_processed"] = staged_pdf_count
-    state["output_file_count"] = (
-        sum(1 for path in output_dir.rglob("*") if path.is_file())
-        if output_dir.exists()
-        else 0
-    )
+    state["output_file_count"] = output_file_count
     if state.get("status") == "running" and staged_docx_count and not state.get("stage"):
         state["stage"] = "convert_pdf"
-        state["stage_text"] = "DOCX созданы. Конвертирую документы в PDF."
+        state["stage_text"] = "Документы созданы. Сохраняю их в PDF."
     state["task_stats"] = count_tasks_for_agent("generator", job_id)
     state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
