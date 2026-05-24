@@ -22,8 +22,12 @@ _philologist_threads: dict[str, threading.Thread] = {}
 _philologist_threads_lock = threading.Lock()
 _generator_threads: dict[str, threading.Thread] = {}
 _generator_threads_lock = threading.Lock()
+_documents_threads: dict[str, threading.Thread] = {}
+_documents_threads_lock = threading.Lock()
 _parser_verification_processes: dict[str, Process] = {}
 _parser_verification_processes_lock = threading.Lock()
+_output_archive_threads: dict[str, threading.Thread] = {}
+_output_archive_threads_lock = threading.Lock()
 PARSER_VERIFICATION_TIMEOUT_SECONDS = 15 * 60
 
 
@@ -65,6 +69,57 @@ def _prefer_existing_file(primary: Path, fallback: Path) -> Path:
     return primary if primary.exists() else fallback
 
 
+_METADATA_CACHE_LOCK = threading.Lock()
+_EXCEL_ROW_COUNT_CACHE: dict[str, dict[str, float | int | tuple[int, int]]] = {}
+_TREE_FILE_COUNT_CACHE: dict[str, dict[str, float | int]] = {}
+METADATA_CACHE_TTL_SECONDS = 10.0
+
+
+def _file_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _cached_excel_row_count(path: Path) -> int:
+    signature = _file_signature(path)
+    if signature is None:
+        return 0
+    cache_key = str(path.resolve())
+    with _METADATA_CACHE_LOCK:
+        cached = _EXCEL_ROW_COUNT_CACHE.get(cache_key)
+        if cached and cached.get("signature") == signature:
+            return int(cached.get("count") or 0)
+    try:
+        workbook, _, rows = load_rows(path)
+        count = len(rows)
+        close = getattr(workbook, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        count = 0
+    with _METADATA_CACHE_LOCK:
+        _EXCEL_ROW_COUNT_CACHE[cache_key] = {"signature": signature, "count": count}
+    return count
+
+
+def _cached_tree_file_count(root: Path, pattern: str) -> int:
+    if not root.exists():
+        return 0
+    cache_key = f"{root.resolve()}::{pattern}"
+    now = time.monotonic()
+    with _METADATA_CACHE_LOCK:
+        cached = _TREE_FILE_COUNT_CACHE.get(cache_key)
+        if cached and now - float(cached.get("cached_at") or 0.0) <= METADATA_CACHE_TTL_SECONDS:
+            return int(cached.get("count") or 0)
+    count = sum(1 for path in root.rglob(pattern) if path.is_file())
+    with _METADATA_CACHE_LOCK:
+        _TREE_FILE_COUNT_CACHE[cache_key] = {"cached_at": now, "count": count}
+    return count
+
+
 def _sender_job_key(job_id: str | None) -> str:
     return str(job_id or "__legacy__")
 
@@ -74,6 +129,10 @@ def _philologist_job_key(job_id: str | None) -> str:
 
 
 def _generator_job_key(job_id: str | None) -> str:
+    return str(job_id or "__legacy__")
+
+
+def _documents_job_key(job_id: str | None) -> str:
     return str(job_id or "__legacy__")
 
 
@@ -145,6 +204,47 @@ def _resolve_cached_output_archive(job_id: str | None) -> tuple[Path, bool]:
     return archive_path, archive_mtime >= _latest_tree_mtime(output_dir)
 
 
+def _build_output_archive(job_id: str | None) -> Path:
+    output_dir = resolve_job_paths(job_id).output_dir
+    archive_path, _ = _resolve_cached_output_archive(job_id)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_archive_path = archive_path.with_suffix(".tmp.zip")
+    if temp_archive_path.exists():
+        try:
+            temp_archive_path.unlink()
+        except OSError:
+            pass
+    with zipfile.ZipFile(temp_archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in output_dir.rglob("*"):
+            if f.is_file():
+                zf.write(f, f.relative_to(output_dir))
+    temp_archive_path.replace(archive_path)
+    return archive_path
+
+
+def _schedule_output_archive_build(job_id: str | None) -> None:
+    key = _generator_job_key(job_id)
+    with _output_archive_threads_lock:
+        existing = _output_archive_threads.get(key)
+        if existing and existing.is_alive():
+            return
+
+        def _run() -> None:
+            try:
+                output_dir = resolve_job_paths(job_id).output_dir
+                if output_dir.exists() and any(output_dir.rglob("*.*")):
+                    _build_output_archive(job_id)
+            except Exception:
+                logger.exception("output_archive_build_failed", job_id=job_id)
+            finally:
+                with _output_archive_threads_lock:
+                    _output_archive_threads.pop(key, None)
+
+        thread = threading.Thread(target=_run, daemon=True, name=f"archive-{key}")
+        _output_archive_threads[key] = thread
+        thread.start()
+
+
 def _is_cache_fresh(cache_path: Path, source_paths: list[Path], *, max_age_seconds: int | None = None) -> bool:
     if not cache_path.exists():
         return False
@@ -195,6 +295,16 @@ def _get_generator_thread(job_id: str | None) -> threading.Thread | None:
         return thread
 
 
+def _get_documents_thread(job_id: str | None) -> threading.Thread | None:
+    key = _documents_job_key(job_id)
+    with _documents_threads_lock:
+        thread = _documents_threads.get(key)
+        if thread and not thread.is_alive():
+            _documents_threads.pop(key, None)
+            return None
+        return thread
+
+
 def _get_parser_verification_process(job_id: str | None) -> Process | None:
     key = _parser_job_key(job_id)
     with _parser_verification_processes_lock:
@@ -218,6 +328,11 @@ def _register_philologist_thread(job_id: str | None, thread: threading.Thread) -
 def _register_generator_thread(job_id: str | None, thread: threading.Thread) -> None:
     with _generator_threads_lock:
         _generator_threads[_generator_job_key(job_id)] = thread
+
+
+def _register_documents_thread(job_id: str | None, thread: threading.Thread) -> None:
+    with _documents_threads_lock:
+        _documents_threads[_documents_job_key(job_id)] = thread
 
 
 def _register_parser_verification_process(job_id: str | None, process: Process) -> None:
@@ -267,6 +382,143 @@ def _compact_philologist_status(state: dict) -> dict:
     }
 
 
+def _compact_generator_status(state: dict) -> dict:
+    return {
+        "status": state.get("status", "idle"),
+        "started_at": state.get("started_at"),
+        "completed_at": state.get("completed_at"),
+        "elapsed_seconds": state.get("elapsed_seconds"),
+        "total_rows": state.get("total_rows", 0),
+        "processed_rows": state.get("processed_rows", 0),
+        "ok_rows": state.get("ok_rows", 0),
+        "error_rows": state.get("error_rows", 0),
+        "stage": state.get("stage", "idle"),
+        "stage_text": state.get("stage_text", ""),
+        "summary_text": state.get("summary_text", ""),
+        "staged_docx_count": state.get("staged_docx_count", 0),
+        "staged_pdf_count": state.get("staged_pdf_count", 0),
+        "pdf_total": state.get("pdf_total", 0),
+        "pdf_processed": state.get("pdf_processed", 0),
+        "output_file_count": state.get("output_file_count", 0),
+        "inflection_summary": state.get("inflection_summary", {}),
+        "template_review": state.get("template_review", {}),
+        "stop_requested": state.get("stop_requested", False),
+        "task_stats": state.get("task_stats", {}),
+        "recent_events": (state.get("recent_events") or [])[:5],
+    }
+
+
+def _documents_generator_percent(generator_state: dict) -> int:
+    status = str(generator_state.get("status") or "idle")
+    stage = str(generator_state.get("stage") or "")
+    total = max(0, int(generator_state.get("total_rows") or 0))
+    processed = max(0, int(generator_state.get("processed_rows") or 0))
+    pdf_total = max(0, int(generator_state.get("pdf_total") or 0))
+    pdf_processed = max(
+        0,
+        int(generator_state.get("pdf_processed") or generator_state.get("staged_pdf_count") or 0),
+    )
+    if status == "completed":
+        return 100
+    if stage == "review_templates":
+        return 5
+    if stage == "render_docx":
+        return min(60, 5 + round((processed / total) * 55)) if total else 5
+    if stage == "convert_pdf":
+        safe_pdf_total = pdf_total or max(int(generator_state.get("staged_docx_count") or 0), total, 1)
+        return min(95, 60 + round((pdf_processed / safe_pdf_total) * 35))
+    if stage == "finalize_output":
+        return 97
+    return min(95, round((processed / total) * 60)) if total else 0
+
+
+def _documents_philologist_percent(philologist_state: dict) -> int:
+    status = str(philologist_state.get("status") or "idle")
+    total = max(0, int(philologist_state.get("total_documents") or 0))
+    processed = max(0, int(philologist_state.get("processed_documents") or 0))
+    if status == "completed":
+        return 100
+    if status == "finalizing":
+        return 95
+    return min(95, round((processed / total) * 100)) if total else 0
+
+
+def _compact_documents_status(job_id: str | None) -> dict:
+    generator_state = _compact_generator_status(get_generator_status(job_id))
+    philologist_state = _compact_philologist_status(get_philologist_status(job_id))
+    pipeline_thread = _get_documents_thread(job_id)
+    generator_status = str(generator_state.get("status") or "idle")
+    philologist_status = str(philologist_state.get("status") or "idle")
+    generator_done = generator_status == "completed"
+    philologist_done = philologist_status == "completed"
+
+    if generator_status == "error" or philologist_status == "error":
+        status = "error"
+    elif generator_status == "stopped" or philologist_status == "stopped":
+        status = "stopped"
+    elif pipeline_thread is not None or generator_status == "running" or philologist_status in {"running", "finalizing"}:
+        status = "running"
+    elif generator_done and philologist_done:
+        status = "completed"
+    elif generator_done:
+        status = "waiting_review"
+    else:
+        status = generator_status if generator_status in {"completed", "error", "stopped"} else "idle"
+
+    if not generator_done:
+        stage = "generate"
+        stage_text = "Создаю документы."
+        progress_percent = round(_documents_generator_percent(generator_state) * 0.7)
+    elif not philologist_done:
+        stage = "review"
+        stage_text = "Проверяю готовые документы."
+        progress_percent = 70 + round(_documents_philologist_percent(philologist_state) * 0.28)
+    else:
+        stage = "completed"
+        stage_text = "Документы созданы и проверены."
+        progress_percent = 100
+
+    if status == "idle":
+        stage_text = "Подготовка документов ещё не запускалась."
+        progress_percent = 0
+    elif status == "waiting_review":
+        stage_text = "Документы созданы. Можно запустить проверку."
+        progress_percent = max(progress_percent, 70)
+    elif status == "stopped":
+        stage_text = "Работа остановлена. Можно продолжить с сохраненного места."
+    elif status == "error":
+        stage_text = (
+            generator_state.get("summary_text")
+            or philologist_state.get("summary_text")
+            or "Не удалось завершить подготовку документов."
+        )
+
+    total_rows = max(int(generator_state.get("total_rows") or 0), int(philologist_state.get("total_documents") or 0) // 2)
+    processed_rows = int(generator_state.get("processed_rows") or 0)
+    reviewed_documents = int(philologist_state.get("processed_documents") or 0)
+    total_documents = int(philologist_state.get("total_documents") or 0)
+    if generator_done and total_rows:
+        processed_rows = total_rows
+
+    return {
+        "status": status,
+        "stage": stage,
+        "stage_text": stage_text,
+        "progress_percent": max(0, min(100, progress_percent)),
+        "generator": generator_state,
+        "philologist": philologist_state,
+        "total_rows": total_rows,
+        "processed_rows": processed_rows,
+        "total_documents": total_documents,
+        "reviewed_documents": reviewed_documents,
+        "error_rows": int(generator_state.get("error_rows") or 0),
+        "fixed_documents": int(philologist_state.get("fixed_documents") or 0),
+        "documents_with_issues": int(philologist_state.get("documents_with_issues") or 0),
+        "output_file_count": int(generator_state.get("output_file_count") or 0),
+        "summary_text": stage_text,
+    }
+
+
 def _run_sender_background(*, limit: int | None, transport: str | None, job_id: str | None) -> None:
     try:
         run_sender(dry_run=False, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
@@ -284,7 +536,9 @@ def _run_sender_background(*, limit: int | None, transport: str | None, job_id: 
 
 def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: str | None) -> None:
     try:
-        run_philologist(ai_enabled=ai_enabled, job_id=job_id, mode=mode)
+        result = run_philologist(ai_enabled=ai_enabled, job_id=job_id, mode=mode)
+        if isinstance(result, dict) and result.get("status") == "completed":
+            _schedule_output_archive_build(job_id)
     except Exception as exc:
         logger.exception("philologist_background_failed", job_id=job_id)
         state = _load_philologist_state(job_id)
@@ -299,12 +553,55 @@ def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: s
 
 def _run_generator_background(*, xlsx_path: Path, job_id: str | None) -> None:
     try:
-        run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
-    except Exception:
+        result = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
+        if isinstance(result, dict) and result.get("status") == "completed":
+            _schedule_output_archive_build(job_id)
+    except Exception as exc:
         logger.exception("generator_background_failed", job_id=job_id)
+        state = _load_generator_state(job_id)
+        state["status"] = "error"
+        state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        state["summary_text"] = f"Генератор остановился с ошибкой: {type(exc).__name__}: {exc}"
+        _save_generator_state(state, job_id)
     finally:
         with _generator_threads_lock:
             _generator_threads.pop(_generator_job_key(job_id), None)
+
+
+def _run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mode: str | None) -> None:
+    try:
+        generator_state = get_generator_status(job_id)
+        if str(generator_state.get("status") or "") != "completed":
+            clear_generator_stop_request(job_id)
+            generator_state = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
+
+        if str(generator_state.get("status") or "") != "completed":
+            return
+
+        philologist_state = get_philologist_status(job_id)
+        if str(philologist_state.get("status") or "") != "completed":
+            clear_philologist_stop_request(job_id)
+            philologist_state = run_philologist(ai_enabled=True, job_id=job_id, mode=mode or "fast")
+
+        if isinstance(philologist_state, dict) and philologist_state.get("status") == "completed":
+            _schedule_output_archive_build(job_id)
+    except Exception as exc:
+        logger.exception("documents_pipeline_failed", job_id=job_id)
+        generator_state = _load_generator_state(job_id)
+        philologist_state = _load_philologist_state(job_id)
+        if str(generator_state.get("status") or "") == "running":
+            generator_state["status"] = "error"
+            generator_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+            generator_state["summary_text"] = f"Подготовка документов остановилась с ошибкой: {type(exc).__name__}: {exc}"
+            _save_generator_state(generator_state, job_id)
+        elif str(philologist_state.get("status") or "") in {"running", "finalizing"}:
+            philologist_state["status"] = "error"
+            philologist_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+            philologist_state["summary_text"] = f"Проверка документов остановилась с ошибкой: {type(exc).__name__}: {exc}"
+            _save_philologist_state(philologist_state, job_id)
+    finally:
+        with _documents_threads_lock:
+            _documents_threads.pop(_documents_job_key(job_id), None)
 
 
 def _run_parser_verification_background(*, job_id: str | None, source: str) -> None:
@@ -552,8 +849,7 @@ async def data_info(job_id: str | None = None, username: str = Depends(check_aut
     data_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
     if not data_path.exists():
         return {"loaded": False, "total": 0}
-    _, _, rows = load_rows(data_path)
-    return {"loaded": True, "total": len(rows)}
+    return {"loaded": True, "total": _cached_excel_row_count(data_path)}
 
 
 @app.get("/api/job/readiness")
@@ -562,11 +858,7 @@ async def job_readiness(job_id: str | None = None, username: str = Depends(check
     data_path = _prefer_existing_file(paths.data_xlsx, Path("data/data.xlsx"))
     row_count = 0
     if data_path.exists():
-        try:
-            _, _, rows = load_rows(data_path)
-            row_count = len(rows)
-        except Exception:
-            row_count = 0
+        row_count = _cached_excel_row_count(data_path)
 
     templates_dir = paths.templates_dir
     kp_template_loaded = (templates_dir / "kp_template_source.docx").exists()
@@ -577,24 +869,22 @@ async def job_readiness(job_id: str | None = None, username: str = Depends(check
     )
 
     output_dir = paths.output_dir
-    output_docx_count = (
-        sum(1 for path in output_dir.rglob("*.docx") if path.is_file())
-        if output_dir.exists()
-        else 0
-    )
-    output_pdf_count = (
-        sum(1 for path in output_dir.rglob("*.pdf") if path.is_file())
-        if output_dir.exists()
-        else 0
-    )
-
     parser_state = get_parser_status(job_id)
     generator_state = get_generator_status(job_id)
     philologist_state = get_philologist_status(job_id)
 
     parser_running = str(parser_state.get("status") or "") == "running"
     generator_running = str(generator_state.get("status") or "") == "running"
-    philologist_running = str(philologist_state.get("status") or "") == "running"
+    philologist_running = str(philologist_state.get("status") or "") in {"running", "finalizing"}
+    output_docx_count = max(
+        int(generator_state.get("staged_docx_count") or 0),
+        int(philologist_state.get("total_documents") or 0),
+    )
+    if output_docx_count <= 0:
+        output_docx_count = _cached_tree_file_count(output_dir, "*.docx")
+    output_pdf_count = int(generator_state.get("staged_pdf_count") or 0)
+    if output_pdf_count <= 0:
+        output_pdf_count = _cached_tree_file_count(output_dir, "*.pdf")
 
     generator_reasons: list[str] = []
     philologist_reasons: list[str] = []
@@ -775,6 +1065,8 @@ from src.generator.knowledge.correction_report import (
 from src.generator.case_engine.overrides import upsert_override
 from src.generator.inflection.inflection_report import load_inflection_log, save_inflection_csv
 from src.generator.generation.generator_agent import (
+    _load_generator_state,
+    _save_generator_state,
     clear_generator_stop_request,
     get_generator_status,
     prime_generator_state,
@@ -912,13 +1204,11 @@ async def counts(job_id: str | None = None, username: str = Depends(check_auth))
     
     parser_total = 0
     if base_path.exists():
-        _, _, rows = load_rows(base_path)
-        parser_total = len(rows)
+        parser_total = _cached_excel_row_count(base_path)
     
     generator_total = 0
     if data_path.exists():
-        _, _, rows = load_rows(data_path)
-        generator_total = len(rows)
+        generator_total = _cached_excel_row_count(data_path)
 
     # After restarts the UI can recover module states earlier than it can
     # reliably re-read every source file. Use persisted agent state as a
@@ -949,6 +1239,75 @@ async def counts(job_id: str | None = None, username: str = Depends(check_auth))
         "sender_total": sender_total
     }
 
+
+@app.post("/api/documents/start")
+async def documents_start(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
+    job_id = str((payload or {}).get("job_id") or "").strip() or None
+    mode = str((payload or {}).get("mode") or "fast").strip().lower() or "fast"
+    xlsx_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
+    if not xlsx_path.exists():
+        raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
+
+    existing_documents_thread = _get_documents_thread(job_id)
+    if existing_documents_thread is not None:
+        return {"status": "ok", "result": _compact_documents_status(job_id)}
+
+    generator_state = get_generator_status(job_id)
+    philologist_state = get_philologist_status(job_id)
+    generator_thread = _get_generator_thread(job_id)
+    philologist_thread = _get_philologist_thread(job_id)
+    generator_thread_running = str(generator_state.get("status") or "") == "running" and generator_thread is not None
+    philologist_thread_running = (
+        str(philologist_state.get("status") or "") in {"running", "finalizing"}
+        and philologist_thread is not None
+    )
+    if generator_thread_running or philologist_thread_running:
+        return {"status": "ok", "result": _compact_documents_status(job_id)}
+
+    if str(generator_state.get("status") or "") == "completed":
+        if str(philologist_state.get("status") or "") != "completed":
+            clear_philologist_stop_request(job_id)
+            _prime_philologist_running_state(job_id, mode)
+    else:
+        if str(generator_state.get("status") or "") == "stopped":
+            clear_generator_stop_request(job_id)
+            generator_state["status"] = "running"
+            generator_state["completed_at"] = None
+            generator_state["summary_text"] = "Продолжаю подготовку документов с сохраненного места."
+            _save_generator_state(generator_state, job_id)
+        else:
+            primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id)
+            if primed_state.get("status") == "error":
+                raise HTTPException(status_code=400, detail=primed_state.get("summary_text") or "Ошибка подготовки документов")
+
+    thread = threading.Thread(
+        target=_run_documents_pipeline_background,
+        kwargs={"xlsx_path": xlsx_path, "job_id": job_id, "mode": mode},
+        daemon=True,
+        name=f"documents-{_documents_job_key(job_id)}",
+    )
+    _register_documents_thread(job_id, thread)
+    thread.start()
+    return {"status": "ok", "result": _compact_documents_status(job_id)}
+
+
+@app.get("/api/documents/status")
+async def documents_status(job_id: str | None = None, username: str = Depends(check_auth)):
+    return {"status": "ok", "result": _compact_documents_status(job_id)}
+
+
+@app.post("/api/documents/stop")
+async def documents_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
+    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    generator_state = get_generator_status(job_id)
+    philologist_state = get_philologist_status(job_id)
+    if str(generator_state.get("status") or "") == "running":
+        request_generator_stop(job_id)
+    if str(philologist_state.get("status") or "") in {"running", "finalizing"}:
+        request_philologist_stop(job_id)
+    return {"status": "ok", "result": _compact_documents_status(job_id)}
+
+
 @app.post("/api/generate")
 async def generate(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
     job_id = str((payload or {}).get("job_id") or "").strip() or None
@@ -957,9 +1316,11 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
         raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
     existing_thread = _get_generator_thread(job_id)
     if existing_thread is not None:
-        return {"status": "ok", "result": get_generator_status(job_id)}
+        return {"status": "ok", "result": _compact_generator_status(get_generator_status(job_id))}
 
     existing_state = get_generator_status(job_id)
+    if str(existing_state.get("status") or "") == "running":
+        return {"status": "ok", "result": _compact_generator_status(existing_state)}
     if str(existing_state.get("status") or "") == "stopped":
         clear_generator_stop_request(job_id)
         primed_state = existing_state
@@ -972,7 +1333,8 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
         raise HTTPException(status_code=400, detail=primed_state.get("summary_text") or "Ошибка генерации")
 
     if primed_state.get("status") == "completed":
-        return {"status": "ok", "result": primed_state}
+        _schedule_output_archive_build(job_id)
+        return {"status": "ok", "result": _compact_generator_status(primed_state)}
 
     thread = threading.Thread(
         target=_run_generator_background,
@@ -982,18 +1344,18 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
     )
     _register_generator_thread(job_id, thread)
     thread.start()
-    return {"status": "ok", "result": primed_state}
+    return {"status": "ok", "result": _compact_generator_status(primed_state)}
 
 
 @app.get("/api/generator/status")
 async def generator_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_generator_status(job_id)}
+    return {"status": "ok", "result": _compact_generator_status(get_generator_status(job_id))}
 
 
 @app.post("/api/generator/stop")
 async def generator_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    return {"status": "ok", "result": request_generator_stop(job_id)}
+    return {"status": "ok", "result": _compact_generator_status(request_generator_stop(job_id))}
 
 
 from fastapi.responses import FileResponse
@@ -1029,15 +1391,14 @@ async def public_onlyoffice_document(token: str, filename: str):
 @app.get("/api/download/output")
 async def download_output(job_id: str | None = None, username: str = Depends(check_auth)):
     output_dir = resolve_job_paths(job_id).output_dir
-    if not output_dir.exists() or not list(output_dir.rglob("*.*")):
+    if not output_dir.exists():
         raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
 
     archive_path, cache_is_fresh = _resolve_cached_output_archive(job_id)
     if not cache_is_fresh:
-        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for f in output_dir.rglob("*"):
-                if f.is_file():
-                    zf.write(f, f.relative_to(output_dir))
+        if not any(output_dir.rglob("*.*")):
+            raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
+        archive_path = _build_output_archive(job_id)
 
     return FileResponse(
         archive_path,
@@ -1262,6 +1623,10 @@ async def philologist_run(
     existing_thread = _get_philologist_thread(job_id)
     if existing_thread:
         return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
+
+    existing_state = get_philologist_status(job_id)
+    if str(existing_state.get("status") or "") in {"running", "finalizing"}:
+        return {"status": "ok", "result": _compact_philologist_status(existing_state)}
 
     clear_philologist_stop_request(job_id)
     primed_state = _prime_philologist_running_state(job_id, mode or "fast")

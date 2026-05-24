@@ -100,7 +100,7 @@ SENDER_STATE: dict[str, Any] = {
     "skipped_rows": 0,
     "handoff_rows": 0,
     "total_rows": 0,
-    "summary_text": "Агент-отправщик ещё не запускался.",
+    "summary_text": "Проверка перед отправкой ещё не запускалась.",
     "rows": [],
     "stats": {},
     "warning_rows": 0,
@@ -124,8 +124,11 @@ UNISENDER_RETRY_BASE_SECONDS = 2.0
 UNISENDER_RETRYABLE_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 UNISENDER_REQUESTS_PER_MINUTE = 60
 UNISENDER_MIN_REQUEST_INTERVAL_SECONDS = 60.0 / UNISENDER_REQUESTS_PER_MINUTE
+UNISENDER_RATE_LIMIT_RETRY_SECONDS = 65.0
 _UNISENDER_RATE_LIMIT_LOCK = threading.Lock()
 _last_unisender_request_at = 0.0
+_EXCEL_STATS_CACHE_LOCK = threading.Lock()
+_EXCEL_STATS_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _load_sender_state(job_id: str | None = None) -> dict[str, Any]:
@@ -160,6 +163,14 @@ def _should_flush_sender_workbook(*, dirty: bool, processed_rows: int, total_row
     return processed_rows % SENDER_WORKBOOK_SAVE_EVERY == 0
 
 
+def _file_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (int(stat.st_mtime_ns), int(stat.st_size))
+
+
 def _sleep_sender_retry(delay_seconds: float) -> None:
     if delay_seconds <= 0:
         return
@@ -170,6 +181,11 @@ def _is_retryable_unisender_exception(exc: Exception) -> bool:
     if isinstance(exc, HTTPError):
         return int(exc.code) in UNISENDER_RETRYABLE_HTTP_CODES
     return isinstance(exc, (TimeoutError, URLError, OSError))
+
+
+def _is_unisender_rate_limit_text(value: Any) -> bool:
+    text = _safe_text(value).lower()
+    return "api call limit exceeded" in text or "limit 60 calls" in text
 
 
 def _wait_unisender_api_slot() -> None:
@@ -191,6 +207,10 @@ def _run_unisender_request(request: Request, *, timeout: float, request_label: s
                 return response.read().decode("utf-8", errors="replace")
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
+            if attempt < UNISENDER_RETRY_ATTEMPTS and _is_unisender_rate_limit_text(raw):
+                _sleep_sender_retry(UNISENDER_RATE_LIMIT_RETRY_SECONDS)
+                last_error = RuntimeError(f"{request_label} временно ограничил API-запросы, повтор {attempt}.")
+                continue
             if attempt < UNISENDER_RETRY_ATTEMPTS and _is_retryable_unisender_exception(exc):
                 _sleep_sender_retry(UNISENDER_RETRY_BASE_SECONDS * attempt)
                 last_error = RuntimeError(
@@ -200,6 +220,10 @@ def _run_unisender_request(request: Request, *, timeout: float, request_label: s
             exc.raw_body = raw  # type: ignore[attr-defined]
             raise
         except Exception as exc:
+            if attempt < UNISENDER_RETRY_ATTEMPTS and _is_unisender_rate_limit_text(exc):
+                _sleep_sender_retry(UNISENDER_RATE_LIMIT_RETRY_SECONDS)
+                last_error = exc
+                continue
             if attempt < UNISENDER_RETRY_ATTEMPTS and _is_retryable_unisender_exception(exc):
                 _sleep_sender_retry(UNISENDER_RETRY_BASE_SECONDS * attempt)
                 last_error = exc
@@ -516,7 +540,15 @@ def _collect_excel_stats(data_xlsx_path: Path | None = None) -> dict[str, int]:
     if not source_path.exists():
         return {"total": 0, "sent": 0, "error": 0, "pending": 0}
 
-    _, _, rows = load_rows(source_path)
+    signature = _file_signature(source_path)
+    cache_key = str(source_path.resolve())
+    if signature is not None:
+        with _EXCEL_STATS_CACHE_LOCK:
+            cached = _EXCEL_STATS_CACHE.get(cache_key)
+            if cached and cached.get("signature") == signature:
+                return dict(cached.get("stats") or {"total": 0, "sent": 0, "error": 0, "pending": 0})
+
+    workbook, _, rows = load_rows(source_path)
     stats = {"total": len(rows), "sent": 0, "error": 0, "pending": 0}
     for row in rows:
         status_class = _status_class(row.get("STATUS"))
@@ -526,46 +558,54 @@ def _collect_excel_stats(data_xlsx_path: Path | None = None) -> dict[str, int]:
             stats["error"] += 1
         else:
             stats["pending"] += 1
+    close = getattr(workbook, "close", None)
+    if callable(close):
+        close()
+    if signature is not None:
+        with _EXCEL_STATS_CACHE_LOCK:
+            _EXCEL_STATS_CACHE[cache_key] = {"signature": signature, "stats": dict(stats)}
     return stats
 
 
 def _format_sender_summary(state: dict[str, Any]) -> str:
     if state.get("status") == "stopped":
         summary = (
-            f"Отправка через {state.get('transport') or 'smtp'} остановлена пользователем: обработано {state.get('processed_rows', 0)} строк, "
-            f"успешно отправлено {state.get('sent_rows', 0)}, готово {state.get('ready_rows', 0)}, "
-            f"ошибок {state.get('error_rows', 0)}."
+            f"Отправка остановлена. Уже отправлено {state.get('sent_rows', 0)}, "
+            f"готово к отправке {state.get('ready_rows', 0)}, ошибок {state.get('error_rows', 0)}."
         )
         if state.get("warning_rows", 0) > 0:
             summary += (
-                f" У {state.get('warning_rows', 0)} строк письмо ушло, "
+                f" У {state.get('warning_rows', 0)} писем отправка прошла, "
                 "но копию не удалось сохранить в папку «Отправленные»."
             )
         if state.get("remaining_rows", 0) > 0:
-            summary += f" Осталось строк без статуса «Отправлено»: {state.get('remaining_rows', 0)}."
+            summary += f" Осталось отправить: {state.get('remaining_rows', 0)}."
         return summary
     if state.get("total_rows", 0) == 0:
-        return "В data.xlsx пока нет строк для отправки."
-    mode = "проверка готовности" if state.get("mode") == "dry_run" else "отправка"
-    summary = (
-        f"Завершена {mode} через {state.get('transport') or 'smtp'}: проверено {state.get('processed_rows', 0)} строк, "
-        f"готово {state.get('ready_rows', 0)}, ошибок {state.get('error_rows', 0)}, "
-        f"пропущено {state.get('skipped_rows', 0)}, уже отправлено {state.get('sent_rows', 0)}, "
-        f"на дозаполнение отправлено {state.get('handoff_rows', 0)}."
-    )
+        return "В таблице пока нет получателей для отправки."
+    if state.get("mode") == "dry_run":
+        summary = (
+            f"Проверка завершена. Готово к отправке: {state.get('ready_rows', 0)}, "
+            f"ошибок: {state.get('error_rows', 0)}, пропущено: {state.get('skipped_rows', 0)}."
+        )
+    else:
+        summary = (
+            f"Отправка завершена. Отправлено: {state.get('sent_rows', 0)}, "
+            f"ошибок: {state.get('error_rows', 0)}, осталось отправить: {state.get('remaining_rows', 0)}."
+        )
     if state.get("generator_handoff_rows", 0) > 0:
-        summary += f" Генератору передано задач на восстановление документов: {state.get('generator_handoff_rows', 0)}."
+        summary += f" Нужно заново подготовить документы: {state.get('generator_handoff_rows', 0)}."
     if state.get("philology_blocked_rows", 0) > 0:
-        summary += f" Заблокировано замечаниями филолога: {state.get('philology_blocked_rows', 0)}."
+        summary += f" Нужно проверить текст перед отправкой: {state.get('philology_blocked_rows', 0)}."
     if state.get("autonomous_recovery_rows", 0) > 0:
-        summary += f" Автономно восстановлено кейсов: {state.get('autonomous_recovery_rows', 0)}."
+        summary += f" Автоматически восстановлено комплектов: {state.get('autonomous_recovery_rows', 0)}."
     if state.get("warning_rows", 0) > 0:
         summary += (
-            f" У {state.get('warning_rows', 0)} строк письмо ушло, "
+            f" У {state.get('warning_rows', 0)} писем отправка прошла, "
             "но копию не удалось сохранить в папку «Отправленные»."
         )
     if state.get("remaining_rows", 0) > 0:
-        summary += f" После этой партии осталось строк без статуса «Отправлено»: {state.get('remaining_rows', 0)}."
+        summary += f" Можно отправить оставшиеся письма: {state.get('remaining_rows', 0)}."
     return summary
 
 
@@ -1475,6 +1515,120 @@ def _send_via_unisender(
     }
 
 
+def _send_via_unisender_go_bulk(
+    row: dict[str, Any],
+    recipients: list[str],
+    attachments: list[str],
+    subject: str,
+    *,
+    mail_template_path: Path | None = None,
+) -> dict[str, Any]:
+    api_key = _safe_text(settings.unisender_api_key)
+    sender_email = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
+    sender_name = _safe_text(settings.unisender_sender_name) or "ООО «ПР»"
+    if not api_key:
+        raise RuntimeError("Не указан API-ключ UniSender Go.")
+    if not sender_email:
+        raise RuntimeError("Не указан email отправителя UniSender Go.")
+
+    cleaned_recipients = [recipient for recipient in recipients if recipient]
+    if not cleaned_recipients:
+        raise RuntimeError("Не найден получатель для отправки.")
+
+    plaintext_body = _build_mail_body(row, mail_template_path=mail_template_path)
+    html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
+    idempotence_key = secrets.token_urlsafe(24)
+    payload: dict[str, Any] = {
+        "message": {
+            "recipients": [{"email": recipient} for recipient in cleaned_recipients],
+            "body": {
+                "html": html_body,
+                "plaintext": plaintext_body,
+            },
+            "subject": subject,
+            "from_email": sender_email,
+            "from_name": sender_name,
+            "reply_to": sender_email,
+            "reply_to_name": sender_name,
+            "global_language": "ru",
+            "template_engine": "simple",
+            "track_links": 1,
+            "track_read": 1,
+            "idempotence_key": idempotence_key,
+        }
+    }
+
+    encoded_attachments: list[dict[str, str]] = []
+    for attachment_path in attachments:
+        path = Path(attachment_path)
+        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        encoded_attachments.append(
+            {
+                "type": mime_type,
+                "name": path.name,
+                "content": base64.b64encode(path.read_bytes()).decode("ascii"),
+            }
+        )
+    if encoded_attachments:
+        payload["message"]["attachments"] = encoded_attachments
+
+    request = Request(
+        _build_unisender_go_url(UNISENDER_GO_SEND_PATH),
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-API-KEY": api_key,
+        },
+    )
+    data: dict[str, Any] = {}
+    for attempt in range(1, UNISENDER_RETRY_ATTEMPTS + 1):
+        try:
+            raw = _run_unisender_request(request, timeout=60, request_label="UniSender Go")
+        except HTTPError as exc:
+            raw = getattr(exc, "raw_body", "")
+            try:
+                error_data = json.loads(raw)
+                message = _safe_text(error_data.get("message"))
+                code = error_data.get("code")
+                if message:
+                    suffix = f" (code {code})" if code is not None else ""
+                    raise RuntimeError(message + suffix) from exc
+            except json.JSONDecodeError:
+                pass
+            raise RuntimeError(f"UniSender Go вернул HTTP {exc.code}: {raw[:300]}") from exc
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"UniSender Go вернул непонятный ответ: {raw[:300]}")
+        if _safe_text(data.get("status")).lower() == "success":
+            break
+        message = _safe_text(data.get("message")) or "UniSender Go не подтвердил отправку письма."
+        if attempt < UNISENDER_RETRY_ATTEMPTS and _is_unisender_rate_limit_text(message):
+            _sleep_sender_retry(UNISENDER_RATE_LIMIT_RETRY_SECONDS)
+            continue
+        raise RuntimeError(message)
+
+    failed_emails = data.get("failed_emails") or {}
+    accepted_emails = data.get("emails") or []
+    if not accepted_emails:
+        accepted_emails = [
+            recipient
+            for recipient in cleaned_recipients
+            if not (isinstance(failed_emails, dict) and recipient in failed_emails)
+        ]
+    return {
+        "provider": "unisender_go",
+        "status": _safe_text(data.get("status")) or "success",
+        "job_id": _safe_text(data.get("job_id") or data.get("id")),
+        "recipients": accepted_emails,
+        "accepted_emails": accepted_emails,
+        "failed_emails": failed_emails if isinstance(failed_emails, dict) else {},
+        "idempotence_key": idempotence_key,
+    }
+
+
 def _send_with_transport(
     row: dict[str, Any],
     recipients: list[str],
@@ -1487,6 +1641,65 @@ def _send_with_transport(
     attempts: list[dict[str, Any]] = []
     sent_recipients: list[str] = []
     warnings: list[str] = []
+    if transport == "unisender" and _uses_unisender_go_api():
+        try:
+            provider = _send_via_unisender_go_bulk(
+                row,
+                recipients,
+                attachments,
+                subject,
+                mail_template_path=mail_template_path,
+            )
+        except Exception as exc:
+            return {
+                "recipient": None,
+                "recipients": [],
+                "attempts": [
+                    {
+                        "recipient": recipient,
+                        "status": "error",
+                        "error": _safe_text(exc) or "UniSender error",
+                    }
+                    for recipient in recipients
+                ],
+                "error": _safe_text(exc) or "UniSender error",
+                "warning": "",
+            }
+        failed_emails = provider.get("failed_emails") if isinstance(provider.get("failed_emails"), dict) else {}
+        accepted_emails = provider.get("accepted_emails") or provider.get("recipients") or []
+        accepted_keys = {_mail_key(recipient) for recipient in accepted_emails}
+        for recipient in recipients:
+            if _mail_key(recipient) in accepted_keys:
+                attempt = {"recipient": recipient, "status": "sent", "error": "", "provider": provider}
+                if provider.get("job_id"):
+                    attempt["provider_job_id"] = provider["job_id"]
+                attempts.append(attempt)
+                sent_recipients.append(recipient)
+            else:
+                attempts.append(
+                    {
+                        "recipient": recipient,
+                        "status": "error",
+                        "error": _safe_text(failed_emails.get(recipient)) or "UniSender Go не подтвердил адрес получателя.",
+                    }
+                )
+        if sent_recipients and len(sent_recipients) == len(recipients):
+            return {
+                "recipient": sent_recipients[0],
+                "recipients": sent_recipients,
+                "attempts": attempts,
+                "error": "",
+                "warning": "",
+            }
+        failed_errors = [attempt["error"] for attempt in attempts if attempt.get("status") == "error" and attempt.get("error")]
+        return {
+            "recipient": None,
+            "recipients": sent_recipients,
+            "attempts": attempts,
+            "error": "; ".join(failed_errors) or "UniSender Go не подтвердил отправку.",
+            "warning": "",
+        }
+
     for recipient in recipients:
         try:
             warning = None
@@ -1745,7 +1958,7 @@ def run_sender(
             "error_rows": 0,
             "skipped_rows": 0,
             "total_rows": 0,
-            "summary_text": "Агент-отправщик начал обработку строк.",
+            "summary_text": "Начинаю проверку перед отправкой.",
             "rows": [],
             "stats": stats,
             "warning_rows": 0,
@@ -2282,7 +2495,10 @@ def run_sender(
 def get_sender_status(job_id: str | None = None) -> dict[str, Any]:
     state = _load_sender_state(job_id)
     data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
-    state["stats"] = _collect_excel_stats(data_xlsx_path)
+    if state.get("status") == "running" and isinstance(state.get("stats"), dict):
+        state["stats"] = dict(state.get("stats") or {})
+    else:
+        state["stats"] = _collect_excel_stats(data_xlsx_path)
     state["task_stats"] = count_tasks_for_agent("sender", job_id)
     state["tasks"] = get_tasks_for_agent("sender", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="sender", limit=20, job_id=job_id)
