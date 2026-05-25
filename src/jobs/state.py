@@ -32,7 +32,8 @@ def load_agent_state(agent_name: str, default_state: dict[str, Any], job_id: str
     if not path.exists():
         return state
     try:
-        stored = json.loads(path.read_text(encoding="utf-8"))
+        # Manual PowerShell edits can leave a UTF-8 BOM; keep state recovery tolerant.
+        stored = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return state
     if isinstance(stored, dict):
