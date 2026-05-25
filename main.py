@@ -564,9 +564,15 @@ def _compact_documents_status(job_id: str | None) -> dict:
     }
 
 
-def _run_sender_background(*, limit: int | None, transport: str | None, job_id: str | None) -> None:
+def _run_sender_background(
+    *,
+    dry_run: bool = False,
+    limit: int | None,
+    transport: str | None,
+    job_id: str | None,
+) -> None:
     try:
-        run_sender(dry_run=False, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
+        run_sender(dry_run=dry_run, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
     except Exception as exc:
         logger.exception("sender_background_failed", job_id=job_id, transport=transport)
         state = _load_sender_state(job_id)
@@ -769,6 +775,36 @@ def _prime_sender_running_state(job_id: str | None, transport: str | None) -> di
     state["total_rows"] = total_rows
     state["remaining_rows"] = total_rows
     state["summary_text"] = "Агент-отправщик начал отправку писем."
+    state["stop_requested"] = False
+    state["stop_requested_at"] = None
+    _save_sender_state(state, job_id)
+    return state
+
+
+def _prime_sender_checking_state(job_id: str | None, transport: str | None) -> dict:
+    state = _load_sender_state(job_id)
+    stats = _collect_excel_stats(resolve_job_paths(job_id).data_xlsx)
+    total_rows = int(state.get("total_rows") or stats.get("total", 0) or 0)
+    state["status"] = "running"
+    state["mode"] = "dry_run"
+    state["transport"] = transport or state.get("transport") or "unisender"
+    state["started_at"] = datetime.now().isoformat(timespec="seconds")
+    state["completed_at"] = None
+    state["processed_rows"] = 0
+    state["ready_rows"] = 0
+    state["sent_rows"] = int(stats.get("sent", 0))
+    state["error_rows"] = 0
+    state["skipped_rows"] = 0
+    state["warning_rows"] = 0
+    state["handoff_rows"] = 0
+    state["generator_handoff_rows"] = 0
+    state["philology_blocked_rows"] = 0
+    state["autonomous_recovery_rows"] = 0
+    state["rows"] = []
+    state["stats"] = stats
+    state["total_rows"] = total_rows
+    state["remaining_rows"] = total_rows
+    state["summary_text"] = "Проверяю адреса и вложения. Письма пока не отправляются."
     state["stop_requested"] = False
     state["stop_requested_at"] = None
     _save_sender_state(state, job_id)
@@ -1778,13 +1814,6 @@ async def sender_run(
     limit = _parse_optional_limit(payload)
     transport = None if payload is None else payload.get("transport")
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    if dry_run:
-        try:
-            result = run_sender(dry_run=True, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
-        except Exception as exc:
-            logger.exception("sender_dry_run_failed", job_id=job_id, transport=transport)
-            raise HTTPException(status_code=500, detail=f"Не удалось проверить отправку: {type(exc).__name__}: {exc}") from exc
-        return {"status": "ok", "result": result}
 
     existing_thread = _get_sender_thread(job_id)
     if existing_thread:
@@ -1792,10 +1821,14 @@ async def sender_run(
 
     try:
         clear_sender_stop_request(job_id)
-        primed_state = _prime_sender_running_state(job_id, transport)
+        primed_state = (
+            _prime_sender_checking_state(job_id, transport)
+            if dry_run
+            else _prime_sender_running_state(job_id, transport)
+        )
         sender_thread = threading.Thread(
             target=_run_sender_background,
-            kwargs={"limit": limit, "transport": transport, "job_id": job_id},
+            kwargs={"dry_run": dry_run, "limit": limit, "transport": transport, "job_id": job_id},
             daemon=True,
             name=f"sender-{_sender_job_key(job_id)}",
         )
