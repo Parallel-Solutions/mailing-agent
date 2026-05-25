@@ -1854,7 +1854,7 @@
       return;
     }
 
-    if (state.lastVerificationStatus === 'running' && verificationStatus === 'completed' && !state.completedAnnounced) {
+    if (verificationStatus === 'completed' && !state.completedAnnounced) {
       const summaryText = formatMoVerificationSummary(verificationResult);
       upsertParserVerificationNotice(summaryText, { loading: false });
       announceProcessStep('p-chat', 'Таблица проверена', '');
@@ -1862,7 +1862,7 @@
       appendDownloadMessage('p-chat', [{ url: downloadUrl, label: 'Скачать проверенную таблицу' }]);
       state.announcedStart = false;
       state.completedAnnounced = true;
-    } else if (state.lastVerificationStatus === 'running' && verificationStatus === 'error') {
+    } else if (verificationStatus === 'error' && !state.completedAnnounced) {
       upsertParserVerificationNotice('Не удалось проверить названия МО. Таблица загружена, можно продолжить работу.', { loading: false });
       announceProcessStep(
         'p-chat',
@@ -1870,7 +1870,7 @@
         ''
       );
       state.announcedStart = false;
-      state.completedAnnounced = false;
+      state.completedAnnounced = true;
     }
 
     state.lastVerificationStatus = verificationStatus;
@@ -2689,6 +2689,7 @@ async function attachFile(input) {
     await refreshCounts();
     await refreshModuleReadiness();
     await refreshParserStatus({ silent: true });
+    followParserVerificationAfterUpload();
  
   } catch (err) {
     if (attachedFile) attachedFile.style.display = 'none';
@@ -2709,6 +2710,28 @@ function clearAttachedFile() {
 
   // PARSER
   let parserRunning = false;
+  let parserVerificationFollowToken = 0;
+
+  function parserVerificationStatusFromResult(result = {}) {
+    const verificationState = result.municipality_name_verification_state || {};
+    const verificationResult = result.municipality_name_verification || {};
+    const hasCompletedVerificationResult = verificationResult.status === 'ok' && Number(verificationResult.total_rows || 0) > 0;
+    if (hasCompletedVerificationResult && String(verificationState.status || 'idle') !== 'running') {
+      return 'completed';
+    }
+    return String(verificationState.status || 'idle');
+  }
+
+  async function followParserVerificationAfterUpload() {
+    const token = ++parserVerificationFollowToken;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 700 : 1500));
+      if (token !== parserVerificationFollowToken || !currentJobId) return;
+      const result = await refreshParserStatus({ silent: true });
+      const verificationStatus = parserVerificationStatusFromResult(result || {});
+      if (['completed', 'error'].includes(verificationStatus)) return;
+    }
+  }
 
   function setParserUiState(result = {}) {
     const force = !!result.force;
