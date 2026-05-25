@@ -61,6 +61,9 @@ from src.utils.logger import logger
 _STATUS_FILE_COUNT_CACHE_LOCK = threading.Lock()
 _STATUS_FILE_COUNT_CACHE: dict[str, dict[str, float | int]] = {}
 STATUS_FILE_COUNT_CACHE_TTL_SECONDS = 10.0
+PHILOLOGIST_PROGRESS_SAVE_INTERVAL_DOCS = 10
+PHILOLOGIST_PROGRESS_SAVE_INTERVAL_SECONDS = 8.0
+PHILOLOGIST_FAST_IN_PROCESS = os.getenv("PHILOLOGIST_FAST_IN_PROCESS", "1") != "0"
 
 
 def _cached_docx_count(directory: Path) -> int:
@@ -113,6 +116,20 @@ def _load_philologist_state(job_id: str | None = None) -> dict[str, Any]:
 
 def _save_philologist_state(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
     return save_agent_state("philologist", state, job_id)
+
+
+def _should_save_philologist_progress(
+    processed_count: int,
+    *,
+    last_save_at: float,
+    now: float | None = None,
+) -> bool:
+    if processed_count <= 0:
+        return True
+    if processed_count % PHILOLOGIST_PROGRESS_SAVE_INTERVAL_DOCS == 0:
+        return True
+    current_time = time.monotonic() if now is None else now
+    return current_time - last_save_at >= PHILOLOGIST_PROGRESS_SAVE_INTERVAL_SECONDS
 
 
 def request_philologist_stop(job_id: str | None = None) -> dict[str, Any]:
@@ -1872,6 +1889,16 @@ def run_philologist(
         len(processed_documents),
         int(state.get("processed_documents") or 0) if was_stopped else 0,
     )
+    fixed_documents_count = (
+        sum(1 for item in processed_documents if item.get("applied_fix_count", 0) > 0)
+        if was_stopped
+        else 0
+    )
+    documents_with_issues_count = (
+        sum(1 for item in processed_documents if item.get("issue_count", 0) > 0)
+        if was_stopped
+        else 0
+    )
     processed_paths = {str(item.get("path")) for item in processed_documents if str(item.get("path") or "").strip()}
     processed_keys = {
         (_safe_text(item.get("row_id")), _safe_text(item.get("document_type")))
@@ -1898,8 +1925,8 @@ def run_philologist(
             "completed_at": None,
             "total_documents": (len(processed_documents) + len(docx_paths)) if was_stopped else len(docx_paths),
             "processed_documents": len(processed_documents) if was_stopped else 0,
-            "fixed_documents": sum(1 for item in processed_documents if item.get("applied_fix_count", 0) > 0) if was_stopped else 0,
-            "documents_with_issues": sum(1 for item in processed_documents if item.get("issue_count", 0) > 0) if was_stopped else 0,
+            "fixed_documents": fixed_documents_count,
+            "documents_with_issues": documents_with_issues_count,
             "documents": processed_documents,
             "mode": run_mode,
             "ai_review_enabled": bool(ai_enabled and run_mode == "deep"),
@@ -1965,6 +1992,7 @@ def run_philologist(
     state["plan"] = agent_loop.as_plan()
     state["agent_loop"] = state["plan"].get("execution")
     _save_philologist_state(state, job_id)
+    last_progress_save_at = time.monotonic()
 
     started_at = perf_counter()
     react_client = _build_llm_client() if settings.orchestrator_mode == "agentic" else None
@@ -2001,19 +2029,41 @@ def run_philologist(
         state["tool_trace"] = tool_runner.as_state()
         state["plan"] = agent_loop.as_plan()
         state["agent_loop"] = state["plan"].get("execution")
-        _save_philologist_state(state, job_id)
+        if _should_save_philologist_progress(len(processed_documents), last_save_at=last_progress_save_at):
+            _save_philologist_state(state, job_id)
+            last_progress_save_at = time.monotonic()
 
         try:
-            react_result = _run_docx_react_loop_safe(
-                docx_path=docx_path,
-                ai_enabled=effective_ai_enabled,
-                use_llm_router=PHILOLOGIST_LLM_ROUTER,
-                use_llm_fix_strategy=PHILOLOGIST_LLM_FIX_STRATEGY,
-                rebuild_pdf_enabled=PHILOLOGIST_REBUILD_PDF,
-                use_rag_decisions=run_mode == "deep",
-                template_memory=template_memory,
-                timeout_seconds=PHILOLOGIST_DOC_TIMEOUT_SECONDS,
-            )
+            if (
+                PHILOLOGIST_FAST_IN_PROCESS
+                and run_mode == "fast"
+                and not effective_ai_enabled
+                and not PHILOLOGIST_LLM_ROUTER
+                and not PHILOLOGIST_LLM_FIX_STRATEGY
+                and not PHILOLOGIST_REBUILD_PDF
+            ):
+                react_result = _run_docx_react_loop(
+                    docx_path=docx_path,
+                    ai_enabled=False,
+                    tool_runner=PhilologistToolRunner(),
+                    client=None,
+                    use_llm_router=False,
+                    use_llm_fix_strategy=False,
+                    rebuild_pdf_enabled=False,
+                    use_rag_decisions=False,
+                    template_memory=template_memory,
+                )
+            else:
+                react_result = _run_docx_react_loop_safe(
+                    docx_path=docx_path,
+                    ai_enabled=effective_ai_enabled,
+                    use_llm_router=PHILOLOGIST_LLM_ROUTER,
+                    use_llm_fix_strategy=PHILOLOGIST_LLM_FIX_STRATEGY,
+                    rebuild_pdf_enabled=PHILOLOGIST_REBUILD_PDF,
+                    use_rag_decisions=run_mode == "deep",
+                    template_memory=template_memory,
+                    timeout_seconds=PHILOLOGIST_DOC_TIMEOUT_SECONDS,
+                )
         except Exception as exc:
             logger.exception("philologist_document_failed", job_id=job_id, path=str(docx_path))
             react_result = _failed_docx_react_result(docx_path, f"{type(exc).__name__}: {exc}")
@@ -2072,15 +2122,28 @@ def run_philologist(
 
         state["processed_documents"] = len(processed_documents)
         state["documents"] = processed_documents
-        state["fixed_documents"] = sum(1 for item in processed_documents if item.get("applied_fix_count", 0) > 0)
-        state["documents_with_issues"] = sum(1 for item in processed_documents if item.get("issue_count", 0) > 0)
-        state["summary_text"] = _format_summary(processed_documents)
+        if document_entry.get("applied_fix_count", 0) > 0:
+            fixed_documents_count += 1
+        if document_entry.get("issue_count", 0) > 0:
+            documents_with_issues_count += 1
+        state["fixed_documents"] = fixed_documents_count
+        state["documents_with_issues"] = documents_with_issues_count
+        state["summary_text"] = (
+            "Документы проверяются. Критичных ошибок не найдено."
+            if documents_with_issues_count == 0
+            else (
+                f"Документы проверяются. Замечания найдены в {documents_with_issues_count} документах, "
+                f"безопасно исправлено {fixed_documents_count}."
+            )
+        )
         state["current_document"] = None
         state["template_memory"] = template_memory
         state["tool_trace"] = tool_runner.as_state()
         state["plan"] = agent_loop.as_plan()
         state["agent_loop"] = state["plan"].get("execution")
-        _save_philologist_state(state, job_id)
+        if _should_save_philologist_progress(len(processed_documents), last_save_at=last_progress_save_at):
+            _save_philologist_state(state, job_id)
+            last_progress_save_at = time.monotonic()
 
     if docx_paths:
         agent_loop.mark_step(
@@ -2346,9 +2409,10 @@ def get_philologist_status(job_id: str | None = None) -> dict[str, Any]:
     state["task_stats"] = count_tasks_for_agent("philologist", job_id)
     state["tasks"] = get_tasks_for_agent("philologist", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="philologist", limit=20, job_id=job_id)
-    inflection_rows = load_inflection_log(job_id)
-    state["inflection_report"] = format_inflection_report(inflection_rows, limit=8) if inflection_rows else ""
-    state["inflection_log_count"] = len(inflection_rows)
+    if not state.get("inflection_report") and not int(state.get("inflection_log_count") or 0):
+        inflection_rows = load_inflection_log(job_id)
+        state["inflection_report"] = format_inflection_report(inflection_rows, limit=8) if inflection_rows else ""
+        state["inflection_log_count"] = len(inflection_rows)
     state["tool_manifest"] = build_philologist_tool_manifest()
     state["tool_trace"] = state.get("tool_trace") or []
     state["plan"] = merge_plan_execution(
