@@ -341,24 +341,44 @@ def _get_parser_verification_process(job_id: str | None) -> Process | None:
         return process
 
 
-def _register_sender_thread(job_id: str | None, thread: threading.Thread) -> None:
+def _register_sender_thread(job_id: str | None, thread: threading.Thread) -> bool:
     with _sender_threads_lock:
-        _sender_threads[_sender_job_key(job_id)] = thread
+        key = _sender_job_key(job_id)
+        existing = _sender_threads.get(key)
+        if existing and existing.is_alive():
+            return False
+        _sender_threads[key] = thread
+        return True
 
 
-def _register_philologist_thread(job_id: str | None, thread: threading.Thread) -> None:
+def _register_philologist_thread(job_id: str | None, thread: threading.Thread) -> bool:
     with _philologist_threads_lock:
-        _philologist_threads[_philologist_job_key(job_id)] = thread
+        key = _philologist_job_key(job_id)
+        existing = _philologist_threads.get(key)
+        if existing and existing.is_alive():
+            return False
+        _philologist_threads[key] = thread
+        return True
 
 
-def _register_generator_thread(job_id: str | None, thread: threading.Thread) -> None:
+def _register_generator_thread(job_id: str | None, thread: threading.Thread) -> bool:
     with _generator_threads_lock:
-        _generator_threads[_generator_job_key(job_id)] = thread
+        key = _generator_job_key(job_id)
+        existing = _generator_threads.get(key)
+        if existing and existing.is_alive():
+            return False
+        _generator_threads[key] = thread
+        return True
 
 
-def _register_documents_thread(job_id: str | None, thread: threading.Thread) -> None:
+def _register_documents_thread(job_id: str | None, thread: threading.Thread) -> bool:
     with _documents_threads_lock:
-        _documents_threads[_documents_job_key(job_id)] = thread
+        key = _documents_job_key(job_id)
+        existing = _documents_threads.get(key)
+        if existing and existing.is_alive():
+            return False
+        _documents_threads[key] = thread
+        return True
 
 
 def _register_parser_verification_process(job_id: str | None, process: Process) -> None:
@@ -520,13 +540,13 @@ def _documents_philologist_percent(philologist_state: dict) -> int:
     return min(95, round((processed / total) * 100)) if total else 0
 
 
-def _stop_orphaned_documents_worker_state(
+def _stop_orphaned_worker_state(
     *,
     job_id: str | None,
     agent_name: str,
     state: dict,
     worker_thread: threading.Thread | None,
-    pipeline_thread: threading.Thread | None,
+    pipeline_thread: threading.Thread | None = None,
 ) -> dict:
     """Recover persisted "running" state after service restart or killed worker."""
     status = str(state.get("status") or "idle")
@@ -535,7 +555,16 @@ def _stop_orphaned_documents_worker_state(
     if worker_thread is not None or pipeline_thread is not None:
         return state
 
-    recovered_state = dict(state)
+    if agent_name == "generator":
+        persisted_state = _load_generator_state(job_id)
+    elif agent_name == "philologist":
+        persisted_state = _load_philologist_state(job_id)
+    elif agent_name == "sender":
+        persisted_state = _load_sender_state(job_id)
+    else:
+        persisted_state = dict(state)
+
+    recovered_state = dict(persisted_state)
     recovered_state["status"] = "stopped"
     recovered_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
     recovered_state["stop_requested"] = False
@@ -548,21 +577,63 @@ def _stop_orphaned_documents_worker_state(
         _save_generator_state(recovered_state, job_id)
     elif agent_name == "philologist":
         _save_philologist_state(recovered_state, job_id)
-    return recovered_state
+    elif agent_name == "sender":
+        _save_sender_state(recovered_state, job_id)
+
+    ui_state = dict(state)
+    ui_state.update(
+        {
+            "status": recovered_state.get("status"),
+            "completed_at": recovered_state.get("completed_at"),
+            "stop_requested": recovered_state.get("stop_requested"),
+            "stop_requested_at": recovered_state.get("stop_requested_at"),
+            "summary_text": recovered_state.get("summary_text"),
+        }
+    )
+    return ui_state
+
+
+def _recover_generator_state(job_id: str | None, state: dict | None = None) -> dict:
+    return _stop_orphaned_worker_state(
+        job_id=job_id,
+        agent_name="generator",
+        state=state or _compact_generator_status(get_generator_status(job_id)),
+        worker_thread=_get_generator_thread(job_id),
+        pipeline_thread=_get_documents_thread(job_id),
+    )
+
+
+def _recover_philologist_state(job_id: str | None, state: dict | None = None) -> dict:
+    return _stop_orphaned_worker_state(
+        job_id=job_id,
+        agent_name="philologist",
+        state=state or _compact_philologist_status(get_philologist_status(job_id)),
+        worker_thread=_get_philologist_thread(job_id),
+        pipeline_thread=_get_documents_thread(job_id),
+    )
+
+
+def _recover_sender_state(job_id: str | None, state: dict | None = None) -> dict:
+    return _stop_orphaned_worker_state(
+        job_id=job_id,
+        agent_name="sender",
+        state=state or get_sender_status(job_id),
+        worker_thread=_get_sender_thread(job_id),
+    )
 
 
 def _compact_documents_status(job_id: str | None) -> dict:
     generator_state = _compact_generator_status(get_generator_status(job_id))
     philologist_state = _compact_philologist_status(get_philologist_status(job_id))
     pipeline_thread = _get_documents_thread(job_id)
-    generator_state = _stop_orphaned_documents_worker_state(
+    generator_state = _stop_orphaned_worker_state(
         job_id=job_id,
         agent_name="generator",
         state=generator_state,
         worker_thread=_get_generator_thread(job_id),
         pipeline_thread=pipeline_thread,
     )
-    philologist_state = _stop_orphaned_documents_worker_state(
+    philologist_state = _stop_orphaned_worker_state(
         job_id=job_id,
         agent_name="philologist",
         state=philologist_state,
@@ -1421,7 +1492,8 @@ async def documents_start(payload: dict | None = Body(default=None), username: s
         daemon=True,
         name=f"documents-{_documents_job_key(job_id)}",
     )
-    _register_documents_thread(job_id, thread)
+    if not _register_documents_thread(job_id, thread):
+        return {"status": "ok", "result": _compact_documents_status(job_id)}
     thread.start()
     return {"status": "ok", "result": _compact_documents_status(job_id)}
 
@@ -1453,7 +1525,7 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
     if existing_thread is not None:
         return {"status": "ok", "result": _compact_generator_status(get_generator_status(job_id))}
 
-    existing_state = get_generator_status(job_id)
+    existing_state = _recover_generator_state(job_id, _compact_generator_status(get_generator_status(job_id)))
     if str(existing_state.get("status") or "") == "running":
         return {"status": "ok", "result": _compact_generator_status(existing_state)}
     if str(existing_state.get("status") or "") == "stopped":
@@ -1477,14 +1549,16 @@ async def generate(payload: dict | None = Body(default=None), username: str = De
         daemon=True,
         name=f"generator-{_generator_job_key(job_id)}",
     )
-    _register_generator_thread(job_id, thread)
+    if not _register_generator_thread(job_id, thread):
+        return {"status": "ok", "result": _compact_generator_status(get_generator_status(job_id))}
     thread.start()
     return {"status": "ok", "result": _compact_generator_status(primed_state)}
 
 
 @app.get("/api/generator/status")
 async def generator_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": _compact_generator_status(get_generator_status(job_id))}
+    state = _compact_generator_status(get_generator_status(job_id))
+    return {"status": "ok", "result": _compact_generator_status(_recover_generator_state(job_id, state))}
 
 
 @app.post("/api/generator/stop")
@@ -1775,7 +1849,7 @@ async def philologist_run(
     if existing_thread:
         return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
 
-    existing_state = get_philologist_status(job_id)
+    existing_state = _recover_philologist_state(job_id, _compact_philologist_status(get_philologist_status(job_id)))
     if str(existing_state.get("status") or "") in {"running", "finalizing"}:
         return {"status": "ok", "result": _compact_philologist_status(existing_state)}
 
@@ -1787,14 +1861,16 @@ async def philologist_run(
         daemon=True,
         name=f"philologist-{_philologist_job_key(job_id)}",
     )
-    _register_philologist_thread(job_id, philologist_thread)
+    if not _register_philologist_thread(job_id, philologist_thread):
+        return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
     philologist_thread.start()
     return {"status": "ok", "result": primed_state}
 
 
 @app.get("/api/philologist/status")
 async def philologist_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
+    state = _compact_philologist_status(get_philologist_status(job_id))
+    return {"status": "ok", "result": _compact_philologist_status(_recover_philologist_state(job_id, state))}
 
 
 @app.post("/api/philologist/stop")
@@ -1889,7 +1965,8 @@ async def sender_run(
             daemon=True,
             name=f"sender-{_sender_job_key(job_id)}",
         )
-        _register_sender_thread(job_id, sender_thread)
+        if not _register_sender_thread(job_id, sender_thread):
+            return {"status": "ok", "result": get_sender_status(job_id)}
         sender_thread.start()
     except Exception as exc:
         logger.exception("sender_run_start_failed", job_id=job_id, transport=transport)
@@ -1900,7 +1977,7 @@ async def sender_run(
 
 @app.get("/api/sender/status")
 async def sender_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_sender_status(job_id)}
+    return {"status": "ok", "result": _recover_sender_state(job_id)}
 
 
 @app.get("/api/sender/unisender-history")
