@@ -1723,7 +1723,13 @@ def run_philologist(
         dict(state.get("template_memory") or {}) if isinstance(state.get("template_memory"), dict) else {}
     )
     if was_stopped:
-        docx_paths = [path for path in docx_paths if str(path) not in processed_paths]
+        matched_processed_paths = {str(path) for path in docx_paths if str(path) in processed_paths}
+        if processed_documents and len(matched_processed_paths) < len(processed_documents):
+            # Older states can contain mojibake paths after manual recovery.
+            # In that case the stable fallback is the same sorted processing order.
+            docx_paths = docx_paths[min(len(processed_documents), len(docx_paths)) :]
+        else:
+            docx_paths = [path for path in docx_paths if str(path) not in processed_paths]
     state.update(
         {
             "status": "running",
