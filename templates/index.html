@@ -1156,9 +1156,8 @@
         <div class="parser-choice-card">
           <div class="parser-choice-kicker">Вариант 2</div>
           <div class="parser-choice-title">Нужно найти данные с нуля</div>
-          <div class="parser-choice-text">Напишите в чат, какие МО или организации нужны, и нажмите кнопку ниже. Парсер соберёт данные и покажет результат в журнале.</div>
-          <button class="btn-outline" id="p-run" type="button" onclick="startParser()">Запустить поиск данных</button>
-          <div class="parser-choice-hint">Пример запроса: “найди сельские поселения Забайкальского края”.</div>
+          <div class="parser-choice-text">Напишите запрос в чат ниже: какие МО, организации или регион нужны. Парсер соберёт данные и покажет результат в журнале.</div>
+          <div class="parser-choice-hint">Пример: “найди сельские поселения Забайкальского края”.</div>
         </div>
       </div>
 
@@ -2137,6 +2136,9 @@
       renderJobSenderStatusScreen(lastSenderUiState || {});
       refreshSenderStatus({ silent: true });
     }
+    if (persist) {
+      refreshActiveScreenStatus({ silent: true });
+    }
   }
 
   function show(id, el) {
@@ -2382,8 +2384,6 @@
         await refreshCounts();
         await refreshModuleReadiness();
         await refreshParserStatus({ silent: true });
-        await refreshDocumentsStatus({ silent: true });
-        await refreshSenderStatus({ silent: true });
         appendChatMessage('p-chat', 'agent', `Файл «${file.name}» загружен. Найдено записей: ${rows}.`);
       } else {
         const uploadLabelError = document.getElementById('upload-data-label');
@@ -2690,8 +2690,6 @@ async function attachFile(input) {
     await refreshCounts();
     await refreshModuleReadiness();
     await refreshParserStatus({ silent: true });
-    await refreshDocumentsStatus({ silent: true });
-    await refreshSenderStatus({ silent: true });
  
   } catch (err) {
     if (attachedFile) attachedFile.style.display = 'none';
@@ -2716,6 +2714,26 @@ function clearAttachedFile() {
   function setParserUiState(result = {}) {
     const force = !!result.force;
     const nextState = stripUiStateMeta(result);
+    const previousVerificationState = lastParserUiState.municipality_name_verification_state || {};
+    const verificationResult = nextState.municipality_name_verification || {};
+    const incomingVerificationState = nextState.municipality_name_verification_state || null;
+    if (!incomingVerificationState && String(previousVerificationState.status || '') === 'running' && !verificationResult.status) {
+      nextState.municipality_name_verification_state = { ...previousVerificationState };
+    }
+    const normalizedVerificationState = nextState.municipality_name_verification_state || {};
+    if (verificationResult.status === 'ok' && String(normalizedVerificationState.status || '') !== 'running') {
+      nextState.municipality_name_verification_state = {
+        ...normalizedVerificationState,
+        status: 'completed',
+        summary_text: normalizedVerificationState.summary_text || 'Проверка таблицы завершена.',
+      };
+    } else if (verificationResult.status === 'error' && String(normalizedVerificationState.status || '') !== 'running') {
+      nextState.municipality_name_verification_state = {
+        ...normalizedVerificationState,
+        status: 'error',
+        summary_text: normalizedVerificationState.summary_text || 'Проверка таблицы завершилась с ошибкой.',
+      };
+    }
     if (!force && !shouldAcceptParserUiState(nextState, lastParserUiState)) {
       return;
     }
@@ -2767,6 +2785,32 @@ function clearAttachedFile() {
       return;
     }
 
+    if (verificationStatus === 'completed') {
+      if (badge) {
+        badge.textContent = 'Проверено';
+        badge.className = 'badge badge-done';
+      }
+      if (label) {
+        label.textContent = 'Проверка таблицы завершена. Можно переходить к документам.';
+      }
+      if (fill) setProgressVisual(fill, { percent: 100, running: false, indeterminate: false });
+      if (runButton) runButton.disabled = false;
+      return;
+    }
+
+    if (verificationStatus === 'error') {
+      if (badge) {
+        badge.textContent = 'Ошибка';
+        badge.className = 'badge badge-error';
+      }
+      if (label) {
+        label.textContent = 'Проверка таблицы не завершилась. Таблица загружена, но названия МО лучше проверить вручную.';
+      }
+      if (fill) setProgressVisual(fill, { percent: total > 0 ? 100 : 0, running: false, indeterminate: false });
+      if (runButton) runButton.disabled = false;
+      return;
+    }
+
     if (runButton) runButton.disabled = false;
 
     if (status === 'completed') {
@@ -2785,7 +2829,7 @@ function clearAttachedFile() {
       badge.className = 'badge badge-idle';
     }
     if (label) label.textContent = total > 0
-      ? 'Таблица загружена. Если проверка завершена, можно переходить к документам.'
+      ? 'Таблица загружена. Проверка названий МО появится здесь.'
       : 'Загрузите Excel или запустите поиск данных с нуля.';
   }
 
@@ -4671,29 +4715,53 @@ function clearAttachedFile() {
   saveUiState();
 
   let statusAutoRefreshInFlight = false;
+  let passiveStatusRefreshTick = 0;
 
-  async function refreshAllModuleStatuses({ silent = true } = {}) {
+  async function refreshActiveScreenStatus({ silent = true } = {}) {
+    if (!currentJobId) return;
+    if (activeScreenId === 'parser') {
+      await refreshParserStatus({ silent });
+      return;
+    }
+    if (activeScreenId === 'generator') {
+      await refreshDocumentsStatus({ silent });
+      return;
+    }
+    if (activeScreenId === 'sender' || activeScreenId === 'status') {
+      await refreshSenderStatus({ silent });
+    }
+  }
+
+  async function refreshAllModuleStatuses({ silent = true, full = false } = {}) {
     if (!currentJobId || statusAutoRefreshInFlight) return;
     statusAutoRefreshInFlight = true;
     try {
-      await Promise.allSettled([
-        refreshCounts(),
-        refreshParserStatus({ silent }),
-        refreshSenderStatus({ silent }),
-      ]);
-      await refreshDocumentsStatus({ silent });
-      await refreshModuleReadiness();
+      if (full) {
+        await Promise.allSettled([
+          refreshCounts(),
+          refreshParserStatus({ silent }),
+          refreshDocumentsStatus({ silent }),
+          refreshSenderStatus({ silent }),
+          refreshModuleReadiness(),
+        ]);
+        return;
+      }
+
+      await refreshActiveScreenStatus({ silent });
+      passiveStatusRefreshTick += 1;
+      if (passiveStatusRefreshTick % 6 === 0) {
+        await Promise.allSettled([
+          refreshCounts(),
+          refreshModuleReadiness(),
+        ]);
+      }
     } finally {
       statusAutoRefreshInFlight = false;
     }
   }
 
-refreshCounts();
-refreshParserStatus({ silent: true });
-refreshDocumentsStatus({ silent: true });
-refreshModuleReadiness();
-refreshSenderStatus({ silent: true });
-  setInterval(() => refreshAllModuleStatuses({ silent: true }), 2500);
+  refreshAllModuleStatuses({ silent: true, full: true });
+  setInterval(() => refreshAllModuleStatuses({ silent: true }), 5000);
 
   const senderPreviewButton = document.getElementById('s-run');
   if (senderPreviewButton) {
