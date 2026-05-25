@@ -1149,8 +1149,7 @@
         <div class="parser-choice-card">
           <div class="parser-choice-kicker">Вариант 1</div>
           <div class="parser-choice-title">У меня уже есть таблица</div>
-          <div class="parser-choice-text">Загрузите Excel-файл. Система проверит официальные названия МО и подготовит таблицу для документов.</div>
-          <button class="btn-primary" type="button" onclick="document.getElementById('p-attach-input').click()">Загрузить Excel</button>
+          <div class="parser-choice-text">Нажмите кнопку «Файл» под журналом и выберите Excel-таблицу. Система проверит официальные названия МО и подготовит таблицу для документов.</div>
           <div class="parser-choice-hint">После проверки появится сообщение: можно переходить к подготовке документов.</div>
         </div>
         <div class="parser-choice-card">
@@ -1161,7 +1160,7 @@
         </div>
       </div>
 
-      <div class="parser-status-card">
+      <div class="parser-status-card" hidden aria-hidden="true">
         <div class="parser-status-row">
           <div>
             <div class="parser-status-title">Состояние таблицы</div>
@@ -1202,7 +1201,7 @@
 
       <!-- Кнопка скачать результат (показывается после batch обработки) -->
       <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn-primary" type="button" onclick="downloadWithJob('/api/parser/download-result')">Скачать проверенную таблицу</button>
+        <button class="btn-primary" type="button" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать проверенную таблицу</button>
         <button class="btn-outline" type="button" onclick="downloadWithJob('/api/parser/download-failed')">Скачать строки на проверку</button>
       </div>
 
