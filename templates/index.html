@@ -961,6 +961,83 @@
   .scenario-btn:hover { background: #eaf2e0; }
   .scenario-btn.active { background: #3a6e10; color: #fff; border-color: #3a6e10; }
 
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(23, 36, 12, 0.28);
+    backdrop-filter: blur(3px);
+  }
+
+  .modal-backdrop.open { display: flex; }
+
+  .modal-card {
+    width: min(560px, 100%);
+    border: 1px solid #dfe8d7;
+    border-radius: 18px;
+    background: #fff;
+    box-shadow: 0 18px 55px rgba(32, 46, 20, 0.18);
+    padding: 22px;
+  }
+
+  .modal-title {
+    font-size: 21px;
+    font-weight: 800;
+    color: #17240c;
+    margin-bottom: 6px;
+  }
+
+  .modal-sub {
+    color: #617156;
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 16px;
+  }
+
+  .modal-form {
+    display: grid;
+    gap: 12px;
+  }
+
+  .modal-field label {
+    display: block;
+    margin-bottom: 5px;
+    color: #8d9884;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  .modal-field input,
+  .modal-field select {
+    width: 100%;
+    border: 1px solid #d7dfd0;
+    border-radius: 9px;
+    padding: 10px 11px;
+    color: #34402c;
+    font-size: 14px;
+    outline: none;
+  }
+
+  .modal-field input:focus,
+  .modal-field select:focus { border-color: #5a9e1f; }
+
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 18px;
+  }
+
+  .modal-actions button {
+    padding: 10px 16px;
+  }
+
   @media (max-width: 980px) {
     body { padding: 0; }
     .app {
@@ -1142,7 +1219,7 @@
     </div>
 
     <div class="screen" id="s-parser">
-      <div class="page-title">Загрузите таблицу клиентов</div>
+      <div class="page-title">Загрузить файл или собрать данные</div>
       <div class="page-sub">Выберите, с чего начать: загрузить готовую Excel-таблицу или попросить систему собрать данные с нуля.</div>
 
       <div class="parser-choice-grid">
@@ -1157,6 +1234,7 @@
           <div class="parser-choice-kicker">Вариант 2</div>
           <div class="parser-choice-title">Нужно найти данные с нуля</div>
           <div class="parser-choice-text">Напишите запрос в чат ниже: какие МО, организации или регион нужны. Парсер соберёт данные и покажет результат в журнале.</div>
+          <button class="btn-outline" type="button" onclick="openParserSearchModal()">Заполнить параметры поиска</button>
           <div class="parser-choice-hint">Пример: “найди сельские поселения Забайкальского края”.</div>
         </div>
       </div>
@@ -1396,6 +1474,39 @@
       </div>
     </div>
 
+  </div>
+</div>
+
+<div class="modal-backdrop" id="parser-search-modal" role="dialog" aria-modal="true" aria-labelledby="parser-search-title" onclick="closeParserSearchModal()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-title" id="parser-search-title">Что нужно найти?</div>
+    <div class="modal-sub">Заполните короткую форму, и система сама соберёт понятный запрос для парсера.</div>
+    <div class="modal-form">
+      <div class="modal-field">
+        <label for="parser-search-what">Что ищем</label>
+        <input id="parser-search-what" type="text" placeholder="Например: сельские поселения, администрации, организации">
+      </div>
+      <div class="modal-field">
+        <label for="parser-search-where">Где ищем</label>
+        <input id="parser-search-where" type="text" placeholder="Например: Забайкальский край">
+      </div>
+      <div class="modal-field">
+        <label for="parser-search-volume">Объём</label>
+        <select id="parser-search-volume">
+          <option value="все найденные записи">Все найденные записи</option>
+          <option value="первые 100 записей">Первые 100 записей</option>
+          <option value="первые 500 записей">Первые 500 записей</option>
+        </select>
+      </div>
+      <div class="modal-field">
+        <label for="parser-search-fields">Какие данные нужны</label>
+        <input id="parser-search-fields" type="text" value="email, телефон, адрес, ИНН, ФИО руководителя">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-outline" type="button" onclick="closeParserSearchModal()">Отмена</button>
+      <button class="btn-primary" type="button" onclick="submitParserSearchModal()">Сформировать и отправить</button>
+    </div>
   </div>
 </div>
 
@@ -2166,6 +2277,50 @@
     t.classList.add('show');
     clearTimeout(t.dataset.hideTimer);
     t.dataset.hideTimer = setTimeout(() => t.classList.remove('show'), 6000);
+  }
+
+  function openParserSearchModal() {
+    const modal = document.getElementById('parser-search-modal');
+    if (!modal) return;
+    modal.classList.add('open');
+    setTimeout(() => {
+      const firstInput = document.getElementById('parser-search-what');
+      if (firstInput) firstInput.focus();
+    }, 0);
+  }
+
+  function closeParserSearchModal() {
+    const modal = document.getElementById('parser-search-modal');
+    if (modal) modal.classList.remove('open');
+  }
+
+  async function submitParserSearchModal() {
+    const what = String(document.getElementById('parser-search-what')?.value || '').trim();
+    const where = String(document.getElementById('parser-search-where')?.value || '').trim();
+    const volume = String(document.getElementById('parser-search-volume')?.value || '').trim();
+    const fields = String(document.getElementById('parser-search-fields')?.value || '').trim();
+
+    if (!what || !where) {
+      showToast('Заполните, что и где нужно найти');
+      return;
+    }
+
+    const prompt = [
+      `Найди ${what} в регионе: ${where}.`,
+      fields ? `Нужны данные: ${fields}.` : '',
+      volume ? `Объём: ${volume}.` : '',
+      'После сбора подготовь таблицу для скачивания.',
+    ].filter(Boolean).join(' ');
+
+    const input = document.getElementById('p-chat-input');
+    if (input) input.value = prompt;
+    closeParserSearchModal();
+    try {
+      await ensureCurrentJobId();
+      sendChat('p-chat');
+    } catch (err) {
+      showToast('Не удалось создать рабочую сессию');
+    }
   }
 
 
