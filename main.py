@@ -414,23 +414,28 @@ def _mark_background_task_waiting(module: str, job_id: str | None) -> None:
     message = "Задача ожидает свободный слот обработки. Она начнётся автоматически."
     if module == "generator":
         state = _load_generator_state(job_id)
+        state["status"] = "queued"
         state["summary_text"] = message
         _save_generator_state(state, job_id)
     elif module == "philologist":
         state = _load_philologist_state(job_id)
+        state["status"] = "queued"
         state["summary_text"] = message
         _save_philologist_state(state, job_id)
     elif module == "documents":
         generator_state = _load_generator_state(job_id)
         philologist_state = _load_philologist_state(job_id)
         if str(generator_state.get("status") or "") != "completed":
+            generator_state["status"] = "queued"
             generator_state["summary_text"] = message
             _save_generator_state(generator_state, job_id)
         else:
+            philologist_state["status"] = "queued"
             philologist_state["summary_text"] = message
             _save_philologist_state(philologist_state, job_id)
     elif module == "sender":
         state = _load_sender_state(job_id)
+        state["status"] = "queued"
         state["summary_text"] = message
         _save_sender_state(state, job_id)
 
@@ -564,7 +569,7 @@ def _stop_orphaned_worker_state(
 ) -> dict:
     """Recover persisted "running" state after service restart or killed worker."""
     status = str(state.get("status") or "idle")
-    if status not in {"running", "finalizing"}:
+    if status not in {"running", "finalizing", "queued"}:
         return state
     if worker_thread is not None or pipeline_thread is not None:
         return state
@@ -663,6 +668,8 @@ def _compact_documents_status(job_id: str | None) -> dict:
         status = "error"
     elif generator_status == "stopped" or philologist_status == "stopped":
         status = "stopped"
+    elif generator_status == "queued" or philologist_status == "queued":
+        status = "queued"
     elif pipeline_thread is not None or generator_status == "running" or philologist_status in {"running", "finalizing"}:
         status = "running"
     elif generator_done and philologist_done:
@@ -688,6 +695,8 @@ def _compact_documents_status(job_id: str | None) -> dict:
     if status == "idle":
         stage_text = "Подготовка документов ещё не запускалась."
         progress_percent = 0
+    elif status == "queued":
+        stage_text = "Подготовка документов ожидает свободный слот. Она начнётся автоматически."
     elif status == "waiting_review":
         stage_text = "Документы созданы. Можно запустить проверку."
         progress_percent = max(progress_percent, 70)

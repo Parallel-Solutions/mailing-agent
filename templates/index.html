@@ -1536,7 +1536,7 @@
   }
 
   function wasRunningBefore(state) {
-    return ['running', 'finalizing'].includes(String(state.lastStatus || 'idle'));
+    return ['running', 'queued', 'finalizing'].includes(String(state.lastStatus || 'idle'));
   }
 
   function maybeAnnounceGeneratorFlow(result = {}) {
@@ -1547,6 +1547,15 @@
     const pdfTotal = Number(result.pdf_total || 0);
     const pdfProcessed = Number(result.pdf_processed || 0);
     const state = flowNotificationState.generator;
+
+    if (status === 'queued') {
+      if (!state.queuedAnnounced) {
+        state.queuedAnnounced = true;
+        announceProcessStep('g-chat', 'Задача в очереди', 'Подготовка документов начнётся автоматически, когда освободится сервис.');
+      }
+      state.lastStatus = status;
+      return;
+    }
 
     if (status !== 'running') {
       if (wasRunningBefore(state) && !state.terminalAnnounced) {
@@ -1576,6 +1585,7 @@
     }
 
     state.terminalAnnounced = false;
+    state.queuedAnnounced = false;
 
     if (total > 0 && !state.announcedStart) {
       state.announcedStart = true;
@@ -1611,6 +1621,15 @@
     const processed = Number(result.processed_documents || 0);
     const state = flowNotificationState.philologist;
 
+    if (status === 'queued') {
+      if (!state.queuedAnnounced) {
+        state.queuedAnnounced = true;
+        announceProcessStep('g-chat', 'Проверка в очереди', 'Проверка текстов начнётся автоматически, когда освободится сервис.');
+      }
+      state.lastStatus = status;
+      return;
+    }
+
     if (status !== 'running' && status !== 'finalizing') {
       if (wasRunningBefore(state) && !state.terminalAnnounced) {
         if (status === 'completed') {
@@ -1639,6 +1658,7 @@
     }
 
     state.terminalAnnounced = false;
+    state.queuedAnnounced = false;
 
     if (status === 'finalizing') {
       if (!state.finalizingAnnounced) {
@@ -1674,6 +1694,15 @@
     const errors = Number(result.error_rows || (result.stats || {}).error || 0);
     const state = flowNotificationState.sender;
 
+    if (status === 'queued') {
+      if (!state.queuedAnnounced) {
+        state.queuedAnnounced = true;
+        announceProcessStep('s-chat', 'Задача в очереди', 'Проверка или отправка начнётся автоматически, когда освободится сервис.');
+      }
+      state.lastStatus = status;
+      return;
+    }
+
     if (status !== 'running') {
       if (wasRunningBefore(state) && !state.terminalAnnounced) {
         if (status === 'completed') {
@@ -1706,6 +1735,7 @@
     }
 
     state.terminalAnnounced = false;
+    state.queuedAnnounced = false;
 
     if (mode !== state.lastMode) {
       state.announcedStart = false;
@@ -1965,6 +1995,8 @@
     if (label) {
       if (!currentJobId) {
         label.textContent = 'Сначала загрузите таблицу или откройте рабочую сессию.';
+      } else if (status === 'queued') {
+        label.textContent = 'Задача ожидает свободный слот и начнётся автоматически.';
       } else if (status === 'running') {
         label.textContent = mode === 'send'
           ? `Идёт отправка писем: обработано ${numbers.processed.toLocaleString('ru')} из ${numbers.total.toLocaleString('ru')}.`
@@ -2797,7 +2829,7 @@ function clearAttachedFile() {
     const withIssues = Number(nextState.documents_with_issues || 0);
     const status = nextState.status || 'idle';
     currentPhilologistStatus = status;
-    phRunning = status === 'running' || status === 'finalizing';
+    phRunning = status === 'running' || status === 'queued' || status === 'finalizing';
     updateSidebarStatusIndicators();
     const percent = total > 0 ? Math.round((processed / total) * 100) : (status === 'completed' ? 100 : 0);
 
@@ -2821,6 +2853,22 @@ function clearAttachedFile() {
         pauseButton.disabled = false;
         pauseButton.textContent = 'Остановить';
         pauseButton.title = '';
+      }
+      return;
+    }
+
+    if (status === 'queued') {
+      badge.textContent = 'В очереди';
+      badge.className = 'badge badge-wait';
+      label.textContent = nextState.summary_text || 'Проверка текстов ожидает свободный слот и начнётся автоматически.';
+      setProgressVisual(fill, { percent, running: false, indeterminate: true });
+      runButton.disabled = true;
+      runButton.textContent = 'Ожидает очередь';
+      runButton.title = 'Проверка начнётся автоматически, когда освободится сервис.';
+      if (pauseButton) {
+        pauseButton.disabled = true;
+        pauseButton.textContent = 'Остановить';
+        pauseButton.title = 'Остановить можно будет после старта проверки.';
       }
       return;
     }
@@ -2946,7 +2994,7 @@ function clearAttachedFile() {
     if (philologistStatusPoll) clearInterval(philologistStatusPoll);
     philologistStatusPoll = setInterval(async () => {
       const status = await refreshPhilologistStatus({ silent: true });
-      if (!status || ['running', 'finalizing'].includes(status.status)) return;
+      if (!status || ['running', 'queued', 'finalizing'].includes(status.status)) return;
       phRunning = false;
       clearInterval(philologistStatusPoll);
       philologistStatusPoll = null;
@@ -3070,7 +3118,7 @@ function clearAttachedFile() {
       const result = data.result || {};
       setGeneratorUiState(result);
       maybeAnnounceGeneratorFlow(result);
-      if (generatorStatusPoll && result.status && result.status !== 'running') {
+      if (generatorStatusPoll && result.status && !['running', 'queued'].includes(String(result.status))) {
         await finalizeGeneratorPolling(result);
       }
       return result;
@@ -3107,7 +3155,7 @@ function clearAttachedFile() {
         currentPhilologistStatus = result.philologist.status || currentPhilologistStatus;
       }
       updateSidebarStatusIndicators();
-      if (documentsStatusPoll && result.status && !['running', 'waiting_review'].includes(String(result.status))) {
+      if (documentsStatusPoll && result.status && !['running', 'queued', 'waiting_review'].includes(String(result.status))) {
         stopDocumentsPolling();
         await refreshModuleReadiness();
         await refreshSenderStatus({ silent: true });
@@ -3165,7 +3213,7 @@ function clearAttachedFile() {
       }
       const result = data.result || {};
       setDocumentsUiState(result);
-      if (result.status && !['running', 'waiting_review'].includes(String(result.status))) {
+      if (result.status && !['running', 'queued', 'waiting_review'].includes(String(result.status))) {
         stopDocumentsPolling();
         await refreshModuleReadiness();
       }
@@ -3226,7 +3274,7 @@ function clearAttachedFile() {
       const result = data.result || {};
       setGeneratorUiState(result);
       maybeAnnounceGeneratorFlow(result);
-      if (result.status && result.status !== 'running') {
+      if (result.status && !['running', 'queued'].includes(String(result.status))) {
         await finalizeGeneratorPolling(result);
       }
       } catch(e) {
@@ -3334,8 +3382,8 @@ function clearAttachedFile() {
   function applyModuleReadiness() {
     const generatorRunButton = document.getElementById('g-run');
     const philologistRunButton = document.getElementById('ph-run');
-    const generatorRunningNow = currentGeneratorStatus === 'running';
-    const philologistRunningNow = ['running', 'finalizing'].includes(currentPhilologistStatus);
+    const generatorRunningNow = ['running', 'queued'].includes(currentGeneratorStatus);
+    const philologistRunningNow = ['running', 'queued', 'finalizing'].includes(currentPhilologistStatus);
 
     applyButtonReadiness(
       generatorRunButton,
@@ -3452,6 +3500,7 @@ function clearAttachedFile() {
     if (status === 'error') return 45;
     if (status === 'stopped') return 40;
     if (status === 'running') return 30;
+    if (status === 'queued') return 25;
     return 10;
   }
 
@@ -3508,6 +3557,7 @@ function clearAttachedFile() {
     if (status === 'stopped') return 40;
     if (status === 'finalizing') return 35;
     if (status === 'running') return 30;
+    if (status === 'queued') return 25;
     return 10;
   }
 
@@ -3547,6 +3597,7 @@ function clearAttachedFile() {
     if (status === 'error') return 45;
     if (status === 'stopped') return 40;
     if (status === 'running') return 30;
+    if (status === 'queued') return 25;
     return 10;
   }
 
@@ -3886,6 +3937,23 @@ function clearAttachedFile() {
       return;
     }
 
+    if (status === 'queued') {
+      if (runButton) runButton.textContent = 'Ожидает очередь';
+      badge.textContent = 'В очереди';
+      badge.className = 'badge badge-wait';
+      label.textContent = humanizeDocumentsMessage(nextState.summary_text, 'Подготовка документов ожидает свободный слот и начнётся автоматически.');
+      setGeneratorButtonsBusy(true);
+      setGeneratorDownloadEnabled(false);
+      setInflectionDownloadEnabled(false);
+      setProgressVisual(fill, { percent: overallGeneratorPercent, running: false, indeterminate: true });
+      if (pauseButton) {
+        pauseButton.disabled = true;
+        pauseButton.textContent = 'Остановить';
+        pauseButton.title = 'Остановить можно будет после старта подготовки.';
+      }
+      return;
+    }
+
     setGeneratorButtonsBusy(false);
     setGeneratorDownloadEnabled(canDownloadOutput);
     if (pauseButton) {
@@ -3976,7 +4044,7 @@ function clearAttachedFile() {
     if (result.philologist) {
       lastPhilologistUiState = { ...stripUiStateMeta(philologistState) };
       currentPhilologistStatus = philologistState.status || currentPhilologistStatus;
-      phRunning = ['running', 'finalizing'].includes(String(currentPhilologistStatus || ''));
+      phRunning = ['running', 'queued', 'finalizing'].includes(String(currentPhilologistStatus || ''));
     }
 
     const badge = document.getElementById('g-badge');
@@ -4027,6 +4095,30 @@ function clearAttachedFile() {
         }
       }
       setProgressVisual(fill, { percent, running: true, indeterminate: false });
+      return;
+    }
+
+    if (status === 'queued') {
+      if (badge) {
+        badge.textContent = 'В очереди';
+        badge.className = 'badge badge-wait';
+      }
+      if (runButton) {
+        runButton.textContent = 'Ожидает очередь';
+        runButton.disabled = true;
+        runButton.title = 'Подготовка начнётся автоматически, когда освободится сервис.';
+      }
+      if (pauseButton) {
+        pauseButton.disabled = true;
+        pauseButton.textContent = 'Остановить';
+        pauseButton.title = 'Остановить можно будет после старта подготовки.';
+      }
+      if (doneStat) doneStat.textContent = stage === 'review'
+        ? reviewedDocuments.toLocaleString('ru')
+        : processedRows.toLocaleString('ru');
+      if (doneLabelStat) doneLabelStat.textContent = stage === 'review' ? 'Проверено документов' : 'Подготовлено клиентов';
+      if (label) label.textContent = humanizeDocumentsMessage(result.stage_text, 'Подготовка документов ожидает свободный слот и начнётся автоматически.');
+      setProgressVisual(fill, { percent, running: false, indeterminate: true });
       return;
     }
 
@@ -4117,6 +4209,15 @@ function clearAttachedFile() {
         runButton.dataset.action = 'stop';
         runButton.textContent = mode === 'send' ? 'Остановить отправку' : 'Остановить проверку';
         runButton.className = 'btn-danger';
+        return;
+      }
+
+      if (status === 'queued') {
+        runButton.dataset.action = 'wait';
+        runButton.textContent = 'Ожидает очередь';
+        runButton.className = 'btn-outline';
+        runButton.disabled = true;
+        runButton.title = 'Задача начнётся автоматически, когда освободится сервис.';
         return;
       }
 
@@ -4267,6 +4368,16 @@ function clearAttachedFile() {
         return;
       }
 
+      if (status === 'queued') {
+        senderRunning = false;
+        badge.textContent = 'В очереди';
+        badge.className = 'badge badge-wait';
+        label.textContent = humanizeSenderMessage(nextState.summary_text, 'Проверка или отправка ожидает свободный слот и начнётся автоматически.');
+        setProgressVisual(fill, { percent, running: false, indeterminate: true });
+        setSenderButtonsState({ status: 'queued', mode, canConfirm: false, hasPendingRows });
+        return;
+      }
+
       if (status === 'stopped') {
         senderRunning = false;
         badge.textContent = 'Остановлено';
@@ -4334,7 +4445,7 @@ function clearAttachedFile() {
       await new Promise(resolve => setTimeout(resolve, 1500));
       const result = await refreshSenderStatus({ silent: true });
       const status = result && result.status ? result.status : 'idle';
-      if (status !== 'running') {
+      if (!['running', 'queued'].includes(String(status))) {
         return result;
       }
     }
