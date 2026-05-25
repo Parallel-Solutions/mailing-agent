@@ -583,6 +583,77 @@
     line-height: 1.5;
   }
 
+  .parser-choice-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    margin: 1rem 0;
+  }
+
+  .parser-choice-card {
+    border: 1px solid #dfe8d7;
+    border-radius: 16px;
+    padding: 16px;
+    background: linear-gradient(180deg, #fff 0%, #fbfcf8 100%);
+  }
+
+  .parser-choice-kicker {
+    font-size: 10px;
+    font-weight: 700;
+    color: #9aa58f;
+    letter-spacing: 0.7px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .parser-choice-title {
+    font-size: 17px;
+    font-weight: 750;
+    color: #17240c;
+    margin-bottom: 6px;
+  }
+
+  .parser-choice-text {
+    font-size: 13px;
+    color: #617156;
+    line-height: 1.5;
+    min-height: 58px;
+    margin-bottom: 12px;
+  }
+
+  .parser-choice-hint {
+    font-size: 12px;
+    color: #8b957f;
+    margin-top: 9px;
+    line-height: 1.45;
+  }
+
+  .parser-status-card {
+    border: 1px solid #e4e8dc;
+    border-radius: 14px;
+    padding: 14px 16px;
+    background: #fbfcf8;
+    margin: 1rem 0;
+  }
+
+  .parser-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+
+  .parser-status-title {
+    font-size: 13px;
+    color: #59674e;
+  }
+
+  .parser-status-count {
+    font-size: 12px;
+    color: #929b89;
+  }
+
   /* TOAST */
   .toast {
     position: fixed;
@@ -915,8 +986,16 @@
     }
     .grid2,
     .grid3,
-    .stats-row {
+    .stats-row,
+    .parser-choice-grid {
       grid-template-columns: 1fr !important;
+    }
+    .parser-choice-text {
+      min-height: 0;
+    }
+    .parser-status-row {
+      align-items: flex-start;
+      flex-direction: column;
     }
   }
 
@@ -1064,11 +1143,37 @@
 
     <div class="screen" id="s-parser">
       <div class="page-title">Загрузите таблицу клиентов</div>
-      <div class="page-sub">Прикрепите Excel-файл. Мы проверим официальные названия МО и подготовим таблицу для документов.</div>
+      <div class="page-sub">Выберите, с чего начать: загрузить готовую Excel-таблицу или попросить систему собрать данные с нуля.</div>
 
-      <!-- Краткая инструкция -->
-      <div class="info-box" style="margin-top:14px">
-        <strong>Что сделать:</strong> нажмите на скрепку, выберите Excel-файл и дождитесь сообщения, что таблица проверена. После этого можно переходить к документам.
+      <div class="parser-choice-grid">
+        <div class="parser-choice-card">
+          <div class="parser-choice-kicker">Вариант 1</div>
+          <div class="parser-choice-title">У меня уже есть таблица</div>
+          <div class="parser-choice-text">Загрузите Excel-файл. Система проверит официальные названия МО и подготовит таблицу для документов.</div>
+          <button class="btn-primary" type="button" onclick="document.getElementById('p-attach-input').click()">Загрузить Excel</button>
+          <div class="parser-choice-hint">После проверки появится сообщение: можно переходить к подготовке документов.</div>
+        </div>
+        <div class="parser-choice-card">
+          <div class="parser-choice-kicker">Вариант 2</div>
+          <div class="parser-choice-title">Нужно найти данные с нуля</div>
+          <div class="parser-choice-text">Напишите в чат, какие МО или организации нужны, и нажмите кнопку ниже. Парсер соберёт данные и покажет результат в журнале.</div>
+          <button class="btn-outline" id="p-run" type="button" onclick="startParser()">Запустить поиск данных</button>
+          <div class="parser-choice-hint">Пример запроса: “найди сельские поселения Забайкальского края”.</div>
+        </div>
+      </div>
+
+      <div class="parser-status-card">
+        <div class="parser-status-row">
+          <div>
+            <div class="parser-status-title">Состояние таблицы</div>
+            <div class="progress-label" id="p-label">Таблица ещё не загружена.</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="parser-status-count"><span id="p-total">0</span> строк</span>
+            <span class="badge badge-idle" id="p-badge">Ждём файл</span>
+          </div>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" id="p-fill" style="width:0%"></div></div>
       </div>
 
       <!-- Чат с агентом -->
@@ -1082,7 +1187,7 @@
 
         <!-- Чип с прикреплённым файлом (показывается только если файл прикреплён) -->
         <div id="p-attached-file" style="display:none;margin:8px 0;padding:8px 14px;background:#f0f7ea;border:1px solid #b7d9a0;border-radius:8px;font-size:13px;color:#2d6a0e">
-          📎 <span id="p-attached-name"></span>
+          <span id="p-attached-name"></span>
           <button onclick="clearAttachedFile()" style="margin-left:12px;background:none;border:none;color:#888;cursor:pointer;font-size:12px">✕ Убрать</button>
         </div>
 
@@ -1090,16 +1195,16 @@
           <!-- Скрытый input для файла -->
           <input type="file" id="p-attach-input" accept=".xlsx" style="display:none" onchange="attachFile(this)">
           <!-- Кнопка прикрепления -->
-          <button class="btn-outline" type="button" onclick="document.getElementById('p-attach-input').click()" title="Прикрепить Excel файл" style="padding:8px 12px">📎</button>
-          <input type="text" id="p-chat-input" placeholder="Можно задать вопрос по таблице..." onkeydown="if(event.key==='Enter') sendChat('p-chat')">
+          <button class="btn-outline" type="button" onclick="document.getElementById('p-attach-input').click()" title="Прикрепить Excel файл" style="padding:8px 12px">Файл</button>
+          <input type="text" id="p-chat-input" placeholder="Напишите, что нужно найти или уточнить..." onkeydown="if(event.key==='Enter') sendChat('p-chat')">
           <button onclick="sendChat('p-chat')">Отправить</button>
         </div>
       </div>
 
       <!-- Кнопка скачать результат (показывается после batch обработки) -->
       <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn-primary" type="button" onclick="downloadWithJob('/api/parser/download-result')">📥 Скачать результат</button>
-        <button class="btn-outline" type="button" onclick="downloadWithJob('/api/parser/download-failed')">📥 Скачать непроверенные</button>
+        <button class="btn-primary" type="button" onclick="downloadWithJob('/api/parser/download-result')">Скачать проверенную таблицу</button>
+        <button class="btn-outline" type="button" onclick="downloadWithJob('/api/parser/download-failed')">Скачать строки на проверку</button>
       </div>
 
       <div class="step-nav">
@@ -2652,10 +2757,12 @@ function clearAttachedFile() {
 
     if (status === 'running') {
       if (badge) {
-        badge.textContent = 'Работает';
+        badge.textContent = 'Ищет данные';
         badge.className = 'badge badge-running';
       }
-      if (label) label.textContent = `Задач на дозаполнение: ${pending}, в работе: ${inProgress}`;
+      if (label) label.textContent = pending || inProgress
+        ? `Ищу и дополняю данные: в очереди ${pending}, в работе ${inProgress}.`
+        : 'Ищу данные по вашему запросу. Результат появится в журнале.';
       if (runButton) runButton.disabled = true;
       return;
     }
@@ -2667,15 +2774,19 @@ function clearAttachedFile() {
         badge.textContent = 'Готово';
         badge.className = 'badge badge-done';
       }
-      if (label) label.textContent = `Задач в очереди: ${pending}, в работе: ${inProgress}`;
+      if (label) label.textContent = total > 0
+        ? 'Таблица готова. Можно скачать результат или перейти к подготовке документов.'
+        : 'Поиск завершён. Проверьте сообщения в журнале.';
       return;
     }
 
     if (badge) {
-      badge.textContent = 'Готов к запуску';
+      badge.textContent = total > 0 ? 'Таблица загружена' : 'Ждём файл';
       badge.className = 'badge badge-idle';
     }
-    if (label) label.textContent = total > 0 ? `0 / ${total} записей` : '0 / 0 записей';
+    if (label) label.textContent = total > 0
+      ? 'Таблица загружена. Если проверка завершена, можно переходить к документам.'
+      : 'Загрузите Excel или запустите поиск данных с нуля.';
   }
 
   async function refreshParserStatus({ silent = false } = {}) {
@@ -2701,7 +2812,7 @@ function clearAttachedFile() {
     await ensureCurrentJobId();
     parserRunning = true;
     setParserUiState({ force: true, status: 'running', row_count: 0, task_stats: {} });
-    appendChatMessage('p-chat', 'agent', 'Запускаю парсерский контур. Сейчас он примет задачи на дозаполнение от других агентов и покажет очередь на обработку.');
+    appendChatMessage('p-chat', 'agent', 'Начинаю поиск данных. Если нужно, уточните в чате регион, тип организаций или список МО.');
     try {
         const res = await fetch('/api/parser/start', {
           method: 'POST',
@@ -2712,8 +2823,8 @@ function clearAttachedFile() {
       if (!res.ok) throw new Error(data.detail || 'Ошибка запуска парсера');
       const result = data.result || {};
       setParserUiState(result);
-      showToast('Парсер обновил очередь задач');
-      appendChatMessage('p-chat', 'agent', result.summary_text || 'Парсер обработал очередь задач.');
+      showToast('Поиск данных завершён');
+      appendChatMessage('p-chat', 'agent', result.summary_text || 'Поиск завершён. Можно скачать результат или перейти к документам.');
     } catch (err) {
       appendChatMessage('p-chat', 'agent', 'Не удалось запустить парсер: ' + err.message);
       showToast('Ошибка парсера');
@@ -2723,7 +2834,7 @@ function clearAttachedFile() {
     }
   }
   function pauseParser() {
-    appendChatMessage('p-chat', 'agent', 'Пауза для парсера пока не поддерживается. Сейчас он работает как агент дозаполнения и обновления очереди.');
+    appendChatMessage('p-chat', 'agent', 'Остановка поиска пока не поддерживается. Дождитесь завершения текущего шага.');
   }
 
   async function refreshOrchestratorStatus({ silent = false } = {}) {
