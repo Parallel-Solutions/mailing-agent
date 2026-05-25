@@ -152,6 +152,38 @@ def _results_from_state(items: list[dict[str, Any]] | None) -> list[dict[str, An
     return [_result_from_state(item) for item in (items or []) if isinstance(item, dict)]
 
 
+def _compact_result_for_state(result: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        "id": result.get("id"),
+        "status": result.get("status"),
+    }
+    if result.get("error"):
+        compact["error"] = result.get("error")
+    files = result.get("files")
+    if isinstance(files, dict):
+        compact["files"] = {
+            key: str(value)
+            for key, value in files.items()
+            if value
+        }
+    return compact
+
+
+def _compact_results_for_state(results: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return [_compact_result_for_state(item) for item in (results or []) if isinstance(item, dict)]
+
+
+def _results_need_compaction(results: Any) -> bool:
+    if not isinstance(results, list):
+        return False
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        if item.get("inflection_trace") or item.get("generated_files") or item.get("result_index") is not None:
+            return True
+    return False
+
+
 def _format_generator_summary(
     state: dict[str, Any],
     *,
@@ -861,7 +893,7 @@ def run_generator_agent(
             philologist_result = run_philologist(ai_enabled=True, row_ids=review_row_ids, job_id=job_id)
             philologist_started_rows = len(review_row_ids)
 
-        state["results"] = results
+        state["results"] = _compact_results_for_state(results)
         state["inflection_summary"] = inflection_summary
         state["ok_rows"] = sum(1 for item in results if item.get("status") == "ok")
         state["error_rows"] = sum(1 for item in results if item.get("status") == "error")
@@ -925,6 +957,10 @@ def run_generator_agent(
 
 def get_generator_status(job_id: str | None = None) -> dict[str, Any]:
     state = _load_generator_state(job_id)
+    should_save_compacted_state = False
+    if state.get("status") == "completed" and _results_need_compaction(state.get("results")):
+        state["results"] = _compact_results_for_state(state.get("results"))
+        should_save_compacted_state = True
     job_paths = resolve_job_paths(job_id)
     output_dir = job_paths.output_dir if not job_paths.uses_legacy_layout else OUTPUT_DIR
     batch_docx_dir = job_paths.batch_docx_dir
@@ -957,6 +993,8 @@ def get_generator_status(job_id: str | None = None) -> dict[str, Any]:
     state["task_stats"] = count_tasks_for_agent("generator", job_id)
     state["tasks"] = get_tasks_for_agent("generator", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="generator", limit=20, job_id=job_id)
+    if should_save_compacted_state:
+        _save_generator_state(state, job_id)
     return state
 
 
