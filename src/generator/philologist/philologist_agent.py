@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
+import os
 import re
 import threading
 import time
@@ -35,6 +37,7 @@ from src.generator.generation.config_generator import (
     PHILOLOGIST_CONTEXT_LLM_BATCH_SIZE,
     PHILOLOGIST_CONTEXT_LLM_MAX_ITEMS,
     PHILOLOGIST_CONTEXT_LLM_MIN_CONFIDENCE,
+    PHILOLOGIST_DOC_TIMEOUT_SECONDS,
     PHILOLOGIST_LLM_FIX_STRATEGY,
     PHILOLOGIST_LLM_ROUTER,
     PHILOLOGIST_MODE,
@@ -1103,6 +1106,142 @@ def _run_docx_react_loop(
     }
 
 
+def _failed_docx_react_result(docx_path: Path, reason: str, *, timed_out: bool = False) -> dict[str, Any]:
+    issue_text = "Документ не удалось проверить за отведенное время." if timed_out else "Документ не удалось проверить."
+    return {
+        "review_result": {
+            "issues": [],
+            "issue_count": 1,
+            "local_issue_count": 0,
+            "ai_issue_count": 0,
+            "ai_error": reason,
+            "review_mode": "skipped",
+            "reviewed_block_count": 0,
+            "total_block_count": 0,
+        },
+        "fix_result": {
+            "applied_fix_count": 0,
+            "applied_fixes": [],
+            "skipped_fix_count": 1,
+            "skipped_fixes": [
+                {
+                    "location": "",
+                    "fragment": docx_path.name,
+                    "issue": issue_text,
+                    "suggestion": "",
+                    "reason": reason,
+                }
+            ],
+            "decision_count": 0,
+            "fix_decisions": [],
+        },
+        "verification_result": {"verified": False, "warning_count": 1, "warnings": [reason]},
+        "pdf_path": None,
+        "react_trace": [
+            {
+                "iteration": 1,
+                "action": "timeout" if timed_out else "error",
+                "reason": reason,
+                "source": "safe_runner",
+                "observation": issue_text,
+                "state": {"document": docx_path.name},
+            }
+        ],
+        "react_context": {"document": docx_path.name, "timed_out": timed_out, "error": reason},
+        "safe_runner_status": "timeout" if timed_out else "error",
+    }
+
+
+def _run_docx_react_loop_child(
+    result_path_text: str,
+    docx_path_text: str,
+    ai_enabled: bool,
+    use_llm_router: bool,
+    use_llm_fix_strategy: bool,
+    rebuild_pdf_enabled: bool,
+    use_rag_decisions: bool,
+    template_memory: dict[str, Any] | None,
+) -> None:
+    docx_path = Path(docx_path_text)
+    result_path = Path(result_path_text)
+    try:
+        child_tool_runner = PhilologistToolRunner()
+        child_client = _build_llm_client() if ai_enabled else None
+        result = _run_docx_react_loop(
+            docx_path=docx_path,
+            ai_enabled=ai_enabled,
+            tool_runner=child_tool_runner,
+            client=child_client,
+            use_llm_router=use_llm_router,
+            use_llm_fix_strategy=use_llm_fix_strategy,
+            rebuild_pdf_enabled=rebuild_pdf_enabled,
+            use_rag_decisions=use_rag_decisions,
+            template_memory=template_memory,
+        )
+        payload = {"ok": True, "result": result}
+    except Exception as exc:
+        payload = {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "result": _failed_docx_react_result(docx_path, f"{type(exc).__name__}: {exc}"),
+        }
+    result_path.write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
+
+
+def _run_docx_react_loop_safe(
+    *,
+    docx_path: Path,
+    ai_enabled: bool,
+    use_llm_router: bool,
+    use_llm_fix_strategy: bool,
+    rebuild_pdf_enabled: bool,
+    use_rag_decisions: bool,
+    template_memory: dict[str, Any] | None,
+    timeout_seconds: int = PHILOLOGIST_DOC_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    result_path = docx_path.parent / f".philologist-result-{os.getpid()}-{time.time_ns()}.json"
+    process = mp.Process(
+        target=_run_docx_react_loop_child,
+        args=(
+            str(result_path),
+            str(docx_path),
+            ai_enabled,
+            use_llm_router,
+            use_llm_fix_strategy,
+            rebuild_pdf_enabled,
+            use_rag_decisions,
+            template_memory,
+        ),
+        daemon=True,
+    )
+    process.start()
+    process.join(timeout_seconds)
+    if process.is_alive():
+        process.terminate()
+        process.join(10)
+        if process.is_alive():
+            process.kill()
+            process.join(5)
+        result_path.unlink(missing_ok=True)
+        reason = f"Проверка документа превысила лимит {timeout_seconds} секунд."
+        return _failed_docx_react_result(docx_path, reason, timed_out=True)
+
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {
+            "ok": False,
+            "error": "Процесс проверки завершился без результата.",
+            "result": _failed_docx_react_result(docx_path, "Процесс проверки завершился без результата."),
+        }
+    finally:
+        result_path.unlink(missing_ok=True)
+
+    if not payload.get("ok"):
+        logger.warning("philologist_document_safe_runner_failed", path=str(docx_path), error=payload.get("error"))
+    return payload.get("result") or _failed_docx_react_result(docx_path, "Процесс проверки завершился без результата.")
+
+
 def _paragraph_is_safe_for_text_rewrite(paragraph) -> bool:
     non_empty_runs = [run for run in paragraph.runs if run.text]
     if len(non_empty_runs) <= 1:
@@ -1420,6 +1559,17 @@ def _rebuild_pdf_for_docx(docx_path: Path) -> str | None:
     return str(pdf_path) if pdf_path and pdf_path.exists() else None
 
 
+def _docx_resume_key(path: Path) -> tuple[str, str]:
+    name = path.name.lower()
+    if name.startswith(("кп_", "kp_")):
+        doc_type = "kp"
+    elif name.startswith(("договор_", "contract_", "contr_")):
+        doc_type = "contract"
+    else:
+        doc_type = name.split("_", 1)[0]
+    return (_extract_row_id_from_docx_path(path), doc_type)
+
+
 def _format_summary(documents: list[dict[str, Any]]) -> str:
     total = len(documents)
     with_issues = sum(1 for item in documents if item.get("issue_count", 0) > 0)
@@ -1718,16 +1868,27 @@ def run_philologist(
     state = _load_philologist_state(job_id)
     was_stopped = str(state.get("status") or "") == "stopped"
     processed_documents: list[dict[str, Any]] = list(state.get("documents") or []) if was_stopped else []
+    processed_count = max(
+        len(processed_documents),
+        int(state.get("processed_documents") or 0) if was_stopped else 0,
+    )
     processed_paths = {str(item.get("path")) for item in processed_documents if str(item.get("path") or "").strip()}
+    processed_keys = {
+        (_safe_text(item.get("row_id")), _safe_text(item.get("document_type")))
+        for item in processed_documents
+        if _safe_text(item.get("row_id")) and _safe_text(item.get("document_type"))
+    }
     template_memory: dict[str, Any] = (
         dict(state.get("template_memory") or {}) if isinstance(state.get("template_memory"), dict) else {}
     )
     if was_stopped:
         matched_processed_paths = {str(path) for path in docx_paths if str(path) in processed_paths}
-        if processed_documents and len(matched_processed_paths) < len(processed_documents):
+        if processed_keys:
+            docx_paths = [path for path in docx_paths if _docx_resume_key(path) not in processed_keys]
+        elif processed_count and len(matched_processed_paths) < processed_count:
             # Older states can contain mojibake paths after manual recovery.
             # In that case the stable fallback is the same sorted processing order.
-            docx_paths = docx_paths[min(len(processed_documents), len(docx_paths)) :]
+            docx_paths = docx_paths[min(processed_count, len(docx_paths)) :]
         else:
             docx_paths = [path for path in docx_paths if str(path) not in processed_paths]
     state.update(
@@ -1843,48 +2004,19 @@ def run_philologist(
         _save_philologist_state(state, job_id)
 
         try:
-            react_result = _run_docx_react_loop(
+            react_result = _run_docx_react_loop_safe(
                 docx_path=docx_path,
                 ai_enabled=effective_ai_enabled,
-                tool_runner=tool_runner,
-                client=react_client,
                 use_llm_router=PHILOLOGIST_LLM_ROUTER,
                 use_llm_fix_strategy=PHILOLOGIST_LLM_FIX_STRATEGY,
                 rebuild_pdf_enabled=PHILOLOGIST_REBUILD_PDF,
                 use_rag_decisions=run_mode == "deep",
                 template_memory=template_memory,
+                timeout_seconds=PHILOLOGIST_DOC_TIMEOUT_SECONDS,
             )
         except Exception as exc:
             logger.exception("philologist_document_failed", job_id=job_id, path=str(docx_path))
-            react_result = {
-                "review_result": {
-                    "issues": [],
-                    "issue_count": 1,
-                    "local_issue_count": 0,
-                    "ai_issue_count": 0,
-                    "ai_error": f"{type(exc).__name__}: {exc}",
-                },
-                "fix_result": {
-                    "applied_fix_count": 0,
-                    "applied_fixes": [],
-                    "skipped_fix_count": 1,
-                    "skipped_fixes": [
-                        {
-                            "location": "",
-                            "fragment": docx_path.name,
-                            "issue": "Документ не удалось проверить.",
-                            "suggestion": "",
-                            "reason": f"{type(exc).__name__}: {exc}",
-                        }
-                    ],
-                    "decision_count": 0,
-                    "fix_decisions": [],
-                },
-                "verification_result": {"verified": False, "warning_count": 1, "warnings": [str(exc)]},
-                "pdf_path": None,
-                "react_trace": [],
-                "react_context": {},
-            }
+            react_result = _failed_docx_react_result(docx_path, f"{type(exc).__name__}: {exc}")
         review_result = react_result["review_result"]
         fix_result = react_result["fix_result"]
         verification_result = react_result["verification_result"]
@@ -1912,6 +2044,7 @@ def run_philologist(
             "folder": str(docx_path.parent),
             "row_id": _extract_row_id_from_docx_path(docx_path),
             "mun_name": _extract_mun_name_from_docx_path(docx_path),
+            "document_type": _docx_resume_key(docx_path)[1],
             "issue_count": int(review_result.get("issue_count", 0)),
             "local_issue_count": int(review_result.get("local_issue_count", 0)),
             "ai_issue_count": int(review_result.get("ai_issue_count", 0)),
