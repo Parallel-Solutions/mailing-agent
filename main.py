@@ -443,10 +443,55 @@ def _documents_philologist_percent(philologist_state: dict) -> int:
     return min(95, round((processed / total) * 100)) if total else 0
 
 
+def _stop_orphaned_documents_worker_state(
+    *,
+    job_id: str | None,
+    agent_name: str,
+    state: dict,
+    worker_thread: threading.Thread | None,
+    pipeline_thread: threading.Thread | None,
+) -> dict:
+    """Recover persisted "running" state after service restart or killed worker."""
+    status = str(state.get("status") or "idle")
+    if status not in {"running", "finalizing"}:
+        return state
+    if worker_thread is not None or pipeline_thread is not None:
+        return state
+
+    recovered_state = dict(state)
+    recovered_state["status"] = "stopped"
+    recovered_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+    recovered_state["stop_requested"] = False
+    recovered_state["stop_requested_at"] = None
+    recovered_state["summary_text"] = (
+        "Работа была остановлена после перезапуска сервиса. "
+        "Можно продолжить с сохраненного места."
+    )
+    if agent_name == "generator":
+        _save_generator_state(recovered_state, job_id)
+    elif agent_name == "philologist":
+        _save_philologist_state(recovered_state, job_id)
+    return recovered_state
+
+
 def _compact_documents_status(job_id: str | None) -> dict:
     generator_state = _compact_generator_status(get_generator_status(job_id))
     philologist_state = _compact_philologist_status(get_philologist_status(job_id))
     pipeline_thread = _get_documents_thread(job_id)
+    generator_state = _stop_orphaned_documents_worker_state(
+        job_id=job_id,
+        agent_name="generator",
+        state=generator_state,
+        worker_thread=_get_generator_thread(job_id),
+        pipeline_thread=pipeline_thread,
+    )
+    philologist_state = _stop_orphaned_documents_worker_state(
+        job_id=job_id,
+        agent_name="philologist",
+        state=philologist_state,
+        worker_thread=_get_philologist_thread(job_id),
+        pipeline_thread=pipeline_thread,
+    )
     generator_status = str(generator_state.get("status") or "idle")
     philologist_status = str(philologist_state.get("status") or "idle")
     generator_done = generator_status == "completed"
@@ -1252,6 +1297,10 @@ async def documents_start(payload: dict | None = Body(default=None), username: s
     if existing_documents_thread is not None:
         return {"status": "ok", "result": _compact_documents_status(job_id)}
 
+    # If the service was restarted mid-run, persisted states can still say
+    # "running" while the worker thread is gone. Normalize before deciding
+    # whether this is a fresh start or a resume.
+    _compact_documents_status(job_id)
     generator_state = get_generator_status(job_id)
     philologist_state = get_philologist_status(job_id)
     generator_thread = _get_generator_thread(job_id)

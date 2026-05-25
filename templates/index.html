@@ -3107,7 +3107,17 @@ function clearAttachedFile() {
   async function startDocumentsPipeline() {
     await ensureCurrentJobId();
     const isResume = currentGeneratorStatus === 'stopped' || currentPhilologistStatus === 'stopped';
-    setDocumentsUiState({ force: true, status: 'running', stage: 'generate', progress_percent: 0, total_rows: 0, processed_rows: 0 });
+    const resumeStage = currentGeneratorStatus === 'completed' && currentPhilologistStatus === 'stopped' ? 'review' : 'generate';
+    setDocumentsUiState({
+      force: true,
+      status: 'running',
+      stage: isResume ? resumeStage : 'generate',
+      progress_percent: isResume && lastGeneratorUiState.status === 'completed' ? 70 : 0,
+      total_rows: Number(lastGeneratorUiState.total_rows || 0),
+      processed_rows: Number(lastGeneratorUiState.processed_rows || 0),
+      generator: lastGeneratorUiState,
+      philologist: lastPhilologistUiState,
+    });
     appendChatMessage('g-chat', 'agent', isResume
       ? 'Продолжаю подготовку документов с сохраненного места.'
       : 'Начинаю подготовку документов. Сначала создам КП и договоры, затем проверю тексты перед отправкой.');
@@ -3941,6 +3951,16 @@ function clearAttachedFile() {
     const fixedDocuments = Number(result.fixed_documents || philologistState.fixed_documents || 0);
     const percent = Number(result.progress_percent || 0);
 
+    if (result.generator) {
+      lastGeneratorUiState = { ...stripUiStateMeta(generatorState) };
+      currentGeneratorStatus = generatorState.status || currentGeneratorStatus;
+    }
+    if (result.philologist) {
+      lastPhilologistUiState = { ...stripUiStateMeta(philologistState) };
+      currentPhilologistStatus = philologistState.status || currentPhilologistStatus;
+      phRunning = ['running', 'finalizing'].includes(String(currentPhilologistStatus || ''));
+    }
+
     const badge = document.getElementById('g-badge');
     const fill = document.getElementById('g-fill');
     const label = document.getElementById('g-label');
@@ -4027,6 +4047,10 @@ function clearAttachedFile() {
         runButton.disabled = false;
         runButton.title = '';
       }
+      if (doneStat) doneStat.textContent = stage === 'review'
+        ? reviewedDocuments.toLocaleString('ru')
+        : processedRows.toLocaleString('ru');
+      if (doneLabelStat) doneLabelStat.textContent = stage === 'review' ? 'Проверено документов' : 'Подготовлено клиентов';
       if (label) label.textContent = humanizeDocumentsMessage(result.stage_text, 'Подготовка остановлена. Можно продолжить с того же места.');
       setProgressVisual(fill, { percent, running: false });
       return;
@@ -4056,7 +4080,7 @@ function clearAttachedFile() {
       runButton.title = runButton.disabled ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.') : '';
     }
     if (doneStat) doneStat.textContent = processedRows.toLocaleString('ru');
-    if (doneLabelStat) doneLabelStat.textContent = 'Готово полностью';
+    if (doneLabelStat) doneLabelStat.textContent = 'Подготовлено клиентов';
     if (label) {
       label.textContent = humanizeDocumentsMessage(result.stage_text, 'Подготовка документов ещё не запускалась.');
     }
