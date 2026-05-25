@@ -572,6 +572,59 @@
     white-space: nowrap;
   }
 
+  .settings-checklist {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin: -0.35rem 0 1.25rem;
+  }
+
+  .settings-check-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    border: 1px solid #e1e8d9;
+    border-radius: 12px;
+    padding: 10px 12px;
+    background: #fbfcf8;
+    color: #6b7660;
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .settings-check-dot {
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    background: #e7ece1;
+    color: #8a9580;
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .settings-check-dot::before {
+    content: "•";
+  }
+
+  .settings-check-item.ready {
+    border-color: #c8e3b3;
+    background: #f4faef;
+    color: #2d6e0a;
+  }
+
+  .settings-check-item.ready .settings-check-dot {
+    background: #59a82f;
+    color: #fff;
+  }
+
+  .settings-check-item.ready .settings-check-dot::before {
+    content: "✓";
+  }
+
   .warn-box {
     background: #fdf8e8;
     border: 1px solid #e8d080;
@@ -1083,7 +1136,8 @@
     .grid2,
     .grid3,
     .stats-row,
-    .parser-choice-grid {
+    .parser-choice-grid,
+    .settings-checklist {
       grid-template-columns: 1fr !important;
     }
     .parser-choice-text {
@@ -1163,7 +1217,7 @@
 
     <!-- НАСТРОЙКИ -->
     <div class="screen active" id="s-settings">
-      <div class="page-title">Подготовим рассылку</div>
+      <div class="page-title">Подготовить шаблоны</div>
       <div class="page-sub">Загрузите шаблоны и проверьте тему письма. После этого можно переходить к таблице клиентов.</div>
 
       <div class="friendly-lead">
@@ -1172,6 +1226,13 @@
           <div class="friendly-lead-text">Шаблон письма, шаблон КП, шаблон договора и тема письма. Остальное система будет подсказывать по шагам.</div>
         </div>
         <div class="friendly-lead-badge">Начальный шаг</div>
+      </div>
+
+      <div class="settings-checklist" aria-label="Что уже готово для рассылки">
+        <div class="settings-check-item" id="settings-check-mail"><span class="settings-check-dot"></span>Письмо</div>
+        <div class="settings-check-item" id="settings-check-kp"><span class="settings-check-dot"></span>КП</div>
+        <div class="settings-check-item" id="settings-check-contract"><span class="settings-check-dot"></span>Договор</div>
+        <div class="settings-check-item" id="settings-check-subject"><span class="settings-check-dot"></span>Тема письма</div>
       </div>
 
       <div class="field">
@@ -1186,7 +1247,7 @@
 
       <div class="field">
         <label>Тема письма для рассылки</label>
-        <input id="settings-mail-subject" type="text" value="Коммерческое предложение на разработку МНГП.">
+        <input id="settings-mail-subject" type="text" value="Коммерческое предложение на разработку МНГП." oninput="updateSettingsChecklist()">
       </div>
 
       <div class="divider"></div>
@@ -1228,7 +1289,7 @@
       </div>
 
       <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn-primary" onclick="showToast('Настройки сохранены')">Сохранить настройки</button>
+        <button class="btn-primary" onclick="saveSettingsAndValidate()">Сохранить настройки</button>
         <button class="btn-outline" type="button" onclick="resetAllMailingState()">Очистить все поля</button>
       </div>
 
@@ -1291,7 +1352,7 @@
           <!-- Скрытый input для файла -->
           <input type="file" id="p-attach-input" accept=".xlsx" style="display:none" onchange="attachFile(this)">
           <!-- Кнопка прикрепления -->
-          <button class="btn-outline" type="button" onclick="document.getElementById('p-attach-input').click()" title="Прикрепить Excel файл" style="padding:8px 12px">Файл</button>
+          <button class="btn-outline" type="button" onclick="document.getElementById('p-attach-input').click()" title="Прикрепить Excel файл" style="padding:8px 12px">Прикрепить файл</button>
           <input type="text" id="p-chat-input" placeholder="Напишите, что нужно найти или уточнить..." onkeydown="if(event.key==='Enter') sendChat('p-chat')">
           <button onclick="sendChat('p-chat')">Отправить</button>
         </div>
@@ -1299,8 +1360,8 @@
 
       <!-- Кнопка скачать результат (показывается после batch обработки) -->
       <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn-primary" type="button" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать результат</button>
-        <button class="btn-outline" type="button" onclick="downloadWithJob('/api/parser/download-failed')">Скачать непроверенные строки</button>
+        <button class="btn-primary" id="p-download-result" type="button" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать результат</button>
+        <button class="btn-outline" id="p-download-failed" type="button" onclick="downloadWithJob('/api/parser/download-failed')" disabled>Скачать непроверенные строки</button>
       </div>
 
       <div class="step-nav">
@@ -1310,7 +1371,7 @@
 
     <!-- ГЕНЕРАТОР -->
     <div class="screen" id="s-generator">
-      <div class="page-title">Подготовить документы?</div>
+      <div class="page-title">Подготовка документов</div>
       <div class="page-sub">Система создаст КП и договоры, сохранит PDF и проверит тексты. Вам нужно нажать одну кнопку.</div>
 
       <div class="stats-row" style="grid-template-columns: repeat(3, 1fr)">
@@ -1396,6 +1457,14 @@
     <div class="screen" id="s-sender">
       <div class="page-title">Проверить и отправить письма?</div>
       <div class="page-sub">Сначала система проверит адреса и вложения. Реальная отправка начнётся только после вашего подтверждения.</div>
+
+      <div class="friendly-lead">
+        <div>
+          <div class="friendly-lead-title">Отправка проходит в два шага</div>
+          <div class="friendly-lead-text">Сначала проверьте адреса и готовность вложений. После проверки появится отдельная кнопка подтверждения, и только тогда письма уйдут получателям.</div>
+        </div>
+        <div class="friendly-lead-badge">Безопасно</div>
+      </div>
 
         <div class="stats-row" style="grid-template-columns: repeat(3, 1fr)">
           <div class="stat">
@@ -1678,7 +1747,10 @@
 
   function applyTemplateButtonSnapshot(buttonId, snapshot) {
     const button = document.getElementById(buttonId);
-    if (!button || !snapshot) return;
+    if (!button || !snapshot) {
+      updateSettingsChecklist();
+      return;
+    }
     if (snapshot.uploaded) {
       button.classList.add('uploaded');
       button.innerHTML = snapshot.html || `<span class="file-icon">✓</span> ${snapshot.defaultLabel || 'Файл загружен'}`;
@@ -1686,6 +1758,43 @@
       button.classList.remove('uploaded');
       button.innerHTML = `<span class="file-icon">📎</span> ${snapshot.defaultLabel || 'Выбрать файл'}`;
     }
+    updateSettingsChecklist();
+  }
+
+  function isTemplateUploaded(buttonId) {
+    const button = document.getElementById(buttonId);
+    return !!(button && button.classList.contains('uploaded'));
+  }
+
+  function setSettingsCheckItem(id, ready) {
+    const item = document.getElementById(id);
+    if (!item) return;
+    item.classList.toggle('ready', !!ready);
+  }
+
+  function updateSettingsChecklist() {
+    const subject = document.getElementById('settings-mail-subject');
+    setSettingsCheckItem('settings-check-mail', isTemplateUploaded('mail-btn'));
+    setSettingsCheckItem('settings-check-kp', isTemplateUploaded('kp-btn'));
+    setSettingsCheckItem('settings-check-contract', isTemplateUploaded('contract-btn'));
+    setSettingsCheckItem('settings-check-subject', !!(subject && subject.value.trim()));
+    scheduleUiStateSave();
+  }
+
+  function saveSettingsAndValidate() {
+    updateSettingsChecklist();
+    const missing = [];
+    if (!isTemplateUploaded('mail-btn')) missing.push('шаблон письма');
+    if (!isTemplateUploaded('kp-btn')) missing.push('шаблон КП');
+    if (!isTemplateUploaded('contract-btn')) missing.push('шаблон договора');
+    const subject = document.getElementById('settings-mail-subject');
+    if (!subject || !subject.value.trim()) missing.push('тему письма');
+    if (missing.length) {
+      showToast('Не всё готово: добавьте ' + missing.join(', '));
+      return;
+    }
+    showToast('Настройки готовы');
+    saveUiState();
   }
 
   function restoreChatHtmlSnapshot(chats = {}) {
@@ -1739,6 +1848,7 @@
       goToScreen(snapshot.activeScreen, { scroll: false, persist: false });
     }
     applyModuleReadiness();
+    updateSettingsChecklist();
   }
 
   function resetFlowNotificationState() {
@@ -2404,6 +2514,7 @@
       sender_reason: '',
     };
     setParserUiState({ force: true, status: 'idle', row_count: 0, task_stats: {} });
+    setParserDownloadButtonsState({ hasResult: false, hasFailed: false });
     setGeneratorUiState({ force: true, status: 'idle', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
     setPhilologistUiState({ force: true, status: 'idle', total_documents: 0, processed_documents: 0, fixed_documents: 0, documents_with_issues: 0 });
     setSenderUiState({ force: true, status: 'idle', total_rows: 0, processed_rows: 0, ready_rows: 0, error_rows: 0, stats: { total: 0, sent: 0, error: 0, pending: 0 } });
@@ -2420,6 +2531,7 @@
     }
     const input = document.getElementById(inputId);
     if (input) input.value = '';
+    updateSettingsChecklist();
   }
 
   function resetChatMessages(chatId) {
@@ -2445,6 +2557,7 @@
     if (subject) subject.value = 'Коммерческое предложение на разработку МНГП.';
     if (senderEmail) senderEmail.value = '';
     if (senderPassword) senderPassword.value = '';
+    updateSettingsChecklist();
   }
 
   function resetModuleCountCards() {
@@ -2593,16 +2706,21 @@
         if (data.job_id) setCurrentJobId(data.job_id);
         btn.innerHTML = '<span class="file-icon">✓</span> ' + (file.name || label);
         btn.classList.add('uploaded');
+        updateSettingsChecklist();
         showToast(label + ' загружен успешно');
         await refreshModuleReadiness();
         saveUiState();
       } else {
         btn.innerHTML = '<span class="file-icon">📎</span> Выбрать файл';
+        btn.classList.remove('uploaded');
+        updateSettingsChecklist();
         showToast('Ошибка загрузки шаблона');
         saveUiState();
       }
     } catch(e) {
       btn.innerHTML = '<span class="file-icon">📎</span> Выбрать файл';
+      btn.classList.remove('uploaded');
+      updateSettingsChecklist();
       showToast('Ошибка соединения');
       saveUiState();
     }
@@ -2912,6 +3030,19 @@ function clearAttachedFile() {
     }
   }
 
+  function setParserDownloadButtonsState({ hasResult = false, hasFailed = false } = {}) {
+    const resultButton = document.getElementById('p-download-result');
+    const failedButton = document.getElementById('p-download-failed');
+    if (resultButton) {
+      resultButton.disabled = !hasResult;
+      resultButton.title = hasResult ? '' : 'Сначала загрузите или соберите таблицу.';
+    }
+    if (failedButton) {
+      failedButton.disabled = !hasFailed;
+      failedButton.title = hasFailed ? '' : 'Непроверенных строк пока нет.';
+    }
+  }
+
   function setParserUiState(result = {}) {
     const force = !!result.force;
     const nextState = stripUiStateMeta(result);
@@ -2954,6 +3085,9 @@ function clearAttachedFile() {
     currentParserStatus = status;
     const verificationState = nextState.municipality_name_verification_state || {};
     const verificationStatus = verificationState.status || 'idle';
+    const hasResultFile = total > 0 || Number(verificationResult.total_rows || 0) > 0 || ['completed', 'error'].includes(verificationStatus);
+    const hasFailedRows = Number(verificationResult.missing_rows || 0) > 0 || Number(verificationResult.error_rows || 0) > 0;
+    setParserDownloadButtonsState({ hasResult: hasResultFile, hasFailed: hasFailedRows });
     parserRunning = status === 'running' || verificationStatus === 'running';
     updateSidebarStatusIndicators();
 
@@ -4857,9 +4991,15 @@ function clearAttachedFile() {
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить счетчики модулей');
       if (requestedJobId !== currentJobId) return;
-      document.getElementById('p-total').textContent = data.parser_total.toLocaleString('ru');
+      const parserTotal = Number(data.parser_total || 0);
+      document.getElementById('p-total').textContent = parserTotal.toLocaleString('ru');
       document.getElementById('g-total').textContent = data.generator_total.toLocaleString('ru');
       document.getElementById('g-total-label').textContent = data.generator_total.toLocaleString('ru');
+      const failedButton = document.getElementById('p-download-failed');
+      setParserDownloadButtonsState({
+        hasResult: parserTotal > 0,
+        hasFailed: !!(failedButton && !failedButton.disabled),
+      });
       saveUiState();
     } catch(e) {}
   }
@@ -4912,6 +5052,7 @@ function clearAttachedFile() {
   }
 
   restoreInitialUiState();
+  updateSettingsChecklist();
   uiPersistenceEnabled = true;
   saveUiState();
 
