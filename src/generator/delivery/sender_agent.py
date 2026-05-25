@@ -462,17 +462,62 @@ def _allowed_send_recipients(email_decision: dict[str, Any]) -> list[str]:
     return list(email_decision.get("valid_emails") or [])
 
 
-def _resolve_output_folder(row_id: Any, *, output_dir: Path | None = None) -> tuple[Path | None, str | None]:
+def _build_output_folder_index(
+    row_ids: set[str],
+    *,
+    output_dir: Path | None = None,
+) -> tuple[dict[str, Path], dict[str, str]]:
+    root_dir = output_dir or OUTPUT_DIR
+    if not root_dir.exists():
+        return {}, {row_id: f"Не найдена папка output для ID={row_id}." for row_id in row_ids}
+
+    matches: dict[str, list[Path]] = {row_id: [] for row_id in row_ids}
+    for path in root_dir.iterdir():
+        if not path.is_dir() or "_" not in path.name:
+            continue
+        row_id = path.name.split("_", 1)[0]
+        if row_id in matches:
+            matches[row_id].append(path)
+
+    folder_index: dict[str, Path] = {}
+    folder_errors: dict[str, str] = {}
+    for row_id in row_ids:
+        row_matches = matches.get(row_id) or []
+        if not row_matches:
+            folder_errors[row_id] = f"Не найдена папка output для ID={row_id}."
+        elif len(row_matches) > 1:
+            folder_errors[row_id] = f"Найдено несколько папок output для ID={row_id}."
+        else:
+            folder_index[row_id] = row_matches[0]
+    return folder_index, folder_errors
+
+
+def _resolve_output_folder(
+    row_id: Any,
+    *,
+    output_dir: Path | None = None,
+    folder_index: dict[str, Path] | None = None,
+    folder_errors: dict[str, str] | None = None,
+) -> tuple[Path | None, str | None]:
     if row_id in (None, ""):
         return None, "Не указан ID строки."
 
+    row_id_text = _safe_text(row_id)
+    if folder_errors and row_id_text in folder_errors:
+        return None, folder_errors[row_id_text]
+    if folder_index is not None:
+        folder = folder_index.get(row_id_text)
+        if folder:
+            return folder, None
+        return None, f"Не найдена папка output для ID={row_id_text}."
+
     root_dir = output_dir or OUTPUT_DIR
-    prefix = f"{row_id}_"
+    prefix = f"{row_id_text}_"
     matches = [path for path in root_dir.iterdir() if path.is_dir() and path.name.startswith(prefix)] if root_dir.exists() else []
     if not matches:
-        return None, f"Не найдена папка output для ID={row_id}."
+        return None, f"Не найдена папка output для ID={row_id_text}."
     if len(matches) > 1:
-        return None, f"Найдено несколько папок output для ID={row_id}."
+        return None, f"Найдено несколько папок output для ID={row_id_text}."
     return matches[0], None
 
 
@@ -1991,6 +2036,15 @@ def run_sender(
     candidates = rows[:effective_limit] if effective_limit else rows
     state["total_rows"] = len(candidates)
     _save_sender_state(state, job_id)
+    candidate_row_ids = {
+        _safe_text(row.get("ID"))
+        for row in candidates
+        if _safe_text(row.get("ID"))
+    }
+    output_folder_index, output_folder_errors = _build_output_folder_index(
+        candidate_row_ids,
+        output_dir=output_dir,
+    )
 
     processed_entries: list[dict[str, Any]] = []
     runtime_warnings: list[str] = []
@@ -2046,7 +2100,12 @@ def run_sender(
         entry["decision_reason"] = email_decision["decision_reason"]
         entry["fallback_candidates"] = email_decision["fallback_candidates"]
 
-        folder, folder_error = _resolve_output_folder(row_id, output_dir=output_dir)
+        folder, folder_error = _resolve_output_folder(
+            row_id,
+            output_dir=output_dir,
+            folder_index=output_folder_index,
+            folder_errors=output_folder_errors,
+        )
         entry["folder"] = str(folder) if folder else None
         attachments, attachment_error = _resolve_pdf_attachments(folder)
         entry["attachments"] = attachments
