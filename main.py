@@ -54,6 +54,27 @@ _background_task_semaphores = {
     name: threading.BoundedSemaphore(limit)
     for name, limit in BACKGROUND_TASK_LIMITS.items()
 }
+_background_task_usage_lock = threading.Lock()
+_background_task_active_counts: dict[str, int] = {name: 0 for name in BACKGROUND_TASK_LIMITS}
+_background_task_waiting_counts: dict[str, int] = {name: 0 for name in BACKGROUND_TASK_LIMITS}
+
+
+def _adjust_background_task_count(counter: dict[str, int], module: str, delta: int) -> None:
+    with _background_task_usage_lock:
+        counter[module] = max(0, int(counter.get(module, 0)) + delta)
+
+
+def _background_task_usage_snapshot() -> dict:
+    with _background_task_usage_lock:
+        modules = sorted(BACKGROUND_TASK_LIMITS)
+        return {
+            module: {
+                "limit": BACKGROUND_TASK_LIMITS[module],
+                "active": int(_background_task_active_counts.get(module, 0)),
+                "waiting": int(_background_task_waiting_counts.get(module, 0)),
+            }
+            for module in modules
+        }
 
 
 @app.on_event("startup")
@@ -163,6 +184,29 @@ def _documents_job_key(job_id: str | None) -> str:
 
 def _parser_job_key(job_id: str | None) -> str:
     return str(job_id or "__legacy__")
+
+
+def _thread_registry_snapshot() -> dict:
+    snapshots: dict[str, list[dict[str, str | bool]]] = {}
+    registries = [
+        ("documents", _documents_threads, _documents_threads_lock),
+        ("generator", _generator_threads, _generator_threads_lock),
+        ("philologist", _philologist_threads, _philologist_threads_lock),
+        ("sender", _sender_threads, _sender_threads_lock),
+        ("archive", _output_archive_threads, _output_archive_threads_lock),
+    ]
+    for module, registry, lock in registries:
+        with lock:
+            snapshots[module] = [
+                {"job_id": key, "thread_name": thread.name, "alive": thread.is_alive()}
+                for key, thread in sorted(registry.items())
+            ]
+    with _parser_verification_processes_lock:
+        snapshots["parser_verification"] = [
+            {"job_id": key, "pid": str(process.pid), "alive": process.is_alive()}
+            for key, process in sorted(_parser_verification_processes.items())
+        ]
+    return snapshots
 
 
 def _latest_matching_file(
@@ -416,20 +460,36 @@ def _background_task_slot(module: str, job_id: str | None):
     module_semaphore = _background_task_semaphores.get(module)
     acquired_global = False
     acquired_module = False
+    active_counted = False
+    waiting_counted = False
     try:
         if not _heavy_task_semaphore.acquire(blocking=False):
             _mark_background_task_waiting(module, job_id)
+            _adjust_background_task_count(_background_task_waiting_counts, module, 1)
+            waiting_counted = True
             _heavy_task_semaphore.acquire()
         acquired_global = True
 
         if module_semaphore is not None:
             if not module_semaphore.acquire(blocking=False):
                 _mark_background_task_waiting(module, job_id)
+                if not waiting_counted:
+                    _adjust_background_task_count(_background_task_waiting_counts, module, 1)
+                    waiting_counted = True
                 module_semaphore.acquire()
             acquired_module = True
+        if waiting_counted:
+            _adjust_background_task_count(_background_task_waiting_counts, module, -1)
+            waiting_counted = False
+        _adjust_background_task_count(_background_task_active_counts, module, 1)
+        active_counted = True
         logger.info("background_task_slot_acquired", module=module, job_id=job_id)
         yield
     finally:
+        if waiting_counted:
+            _adjust_background_task_count(_background_task_waiting_counts, module, -1)
+        if active_counted:
+            _adjust_background_task_count(_background_task_active_counts, module, -1)
         if acquired_module and module_semaphore is not None:
             module_semaphore.release()
         if acquired_global:
@@ -966,6 +1026,21 @@ async def index(username: str = Depends(check_auth)):
 @app.get("/api/status")
 async def app_status(username: str = Depends(check_auth)):
     return {"status": "ok", "message": "Сервер работает"}
+
+
+@app.get("/api/system/tasks")
+async def system_tasks(username: str = Depends(check_auth)):
+    return {
+        "status": "ok",
+        "result": {
+            "limits": {
+                "heavy": HEAVY_TASK_MAX_CONCURRENT,
+                **BACKGROUND_TASK_LIMITS,
+            },
+            "usage": _background_task_usage_snapshot(),
+            "threads": _thread_registry_snapshot(),
+        },
+    }
 
 
 @app.post("/api/jobs")
