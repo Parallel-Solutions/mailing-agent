@@ -1019,7 +1019,7 @@
 
     <div class="nav-section" style="margin-top:0.5rem">Что делаем</div>
     <div class="nav-item" data-nav-screen="parser" onclick="show('parser', this)">
-      <div class="nav-dot dot-gray"></div> Таблица клиентов
+      <div class="nav-dot dot-gray"></div> Парсинг
     </div>
     <div class="nav-item" data-nav-screen="generator" onclick="show('generator', this)">
       <div class="nav-dot dot-gray"></div> Документы
@@ -1201,8 +1201,8 @@
 
       <!-- Кнопка скачать результат (показывается после batch обработки) -->
       <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn-primary" type="button" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать проверенную таблицу</button>
-        <button class="btn-outline" type="button" onclick="downloadWithJob('/api/parser/download-failed')">Скачать строки на проверку</button>
+        <button class="btn-primary" type="button" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать результат</button>
+        <button class="btn-outline" type="button" onclick="downloadWithJob('/api/parser/download-failed')">Скачать непроверенные строки</button>
       </div>
 
       <div class="step-nav">
@@ -1859,7 +1859,7 @@
       upsertParserVerificationNotice(summaryText, { loading: false });
       announceProcessStep('p-chat', 'Таблица проверена', '');
       const downloadUrl = currentJobId ? `/api/download/data-xlsx?job_id=${encodeURIComponent(currentJobId)}` : '/api/download/data-xlsx';
-      appendDownloadMessage('p-chat', [{ url: downloadUrl, label: 'Скачать проверенную таблицу' }]);
+      appendDownloadMessage('p-chat', [{ url: downloadUrl, label: 'Скачать результат' }]);
       state.announcedStart = false;
       state.completedAnnounced = true;
     } else if (verificationStatus === 'error' && !state.completedAnnounced) {
