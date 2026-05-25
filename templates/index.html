@@ -1027,6 +1027,21 @@
   .modal-field input:focus,
   .modal-field select:focus { border-color: #5a9e1f; }
 
+  .modal-inline-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .modal-inline-row input {
+    flex: 1;
+  }
+
+  .modal-inline-row button {
+    white-space: nowrap;
+    padding: 10px 12px;
+  }
+
   .modal-actions {
     display: flex;
     justify-content: flex-end;
@@ -1057,6 +1072,10 @@
     .content {
       max-height: none;
       padding: 1.25rem;
+    }
+    .modal-inline-row {
+      align-items: stretch;
+      flex-direction: column;
     }
     .workflow-progress {
       font-size: 10px;
@@ -1492,11 +1511,10 @@
       </div>
       <div class="modal-field">
         <label for="parser-search-volume">Объём</label>
-        <select id="parser-search-volume">
-          <option value="все найденные записи">Все найденные записи</option>
-          <option value="первые 100 записей">Первые 100 записей</option>
-          <option value="первые 500 записей">Первые 500 записей</option>
-        </select>
+        <div class="modal-inline-row">
+          <input id="parser-search-volume" type="text" placeholder="Например: 3000 записей, все районы, первые 500">
+          <button class="btn-outline" type="button" onclick="setParserSearchAll()">Искать всё</button>
+        </div>
       </div>
       <div class="modal-field">
         <label for="parser-search-fields">Какие данные нужны</label>
@@ -2292,6 +2310,11 @@
   function closeParserSearchModal() {
     const modal = document.getElementById('parser-search-modal');
     if (modal) modal.classList.remove('open');
+  }
+
+  function setParserSearchAll() {
+    const volumeInput = document.getElementById('parser-search-volume');
+    if (volumeInput) volumeInput.value = 'всё, что есть';
   }
 
   async function submitParserSearchModal() {
