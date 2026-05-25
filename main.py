@@ -15,6 +15,7 @@ from datetime import datetime
 from time import perf_counter
 import time
 from contextlib import contextmanager
+from src.jobs.task_queue import persistent_task_slot, task_queue_snapshot
 
 app = FastAPI(title="Mailing Agent")
 security = HTTPBasic()
@@ -49,32 +50,11 @@ BACKGROUND_TASK_LIMITS = {
     "sender": _read_int_env("SENDER_TASK_MAX_CONCURRENT", 1),
     "archive": _read_int_env("ARCHIVE_TASK_MAX_CONCURRENT", 1),
 }
-_heavy_task_semaphore = threading.BoundedSemaphore(HEAVY_TASK_MAX_CONCURRENT)
-_background_task_semaphores = {
-    name: threading.BoundedSemaphore(limit)
-    for name, limit in BACKGROUND_TASK_LIMITS.items()
-}
-_background_task_usage_lock = threading.Lock()
-_background_task_active_counts: dict[str, int] = {name: 0 for name in BACKGROUND_TASK_LIMITS}
-_background_task_waiting_counts: dict[str, int] = {name: 0 for name in BACKGROUND_TASK_LIMITS}
-
-
-def _adjust_background_task_count(counter: dict[str, int], module: str, delta: int) -> None:
-    with _background_task_usage_lock:
-        counter[module] = max(0, int(counter.get(module, 0)) + delta)
-
-
 def _background_task_usage_snapshot() -> dict:
-    with _background_task_usage_lock:
-        modules = sorted(BACKGROUND_TASK_LIMITS)
-        return {
-            module: {
-                "limit": BACKGROUND_TASK_LIMITS[module],
-                "active": int(_background_task_active_counts.get(module, 0)),
-                "waiting": int(_background_task_waiting_counts.get(module, 0)),
-            }
-            for module in modules
-        }
+    return task_queue_snapshot(
+        module_limits=BACKGROUND_TASK_LIMITS,
+        global_limit=HEAVY_TASK_MAX_CONCURRENT,
+    )
 
 
 @app.on_event("startup")
@@ -457,43 +437,17 @@ def _mark_background_task_waiting(module: str, job_id: str | None) -> None:
 
 @contextmanager
 def _background_task_slot(module: str, job_id: str | None):
-    module_semaphore = _background_task_semaphores.get(module)
-    acquired_global = False
-    acquired_module = False
-    active_counted = False
-    waiting_counted = False
     try:
-        if not _heavy_task_semaphore.acquire(blocking=False):
-            _mark_background_task_waiting(module, job_id)
-            _adjust_background_task_count(_background_task_waiting_counts, module, 1)
-            waiting_counted = True
-            _heavy_task_semaphore.acquire()
-        acquired_global = True
-
-        if module_semaphore is not None:
-            if not module_semaphore.acquire(blocking=False):
-                _mark_background_task_waiting(module, job_id)
-                if not waiting_counted:
-                    _adjust_background_task_count(_background_task_waiting_counts, module, 1)
-                    waiting_counted = True
-                module_semaphore.acquire()
-            acquired_module = True
-        if waiting_counted:
-            _adjust_background_task_count(_background_task_waiting_counts, module, -1)
-            waiting_counted = False
-        _adjust_background_task_count(_background_task_active_counts, module, 1)
-        active_counted = True
-        logger.info("background_task_slot_acquired", module=module, job_id=job_id)
-        yield
+        with persistent_task_slot(
+            module=module,
+            job_id=job_id,
+            global_limit=HEAVY_TASK_MAX_CONCURRENT,
+            module_limits=BACKGROUND_TASK_LIMITS,
+            on_wait=lambda: _mark_background_task_waiting(module, job_id),
+        ):
+            logger.info("background_task_slot_acquired", module=module, job_id=job_id)
+            yield
     finally:
-        if waiting_counted:
-            _adjust_background_task_count(_background_task_waiting_counts, module, -1)
-        if active_counted:
-            _adjust_background_task_count(_background_task_active_counts, module, -1)
-        if acquired_module and module_semaphore is not None:
-            module_semaphore.release()
-        if acquired_global:
-            _heavy_task_semaphore.release()
         logger.info("background_task_slot_released", module=module, job_id=job_id)
 
 
