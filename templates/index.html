@@ -1824,7 +1824,25 @@
     return formData;
   }
 
-  function downloadWithJob(path) {
+  async function downloadWithJob(path) {
+    if (path === '/api/download/output') {
+      try {
+        const checkRes = await fetch(apiUrl(`${path}?check=true`));
+        const checkData = await readJsonOrText(checkRes);
+        if (!checkRes.ok) throw new Error(checkData.detail || 'Не удалось подготовить архив');
+        if (checkData.status !== 'ready') {
+          const message = checkData.detail || 'Архив с документами готовится. Попробуйте скачать через несколько минут.';
+          showToast(message);
+          safeAppendChatMessage('g-chat', 'agent', message);
+          return;
+        }
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        showToast(message);
+        safeAppendChatMessage('g-chat', 'agent', 'Не удалось скачать документы: ' + message);
+        return;
+      }
+    }
     window.location.href = apiUrl(path);
   }
 

@@ -1,6 +1,7 @@
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pathlib import Path
+import os
 import secrets
 import re
 from src.utils.logger import logger
@@ -13,6 +14,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from time import perf_counter
 import time
+from contextlib import contextmanager
 
 app = FastAPI(title="Mailing Agent")
 security = HTTPBasic()
@@ -29,6 +31,29 @@ _parser_verification_processes_lock = threading.Lock()
 _output_archive_threads: dict[str, threading.Thread] = {}
 _output_archive_threads_lock = threading.Lock()
 PARSER_VERIFICATION_TIMEOUT_SECONDS = 15 * 60
+
+
+def _read_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, value)
+
+
+HEAVY_TASK_MAX_CONCURRENT = _read_int_env("HEAVY_TASK_MAX_CONCURRENT", 1)
+BACKGROUND_TASK_LIMITS = {
+    "documents": _read_int_env("DOCUMENTS_TASK_MAX_CONCURRENT", 1),
+    "generator": _read_int_env("GENERATOR_TASK_MAX_CONCURRENT", 1),
+    "philologist": _read_int_env("PHILOLOGIST_TASK_MAX_CONCURRENT", 1),
+    "sender": _read_int_env("SENDER_TASK_MAX_CONCURRENT", 1),
+    "archive": _read_int_env("ARCHIVE_TASK_MAX_CONCURRENT", 1),
+}
+_heavy_task_semaphore = threading.BoundedSemaphore(HEAVY_TASK_MAX_CONCURRENT)
+_background_task_semaphores = {
+    name: threading.BoundedSemaphore(limit)
+    for name, limit in BACKGROUND_TASK_LIMITS.items()
+}
 
 
 @app.on_event("startup")
@@ -231,9 +256,10 @@ def _schedule_output_archive_build(job_id: str | None) -> None:
 
         def _run() -> None:
             try:
-                output_dir = resolve_job_paths(job_id).output_dir
-                if output_dir.exists() and any(output_dir.rglob("*.*")):
-                    _build_output_archive(job_id)
+                with _background_task_slot("archive", job_id):
+                    output_dir = resolve_job_paths(job_id).output_dir
+                    if output_dir.exists() and any(output_dir.rglob("*.*")):
+                        _build_output_archive(job_id)
             except Exception:
                 logger.exception("output_archive_build_failed", job_id=job_id)
             finally:
@@ -338,6 +364,57 @@ def _register_documents_thread(job_id: str | None, thread: threading.Thread) -> 
 def _register_parser_verification_process(job_id: str | None, process: Process) -> None:
     with _parser_verification_processes_lock:
         _parser_verification_processes[_parser_job_key(job_id)] = process
+
+
+def _mark_background_task_waiting(module: str, job_id: str | None) -> None:
+    message = "Задача ожидает свободный слот обработки. Она начнётся автоматически."
+    if module == "generator":
+        state = _load_generator_state(job_id)
+        state["summary_text"] = message
+        _save_generator_state(state, job_id)
+    elif module == "philologist":
+        state = _load_philologist_state(job_id)
+        state["summary_text"] = message
+        _save_philologist_state(state, job_id)
+    elif module == "documents":
+        generator_state = _load_generator_state(job_id)
+        philologist_state = _load_philologist_state(job_id)
+        if str(generator_state.get("status") or "") != "completed":
+            generator_state["summary_text"] = message
+            _save_generator_state(generator_state, job_id)
+        else:
+            philologist_state["summary_text"] = message
+            _save_philologist_state(philologist_state, job_id)
+    elif module == "sender":
+        state = _load_sender_state(job_id)
+        state["summary_text"] = message
+        _save_sender_state(state, job_id)
+
+
+@contextmanager
+def _background_task_slot(module: str, job_id: str | None):
+    module_semaphore = _background_task_semaphores.get(module)
+    acquired_global = False
+    acquired_module = False
+    try:
+        if not _heavy_task_semaphore.acquire(blocking=False):
+            _mark_background_task_waiting(module, job_id)
+            _heavy_task_semaphore.acquire()
+        acquired_global = True
+
+        if module_semaphore is not None:
+            if not module_semaphore.acquire(blocking=False):
+                _mark_background_task_waiting(module, job_id)
+                module_semaphore.acquire()
+            acquired_module = True
+        logger.info("background_task_slot_acquired", module=module, job_id=job_id)
+        yield
+    finally:
+        if acquired_module and module_semaphore is not None:
+            module_semaphore.release()
+        if acquired_global:
+            _heavy_task_semaphore.release()
+        logger.info("background_task_slot_released", module=module, job_id=job_id)
 
 
 def _compact_philologist_status(state: dict) -> dict:
@@ -564,15 +641,17 @@ def _compact_documents_status(job_id: str | None) -> dict:
     }
 
 
-def _run_sender_background(*, limit: int | None, transport: str | None, job_id: str | None) -> None:
+def _run_sender_background(*, dry_run: bool, limit: int | None, transport: str | None, job_id: str | None) -> None:
     try:
-        run_sender(dry_run=False, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
+        with _background_task_slot("sender", job_id):
+            run_sender(dry_run=dry_run, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
     except Exception as exc:
         logger.exception("sender_background_failed", job_id=job_id, transport=transport)
         state = _load_sender_state(job_id)
         state["status"] = "error"
         state["completed_at"] = datetime.now().isoformat(timespec="seconds")
-        state["summary_text"] = f"Агент-отправщик остановился с ошибкой: {type(exc).__name__}: {exc}"
+        action = "проверки перед отправкой" if dry_run else "отправки писем"
+        state["summary_text"] = f"Не удалось завершить {action}: {type(exc).__name__}: {exc}"
         _save_sender_state(state, job_id)
     finally:
         with _sender_threads_lock:
@@ -581,7 +660,8 @@ def _run_sender_background(*, limit: int | None, transport: str | None, job_id: 
 
 def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: str | None) -> None:
     try:
-        result = run_philologist(ai_enabled=ai_enabled, job_id=job_id, mode=mode)
+        with _background_task_slot("philologist", job_id):
+            result = run_philologist(ai_enabled=ai_enabled, job_id=job_id, mode=mode)
         if isinstance(result, dict) and result.get("status") == "completed":
             _schedule_output_archive_build(job_id)
     except Exception as exc:
@@ -598,7 +678,8 @@ def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: s
 
 def _run_generator_background(*, xlsx_path: Path, job_id: str | None) -> None:
     try:
-        result = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
+        with _background_task_slot("generator", job_id):
+            result = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
         if isinstance(result, dict) and result.get("status") == "completed":
             _schedule_output_archive_build(job_id)
     except Exception as exc:
@@ -615,21 +696,22 @@ def _run_generator_background(*, xlsx_path: Path, job_id: str | None) -> None:
 
 def _run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mode: str | None) -> None:
     try:
-        generator_state = get_generator_status(job_id)
-        if str(generator_state.get("status") or "") != "completed":
-            clear_generator_stop_request(job_id)
-            generator_state = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
+        with _background_task_slot("documents", job_id):
+            generator_state = get_generator_status(job_id)
+            if str(generator_state.get("status") or "") != "completed":
+                clear_generator_stop_request(job_id)
+                generator_state = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
 
-        if str(generator_state.get("status") or "") != "completed":
-            return
+            if str(generator_state.get("status") or "") != "completed":
+                return
 
-        philologist_state = get_philologist_status(job_id)
-        if str(philologist_state.get("status") or "") != "completed":
-            clear_philologist_stop_request(job_id)
-            philologist_state = run_philologist(ai_enabled=True, job_id=job_id, mode=mode or "fast")
+            philologist_state = get_philologist_status(job_id)
+            if str(philologist_state.get("status") or "") != "completed":
+                clear_philologist_stop_request(job_id)
+                philologist_state = run_philologist(ai_enabled=True, job_id=job_id, mode=mode or "fast")
 
-        if isinstance(philologist_state, dict) and philologist_state.get("status") == "completed":
-            _schedule_output_archive_build(job_id)
+            if isinstance(philologist_state, dict) and philologist_state.get("status") == "completed":
+                _schedule_output_archive_build(job_id)
     except Exception as exc:
         logger.exception("documents_pipeline_failed", job_id=job_id)
         generator_state = _load_generator_state(job_id)
@@ -745,12 +827,12 @@ def _watch_parser_verification_process(*, job_id: str | None, source: str, proce
             _parser_verification_processes.pop(key, None)
 
 
-def _prime_sender_running_state(job_id: str | None, transport: str | None) -> dict:
+def _prime_sender_running_state(job_id: str | None, transport: str | None, *, dry_run: bool) -> dict:
     state = _load_sender_state(job_id)
     stats = _collect_excel_stats(resolve_job_paths(job_id).data_xlsx)
     total_rows = int(state.get("total_rows") or stats.get("total", 0) or 0)
     state["status"] = "running"
-    state["mode"] = "send"
+    state["mode"] = "dry_run" if dry_run else "send"
     state["transport"] = transport or state.get("transport") or "smtp"
     state["started_at"] = datetime.now().isoformat(timespec="seconds")
     state["completed_at"] = None
@@ -768,7 +850,11 @@ def _prime_sender_running_state(job_id: str | None, transport: str | None) -> di
     state["stats"] = stats
     state["total_rows"] = total_rows
     state["remaining_rows"] = total_rows
-    state["summary_text"] = "Агент-отправщик начал отправку писем."
+    state["summary_text"] = (
+        "Проверяю адреса и готовность документов перед отправкой."
+        if dry_run
+        else "Начинаю отправку писем."
+    )
     state["stop_requested"] = False
     state["stop_requested_at"] = None
     _save_sender_state(state, job_id)
@@ -1438,7 +1524,11 @@ async def public_onlyoffice_document(token: str, filename: str):
 
 
 @app.get("/api/download/output")
-async def download_output(job_id: str | None = None, username: str = Depends(check_auth)):
+async def download_output(
+    job_id: str | None = None,
+    check: bool = False,
+    username: str = Depends(check_auth),
+):
     output_dir = resolve_job_paths(job_id).output_dir
     if not output_dir.exists():
         raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
@@ -1447,7 +1537,19 @@ async def download_output(job_id: str | None = None, username: str = Depends(che
     if not cache_is_fresh:
         if not any(output_dir.rglob("*.*")):
             raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
-        archive_path = _build_output_archive(job_id)
+        _schedule_output_archive_build(job_id)
+        if check:
+            return {
+                "status": "preparing",
+                "detail": "Архив с документами готовится. Попробуйте скачать через несколько минут.",
+            }
+        raise HTTPException(
+            status_code=409,
+            detail="Архив с документами готовится. Попробуйте скачать через несколько минут.",
+        )
+
+    if check:
+        return {"status": "ready"}
 
     return FileResponse(
         archive_path,
@@ -1774,24 +1876,16 @@ async def sender_run(
     limit = _parse_optional_limit(payload)
     transport = None if payload is None else payload.get("transport")
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    if dry_run:
-        try:
-            result = run_sender(dry_run=True, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
-        except Exception as exc:
-            logger.exception("sender_dry_run_failed", job_id=job_id, transport=transport)
-            raise HTTPException(status_code=500, detail=f"Не удалось проверить отправку: {type(exc).__name__}: {exc}") from exc
-        return {"status": "ok", "result": result}
-
     existing_thread = _get_sender_thread(job_id)
     if existing_thread:
         return {"status": "ok", "result": get_sender_status(job_id)}
 
     try:
         clear_sender_stop_request(job_id)
-        primed_state = _prime_sender_running_state(job_id, transport)
+        primed_state = _prime_sender_running_state(job_id, transport, dry_run=dry_run)
         sender_thread = threading.Thread(
             target=_run_sender_background,
-            kwargs={"limit": limit, "transport": transport, "job_id": job_id},
+            kwargs={"dry_run": dry_run, "limit": limit, "transport": transport, "job_id": job_id},
             daemon=True,
             name=f"sender-{_sender_job_key(job_id)}",
         )
@@ -1799,7 +1893,8 @@ async def sender_run(
         sender_thread.start()
     except Exception as exc:
         logger.exception("sender_run_start_failed", job_id=job_id, transport=transport)
-        raise HTTPException(status_code=500, detail=f"Не удалось запустить отправку: {type(exc).__name__}: {exc}") from exc
+        action = "проверку перед отправкой" if dry_run else "отправку"
+        raise HTTPException(status_code=500, detail=f"Не удалось запустить {action}: {type(exc).__name__}: {exc}") from exc
     return {"status": "ok", "result": primed_state}
 
 
