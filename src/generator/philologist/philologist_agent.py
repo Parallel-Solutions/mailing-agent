@@ -1883,7 +1883,13 @@ def run_philologist(
     )
 
     state = _load_philologist_state(job_id)
-    was_stopped = str(state.get("status") or "") == "stopped"
+    state_status = str(state.get("status") or "")
+    has_resume_checkpoint = bool(state.get("documents")) or int(state.get("processed_documents") or 0) > 0
+    was_stopped = (
+        state_status == "stopped"
+        or bool(state.get("resume_from_stopped"))
+        or (state_status == "running" and has_resume_checkpoint)
+    )
     processed_documents: list[dict[str, Any]] = list(state.get("documents") or []) if was_stopped else []
     processed_count = max(
         len(processed_documents),
@@ -1954,6 +1960,7 @@ def run_philologist(
             "recent_events": get_recent_events(agent_name="philologist", limit=20, job_id=job_id),
             "stop_requested": False,
             "stop_requested_at": None,
+            "resume_from_stopped": False,
             "template_memory": template_memory,
         }
     )

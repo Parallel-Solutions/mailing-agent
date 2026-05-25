@@ -780,10 +780,14 @@ def _prime_philologist_running_state(job_id: str | None, mode: str | None) -> di
     output_dir = paths.output_dir
     docx_count = len(list(output_dir.rglob("*.docx"))) if output_dir.exists() else 0
     state = _load_philologist_state(job_id)
-    if str(state.get("status") or "") == "stopped":
+    saved_processed = int(state.get("processed_documents") or 0)
+    saved_documents = state.get("documents") if isinstance(state.get("documents"), list) else []
+    has_resume_checkpoint = saved_processed > 0 or bool(saved_documents)
+    if str(state.get("status") or "") == "stopped" or has_resume_checkpoint:
         state["status"] = "running"
         state["completed_at"] = None
         state["mode"] = mode or state.get("mode") or "fast"
+        state["resume_from_stopped"] = True
         state["summary_text"] = "Продолжаю работу агента-филолога с сохраненного места."
     else:
         state["status"] = "running"
