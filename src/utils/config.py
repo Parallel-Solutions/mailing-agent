@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     sbis_password: str = ""
 
     app_username: str = "admin"
-    app_password: str = "nngG!8c%Rm2UY"
+    app_password: str = ""
 
     # Приложение
     app_host: str = "0.0.0.0"
