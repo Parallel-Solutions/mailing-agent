@@ -497,6 +497,96 @@
     margin-top: 3px;
   }
 
+  .delivery-dashboard {
+    background: linear-gradient(135deg, #fbfcf7 0%, #f3f7ed 100%);
+    border: 1px solid #dce8d0;
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 18px 40px rgba(44, 74, 26, 0.07);
+  }
+
+  .delivery-dashboard-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .delivery-dashboard-title {
+    font-size: 17px;
+    font-weight: 750;
+    color: #132008;
+  }
+
+  .delivery-dashboard-sub {
+    margin-top: 3px;
+    color: #6d765f;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .delivery-metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .delivery-metric {
+    background: rgba(255, 255, 255, 0.86);
+    border: 1px solid #e0e7d7;
+    border-radius: 14px;
+    padding: 14px;
+    min-height: 92px;
+  }
+
+  .delivery-metric-title {
+    color: #4e5b44;
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .delivery-metric-title::after {
+    content: "i";
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid #b9c5ae;
+    color: #8b9780;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .delivery-metric-value {
+    font-size: 26px;
+    font-weight: 760;
+    color: #17230d;
+    margin-top: 12px;
+  }
+
+  .delivery-metric-percent {
+    color: #6f7b64;
+    font-size: 13px;
+    margin-top: 2px;
+  }
+
+  .delivery-metric.good .delivery-metric-percent { color: #2d7a1e; }
+  .delivery-metric.warn .delivery-metric-percent { color: #b67812; }
+  .delivery-metric.bad .delivery-metric-percent { color: #b02020; }
+
+  .delivery-dashboard-note {
+    color: #8a9580;
+    font-size: 12px;
+    margin-top: 12px;
+  }
+
   /* UPLOAD ZONE */
   .upload-zone {
     border: 1.5px dashed #ccc;
@@ -1136,9 +1226,13 @@
     .grid2,
     .grid3,
     .stats-row,
+    .delivery-metrics-grid,
     .parser-choice-grid,
     .settings-checklist {
       grid-template-columns: 1fr !important;
+    }
+    .delivery-dashboard-head {
+      flex-direction: column;
     }
     .parser-choice-text {
       min-height: 0;
@@ -1449,7 +1543,7 @@
 
       <div class="step-nav">
         <button class="btn-outline" type="button" onclick="goToScreen('parser')">Назад к таблице</button>
-        <button class="btn-primary" type="button" onclick="goToScreen('sender')">Дальше: проверить отправку</button>
+        <button class="btn-primary" id="documents-next-sender" type="button" onclick="goToScreen('sender')" disabled>Дальше: проверить отправку</button>
       </div>
     </div>
 
@@ -1634,6 +1728,7 @@
   let lastParserUiState = {};
   let lastGeneratorUiState = {};
   let lastPhilologistUiState = {};
+  let lastDocumentsUiState = {};
   let lastSenderUiState = {};
   let isRestoringUiState = false;
 
@@ -1678,6 +1773,7 @@
       parserUiState: lastParserUiState,
       generatorUiState: lastGeneratorUiState,
       philologistUiState: lastPhilologistUiState,
+      documentsUiState: lastDocumentsUiState,
       senderUiState: lastSenderUiState,
       senderPreviewState,
       parserRunning,
@@ -1833,6 +1929,7 @@
       if (snapshot.parserUiState) setParserUiState({ ...snapshot.parserUiState, from_restore: true });
       if (snapshot.generatorUiState) setGeneratorUiState({ ...snapshot.generatorUiState, from_restore: true });
       if (snapshot.philologistUiState) setPhilologistUiState({ ...snapshot.philologistUiState, from_restore: true });
+      if (snapshot.documentsUiState) setDocumentsUiState({ ...snapshot.documentsUiState, from_restore: true });
       if (snapshot.senderUiState) setSenderUiState({ ...snapshot.senderUiState, from_restore: true });
     } finally {
       isRestoringUiState = false;
@@ -1848,6 +1945,7 @@
       goToScreen(snapshot.activeScreen, { scroll: false, persist: false });
     }
     applyModuleReadiness();
+    updateDocumentsNextButton();
     updateSettingsChecklist();
   }
 
@@ -2385,6 +2483,11 @@
   }
 
   function goToScreen(id, options = {}) {
+    if (id === 'sender' && !isDocumentsReadyForSender()) {
+      showToast('Сначала дождитесь завершения подготовки документов');
+      refreshDocumentsStatus({ silent: true });
+      return;
+    }
     activateScreen(id, options);
   }
 
@@ -4440,6 +4543,8 @@ function clearAttachedFile() {
     const errorRows = Number(result.error_rows || generatorState.error_rows || 0);
     const fixedDocuments = Number(result.fixed_documents || philologistState.fixed_documents || 0);
     const percent = Number(result.progress_percent || 0);
+    lastDocumentsUiState = { ...stripUiStateMeta(result) };
+    scheduleUiStateSave();
 
     if (result.generator) {
       lastGeneratorUiState = { ...stripUiStateMeta(generatorState) };
@@ -4462,6 +4567,7 @@ function clearAttachedFile() {
     const totalStat = document.getElementById('g-total');
     const reportButton = document.getElementById('ph-download-report');
     const outputButton = document.getElementById('g-download-output');
+    updateDocumentsNextButton(status);
 
     if (totalStat && totalRows > 0) totalStat.textContent = totalRows.toLocaleString('ru');
     if (errorStat) errorStat.textContent = errorRows.toLocaleString('ru');
@@ -4575,6 +4681,35 @@ function clearAttachedFile() {
       label.textContent = humanizeDocumentsMessage(result.stage_text, 'Подготовка документов ещё не запускалась.');
     }
     setProgressVisual(fill, { percent: Math.max(0, Math.min(percent, 100)), running: false });
+  }
+
+  function isDocumentsReadyForSender() {
+    const documentsStatus = String(lastDocumentsUiState.status || '');
+    const generatorStatus = String((lastDocumentsUiState.generator || {}).status || currentGeneratorStatus || '');
+    const philologistStatus = String((lastDocumentsUiState.philologist || {}).status || currentPhilologistStatus || '');
+    const modulesCompleted = generatorStatus === 'completed' && philologistStatus === 'completed';
+    return modulesCompleted && (documentsStatus === 'completed' || !documentsStatus);
+  }
+
+  function updateDocumentsNextButton(status = String(lastDocumentsUiState.status || 'idle')) {
+    const nextButton = document.getElementById('documents-next-sender');
+    if (!nextButton) return;
+    const ready = isDocumentsReadyForSender();
+    nextButton.disabled = !ready;
+    if (ready) {
+      nextButton.title = '';
+      nextButton.textContent = 'Дальше: проверить отправку';
+      return;
+    }
+    if (status === 'running') {
+      nextButton.title = 'Документы ещё готовятся или проверяются. Переход станет доступен после завершения.';
+    } else if (status === 'stopped') {
+      nextButton.title = 'Подготовка остановлена. Сначала продолжите и завершите проверку документов.';
+    } else if (status === 'error') {
+      nextButton.title = 'Подготовка документов завершилась с ошибкой.';
+    } else {
+      nextButton.title = 'Сначала подготовьте и проверьте документы.';
+    }
   }
 
   function setSenderButtonsState({ status = 'idle', mode = 'dry_run', canConfirm = false, hasPendingRows = false } = {}) {
@@ -4802,9 +4937,18 @@ function clearAttachedFile() {
   }
 
   async function waitForSenderCompletion() {
+    let failedPolls = 0;
     while (true) {
       await new Promise(resolve => setTimeout(resolve, 1500));
       const result = await refreshSenderStatus({ silent: true });
+      if (!result) {
+        failedPolls += 1;
+        if (failedPolls >= 5) {
+          throw new Error('Сервер временно не отвечает на статус отправки. Попробуйте обновить страницу через несколько секунд.');
+        }
+        continue;
+      }
+      failedPolls = 0;
       const status = result && result.status ? result.status : 'idle';
       if (status !== 'running') {
         return result;
@@ -4830,16 +4974,7 @@ function clearAttachedFile() {
       senderRunning = true;
       flowNotificationState.sender.terminalAnnounced = false;
       setSenderButtonsState({ status: 'running', mode: 'dry_run', canConfirm: false });
-      const previewRes = await fetch('/api/sender/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ limit })),
-      });
-      const previewData = await readJsonOrText(previewRes);
-      if (!previewRes.ok) throw new Error(previewData.detail || 'Ошибка предпросмотра адресов');
-
       safeSetSenderUiState({ status: 'running', total_rows: 0, processed_rows: 0, stats: {} });
-      senderPreviewState = previewData.result || {};
       safeAppendChatMessage('s-chat', 'agent', 'Проверяю адреса и готовые документы. Письма пока не отправляются.');
 
       const res = await fetch('/api/sender/run', {
@@ -4849,9 +4984,23 @@ function clearAttachedFile() {
       });
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
-        const result = data.result || {};
+        let result = data.result || {};
         safeSetSenderUiState(result);
         maybeAnnounceSenderFlow(result);
+        if (result.status === 'running') {
+          const finalResult = await waitForSenderCompletion();
+          result = finalResult || result;
+          safeSetSenderUiState(result);
+          maybeAnnounceSenderFlow(result);
+        }
+        if (result.status === 'stopped') {
+          showToast('Проверка остановлена');
+          safeAppendChatMessage('s-chat', 'agent', humanizeSenderMessage(result.summary_text, 'Проверка остановлена. Можно продолжить позже.'));
+          return;
+        }
+        if (result.status === 'error') {
+          throw new Error(result.summary_text || 'Проверка перед отправкой завершилась с ошибкой');
+        }
         showToast('Проверка завершена');
         safeAppendChatMessage('s-chat', 'agent', humanizeSenderMessage(result.summary_text, 'Проверка завершена. Если всё верно, нажмите «Отправить письма».'));
       } catch (err) {

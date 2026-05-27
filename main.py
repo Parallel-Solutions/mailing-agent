@@ -408,6 +408,84 @@ def _compact_generator_status(state: dict) -> dict:
     }
 
 
+def _compact_sender_row(row: dict) -> dict:
+    attempts = row.get("attempts") if isinstance(row, dict) else []
+    compact_attempts = []
+    if isinstance(attempts, list):
+        for attempt in attempts[:3]:
+            if isinstance(attempt, dict):
+                compact_attempts.append(
+                    {
+                        "recipient": attempt.get("recipient"),
+                        "status": attempt.get("status"),
+                        "error": attempt.get("error"),
+                    }
+                )
+
+    return {
+        "id": row.get("id"),
+        "row_index": row.get("row_index"),
+        "mun_name": row.get("mun_name"),
+        "result": row.get("result"),
+        "recipient": row.get("recipient"),
+        "emails": row.get("emails") or [],
+        "invalid_emails": row.get("invalid_emails") or [],
+        "email_strategy": row.get("email_strategy"),
+        "decision_reason": row.get("decision_reason"),
+        "error": row.get("error"),
+        "warning": row.get("warning"),
+        "provider": row.get("provider"),
+        "provider_status": row.get("provider_status"),
+        "provider_status_label": row.get("provider_status_label"),
+        "provider_message_id": row.get("provider_message_id"),
+        "attempts": compact_attempts,
+    }
+
+
+def _compact_sender_status(state: dict) -> dict:
+    rows = state.get("rows") or []
+    if not isinstance(rows, list):
+        rows = []
+    stats = state.get("stats") or {}
+    if not isinstance(stats, dict):
+        stats = {}
+
+    return {
+        "status": state.get("status", "idle"),
+        "mode": state.get("mode", "dry_run"),
+        "started_at": state.get("started_at"),
+        "completed_at": state.get("completed_at"),
+        "processed_rows": state.get("processed_rows", 0),
+        "ready_rows": state.get("ready_rows", 0),
+        "sent_rows": state.get("sent_rows", 0),
+        "error_rows": state.get("error_rows", 0),
+        "skipped_rows": state.get("skipped_rows", 0),
+        "handoff_rows": state.get("handoff_rows", 0),
+        "total_rows": state.get("total_rows", 0),
+        "summary_text": state.get("summary_text", ""),
+        "stats": {
+            "total": stats.get("total", state.get("total_rows", 0)),
+            "sent": stats.get("sent", state.get("sent_rows", 0)),
+            "error": stats.get("error", state.get("error_rows", 0)),
+            "pending": stats.get("pending", state.get("remaining_rows", 0)),
+        },
+        "warning_rows": state.get("warning_rows", 0),
+        "generator_handoff_rows": state.get("generator_handoff_rows", 0),
+        "philology_blocked_rows": state.get("philology_blocked_rows", 0),
+        "autonomous_recovery_rows": state.get("autonomous_recovery_rows", 0),
+        "effective_limit": state.get("effective_limit"),
+        "remaining_rows": state.get("remaining_rows", 0),
+        "stop_requested": state.get("stop_requested", False),
+        "stop_requested_at": state.get("stop_requested_at"),
+        "transport": state.get("transport", "unisender"),
+        "row_count": len(rows),
+        # Статусу UI нужен только небольшой срез для предпросмотра, не весь список на тысячи строк.
+        "rows": [_compact_sender_row(row) for row in rows[:20] if isinstance(row, dict)],
+        "task_stats": state.get("task_stats", {}),
+        "recent_events": (state.get("recent_events") or [])[:5],
+    }
+
+
 def _documents_generator_percent(generator_state: dict) -> int:
     status = str(generator_state.get("status") or "idle")
     stage = str(generator_state.get("stage") or "")
@@ -476,7 +554,7 @@ def _stop_orphaned_documents_worker_state(
 
 def _compact_documents_status(job_id: str | None) -> dict:
     generator_state = _compact_generator_status(get_generator_status(job_id))
-    philologist_state = _compact_philologist_status(get_philologist_status(job_id))
+    philologist_state = _compact_philologist_status(get_philologist_status(job_id, include_details=False))
     pipeline_thread = _get_documents_thread(job_id)
     generator_state = _stop_orphaned_documents_worker_state(
         job_id=job_id,
@@ -629,7 +707,7 @@ def _run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, m
         if str(generator_state.get("status") or "") != "completed":
             return
 
-        philologist_state = get_philologist_status(job_id)
+        philologist_state = get_philologist_status(job_id, include_details=False)
         if str(philologist_state.get("status") or "") != "completed":
             clear_philologist_stop_request(job_id)
             philologist_state = run_philologist(ai_enabled=True, job_id=job_id, mode=mode or "fast")
@@ -956,7 +1034,7 @@ async def job_readiness(job_id: str | None = None, username: str = Depends(check
     output_dir = paths.output_dir
     parser_state = get_parser_status(job_id)
     generator_state = get_generator_status(job_id)
-    philologist_state = get_philologist_status(job_id)
+    philologist_state = get_philologist_status(job_id, include_details=False)
 
     parser_running = str(parser_state.get("status") or "") == "running"
     generator_running = str(generator_state.get("status") or "") == "running"
@@ -1112,6 +1190,7 @@ from src.generator.delivery.sender_agent import (
     run_sender,
 )
 from src.generator.delivery.sender_report import (
+    build_unisender_delivery_analytics,
     build_unisender_delivery_report_xlsx,
     unisender_delivery_report_has_data,
 )
@@ -1299,7 +1378,7 @@ async def counts(job_id: str | None = None, username: str = Depends(check_auth))
     # reliably re-read every source file. Use persisted agent state as a
     # fallback so the counters stay in sync with the real job progress.
     generator_state = get_generator_status(job_id)
-    philologist_state = get_philologist_status(job_id)
+    philologist_state = get_philologist_status(job_id, include_details=False)
     sender_state = get_sender_status(job_id)
 
     generator_total = max(
@@ -1342,7 +1421,7 @@ async def documents_start(payload: dict | None = Body(default=None), username: s
     # whether this is a fresh start or a resume.
     _compact_documents_status(job_id)
     generator_state = get_generator_status(job_id)
-    philologist_state = get_philologist_status(job_id)
+    philologist_state = get_philologist_status(job_id, include_details=False)
     generator_thread = _get_generator_thread(job_id)
     philologist_thread = _get_philologist_thread(job_id)
     generator_thread_running = str(generator_state.get("status") or "") == "running" and generator_thread is not None
@@ -1389,7 +1468,7 @@ async def documents_status(job_id: str | None = None, username: str = Depends(ch
 async def documents_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
     generator_state = get_generator_status(job_id)
-    philologist_state = get_philologist_status(job_id)
+    philologist_state = get_philologist_status(job_id, include_details=False)
     if str(generator_state.get("status") or "") == "running":
         request_generator_stop(job_id)
     if str(philologist_state.get("status") or "") in {"running", "finalizing"}:
@@ -1711,9 +1790,9 @@ async def philologist_run(
     mode = None if payload is None else str(payload.get("mode") or "").strip().lower() or None
     existing_thread = _get_philologist_thread(job_id)
     if existing_thread:
-        return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
+        return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id, include_details=False))}
 
-    existing_state = get_philologist_status(job_id)
+    existing_state = get_philologist_status(job_id, include_details=False)
     if str(existing_state.get("status") or "") in {"running", "finalizing"}:
         return {"status": "ok", "result": _compact_philologist_status(existing_state)}
 
@@ -1732,7 +1811,7 @@ async def philologist_run(
 
 @app.get("/api/philologist/status")
 async def philologist_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id))}
+    return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id, include_details=False))}
 
 
 @app.post("/api/philologist/stop")
@@ -1817,7 +1896,7 @@ async def sender_run(
 
     existing_thread = _get_sender_thread(job_id)
     if existing_thread:
-        return {"status": "ok", "result": get_sender_status(job_id)}
+        return {"status": "ok", "result": _compact_sender_status(get_sender_status(job_id))}
 
     try:
         clear_sender_stop_request(job_id)
@@ -1837,12 +1916,12 @@ async def sender_run(
     except Exception as exc:
         logger.exception("sender_run_start_failed", job_id=job_id, transport=transport)
         raise HTTPException(status_code=500, detail=f"Не удалось запустить отправку: {type(exc).__name__}: {exc}") from exc
-    return {"status": "ok", "result": primed_state}
+    return {"status": "ok", "result": _compact_sender_status(primed_state)}
 
 
 @app.get("/api/sender/status")
 async def sender_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_sender_status(job_id)}
+    return {"status": "ok", "result": _compact_sender_status(get_sender_status(job_id))}
 
 
 @app.get("/api/sender/unisender-history")
@@ -1858,11 +1937,23 @@ async def sender_unisender_history(
     }
 
 
+@app.get("/api/sender/analytics")
+async def sender_analytics(
+    job_id: str | None = None,
+    refresh: bool = False,
+    username: str = Depends(check_auth),
+):
+    return {
+        "status": "ok",
+        "result": build_unisender_delivery_analytics(job_id=job_id, refresh=refresh),
+    }
+
+
 @app.post("/api/sender/stop")
 async def sender_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
     job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
     result = request_sender_stop(job_id=job_id)
-    return {"status": "ok", "result": result}
+    return {"status": "ok", "result": _compact_sender_status(result)}
 
 
 @app.post("/api/sender/preview")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
+import json
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ BLUE = "1F4E78"
 LIGHT_BLUE = "D9EAF7"
 BORDER = Side(style="thin", color="D9E2F3")
 REPORT_FILENAME = "unisender_delivery_report.xlsx"
+ANALYTICS_CACHE_FILENAME = "unisender_delivery_analytics.json"
 
 
 def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: bool = True) -> Path:
@@ -68,12 +70,114 @@ def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: 
     return output_path
 
 
+def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bool = False) -> dict[str, Any]:
+    """Return lightweight dashboard metrics for the current UniSender sending job."""
+
+    rows, refresh_error = _build_delivery_rows(job_id, refresh=refresh)
+    statuses = Counter(row["provider_status"] or "unknown" for row in rows)
+
+    total = len(rows)
+    delivered_statuses = {"ok_delivered", "ok_read", "ok_link_visited", "ok_unsubscribed", "ok_spam_folder"}
+    read_statuses = {"ok_read", "ok_link_visited"}
+    clicked_statuses = {"ok_link_visited"}
+    warning_statuses = {"ok_unsubscribed", "ok_spam_folder", "err_spam_rejected"}
+    pending_statuses = {"accepted", "success", "not_sent", "ok_sent", "err_will_retry", "unknown"}
+
+    delivered = sum(statuses.get(status, 0) for status in delivered_statuses)
+    read = sum(statuses.get(status, 0) for status in read_statuses)
+    clicked = sum(statuses.get(status, 0) for status in clicked_statuses)
+    warnings = sum(statuses.get(status, 0) for status in warning_statuses)
+    errors = sum(count for status, count in statuses.items() if status.startswith("err_") and status != "err_will_retry")
+    pending = sum(statuses.get(status, 0) for status in pending_statuses)
+    checked = sum(1 for row in rows if row.get("checked_at"))
+
+    def pct(value: int, base: int | None = None) -> float:
+        denominator = total if base is None else base
+        if denominator <= 0:
+            return 0.0
+        return round((value / denominator) * 100, 1)
+
+    cards = [
+        {
+            "id": "accepted",
+            "title": "Принято UniSender",
+            "value": total,
+            "percent": 100.0 if total else 0.0,
+            "hint": "Письма, которые сервис передал в UniSender.",
+        },
+        {
+            "id": "delivered",
+            "title": "Доставлено",
+            "value": delivered,
+            "percent": pct(delivered),
+            "hint": "Подтверждённая доставка по статусам UniSender.",
+        },
+        {
+            "id": "read",
+            "title": "Прочитано",
+            "value": read,
+            "percent": pct(read),
+            "hint": "Письма со статусом прочтения или перехода по ссылке.",
+        },
+        {
+            "id": "clicked",
+            "title": "Переходы",
+            "value": clicked,
+            "percent": pct(clicked),
+            "hint": "Письма, где UniSender зафиксировал переход по ссылке.",
+        },
+        {
+            "id": "errors",
+            "title": "Ошибки доставки",
+            "value": errors,
+            "percent": pct(errors),
+            "hint": "Адреса, по которым UniSender вернул ошибку доставки.",
+        },
+        {
+            "id": "warnings",
+            "title": "Отписки/спам",
+            "value": warnings,
+            "percent": pct(warnings),
+            "hint": "Отписки, попадание в спам или отклонение как спам.",
+        },
+        {
+            "id": "pending",
+            "title": "В обработке",
+            "value": pending,
+            "percent": pct(pending),
+            "hint": "UniSender ещё не вернул финальный статус доставки.",
+        },
+        {
+            "id": "ctor",
+            "title": "CTOR",
+            "value": clicked,
+            "percent": pct(clicked, read),
+            "hint": "Доля переходов среди прочитанных писем.",
+        },
+    ]
+
+    return {
+        "status": "ok",
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "job_id": job_id or "",
+        "total": total,
+        "checked": checked,
+        "refresh_error": refresh_error,
+        "cards": cards,
+        "statuses": [
+            {"status": status, "label": _report_status_label(status), "count": count}
+            for status, count in sorted(statuses.items(), key=lambda item: (-item[1], item[0]))
+        ],
+    }
+
+
 def unisender_delivery_report_has_data(job_id: str | None = None) -> bool:
     return bool(_load_unisender_log_items(job_id))
 
 
 def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dict[str, Any]], str]:
     items = _load_unisender_log_items(job_id)
+    cached_statuses = _load_delivery_status_cache(job_id)
     provider_statuses: dict[str, dict[str, Any]] = {}
     refresh_error = ""
 
@@ -81,6 +185,9 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
     if refresh and classic_ids:
         try:
             provider_statuses = _check_classic_statuses(classic_ids)
+            if provider_statuses:
+                cached_statuses.update(provider_statuses)
+                _save_delivery_status_cache(job_id, cached_statuses)
         except Exception as exc:
             refresh_error = _safe_text(exc) or "не удалось обновить статусы UniSender"
 
@@ -94,6 +201,9 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
         if message_id and message_id in provider_statuses:
             provider_status = _safe_text(provider_statuses[message_id].get("provider_status")) or provider_status
             checked_at = _safe_text(provider_statuses[message_id].get("checked_at")) or checked_at
+        elif message_id and message_id in cached_statuses:
+            provider_status = _safe_text(cached_statuses[message_id].get("provider_status")) or provider_status
+            checked_at = _safe_text(cached_statuses[message_id].get("checked_at")) or checked_at
 
         label = _report_status_label(provider_status)
         rows.append(
@@ -114,6 +224,39 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
             }
         )
     return rows, refresh_error
+
+
+def _delivery_status_cache_path(job_id: str | None) -> Path:
+    job_paths = resolve_job_paths(job_id)
+    return job_paths.root_dir / "state" / ANALYTICS_CACHE_FILENAME
+
+
+def _load_delivery_status_cache(job_id: str | None) -> dict[str, dict[str, Any]]:
+    path = _delivery_status_cache_path(job_id)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    statuses = data.get("statuses") if isinstance(data, dict) else {}
+    if not isinstance(statuses, dict):
+        return {}
+    return {
+        _safe_text(message_id): payload
+        for message_id, payload in statuses.items()
+        if _safe_text(message_id) and isinstance(payload, dict)
+    }
+
+
+def _save_delivery_status_cache(job_id: str | None, statuses: dict[str, dict[str, Any]]) -> None:
+    path = _delivery_status_cache_path(job_id)
+    payload = {
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "statuses": statuses,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _load_unisender_log_items(job_id: str | None) -> list[dict[str, Any]]:

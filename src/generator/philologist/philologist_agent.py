@@ -141,7 +141,7 @@ def request_philologist_stop(job_id: str | None = None) -> dict[str, Any]:
             "Получен запрос на остановку. Филолог завершит текущий документ и остановится."
         )
     _save_philologist_state(state, job_id)
-    return get_philologist_status(job_id)
+    return get_philologist_status(job_id, include_details=False)
 
 
 def clear_philologist_stop_request(job_id: str | None = None) -> None:
@@ -2409,11 +2409,19 @@ def run_philologist(
     return dict(state)
 
 
-def get_philologist_status(job_id: str | None = None) -> dict[str, Any]:
+def get_philologist_status(job_id: str | None = None, *, include_details: bool = True) -> dict[str, Any]:
     state = _load_philologist_state(job_id)
     job_paths = resolve_job_paths(job_id)
     target_dir = job_paths.output_dir if not job_paths.uses_legacy_layout else OUTPUT_DIR
     state["task_stats"] = count_tasks_for_agent("philologist", job_id)
+    if not include_details:
+        if state.get("status") == "idle":
+            state["total_documents"] = _cached_docx_count(target_dir)
+        state["tasks"] = []
+        state["recent_events"] = []
+        state["tool_trace"] = state.get("tool_trace") or []
+        return state
+
     state["tasks"] = get_tasks_for_agent("philologist", job_id)[:20]
     state["recent_events"] = get_recent_events(agent_name="philologist", limit=20, job_id=job_id)
     if not state.get("inflection_report") and not int(state.get("inflection_log_count") or 0):
