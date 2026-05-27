@@ -1388,7 +1388,7 @@
       </div>
 
       <div class="step-nav">
-        <button class="btn-primary" type="button" onclick="goToScreen('parser')">Дальше: загрузить таблицу</button>
+        <button class="btn-primary" id="settings-next-parser" type="button" onclick="goToScreen('parser')" disabled>Дальше: загрузить файл или собрать данные</button>
       </div>
     </div>
 
@@ -1459,7 +1459,7 @@
       </div>
 
       <div class="step-nav">
-        <button class="btn-primary" type="button" onclick="goToScreen('generator')">Дальше: подготовить документы</button>
+        <button class="btn-primary" id="parser-next-generator" type="button" onclick="goToScreen('generator')" disabled>Дальше: подготовить документы</button>
       </div>
     </div>
 
@@ -1611,7 +1611,7 @@
 
       <div class="step-nav">
         <button class="btn-outline" type="button" onclick="goToScreen('generator')">Назад к документам</button>
-        <button class="btn-primary" type="button" onclick="goToScreen('status')">Дальше: посмотреть результат</button>
+        <button class="btn-primary" id="sender-next-status" type="button" onclick="goToScreen('status')" disabled>Дальше: посмотреть результат</button>
       </div>
     </div>
 
@@ -1862,6 +1862,20 @@
     return !!(button && button.classList.contains('uploaded'));
   }
 
+  function getMissingSettingsFields() {
+    const missing = [];
+    if (!isTemplateUploaded('mail-btn')) missing.push('шаблон письма');
+    if (!isTemplateUploaded('kp-btn')) missing.push('шаблон КП');
+    if (!isTemplateUploaded('contract-btn')) missing.push('шаблон договора');
+    const subject = document.getElementById('settings-mail-subject');
+    if (!subject || !subject.value.trim()) missing.push('тему письма');
+    return missing;
+  }
+
+  function areSettingsReady() {
+    return getMissingSettingsFields().length === 0;
+  }
+
   function setSettingsCheckItem(id, ready) {
     const item = document.getElementById(id);
     if (!item) return;
@@ -1874,17 +1888,13 @@
     setSettingsCheckItem('settings-check-kp', isTemplateUploaded('kp-btn'));
     setSettingsCheckItem('settings-check-contract', isTemplateUploaded('contract-btn'));
     setSettingsCheckItem('settings-check-subject', !!(subject && subject.value.trim()));
+    updateFlowNavigationButtons();
     scheduleUiStateSave();
   }
 
   function saveSettingsAndValidate() {
     updateSettingsChecklist();
-    const missing = [];
-    if (!isTemplateUploaded('mail-btn')) missing.push('шаблон письма');
-    if (!isTemplateUploaded('kp-btn')) missing.push('шаблон КП');
-    if (!isTemplateUploaded('contract-btn')) missing.push('шаблон договора');
-    const subject = document.getElementById('settings-mail-subject');
-    if (!subject || !subject.value.trim()) missing.push('тему письма');
+    const missing = getMissingSettingsFields();
     if (missing.length) {
       showToast('Не всё готово: добавьте ' + missing.join(', '));
       return;
@@ -2347,6 +2357,55 @@
     } else {
       setSidebarStepState('status', 'idle', 'Результаты появятся после отправки писем.');
     }
+    updateFlowNavigationButtons();
+  }
+
+  function isParserReadyForDocuments() {
+    const parserVerificationStatus = String((lastParserUiState.municipality_name_verification_state || {}).status || 'idle');
+    const parserStatus = String(currentParserStatus || lastParserUiState.status || 'idle');
+    const parserRows = Number(lastParserUiState.row_count || 0);
+    const parserFinished = parserVerificationStatus === 'completed' || parserStatus === 'completed';
+    return parserRows > 0
+      && !parserRunning
+      && parserStatus !== 'running'
+      && parserVerificationStatus !== 'running'
+      && parserVerificationStatus !== 'error'
+      && parserFinished;
+  }
+
+  function isSenderReadyForStatus() {
+    const status = String(currentSenderStatus || lastSenderUiState.status || 'idle');
+    const stats = lastSenderUiState.stats || {};
+    const sent = Math.max(Number(lastSenderUiState.sent_rows || 0), Number(stats.sent || 0));
+    const errors = Math.max(Number(lastSenderUiState.error_rows || 0), Number(stats.error || 0));
+    const total = Math.max(Number(lastSenderUiState.total_rows || 0), Number(stats.total || 0));
+    return !senderRunning && status !== 'running' && (status === 'completed' || sent > 0 || errors > 0 || total > 0);
+  }
+
+  function setFlowButtonState(id, enabled, title = '') {
+    const button = document.getElementById(id);
+    if (!button) return;
+    button.disabled = !enabled;
+    button.title = enabled ? '' : title;
+  }
+
+  function updateFlowNavigationButtons() {
+    setFlowButtonState(
+      'settings-next-parser',
+      areSettingsReady(),
+      'Сначала загрузите шаблон письма, КП, договор и заполните тему письма.'
+    );
+    setFlowButtonState(
+      'parser-next-generator',
+      isParserReadyForDocuments(),
+      parserRunning ? 'Дождитесь завершения проверки таблицы.' : 'Сначала загрузите и проверьте таблицу.'
+    );
+    updateDocumentsNextButton();
+    setFlowButtonState(
+      'sender-next-status',
+      isSenderReadyForStatus(),
+      senderRunning ? 'Дождитесь завершения проверки или отправки писем.' : 'Сначала выполните проверку или отправку.'
+    );
   }
 
   function getSenderStatusNumbers(state = {}) {
@@ -2479,10 +2538,31 @@
   }
 
   function show(id, el) {
-    activateScreen(id, { navElement: el });
+    goToScreen(id, { navElement: el });
   }
 
   function goToScreen(id, options = {}) {
+    const order = ['settings', 'parser', 'generator', 'sender', 'status'];
+    const currentIndex = order.indexOf(activeScreenId);
+    const targetIndex = order.indexOf(id);
+    const movingForward = currentIndex >= 0 && targetIndex > currentIndex;
+
+    if (movingForward && activeScreenId === 'settings' && !areSettingsReady()) {
+      const missing = getMissingSettingsFields();
+      showToast('Сначала добавьте: ' + missing.join(', '));
+      updateSettingsChecklist();
+      return;
+    }
+    if (movingForward && activeScreenId === 'parser' && !isParserReadyForDocuments()) {
+      showToast(parserRunning ? 'Дождитесь завершения проверки таблицы' : 'Сначала загрузите и проверьте таблицу');
+      refreshParserStatus({ silent: true });
+      return;
+    }
+    if (movingForward && activeScreenId === 'sender' && !isSenderReadyForStatus()) {
+      showToast(senderRunning ? 'Дождитесь завершения проверки или отправки' : 'Сначала выполните проверку перед отправкой');
+      refreshSenderStatus({ silent: true });
+      return;
+    }
     if (id === 'sender' && !isDocumentsReadyForSender()) {
       showToast('Сначала дождитесь завершения подготовки документов');
       refreshDocumentsStatus({ silent: true });
