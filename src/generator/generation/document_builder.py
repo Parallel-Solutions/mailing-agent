@@ -81,28 +81,54 @@ def replace_text_in_runs(paragraph, replacements: list[tuple[str, str]]) -> None
     if not paragraph.runs:
         return
 
-    original_chunks = [run.text for run in paragraph.runs]
-    original_text = "".join(original_chunks)
-    if not original_text:
-        return
-
-    new_text = original_text
     for target, replacement in replacements:
-        if target:
-            new_text = new_text.replace(target, replacement)
+        if not target:
+            continue
+        replacement_text = str(replacement)
+        while True:
+            chunks = [run.text for run in paragraph.runs]
+            original_text = "".join(chunks)
+            if not original_text:
+                return
+            start = original_text.find(target)
+            if start < 0:
+                break
+            end = start + len(target)
 
-    if new_text == original_text:
-        return
+            positions: list[tuple[int, int]] = []
+            cursor = 0
+            for chunk in chunks:
+                positions.append((cursor, cursor + len(chunk)))
+                cursor += len(chunk)
 
-    remaining = new_text
-    for index, run in enumerate(paragraph.runs):
-        if index == len(paragraph.runs) - 1:
-            run.text = remaining
+            start_run_index = None
+            end_run_index = None
+            for index, (run_start, run_end) in enumerate(positions):
+                if start_run_index is None and run_start <= start < run_end:
+                    start_run_index = index
+                if run_start < end <= run_end:
+                    end_run_index = index
+                    break
+
+            if start_run_index is None:
+                start_run_index = 0
+            if end_run_index is None:
+                end_run_index = len(paragraph.runs) - 1
+
+            start_run_start, _ = positions[start_run_index]
+            end_run_start, _ = positions[end_run_index]
+            prefix = chunks[start_run_index][: start - start_run_start]
+            suffix = chunks[end_run_index][end - end_run_start :]
+
+            if start_run_index == end_run_index:
+                paragraph.runs[start_run_index].text = prefix + replacement_text + suffix
+                break
+
+            paragraph.runs[start_run_index].text = prefix + replacement_text
+            for index in range(start_run_index + 1, end_run_index):
+                paragraph.runs[index].text = ""
+            paragraph.runs[end_run_index].text = suffix
             break
-
-        original_length = len(original_chunks[index])
-        run.text = remaining[:original_length]
-        remaining = remaining[original_length:]
 
 
 def clear_highlights(doc: DocumentObject) -> None:

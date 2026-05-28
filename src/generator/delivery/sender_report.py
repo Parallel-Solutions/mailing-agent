@@ -17,6 +17,7 @@ from src.generator.delivery.sender_agent import (
     _safe_text,
     _unisender_status_label,
 )
+from src.generator.delivery.unisender_go_events import load_unisender_go_events
 from src.jobs import resolve_job_paths
 
 
@@ -74,21 +75,54 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
     """Return lightweight dashboard metrics for the current UniSender sending job."""
 
     rows, refresh_error = _build_delivery_rows(job_id, refresh=refresh)
-    statuses = Counter(row["provider_status"] or "unknown" for row in rows)
+    statuses = Counter(_normalize_provider_status(row["provider_status"] or "unknown") for row in rows)
+    providers = Counter(row.get("provider") or "unisender" for row in rows)
 
     total = len(rows)
-    delivered_statuses = {"ok_delivered", "ok_read", "ok_link_visited", "ok_unsubscribed", "ok_spam_folder"}
-    read_statuses = {"ok_read", "ok_link_visited"}
-    clicked_statuses = {"ok_link_visited"}
-    warning_statuses = {"ok_unsubscribed", "ok_spam_folder", "err_spam_rejected"}
-    pending_statuses = {"accepted", "success", "not_sent", "ok_sent", "err_will_retry", "unknown"}
+    accepted_statuses = {"accepted", "success", "ok_sent", "sent", "queued", "not_sent", "processing"}
+    delivered_statuses = {
+        "delivered",
+        "opened",
+        "clicked",
+        "subscribed",
+        "unsubscribed",
+        "spam",
+        "ok_delivered",
+        "ok_read",
+        "ok_link_visited",
+        "ok_unsubscribed",
+        "ok_spam_folder",
+    }
+    read_statuses = {"opened", "clicked", "subscribed", "unsubscribed", "spam", "ok_read", "ok_link_visited"}
+    clicked_statuses = {"clicked", "ok_link_visited"}
+    unsubscribed_statuses = {"unsubscribed", "ok_unsubscribed"}
+    spam_statuses = {"spam", "ok_spam_folder", "err_spam_rejected"}
+    soft_bounce_statuses = {"soft_bounced", "err_will_retry"}
+    hard_bounce_statuses = {
+        "hard_bounced",
+        "err_user_unknown",
+        "err_user_inactive",
+        "err_mailbox_full",
+        "err_delivery_failed",
+        "err_lost",
+    }
+    pending_statuses = accepted_statuses | {"unknown"} | soft_bounce_statuses
 
     delivered = sum(statuses.get(status, 0) for status in delivered_statuses)
     read = sum(statuses.get(status, 0) for status in read_statuses)
     clicked = sum(statuses.get(status, 0) for status in clicked_statuses)
-    warnings = sum(statuses.get(status, 0) for status in warning_statuses)
-    errors = sum(count for status, count in statuses.items() if status.startswith("err_") and status != "err_will_retry")
+    unsubscribed = sum(statuses.get(status, 0) for status in unsubscribed_statuses)
+    spam = sum(statuses.get(status, 0) for status in spam_statuses)
+    soft_bounced = sum(statuses.get(status, 0) for status in soft_bounce_statuses)
+    hard_bounced = sum(statuses.get(status, 0) for status in hard_bounce_statuses)
+    warnings = unsubscribed + spam + soft_bounced
+    errors = hard_bounced + sum(
+        count
+        for status, count in statuses.items()
+        if status.startswith("err_") and status not in soft_bounce_statuses and status not in hard_bounce_statuses
+    )
     pending = sum(statuses.get(status, 0) for status in pending_statuses)
+    accepted = total
     checked = sum(1 for row in rows if row.get("checked_at"))
 
     def pct(value: int, base: int | None = None) -> float:
@@ -100,10 +134,11 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
     cards = [
         {
             "id": "accepted",
-            "title": "Принято UniSender",
-            "value": total,
+            "title": "Отправлено в UniSender",
+            "value": accepted,
             "percent": 100.0 if total else 0.0,
-            "hint": "Письма, которые сервис передал в UniSender.",
+            "hint": "Письма, которые наш сервис успешно передал провайдеру.",
+            "tone": "good" if accepted and not errors else "neutral",
         },
         {
             "id": "delivered",
@@ -111,50 +146,64 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
             "value": delivered,
             "percent": pct(delivered),
             "hint": "Подтверждённая доставка по статусам UniSender.",
+            "tone": "good",
         },
         {
-            "id": "read",
-            "title": "Прочитано",
+            "id": "opened",
+            "title": "Открытия",
             "value": read,
             "percent": pct(read),
-            "hint": "Письма со статусом прочтения или перехода по ссылке.",
+            "hint": "Письма, где UniSender Go зафиксировал открытие или более позднее действие.",
+            "tone": "good",
         },
         {
             "id": "clicked",
             "title": "Переходы",
             "value": clicked,
             "percent": pct(clicked),
-            "hint": "Письма, где UniSender зафиксировал переход по ссылке.",
+            "hint": "Письма, где UniSender Go зафиксировал переход по ссылке.",
+            "tone": "good",
         },
         {
-            "id": "errors",
-            "title": "Ошибки доставки",
-            "value": errors,
-            "percent": pct(errors),
-            "hint": "Адреса, по которым UniSender вернул ошибку доставки.",
+            "id": "hard_bounced",
+            "title": "Недоставлено",
+            "value": hard_bounced,
+            "percent": pct(hard_bounced),
+            "hint": "Финальные ошибки доставки: письмо больше не будет доставляться.",
+            "tone": "bad" if hard_bounced else "neutral",
         },
         {
-            "id": "warnings",
+            "id": "soft_bounced",
+            "title": "Временные ошибки",
+            "value": soft_bounced,
+            "percent": pct(soft_bounced),
+            "hint": "Временные недоставки: UniSender Go ещё может повторить попытку.",
+            "tone": "warn" if soft_bounced else "neutral",
+        },
+        {
+            "id": "complaints",
             "title": "Отписки/спам",
-            "value": warnings,
-            "percent": pct(warnings),
-            "hint": "Отписки, попадание в спам или отклонение как спам.",
+            "value": unsubscribed + spam,
+            "percent": pct(unsubscribed + spam),
+            "hint": "Отписки и жалобы на спам по событиям UniSender Go.",
+            "tone": "warn" if (unsubscribed + spam) else "neutral",
         },
         {
             "id": "pending",
             "title": "В обработке",
             "value": pending,
             "percent": pct(pending),
-            "hint": "UniSender ещё не вернул финальный статус доставки.",
-        },
-        {
-            "id": "ctor",
-            "title": "CTOR",
-            "value": clicked,
-            "percent": pct(clicked, read),
-            "hint": "Доля переходов среди прочитанных писем.",
+            "hint": "Письма без финального события доставки, открытия, клика или ошибки.",
+            "tone": "warn" if pending else "neutral",
         },
     ]
+    rates = {
+        "delivery_rate": pct(delivered),
+        "open_rate": pct(read, delivered or total),
+        "ctr": pct(clicked),
+        "error_rate": pct(errors + hard_bounced),
+        "pending_rate": pct(pending),
+    }
 
     return {
         "status": "ok",
@@ -163,11 +212,26 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
         "total": total,
         "checked": checked,
         "refresh_error": refresh_error,
+        "summary": {
+            "accepted": accepted,
+            "delivered": delivered,
+            "opened": read,
+            "clicked": clicked,
+            "unsubscribed": unsubscribed,
+            "spam": spam,
+            "soft_bounced": soft_bounced,
+            "hard_bounced": hard_bounced,
+            "errors": errors,
+            "pending": pending,
+            "providers": dict(providers),
+            "rates": rates,
+        },
         "cards": cards,
         "statuses": [
             {"status": status, "label": _report_status_label(status), "count": count}
             for status, count in sorted(statuses.items(), key=lambda item: (-item[1], item[0]))
         ],
+        "note": _analytics_note(total=total, checked=checked, providers=providers, refresh_error=refresh_error),
     }
 
 
@@ -177,6 +241,7 @@ def unisender_delivery_report_has_data(job_id: str | None = None) -> bool:
 
 def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dict[str, Any]], str]:
     items = _load_unisender_log_items(job_id)
+    go_events = _latest_unisender_go_events(job_id)
     cached_statuses = _load_delivery_status_cache(job_id)
     provider_statuses: dict[str, dict[str, Any]] = {}
     refresh_error = ""
@@ -204,6 +269,10 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
         elif message_id and message_id in cached_statuses:
             provider_status = _safe_text(cached_statuses[message_id].get("provider_status")) or provider_status
             checked_at = _safe_text(cached_statuses[message_id].get("checked_at")) or checked_at
+        go_event = _match_unisender_go_event(item, go_events)
+        if go_event:
+            provider_status = _safe_text(go_event.get("provider_status")) or provider_status
+            checked_at = _safe_text(go_event.get("checked_at")) or checked_at
 
         label = _report_status_label(provider_status)
         rows.append(
@@ -214,7 +283,8 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
                 "sent_at": _safe_text(item.get("sent_at")),
                 "subject": _safe_text(item.get("subject")),
                 "accepted_status": accepted_status,
-                "provider_status": provider_status,
+                "provider": _provider_name(item),
+                "provider_status": _normalize_provider_status(provider_status),
                 "provider_status_label": label,
                 "outcome": _delivery_outcome(provider_status),
                 "email_id": message_id,
@@ -267,6 +337,52 @@ def _load_unisender_log_items(job_id: str | None) -> list[dict[str, Any]]:
         for item in _load_sent_mail_log_items(sent_mail_log_path)
         if _safe_text(item.get("transport")) == "unisender"
     ]
+
+
+def _latest_unisender_go_events(job_id: str | None) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    priority = {
+        "accepted": 10,
+        "sent": 20,
+        "delivered": 30,
+        "opened": 40,
+        "clicked": 50,
+        "subscribed": 55,
+        "unsubscribed": 60,
+        "soft_bounced": 70,
+        "spam": 80,
+        "hard_bounced": 90,
+    }
+    for event in load_unisender_go_events(job_id):
+        status = _normalize_provider_status(_safe_text(event.get("event_type")))
+        checked_at = _safe_text(event.get("received_at"))
+        recipient = _safe_text(event.get("recipient")).lower()
+        row_id = _safe_text(event.get("row_id"))
+        keys = [
+            f"row_email:{row_id}:{recipient}",
+            f"email:{recipient}",
+        ]
+        for key in keys:
+            if not key:
+                continue
+            previous = latest.get(key)
+            previous_rank = priority.get(_safe_text(previous.get("provider_status")) if previous else "", 0)
+            if not previous or priority.get(status, 0) >= previous_rank:
+                latest[key] = {"provider_status": status, "checked_at": checked_at}
+    return latest
+
+
+def _match_unisender_go_event(item: dict[str, Any], events: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    recipient = _safe_text(item.get("recipient")).lower()
+    row_id = _safe_text(item.get("row_id"))
+    keys = [
+        f"row_email:{row_id}:{recipient}",
+        f"email:{recipient}",
+    ]
+    for key in keys:
+        if key and key in events:
+            return events[key]
+    return None
 
 
 def _check_classic_statuses(email_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -371,19 +487,38 @@ def _comment_text(item: dict[str, Any], refresh_error: str) -> str:
 
 
 def _delivery_outcome(status: str) -> str:
-    normalized = _safe_text(status)
-    if normalized in {"ok_delivered", "ok_read", "ok_link_visited"}:
+    normalized = _normalize_provider_status(status)
+    if normalized in {
+        "delivered",
+        "opened",
+        "clicked",
+        "subscribed",
+        "ok_delivered",
+        "ok_read",
+        "ok_link_visited",
+    }:
         return "Успешно"
-    if normalized in {"ok_unsubscribed", "ok_spam_folder"}:
+    if normalized in {"unsubscribed", "spam", "soft_bounced", "ok_unsubscribed", "ok_spam_folder", "err_will_retry"}:
         return "Предупреждение"
-    if normalized.startswith("err_"):
+    if normalized in {"hard_bounced"} or normalized.startswith("err_"):
         return "Ошибка"
     return "В обработке"
 
 
 def _report_status_label(status: str) -> str:
-    normalized = _safe_text(status)
+    normalized = _normalize_provider_status(status)
     overrides = {
+        "accepted": "Принято, ожидает отправки",
+        "sent": "Отправлено, ждём доставку",
+        "success": "Принято UniSender Go",
+        "delivered": "Доставлено",
+        "opened": "Открыто",
+        "clicked": "Переход по ссылке",
+        "unsubscribed": "Получатель отписался",
+        "subscribed": "Получатель снова подписался",
+        "soft_bounced": "Временная недоставка",
+        "hard_bounced": "Не доставлено",
+        "spam": "Жалоба на спам",
         "err_user_unknown": "Ошибка: адрес не существует",
         "err_user_inactive": "Ошибка: ящик неактивен",
         "err_mailbox_full": "Ошибка: ящик переполнен",
@@ -394,6 +529,27 @@ def _report_status_label(status: str) -> str:
     }
     label = overrides.get(normalized) or _unisender_status_label(normalized)
     return label[:1].upper() + label[1:] if label else "Статус неизвестен"
+
+
+def _normalize_provider_status(status: str) -> str:
+    normalized = _safe_text(status).strip().lower().replace("-", "_").replace(" ", "_")
+    return normalized or "unknown"
+
+
+def _analytics_note(*, total: int, checked: int, providers: Counter[str], refresh_error: str) -> str:
+    if total <= 0:
+        return "Статистика появится после реальной отправки писем."
+    provider_names = ", ".join(name for name, count in providers.most_common() if count)
+    if refresh_error:
+        return f"Показаны локальные данные отправки. Не удалось обновить часть статусов: {refresh_error}"
+    if any(name == "unisender_go" for name in providers):
+        return (
+            "Для UniSender Go показываем события, которые уже есть в журнале/кэше job. "
+            "Открытия, клики и финальная доставка появятся после подключения webhook или event-dump."
+        )
+    if checked:
+        return f"Статусы обновлены для {checked} писем. Провайдеры: {provider_names or 'UniSender'}."
+    return f"Письма переданы провайдеру. Провайдеры: {provider_names or 'UniSender'}."
 
 
 def _add_title(sheet, title: str) -> None:

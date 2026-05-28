@@ -3,9 +3,10 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pathlib import Path
 import secrets
 import re
+import json
 from src.utils.logger import logger
 from src.utils.config import settings
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form, BackgroundTasks, Request
 import shutil
 import threading
 from multiprocessing import Process
@@ -486,6 +487,145 @@ def _compact_sender_status(state: dict) -> dict:
     }
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _read_state_json(path: Path) -> dict:
+    try:
+        if not path.exists() or not path.is_file():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+
+
+def _state_file_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime if path.exists() else 0.0
+    except OSError:
+        return 0.0
+
+
+def _format_history_time(timestamp: float) -> str:
+    if timestamp <= 0:
+        return ""
+    return datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
+
+
+def _job_history_mtime(job_dir: Path) -> float:
+    state_dir = job_dir / "state"
+    candidates = [
+        job_dir,
+        job_dir / "input" / "data.xlsx",
+        state_dir / "parser.json",
+        state_dir / "generator.json",
+        state_dir / "philologist.json",
+        state_dir / "sender.json",
+        state_dir / "unisender_go_events.jsonl",
+        job_dir / "sent_mail_log.jsonl",
+    ]
+    return max((_state_file_mtime(path) for path in candidates), default=0.0)
+
+
+def _job_history_status(
+    *,
+    parser_state: dict,
+    generator_state: dict,
+    philologist_state: dict,
+    sender_state: dict,
+    data_exists: bool,
+) -> tuple[str, str]:
+    sender_status = str(sender_state.get("status") or "idle")
+    sender_mode = str(sender_state.get("mode") or "")
+    sent_rows = _safe_int(sender_state.get("sent_rows") or (sender_state.get("stats") or {}).get("sent"))
+    error_rows = _safe_int(sender_state.get("error_rows") or (sender_state.get("stats") or {}).get("error"))
+    ready_rows = _safe_int(sender_state.get("ready_rows"))
+    if sender_status == "running":
+        return ("Отправка идёт" if sender_mode == "send" else "Проверка отправки", "progress")
+    if sent_rows > 0 or sender_mode == "send":
+        return ("Есть ошибки отправки" if error_rows else "Отправка завершена", "error" if error_rows else "ok")
+    if ready_rows > 0 or (sender_status == "completed" and sender_mode == "dry_run"):
+        return ("Проверка отправки готова", "ok")
+
+    philologist_status = str(philologist_state.get("status") or "idle")
+    if philologist_status == "running":
+        return ("Проверка документов идёт", "progress")
+    if philologist_status == "stopped":
+        return ("Документы остановлены", "wait")
+    if philologist_status == "completed":
+        return ("Документы готовы", "ok")
+
+    generator_status = str(generator_state.get("status") or "idle")
+    if generator_status == "running":
+        return ("Документы готовятся", "progress")
+    if generator_status == "completed":
+        return ("Документы созданы", "ok")
+    if generator_status == "error":
+        return ("Ошибка документов", "error")
+
+    parser_status = str((parser_state.get("municipality_name_verification_state") or {}).get("status") or parser_state.get("status") or "idle")
+    if parser_status == "running":
+        return ("Таблица проверяется", "progress")
+    if data_exists:
+        return ("Таблица загружена", "wait")
+    return ("Черновик", "idle")
+
+
+def _build_job_history_item(job_dir: Path, updated_at_ts: float) -> dict:
+    job_id = job_dir.name
+    paths = resolve_job_paths(job_id)
+    state_dir = job_dir / "state"
+    parser_state = _read_state_json(state_dir / "parser.json")
+    generator_state = _read_state_json(state_dir / "generator.json")
+    philologist_state = _read_state_json(state_dir / "philologist.json")
+    sender_state = _read_state_json(state_dir / "sender.json")
+
+    sender_stats = sender_state.get("stats") if isinstance(sender_state.get("stats"), dict) else {}
+    total_rows = max(
+        _safe_int(sender_stats.get("total")),
+        _safe_int(sender_state.get("total_rows")),
+        _safe_int(generator_state.get("total_rows")),
+        _safe_int(parser_state.get("row_count")),
+    )
+    sent_rows = max(_safe_int(sender_stats.get("sent")), _safe_int(sender_state.get("sent_rows")))
+    error_rows = max(_safe_int(sender_stats.get("error")), _safe_int(sender_state.get("error_rows")))
+    pending_rows = max(0, total_rows - sent_rows - error_rows) if total_rows else 0
+    ready_rows = _safe_int(sender_state.get("ready_rows"))
+    reviewed_documents = _safe_int(philologist_state.get("processed_documents"))
+    total_documents = _safe_int(philologist_state.get("total_documents"))
+    generated_rows = max(_safe_int(generator_state.get("ok_rows")), _safe_int(generator_state.get("processed_rows")))
+    label, tone = _job_history_status(
+        parser_state=parser_state,
+        generator_state=generator_state,
+        philologist_state=philologist_state,
+        sender_state=sender_state,
+        data_exists=paths.data_xlsx.exists(),
+    )
+
+    return {
+        "job_id": job_id,
+        "updated_at": _format_history_time(updated_at_ts),
+        "status_label": label,
+        "status_tone": tone,
+        "total_rows": total_rows,
+        "generated_rows": generated_rows,
+        "reviewed_documents": reviewed_documents,
+        "total_documents": total_documents,
+        "ready_rows": ready_rows,
+        "sent_rows": sent_rows,
+        "error_rows": error_rows,
+        "pending_rows": pending_rows,
+        "has_data": paths.data_xlsx.exists(),
+        "has_output": paths.output_dir.exists(),
+        "sender_status": sender_state.get("status", "idle"),
+        "sender_mode": sender_state.get("mode", "dry_run"),
+    }
+
+
 def _documents_generator_percent(generator_state: dict) -> int:
     status = str(generator_state.get("status") or "idle")
     stage = str(generator_state.get("stage") or "")
@@ -573,7 +713,13 @@ def _compact_documents_status(job_id: str | None) -> dict:
     generator_status = str(generator_state.get("status") or "idle")
     philologist_status = str(philologist_state.get("status") or "idle")
     generator_done = generator_status == "completed"
-    philologist_done = philologist_status == "completed"
+    reviewed_documents = int(philologist_state.get("processed_documents") or 0)
+    total_documents = int(philologist_state.get("total_documents") or 0)
+    philologist_done = philologist_status == "completed" or (
+        total_documents > 0
+        and reviewed_documents >= total_documents
+        and philologist_status in {"running", "finalizing"}
+    )
 
     if generator_status == "error" or philologist_status == "error":
         status = "error"
@@ -618,8 +764,6 @@ def _compact_documents_status(job_id: str | None) -> dict:
 
     total_rows = max(int(generator_state.get("total_rows") or 0), int(philologist_state.get("total_documents") or 0) // 2)
     processed_rows = int(generator_state.get("processed_rows") or 0)
-    reviewed_documents = int(philologist_state.get("processed_documents") or 0)
-    total_documents = int(philologist_state.get("total_documents") or 0)
     if generator_done and total_rows:
         processed_rows = total_rows
 
@@ -937,6 +1081,23 @@ async def create_job(username: str = Depends(check_auth)):
     return {"status": "ok", "job_id": job_id}
 
 
+@app.get("/api/jobs/history")
+async def jobs_history(limit: int = 100, username: str = Depends(check_auth)):
+    safe_limit = max(1, min(int(limit or 100), 300))
+    if not JOBS_DIR.exists():
+        return {"status": "ok", "result": {"jobs": []}}
+
+    candidates: list[tuple[float, Path]] = []
+    for job_dir in JOBS_DIR.iterdir():
+        if not job_dir.is_dir() or not job_dir.name.startswith("job-"):
+            continue
+        candidates.append((_job_history_mtime(job_dir), job_dir))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    jobs = [_build_job_history_item(job_dir, updated_at) for updated_at, job_dir in candidates[:safe_limit]]
+    return {"status": "ok", "result": {"jobs": jobs}}
+
+
 def _clone_job_templates_if_present(source_job_id: str | None, target_job_id: str | None) -> None:
     source_paths = resolve_job_paths(source_job_id)
     target_paths = resolve_job_paths(target_job_id)
@@ -1194,6 +1355,7 @@ from src.generator.delivery.sender_report import (
     build_unisender_delivery_report_xlsx,
     unisender_delivery_report_has_data,
 )
+from src.generator.delivery.unisender_go_events import append_unisender_go_events
 from src.generator.orchestration.parser_agent import (
     chat_with_parser,
     format_municipality_verification_for_chat,
@@ -1239,6 +1401,7 @@ from src.generator.generation.generator_agent import (
 )
 from src.generator.philologist.philologist_planner import build_philologist_plan
 from src.jobs import create_job_id, resolve_job_paths
+from src.jobs.storage import JOBS_DIR
 
 
 def cleanup_batch_pdf_dir() -> None:
@@ -1947,6 +2110,29 @@ async def sender_analytics(
         "status": "ok",
         "result": build_unisender_delivery_analytics(job_id=job_id, refresh=refresh),
     }
+
+
+@app.get("/api/webhooks/unisender-go")
+async def unisender_go_webhook_health():
+    return {"status": "ok", "message": "UniSender Go webhook endpoint is ready"}
+
+
+@app.post("/api/webhooks/unisender-go")
+async def unisender_go_webhook(request: Request):
+    if settings.unisender_webhook_secret:
+        provided_secret = request.headers.get("X-Webhook-Secret") or request.query_params.get("secret") or ""
+        if not secrets.compare_digest(provided_secret, settings.unisender_webhook_secret):
+            raise HTTPException(status_code=401, detail="Некорректный секрет webhook UniSender Go")
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Некорректный JSON webhook UniSender Go") from exc
+    try:
+        result = append_unisender_go_events(payload)
+    except Exception as exc:
+        logger.exception("unisender_go_webhook_save_failed")
+        raise HTTPException(status_code=500, detail=f"Не удалось сохранить webhook UniSender Go: {exc}") from exc
+    return {"status": "ok", "result": result}
 
 
 @app.post("/api/sender/stop")

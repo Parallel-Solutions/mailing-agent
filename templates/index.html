@@ -587,6 +587,107 @@
     margin-top: 12px;
   }
 
+  .jobs-history-card {
+    margin-top: 1.25rem;
+    border: 1px solid #e4e8dc;
+    border-radius: 16px;
+    padding: 16px;
+    background: #fbfcf8;
+  }
+
+  .jobs-history-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .jobs-history-title {
+    font-size: 17px;
+    font-weight: 750;
+    color: #132008;
+  }
+
+  .jobs-history-sub {
+    margin-top: 3px;
+    color: #6d765f;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .jobs-history-list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .jobs-history-empty {
+    color: #8a9580;
+    font-size: 13px;
+    padding: 8px 0;
+  }
+
+  .job-history-row {
+    display: grid;
+    grid-template-columns: minmax(190px, 1.2fr) minmax(160px, 0.9fr) repeat(3, minmax(90px, 0.5fr)) auto;
+    gap: 10px;
+    align-items: center;
+    border: 1px solid #e1e8d9;
+    border-radius: 12px;
+    padding: 10px;
+    background: #fff;
+  }
+
+  .job-history-row.current {
+    border-color: #9fd37a;
+    background: #f4faef;
+  }
+
+  .job-history-main {
+    min-width: 0;
+  }
+
+  .job-history-id {
+    font-size: 13px;
+    font-weight: 700;
+    color: #20320f;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .job-history-updated {
+    margin-top: 2px;
+    color: #8a9580;
+    font-size: 11px;
+  }
+
+  .job-history-status {
+    width: fit-content;
+    border-radius: 999px;
+    padding: 4px 9px;
+    font-size: 11px;
+    font-weight: 700;
+    background: #eef2e8;
+    color: #6d765f;
+  }
+
+  .job-history-status.ok { background: #e8f5d8; color: #2d6e0a; }
+  .job-history-status.progress { background: #fdf0d8; color: #8a5a00; }
+  .job-history-status.wait { background: #fdf0d8; color: #8a5a00; }
+  .job-history-status.error { background: #fde8e8; color: #a02020; }
+
+  .job-history-metric {
+    color: #5b6751;
+    font-size: 12px;
+  }
+
+  .job-history-metric strong {
+    display: block;
+    color: #17240c;
+    font-size: 15px;
+  }
+
   /* UPLOAD ZONE */
   .upload-zone {
     border: 1.5px dashed #ccc;
@@ -1234,6 +1335,9 @@
     .delivery-dashboard-head {
       flex-direction: column;
     }
+    .job-history-row {
+      grid-template-columns: 1fr;
+    }
     .parser-choice-text {
       min-height: 0;
     }
@@ -1274,7 +1378,7 @@
 
     <div class="sidebar-bottom">
       <div class="nav-item" data-nav-screen="status" onclick="show('status', this)">
-        <div class="nav-dot dot-amber"></div> Результат отправки
+        <div class="nav-dot dot-amber"></div> Статистика отправок
       </div>
     </div>
   </div>
@@ -1304,7 +1408,7 @@
       </button>
       <button class="workflow-step" type="button" data-workflow-screen="status" onclick="goToScreen('status')">
         <span class="workflow-step-kicker">Шаг 4</span>
-        <span class="workflow-step-title">Статусы</span>
+        <span class="workflow-step-title">Статистика</span>
         <span class="workflow-step-sub">Что дошло</span>
       </button>
     </div>
@@ -1433,7 +1537,7 @@
           <div class="dot-green"></div> Журнал проверки таблицы
         </div>
         <div class="chat-messages" id="p-chat-messages">
-          <div class="chat-msg agent">Прикрепите Excel-файл. Здесь появятся сообщения о загрузке и проверке названий МО.</div>
+          <div class="chat-msg agent">Выберите удобный способ: прикрепите готовый Excel-файл или напишите в чат, какие данные нужно найти. Здесь появятся сообщения о загрузке, поиске и проверке таблицы.</div>
         </div>
 
         <!-- Чип с прикреплённым файлом (показывается только если файл прикреплён) -->
@@ -1611,13 +1715,13 @@
 
       <div class="step-nav">
         <button class="btn-outline" type="button" onclick="goToScreen('generator')">Назад к документам</button>
-        <button class="btn-primary" id="sender-next-status" type="button" onclick="goToScreen('status')" disabled>Дальше: посмотреть результат</button>
+        <button class="btn-primary" id="sender-next-status" type="button" onclick="goToScreen('status')" disabled>Дальше: статистика отправок</button>
       </div>
     </div>
 
     <!-- СТАТУСЫ -->
     <div class="screen" id="s-status">
-      <div class="page-title">Результат отправки</div>
+      <div class="page-title">Статистика отправок</div>
       <div class="page-sub">Здесь видно, сколько писем ушло, сколько осталось и где возникли ошибки по текущей таблице.</div>
 
       <div class="stats-row" style="grid-template-columns: repeat(4, 1fr)">
@@ -1649,10 +1753,39 @@
         Статусы будут показаны для текущей рабочей сессии.
       </div>
 
+      <div class="delivery-dashboard" id="delivery-dashboard" hidden>
+        <div class="delivery-dashboard-head">
+          <div>
+            <div class="delivery-dashboard-title">Показатели рассылки</div>
+            <div class="delivery-dashboard-sub" id="delivery-dashboard-sub">
+              Здесь появятся доставка, открытия, переходы и ошибки по текущей отправке.
+            </div>
+          </div>
+          <button class="btn-outline" type="button" onclick="refreshDeliveryAnalytics({ refresh: true })">Обновить аналитику</button>
+        </div>
+        <div class="delivery-metrics-grid" id="delivery-metrics-grid"></div>
+        <div class="delivery-dashboard-note" id="delivery-dashboard-note">
+          Данные считаются по журналу текущей рабочей сессии.
+        </div>
+      </div>
+
       <div style="display:flex; gap:8px; flex-wrap:wrap">
         <button class="btn-outline" id="status-download-data" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать таблицу текущей отправки</button>
         <button class="btn-outline" id="status-download-report" onclick="downloadWithJob('/api/download/sender-delivery-report')" disabled>Скачать отчёт текущей отправки</button>
         <button class="btn-outline" onclick="refreshCurrentJobStatusScreen()">Обновить статусы</button>
+      </div>
+
+      <div class="jobs-history-card">
+        <div class="jobs-history-head">
+          <div>
+            <div class="jobs-history-title">Все отправки на сервере</div>
+            <div class="jobs-history-sub">Можно открыть любую рабочую сессию и посмотреть её таблицу, документы, отправку и статистику.</div>
+          </div>
+          <button class="btn-outline" type="button" onclick="refreshJobsHistory()">Обновить список</button>
+        </div>
+        <div class="jobs-history-list" id="jobs-history-list">
+          <div class="jobs-history-empty">Список отправок ещё не загружен.</div>
+        </div>
       </div>
     </div>
 
@@ -1699,7 +1832,7 @@
   const ACTIVE_SCREEN_STORAGE_KEY = 'mailing-agent-active-screen';
   const UI_STATE_STORAGE_KEY_PREFIX = 'mailing-agent-ui-state-v1:';
   const INITIAL_CHAT_MESSAGES = {
-    'p-chat': 'Прикрепите Excel-файл. Здесь появятся сообщения о загрузке и проверке названий МО.',
+    'p-chat': 'Выберите удобный способ: прикрепите готовый Excel-файл или напишите в чат, какие данные нужно найти. Здесь появятся сообщения о загрузке, поиске и проверке таблицы.',
     'g-chat': 'Здесь будут появляться понятные сообщения о подготовке документов: что уже готово и что делать дальше.',
     's-chat': 'Здесь будет видно, какие письма готовы к отправке, что уже отправлено и где нужна проверка.',
   };
@@ -1731,6 +1864,15 @@
   let lastDocumentsUiState = {};
   let lastSenderUiState = {};
   let isRestoringUiState = false;
+
+  function escapeHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
 
   function getUiStateStorageKey(jobId = currentJobId) {
     const safeJobId = String(jobId || '').trim();
@@ -1980,6 +2122,9 @@
   function humanizeSenderMessage(text, fallback = '') {
     const raw = String(text || '').trim();
     if (!raw) return fallback;
+    if (/Проверка перед отправкой ещё не запускалась/i.test(raw)) {
+      return fallback || '';
+    }
     if (/send|dry_run|data\.xlsx|строк|обработано|Отправщик|агент-|mode|provider|email_id/i.test(raw)) {
       return fallback || 'Статус отправки обновлён.';
     }
@@ -2481,14 +2626,175 @@
     if (reportButton) reportButton.disabled = !currentJobId || numbers.sent <= 0;
   }
 
+  function renderDeliveryAnalytics(analytics = {}) {
+    const dashboard = document.getElementById('delivery-dashboard');
+    const grid = document.getElementById('delivery-metrics-grid');
+    const sub = document.getElementById('delivery-dashboard-sub');
+    const note = document.getElementById('delivery-dashboard-note');
+    if (!dashboard || !grid) return;
+
+    const cards = Array.isArray(analytics.cards) ? analytics.cards : [];
+    const total = Number(analytics.total || 0);
+    if (!currentJobId || total <= 0 || !cards.length) {
+      dashboard.hidden = true;
+      grid.innerHTML = '';
+      return;
+    }
+
+    dashboard.hidden = false;
+    if (sub) {
+      const generatedAt = analytics.generated_at
+        ? String(analytics.generated_at).replace('T', ' ')
+        : 'только что';
+      sub.textContent = `Сводка по текущей отправке: ${total.toLocaleString('ru')} писем. Обновлено: ${generatedAt}.`;
+    }
+    grid.innerHTML = cards.map(card => {
+      const value = Number(card.value || 0).toLocaleString('ru');
+      const percent = Number(card.percent || 0).toLocaleString('ru', { maximumFractionDigits: 1 });
+      const tone = card.tone || (
+        ['errors', 'hard_bounced'].includes(card.id) ? 'bad'
+          : ['pending', 'soft_bounced', 'complaints', 'warnings'].includes(card.id) ? 'warn'
+          : 'good'
+      );
+      const title = escapeHtml(card.title || 'Показатель');
+      const hint = escapeHtml(card.hint || '');
+      return `
+        <div class="delivery-metric ${tone}" title="${hint}">
+          <div class="delivery-metric-title">${title}</div>
+          <div class="delivery-metric-value">${value}</div>
+          <div class="delivery-metric-percent">${percent}%</div>
+        </div>
+      `;
+    }).join('');
+    if (note) {
+      note.textContent = analytics.note || 'Данные считаются по журналу текущей рабочей сессии.';
+    }
+  }
+
+  async function refreshDeliveryAnalytics({ refresh = false, silent = false } = {}) {
+    if (!currentJobId) {
+      renderDeliveryAnalytics({});
+      return null;
+    }
+    try {
+      const url = apiUrl(`/api/sender/analytics?refresh=${refresh ? '1' : '0'}`);
+      const res = await fetch(url);
+      const data = await readJsonOrText(res);
+      if (!res.ok) throw new Error(data.detail || 'Не удалось получить аналитику отправки');
+      const result = data.result || {};
+      renderDeliveryAnalytics(result);
+      if (!silent) showToast('Аналитика отправки обновлена');
+      return result;
+    } catch (err) {
+      if (!silent) showToast('Не удалось обновить аналитику');
+      return null;
+    }
+  }
+
+  function formatJobHistoryDate(value) {
+    if (!value) return 'дата неизвестна';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ');
+    return date.toLocaleString('ru', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function formatJobHistoryTitleDate(value) {
+    if (!value) return 'дата неизвестна';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ');
+    return date.toLocaleString('ru', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function renderJobsHistory(jobs = []) {
+    const list = document.getElementById('jobs-history-list');
+    if (!list) return;
+    if (!Array.isArray(jobs) || !jobs.length) {
+      list.innerHTML = '<div class="jobs-history-empty">На сервере пока нет сохранённых отправок.</div>';
+      return;
+    }
+    list.innerHTML = jobs.map(job => {
+      const jobId = escapeHtml(job.job_id || '');
+      const isCurrent = job.job_id === currentJobId;
+      const statusTone = escapeHtml(job.status_tone || 'idle');
+      const statusLabel = escapeHtml(job.status_label || 'Статус неизвестен');
+      const totalRows = Number(job.total_rows || 0).toLocaleString('ru');
+      const sentRows = Number(job.sent_rows || 0).toLocaleString('ru');
+      const errorRows = Number(job.error_rows || 0).toLocaleString('ru');
+      const readyRows = Number(job.ready_rows || 0).toLocaleString('ru');
+      const updatedAt = escapeHtml(formatJobHistoryDate(job.updated_at));
+      const safeTitle = escapeHtml(`Отправка от ${formatJobHistoryTitleDate(job.updated_at)}`);
+      return `
+        <div class="job-history-row ${isCurrent ? 'current' : ''}">
+          <div class="job-history-main">
+            <div class="job-history-id" title="ID: ${jobId}">${safeTitle}</div>
+            <div class="job-history-updated">${updatedAt}${isCurrent ? ' · открыта сейчас' : ''}</div>
+          </div>
+          <div><span class="job-history-status ${statusTone}">${statusLabel}</span></div>
+          <div class="job-history-metric"><strong>${totalRows}</strong>строк</div>
+          <div class="job-history-metric"><strong>${sentRows}</strong>отправлено</div>
+          <div class="job-history-metric"><strong>${errorRows}</strong>ошибок</div>
+          <button class="btn-outline" type="button" onclick="openJobFromHistory('${jobId}')">${isCurrent ? 'Обновить' : 'Открыть'}</button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function refreshJobsHistory({ silent = false } = {}) {
+    const list = document.getElementById('jobs-history-list');
+    if (list && !silent) {
+      list.innerHTML = '<div class="jobs-history-empty">Загружаю список отправок...</div>';
+    }
+    try {
+      const res = await fetch('/api/jobs/history?limit=100');
+      const data = await readJsonOrText(res);
+      if (!res.ok) throw new Error(data.detail || 'Не удалось загрузить список отправок');
+      const jobs = (data.result || {}).jobs || [];
+      renderJobsHistory(jobs);
+      return jobs;
+    } catch (err) {
+      if (list) {
+        list.innerHTML = '<div class="jobs-history-empty">Не удалось загрузить список отправок.</div>';
+      }
+      if (!silent) showToast('Не удалось загрузить список отправок');
+      return [];
+    }
+  }
+
+  async function openJobFromHistory(jobId) {
+    if (!jobId) return;
+    setCurrentJobId(jobId);
+    activeScreenId = 'status';
+    try {
+      localStorage.setItem(ACTIVE_SCREEN_STORAGE_KEY, activeScreenId);
+    } catch (e) {}
+    renderJobsHistory([]);
+    await refreshCurrentJobStatusScreen();
+    await refreshJobsHistory({ silent: true });
+    refreshAllModuleStatuses({ silent: true, full: true });
+    showToast('Открыта выбранная отправка');
+  }
+
   async function refreshCurrentJobStatusScreen() {
     if (!currentJobId) {
       renderJobSenderStatusScreen({});
+      renderDeliveryAnalytics({});
       showToast('Сначала загрузите таблицу');
       return;
     }
     const result = await refreshSenderStatus({ silent: true });
     renderJobSenderStatusScreen(result || lastSenderUiState || {});
+    await refreshDeliveryAnalytics({ refresh: true, silent: true });
     showToast('Статусы текущей отправки обновлены');
   }
 
@@ -2531,6 +2837,8 @@
     if (id === 'status') {
       renderJobSenderStatusScreen(lastSenderUiState || {});
       refreshSenderStatus({ silent: true });
+      refreshDeliveryAnalytics({ silent: true });
+      refreshJobsHistory({ silent: true });
     }
     if (persist) {
       refreshActiveScreenStatus({ silent: true });
@@ -2913,9 +3221,21 @@
   // CHAT
   function appendChatMessage(chatId, role, text) {
     const messages = document.getElementById(chatId + '-messages');
+    if (!messages) return;
+    const normalizedText = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!normalizedText) return;
+    if (role === 'agent') {
+      const existingAgentMessages = Array.from(messages.querySelectorAll('.chat-msg.agent:not(.typing)'));
+      const alreadyShown = existingAgentMessages.some(message => (
+        String(message.textContent || '').replace(/\s+/g, ' ').trim() === normalizedText
+      ));
+      if (alreadyShown) {
+        return;
+      }
+    }
     const msg = document.createElement('div');
     msg.className = 'chat-msg ' + role;
-    msg.textContent = text;
+    msg.textContent = normalizedText;
     messages.appendChild(msg);
     messages.scrollTop = messages.scrollHeight;
     saveUiState();
@@ -4623,6 +4943,8 @@ function clearAttachedFile() {
     const errorRows = Number(result.error_rows || generatorState.error_rows || 0);
     const fixedDocuments = Number(result.fixed_documents || philologistState.fixed_documents || 0);
     const percent = Number(result.progress_percent || 0);
+    const reviewActuallyDone = totalDocuments > 0 && reviewedDocuments >= totalDocuments;
+    const effectiveStatus = status === 'running' && stage === 'review' && reviewActuallyDone ? 'completed' : status;
     lastDocumentsUiState = { ...stripUiStateMeta(result) };
     scheduleUiStateSave();
 
@@ -4647,14 +4969,14 @@ function clearAttachedFile() {
     const totalStat = document.getElementById('g-total');
     const reportButton = document.getElementById('ph-download-report');
     const outputButton = document.getElementById('g-download-output');
-    updateDocumentsNextButton(status);
+    updateDocumentsNextButton(effectiveStatus);
 
     if (totalStat && totalRows > 0) totalStat.textContent = totalRows.toLocaleString('ru');
     if (errorStat) errorStat.textContent = errorRows.toLocaleString('ru');
-    if (reportButton) reportButton.disabled = status !== 'completed';
-    if (outputButton) outputButton.disabled = !(status === 'completed' || Number(result.output_file_count || 0) > 0);
+    if (reportButton) reportButton.disabled = effectiveStatus !== 'completed';
+    if (outputButton) outputButton.disabled = !(effectiveStatus === 'completed' || Number(result.output_file_count || 0) > 0);
 
-    if (status === 'running') {
+    if (effectiveStatus === 'running') {
       if (badge) {
         badge.textContent = stage === 'review' ? 'Проверка текстов' : 'Подготовка';
         badge.className = 'badge badge-running';
@@ -4694,7 +5016,7 @@ function clearAttachedFile() {
       pauseButton.title = 'Остановка станет доступна после запуска подготовки документов.';
     }
 
-    if (status === 'completed') {
+    if (effectiveStatus === 'completed') {
       if (badge) {
         badge.textContent = 'Готово';
         badge.className = 'badge badge-done';
@@ -4704,7 +5026,7 @@ function clearAttachedFile() {
         runButton.disabled = !moduleReadiness.generator_ready;
         runButton.title = runButton.disabled ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.') : '';
       }
-      if (doneStat) doneStat.textContent = totalRows.toLocaleString('ru');
+      if (doneStat) doneStat.textContent = (totalRows || Math.floor(totalDocuments / 2)).toLocaleString('ru');
       if (doneLabelStat) doneLabelStat.textContent = 'Готово полностью';
       if (label) label.textContent = fixedDocuments > 0
         ? 'Документы готовы. Безопасные правки внесены.'

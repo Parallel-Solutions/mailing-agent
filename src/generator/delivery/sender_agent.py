@@ -1455,6 +1455,7 @@ def _send_via_unisender(
     subject: str,
     *,
     mail_template_path: Path | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     if not _uses_unisender_go_api():
         return _send_via_unisender_classic(
@@ -1493,6 +1494,7 @@ def _send_via_unisender(
             "track_links": 1,
             "track_read": 1,
             "idempotence_key": idempotence_key,
+            "global_metadata": _build_unisender_go_metadata(row, recipient=recipient, job_id=job_id),
         }
     }
 
@@ -1567,6 +1569,7 @@ def _send_via_unisender_go_bulk(
     subject: str,
     *,
     mail_template_path: Path | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     api_key = _safe_text(settings.unisender_api_key)
     sender_email = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
@@ -1600,6 +1603,7 @@ def _send_via_unisender_go_bulk(
             "track_links": 1,
             "track_read": 1,
             "idempotence_key": idempotence_key,
+            "global_metadata": _build_unisender_go_metadata(row, recipient=", ".join(cleaned_recipients), job_id=job_id),
         }
     }
 
@@ -1674,6 +1678,16 @@ def _send_via_unisender_go_bulk(
     }
 
 
+def _build_unisender_go_metadata(row: dict[str, Any], *, recipient: str, job_id: str | None) -> dict[str, str]:
+    return {
+        "app": "mailing-agent",
+        "app_job_id": _safe_text(job_id),
+        "app_row_id": _safe_text(row.get("ID")),
+        "app_mun_name": _safe_text(row.get("MUN_NAME")),
+        "app_recipient": _safe_text(recipient),
+    }
+
+
 def _send_with_transport(
     row: dict[str, Any],
     recipients: list[str],
@@ -1682,6 +1696,7 @@ def _send_with_transport(
     *,
     transport: str,
     mail_template_path: Path | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     sent_recipients: list[str] = []
@@ -1694,6 +1709,7 @@ def _send_with_transport(
                 attachments,
                 subject,
                 mail_template_path=mail_template_path,
+                job_id=job_id,
             )
         except Exception as exc:
             return {
@@ -1756,6 +1772,7 @@ def _send_with_transport(
                     attachments,
                     subject,
                     mail_template_path=mail_template_path,
+                    job_id=job_id,
                 )
             else:
                 warning = _send_via_smtp(
@@ -1825,6 +1842,7 @@ def _build_parallel_send_job(
     subject: str,
     transport: str,
     mail_template_path: Path | None,
+    job_id: str | None,
 ) -> dict[str, Any]:
     return {
         "row": row,
@@ -1835,6 +1853,7 @@ def _build_parallel_send_job(
         "subject": subject,
         "transport": transport,
         "mail_template_path": mail_template_path,
+        "job_id": job_id,
     }
 
 
@@ -1846,6 +1865,7 @@ def _run_parallel_send_job(job: dict[str, Any]) -> dict[str, Any]:
         job["subject"],
         transport=job["transport"],
         mail_template_path=job["mail_template_path"],
+        job_id=job.get("job_id"),
     )
     return {"job": job, "send_result": send_result}
 
@@ -2332,6 +2352,7 @@ def run_sender(
                             subject=row_subject,
                             transport=effective_transport,
                             mail_template_path=mail_template_path,
+                            job_id=job_id,
                         )
                     )
                     entry["result"] = "queued_parallel_send"
@@ -2344,6 +2365,7 @@ def run_sender(
                         row_subject,
                         transport=effective_transport,
                         mail_template_path=mail_template_path,
+                        job_id=job_id,
                     )
                     workbook_dirty = (
                         _apply_send_result_to_entry(

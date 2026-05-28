@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     unisender_sender_name: str = "ООО «ПР»"
     unisender_sender_email: str = ""
     unisender_list_id: int = 1
+    unisender_webhook_secret: str = ""
     mail_signature_image_url: str = ""
 
     municipality_oktmo_lookup_enabled: bool = True
