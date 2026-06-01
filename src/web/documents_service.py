@@ -168,6 +168,7 @@ def compact_documents_status(job_id: str | None) -> dict:
         processed_rows = total_rows
 
     result = {
+        "job_id": job_id or "",
         "status": status,
         "stage": stage,
         "stage_text": stage_text,
@@ -189,6 +190,11 @@ def compact_documents_status(job_id: str | None) -> dict:
 
 
 def build_documents_ui_payload(documents_status: dict) -> dict:
+    build_job_readiness_result = _require("build_job_readiness_result")
+    readiness = build_job_readiness_result(documents_status.get("job_id"))
+    generator_ready = bool(readiness.get("generator_ready"))
+    generator_reason = str(readiness.get("generator_reason") or "").strip()
+
     status = str(documents_status.get("status") or "idle")
     stage = str(documents_status.get("stage") or "generate")
     generator = documents_status.get("generator") or {}
@@ -211,16 +217,28 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
     documents_text = f"{shown_documents} из {expected_documents} документов"
     pdf_text = f"{shown_pdf_done} из {shown_pdf_total} PDF"
 
-    process_title = "Готово к запуску"
-    process_main = "Сервис подготовит документы по вашей таблице."
-    process_detail = "После запуска ничего дополнительно делать не нужно."
-    process_next = "Когда всё будет готово, можно будет скачать результат и перейти дальше."
-    badge_text = "Готов к запуску"
-    badge_tone = "idle"
+    process_title = "Готово к запуску" if generator_ready else "Нужно подготовить входные данные"
+    process_main = (
+        "Сервис подготовит документы по вашей таблице."
+        if generator_ready
+        else "Подготовку документов пока нельзя запустить."
+    )
+    process_detail = (
+        "После запуска ничего дополнительно делать не нужно."
+        if generator_ready
+        else (generator_reason or "Сначала загрузите таблицу и шаблоны.")
+    )
+    process_next = (
+        "Когда всё будет готово, можно будет скачать результат и перейти дальше."
+        if generator_ready
+        else "Сначала завершите подготовку таблицы и шаблонов."
+    )
+    badge_text = "Готов к запуску" if generator_ready else "Ожидание данных"
+    badge_tone = "idle" if generator_ready else "wait"
     run_text = "Подготовить документы"
     label_text = str(documents_status.get("stage_text") or "Подготовка документов ещё не запускалась.")
-    generator_hint = "Сначала загрузите таблицу и шаблоны."
-    actions_hint = "Можно запускать. Дальше сервис всё сделает сам."
+    generator_hint = generator_reason or ("Можно запускать. Дальше сервис всё сделает сам." if generator_ready else "Сначала загрузите таблицу и шаблоны.")
+    actions_hint = "Можно запускать. Дальше сервис всё сделает сам." if generator_ready else (generator_reason or "Сначала загрузите таблицу и шаблоны.")
     next_hint = "Кнопка перехода дальше включится автоматически после завершения подготовки."
     next_button_text = "Дальше: проверить отправку"
     next_button_title = "Сначала завершите подготовку документов."
@@ -316,7 +334,7 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
             "next_hint": next_hint,
         },
         "actions": {
-            "can_run": status in {"idle", "completed", "stopped", "error", "waiting_review"},
+            "can_run": status in {"idle", "completed", "stopped", "error", "waiting_review"} and (status != "idle" or generator_ready),
             "can_stop": status == "running",
             "can_download_output": status == "completed" and output_file_count > 0,
             "can_download_report": status == "completed" and (fixed_documents > 0 or total_documents > 0),

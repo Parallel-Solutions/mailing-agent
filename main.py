@@ -1707,8 +1707,7 @@ async def data_info(job_id: str | None = None, username: str = Depends(check_aut
     return {"loaded": True, "total": _cached_excel_row_count(data_path)}
 
 
-@app.get("/api/job/readiness")
-async def job_readiness(job_id: str | None = None, username: str = Depends(check_auth)):
+def _build_job_readiness_result(job_id: str | None = None) -> dict:
     paths = resolve_job_paths(job_id)
     data_path = _prefer_existing_file(paths.data_xlsx, Path("data/data.xlsx"))
     row_count = 0
@@ -1793,31 +1792,33 @@ async def job_readiness(job_id: str | None = None, username: str = Depends(check
     )
 
     return {
-        "status": "ok",
-        "result": {
-            "data_loaded": data_path.exists(),
-            "row_count": row_count,
-            "kp_template_loaded": kp_template_loaded,
-            "contract_template_loaded": contract_template_loaded,
-            "mail_template_loaded": mail_template_loaded,
-            "output_docx_count": output_docx_count,
-            "output_pdf_count": output_pdf_count,
-            "parser_running": parser_running,
-            "generator_running": generator_running,
-            "philologist_running": philologist_running,
-            "generator_ready": not generator_reasons,
-            "philologist_ready": not philologist_reasons,
-            "sender_ready": not sender_reasons,
-            "generator_reason": " ".join(generator_reasons).strip(),
-            "philologist_reason": " ".join(philologist_reasons).strip(),
-            "sender_reason": " ".join(sender_reasons).strip(),
-            "counts": {
-                "parser_total": parser_total,
-                "generator_total": generator_total,
-                "sender_total": sender_total,
-            },
+        "data_loaded": data_path.exists(),
+        "row_count": row_count,
+        "kp_template_loaded": kp_template_loaded,
+        "contract_template_loaded": contract_template_loaded,
+        "mail_template_loaded": mail_template_loaded,
+        "output_docx_count": output_docx_count,
+        "output_pdf_count": output_pdf_count,
+        "parser_running": parser_running,
+        "generator_running": generator_running,
+        "philologist_running": philologist_running,
+        "generator_ready": not generator_reasons,
+        "philologist_ready": not philologist_reasons,
+        "sender_ready": not sender_reasons,
+        "generator_reason": " ".join(generator_reasons).strip(),
+        "philologist_reason": " ".join(philologist_reasons).strip(),
+        "sender_reason": " ".join(sender_reasons).strip(),
+        "counts": {
+            "parser_total": parser_total,
+            "generator_total": generator_total,
+            "sender_total": sender_total,
         },
     }
+
+
+@app.get("/api/job/readiness")
+async def job_readiness(job_id: str | None = None, username: str = Depends(check_auth)):
+    return {"status": "ok", "result": _build_job_readiness_result(job_id)}
 
 
 @app.post("/api/data/verify-municipality-names")
@@ -2046,6 +2047,7 @@ configure_documents_service(
     load_philologist_state=_load_philologist_state,
     schedule_output_archive_build=_schedule_output_archive_build,
     unregister_documents_thread=_unregister_documents_thread,
+    build_job_readiness_result=_build_job_readiness_result,
     logger=logger,
 )
 

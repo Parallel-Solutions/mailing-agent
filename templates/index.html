@@ -5176,10 +5176,14 @@ function clearAttachedFile() {
   function setGeneratorButtonsBusy(isBusy) {
     const runButton = document.getElementById('g-run');
     const pauseButton = document.getElementById('g-pause');
+    const serverActions = ((lastDocumentsUiState.ui || {}).actions || {});
+    const serverModule = ((lastDocumentsUiState.ui || {}).module || {});
+    const canRun = typeof serverActions.can_run === 'boolean' ? serverActions.can_run : !!moduleReadiness.generator_ready;
+    const runReason = serverModule.generator_hint || moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.';
     if (runButton) {
-      runButton.disabled = !!isBusy || !moduleReadiness.generator_ready;
-      runButton.title = (!isBusy && !moduleReadiness.generator_ready)
-        ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.')
+      runButton.disabled = !!isBusy || !canRun;
+      runButton.title = (!isBusy && !canRun)
+        ? runReason
         : '';
     }
     if (pauseButton) {
@@ -5389,8 +5393,11 @@ function clearAttachedFile() {
 
     if (status === 'completed') {
       if (runButton) {
+        const serverModule = ((lastDocumentsUiState.ui || {}).module || {});
         runButton.textContent = 'Подготовить заново';
-        runButton.title = runButton.disabled ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.') : 'Запустить подготовку заново с текущими данными.';
+        runButton.title = runButton.disabled
+          ? (serverModule.generator_hint || moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.')
+          : 'Запустить подготовку заново с текущими данными.';
       }
       badge.textContent = 'Готово';
       badge.className = 'badge badge-done';
@@ -5622,23 +5629,23 @@ function clearAttachedFile() {
 
   function buildDocumentsUiCopy(vm, result = {}) {
     const serverModule = (result.ui || {}).module || {};
+    const serverActions = (result.ui || {}).actions || {};
+    const canRun = typeof serverActions.can_run === 'boolean' ? serverActions.can_run : !!moduleReadiness.generator_ready;
+    const runReason = serverModule.generator_hint || moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.';
     if (serverModule.badge_text || serverModule.label_text || serverModule.run_text) {
-      let runDisabled = false;
-      let runTitle = '';
+      let runDisabled = !canRun;
+      let runTitle = runDisabled ? runReason : '';
       if (vm.status === 'running') {
         runDisabled = true;
-      } else if (vm.status === 'completed' || vm.status === 'error' || vm.status === 'idle') {
-        runDisabled = !moduleReadiness.generator_ready;
-        runTitle = runDisabled ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.') : '';
       }
       if (vm.status === 'completed' && !runDisabled) {
         runTitle = 'Запустить подготовку заново с текущими данными.';
       }
       const resolvedGeneratorHint = vm.status === 'idle'
         ? (
-          moduleReadiness.generator_ready
+          canRun
             ? 'Можно запускать. Дальше сервис всё сделает сам.'
-            : (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.')
+            : runReason
         )
         : (serverModule.generator_hint || '');
       const resolvedPhilologistHint = vm.status === 'idle'
@@ -5718,9 +5725,9 @@ function clearAttachedFile() {
         badgeText: 'Готово',
         badgeClass: 'badge badge-done',
         runText: 'Подготовить заново',
-        runDisabled: !moduleReadiness.generator_ready,
-        runTitle: !moduleReadiness.generator_ready
-          ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.')
+        runDisabled: !canRun,
+        runTitle: !canRun
+          ? runReason
           : 'Запустить подготовку заново с текущими данными.',
         pauseDisabled: true,
         pauseText: 'Остановить',
@@ -5762,9 +5769,9 @@ function clearAttachedFile() {
         badgeText: 'Ошибка',
         badgeClass: 'badge badge-error',
         runText: 'Повторить подготовку',
-        runDisabled: !moduleReadiness.generator_ready,
-        runTitle: !moduleReadiness.generator_ready
-          ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.')
+        runDisabled: !canRun,
+        runTitle: !canRun
+          ? runReason
           : '',
         pauseDisabled: true,
         pauseText: 'Остановить',
@@ -5781,20 +5788,20 @@ function clearAttachedFile() {
     }
 
     return {
-      badgeText: 'Готов к запуску',
-      badgeClass: 'badge badge-idle',
+      badgeText: canRun ? 'Готов к запуску' : 'Ожидание данных',
+      badgeClass: canRun ? 'badge badge-idle' : 'badge badge-wait',
       runText: 'Подготовить документы',
-      runDisabled: !moduleReadiness.generator_ready,
-      runTitle: !moduleReadiness.generator_ready ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.') : '',
+      runDisabled: !canRun,
+      runTitle: !canRun ? runReason : '',
       pauseDisabled: true,
       pauseText: 'Остановить',
       pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
       doneValue: vm.processedRows,
       doneLabel: 'Подготовлено клиентов',
       labelText: defaultLabel,
-      generatorHint: moduleReadiness.generator_ready
+      generatorHint: canRun
         ? 'Можно запускать. Дальше сервис всё сделает сам.'
-        : (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.'),
+        : runReason,
       philologistHint: moduleReadiness.philologist_ready
         ? 'Документы уже готовы. При необходимости можно перепроверить текст отдельно.'
         : 'Отдельную проверку текста сейчас запускать не нужно.',
