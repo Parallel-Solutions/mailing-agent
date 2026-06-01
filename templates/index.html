@@ -2981,7 +2981,13 @@
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить аналитику отправки');
       const result = data.result || {};
       renderDeliveryAnalytics(result);
-      if (!silent) showToast('Аналитика отправки обновлена');
+      if (!silent) {
+        if (result.refresh_started || result.refresh_in_progress) {
+          showToast('Обновление аналитики запущено в фоне');
+        } else {
+          showToast('Аналитика отправки обновлена');
+        }
+      }
       return result;
     } catch (err) {
       if (!silent) showToast('Не удалось обновить аналитику');
@@ -3054,7 +3060,7 @@
       list.innerHTML = '<div class="jobs-history-empty">Загружаю список отправок...</div>';
     }
     try {
-      const res = await fetch('/api/jobs/history?limit=100');
+      const res = await fetch('/api/jobs/history?limit=40');
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось загрузить список отправок');
       const jobs = (data.result || {}).jobs || [];

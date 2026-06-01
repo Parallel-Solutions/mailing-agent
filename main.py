@@ -1596,8 +1596,8 @@ async def create_job(username: str = Depends(check_auth)):
 
 
 @app.get("/api/jobs/history")
-async def jobs_history(limit: int = 100, username: str = Depends(check_auth)):
-    safe_limit = max(1, min(int(limit or 100), 300))
+async def jobs_history(limit: int = 40, username: str = Depends(check_auth)):
+    safe_limit = max(1, min(int(limit or 40), 200))
     if not JOBS_DIR.exists():
         return {"status": "ok", "result": {"jobs": []}}
 
@@ -1610,7 +1610,11 @@ async def jobs_history(limit: int = 100, username: str = Depends(check_auth)):
     candidates.sort(key=lambda item: item[0], reverse=True)
     jobs: list[dict] = []
     for updated_at, job_dir in candidates:
-        item = _build_job_history_item(job_dir, updated_at)
+        try:
+            item = _build_job_history_item(job_dir, updated_at)
+        except Exception:
+            logger.exception("jobs_history_item_failed", job_dir=str(job_dir))
+            continue
         if not _job_history_is_mailing_session(item):
             continue
         jobs.append(item)

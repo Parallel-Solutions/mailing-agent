@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 from time import sleep
+import threading
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -35,6 +36,8 @@ REPORT_FILENAME = "unisender_delivery_report.xlsx"
 ANALYTICS_CACHE_FILENAME = "unisender_delivery_analytics.json"
 EVENT_DUMP_POLL_ATTEMPTS = 15
 EVENT_DUMP_POLL_SECONDS = 2.0
+_ANALYTICS_REFRESH_LOCK = threading.Lock()
+_ANALYTICS_REFRESH_THREADS: dict[str, threading.Thread] = {}
 
 
 def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: bool = True) -> Path:
@@ -83,7 +86,10 @@ def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: 
 def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bool = False) -> dict[str, Any]:
     """Return lightweight dashboard metrics for the current UniSender sending job."""
 
-    rows, refresh_error = _build_delivery_rows(job_id, refresh=refresh)
+    refresh_started = False
+    if refresh:
+        refresh_started = _start_unisender_delivery_refresh(job_id)
+    rows, refresh_error = _build_delivery_rows(job_id, refresh=False)
     statuses = Counter(_normalize_provider_status(row["provider_status"] or "unknown") for row in rows)
     providers = Counter(row.get("provider") or "unisender" for row in rows)
 
@@ -229,6 +235,8 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
         "total": total,
         "checked": checked,
         "refresh_error": refresh_error,
+        "refresh_started": refresh_started,
+        "refresh_in_progress": _is_unisender_delivery_refresh_running(job_id),
         "awaiting_provider_events": awaiting_provider_events,
         "provider_events_count": provider_events_count,
         "summary": {
@@ -252,6 +260,41 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
         ],
         "note": _analytics_note(total=total, checked=checked, providers=providers, refresh_error=refresh_error),
     }
+
+
+def _start_unisender_delivery_refresh(job_id: str | None) -> bool:
+    key = str(job_id or "__legacy__")
+    with _ANALYTICS_REFRESH_LOCK:
+        current = _ANALYTICS_REFRESH_THREADS.get(key)
+        if current and current.is_alive():
+            return False
+        thread = threading.Thread(
+            target=_run_unisender_delivery_refresh_background,
+            kwargs={"job_id": job_id},
+            daemon=True,
+            name=f"unisender-analytics-{key}",
+        )
+        _ANALYTICS_REFRESH_THREADS[key] = thread
+        thread.start()
+        return True
+
+
+def _is_unisender_delivery_refresh_running(job_id: str | None) -> bool:
+    key = str(job_id or "__legacy__")
+    with _ANALYTICS_REFRESH_LOCK:
+        current = _ANALYTICS_REFRESH_THREADS.get(key)
+        return bool(current and current.is_alive())
+
+
+def _run_unisender_delivery_refresh_background(job_id: str | None) -> None:
+    key = str(job_id or "__legacy__")
+    try:
+        _build_delivery_rows(job_id, refresh=True)
+    finally:
+        with _ANALYTICS_REFRESH_LOCK:
+            current = _ANALYTICS_REFRESH_THREADS.get(key)
+            if current is threading.current_thread():
+                _ANALYTICS_REFRESH_THREADS.pop(key, None)
 
 
 def unisender_delivery_report_has_data(job_id: str | None = None) -> bool:
