@@ -56,17 +56,25 @@ def create_sender_router(
 
         try:
             clear_sender_stop_request(job_id)
-            primed_state = (
-                prime_sender_checking_state(job_id, transport)
-                if dry_run
-                else prime_sender_running_state(job_id, transport)
-            )
-            start_sender_thread_if_absent(
+            primed_state_box: dict[str, Any] = {}
+
+            def _prime_state() -> None:
+                primed_state_box["state"] = (
+                    prime_sender_checking_state(job_id, transport)
+                    if dry_run
+                    else prime_sender_running_state(job_id, transport)
+                )
+
+            _, started = start_sender_thread_if_absent(
                 job_id,
                 target=run_sender_background,
                 kwargs={"dry_run": dry_run, "limit": limit, "transport": transport, "job_id": job_id},
                 name=f"sender-{sender_job_key(job_id)}",
+                before_start=_prime_state,
             )
+            if not started:
+                return {"status": "ok", "result": compact_sender_status(get_sender_status(job_id))}
+            primed_state = primed_state_box.get("state") or get_sender_status(job_id)
         except Exception as exc:
             logger.exception("sender_run_start_failed", job_id=job_id, transport=transport)
             raise HTTPException(

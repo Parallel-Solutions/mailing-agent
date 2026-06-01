@@ -24,7 +24,6 @@ from src.web.sender_service import (
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form, BackgroundTasks
 import shutil
 import threading
-from multiprocessing import Process
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from time import perf_counter
@@ -43,11 +42,10 @@ _generator_threads: dict[str, threading.Thread] = {}
 _generator_threads_lock = threading.Lock()
 _documents_threads: dict[str, threading.Thread] = {}
 _documents_threads_lock = threading.Lock()
-_parser_verification_processes: dict[str, Process] = {}
-_parser_verification_processes_lock = threading.Lock()
+_parser_verification_threads: dict[str, threading.Thread] = {}
+_parser_verification_threads_lock = threading.Lock()
 _output_archive_threads: dict[str, threading.Thread] = {}
 _output_archive_threads_lock = threading.Lock()
-PARSER_VERIFICATION_TIMEOUT_SECONDS = 15 * 60
 
 
 @app.on_event("startup")
@@ -143,6 +141,7 @@ _METADATA_CACHE_LOCK = threading.Lock()
 _EXCEL_ROW_COUNT_CACHE: dict[str, dict[str, float | int | tuple[int, int]]] = {}
 _TREE_FILE_COUNT_CACHE: dict[str, dict[str, float | int]] = {}
 _JOB_HISTORY_ITEM_CACHE: dict[str, dict[str, object]] = {}
+_JOB_HISTORY_SCAN_CACHE: dict[str, dict[str, object]] = {}
 METADATA_CACHE_TTL_SECONDS = 10.0
 
 
@@ -376,12 +375,12 @@ def _get_documents_thread(job_id: str | None) -> threading.Thread | None:
         return thread
 
 
-def _get_parser_verification_process(job_id: str | None) -> Process | None:
+def _get_parser_verification_thread(job_id: str | None) -> threading.Thread | None:
     key = _parser_job_key(job_id)
-    with _parser_verification_processes_lock:
-        process = _parser_verification_processes.get(key)
+    with _parser_verification_threads_lock:
+        process = _parser_verification_threads.get(key)
         if process and not process.is_alive():
-            _parser_verification_processes.pop(key, None)
+            _parser_verification_threads.pop(key, None)
             return None
         return process
 
@@ -412,6 +411,7 @@ def _start_sender_thread_if_absent(
     target,
     kwargs: dict | None = None,
     name: str | None = None,
+    before_start=None,
 ) -> tuple[threading.Thread, bool]:
     with _sender_threads_lock:
         key = _sender_job_key(job_id)
@@ -420,6 +420,8 @@ def _start_sender_thread_if_absent(
             return existing, False
         if existing and not existing.is_alive():
             _sender_threads.pop(key, None)
+        if before_start is not None:
+            before_start()
         thread = threading.Thread(
             target=target,
             kwargs=kwargs or {},
@@ -466,9 +468,9 @@ def _unregister_documents_thread(job_id: str | None) -> None:
         _documents_threads.pop(_documents_job_key(job_id), None)
 
 
-def _register_parser_verification_process(job_id: str | None, process: Process) -> None:
-    with _parser_verification_processes_lock:
-        _parser_verification_processes[_parser_job_key(job_id)] = process
+def _register_parser_verification_thread(job_id: str | None, process: threading.Thread) -> None:
+    with _parser_verification_threads_lock:
+        _parser_verification_threads[_parser_job_key(job_id)] = process
 
 
 def _compact_philologist_status(state: dict) -> dict:
@@ -592,6 +594,73 @@ def _job_history_mtime(job_dir: Path) -> float:
         job_dir / "sent_mail_log.jsonl",
     ]
     return max((_state_file_mtime(path) for path in candidates), default=0.0)
+
+
+def _job_history_sender_hint(job_dir: Path) -> bool:
+    sent_log_path = job_dir / "sent_mail_log.jsonl"
+    try:
+        if sent_log_path.exists() and sent_log_path.stat().st_size > 0:
+            return True
+    except OSError:
+        pass
+
+    sender_state = _read_state_json(job_dir / "state" / "sender.json")
+    if not sender_state:
+        return False
+
+    sender_mode = str(sender_state.get("mode") or "")
+    sender_status = str(sender_state.get("status") or "")
+    sender_stats = sender_state.get("stats") if isinstance(sender_state.get("stats"), dict) else {}
+    sent_rows = max(_safe_int(sender_stats.get("sent")), _safe_int(sender_state.get("sent_rows")))
+    error_rows = max(_safe_int(sender_stats.get("error")), _safe_int(sender_state.get("error_rows")))
+    total_rows = max(_safe_int(sender_stats.get("total")), _safe_int(sender_state.get("total_rows")))
+    pending_rows = max(0, total_rows - sent_rows - error_rows) if total_rows else 0
+
+    if sender_mode == "send":
+        return True
+    if sent_rows > 0 or error_rows > 0:
+        return True
+    if sender_status == "running" and pending_rows > 0:
+        return True
+    return False
+
+
+def _job_history_candidate(job_dir: Path) -> tuple[float, bool]:
+    state_dir = job_dir / "state"
+    sender_path = state_dir / "sender.json"
+    sent_log_path = job_dir / "sent_mail_log.jsonl"
+    cache_key = str(job_dir.resolve())
+    root_mtime = _state_file_mtime(job_dir)
+    state_mtime = _state_file_mtime(state_dir)
+    sender_mtime = _state_file_mtime(sender_path)
+    sent_log_mtime = _state_file_mtime(sent_log_path)
+
+    with _METADATA_CACHE_LOCK:
+        cached = _JOB_HISTORY_SCAN_CACHE.get(cache_key)
+        if (
+            cached
+            and float(cached.get("root_mtime") or 0.0) == float(root_mtime)
+            and float(cached.get("state_mtime") or 0.0) == float(state_mtime)
+            and float(cached.get("sender_mtime") or 0.0) == float(sender_mtime)
+            and float(cached.get("sent_log_mtime") or 0.0) == float(sent_log_mtime)
+        ):
+            return (
+                float(cached.get("updated_at_ts") or 0.0),
+                bool(cached.get("is_mailing_hint")),
+            )
+
+    updated_at_ts = _job_history_mtime(job_dir)
+    is_mailing_hint = _job_history_sender_hint(job_dir)
+    with _METADATA_CACHE_LOCK:
+        _JOB_HISTORY_SCAN_CACHE[cache_key] = {
+            "root_mtime": float(root_mtime),
+            "state_mtime": float(state_mtime),
+            "sender_mtime": float(sender_mtime),
+            "sent_log_mtime": float(sent_log_mtime),
+            "updated_at_ts": float(updated_at_ts),
+            "is_mailing_hint": bool(is_mailing_hint),
+        }
+    return updated_at_ts, is_mailing_hint
 
 
 def _job_history_status(
@@ -1468,83 +1537,40 @@ def _run_parser_verification_background(*, job_id: str | None, source: str) -> N
         )
     except Exception:
         logger.exception("parser_upload_verification_background_failed", job_id=job_id, source=source)
+    finally:
+        with _parser_verification_threads_lock:
+            current = _parser_verification_threads.get(_parser_job_key(job_id))
+            if current is threading.current_thread():
+                _parser_verification_threads.pop(_parser_job_key(job_id), None)
 
 
 def _start_parser_verification_process(*, job_id: str | None, filename: str, source: str = "upload") -> None:
     started_at = perf_counter()
-    existing_process = _get_parser_verification_process(job_id)
-    if existing_process is not None:
+    existing_thread = _get_parser_verification_thread(job_id)
+    if existing_thread is not None:
         logger.info(
             "upload_data_verification_already_running",
             filename=filename,
             job_id=job_id,
-            pid=existing_process.pid,
+            worker_name=existing_thread.name,
         )
         return
 
-    verification_process = Process(
+    verification_thread = threading.Thread(
         target=_run_parser_verification_background,
         kwargs={"job_id": job_id, "source": source},
         daemon=True,
         name=f"parser-verify-{_parser_job_key(job_id)}",
     )
-    verification_process.start()
-    _register_parser_verification_process(job_id, verification_process)
-    watcher_thread = threading.Thread(
-        target=_watch_parser_verification_process,
-        kwargs={"job_id": job_id, "source": source, "process": verification_process},
-        daemon=True,
-        name=f"parser-verify-watch-{_parser_job_key(job_id)}",
-    )
-    watcher_thread.start()
+    verification_thread.start()
+    _register_parser_verification_thread(job_id, verification_thread)
     logger.info(
         "upload_data_verification_scheduled",
         filename=filename,
         job_id=job_id,
-        pid=verification_process.pid,
+        worker_name=verification_thread.name,
         schedule_seconds=round(perf_counter() - started_at, 3),
     )
-
-
-def _watch_parser_verification_process(*, job_id: str | None, source: str, process: Process) -> None:
-    process.join(PARSER_VERIFICATION_TIMEOUT_SECONDS)
-    key = _parser_job_key(job_id)
-    if process.is_alive():
-        logger.error(
-            "parser_upload_verification_timeout",
-            job_id=job_id,
-            source=source,
-            pid=process.pid,
-            timeout_seconds=PARSER_VERIFICATION_TIMEOUT_SECONDS,
-        )
-        process.terminate()
-        process.join(10)
-        if process.is_alive():
-            process.kill()
-            process.join(5)
-        mark_municipality_verification_failed(
-            job_id,
-            source=source,
-            reason=f"превышен лимит времени {PARSER_VERIFICATION_TIMEOUT_SECONDS // 60} минут",
-        )
-    else:
-        logger.info(
-            "parser_upload_verification_process_finished",
-            job_id=job_id,
-            source=source,
-            pid=process.pid,
-            exitcode=process.exitcode,
-        )
-        if process.exitcode not in (0, None):
-            mark_municipality_verification_failed(
-                job_id,
-                source=source,
-                reason=f"процесс проверки завершился с кодом {process.exitcode}",
-            )
-    with _parser_verification_processes_lock:
-        current = _parser_verification_processes.get(key)
-        if current is process:
-            _parser_verification_processes.pop(key, None)
 
 
 def _prime_philologist_running_state(job_id: str | None, mode: str | None) -> dict:
@@ -1605,7 +1631,10 @@ async def jobs_history(limit: int = 40, username: str = Depends(check_auth)):
     for job_dir in JOBS_DIR.iterdir():
         if not job_dir.is_dir() or not job_dir.name.startswith("job-"):
             continue
-        candidates.append((_job_history_mtime(job_dir), job_dir))
+        updated_at, is_mailing_hint = _job_history_candidate(job_dir)
+        if not is_mailing_hint:
+            continue
+        candidates.append((updated_at, job_dir))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     jobs: list[dict] = []

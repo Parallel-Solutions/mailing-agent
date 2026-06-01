@@ -4542,7 +4542,6 @@ function clearAttachedFile() {
     stopDocumentsPolling();
     stopGeneratorPolling();
     stopPhilologistPolling();
-    documentsStatusPoll = startPollingLoop(() => refreshDocumentsStatus({ silent: true }), 2000);
     try {
       const res = await fetch('/api/documents/start', {
         method: 'POST',
@@ -4560,7 +4559,9 @@ function clearAttachedFile() {
       }
       const result = data.result || {};
       setDocumentsUiState(result);
-      if (result.status && !['running', 'waiting_review'].includes(String(result.status))) {
+      if (result.status && ['running', 'waiting_review'].includes(String(result.status))) {
+        documentsStatusPoll = startPollingLoop(() => refreshDocumentsStatus({ silent: true }), 2000);
+      } else {
         stopDocumentsPolling();
         await refreshModuleReadiness();
       }

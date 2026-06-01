@@ -484,6 +484,11 @@ def _import_unisender_go_dump_files(job_id: str, files: list[dict[str, Any]], it
     path.parent.mkdir(parents=True, exist_ok=True)
     existing_events = load_unisender_go_events(job_id)
     existing_keys = {_unisender_go_event_record_key(item) for item in existing_events if isinstance(item, dict)}
+    provider_job_ids = {
+        _safe_text(item.get("provider_job_id") or item.get("message_id"))
+        for item in items
+        if _safe_text(item.get("provider_job_id") or item.get("message_id"))
+    }
     recipient_row_pairs = {
         (_safe_text(item.get("recipient")).lower(), _safe_text(item.get("row_id")))
         for item in items
@@ -495,7 +500,12 @@ def _import_unisender_go_dump_files(job_id: str, files: list[dict[str, Any]], it
             url = _safe_text(file_info.get("url"))
             if not url:
                 continue
-            for record in _load_unisender_go_dump_records(url, job_id=job_id, recipient_row_pairs=recipient_row_pairs):
+            for record in _load_unisender_go_dump_records(
+                url,
+                job_id=job_id,
+                provider_job_ids=provider_job_ids,
+                recipient_row_pairs=recipient_row_pairs,
+            ):
                 key = _unisender_go_event_record_key(record)
                 if key in existing_keys:
                     continue
@@ -509,6 +519,7 @@ def _load_unisender_go_dump_records(
     url: str,
     *,
     job_id: str,
+    provider_job_ids: set[str],
     recipient_row_pairs: set[tuple[str, str]],
 ) -> list[dict[str, Any]]:
     with urlopen(url, timeout=60) as response:
@@ -520,7 +531,14 @@ def _load_unisender_go_dump_records(
         recipient = _safe_text(row.get("email")).lower()
         row_id = _safe_text(metadata.get("app_row_id") or metadata.get("row_id"))
         event_job_id = _safe_text(metadata.get("app_job_id") or metadata.get("job_id"))
-        if event_job_id != job_id and (recipient, row_id) not in recipient_row_pairs:
+        provider_job_id = _safe_text(row.get("job_id"))
+        if event_job_id:
+            if event_job_id != job_id:
+                continue
+        elif provider_job_id:
+            if provider_job_id not in provider_job_ids:
+                continue
+        elif (recipient, row_id) not in recipient_row_pairs:
             continue
         event_type = _resolve_event_dump_status(row)
         if not event_type:
@@ -538,7 +556,7 @@ def _load_unisender_go_dump_records(
                 },
                 "event_type": event_type,
                 "recipient": recipient,
-                "provider_job_id": _safe_text(row.get("job_id")),
+                "provider_job_id": provider_job_id,
                 "row_id": row_id,
                 "mun_name": _safe_text(metadata.get("app_mun_name") or metadata.get("mun_name")),
             }
