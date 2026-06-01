@@ -1788,15 +1788,15 @@
         <div class="document-process-next" id="g-process-next">Когда всё будет готово, можно будет перейти к проверке отправки.</div>
         <div class="document-process-list">
           <div class="document-process-row">
-            <span>Клиенты:</span>
-            <strong id="g-process-clients">0</strong>
+            <span>Клиенты готовы:</span>
+            <strong id="g-process-clients">0/0</strong>
           </div>
           <div class="document-process-row">
-            <span>Документы:</span>
+            <span>Файлы DOCX:</span>
             <strong id="g-process-files">0/0</strong>
           </div>
           <div class="document-process-row">
-            <span>Проверка:</span>
+            <span>Проверка текста:</span>
             <strong id="g-process-review">0/0</strong>
           </div>
         </div>
@@ -5582,7 +5582,13 @@ function clearAttachedFile() {
       if (detailEl) detailEl.textContent = detail;
       if (nextEl) nextEl.textContent = next;
     };
-    if (clientsEl) clientsEl.textContent = Number(serverProcess.clients_total ?? vm.totalRows ?? 0).toLocaleString('ru');
+    if (clientsEl) {
+      const clientsDone = Number(serverProcess.clients_done ?? vm.processedRows ?? 0);
+      const clientsTotal = Number(serverProcess.clients_total ?? vm.totalRows ?? 0);
+      clientsEl.textContent = clientsTotal > 0
+        ? `${clientsDone.toLocaleString('ru')}/${clientsTotal.toLocaleString('ru')}`
+        : '0/0';
+    }
     if (filesEl) filesEl.textContent = `${Number(serverProcess.documents_done ?? vm.shownDocuments ?? 0).toLocaleString('ru')}/${Number(serverProcess.documents_total ?? vm.expectedDocuments ?? 0).toLocaleString('ru')}`;
     if (reviewEl) reviewEl.textContent = `${Number(serverProcess.review_done ?? vm.reviewedDocuments ?? 0).toLocaleString('ru')}/${Number(serverProcess.review_total ?? vm.totalDocuments ?? 0).toLocaleString('ru')}`;
     if (serverProcess.title || serverProcess.main || serverProcess.detail || serverProcess.next) {
@@ -5597,14 +5603,14 @@ function clearAttachedFile() {
     const clientsText = vm.totalRows > 0
       ? `${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')} клиентов`
       : 'клиентов пока не найдено';
-    const documentsText = `${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')} документов`;
+    const documentsText = `${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')} файлов DOCX`;
     const pdfText = `${vm.shownPdfDone.toLocaleString('ru')} из ${vm.shownPdfTotal.toLocaleString('ru')} PDF`;
 
     if (status === 'running' && stage === 'review') {
       setText({
         title: 'Идёт подготовка',
         main: 'Сейчас сервис проверяет текст в документах.',
-        detail: `Готово ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')}. Ничего нажимать не нужно.`,
+        detail: `Проверено ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')} документов. Ничего нажимать не нужно.`,
         next: 'После завершения можно будет скачать результат или перейти дальше.'
       });
       return;
@@ -5624,7 +5630,7 @@ function clearAttachedFile() {
       setText({
         title: 'Идёт подготовка',
         main: 'Сейчас сервис создаёт документы.',
-        detail: `Готово ${clientsText}. Просто дождитесь завершения.`,
+        detail: `Клиенты: ${clientsText}. Файлы DOCX: ${documentsText}. Просто дождитесь завершения.`,
         next: 'После этого система сама закончит остальные шаги.'
       });
       return;

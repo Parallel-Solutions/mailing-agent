@@ -211,10 +211,12 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
     pdf_processed = max(0, int(generator.get("pdf_processed") or generator.get("staged_pdf_count") or 0))
     expected_documents = total_rows * 2 if total_rows > 0 else max(total_documents, pdf_total, staged_docx_count, output_file_count)
     shown_documents = max(staged_docx_count, pdf_total, total_documents, expected_documents if status == "completed" else 0)
+    if stage == "generate" and total_rows > 0:
+        shown_documents = max(shown_documents, min(expected_documents, processed_rows * 2))
     shown_pdf_total = expected_documents or pdf_total
     shown_pdf_done = shown_pdf_total if status == "completed" and output_file_count <= 0 and pdf_processed <= 0 else max(pdf_processed, min(output_file_count, shown_pdf_total or output_file_count))
     clients_text = f"{processed_rows} из {total_rows} клиентов" if total_rows > 0 else "клиентов пока не найдено"
-    documents_text = f"{shown_documents} из {expected_documents} документов"
+    documents_text = f"{shown_documents} из {expected_documents} файлов DOCX"
     pdf_text = f"{shown_pdf_done} из {shown_pdf_total} PDF"
 
     process_title = "Готово к запуску" if generator_ready else "Нужно подготовить входные данные"
@@ -253,9 +255,9 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
             else "Сейчас сервис создаёт документы."
         )
         process_detail = (
-            f"Проверено {reviewed_documents} из {total_documents}. Ничего нажимать не нужно."
+            f"Проверка текста: {reviewed_documents} из {total_documents} документов. Ничего нажимать не нужно."
             if stage == "review" and total_documents > 0
-            else f"Подготовлено {processed_rows} из {total_rows}. Ничего нажимать не нужно."
+            else f"Клиенты: {processed_rows} из {total_rows}. Файлы DOCX: {shown_documents} из {expected_documents}. Ничего нажимать не нужно."
             if total_rows > 0
             else "Ничего нажимать не нужно."
         )
@@ -268,13 +270,18 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
             if stage == "review"
             else f"Сохраняю документы в PDF: {pdf_processed} из {shown_pdf_total}."
             if str(generator.get("stage") or "") in {"convert_pdf", "finalize_output"}
-            else f"Создаю документы по шаблонам: {processed_rows} из {total_rows}."
+            else f"Создаю документы по шаблонам: {processed_rows} из {total_rows} клиентов, {shown_documents} из {expected_documents} файлов DOCX."
         )
         actions_hint = "Идёт подготовка документов. Просто дождитесь завершения."
     elif status == "completed":
         process_title = "Готово"
         process_main = "Документы подготовлены."
-        process_detail = f"Подготовка завершена для {total_rows} клиентов." if total_rows > 0 else "Подготовка завершена."
+        process_detail = (
+            f"Готовы комплекты для {total_rows} клиентов: {shown_documents} из {expected_documents} файлов DOCX, "
+            f"проверено {reviewed_documents} из {total_documents} документов."
+            if total_rows > 0
+            else "Подготовка завершена."
+        )
         process_next = "Теперь можно скачать архив или перейти к проверке отправки."
         badge_text = "Готово"
         badge_tone = "done"
@@ -306,7 +313,7 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
     elif status == "waiting_review":
         process_title = "Проверка ожидается"
         process_main = "Документы уже созданы."
-        process_detail = "Осталось завершить проверку текста."
+        process_detail = f"Файлы DOCX созданы: {shown_documents} из {expected_documents}. Осталось проверить текст."
         process_next = "После проверки текста можно будет скачать результат и перейти дальше."
         badge_text = "Ожидает проверки"
         badge_tone = "wait"
@@ -323,6 +330,12 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
             "clients_text": clients_text,
             "documents_text": documents_text,
             "pdf_text": pdf_text,
+            "clients_total": total_rows,
+            "clients_done": processed_rows,
+            "documents_total": expected_documents,
+            "documents_done": shown_documents,
+            "review_total": total_documents,
+            "review_done": reviewed_documents,
         },
         "module": {
             "badge_text": badge_text,
