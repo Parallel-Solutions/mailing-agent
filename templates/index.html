@@ -4817,7 +4817,10 @@ function clearAttachedFile() {
   function applyModuleReadiness() {
     const generatorRunButton = document.getElementById('g-run');
     const philologistRunButton = document.getElementById('ph-run');
-    const generatorRunningNow = currentGeneratorStatus === 'running';
+    const documentsStatusNow = String((lastDocumentsUiState || {}).status || '');
+    const generatorRunningNow = documentsStatusNow
+      ? documentsStatusNow === 'running'
+      : currentGeneratorStatus === 'running';
     const philologistRunningNow = ['running', 'finalizing'].includes(currentPhilologistStatus);
     if (moduleReadinessServerLoaded) {
       setTemplateButtonServerState('mail-btn', moduleReadiness.mail_template_loaded, 'Шаблон письма загружен');
@@ -4828,7 +4831,7 @@ function clearAttachedFile() {
 
     applyButtonReadiness(
       generatorRunButton,
-      !parserRunning && !generatorRunningNow,
+      !generatorRunningNow,
       'Подготовка уже выполняется.'
     );
     applyButtonReadiness(
@@ -5707,9 +5710,7 @@ function clearAttachedFile() {
 
   function buildDocumentsUiCopy(vm, result = {}) {
     const serverModule = (result.ui || {}).module || {};
-    const serverActions = (result.ui || {}).actions || {};
-    const serverAllowsRun = typeof serverActions.can_run === 'boolean' ? serverActions.can_run : true;
-    const canRun = serverAllowsRun && vm.status !== 'running';
+    const canRun = vm.status !== 'running';
     const hasRequiredInputs = !!moduleReadiness.generator_ready;
     const runReason = serverModule.generator_hint || moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.';
     if (serverModule.badge_text || serverModule.label_text || serverModule.run_text) {
