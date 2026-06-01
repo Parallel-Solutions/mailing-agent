@@ -2099,6 +2099,7 @@
   let lastSenderUiState = {};
   let deliveryAnalyticsFollowupTimer = null;
   let isRestoringUiState = false;
+  let moduleReadinessServerLoaded = false;
 
   function escapeHtml(value) {
     return String(value || '')
@@ -2234,7 +2235,25 @@
     updateSettingsChecklist();
   }
 
+  function setTemplateButtonServerState(buttonId, loaded, label) {
+    const button = document.getElementById(buttonId);
+    if (!button) return;
+    const defaultLabel = button.dataset.defaultLabel || 'Выбрать файл';
+    if (loaded) {
+      button.classList.add('uploaded');
+      button.innerHTML = `<span class="file-icon">✓</span> ${label || 'Файл загружен'}`;
+    } else {
+      button.classList.remove('uploaded');
+      button.innerHTML = `<span class="file-icon">📎</span> ${defaultLabel}`;
+    }
+  }
+
   function isTemplateUploaded(buttonId) {
+    if (moduleReadinessServerLoaded) {
+      if (buttonId === 'mail-btn') return !!moduleReadiness.mail_template_loaded;
+      if (buttonId === 'kp-btn') return !!moduleReadiness.kp_template_loaded;
+      if (buttonId === 'contract-btn') return !!moduleReadiness.contract_template_loaded;
+    }
     const button = document.getElementById(buttonId);
     return !!(button && button.classList.contains('uploaded'));
   }
@@ -2298,38 +2317,10 @@
     Object.assign(chatSessions, snapshot.chatSessions || {});
 
     restoreChatHtmlSnapshot(snapshot.chats || {});
-    applyTemplateButtonSnapshot('mail-btn', snapshot.templates && snapshot.templates.mail);
-    applyTemplateButtonSnapshot('kp-btn', snapshot.templates && snapshot.templates.kp);
-    applyTemplateButtonSnapshot('contract-btn', snapshot.templates && snapshot.templates.contract);
-
     const attachedFile = document.getElementById('p-attached-file');
     const attachedName = document.getElementById('p-attached-name');
-    if (attachedFile) attachedFile.style.display = snapshot.attachedFile && snapshot.attachedFile.visible ? 'block' : 'none';
-    if (attachedName) attachedName.textContent = (snapshot.attachedFile && snapshot.attachedFile.name) || '';
-    Object.entries(snapshot.counts || {}).forEach(([id, value]) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = value;
-    });
-
-    isRestoringUiState = true;
-    try {
-      if (snapshot.parserUiState) setParserUiState({ ...snapshot.parserUiState, from_restore: true });
-      if (snapshot.documentsUiState) {
-        setDocumentsUiState({ ...snapshot.documentsUiState, from_restore: true });
-      } else {
-        if (snapshot.generatorUiState) setGeneratorUiState({ ...snapshot.generatorUiState, from_restore: true });
-        if (snapshot.philologistUiState) setPhilologistUiState({ ...snapshot.philologistUiState, from_restore: true });
-      }
-      if (snapshot.senderUiState) setSenderUiState({ ...snapshot.senderUiState, from_restore: true });
-    } finally {
-      isRestoringUiState = false;
-    }
-
-    const parserVerificationStatus = String((lastParserUiState.municipality_name_verification_state || {}).status || 'idle');
-    parserRunning = currentParserStatus === 'running' || parserVerificationStatus === 'running';
-    phRunning = ['running', 'finalizing'].includes(currentPhilologistStatus);
-    senderRunning = currentSenderStatus === 'running';
-    moduleReadiness = mergeModuleReadiness(moduleReadiness, inferLocalModuleReadiness());
+    if (attachedFile) attachedFile.style.display = 'none';
+    if (attachedName) attachedName.textContent = '';
 
     if (snapshot.activeScreen) {
       goToScreen(snapshot.activeScreen, { scroll: false, persist: false });
@@ -2639,6 +2630,15 @@
     const nextJobId = String(jobId || '').trim();
     if (nextJobId !== currentJobId) {
       resetFlowNotificationState();
+      moduleReadinessServerLoaded = false;
+      moduleReadiness = {
+        generator_ready: false,
+        philologist_ready: false,
+        sender_ready: false,
+        generator_reason: '',
+        philologist_reason: '',
+        sender_reason: '',
+      };
     }
     currentJobId = nextJobId;
     if (currentJobId) {
@@ -3852,6 +3852,15 @@ async function attachFile(input) {
   const attachedFile = document.getElementById('p-attached-file');
   if (attachedName) attachedName.textContent = 'Загрузка ' + file.name + '...';
   if (attachedFile) attachedFile.style.display = 'block';
+  upsertParserVerificationNotice(`Приняла файл «${file.name}». Загружаю его на сервер и сразу после этого начну проверку названий МО.`, { loading: true });
+  setParserUiState({
+    force: true,
+    status: 'idle',
+    municipality_name_verification_state: {
+      status: 'running',
+      summary_text: 'Файл загружается на сервер. Сразу после загрузки начнётся проверка официальных названий МО.'
+    }
+  });
   saveUiState();
  
   try {
@@ -4710,29 +4719,29 @@ function clearAttachedFile() {
   }
 
   function syncModuleReadinessFromUi() {
-    moduleReadiness = mergeModuleReadiness(moduleReadiness, inferLocalModuleReadiness());
     applyModuleReadiness();
     saveUiState();
     return moduleReadiness;
   }
 
   function mergeModuleReadiness(serverState = {}, localState = {}) {
+    const hasServerState = !!(serverState && Object.keys(serverState).length);
     const hasServerGeneratorReady = Object.prototype.hasOwnProperty.call(serverState, 'generator_ready');
     const hasServerPhilologistReady = Object.prototype.hasOwnProperty.call(serverState, 'philologist_ready');
     const hasServerSenderReady = Object.prototype.hasOwnProperty.call(serverState, 'sender_ready');
+    const useLocalHints = !moduleReadinessServerLoaded && !hasServerState;
 
-    const generatorReady = hasServerGeneratorReady ? !!serverState.generator_ready : !!localState.generator_ready;
-    const philologistReady = hasServerPhilologistReady ? !!serverState.philologist_ready : !!localState.philologist_ready;
-    const senderReady = hasServerSenderReady ? !!serverState.sender_ready : !!localState.sender_ready;
+    const generatorReady = hasServerGeneratorReady ? !!serverState.generator_ready : false;
+    const philologistReady = hasServerPhilologistReady ? !!serverState.philologist_ready : false;
+    const senderReady = hasServerSenderReady ? !!serverState.sender_ready : false;
 
     return {
       ...moduleReadiness,
       ...serverState,
-      ...localState,
-      data_loaded: !!serverState.data_loaded || !!localState.data_loaded,
-      kp_template_loaded: !!serverState.kp_template_loaded || !!localState.kp_template_loaded,
-      contract_template_loaded: !!serverState.contract_template_loaded || !!localState.contract_template_loaded,
-      mail_template_loaded: !!serverState.mail_template_loaded || !!localState.mail_template_loaded,
+      data_loaded: hasServerState ? !!serverState.data_loaded : !!(useLocalHints && localState.data_loaded),
+      kp_template_loaded: hasServerState ? !!serverState.kp_template_loaded : !!(useLocalHints && localState.kp_template_loaded),
+      contract_template_loaded: hasServerState ? !!serverState.contract_template_loaded : !!(useLocalHints && localState.contract_template_loaded),
+      mail_template_loaded: hasServerState ? !!serverState.mail_template_loaded : !!(useLocalHints && localState.mail_template_loaded),
       generator_ready: generatorReady,
       philologist_ready: philologistReady,
       sender_ready: senderReady,
@@ -4747,6 +4756,12 @@ function clearAttachedFile() {
     const philologistRunButton = document.getElementById('ph-run');
     const generatorRunningNow = currentGeneratorStatus === 'running';
     const philologistRunningNow = ['running', 'finalizing'].includes(currentPhilologistStatus);
+    if (moduleReadinessServerLoaded) {
+      setTemplateButtonServerState('mail-btn', moduleReadiness.mail_template_loaded, 'Шаблон письма загружен');
+      setTemplateButtonServerState('kp-btn', moduleReadiness.kp_template_loaded, 'Шаблон КП загружен');
+      setTemplateButtonServerState('contract-btn', moduleReadiness.contract_template_loaded, 'Шаблон договора загружен');
+      updateSettingsChecklist();
+    }
 
     applyButtonReadiness(
       generatorRunButton,
@@ -4780,10 +4795,13 @@ function clearAttachedFile() {
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить готовность модулей');
       if (requestedJobId !== currentJobId) return null;
       const result = data.result || {};
-      moduleReadiness = mergeModuleReadiness(result, inferLocalModuleReadiness());
+      moduleReadinessServerLoaded = true;
+      moduleReadiness = mergeModuleReadiness(result, {});
       applyModuleCounts(result.counts || {});
     } catch (e) {
-      moduleReadiness = mergeModuleReadiness({}, inferLocalModuleReadiness());
+      if (!moduleReadinessServerLoaded) {
+        moduleReadiness = mergeModuleReadiness({}, inferLocalModuleReadiness());
+      }
     }
     applyModuleReadiness();
     saveUiState();
