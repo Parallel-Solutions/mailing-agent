@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Рассылка КП — Система автоматизации</title>
+<title>Формирование и рассылка коммерческих предложений</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -61,6 +61,10 @@
     font-size: 11px;
     color: #888;
     margin-top: 3px;
+  }
+
+  .logo-sub:empty {
+    display: none;
   }
 
   .nav-section {
@@ -396,6 +400,96 @@
     flex-wrap: wrap;
   }
 
+  .module-actions-hint {
+    margin-top: 10px;
+    color: #6f7b65;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .page-sub-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 1.2rem;
+  }
+
+  .page-sub-row .page-sub {
+    margin-bottom: 0;
+    flex: 1 1 620px;
+  }
+
+  .help-popover-wrap {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .help-popover-trigger {
+    border: 1px solid #d7ddcd;
+    background: #fbfcf8;
+    color: #51604a;
+    border-radius: 999px;
+    padding: 7px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .help-popover-trigger:hover {
+    border-color: #bfc8b1;
+    color: #233018;
+    background: #f4f7ee;
+  }
+
+  .help-popover {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: min(360px, calc(100vw - 56px));
+    padding: 12px 14px;
+    border: 1px solid #dfe5d5;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 14px 30px rgba(37, 55, 20, 0.12);
+    display: none;
+    z-index: 20;
+  }
+
+  .help-popover.open {
+    display: block;
+  }
+
+  .help-popover-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #43503b;
+    margin-bottom: 8px;
+  }
+
+  .help-popover-list {
+    display: grid;
+    gap: 7px;
+  }
+
+  .help-popover-item {
+    color: #5c6756;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .help-popover-item strong {
+    color: #17220e;
+  }
+
+  .help-popover-note {
+    margin-top: 9px;
+    color: #798374;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
   .step-nav {
     display: flex;
     justify-content: flex-end;
@@ -479,6 +573,76 @@
     margin-top: 5px;
   }
 
+  .document-process-panel {
+    border: 1px solid #e2e8d9;
+    background: linear-gradient(135deg, #fbfcf7 0%, #f4f8ee 100%);
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-top: 10px;
+  }
+
+  .document-process-panel-top {
+    margin: 8px 0 14px;
+  }
+
+  .document-process-title {
+    color: #849078;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.45px;
+    text-transform: uppercase;
+  }
+
+  .document-process-main {
+    margin-top: 5px;
+    color: #17220e;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.4;
+  }
+
+  .document-process-detail,
+  .document-process-next {
+    margin-top: 5px;
+    color: #788273;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .document-process-next {
+    color: #43791d;
+  }
+
+  .document-process-list {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+
+  .document-process-row {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    color: #41513a;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .document-process-row span {
+    color: #6d7768;
+  }
+
+  .document-process-row strong {
+    color: #17220e;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .generator-stats {
+    display: none;
+  }
+
   /* STATS */
   .stats-row {
     display: grid;
@@ -492,6 +656,7 @@
     border-radius: 10px;
     padding: 12px;
     text-align: center;
+    min-width: 0;
   }
 
   .stat-n {
@@ -1042,6 +1207,14 @@
     font-weight: 500;
   }
 
+  #g-chat-messages {
+    height: 320px;
+  }
+
+  #s-chat-messages {
+    height: 320px;
+  }
+
   @keyframes spin {
     to { transform: rotate(360deg); }
   }
@@ -1369,8 +1542,8 @@
   <!-- SIDEBAR -->
   <div class="sidebar">
     <div class="sidebar-logo">
-      <div class="logo-title">Рассылка КП</div>
-      <div class="logo-sub">Система автоматизации</div>
+      <div class="logo-title">Формирование и рассылка коммерческих предложений</div>
+      <div class="logo-sub"></div>
     </div>
 
     <div class="nav-section">Начало</div>
@@ -1583,16 +1756,60 @@
     <!-- ГЕНЕРАТОР -->
     <div class="screen" id="s-generator">
       <div class="page-title">Подготовка документов</div>
-      <div class="page-sub">Система создаст КП и договоры, сохранит PDF и проверит тексты. Вам нужно нажать одну кнопку.</div>
+      <div class="page-sub-row">
+        <div class="page-sub">На этом шаге нужно просто запустить подготовку и дождаться завершения. Сервис сам создаст документы, проверит текст и подготовит результат.</div>
+        <div class="help-popover-wrap">
+          <button
+            class="help-popover-trigger"
+            type="button"
+            id="generator-help-trigger"
+            aria-expanded="false"
+            aria-controls="generator-help-popover"
+            onclick="toggleHelpPopover('generator-help-popover', this)"
+          >
+            Как это работает
+          </button>
+          <div class="help-popover" id="generator-help-popover" role="dialog" aria-label="Подсказка по подготовке документов">
+            <div class="help-popover-title">Коротко:</div>
+            <div class="help-popover-list">
+              <div class="help-popover-item"><strong>1.</strong> Нажмите кнопку «Подготовить документы».</div>
+              <div class="help-popover-item"><strong>2.</strong> Дождитесь завершения. Ничего дополнительно нажимать не нужно.</div>
+              <div class="help-popover-item"><strong>3.</strong> После завершения скачайте архив или перейдите к проверке отправки.</div>
+            </div>
+            <div class="help-popover-note">Если процесс остановили или произошла ошибка, на экране появится кнопка для продолжения или повторного запуска.</div>
+          </div>
+        </div>
+      </div>
 
-      <div class="stats-row" style="grid-template-columns: repeat(3, 1fr)">
+      <div class="document-process-panel document-process-panel-top" aria-label="Что сейчас происходит с документами">
+        <div class="document-process-title" id="g-process-title">Состояние</div>
+        <div class="document-process-main" id="g-process-main">Для каждого клиента система подготовит комплект документов.</div>
+        <div class="document-process-detail" id="g-process-detail">Сначала создадим файлы, затем проверим текст и подготовим итог к скачиванию.</div>
+        <div class="document-process-next" id="g-process-next">Когда всё будет готово, можно будет перейти к проверке отправки.</div>
+        <div class="document-process-list">
+          <div class="document-process-row">
+            <span>Клиенты:</span>
+            <strong id="g-process-clients">0</strong>
+          </div>
+          <div class="document-process-row">
+            <span>Документы:</span>
+            <strong id="g-process-files">0/0</strong>
+          </div>
+          <div class="document-process-row">
+            <span>Проверка:</span>
+            <strong id="g-process-review">0/0</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-row generator-stats" style="grid-template-columns: repeat(3, minmax(0, 1fr))">
         <div class="stat">
           <div class="stat-n" id="g-total">0</div>
           <div class="stat-l">Всего клиентов</div>
         </div>
         <div class="stat">
           <div class="stat-n" id="g-done" style="color:#2d6e0a">0</div>
-          <div class="stat-l" id="g-done-label">Готово полностью</div>
+          <div class="stat-l" id="g-done-label">Клиентов подготовлено</div>
         </div>
         <div class="stat">
           <div class="stat-n" id="g-err" style="color:#a02020">0</div>
@@ -1603,12 +1820,12 @@
 
       <div class="module-card">
         <div class="module-header">
-          <span class="module-num">Основное действие</span>
+          <span class="module-num">Главная кнопка</span>
           <span class="badge badge-idle" id="g-badge">Готов к запуску</span>
         </div>
-        <div class="module-title">Создать и проверить документы</div>
+        <div class="module-title">Подготовить документы</div>
         <div class="module-desc">
-          Используем загруженную таблицу и шаблоны. На выходе будут готовые папки с DOCX/PDF и список текстовых исправлений, если они понадобятся.
+          Нажмите кнопку ниже. Дальше сервис всё сделает сам.
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="g-fill" style="width:0%"></div></div>
@@ -1619,20 +1836,21 @@
           <div class="module-actions-primary">
             <button class="btn-primary" id="g-run" onclick="startDocumentsPipeline()">Подготовить документы</button>
             <button class="btn-outline" id="g-pause" onclick="pauseDocumentsPipeline()" disabled>Остановить</button>
-            <button class="btn-outline" id="g-download-output" onclick="downloadWithJob('/api/download/output')" disabled>Скачать готовые документы</button>
-            <button class="btn-outline" id="ph-download-report" onclick="downloadWithJob('/api/download/correction-report')" disabled>Скачать список исправлений</button>
+            <button class="btn-outline" id="g-download-output" onclick="downloadWithJob('/api/download/output')" disabled>Скачать архив документов</button>
+            <button class="btn-outline" id="ph-download-report" onclick="downloadWithJob('/api/download/correction-report')" disabled>Скачать отчёт по исправлениям</button>
           </div>
         </div>
+        <div class="module-actions-hint" id="g-actions-hint">Сначала загрузите таблицу и шаблоны. Потом нажмите кнопку выше и дождитесь завершения.</div>
       </div>
 
       <div class="module-card" style="border-color:#c8e0a0; background:#fafdf6; display:none">
         <div class="module-header">
-          <span class="module-num">Постобработка — склонение по падежам</span>
+          <span class="module-num">Дополнительный запуск</span>
           <span class="badge badge-idle" id="ph-badge">Готов к проверке</span>
         </div>
         <div class="module-title">Проверка текстов</div>
         <div class="module-desc">
-          Проверяет готовые документы на грамотность, ищет языковые ошибки, старается автоматически исправлять безопасные случаи и может объяснить результат в чате.
+          Проверяет готовые документы на ошибки в тексте, вносит безопасные исправления и показывает, что требует ручной проверки.
         </div>
         <div class="progress-wrap">
           <div class="progress-bar"><div class="progress-fill" id="ph-fill" style="width:0%"></div></div>
@@ -1642,6 +1860,7 @@
           <button class="btn-primary" id="ph-run" onclick="startPhilologist()">Проверить тексты</button>
           <button class="btn-outline" id="ph-pause" onclick="pausePhilologist()" disabled>Остановить</button>
         </div>
+        <div class="module-actions-hint" id="ph-actions-hint">Обычно этот шаг вручную запускать не нужно: проверка текста входит в общую подготовку документов.</div>
       </div>
 
 
@@ -1650,10 +1869,10 @@
           <div class="dot-green"></div> Журнал подготовки документов
         </div>
         <div class="chat-messages" id="g-chat-messages">
-          <div class="chat-msg agent">Здесь будут появляться понятные сообщения о подготовке документов: что уже готово и что делать дальше.</div>
+          <div class="chat-msg agent">Здесь будут появляться сообщения о подготовке документов. Можно спросить, что сейчас происходит, что уже готово, были ли ошибки и что делать дальше.</div>
         </div>
         <div class="chat-input-row">
-          <input type="text" id="g-chat-input" placeholder="Можно задать вопрос по документам..." onkeydown="if(event.key==='Enter') sendChat('g-chat')">
+          <input type="text" id="g-chat-input" placeholder="Можно спросить про статус, ошибки или документы..." onkeydown="if(event.key==='Enter') sendChat('g-chat')">
           <button onclick="sendChat('g-chat')">Отправить</button>
         </div>
       </div>
@@ -1662,6 +1881,7 @@
         <button class="btn-outline" type="button" onclick="goToScreen('parser')">Назад к таблице</button>
         <button class="btn-primary" id="documents-next-sender" type="button" onclick="goToScreen('sender')" disabled>Дальше: проверить отправку</button>
       </div>
+      <div class="module-actions-hint" id="documents-next-hint">Кнопка перехода дальше станет доступна автоматически после завершения подготовки.</div>
     </div>
 
     <!-- ОТПРАВЩИК -->
@@ -1846,7 +2066,7 @@
   const UI_STATE_STORAGE_KEY_PREFIX = 'mailing-agent-ui-state-v1:';
   const INITIAL_CHAT_MESSAGES = {
     'p-chat': 'Выберите удобный способ: прикрепите готовый Excel-файл или напишите в чат, какие данные нужно найти. Здесь появятся сообщения о загрузке, поиске и проверке таблицы.',
-    'g-chat': 'Здесь будут появляться понятные сообщения о подготовке документов: что уже готово и что делать дальше.',
+    'g-chat': 'Здесь будут появляться сообщения о подготовке документов. Можно спросить, что сейчас происходит, что уже готово, были ли ошибки и что делать дальше.',
     's-chat': 'Здесь будет видно, какие письма готовы к отправке, что уже отправлено и где нужна проверка.',
   };
   let currentJobId = localStorage.getItem(JOB_STORAGE_KEY) || '';
@@ -1864,6 +2084,7 @@
   function createFlowNotificationState() {
     return {
       parser: { lastVerificationStatus: 'idle', announcedStart: false, completedAnnounced: false },
+      documents: { announcedStart: false, terminalAnnounced: false, lastStatus: 'idle', lastStage: '', lastGeneratorStage: '' },
       generator: { announcedStart: false, terminalAnnounced: false, lastStatus: 'idle', lastStage: '', milestones: {}, stageMilestones: {} },
       philologist: { announcedStart: false, terminalAnnounced: false, finalizingAnnounced: false, lastStatus: 'idle', milestones: {} },
       sender: { announcedStart: false, terminalAnnounced: false, lastStatus: 'idle', lastMode: '', milestones: {} },
@@ -2092,9 +2313,12 @@
     isRestoringUiState = true;
     try {
       if (snapshot.parserUiState) setParserUiState({ ...snapshot.parserUiState, from_restore: true });
-      if (snapshot.generatorUiState) setGeneratorUiState({ ...snapshot.generatorUiState, from_restore: true });
-      if (snapshot.philologistUiState) setPhilologistUiState({ ...snapshot.philologistUiState, from_restore: true });
-      if (snapshot.documentsUiState) setDocumentsUiState({ ...snapshot.documentsUiState, from_restore: true });
+      if (snapshot.documentsUiState) {
+        setDocumentsUiState({ ...snapshot.documentsUiState, from_restore: true });
+      } else {
+        if (snapshot.generatorUiState) setGeneratorUiState({ ...snapshot.generatorUiState, from_restore: true });
+        if (snapshot.philologistUiState) setPhilologistUiState({ ...snapshot.philologistUiState, from_restore: true });
+      }
       if (snapshot.senderUiState) setSenderUiState({ ...snapshot.senderUiState, from_restore: true });
     } finally {
       isRestoringUiState = false;
@@ -2138,6 +2362,12 @@
     if (/Проверка перед отправкой ещё не запускалась/i.test(raw)) {
       return fallback || '';
     }
+    if (/Проверяю адреса и готовые документы\. Письма пока не отправляются\./i.test(raw)) {
+      return 'Проверяю письма перед отправкой. Пока ничего не отправляю.';
+    }
+    if (/Проверяю адреса и вложения\./i.test(raw)) {
+      return 'Проверяю адреса, вложения и готовность писем.';
+    }
     if (/send|dry_run|data\.xlsx|строк|обработано|Отправщик|агент-|mode|provider|email_id/i.test(raw)) {
       return fallback || 'Статус отправки обновлён.';
     }
@@ -2148,7 +2378,16 @@
     return ['running', 'finalizing'].includes(String(state.lastStatus || 'idle'));
   }
 
+  function shouldUseUnifiedDocumentsChat() {
+    return activeScreenId === 'generator' && doesDocumentsScreenOwnSubmoduleUi(false);
+  }
+
   function maybeAnnounceGeneratorFlow(result = {}) {
+    if (shouldUseUnifiedDocumentsChat()) {
+      flowNotificationState.generator.lastStatus = String(result.status || 'idle');
+      flowNotificationState.generator.lastStage = String(result.stage || '');
+      return;
+    }
     const status = String(result.status || 'idle');
     const stage = String(result.stage || '');
     const total = Number(result.total_rows || 0);
@@ -2215,6 +2454,10 @@
   }
 
   function maybeAnnouncePhilologistFlow(result = {}) {
+    if (shouldUseUnifiedDocumentsChat()) {
+      flowNotificationState.philologist.lastStatus = String(result.status || 'idle');
+      return;
+    }
     const status = String(result.status || 'idle');
     const total = Number(result.total_documents || 0);
     const processed = Number(result.processed_documents || 0);
@@ -2274,6 +2517,15 @@
     state.lastStatus = status;
   }
 
+  function maybeAnnounceDocumentsFlow(result = {}) {
+    const status = String(result.status || 'idle');
+    const ui = result.ui || {};
+    const chatEvents = ui.chat_events || [];
+    const state = flowNotificationState.documents;
+    appendServerChatEvents('g-chat', 'documents', chatEvents);
+    state.lastStatus = status;
+  }
+
   function maybeAnnounceSenderFlow(result = {}) {
     const status = String(result.status || 'idle');
     const mode = String(result.mode || 'dry_run');
@@ -2329,7 +2581,7 @@
         mode === 'send' ? 'Отправка началась' : 'Проверка началась',
         mode === 'send'
           ? `Начинаю отправку писем. Всего к обработке: ${total.toLocaleString('ru')}.`
-          : `Проверяю адреса и вложения. Всего к проверке: ${total.toLocaleString('ru')}.`
+          : `Проверяю адреса, вложения и готовность писем. Всего к проверке: ${total.toLocaleString('ru')}.`
       );
     }
 
@@ -2867,19 +3119,20 @@
     const currentIndex = order.indexOf(activeScreenId);
     const targetIndex = order.indexOf(id);
     const movingForward = currentIndex >= 0 && targetIndex > currentIndex;
+    const openingStatusScreen = id === 'status';
 
-    if (movingForward && activeScreenId === 'settings' && !areSettingsReady()) {
+    if (!openingStatusScreen && movingForward && activeScreenId === 'settings' && !areSettingsReady()) {
       const missing = getMissingSettingsFields();
       showToast('Сначала добавьте: ' + missing.join(', '));
       updateSettingsChecklist();
       return;
     }
-    if (movingForward && activeScreenId === 'parser' && !isParserReadyForDocuments()) {
+    if (!openingStatusScreen && movingForward && activeScreenId === 'parser' && !isParserReadyForDocuments()) {
       showToast(parserRunning ? 'Дождитесь завершения проверки таблицы' : 'Сначала загрузите и проверьте таблицу');
       refreshParserStatus({ silent: true });
       return;
     }
-    if (movingForward && activeScreenId === 'sender' && !isSenderReadyForStatus()) {
+    if (!openingStatusScreen && movingForward && activeScreenId === 'sender' && !isSenderReadyForStatus()) {
       showToast(senderRunning ? 'Дождитесь завершения проверки или отправки' : 'Сначала выполните проверку перед отправкой');
       refreshSenderStatus({ silent: true });
       return;
@@ -2909,6 +3162,25 @@
     t.classList.add('show');
     clearTimeout(t.dataset.hideTimer);
     t.dataset.hideTimer = setTimeout(() => t.classList.remove('show'), 6000);
+  }
+
+  function closeAllHelpPopovers() {
+    document.querySelectorAll('.help-popover.open').forEach(popover => {
+      popover.classList.remove('open');
+    });
+    document.querySelectorAll('.help-popover-trigger[aria-expanded="true"]').forEach(trigger => {
+      trigger.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function toggleHelpPopover(popoverId, trigger) {
+    const popover = document.getElementById(popoverId);
+    if (!popover || !trigger) return;
+    const shouldOpen = !popover.classList.contains('open');
+    closeAllHelpPopovers();
+    if (!shouldOpen) return;
+    popover.classList.add('open');
+    trigger.setAttribute('aria-expanded', 'true');
   }
 
   function openParserSearchModal() {
@@ -3038,6 +3310,24 @@
     updateSettingsChecklist();
   }
 
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function startPollingLoop(runOnce, intervalMs) {
+    const controller = { stopped: false };
+    controller.promise = (async () => {
+      while (!controller.stopped) {
+        try {
+          await runOnce();
+        } catch (err) {}
+        if (controller.stopped) break;
+        await sleep(intervalMs);
+      }
+    })();
+    return controller;
+  }
+
   function resetChatMessages(chatId) {
     const wrap = document.getElementById(`${chatId}-messages`);
     if (!wrap) return;
@@ -3077,18 +3367,10 @@
     if (!confirmed) return;
     const previousJobIdForCleanup = currentJobId;
 
-    if (generatorStatusPoll) {
-      clearInterval(generatorStatusPoll);
-      generatorStatusPoll = null;
-    }
-    if (documentsStatusPoll) {
-      clearInterval(documentsStatusPoll);
-      documentsStatusPoll = null;
-    }
-    if (philologistStatusPoll) {
-      clearInterval(philologistStatusPoll);
-      philologistStatusPoll = null;
-    }
+    stopGeneratorPolling();
+    stopDocumentsPolling();
+    stopPhilologistPolling();
+    stopGlobalStatusPolling();
 
     senderRunning = false;
     parserRunning = false;
@@ -3110,6 +3392,7 @@
     setScenario(1);
 
     ['p-chat', 'g-chat', 's-chat'].forEach(resetChatMessages);
+    lastAgentEventIds.documents = '';
     lastAgentEventIds.generator = '';
     lastAgentEventIds.philologist = '';
     lastAgentEventIds.sender = '';
@@ -3408,7 +3691,7 @@
     let endpoint = null;
     if (chatId === 'o-chat') endpoint = '/api/orchestrator/chat';
     if (chatId === 'p-chat') endpoint = '/api/parser/chat';
-    if (chatId === 'g-chat') endpoint = '/api/philologist/chat';
+    if (chatId === 'g-chat') endpoint = '/api/documents/chat';
     if (chatId === 's-chat') endpoint = '/api/sender/chat';
 
     if (!endpoint) {
@@ -3811,6 +4094,13 @@ function clearAttachedFile() {
 
   // PHILOLOGIST
   let phRunning = false, philologistStatusPoll = null;
+
+  function stopPhilologistPolling() {
+    if (philologistStatusPoll) {
+      philologistStatusPoll.stopped = true;
+      philologistStatusPoll = null;
+    }
+  }
   let currentParserStatus = 'idle';
   let currentGeneratorStatus = 'idle';
   let currentPhilologistStatus = 'idle';
@@ -3820,6 +4110,17 @@ function clearAttachedFile() {
     const force = !!result.force;
     const fromRestore = !!result.from_restore;
     const nextState = stripUiStateMeta(result);
+    const documentsOwnPhilologistUi = doesDocumentsScreenOwnSubmoduleUi(force);
+    if (documentsOwnPhilologistUi) {
+      if (!force && !shouldAcceptPhilologistUiState(nextState, lastPhilologistUiState)) {
+        return;
+      }
+      lastPhilologistUiState = { ...nextState };
+      currentPhilologistStatus = nextState.status || currentPhilologistStatus;
+      phRunning = ['running', 'finalizing'].includes(String(currentPhilologistStatus || ''));
+      scheduleUiStateSave();
+      return;
+    }
     if (!force && !shouldAcceptPhilologistUiState(nextState, lastPhilologistUiState)) {
       return;
     }
@@ -3898,7 +4199,7 @@ function clearAttachedFile() {
     }
 
     if (status === 'completed') {
-      runButton.textContent = 'Проверить тексты';
+      runButton.textContent = 'Проверить заново';
       badge.textContent = 'Готово';
       badge.className = 'badge badge-done';
       label.textContent = total > 0
@@ -3930,7 +4231,7 @@ function clearAttachedFile() {
     }
 
     if (status === 'error') {
-      runButton.textContent = 'Проверить тексты';
+      runButton.textContent = 'Повторить проверку';
       badge.textContent = 'Ошибка';
       badge.className = 'badge badge-error';
       label.textContent = nextState.summary_text || 'Проверка завершилась с ошибкой';
@@ -3982,13 +4283,12 @@ function clearAttachedFile() {
     appendChatMessage('g-chat', 'agent', isResume
       ? 'Продолжаю проверку документов с сохраненного места.'
       : 'Запускаю проверку документов. После завершения расскажу, что нашёл и что удалось исправить.');
-    if (philologistStatusPoll) clearInterval(philologistStatusPoll);
-    philologistStatusPoll = setInterval(async () => {
+    stopPhilologistPolling();
+    philologistStatusPoll = startPollingLoop(async () => {
       const status = await refreshPhilologistStatus({ silent: true });
       if (!status || ['running', 'finalizing'].includes(status.status)) return;
       phRunning = false;
-      clearInterval(philologistStatusPoll);
-      philologistStatusPoll = null;
+      stopPhilologistPolling();
       if (status.status === 'completed') {
         showToast('Тексты проверены');
         if (!flowNotificationState.philologist.terminalAnnounced) {
@@ -4029,10 +4329,7 @@ function clearAttachedFile() {
       }
     } catch (err) {
       phRunning = false;
-      if (philologistStatusPoll) {
-        clearInterval(philologistStatusPoll);
-        philologistStatusPoll = null;
-      }
+      stopPhilologistPolling();
       setPhilologistUiState({ force: true, status: 'error', summary_text: 'Проверка не завершилась' });
       appendChatMessage('g-chat', 'agent', 'Не удалось завершить проверку: ' + err.message);
       showToast('Ошибка проверки текстов');
@@ -4062,7 +4359,7 @@ function clearAttachedFile() {
 
   function stopGeneratorPolling() {
     if (generatorStatusPoll) {
-      clearInterval(generatorStatusPoll);
+      generatorStatusPoll.stopped = true;
       generatorStatusPoll = null;
     }
   }
@@ -4123,7 +4420,7 @@ function clearAttachedFile() {
 
   function stopDocumentsPolling() {
     if (documentsStatusPoll) {
-      clearInterval(documentsStatusPoll);
+      documentsStatusPoll.stopped = true;
       documentsStatusPoll = null;
     }
   }
@@ -4137,6 +4434,7 @@ function clearAttachedFile() {
       if (requestedJobId !== currentJobId) return null;
       const result = data.result || {};
       setDocumentsUiState(result);
+      maybeAnnounceDocumentsFlow(result);
       if (result.generator) {
         lastGeneratorUiState = { ...stripUiStateMeta(result.generator) };
         currentGeneratorStatus = result.generator.status || currentGeneratorStatus;
@@ -4180,13 +4478,8 @@ function clearAttachedFile() {
       : 'Начинаю подготовку документов. Сначала создам КП и договоры, затем проверю тексты перед отправкой.');
     stopDocumentsPolling();
     stopGeneratorPolling();
-    if (philologistStatusPoll) {
-      clearInterval(philologistStatusPoll);
-      philologistStatusPoll = null;
-    }
-    documentsStatusPoll = setInterval(() => {
-      refreshDocumentsStatus({ silent: true });
-    }, 2000);
+    stopPhilologistPolling();
+    documentsStatusPoll = startPollingLoop(() => refreshDocumentsStatus({ silent: true }), 2000);
     try {
       const res = await fetch('/api/documents/start', {
         method: 'POST',
@@ -4244,9 +4537,7 @@ function clearAttachedFile() {
       : 'Начинаю подготовку документов. Сначала проверю шаблоны, затем создам файлы и сохраню их в PDF.');
     generatorCompletionAnnounced = false;
     stopGeneratorPolling();
-    generatorStatusPoll = setInterval(() => {
-      refreshGeneratorStatus({ silent: true });
-    }, 2000);
+    generatorStatusPoll = startPollingLoop(() => refreshGeneratorStatus({ silent: true }), 2000);
     try {
       const res = await fetch('/api/generate', {
         method: 'POST',
@@ -4314,15 +4605,20 @@ function clearAttachedFile() {
   function getSenderOutstandingRows(state = {}) {
     const stats = state.stats || {};
     const statsTotal = Number(stats.total || 0);
-    const statsOutstanding = Math.max(0, Number(stats.pending || 0) + Number(stats.error || 0));
+    const processedRows = Number(state.processed_rows || 0);
+    const totalRows = Math.max(Number(state.total_rows || 0), statsTotal, processedRows);
     const status = String(state.status || 'idle');
     const mode = String(state.mode || 'dry_run');
-    if (status === 'completed' && mode === 'send' && statsTotal > 0) {
-      return statsOutstanding;
+    if (status === 'running' && totalRows > 0) {
+      return Math.max(0, totalRows - processedRows);
     }
     const remainingRows = Number(state.remaining_rows || 0);
     if (remainingRows > 0) {
       return Math.max(0, remainingRows);
+    }
+    const statsOutstanding = Math.max(0, Number(stats.pending || 0));
+    if (status === 'completed' && mode === 'send' && statsTotal > 0) {
+      return statsOutstanding;
     }
     return statsTotal > 0 ? statsOutstanding : 0;
   }
@@ -4623,12 +4919,12 @@ function clearAttachedFile() {
   }
 
   function humanAgentName(agent) {
-    if (agent === 'generator') return 'агент-генератор';
-    if (agent === 'philologist') return 'агент-филолог';
-    if (agent === 'sender') return 'агент-отправщик';
-    if (agent === 'parser') return 'агент-парсер';
+    if (agent === 'generator') return 'подготовка документов';
+    if (agent === 'philologist') return 'проверка текста';
+    if (agent === 'sender') return 'отправка писем';
+    if (agent === 'parser') return 'обработка таблицы';
     if (agent === 'orchestrator') return 'оркестратор';
-    return 'другой агент';
+    return 'система';
   }
 
   function humanTaskName(taskType) {
@@ -4652,19 +4948,19 @@ function clearAttachedFile() {
     const rowLabel = munName ? `по "${munName}"` : (rowId ? `по строке ${rowId}` : '');
 
     if (eventType === 'task_created') {
-      return `${source} передал ${target} ${humanTaskName(taskType)} ${rowLabel}`.trim();
+      return `${source} передала на ${target} ${humanTaskName(taskType)} ${rowLabel}`.trim();
     }
     if (eventType === 'task_claimed') {
-      return `${source} принял в работу ${humanTaskName(taskType)} ${rowLabel}`.trim();
+      return `${source} начала ${humanTaskName(taskType)} ${rowLabel}`.trim();
     }
     if (eventType === 'task_done') {
       const resolution = item.resolution_summary || item.details?.resolution_summary || '';
       return resolution
-        ? `${source} завершил работу ${rowLabel}: ${resolution}`.trim()
-        : `${source} завершил работу ${rowLabel}`.trim();
+        ? `${source} завершена ${rowLabel}: ${resolution}`.trim()
+        : `${source} завершена ${rowLabel}`.trim();
     }
     if (eventType === 'task_blocked') {
-      return `${source} не смог продолжить ${rowLabel}. Нужна дополнительная проверка.`.trim();
+      return `${source} остановилась ${rowLabel}. Нужна дополнительная проверка.`.trim();
     }
     if (eventType === 'task_escalated') {
       return '';
@@ -4696,6 +4992,7 @@ function clearAttachedFile() {
   }
 
   const lastAgentEventIds = {
+    documents: '',
     generator: '',
     philologist: '',
     sender: '',
@@ -4717,6 +5014,30 @@ function clearAttachedFile() {
     const formatted = formatAgentEvents(unseen, unseen.length);
     if (!formatted) return;
     appendChatMessage(chatId, 'agent', `${title}\n${formatted}`);
+  }
+
+  function appendServerChatEvents(chatId, agentKey, events) {
+    if (!Array.isArray(events) || !events.length) return;
+    const unseen = [];
+    for (const item of events) {
+      const eventId = String(item && item.id || '').trim();
+      const text = String(item && item.text || '').trim();
+      if (!eventId || !text) continue;
+      if (eventId === lastAgentEventIds[agentKey]) {
+        unseen.length = 0;
+      } else {
+        unseen.push({
+          title: String(item.title || '').trim(),
+          text,
+          id: eventId,
+        });
+      }
+    }
+    lastAgentEventIds[agentKey] = String(events[events.length - 1] && events[events.length - 1].id || lastAgentEventIds[agentKey] || '');
+    if (!unseen.length) return;
+    unseen.forEach((item) => {
+      appendChatMessage(chatId, 'agent', item.text);
+    });
   }
 
   function setProgressVisual(fillEl, { percent = 0, running = false, indeterminate = false } = {}) {
@@ -4772,6 +5093,28 @@ function clearAttachedFile() {
     if (downloadButton) downloadButton.disabled = !isEnabled;
   }
 
+  function updateDocumentsActionHints({
+    generatorHint = '',
+    philologistHint = '',
+    nextHint = '',
+  } = {}) {
+    const generatorHintEl = document.getElementById('g-actions-hint');
+    const philologistHintEl = document.getElementById('ph-actions-hint');
+    const nextHintEl = document.getElementById('documents-next-hint');
+    if (generatorHintEl) generatorHintEl.textContent = generatorHint;
+    if (philologistHintEl) philologistHintEl.textContent = philologistHint;
+    if (nextHintEl) nextHintEl.textContent = nextHint;
+  }
+
+  function doesDocumentsScreenOwnSubmoduleUi(force = false) {
+    if (force || activeScreenId !== 'generator' || !lastDocumentsUiState) return false;
+    return Boolean(
+      lastDocumentsUiState.generator
+      || lastDocumentsUiState.philologist
+      || ['running', 'stopped', 'completed', 'error'].includes(String(lastDocumentsUiState.status || ''))
+    );
+  }
+
   function setInflectionDownloadEnabled(isEnabled) {
   }
 
@@ -4794,6 +5137,16 @@ function clearAttachedFile() {
     const force = !!result.force;
     const fromRestore = !!result.from_restore;
     const nextState = stripUiStateMeta(result);
+    const documentsOwnGeneratorUi = doesDocumentsScreenOwnSubmoduleUi(force);
+    if (documentsOwnGeneratorUi) {
+      if (!force && !shouldAcceptGeneratorUiState(nextState, lastGeneratorUiState)) {
+        return;
+      }
+      lastGeneratorUiState = { ...nextState };
+      currentGeneratorStatus = nextState.status || currentGeneratorStatus;
+      scheduleUiStateSave();
+      return;
+    }
     if (!force && !shouldAcceptGeneratorUiState(nextState, lastGeneratorUiState)) {
       return;
     }
@@ -4858,7 +5211,7 @@ function clearAttachedFile() {
     })();
 
     let doneValue = 0;
-    let doneLabel = 'Готово полностью';
+    let doneLabel = 'Клиентов подготовлено';
     if (status === 'running') {
       if (stage === 'convert_pdf' || stage === 'finalize_output') {
         doneValue = pdfProcessed;
@@ -4869,7 +5222,7 @@ function clearAttachedFile() {
       }
     } else if (status === 'completed') {
       doneValue = total;
-      doneLabel = 'Готово полностью';
+      doneLabel = 'Клиентов подготовлено';
     } else if (status === 'error') {
       if (stage === 'convert_pdf' || stage === 'finalize_output') {
         doneValue = pdfProcessed;
@@ -4934,7 +5287,10 @@ function clearAttachedFile() {
     }
 
     if (status === 'completed') {
-      if (runButton) runButton.textContent = 'Подготовить документы';
+      if (runButton) {
+        runButton.textContent = 'Подготовить заново';
+        runButton.title = runButton.disabled ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.') : 'Запустить подготовку заново с текущими данными.';
+      }
       badge.textContent = 'Готово';
       badge.className = 'badge badge-done';
       label.textContent = total > 0
@@ -4970,7 +5326,7 @@ function clearAttachedFile() {
     }
 
     if (status === 'error') {
-      if (runButton) runButton.textContent = 'Подготовить документы';
+      if (runButton) runButton.textContent = 'Повторить подготовку';
       badge.textContent = 'Ошибка';
       badge.className = 'badge badge-error';
       label.textContent = humanizeDocumentsMessage(nextState.summary_text, 'Не удалось подготовить документы.');
@@ -4993,32 +5349,374 @@ function clearAttachedFile() {
     setProgressVisual(fill, { percent: 0, running: false });
   }
 
-  function setDocumentsUiState(result = {}) {
-    const status = String(result.status || 'idle');
-    const stage = String(result.stage || 'generate');
+  function updateDocumentsStageBreakdown(result = {}) {
+    const vm = buildDocumentsScreenViewModel(result);
+    const serverUi = result.ui || {};
+    const serverProcess = serverUi.process || {};
+    const status = vm.status;
+    const stage = vm.stage;
+    const titleEl = document.getElementById('g-process-title');
+    const mainEl = document.getElementById('g-process-main');
+    const detailEl = document.getElementById('g-process-detail');
+    const nextEl = document.getElementById('g-process-next');
+    const clientsEl = document.getElementById('g-process-clients');
+    const filesEl = document.getElementById('g-process-files');
+    const reviewEl = document.getElementById('g-process-review');
+    const setText = ({ title, main, detail, next }) => {
+      if (titleEl) titleEl.textContent = title;
+      if (mainEl) mainEl.textContent = main;
+      if (detailEl) detailEl.textContent = detail;
+      if (nextEl) nextEl.textContent = next;
+    };
+    if (clientsEl) clientsEl.textContent = Number(serverProcess.clients_total ?? vm.totalRows ?? 0).toLocaleString('ru');
+    if (filesEl) filesEl.textContent = `${Number(serverProcess.documents_done ?? vm.shownDocuments ?? 0).toLocaleString('ru')}/${Number(serverProcess.documents_total ?? vm.expectedDocuments ?? 0).toLocaleString('ru')}`;
+    if (reviewEl) reviewEl.textContent = `${Number(serverProcess.review_done ?? vm.reviewedDocuments ?? 0).toLocaleString('ru')}/${Number(serverProcess.review_total ?? vm.totalDocuments ?? 0).toLocaleString('ru')}`;
+    if (serverProcess.title || serverProcess.main || serverProcess.detail || serverProcess.next) {
+      setText({
+        title: serverProcess.title || 'Состояние',
+        main: serverProcess.main || '',
+        detail: serverProcess.detail || '',
+        next: serverProcess.next || '',
+      });
+      return;
+    }
+    const clientsText = vm.totalRows > 0
+      ? `${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')} клиентов`
+      : 'клиентов пока не найдено';
+    const documentsText = `${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')} документов`;
+    const pdfText = `${vm.shownPdfDone.toLocaleString('ru')} из ${vm.shownPdfTotal.toLocaleString('ru')} PDF`;
+
+    if (status === 'running' && stage === 'review') {
+      setText({
+        title: 'Идёт подготовка',
+        main: 'Сейчас сервис проверяет текст в документах.',
+        detail: `Готово ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')}. Ничего нажимать не нужно.`,
+        next: 'После завершения можно будет скачать результат или перейти дальше.'
+      });
+      return;
+    }
+
+    if (status === 'running' && (stage === 'convert_pdf' || stage === 'finalize_output')) {
+      setText({
+        title: 'Идёт подготовка',
+        main: 'Сейчас сервис сохраняет готовые файлы.',
+        detail: `Подготовлено ${pdfText}.`,
+        next: 'Скоро подготовка завершится автоматически.'
+      });
+      return;
+    }
+
+    if (status === 'running') {
+      setText({
+        title: 'Идёт подготовка',
+        main: 'Сейчас сервис создаёт документы.',
+        detail: `Готово ${clientsText}. Просто дождитесь завершения.`,
+        next: 'После этого система сама закончит остальные шаги.'
+      });
+      return;
+    }
+
+    if (status === 'completed') {
+      const hasMissingDocuments = vm.expectedDocuments > 0 && vm.shownDocuments > 0 && vm.shownDocuments < vm.expectedDocuments;
+      const hasMissingPdf = vm.shownPdfTotal > 0 && vm.shownPdfDone > 0 && vm.shownPdfDone < vm.shownPdfTotal;
+      if (hasMissingDocuments || hasMissingPdf || vm.errorRows > 0) {
+        setText({
+          title: 'Подготовка завершена с замечаниями',
+          main: 'Часть документов готова, но не всё удалось собрать автоматически.',
+          detail: `Документы: ${documentsText}. PDF: ${pdfText}.`,
+          next: 'Скачайте результат и проверьте строки с ошибками.'
+        });
+        return;
+      }
+      setText({
+        title: 'Готово',
+        main: 'Документы подготовлены.',
+        detail: `Подготовка завершена для ${vm.totalRows.toLocaleString('ru')} клиентов.`,
+        next: 'Теперь можно скачать архив или перейти к проверке отправки.'
+      });
+      return;
+    }
+
+    if (status === 'stopped') {
+      setText({
+        title: 'Подготовка остановлена',
+        main: 'Процесс остановлен.',
+        detail: stage === 'review'
+          ? `Проверка текста выполнена частично: ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')}.`
+          : `Подготовка выполнена частично: ${clientsText}.`,
+        next: 'Нажмите «Продолжить подготовку», чтобы продолжить.'
+      });
+      return;
+    }
+
+    if (status === 'error') {
+      setText({
+        title: 'Есть ошибка',
+        main: 'Сервис не смог завершить подготовку.',
+        detail: vm.errorRows > 0
+          ? `Строк с ошибками: ${vm.errorRows.toLocaleString('ru')}. Часть файлов может быть уже готова.`
+          : 'Часть файлов может быть уже готова.',
+        next: 'Исправьте данные или просто попробуйте повторить запуск.'
+      });
+      return;
+    }
+
+    setText({
+      title: 'Готово к запуску',
+      main: 'Сервис подготовит документы по вашей таблице.',
+      detail: 'После запуска ничего дополнительно делать не нужно.',
+      next: 'Когда всё будет готово, можно будет скачать результат и перейти дальше.'
+    });
+  }
+
+  function buildDocumentsScreenViewModel(result = {}) {
     const generatorState = result.generator || {};
     const philologistState = result.philologist || {};
+    const rawStatus = String(result.status || 'idle');
+    const stage = String(result.stage || 'generate');
     const totalRows = Number(result.total_rows || generatorState.total_rows || 0);
     const processedRows = Number(result.processed_rows || generatorState.processed_rows || 0);
     const totalDocuments = Number(result.total_documents || philologistState.total_documents || 0);
     const reviewedDocuments = Number(result.reviewed_documents || philologistState.processed_documents || 0);
+    const stagedDocxCount = Number(generatorState.staged_docx_count || 0);
     const pdfTotal = Number(generatorState.pdf_total || 0);
     const pdfProcessed = Number(generatorState.pdf_processed || generatorState.staged_pdf_count || 0);
+    const outputFileCount = Number(result.output_file_count || generatorState.output_file_count || 0);
     const errorRows = Number(result.error_rows || generatorState.error_rows || 0);
     const fixedDocuments = Number(result.fixed_documents || philologistState.fixed_documents || 0);
-    const percent = Number(result.progress_percent || 0);
     const reviewActuallyDone = totalDocuments > 0 && reviewedDocuments >= totalDocuments;
-    const effectiveStatus = status === 'running' && stage === 'review' && reviewActuallyDone ? 'completed' : status;
+    const status = rawStatus === 'running' && stage === 'review' && reviewActuallyDone ? 'completed' : rawStatus;
+    const expectedDocuments = totalRows > 0
+      ? totalRows * 2
+      : Math.max(totalDocuments, pdfTotal, stagedDocxCount, outputFileCount);
+    const generatedDocuments = Math.max(stagedDocxCount, pdfTotal, totalDocuments, stage === 'review' ? totalDocuments : 0);
+    const hasGeneratedDocumentsCount = generatedDocuments > 0 || stagedDocxCount > 0 || pdfTotal > 0 || totalDocuments > 0;
+    const shownDocuments = status === 'completed' && expectedDocuments > 0 && !hasGeneratedDocumentsCount
+      ? expectedDocuments
+      : generatedDocuments;
+    const shownPdfTotal = expectedDocuments || pdfTotal;
+    const hasPdfCount = pdfProcessed > 0 || outputFileCount > 0 || pdfTotal > 0;
+    const shownPdfDone = status === 'completed' && shownPdfTotal > 0 && !hasPdfCount
+      ? shownPdfTotal
+      : Math.max(pdfProcessed, Math.min(outputFileCount, shownPdfTotal || outputFileCount));
+    const progressPercent = Number(result.progress_percent || 0);
+    return {
+      status,
+      rawStatus,
+      stage,
+      totalRows,
+      processedRows,
+      totalDocuments,
+      reviewedDocuments,
+      errorRows,
+      fixedDocuments,
+      expectedDocuments,
+      shownDocuments,
+      shownPdfTotal,
+      shownPdfDone,
+      outputFileCount,
+      progressPercent,
+    };
+  }
+
+  function buildDocumentsUiCopy(vm, result = {}) {
+    const serverModule = (result.ui || {}).module || {};
+    if (serverModule.badge_text || serverModule.label_text || serverModule.run_text) {
+      let runDisabled = false;
+      let runTitle = '';
+      if (vm.status === 'running') {
+        runDisabled = true;
+      } else if (vm.status === 'completed' || vm.status === 'error' || vm.status === 'idle') {
+        runDisabled = !moduleReadiness.generator_ready;
+        runTitle = runDisabled ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.') : '';
+      }
+      if (vm.status === 'completed' && !runDisabled) {
+        runTitle = 'Запустить подготовку заново с текущими данными.';
+      }
+      const resolvedGeneratorHint = vm.status === 'idle'
+        ? (
+          moduleReadiness.generator_ready
+            ? 'Можно запускать. Дальше сервис всё сделает сам.'
+            : (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.')
+        )
+        : (serverModule.generator_hint || '');
+      const resolvedPhilologistHint = vm.status === 'idle'
+        ? (
+          moduleReadiness.philologist_ready
+            ? 'Документы уже готовы. При необходимости можно перепроверить текст отдельно.'
+            : 'Отдельную проверку текста сейчас запускать не нужно.'
+        )
+        : (serverModule.philologist_hint || '');
+      return {
+        badgeText: serverModule.badge_text || 'Готов к запуску',
+        badgeClass: `badge badge-${serverModule.badge_tone || 'idle'}`,
+        runText: serverModule.run_text || 'Подготовить документы',
+        runDisabled,
+        runTitle,
+        pauseDisabled: vm.status !== 'running',
+        pauseText: 'Остановить',
+        pauseTitle: vm.status === 'running' ? '' : 'Остановка станет доступна после запуска подготовки документов.',
+        doneValue: vm.status === 'completed'
+          ? (vm.totalRows || Math.floor(vm.totalDocuments / 2))
+          : (vm.stage === 'review' ? vm.reviewedDocuments : vm.processedRows),
+        doneLabel: vm.status === 'completed'
+          ? 'Клиентов подготовлено'
+          : (vm.stage === 'review' ? 'Проверено документов' : 'Подготовлено клиентов'),
+        labelText: serverModule.label_text || '',
+        generatorHint: resolvedGeneratorHint,
+        philologistHint: resolvedPhilologistHint,
+        nextHint: serverModule.next_hint || '',
+        progressPercent: vm.status === 'completed' ? 100 : vm.progressPercent,
+        progressRunning: vm.status === 'running',
+      };
+    }
+    const defaultLabel = humanizeDocumentsMessage(result.stage_text, 'Подготовка документов ещё не запускалась.');
+    const completedLabel = vm.fixedDocuments > 0
+      ? 'Документы готовы. Безопасные правки внесены.'
+      : 'Документы созданы и проверены. Можно переходить к отправке.';
+    const stoppedLabel = humanizeDocumentsMessage(result.stage_text, 'Подготовка остановлена. Можно продолжить с того же места.');
+    const errorLabel = humanizeDocumentsMessage(result.stage_text, 'Не удалось завершить подготовку документов.');
+    const runningLabel = (() => {
+      if (vm.stage === 'review' && vm.totalDocuments > 0) {
+        return `Документы созданы. Проверяю тексты: ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')}.`;
+      }
+      if (vm.shownPdfTotal > 0 && (vm.stage === 'convert_pdf' || vm.stage === 'finalize_output')) {
+        return `Сохраняю документы в PDF: ${vm.shownPdfDone.toLocaleString('ru')} из ${vm.shownPdfTotal.toLocaleString('ru')}.`;
+      }
+      if (vm.totalRows > 0) {
+        return `Готовлю документы: ${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')} клиентов.`;
+      }
+      return humanizeDocumentsMessage(result.stage_text, 'Готовлю документы. Скоро покажу прогресс.');
+    })();
+
+    if (vm.status === 'running') {
+      return {
+        badgeText: vm.stage === 'review' ? 'Проверка текстов' : 'Подготовка',
+        badgeClass: 'badge badge-running',
+        runText: vm.stage === 'review' ? 'Проверяю документы' : 'Документы готовятся',
+        runDisabled: true,
+        runTitle: '',
+        pauseDisabled: false,
+        pauseText: 'Остановить',
+        pauseTitle: '',
+        doneValue: vm.stage === 'review' ? vm.reviewedDocuments : vm.processedRows,
+        doneLabel: vm.stage === 'review' ? 'Проверено документов' : 'Подготовлено клиентов',
+        labelText: runningLabel,
+        generatorHint: vm.stage === 'review'
+          ? 'Идёт проверка текста. Просто дождитесь завершения.'
+          : 'Идёт подготовка документов. Просто дождитесь завершения.',
+        philologistHint: 'Ничего дополнительно запускать не нужно.',
+        nextHint: 'Когда всё будет готово, кнопка перехода дальше включится сама.',
+        progressPercent: vm.progressPercent,
+        progressRunning: true,
+      };
+    }
+
+    if (vm.status === 'completed') {
+      return {
+        badgeText: 'Готово',
+        badgeClass: 'badge badge-done',
+        runText: 'Подготовить заново',
+        runDisabled: !moduleReadiness.generator_ready,
+        runTitle: !moduleReadiness.generator_ready
+          ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.')
+          : 'Запустить подготовку заново с текущими данными.',
+        pauseDisabled: true,
+        pauseText: 'Остановить',
+        pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
+        doneValue: vm.totalRows || Math.floor(vm.totalDocuments / 2),
+        doneLabel: 'Клиентов подготовлено',
+        labelText: completedLabel,
+        generatorHint: 'Готово. Можно скачать архив документов.',
+        philologistHint: 'Если очень нужно, можно отдельно запустить повторную проверку текста.',
+        nextHint: 'Теперь можно переходить к следующему шагу.',
+        progressPercent: 100,
+        progressRunning: false,
+      };
+    }
+
+    if (vm.status === 'stopped') {
+      return {
+        badgeText: 'Остановлено',
+        badgeClass: 'badge badge-wait',
+        runText: 'Продолжить подготовку',
+        runDisabled: false,
+        runTitle: '',
+        pauseDisabled: true,
+        pauseText: 'Остановить',
+        pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
+        doneValue: vm.stage === 'review' ? vm.reviewedDocuments : vm.processedRows,
+        doneLabel: vm.stage === 'review' ? 'Проверено документов' : 'Подготовлено клиентов',
+        labelText: stoppedLabel,
+        generatorHint: 'Прогресс сохранён. Можно продолжить с этого места.',
+        philologistHint: 'Сначала продолжите подготовку.',
+        nextHint: 'Пока процесс не завершён, перейти дальше нельзя.',
+        progressPercent: vm.progressPercent,
+        progressRunning: false,
+      };
+    }
+
+    if (vm.status === 'error') {
+      return {
+        badgeText: 'Ошибка',
+        badgeClass: 'badge badge-error',
+        runText: 'Повторить подготовку',
+        runDisabled: !moduleReadiness.generator_ready,
+        runTitle: !moduleReadiness.generator_ready
+          ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.')
+          : '',
+        pauseDisabled: true,
+        pauseText: 'Остановить',
+        pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
+        doneValue: vm.processedRows,
+        doneLabel: 'Подготовлено клиентов',
+        labelText: errorLabel,
+        generatorHint: 'Попробуйте повторить запуск. Если ошибка повторяется, проверьте таблицу и шаблоны.',
+        philologistHint: 'Сначала завершите подготовку без ошибки.',
+        nextHint: 'Пока есть ошибка, перейти дальше нельзя.',
+        progressPercent: vm.progressPercent,
+        progressRunning: false,
+      };
+    }
+
+    return {
+      badgeText: 'Готов к запуску',
+      badgeClass: 'badge badge-idle',
+      runText: 'Подготовить документы',
+      runDisabled: !moduleReadiness.generator_ready,
+      runTitle: !moduleReadiness.generator_ready ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.') : '',
+      pauseDisabled: true,
+      pauseText: 'Остановить',
+      pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
+      doneValue: vm.processedRows,
+      doneLabel: 'Подготовлено клиентов',
+      labelText: defaultLabel,
+      generatorHint: moduleReadiness.generator_ready
+        ? 'Можно запускать. Дальше сервис всё сделает сам.'
+        : (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.'),
+      philologistHint: moduleReadiness.philologist_ready
+        ? 'Документы уже готовы. При необходимости можно перепроверить текст отдельно.'
+        : 'Отдельную проверку текста сейчас запускать не нужно.',
+      nextHint: 'Сначала завершите подготовку документов.',
+      progressPercent: vm.progressPercent,
+      progressRunning: false,
+    };
+  }
+
+  function setDocumentsUiState(result = {}) {
+    const vm = buildDocumentsScreenViewModel(result);
+    const uiCopy = buildDocumentsUiCopy(vm, result);
+    const serverActions = ((result.ui || {}).actions || {});
     lastDocumentsUiState = { ...stripUiStateMeta(result) };
     scheduleUiStateSave();
 
     if (result.generator) {
-      lastGeneratorUiState = { ...stripUiStateMeta(generatorState) };
-      currentGeneratorStatus = generatorState.status || currentGeneratorStatus;
+      lastGeneratorUiState = { ...stripUiStateMeta(result.generator) };
+      currentGeneratorStatus = (result.generator || {}).status || currentGeneratorStatus;
     }
     if (result.philologist) {
-      lastPhilologistUiState = { ...stripUiStateMeta(philologistState) };
-      currentPhilologistStatus = philologistState.status || currentPhilologistStatus;
+      lastPhilologistUiState = { ...stripUiStateMeta(result.philologist) };
+      currentPhilologistStatus = (result.philologist || {}).status || currentPhilologistStatus;
       phRunning = ['running', 'finalizing'].includes(String(currentPhilologistStatus || ''));
     }
 
@@ -5033,120 +5731,40 @@ function clearAttachedFile() {
     const totalStat = document.getElementById('g-total');
     const reportButton = document.getElementById('ph-download-report');
     const outputButton = document.getElementById('g-download-output');
-    updateDocumentsNextButton(effectiveStatus);
+    updateDocumentsStageBreakdown(result);
+    updateDocumentsNextButton(vm.status, serverActions);
 
-    if (totalStat && totalRows > 0) totalStat.textContent = totalRows.toLocaleString('ru');
-    if (errorStat) errorStat.textContent = errorRows.toLocaleString('ru');
-    if (reportButton) reportButton.disabled = effectiveStatus !== 'completed';
-    if (outputButton) outputButton.disabled = !(effectiveStatus === 'completed' || Number(result.output_file_count || 0) > 0);
-
-    if (effectiveStatus === 'running') {
-      if (badge) {
-        badge.textContent = stage === 'review' ? 'Проверка текстов' : 'Подготовка';
-        badge.className = 'badge badge-running';
-      }
-      if (runButton) {
-        runButton.textContent = stage === 'review' ? 'Проверяю документы' : 'Документы готовятся';
-        runButton.disabled = true;
-        runButton.title = '';
-      }
-      if (pauseButton) {
-        pauseButton.disabled = false;
-        pauseButton.textContent = 'Остановить';
-        pauseButton.title = '';
-      }
-      if (doneStat) doneStat.textContent = stage === 'review'
-        ? reviewedDocuments.toLocaleString('ru')
-        : processedRows.toLocaleString('ru');
-      if (doneLabelStat) doneLabelStat.textContent = stage === 'review' ? 'Проверено документов' : 'Подготовлено клиентов';
-      if (label) {
-        if (stage === 'review' && totalDocuments > 0) {
-          label.textContent = `Документы созданы. Проверяю тексты: ${reviewedDocuments.toLocaleString('ru')} из ${totalDocuments.toLocaleString('ru')}.`;
-        } else if (pdfTotal > 0) {
-          label.textContent = `Сохраняю документы в PDF: ${pdfProcessed.toLocaleString('ru')} из ${pdfTotal.toLocaleString('ru')}.`;
-        } else if (totalRows > 0) {
-          label.textContent = `Готовлю документы: ${processedRows.toLocaleString('ru')} из ${totalRows.toLocaleString('ru')} клиентов.`;
-        } else {
-          label.textContent = humanizeDocumentsMessage(result.stage_text, 'Готовлю документы. Скоро покажу прогресс.');
-        }
-      }
-      setProgressVisual(fill, { percent, running: true, indeterminate: false });
-      return;
-    }
-
-    if (pauseButton) {
-      pauseButton.disabled = true;
-      pauseButton.textContent = 'Остановить';
-      pauseButton.title = 'Остановка станет доступна после запуска подготовки документов.';
-    }
-
-    if (effectiveStatus === 'completed') {
-      if (badge) {
-        badge.textContent = 'Готово';
-        badge.className = 'badge badge-done';
-      }
-      if (runButton) {
-        runButton.textContent = 'Подготовить документы';
-        runButton.disabled = !moduleReadiness.generator_ready;
-        runButton.title = runButton.disabled ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.') : '';
-      }
-      if (doneStat) doneStat.textContent = (totalRows || Math.floor(totalDocuments / 2)).toLocaleString('ru');
-      if (doneLabelStat) doneLabelStat.textContent = 'Готово полностью';
-      if (label) label.textContent = fixedDocuments > 0
-        ? 'Документы готовы. Безопасные правки внесены.'
-        : 'Документы созданы и проверены. Можно переходить к отправке.';
-      setProgressVisual(fill, { percent: 100, running: false });
-      return;
-    }
-
-    if (status === 'stopped') {
-      if (badge) {
-        badge.textContent = 'Остановлено';
-        badge.className = 'badge badge-wait';
-      }
-      if (runButton) {
-        runButton.textContent = 'Продолжить подготовку';
-        runButton.disabled = false;
-        runButton.title = '';
-      }
-      if (doneStat) doneStat.textContent = stage === 'review'
-        ? reviewedDocuments.toLocaleString('ru')
-        : processedRows.toLocaleString('ru');
-      if (doneLabelStat) doneLabelStat.textContent = stage === 'review' ? 'Проверено документов' : 'Подготовлено клиентов';
-      if (label) label.textContent = humanizeDocumentsMessage(result.stage_text, 'Подготовка остановлена. Можно продолжить с того же места.');
-      setProgressVisual(fill, { percent, running: false });
-      return;
-    }
-
-    if (status === 'error') {
-      if (badge) {
-        badge.textContent = 'Ошибка';
-        badge.className = 'badge badge-error';
-      }
-      if (runButton) {
-        runButton.textContent = 'Подготовить документы';
-        runButton.disabled = !moduleReadiness.generator_ready;
-      }
-      if (label) label.textContent = humanizeDocumentsMessage(result.stage_text, 'Не удалось завершить подготовку документов.');
-      setProgressVisual(fill, { percent, running: false });
-      return;
-    }
-
+    if (totalStat && vm.totalRows > 0) totalStat.textContent = vm.totalRows.toLocaleString('ru');
+    if (errorStat) errorStat.textContent = vm.errorRows.toLocaleString('ru');
+    if (reportButton) reportButton.disabled = typeof serverActions.can_download_report === 'boolean'
+      ? !serverActions.can_download_report
+      : vm.status !== 'completed';
+    if (outputButton) outputButton.disabled = typeof serverActions.can_download_output === 'boolean'
+      ? !serverActions.can_download_output
+      : !(vm.status === 'completed' || vm.outputFileCount > 0);
     if (badge) {
-      badge.textContent = 'Готов к запуску';
-      badge.className = 'badge badge-idle';
+      badge.textContent = uiCopy.badgeText;
+      badge.className = uiCopy.badgeClass;
     }
     if (runButton) {
-      runButton.textContent = 'Подготовить документы';
-      runButton.disabled = !moduleReadiness.generator_ready;
-      runButton.title = runButton.disabled ? (moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.') : '';
+      runButton.textContent = uiCopy.runText;
+      runButton.disabled = uiCopy.runDisabled;
+      runButton.title = uiCopy.runTitle;
     }
-    if (doneStat) doneStat.textContent = processedRows.toLocaleString('ru');
-    if (doneLabelStat) doneLabelStat.textContent = 'Подготовлено клиентов';
-    if (label) {
-      label.textContent = humanizeDocumentsMessage(result.stage_text, 'Подготовка документов ещё не запускалась.');
+    if (pauseButton) {
+      pauseButton.disabled = uiCopy.pauseDisabled;
+      pauseButton.textContent = uiCopy.pauseText;
+      pauseButton.title = uiCopy.pauseTitle;
     }
-    setProgressVisual(fill, { percent: Math.max(0, Math.min(percent, 100)), running: false });
+    if (doneStat) doneStat.textContent = Number(uiCopy.doneValue || 0).toLocaleString('ru');
+    if (doneLabelStat) doneLabelStat.textContent = uiCopy.doneLabel;
+    if (label) label.textContent = uiCopy.labelText;
+    updateDocumentsActionHints({
+      generatorHint: uiCopy.generatorHint,
+      philologistHint: uiCopy.philologistHint,
+      nextHint: uiCopy.nextHint,
+    });
+    setProgressVisual(fill, { percent: uiCopy.progressPercent, running: uiCopy.progressRunning, indeterminate: false });
   }
 
   function isDocumentsReadyForSender() {
@@ -5157,14 +5775,18 @@ function clearAttachedFile() {
     return modulesCompleted && (documentsStatus === 'completed' || !documentsStatus);
   }
 
-  function updateDocumentsNextButton(status = String(lastDocumentsUiState.status || 'idle')) {
+  function updateDocumentsNextButton(status = String(lastDocumentsUiState.status || 'idle'), serverActions = ((lastDocumentsUiState.ui || {}).actions || {})) {
     const nextButton = document.getElementById('documents-next-sender');
     if (!nextButton) return;
-    const ready = isDocumentsReadyForSender();
+    const ready = typeof serverActions.can_go_next === 'boolean' ? serverActions.can_go_next : isDocumentsReadyForSender();
     nextButton.disabled = !ready;
+    nextButton.textContent = serverActions.next_button_text || 'Дальше: проверить отправку';
     if (ready) {
-      nextButton.title = '';
-      nextButton.textContent = 'Дальше: проверить отправку';
+      nextButton.title = serverActions.next_button_title || '';
+      return;
+    }
+    if (serverActions.next_button_title) {
+      nextButton.title = serverActions.next_button_title;
       return;
     }
     if (status === 'running') {
@@ -5288,14 +5910,12 @@ function clearAttachedFile() {
         const fill = document.getElementById('s-fill');
         const label = document.getElementById('s-label');
       const processed = Number(nextState.processed_rows || 0);
-      const totalRaw = Number(nextState.total_rows || 0);
+      const stats = nextState.stats || {};
+      const totalRaw = Math.max(Number(nextState.total_rows || 0), Number(stats.total || 0));
       const total = totalRaw > 0 ? totalRaw : (processed > 0 ? processed : 0);
       const ready = Number(nextState.ready_rows || 0);
-      const errors = Number(nextState.error_rows || 0);
-      const stats = nextState.stats || {};
+      const errors = Math.max(Number(nextState.error_rows || 0), Number(stats.error || 0));
       const sent = Math.max(Number(nextState.sent_rows || 0), Number(stats.sent || 0));
-      const totalFromStats = Number(stats.total || total);
-      const errorFromStats = Number(stats.error || 0);
       const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
         const status = nextState.status || 'idle';
         currentSenderStatus = status;
@@ -5320,7 +5940,7 @@ function clearAttachedFile() {
       setProgressVisual(fill, { percent, running: status === 'running' && total > 0, indeterminate: false });
       document.getElementById('s-sent').textContent = sent.toLocaleString('ru');
       document.getElementById('s-left').textContent = Math.max(0, pending).toLocaleString('ru');
-      document.getElementById('s-err2').textContent = errorFromStats.toLocaleString('ru');
+      document.getElementById('s-err2').textContent = errors.toLocaleString('ru');
       setSenderDownloadEnabled(canDownloadStatuses);
       renderJobSenderStatusScreen(nextState);
 
@@ -5441,8 +6061,6 @@ function clearAttachedFile() {
       flowNotificationState.sender.terminalAnnounced = false;
       setSenderButtonsState({ status: 'running', mode: 'dry_run', canConfirm: false });
       safeSetSenderUiState({ status: 'running', total_rows: 0, processed_rows: 0, stats: {} });
-      safeAppendChatMessage('s-chat', 'agent', 'Проверяю адреса и готовые документы. Письма пока не отправляются.');
-
       const res = await fetch('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5468,7 +6086,7 @@ function clearAttachedFile() {
           throw new Error(result.summary_text || 'Проверка перед отправкой завершилась с ошибкой');
         }
         showToast('Проверка завершена');
-        safeAppendChatMessage('s-chat', 'agent', humanizeSenderMessage(result.summary_text, 'Проверка завершена. Если всё верно, нажмите «Отправить письма».'));
+        safeAppendChatMessage('s-chat', 'agent', humanizeSenderMessage(result.summary_text, 'Проверка завершена. Если всё верно, можно запускать отправку писем.'));
       } catch (err) {
       safeSetSenderUiState({ status: 'error', summary_text: 'Проверка перед отправкой не завершилась' });
       safeAppendChatMessage('s-chat', 'agent', 'Не удалось выполнить проверку перед отправкой: ' + (err && err.message ? err.message : String(err)));
@@ -5666,6 +6284,18 @@ function clearAttachedFile() {
     }
   }
 
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.help-popover-wrap')) {
+      closeAllHelpPopovers();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      closeAllHelpPopovers();
+    }
+  });
+
   restoreInitialUiState();
   updateSettingsChecklist();
   uiPersistenceEnabled = true;
@@ -5673,6 +6303,19 @@ function clearAttachedFile() {
 
   let statusAutoRefreshInFlight = false;
   let passiveStatusRefreshTick = 0;
+  let globalStatusPoll = null;
+
+  function stopGlobalStatusPolling() {
+    if (globalStatusPoll) {
+      globalStatusPoll.stopped = true;
+      globalStatusPoll = null;
+    }
+  }
+
+  function startGlobalStatusPolling() {
+    stopGlobalStatusPolling();
+    globalStatusPoll = startPollingLoop(() => refreshAllModuleStatuses({ silent: true }), 5000);
+  }
 
   async function refreshActiveScreenStatus({ silent = true } = {}) {
     if (!currentJobId) return;
@@ -5718,7 +6361,7 @@ function clearAttachedFile() {
   }
 
   refreshAllModuleStatuses({ silent: true, full: true });
-  setInterval(() => refreshAllModuleStatuses({ silent: true }), 5000);
+  startGlobalStatusPolling();
 
   const senderPreviewButton = document.getElementById('s-run');
   if (senderPreviewButton) {

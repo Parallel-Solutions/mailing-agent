@@ -6,7 +6,22 @@ import re
 import json
 from src.utils.logger import logger
 from src.utils.config import settings
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form, BackgroundTasks, Request
+from src.web.documents_router import create_documents_router
+from src.web.documents_service import (
+    compact_documents_status,
+    configure_documents_service,
+    documents_agent_choose_reply,
+    run_documents_pipeline_background,
+)
+from src.web.sender_router import create_sender_router
+from src.web.sender_service import (
+    compact_sender_status,
+    configure_sender_service,
+    prime_sender_checking_state,
+    prime_sender_running_state,
+    run_sender_background,
+)
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form, BackgroundTasks
 import shutil
 import threading
 from multiprocessing import Process
@@ -339,6 +354,16 @@ def _register_documents_thread(job_id: str | None, thread: threading.Thread) -> 
         _documents_threads[_documents_job_key(job_id)] = thread
 
 
+def _unregister_sender_thread(job_id: str | None) -> None:
+    with _sender_threads_lock:
+        _sender_threads.pop(_sender_job_key(job_id), None)
+
+
+def _unregister_documents_thread(job_id: str | None) -> None:
+    with _documents_threads_lock:
+        _documents_threads.pop(_documents_job_key(job_id), None)
+
+
 def _register_parser_verification_process(job_id: str | None, process: Process) -> None:
     with _parser_verification_processes_lock:
         _parser_verification_processes[_parser_job_key(job_id)] = process
@@ -346,6 +371,13 @@ def _register_parser_verification_process(job_id: str | None, process: Process) 
 
 def _compact_philologist_status(state: dict) -> dict:
     documents = state.get("documents") or []
+    document_count = len(documents) if isinstance(documents, list) and documents else int(
+        state.get("documents_count") or state.get("document_count") or state.get("processed_documents") or 0
+    )
+    tool_trace = state.get("tool_trace") or []
+    tool_trace_count = len(tool_trace) if isinstance(tool_trace, list) and tool_trace else int(
+        state.get("tool_trace_count") or 0
+    )
     context_review = state.get("inflection_context_review") or {}
     context_corrections = state.get("inflection_context_corrections") or {}
     current_document = state.get("current_document")
@@ -370,8 +402,8 @@ def _compact_philologist_status(state: dict) -> dict:
         "ai_review_enabled": state.get("ai_review_enabled", False),
         "inflection_log_count": state.get("inflection_log_count", 0),
         "current_document": current_document,
-        "document_count": len(documents),
-        "tool_trace_count": len(state.get("tool_trace") or []),
+        "document_count": document_count,
+        "tool_trace_count": tool_trace_count,
         "inflection_context_review": {
             "enabled": context_review.get("enabled", False),
             "selected_count": context_review.get("selected_count", 0),
@@ -387,6 +419,10 @@ def _compact_philologist_status(state: dict) -> dict:
 
 
 def _compact_generator_status(state: dict) -> dict:
+    inflection_summary = state.get("inflection_summary", {})
+    if isinstance(inflection_summary, dict) and inflection_summary.get("sample_warnings"):
+        inflection_summary = dict(inflection_summary)
+        inflection_summary["sample_warnings"] = list(inflection_summary.get("sample_warnings") or [])[:3]
     return {
         "status": state.get("status", "idle"),
         "started_at": state.get("started_at"),
@@ -404,87 +440,9 @@ def _compact_generator_status(state: dict) -> dict:
         "pdf_total": state.get("pdf_total", 0),
         "pdf_processed": state.get("pdf_processed", 0),
         "output_file_count": state.get("output_file_count", 0),
-        "inflection_summary": state.get("inflection_summary", {}),
+        "inflection_summary": inflection_summary if isinstance(inflection_summary, dict) else {},
         "template_review": state.get("template_review", {}),
         "stop_requested": state.get("stop_requested", False),
-        "task_stats": state.get("task_stats", {}),
-        "recent_events": (state.get("recent_events") or [])[:5],
-    }
-
-
-def _compact_sender_row(row: dict) -> dict:
-    attempts = row.get("attempts") if isinstance(row, dict) else []
-    compact_attempts = []
-    if isinstance(attempts, list):
-        for attempt in attempts[:3]:
-            if isinstance(attempt, dict):
-                compact_attempts.append(
-                    {
-                        "recipient": attempt.get("recipient"),
-                        "status": attempt.get("status"),
-                        "error": attempt.get("error"),
-                    }
-                )
-
-    return {
-        "id": row.get("id"),
-        "row_index": row.get("row_index"),
-        "mun_name": row.get("mun_name"),
-        "result": row.get("result"),
-        "recipient": row.get("recipient"),
-        "emails": row.get("emails") or [],
-        "invalid_emails": row.get("invalid_emails") or [],
-        "email_strategy": row.get("email_strategy"),
-        "decision_reason": row.get("decision_reason"),
-        "error": row.get("error"),
-        "warning": row.get("warning"),
-        "provider": row.get("provider"),
-        "provider_status": row.get("provider_status"),
-        "provider_status_label": row.get("provider_status_label"),
-        "provider_message_id": row.get("provider_message_id"),
-        "attempts": compact_attempts,
-    }
-
-
-def _compact_sender_status(state: dict) -> dict:
-    rows = state.get("rows") or []
-    if not isinstance(rows, list):
-        rows = []
-    stats = state.get("stats") or {}
-    if not isinstance(stats, dict):
-        stats = {}
-
-    return {
-        "status": state.get("status", "idle"),
-        "mode": state.get("mode", "dry_run"),
-        "started_at": state.get("started_at"),
-        "completed_at": state.get("completed_at"),
-        "processed_rows": state.get("processed_rows", 0),
-        "ready_rows": state.get("ready_rows", 0),
-        "sent_rows": state.get("sent_rows", 0),
-        "error_rows": state.get("error_rows", 0),
-        "skipped_rows": state.get("skipped_rows", 0),
-        "handoff_rows": state.get("handoff_rows", 0),
-        "total_rows": state.get("total_rows", 0),
-        "summary_text": state.get("summary_text", ""),
-        "stats": {
-            "total": stats.get("total", state.get("total_rows", 0)),
-            "sent": stats.get("sent", state.get("sent_rows", 0)),
-            "error": stats.get("error", state.get("error_rows", 0)),
-            "pending": stats.get("pending", state.get("remaining_rows", 0)),
-        },
-        "warning_rows": state.get("warning_rows", 0),
-        "generator_handoff_rows": state.get("generator_handoff_rows", 0),
-        "philology_blocked_rows": state.get("philology_blocked_rows", 0),
-        "autonomous_recovery_rows": state.get("autonomous_recovery_rows", 0),
-        "effective_limit": state.get("effective_limit"),
-        "remaining_rows": state.get("remaining_rows", 0),
-        "stop_requested": state.get("stop_requested", False),
-        "stop_requested_at": state.get("stop_requested_at"),
-        "transport": state.get("transport", "unisender"),
-        "row_count": len(rows),
-        # Статусу UI нужен только небольшой срез для предпросмотра, не весь список на тысячи строк.
-        "rows": [_compact_sender_row(row) for row in rows[:20] if isinstance(row, dict)],
         "task_stats": state.get("task_stats", {}),
         "recent_events": (state.get("recent_events") or [])[:5],
     }
@@ -629,6 +587,22 @@ def _build_job_history_item(job_dir: Path, updated_at_ts: float) -> dict:
     }
 
 
+def _job_history_is_mailing_session(item: dict) -> bool:
+    sender_mode = str(item.get("sender_mode") or "")
+    sender_status = str(item.get("sender_status") or "")
+    sent_rows = _safe_int(item.get("sent_rows"))
+    error_rows = _safe_int(item.get("error_rows"))
+    pending_rows = _safe_int(item.get("pending_rows"))
+
+    if sender_mode == "send":
+        return True
+    if sent_rows > 0 or error_rows > 0:
+        return True
+    if sender_status == "running" and pending_rows > 0:
+        return True
+    return False
+
+
 def _documents_generator_percent(generator_state: dict) -> int:
     status = str(generator_state.get("status") or "idle")
     stage = str(generator_state.get("stage") or "")
@@ -770,7 +744,7 @@ def _compact_documents_status(job_id: str | None) -> dict:
     if generator_done and total_rows:
         processed_rows = total_rows
 
-    return {
+    result = {
         "status": status,
         "stage": stage,
         "stage_text": stage_text,
@@ -787,27 +761,544 @@ def _compact_documents_status(job_id: str | None) -> dict:
         "output_file_count": int(generator_state.get("output_file_count") or 0),
         "summary_text": stage_text,
     }
+    result["ui"] = _build_documents_ui_payload(result)
+    return result
 
 
-def _run_sender_background(
-    *,
-    dry_run: bool = False,
-    limit: int | None,
-    transport: str | None,
-    job_id: str | None,
-) -> None:
-    try:
-        run_sender(dry_run=dry_run, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
-    except Exception as exc:
-        logger.exception("sender_background_failed", job_id=job_id, transport=transport)
-        state = _load_sender_state(job_id)
-        state["status"] = "error"
-        state["completed_at"] = datetime.now().isoformat(timespec="seconds")
-        state["summary_text"] = f"Агент-отправщик остановился с ошибкой: {type(exc).__name__}: {exc}"
-        _save_sender_state(state, job_id)
-    finally:
-        with _sender_threads_lock:
-            _sender_threads.pop(_sender_job_key(job_id), None)
+def _build_documents_ui_payload(documents_status: dict) -> dict:
+    status = str(documents_status.get("status") or "idle")
+    stage = str(documents_status.get("stage") or "generate")
+    generator = documents_status.get("generator") or {}
+    philologist = documents_status.get("philologist") or {}
+    total_rows = max(0, int(documents_status.get("total_rows") or 0))
+    processed_rows = max(0, int(documents_status.get("processed_rows") or 0))
+    total_documents = max(0, int(documents_status.get("total_documents") or 0))
+    reviewed_documents = max(0, int(documents_status.get("reviewed_documents") or 0))
+    error_rows = max(0, int(documents_status.get("error_rows") or 0))
+    fixed_documents = max(0, int(documents_status.get("fixed_documents") or 0))
+    output_file_count = max(0, int(documents_status.get("output_file_count") or 0))
+    staged_docx_count = max(0, int(generator.get("staged_docx_count") or 0))
+    pdf_total = max(0, int(generator.get("pdf_total") or 0))
+    pdf_processed = max(0, int(generator.get("pdf_processed") or generator.get("staged_pdf_count") or 0))
+    expected_documents = total_rows * 2 if total_rows > 0 else max(total_documents, pdf_total, staged_docx_count, output_file_count)
+    shown_documents = max(staged_docx_count, pdf_total, total_documents, expected_documents if status == "completed" else 0)
+    shown_pdf_total = expected_documents or pdf_total
+    shown_pdf_done = shown_pdf_total if status == "completed" and output_file_count <= 0 and pdf_processed <= 0 else max(pdf_processed, min(output_file_count, shown_pdf_total or output_file_count))
+    clients_text = f"{processed_rows} из {total_rows} клиентов" if total_rows > 0 else "клиентов пока не найдено"
+    documents_text = f"{shown_documents} из {expected_documents} документов"
+    pdf_text = f"{shown_pdf_done} из {shown_pdf_total} PDF"
+
+    process_title = "Готово к запуску"
+    process_main = "Сервис подготовит документы по вашей таблице."
+    process_detail = "После запуска ничего дополнительно делать не нужно."
+    process_next = "Когда всё будет готово, можно будет скачать результат и перейти дальше."
+    badge_text = "Готов к запуску"
+    badge_tone = "idle"
+    run_text = "Подготовить документы"
+    label_text = str(documents_status.get("stage_text") or "Подготовка документов ещё не запускалась.")
+    generator_hint = "Сначала загрузите таблицу и шаблоны."
+    philologist_hint = "Отдельную проверку текста сейчас запускать не нужно."
+    next_hint = "Сначала завершите подготовку документов."
+    can_run = status not in {"running", "waiting_review"}
+    can_stop = status == "running"
+    can_download_output = status == "completed" or output_file_count > 0
+    can_download_report = status == "completed"
+    can_go_next = (
+        str(generator.get("status") or "") == "completed"
+        and str(philologist.get("status") or "") == "completed"
+        and status == "completed"
+    )
+    next_button_text = "Дальше: проверить отправку"
+    next_button_title = "Сначала завершите подготовку документов."
+
+    if status == "running" and stage == "review":
+        process_title = "Идёт подготовка"
+        process_main = "Сейчас сервис проверяет текст в документах."
+        process_detail = f"Готово {reviewed_documents} из {total_documents}. Ничего нажимать не нужно."
+        process_next = "После завершения можно будет скачать результат или перейти дальше."
+        badge_text = "Проверка текстов"
+        badge_tone = "running"
+        run_text = "Проверяю документы"
+        label_text = (
+            f"Документы созданы. Проверяю тексты: {reviewed_documents} из {total_documents}."
+            if total_documents > 0
+            else "Проверяю текст в готовых документах."
+        )
+        generator_hint = "Идёт проверка текста. Просто дождитесь завершения."
+        philologist_hint = "Ничего дополнительно запускать не нужно."
+        next_hint = "Когда всё будет готово, кнопка перехода дальше включится сама."
+        next_button_title = "Документы ещё готовятся или проверяются. Переход станет доступен после завершения."
+    elif status == "running" and str(generator.get("stage") or "") in {"convert_pdf", "finalize_output"}:
+        process_title = "Идёт подготовка"
+        process_main = "Сейчас сервис сохраняет готовые файлы."
+        process_detail = f"Подготовлено {pdf_text}."
+        process_next = "Скоро подготовка завершится автоматически."
+        badge_text = "Подготовка"
+        badge_tone = "running"
+        run_text = "Документы готовятся"
+        label_text = f"Сохраняю документы в PDF: {shown_pdf_done} из {shown_pdf_total}."
+        generator_hint = "Идёт подготовка документов. Просто дождитесь завершения."
+        philologist_hint = "Ничего дополнительно запускать не нужно."
+        next_hint = "Когда всё будет готово, кнопка перехода дальше включится сама."
+        next_button_title = "Документы ещё готовятся или проверяются. Переход станет доступен после завершения."
+    elif status == "running":
+        process_title = "Идёт подготовка"
+        process_main = "Сейчас сервис создаёт документы."
+        process_detail = f"Готово {clients_text}. Просто дождитесь завершения."
+        process_next = "После этого система сама закончит остальные шаги."
+        badge_text = "Подготовка"
+        badge_tone = "running"
+        run_text = "Документы готовятся"
+        label_text = (
+            f"Готовлю документы: {processed_rows} из {total_rows} клиентов."
+            if total_rows > 0
+            else "Готовлю документы. Скоро покажу прогресс."
+        )
+        generator_hint = "Идёт подготовка документов. Просто дождитесь завершения."
+        philologist_hint = "Ничего дополнительно запускать не нужно."
+        next_hint = "Когда всё будет готово, кнопка перехода дальше включится сама."
+        next_button_title = "Документы ещё готовятся или проверяются. Переход станет доступен после завершения."
+    elif status == "completed":
+        has_missing_documents = expected_documents > 0 and shown_documents > 0 and shown_documents < expected_documents
+        has_missing_pdf = shown_pdf_total > 0 and shown_pdf_done > 0 and shown_pdf_done < shown_pdf_total
+        if has_missing_documents or has_missing_pdf or error_rows > 0:
+            process_title = "Подготовка завершена с замечаниями"
+            process_main = "Часть документов готова, но не всё удалось собрать автоматически."
+            process_detail = f"Документы: {documents_text}. PDF: {pdf_text}."
+            process_next = "Скачайте результат и проверьте строки с ошибками."
+        else:
+            process_title = "Готово"
+            process_main = "Документы подготовлены."
+            process_detail = f"Подготовка завершена для {total_rows} клиентов."
+            process_next = "Теперь можно скачать архив или перейти к проверке отправки."
+        badge_text = "Готово"
+        badge_tone = "done"
+        run_text = "Подготовить заново"
+        label_text = "Документы готовы. Безопасные правки внесены." if fixed_documents > 0 else "Документы созданы и проверены. Можно переходить к отправке."
+        generator_hint = "Готово. Можно скачать архив документов."
+        philologist_hint = "Если очень нужно, можно отдельно запустить повторную проверку текста."
+        next_hint = "Теперь можно переходить к следующему шагу."
+        next_button_title = ""
+    elif status == "stopped":
+        process_title = "Подготовка остановлена"
+        process_main = "Процесс остановлен."
+        process_detail = (
+            f"Проверка текста выполнена частично: {reviewed_documents} из {total_documents}."
+            if stage == "review"
+            else f"Подготовка выполнена частично: {clients_text}."
+        )
+        process_next = "Нажмите «Продолжить подготовку», чтобы продолжить."
+        badge_text = "Остановлено"
+        badge_tone = "wait"
+        run_text = "Продолжить подготовку"
+        label_text = str(documents_status.get("stage_text") or "Подготовка остановлена. Можно продолжить с того же места.")
+        generator_hint = "Прогресс сохранён. Можно продолжить с этого места."
+        philologist_hint = "Сначала продолжите подготовку."
+        next_hint = "Пока процесс не завершён, перейти дальше нельзя."
+        next_button_title = "Подготовка остановлена. Сначала продолжите и завершите проверку документов."
+    elif status == "error":
+        process_title = "Есть ошибка"
+        process_main = "Сервис не смог завершить подготовку."
+        process_detail = f"Строк с ошибками: {error_rows}. Часть файлов может быть уже готова." if error_rows > 0 else "Часть файлов может быть уже готова."
+        process_next = "Исправьте данные или просто попробуйте повторить запуск."
+        badge_text = "Ошибка"
+        badge_tone = "error"
+        run_text = "Повторить подготовку"
+        label_text = str(documents_status.get("stage_text") or "Не удалось завершить подготовку документов.")
+        generator_hint = "Попробуйте повторить запуск. Если ошибка повторяется, проверьте таблицу и шаблоны."
+        philologist_hint = "Сначала завершите подготовку без ошибки."
+        next_hint = "Пока есть ошибка, перейти дальше нельзя."
+        next_button_title = "Подготовка документов завершилась с ошибкой."
+    elif status == "waiting_review":
+        process_title = "Почти готово"
+        process_main = "Документы уже созданы."
+        process_detail = "Осталось завершить проверку текста."
+        process_next = "После проверки можно будет скачать результат и перейти дальше."
+        badge_text = "Подготовка"
+        badge_tone = "running"
+        run_text = "Документы готовятся"
+        label_text = "Документы созданы. Завершаю проверку текста."
+        generator_hint = "Документы уже созданы. Осталось завершить проверку текста."
+        philologist_hint = "Ничего дополнительно запускать не нужно."
+        next_hint = "Когда проверка завершится, кнопка перехода дальше включится сама."
+        can_run = False
+        next_button_title = "Документы ещё готовятся или проверяются. Переход станет доступен после завершения."
+
+    return {
+        "process": {
+            "title": process_title,
+            "main": process_main,
+            "detail": process_detail,
+            "next": process_next,
+            "clients_total": total_rows,
+            "clients_done": processed_rows,
+            "documents_done": shown_documents,
+            "documents_total": expected_documents,
+            "review_done": reviewed_documents,
+            "review_total": total_documents,
+        },
+        "module": {
+            "badge_text": badge_text,
+            "badge_tone": badge_tone,
+            "run_text": run_text,
+            "label_text": label_text,
+            "generator_hint": generator_hint,
+            "philologist_hint": philologist_hint,
+            "next_hint": next_hint,
+        },
+        "actions": {
+            "can_run": can_run,
+            "can_stop": can_stop,
+            "can_download_output": can_download_output,
+            "can_download_report": can_download_report,
+            "can_go_next": can_go_next,
+            "next_button_text": next_button_text,
+            "next_button_title": next_button_title,
+        },
+        "chat_events": _build_documents_chat_events(documents_status),
+    }
+
+
+def _documents_recent_events_payload(events: list[dict] | None, *, prefix: str, title: str, limit: int = 3) -> list[dict]:
+    payload: list[dict] = []
+    for event in (events or [])[:limit]:
+        if not isinstance(event, dict):
+            continue
+        event_id = str(event.get("id") or "").strip()
+        text = str(event.get("message") or event.get("summary") or event.get("event") or "").strip()
+        if not event_id or not text:
+            continue
+        lowered = text.lower()
+        if any(fragment in lowered for fragment in (
+            "принято документов",
+            "фильтр строк",
+            "прочитан журнал склонений",
+            "план агента",
+            "цикл исполнения",
+        )):
+            continue
+        payload.append({
+            "id": f"{prefix}:{event_id}",
+            "title": title,
+            "text": text.rstrip(".") + ".",
+        })
+    return payload
+
+
+def _dedupe_documents_chat_events(events: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen_keys: set[str] = set()
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        event_id = str(item.get("id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if not event_id or not text:
+            continue
+        key = re.sub(r"\s+", " ", f"{title}\n{text}".strip().lower())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append({
+            "id": event_id,
+            "title": title,
+            "text": text,
+        })
+    return deduped
+
+
+def _build_documents_chat_events(documents_status: dict) -> list[dict]:
+    status = str(documents_status.get("status") or "idle")
+    stage = str(documents_status.get("stage") or "generate")
+    generator = documents_status.get("generator") or {}
+    philologist = documents_status.get("philologist") or {}
+    generator_stage = str(generator.get("stage") or "")
+    total_rows = max(0, int(documents_status.get("total_rows") or 0))
+    processed_rows = max(0, int(documents_status.get("processed_rows") or 0))
+    total_documents = max(0, int(documents_status.get("total_documents") or 0))
+    reviewed_documents = max(0, int(documents_status.get("reviewed_documents") or 0))
+
+    events: list[dict] = []
+    if status == "idle":
+        return events
+
+    if status in {"running", "waiting_review", "completed", "stopped", "error"} and total_rows > 0:
+        events.append({
+            "id": f"documents:start:{total_rows}",
+            "title": "Подготовка началась",
+            "text": f"Запускаю подготовку документов. Всего клиентов: {total_rows}.",
+        })
+
+    if stage == "generate":
+        if generator_stage == "review_templates":
+            events.append({
+                "id": "documents:stage:review_templates",
+                "title": "Проверяю шаблоны",
+                "text": "Проверяю шаблоны перед созданием документов.",
+            })
+        elif generator_stage == "render_docx":
+            progress_percent = round((processed_rows / total_rows) * 100) if total_rows > 0 else 0
+            progress_bucket = 0
+            if progress_percent >= 50 and progress_percent < 100:
+                progress_bucket = 50
+            events.append({
+                "id": f"documents:stage:render_docx:{progress_bucket or 'start'}",
+                "title": "Создаю документы",
+                "text": (
+                    f"Создаю документы по шаблонам. Уже готово {processed_rows} из {total_rows} клиентов."
+                    if total_rows > 0 and progress_bucket >= 50
+                    else "Создаю документы по шаблонам."
+                ),
+            })
+        elif generator_stage == "convert_pdf":
+            events.append({
+                "id": "documents:stage:convert_pdf",
+                "title": "Сохраняю PDF",
+                "text": "Документы созданы. Сейчас сохраняю их в PDF.",
+            })
+        elif generator_stage == "finalize_output":
+            events.append({
+                "id": "documents:stage:finalize_output",
+                "title": "Готовлю результат",
+                "text": "PDF уже готовы. Собираю итоговые файлы и архив к скачиванию.",
+            })
+    elif stage == "review":
+        review_percent = round((reviewed_documents / total_documents) * 100) if total_documents > 0 else 0
+        review_bucket = 0
+        if review_percent >= 50 and review_percent < 100:
+            review_bucket = 50
+        events.append({
+            "id": f"documents:stage:review:{review_bucket or 'start'}",
+            "title": "Проверяю текст",
+            "text": (
+                f"Проверяю текст в документах: {reviewed_documents} из {total_documents}."
+                if total_documents > 0 and review_bucket >= 50
+                else "Проверяю текст в готовых документах."
+            ),
+        })
+
+    if status == "waiting_review":
+        events.append({
+            "id": "documents:waiting_review",
+            "title": "Документы созданы",
+            "text": "Документы уже созданы. Следующий этап: проверка текста.",
+        })
+    elif status == "completed":
+        events.append({
+            "id": "documents:completed",
+            "title": "Подготовка завершена",
+            "text": "Документы подготовлены. Можно скачать архив и перейти к проверке отправки.",
+        })
+    elif status == "stopped":
+        events.append({
+            "id": "documents:stopped",
+            "title": "Подготовка остановлена",
+            "text": "Подготовка остановлена. Можно продолжить с сохраненного места.",
+        })
+    elif status == "error":
+        events.append({
+            "id": "documents:error",
+            "title": "Ошибка подготовки",
+            "text": str(documents_status.get("summary_text") or "Не удалось завершить подготовку документов.").strip(),
+        })
+
+    recent_generator_events = _documents_recent_events_payload(generator.get("recent_events"), prefix="generator", title="Дополнительно")
+    recent_philologist_events = _documents_recent_events_payload(philologist.get("recent_events"), prefix="philologist", title="Проверка текста")
+
+    if status == "running" and generator_stage in {"review_templates", "render_docx", "convert_pdf", "finalize_output"}:
+        recent_generator_events = recent_generator_events[:1]
+    if status == "running" and stage == "review":
+        recent_philologist_events = recent_philologist_events[:1]
+
+    events.extend(recent_generator_events)
+    events.extend(recent_philologist_events)
+    return _dedupe_documents_chat_events(events)
+
+
+def _documents_agent_recent_event_lines(state: dict, *, limit: int = 3) -> list[str]:
+    lines: list[str] = []
+    for event in (state.get("recent_events") or [])[:limit]:
+        if not isinstance(event, dict):
+            continue
+        text = str(event.get("message") or event.get("summary") or event.get("event") or "").strip()
+        if text:
+            lines.append(text.rstrip(".") + ".")
+    return lines
+
+
+def _documents_agent_stage_label(documents_status: dict) -> str:
+    stage = str(documents_status.get("stage") or "")
+    generator = documents_status.get("generator") or {}
+    generator_stage = str(generator.get("stage") or "")
+    if stage == "review":
+        return "проверка текста"
+    if generator_stage == "review_templates":
+        return "проверка шаблонов"
+    if generator_stage == "render_docx":
+        return "создание документов"
+    if generator_stage == "convert_pdf":
+        return "сохранение PDF"
+    if generator_stage == "finalize_output":
+        return "подготовка файлов к скачиванию"
+    if stage == "completed":
+        return "подготовка завершена"
+    return "подготовка документов"
+
+
+def _documents_agent_process_reply(documents_status: dict) -> str:
+    status = str(documents_status.get("status") or "idle")
+    generator = documents_status.get("generator") or {}
+    philologist = documents_status.get("philologist") or {}
+    total_rows = int(documents_status.get("total_rows") or 0)
+    processed_rows = int(documents_status.get("processed_rows") or 0)
+    total_documents = int(documents_status.get("total_documents") or 0)
+    reviewed_documents = int(documents_status.get("reviewed_documents") or 0)
+    output_file_count = int(documents_status.get("output_file_count") or 0)
+    fixed_documents = int(documents_status.get("fixed_documents") or 0)
+    documents_with_issues = int(documents_status.get("documents_with_issues") or 0)
+    error_rows = int(documents_status.get("error_rows") or 0)
+    stage_label = _documents_agent_stage_label(documents_status)
+
+    if status == "running":
+        parts = [f"Сейчас идёт {stage_label}."]
+        if documents_status.get("stage") == "review" and total_documents > 0:
+            parts.append(f"Проверено {reviewed_documents} из {total_documents} документов.")
+        elif total_rows > 0:
+            parts.append(f"Готово {processed_rows} из {total_rows} клиентов.")
+        recent = _documents_agent_recent_event_lines(philologist if documents_status.get("stage") == "review" else generator, limit=2)
+        if recent:
+            parts.append("Последние события: " + " ".join(recent))
+        parts.append("Действие пользователя сейчас не нужно, просто дождитесь завершения.")
+        return " ".join(parts)
+
+    if status == "completed":
+        parts = ["Подготовка документов завершена."]
+        if total_rows > 0:
+            parts.append(f"Обработано клиентов: {total_rows}.")
+        if output_file_count > 0:
+            parts.append(f"Готовых файлов в результате: {output_file_count}.")
+        if fixed_documents > 0:
+            parts.append(f"Безопасные исправления внесены в {fixed_documents} документах.")
+        if documents_with_issues > 0:
+            parts.append(f"Замечания остались в {documents_with_issues} документах.")
+        parts.append("Можно скачать архив документов и перейти к проверке отправки.")
+        return " ".join(parts)
+
+    if status == "stopped":
+        return (
+            f"Подготовка документов остановлена на этапе «{stage_label}». "
+            "Прогресс сохранён. Можно нажать «Продолжить подготовку» и продолжить с этого места."
+        )
+
+    if status == "error":
+        summary = str(documents_status.get("summary_text") or "").strip() or "Не удалось завершить подготовку документов."
+        parts = [summary]
+        if error_rows > 0:
+            parts.append(f"Строк с ошибками: {error_rows}.")
+        parts.append("Сначала попробуйте повторить запуск. Если ошибка повторится, проверьте таблицу и шаблоны.")
+        return " ".join(parts)
+
+    if status == "waiting_review":
+        return (
+            "Документы уже созданы, но проверка текста ещё не завершена. "
+            "Следующий шаг: запустить или дождаться завершения проверки текста."
+        )
+
+    return (
+        "Подготовка документов ещё не запускалась. "
+        "Сначала загрузите таблицу и шаблоны, затем нажмите «Подготовить документы»."
+    )
+
+
+def _documents_agent_result_reply(documents_status: dict) -> str:
+    total_rows = int(documents_status.get("total_rows") or 0)
+    output_file_count = int(documents_status.get("output_file_count") or 0)
+    fixed_documents = int(documents_status.get("fixed_documents") or 0)
+    documents_with_issues = int(documents_status.get("documents_with_issues") or 0)
+    reviewed_documents = int(documents_status.get("reviewed_documents") or 0)
+    total_documents = int(documents_status.get("total_documents") or 0)
+    return (
+        "Сводка по подготовке: "
+        f"клиентов обработано {total_rows}, "
+        f"готовых файлов {output_file_count}, "
+        f"проверено документов {reviewed_documents} из {total_documents}, "
+        f"безопасных исправлений {fixed_documents}, "
+        f"документов с замечаниями {documents_with_issues}. "
+        "Если нужен разбор ошибок по тексту, могу показать его по данным филолога."
+    )
+
+
+def _documents_agent_download_reply(documents_status: dict) -> str:
+    status = str(documents_status.get("status") or "idle")
+    output_file_count = int(documents_status.get("output_file_count") or 0)
+    fixed_documents = int(documents_status.get("fixed_documents") or 0)
+    if status != "completed":
+        return (
+            "Архив и итоговый отчёт лучше скачивать после завершения подготовки. "
+            "Пока дождитесь статуса «Готово»."
+        )
+    parts = []
+    if output_file_count > 0:
+        parts.append("Архив документов уже готов к скачиванию.")
+    else:
+        parts.append("Подготовка завершена, но архив пока не найден.")
+    parts.append(
+        "Кнопка «Скачать отчёт по исправлениям» нужна, если хотите посмотреть текстовые правки и замечания."
+    )
+    if fixed_documents <= 0:
+        parts.append("Существенных автоматических правок по тексту не было.")
+    return " ".join(parts)
+
+
+def _documents_agent_next_step_reply(documents_status: dict) -> str:
+    status = str(documents_status.get("status") or "idle")
+    if status == "completed":
+        return "Следующий шаг: скачать архив при необходимости и перейти к проверке отправки писем."
+    if status == "running":
+        return "Сейчас ничего делать не нужно. Следующий шаг откроется автоматически после завершения подготовки."
+    if status == "stopped":
+        return "Следующий шаг сейчас недоступен. Сначала продолжите подготовку документов."
+    if status == "error":
+        return "Сначала нужно повторить подготовку и завершить её без ошибки."
+    return "Сначала запустите подготовку документов."
+
+
+def _documents_agent_should_delegate_to_philologist(message: str, documents_status: dict) -> bool:
+    lowered = message.lower()
+    philologist_keywords = (
+        "филолог", "ошиб", "исправ", "правк", "грамот", "граммат", "орфограф",
+        "пунктуа", "текст", "формулиров", "замечан", "правило", "документе"
+    )
+    if any(token in lowered for token in philologist_keywords):
+        return True
+    return int(documents_status.get("reviewed_documents") or 0) > 0 and any(
+        token in lowered for token in ("что не так", "что исправ", "какие проблемы", "какие замечания")
+    )
+
+
+def _documents_agent_choose_reply(message: str, job_id: str | None = None) -> dict[str, str]:
+    documents_status = _compact_documents_status(job_id)
+    lowered = message.lower()
+
+    if _documents_agent_should_delegate_to_philologist(message, documents_status):
+        delegated = chat_with_philologist(message, job_id=job_id)
+        reply = str(delegated.get("reply") or "").strip()
+        if reply:
+            return {"reply": reply}
+
+    if any(token in lowered for token in ("что происходит", "на каком этапе", "статус", "идет ли", "что сейчас", "процесс")):
+        return {"reply": _documents_agent_process_reply(documents_status)}
+    if any(token in lowered for token in ("что дальше", "следующ", "можно ли дальше", "переход")):
+        return {"reply": _documents_agent_next_step_reply(documents_status)}
+    if any(token in lowered for token in ("скачать", "архив", "отч", "файл", "pdf", "docx")):
+        return {"reply": _documents_agent_download_reply(documents_status)}
+    if any(token in lowered for token in ("итог", "результат", "сколько готово", "сколько документов", "сводк")):
+        return {"reply": _documents_agent_result_reply(documents_status)}
+
+    process_reply = _documents_agent_process_reply(documents_status)
+    next_reply = _documents_agent_next_step_reply(documents_status)
+    return {"reply": f"{process_reply} {next_reply}"}
 
 
 def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: str | None) -> None:
@@ -842,42 +1333,6 @@ def _run_generator_background(*, xlsx_path: Path, job_id: str | None) -> None:
     finally:
         with _generator_threads_lock:
             _generator_threads.pop(_generator_job_key(job_id), None)
-
-
-def _run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mode: str | None) -> None:
-    try:
-        generator_state = get_generator_status(job_id)
-        if str(generator_state.get("status") or "") != "completed":
-            clear_generator_stop_request(job_id)
-            generator_state = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
-
-        if str(generator_state.get("status") or "") != "completed":
-            return
-
-        philologist_state = get_philologist_status(job_id, include_details=False)
-        if str(philologist_state.get("status") or "") != "completed":
-            clear_philologist_stop_request(job_id)
-            philologist_state = run_philologist(ai_enabled=True, job_id=job_id, mode=mode or "fast")
-
-        if isinstance(philologist_state, dict) and philologist_state.get("status") == "completed":
-            _schedule_output_archive_build(job_id)
-    except Exception as exc:
-        logger.exception("documents_pipeline_failed", job_id=job_id)
-        generator_state = _load_generator_state(job_id)
-        philologist_state = _load_philologist_state(job_id)
-        if str(generator_state.get("status") or "") == "running":
-            generator_state["status"] = "error"
-            generator_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
-            generator_state["summary_text"] = f"Подготовка документов остановилась с ошибкой: {type(exc).__name__}: {exc}"
-            _save_generator_state(generator_state, job_id)
-        elif str(philologist_state.get("status") or "") in {"running", "finalizing"}:
-            philologist_state["status"] = "error"
-            philologist_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
-            philologist_state["summary_text"] = f"Проверка документов остановилась с ошибкой: {type(exc).__name__}: {exc}"
-            _save_philologist_state(philologist_state, job_id)
-    finally:
-        with _documents_threads_lock:
-            _documents_threads.pop(_documents_job_key(job_id), None)
 
 
 def _run_parser_verification_background(*, job_id: str | None, source: str) -> None:
@@ -976,66 +1431,6 @@ def _watch_parser_verification_process(*, job_id: str | None, source: str, proce
             _parser_verification_processes.pop(key, None)
 
 
-def _prime_sender_running_state(job_id: str | None, transport: str | None) -> dict:
-    state = _load_sender_state(job_id)
-    stats = _collect_excel_stats(resolve_job_paths(job_id).data_xlsx)
-    total_rows = int(state.get("total_rows") or stats.get("total", 0) or 0)
-    state["status"] = "running"
-    state["mode"] = "send"
-    state["transport"] = transport or state.get("transport") or "smtp"
-    state["started_at"] = datetime.now().isoformat(timespec="seconds")
-    state["completed_at"] = None
-    state["processed_rows"] = 0
-    state["ready_rows"] = 0
-    state["sent_rows"] = int(stats.get("sent", 0))
-    state["error_rows"] = 0
-    state["skipped_rows"] = 0
-    state["warning_rows"] = 0
-    state["handoff_rows"] = 0
-    state["generator_handoff_rows"] = 0
-    state["philology_blocked_rows"] = 0
-    state["autonomous_recovery_rows"] = 0
-    state["rows"] = []
-    state["stats"] = stats
-    state["total_rows"] = total_rows
-    state["remaining_rows"] = total_rows
-    state["summary_text"] = "Агент-отправщик начал отправку писем."
-    state["stop_requested"] = False
-    state["stop_requested_at"] = None
-    _save_sender_state(state, job_id)
-    return state
-
-
-def _prime_sender_checking_state(job_id: str | None, transport: str | None) -> dict:
-    state = _load_sender_state(job_id)
-    stats = _collect_excel_stats(resolve_job_paths(job_id).data_xlsx)
-    total_rows = int(state.get("total_rows") or stats.get("total", 0) or 0)
-    state["status"] = "running"
-    state["mode"] = "dry_run"
-    state["transport"] = transport or state.get("transport") or "unisender"
-    state["started_at"] = datetime.now().isoformat(timespec="seconds")
-    state["completed_at"] = None
-    state["processed_rows"] = 0
-    state["ready_rows"] = 0
-    state["sent_rows"] = int(stats.get("sent", 0))
-    state["error_rows"] = 0
-    state["skipped_rows"] = 0
-    state["warning_rows"] = 0
-    state["handoff_rows"] = 0
-    state["generator_handoff_rows"] = 0
-    state["philology_blocked_rows"] = 0
-    state["autonomous_recovery_rows"] = 0
-    state["rows"] = []
-    state["stats"] = stats
-    state["total_rows"] = total_rows
-    state["remaining_rows"] = total_rows
-    state["summary_text"] = "Проверяю адреса и вложения. Письма пока не отправляются."
-    state["stop_requested"] = False
-    state["stop_requested_at"] = None
-    _save_sender_state(state, job_id)
-    return state
-
-
 def _prime_philologist_running_state(job_id: str | None, mode: str | None) -> dict:
     paths = resolve_job_paths(job_id)
     output_dir = paths.output_dir
@@ -1097,7 +1492,14 @@ async def jobs_history(limit: int = 100, username: str = Depends(check_auth)):
         candidates.append((_job_history_mtime(job_dir), job_dir))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
-    jobs = [_build_job_history_item(job_dir, updated_at) for updated_at, job_dir in candidates[:safe_limit]]
+    jobs: list[dict] = []
+    for updated_at, job_dir in candidates:
+        item = _build_job_history_item(job_dir, updated_at)
+        if not _job_history_is_mailing_session(item):
+            continue
+        jobs.append(item)
+        if len(jobs) >= safe_limit:
+            break
     return {"status": "ok", "result": {"jobs": jobs}}
 
 
@@ -1325,7 +1727,6 @@ from src.generator.generation.config_generator import (
     START_OUTGOING_NUMBER,
     WEB_CASE_AGENT_MAX_WORKERS,
 )
-from src.generator.generation.pdf_converter import convert_docx_batch
 from src.generator.inflection.ai_case_agent import (
     ENABLE_CASE_AGENT,
     CASE_AGENT_ONLY_SUSPICIOUS,
@@ -1459,67 +1860,85 @@ def process_web_row(payload: tuple[int, int, dict]) -> dict:
     }
 
 
-def build_docx_jobs(results: list[dict]) -> list[dict[str, Path]]:
-    jobs: list[dict[str, Path]] = []
-    for result in results:
-        generated_files = result.get("generated_files") or {}
-        for job_key in ("kp", "contract"):
-            staged_key = job_key
-            final_docx_key = f"{job_key}_final_docx"
-            final_pdf_key = f"{job_key}_final_pdf"
-            if staged_key not in generated_files:
-                continue
-            jobs.append(
-                {
-                    "staged_docx": generated_files[staged_key],
-                    "final_docx": generated_files[final_docx_key],
-                    "final_pdf": generated_files[final_pdf_key],
-                    "result_index": result["result_index"],
-                    "file_kind": job_key,
-                }
-            )
-    return jobs
+configure_documents_service(
+    compact_generator_status=_compact_generator_status,
+    get_generator_status=get_generator_status,
+    compact_philologist_status=_compact_philologist_status,
+    get_philologist_status=get_philologist_status,
+    get_documents_thread=_get_documents_thread,
+    get_generator_thread=_get_generator_thread,
+    get_philologist_thread=_get_philologist_thread,
+    save_generator_state=_save_generator_state,
+    save_philologist_state=_save_philologist_state,
+    chat_with_philologist=chat_with_philologist,
+    run_generator_agent=run_generator_agent,
+    clear_generator_stop_request=clear_generator_stop_request,
+    run_philologist=run_philologist,
+    clear_philologist_stop_request=clear_philologist_stop_request,
+    load_generator_state=_load_generator_state,
+    load_philologist_state=_load_philologist_state,
+    schedule_output_archive_build=_schedule_output_archive_build,
+    unregister_documents_thread=_unregister_documents_thread,
+    logger=logger,
+)
+
+configure_sender_service(
+    run_sender=run_sender,
+    logger=logger,
+    load_sender_state=_load_sender_state,
+    save_sender_state=_save_sender_state,
+    unregister_sender_thread=_unregister_sender_thread,
+    collect_excel_stats=_collect_excel_stats,
+)
 
 
-def finalize_generated_files(results: list[dict]) -> None:
-    jobs = build_docx_jobs(results)
-    logger.info("web_finalize_start", staged_docx_count=len(jobs))
-    staged_docx_paths = [job["staged_docx"] for job in jobs]
-    started_at = perf_counter()
-    pdf_map = convert_docx_batch(staged_docx_paths, BATCH_PDF_DIR, chunk_size=100, worker_count=1)
-    logger.info(
-        "web_pdf_batch_done",
-        staged_docx_count=len(staged_docx_paths),
-        converted_count=sum(1 for value in pdf_map.values() if value),
-        elapsed_seconds=round(perf_counter() - started_at, 2),
+app.include_router(
+    create_documents_router(
+        check_auth=check_auth,
+        prefer_existing_file=_prefer_existing_file,
+        compact_documents_status=compact_documents_status,
+        get_documents_thread=_get_documents_thread,
+        get_generator_thread=_get_generator_thread,
+        get_philologist_thread=_get_philologist_thread,
+        prime_philologist_running_state=_prime_philologist_running_state,
+        register_documents_thread=_register_documents_thread,
+        run_documents_pipeline_background=run_documents_pipeline_background,
+        documents_job_key=_documents_job_key,
+        clear_philologist_stop_request=clear_philologist_stop_request,
+        get_generator_status=get_generator_status,
+        get_philologist_status=lambda job_id: get_philologist_status(job_id, include_details=False),
+        clear_generator_stop_request=clear_generator_stop_request,
+        save_generator_state=_save_generator_state,
+        prime_generator_state=prime_generator_state,
+        request_generator_stop=request_generator_stop,
+        request_philologist_stop=request_philologist_stop,
+        documents_agent_choose_reply=documents_agent_choose_reply,
     )
+)
 
-    for job in jobs:
-        staged_docx = job["staged_docx"]
-        final_docx = job["final_docx"]
-        final_pdf = job["final_pdf"]
-
-        final_docx.parent.mkdir(parents=True, exist_ok=True)
-        if staged_docx.exists():
-            shutil.copy2(str(staged_docx), str(final_docx))
-
-        batch_pdf = pdf_map.get(staged_docx)
-        pdf_created = bool(batch_pdf and batch_pdf.exists())
-        if pdf_created:
-            final_pdf.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(batch_pdf), str(final_pdf))
-
-        result_entry = results[job["result_index"]]
-        result_files = result_entry.setdefault("files", {})
-        result_files[f"{job['file_kind']}_final_docx"] = str(final_docx)
-        if pdf_created:
-            result_files[f"{job['file_kind']}_final_pdf"] = str(final_pdf)
-
-        if staged_docx.exists():
-            staged_docx.unlink()
-
-    for result in results:
-        result.pop("generated_files", None)
+app.include_router(
+    create_sender_router(
+        check_auth=check_auth,
+        parse_optional_limit=_parse_optional_limit,
+        compact_sender_status=compact_sender_status,
+        get_sender_thread=_get_sender_thread,
+        clear_sender_stop_request=clear_sender_stop_request,
+        prime_sender_checking_state=prime_sender_checking_state,
+        prime_sender_running_state=prime_sender_running_state,
+        register_sender_thread=_register_sender_thread,
+        run_sender_background=run_sender_background,
+        sender_job_key=_sender_job_key,
+        get_sender_status=get_sender_status,
+        get_unisender_history=get_unisender_history,
+        build_unisender_delivery_analytics=build_unisender_delivery_analytics,
+        settings=settings,
+        append_unisender_go_events=append_unisender_go_events,
+        logger=logger,
+        request_sender_stop=request_sender_stop,
+        preview_recipients=preview_recipients,
+        chat_with_sender=chat_with_sender,
+    )
+)
 
 
 @app.get("/api/counts")
@@ -1568,78 +1987,6 @@ async def counts(job_id: str | None = None, username: str = Depends(check_auth))
         "generator_total": generator_total,
         "sender_total": sender_total
     }
-
-
-@app.post("/api/documents/start")
-async def documents_start(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-    job_id = str((payload or {}).get("job_id") or "").strip() or None
-    mode = str((payload or {}).get("mode") or "fast").strip().lower() or "fast"
-    xlsx_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
-    if not xlsx_path.exists():
-        raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
-
-    existing_documents_thread = _get_documents_thread(job_id)
-    if existing_documents_thread is not None:
-        return {"status": "ok", "result": _compact_documents_status(job_id)}
-
-    # If the service was restarted mid-run, persisted states can still say
-    # "running" while the worker thread is gone. Normalize before deciding
-    # whether this is a fresh start or a resume.
-    _compact_documents_status(job_id)
-    generator_state = get_generator_status(job_id)
-    philologist_state = get_philologist_status(job_id, include_details=False)
-    generator_thread = _get_generator_thread(job_id)
-    philologist_thread = _get_philologist_thread(job_id)
-    generator_thread_running = str(generator_state.get("status") or "") == "running" and generator_thread is not None
-    philologist_thread_running = (
-        str(philologist_state.get("status") or "") in {"running", "finalizing"}
-        and philologist_thread is not None
-    )
-    if generator_thread_running or philologist_thread_running:
-        return {"status": "ok", "result": _compact_documents_status(job_id)}
-
-    if str(generator_state.get("status") or "") == "completed":
-        if str(philologist_state.get("status") or "") != "completed":
-            clear_philologist_stop_request(job_id)
-            _prime_philologist_running_state(job_id, mode)
-    else:
-        if str(generator_state.get("status") or "") == "stopped":
-            clear_generator_stop_request(job_id)
-            generator_state["status"] = "running"
-            generator_state["completed_at"] = None
-            generator_state["summary_text"] = "Продолжаю подготовку документов с сохраненного места."
-            _save_generator_state(generator_state, job_id)
-        else:
-            primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id)
-            if primed_state.get("status") == "error":
-                raise HTTPException(status_code=400, detail=primed_state.get("summary_text") or "Ошибка подготовки документов")
-
-    thread = threading.Thread(
-        target=_run_documents_pipeline_background,
-        kwargs={"xlsx_path": xlsx_path, "job_id": job_id, "mode": mode},
-        daemon=True,
-        name=f"documents-{_documents_job_key(job_id)}",
-    )
-    _register_documents_thread(job_id, thread)
-    thread.start()
-    return {"status": "ok", "result": _compact_documents_status(job_id)}
-
-
-@app.get("/api/documents/status")
-async def documents_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": _compact_documents_status(job_id)}
-
-
-@app.post("/api/documents/stop")
-async def documents_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    generator_state = get_generator_status(job_id)
-    philologist_state = get_philologist_status(job_id, include_details=False)
-    if str(generator_state.get("status") or "") == "running":
-        request_generator_stop(job_id)
-    if str(philologist_state.get("status") or "") in {"running", "finalizing"}:
-        request_philologist_stop(job_id)
-    return {"status": "ok", "result": _compact_documents_status(job_id)}
 
 
 @app.post("/api/generate")
@@ -2056,124 +2403,6 @@ async def parser_prompt(payload: dict = Body(...), username: str = Depends(check
     return {"status": "ok"}
 
 
-@app.post("/api/sender/run")
-async def sender_run(
-    payload: dict | None = Body(default=None),
-    username: str = Depends(check_auth),
-):
-    dry_run = True if payload is None else bool(payload.get("dry_run", True))
-    limit = _parse_optional_limit(payload)
-    transport = None if payload is None else payload.get("transport")
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-
-    existing_thread = _get_sender_thread(job_id)
-    if existing_thread:
-        return {"status": "ok", "result": _compact_sender_status(get_sender_status(job_id))}
-
-    try:
-        clear_sender_stop_request(job_id)
-        primed_state = (
-            _prime_sender_checking_state(job_id, transport)
-            if dry_run
-            else _prime_sender_running_state(job_id, transport)
-        )
-        sender_thread = threading.Thread(
-            target=_run_sender_background,
-            kwargs={"dry_run": dry_run, "limit": limit, "transport": transport, "job_id": job_id},
-            daemon=True,
-            name=f"sender-{_sender_job_key(job_id)}",
-        )
-        _register_sender_thread(job_id, sender_thread)
-        sender_thread.start()
-    except Exception as exc:
-        logger.exception("sender_run_start_failed", job_id=job_id, transport=transport)
-        raise HTTPException(status_code=500, detail=f"Не удалось запустить отправку: {type(exc).__name__}: {exc}") from exc
-    return {"status": "ok", "result": _compact_sender_status(primed_state)}
-
-
-@app.get("/api/sender/status")
-async def sender_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": _compact_sender_status(get_sender_status(job_id))}
-
-
-@app.get("/api/sender/unisender-history")
-async def sender_unisender_history(
-    job_id: str | None = None,
-    limit: int = 50,
-    refresh: bool = False,
-    username: str = Depends(check_auth),
-):
-    return {
-        "status": "ok",
-        "result": get_unisender_history(job_id=job_id, limit=limit, refresh=refresh),
-    }
-
-
-@app.get("/api/sender/analytics")
-async def sender_analytics(
-    job_id: str | None = None,
-    refresh: bool = False,
-    username: str = Depends(check_auth),
-):
-    return {
-        "status": "ok",
-        "result": build_unisender_delivery_analytics(job_id=job_id, refresh=refresh),
-    }
-
-
-@app.get("/api/webhooks/unisender-go")
-async def unisender_go_webhook_health():
-    return {"status": "ok", "message": "UniSender Go webhook endpoint is ready"}
-
-
-@app.post("/api/webhooks/unisender-go")
-async def unisender_go_webhook(request: Request):
-    if settings.unisender_webhook_secret:
-        provided_secret = request.headers.get("X-Webhook-Secret") or request.query_params.get("secret") or ""
-        if not secrets.compare_digest(provided_secret, settings.unisender_webhook_secret):
-            raise HTTPException(status_code=401, detail="Некорректный секрет webhook UniSender Go")
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Некорректный JSON webhook UniSender Go") from exc
-    try:
-        result = append_unisender_go_events(payload)
-    except Exception as exc:
-        logger.exception("unisender_go_webhook_save_failed")
-        raise HTTPException(status_code=500, detail=f"Не удалось сохранить webhook UniSender Go: {exc}") from exc
-    return {"status": "ok", "result": result}
-
-
-@app.post("/api/sender/stop")
-async def sender_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    result = request_sender_stop(job_id=job_id)
-    return {"status": "ok", "result": _compact_sender_status(result)}
-
-
-@app.post("/api/sender/preview")
-async def sender_preview(
-    payload: dict | None = Body(default=None),
-    username: str = Depends(check_auth),
-):
-    limit = _parse_optional_limit(payload)
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    result = preview_recipients(limit=limit, job_id=job_id)
-    return {"status": "ok", "result": result}
-
-
-@app.post("/api/sender/chat")
-async def sender_chat(
-    payload: dict = Body(...),
-    username: str = Depends(check_auth),
-):
-    message = str(payload.get("message", "")).strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="Пустое сообщение")
-    job_id = str(payload.get("job_id") or "").strip() or None
-    return {"status": "ok", **chat_with_sender(message, job_id=job_id)}
-
-
 @app.post("/api/parser/run")
 async def parser_run(
     payload: dict | None = Body(default=None),
@@ -2291,4 +2520,4 @@ async def orchestrator_chat(
 if __name__ == "__main__":
     import uvicorn
     logger.info("Запуск сервера", host=settings.app_host, port=settings.app_port)
-    uvicorn.run("main:app", host=settings.app_host, port=settings.app_port, reload=True)
+    uvicorn.run("main:app", host=settings.app_host, port=settings.app_port)
