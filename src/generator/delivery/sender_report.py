@@ -133,6 +133,14 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
     pending = sum(statuses.get(status, 0) for status in pending_statuses)
     accepted = total
     checked = sum(1 for row in rows if row.get("checked_at"))
+    provider_events_count = sum(
+        count
+        for status, count in statuses.items()
+        if status not in accepted_statuses and status not in {"unknown"}
+    )
+    awaiting_provider_events = bool(
+        total > 0 and provider_events_count <= 0 and pending >= accepted
+    )
 
     def pct(value: int, base: int | None = None) -> float:
         denominator = total if base is None else base
@@ -155,7 +163,7 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
             "value": delivered,
             "percent": pct(delivered),
             "hint": "Подтверждённая доставка по статусам UniSender.",
-            "tone": "good",
+            "tone": "neutral" if awaiting_provider_events else "good",
         },
         {
             "id": "opened",
@@ -163,7 +171,7 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
             "value": read,
             "percent": pct(read),
             "hint": "Письма, где UniSender Go зафиксировал открытие или более позднее действие.",
-            "tone": "good",
+            "tone": "neutral" if awaiting_provider_events else "good",
         },
         {
             "id": "clicked",
@@ -171,7 +179,7 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
             "value": clicked,
             "percent": pct(clicked),
             "hint": "Письма, где UniSender Go зафиксировал переход по ссылке.",
-            "tone": "good",
+            "tone": "neutral" if awaiting_provider_events else "good",
         },
         {
             "id": "hard_bounced",
@@ -221,6 +229,8 @@ def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bo
         "total": total,
         "checked": checked,
         "refresh_error": refresh_error,
+        "awaiting_provider_events": awaiting_provider_events,
+        "provider_events_count": provider_events_count,
         "summary": {
             "accepted": accepted,
             "delivered": delivered,
@@ -782,8 +792,8 @@ def _analytics_note(*, total: int, checked: int, providers: Counter[str], refres
         return f"Показаны локальные данные отправки. Не удалось обновить часть статусов: {refresh_error}"
     if any(name == "unisender_go" for name in providers):
         return (
-            "Для UniSender Go показываем события, которые уже есть в журнале/кэше job. "
-            "Открытия, клики и финальная доставка появятся после подключения webhook или event-dump."
+            "Для UniSender Go доставка, открытия и клики появляются после событий провайдера. "
+            "Если письма уже переданы в UniSender, а здесь пока нули, значит сервис ещё ждёт webhook или добор из event-dump."
         )
     if checked:
         return f"Статусы обновлены для {checked} писем. Провайдеры: {provider_names or 'UniSender'}."

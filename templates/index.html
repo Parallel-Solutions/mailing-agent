@@ -2328,7 +2328,7 @@
     parserRunning = currentParserStatus === 'running' || parserVerificationStatus === 'running';
     phRunning = ['running', 'finalizing'].includes(currentPhilologistStatus);
     senderRunning = currentSenderStatus === 'running';
-    moduleReadiness = { ...moduleReadiness, ...inferLocalModuleReadiness() };
+    moduleReadiness = mergeModuleReadiness(moduleReadiness, inferLocalModuleReadiness());
 
     if (snapshot.activeScreen) {
       goToScreen(snapshot.activeScreen, { scroll: false, persist: false });
@@ -2940,7 +2940,11 @@
       const generatedAt = analytics.generated_at
         ? String(analytics.generated_at).replace('T', ' ')
         : 'только что';
-      sub.textContent = `Сводка по текущей отправке: ${total.toLocaleString('ru')} писем. Обновлено: ${generatedAt}.`;
+      const awaitingProviderEvents = !!analytics.awaiting_provider_events;
+      const providerEventsCount = Number(analytics.provider_events_count || 0);
+      sub.textContent = awaitingProviderEvents
+        ? `Письма уже переданы в UniSender: ${total.toLocaleString('ru')}. Ждём события доставки от провайдера. Обновлено: ${generatedAt}.`
+        : `Сводка по текущей отправке: ${total.toLocaleString('ru')} писем. Событий провайдера: ${providerEventsCount.toLocaleString('ru')}. Обновлено: ${generatedAt}.`;
     }
     grid.innerHTML = cards.map(card => {
       const value = Number(card.value || 0).toLocaleString('ru');
@@ -3437,7 +3441,6 @@
     } catch (e) {}
 
     if (currentJobId) {
-      await refreshCounts();
       await refreshModuleReadiness();
       await refreshParserStatus({ silent: true });
       await refreshDocumentsStatus({ silent: true });
@@ -4672,46 +4675,29 @@ function clearAttachedFile() {
     const kpLoaded = !!(kpButton && kpButton.classList.contains('uploaded'));
     const contractLoaded = !!(contractButton && contractButton.classList.contains('uploaded'));
     const mailLoaded = !!(mailButton && mailButton.classList.contains('uploaded'));
-    const generatorCompleted = currentGeneratorStatus === 'completed' || String(lastGeneratorUiState.status || '') === 'completed';
-    const philologistCompleted = currentPhilologistStatus === 'completed' || String(lastPhilologistUiState.status || '') === 'completed';
-    const generatorOutputReady = generatorCompleted && Number(lastGeneratorUiState.output_file_count || 0) > 0;
-    const outputReady = !!(generatorOutputReady || philologistCompleted);
-    const senderReady = !!(dataLoaded && outputReady);
-
     return {
       data_loaded: dataLoaded,
       kp_template_loaded: kpLoaded,
       contract_template_loaded: contractLoaded,
       mail_template_loaded: mailLoaded,
-      generator_ready: dataLoaded && kpLoaded && contractLoaded,
-      philologist_ready: generatorCompleted,
-      sender_ready: senderReady,
-      generator_reason: dataLoaded
-        ? ((kpLoaded && contractLoaded) ? '' : 'Для генератора нужны шаблон КП и шаблон договора.')
-        : 'Сначала загрузите таблицу.',
-      philologist_reason: generatorCompleted ? '' : 'Сначала подготовьте документы.',
-      sender_reason: senderReady ? '' : 'Сначала подготовьте документы.',
     };
   }
 
   function syncModuleReadinessFromUi() {
-    moduleReadiness = { ...moduleReadiness, ...inferLocalModuleReadiness() };
+    moduleReadiness = mergeModuleReadiness(moduleReadiness, inferLocalModuleReadiness());
     applyModuleReadiness();
     saveUiState();
     return moduleReadiness;
   }
 
   function mergeModuleReadiness(serverState = {}, localState = {}) {
-    const serverGeneratorReady = !!serverState.generator_ready;
-    const localGeneratorReady = !!localState.generator_ready;
-    const serverPhilologistReady = !!serverState.philologist_ready;
-    const localPhilologistReady = !!localState.philologist_ready;
-    const serverSenderReady = !!serverState.sender_ready;
-    const localSenderReady = !!localState.sender_ready;
+    const hasServerGeneratorReady = Object.prototype.hasOwnProperty.call(serverState, 'generator_ready');
+    const hasServerPhilologistReady = Object.prototype.hasOwnProperty.call(serverState, 'philologist_ready');
+    const hasServerSenderReady = Object.prototype.hasOwnProperty.call(serverState, 'sender_ready');
 
-    const generatorReady = serverGeneratorReady || localGeneratorReady;
-    const philologistReady = serverPhilologistReady || localPhilologistReady;
-    const senderReady = serverSenderReady || localSenderReady;
+    const generatorReady = hasServerGeneratorReady ? !!serverState.generator_ready : !!localState.generator_ready;
+    const philologistReady = hasServerPhilologistReady ? !!serverState.philologist_ready : !!localState.philologist_ready;
+    const senderReady = hasServerSenderReady ? !!serverState.sender_ready : !!localState.sender_ready;
 
     return {
       ...moduleReadiness,
@@ -4724,9 +4710,9 @@ function clearAttachedFile() {
       generator_ready: generatorReady,
       philologist_ready: philologistReady,
       sender_ready: senderReady,
-      generator_reason: generatorReady ? '' : (serverState.generator_reason || localState.generator_reason || ''),
-      philologist_reason: philologistReady ? '' : (serverState.philologist_reason || localState.philologist_reason || ''),
-      sender_reason: senderReady ? '' : (serverState.sender_reason || localState.sender_reason || ''),
+      generator_reason: generatorReady ? '' : (serverState.generator_reason || ''),
+      philologist_reason: philologistReady ? '' : (serverState.philologist_reason || ''),
+      sender_reason: senderReady ? '' : (serverState.sender_reason || ''),
     };
   }
 
@@ -4765,13 +4751,39 @@ function clearAttachedFile() {
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить готовность модулей');
       if (requestedJobId !== currentJobId) return null;
-      moduleReadiness = mergeModuleReadiness(data.result || {}, inferLocalModuleReadiness());
+      const result = data.result || {};
+      moduleReadiness = mergeModuleReadiness(result, inferLocalModuleReadiness());
+      applyModuleCounts(result.counts || {});
     } catch (e) {
       moduleReadiness = mergeModuleReadiness({}, inferLocalModuleReadiness());
     }
     applyModuleReadiness();
     saveUiState();
     return moduleReadiness;
+  }
+
+  function applyModuleCounts(counts = {}) {
+    const parserTotal = Number(counts.parser_total || 0);
+    const generatorTotal = Number(counts.generator_total || 0);
+    const senderTotal = Number(counts.sender_total || 0);
+
+    const parserTotalEl = document.getElementById('p-total');
+    if (parserTotalEl) parserTotalEl.textContent = parserTotal.toLocaleString('ru');
+
+    const generatorTotalEl = document.getElementById('g-total');
+    if (generatorTotalEl) generatorTotalEl.textContent = generatorTotal.toLocaleString('ru');
+
+    const generatorTotalLabelEl = document.getElementById('g-total-label');
+    if (generatorTotalLabelEl) generatorTotalLabelEl.textContent = generatorTotal.toLocaleString('ru');
+
+    const senderTotalEl = document.getElementById('s-total');
+    if (senderTotalEl) senderTotalEl.textContent = senderTotal.toLocaleString('ru');
+
+    const failedButton = document.getElementById('p-download-failed');
+    setParserDownloadButtonsState({
+      hasResult: parserTotal > 0,
+      hasFailed: !!(failedButton && !failedButton.disabled),
+    });
   }
 
   function safeAppendChatMessage(chatId, role, text) {
@@ -6402,7 +6414,6 @@ function clearAttachedFile() {
     try {
       if (full) {
         await Promise.allSettled([
-          refreshCounts(),
           refreshParserStatus({ silent }),
           refreshDocumentsStatus({ silent }),
           refreshSenderStatus({ silent }),
@@ -6415,7 +6426,6 @@ function clearAttachedFile() {
       passiveStatusRefreshTick += 1;
       if (passiveStatusRefreshTick % 6 === 0) {
         await Promise.allSettled([
-          refreshCounts(),
           refreshModuleReadiness(),
         ]);
       }
