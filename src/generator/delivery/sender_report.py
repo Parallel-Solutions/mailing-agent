@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime
+import csv
+from datetime import datetime, timedelta
+import io
 import json
 from pathlib import Path
+from time import sleep
 from typing import Any
+from urllib.request import Request, urlopen
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -12,13 +16,16 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from src.generator.delivery.sender_agent import (
+    _build_unisender_go_url,
     _check_unisender_classic_messages,
     _load_sent_mail_log_items,
+    _run_unisender_request,
     _safe_text,
     _unisender_status_label,
 )
 from src.generator.delivery.unisender_go_events import load_unisender_go_events
 from src.jobs import resolve_job_paths
+from src.utils.config import settings
 
 
 BLUE = "1F4E78"
@@ -26,6 +33,8 @@ LIGHT_BLUE = "D9EAF7"
 BORDER = Side(style="thin", color="D9E2F3")
 REPORT_FILENAME = "unisender_delivery_report.xlsx"
 ANALYTICS_CACHE_FILENAME = "unisender_delivery_analytics.json"
+EVENT_DUMP_POLL_ATTEMPTS = 15
+EVENT_DUMP_POLL_SECONDS = 2.0
 
 
 def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: bool = True) -> Path:
@@ -241,6 +250,11 @@ def unisender_delivery_report_has_data(job_id: str | None = None) -> bool:
 
 def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dict[str, Any]], str]:
     items = _load_unisender_log_items(job_id)
+    refresh_messages: list[str] = []
+    if refresh:
+        go_refresh_error = _refresh_unisender_go_event_dump(job_id, items)
+        if go_refresh_error:
+            refresh_messages.append(go_refresh_error)
     go_events = _latest_unisender_go_events(job_id)
     cached_statuses = _load_delivery_status_cache(job_id)
     provider_statuses: dict[str, dict[str, Any]] = {}
@@ -255,6 +269,9 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
                 _save_delivery_status_cache(job_id, cached_statuses)
         except Exception as exc:
             refresh_error = _safe_text(exc) or "не удалось обновить статусы UniSender"
+    if refresh_error:
+        refresh_messages.append(refresh_error)
+    refresh_error = " ".join(message for message in refresh_messages if message).strip()
 
     rows: list[dict[str, Any]] = []
     for item in items:
@@ -294,6 +311,227 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
             }
         )
     return rows, refresh_error
+
+
+def _refresh_unisender_go_event_dump(job_id: str | None, items: list[dict[str, Any]]) -> str:
+    if not job_id:
+        return ""
+    go_items = [item for item in items if _provider_name(item) == "unisender_go"]
+    if not go_items:
+        return ""
+    api_key = _safe_text(settings.unisender_api_key)
+    if not api_key:
+        return "Не указан API-ключ UniSender Go, поэтому не удалось добрать события доставки."
+
+    start_time, end_time = _event_dump_time_window(go_items)
+    request_body = {
+        "start_time": start_time,
+        "end_time": end_time,
+        "dump_fields": [
+            "event_time",
+            "job_id",
+            "email",
+            "status",
+            "delivery_status",
+            "metadata",
+            "url",
+        ],
+        "format": "csv",
+        "delimiter": ",",
+    }
+    email_from = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
+    if email_from:
+        request_body["filter"] = {"email_from": email_from}
+    try:
+        create_data = _unisender_go_json_request("event-dump/create.json", request_body, api_key=api_key)
+    except RuntimeError as exc:
+        return _safe_text(exc)
+
+    dump_id = _safe_text(create_data.get("dump_id"))
+    if not dump_id:
+        return "UniSender Go не вернул идентификатор event-dump."
+
+    try:
+        files = _wait_unisender_go_dump_files(dump_id, api_key=api_key)
+        imported = _import_unisender_go_dump_files(job_id, files, go_items)
+    except RuntimeError as exc:
+        return _safe_text(exc)
+    finally:
+        _delete_unisender_go_dump_safely(dump_id, api_key=api_key)
+
+    if imported <= 0:
+        return "Новые события UniSender Go пока не найдены. Возможно, провайдер ещё не сформировал доставку/открытия или события уже недоступны."
+    return f"Добрали из UniSender Go {imported} событий доставки."
+
+
+def _event_dump_time_window(items: list[dict[str, Any]]) -> tuple[str, str]:
+    sent_times: list[datetime] = []
+    for item in items:
+        text = _safe_text(item.get("sent_at"))
+        if not text:
+            continue
+        try:
+            sent_times.append(datetime.fromisoformat(text))
+        except ValueError:
+            continue
+    now = datetime.now()
+    if sent_times:
+        start = min(sent_times) - timedelta(days=1)
+    else:
+        start = now - timedelta(days=7)
+    # UniSender хранит историю ограниченно, а серверные часы/таймзона могут плавать.
+    floor = now - timedelta(days=45)
+    if start < floor:
+        start = floor
+    end = now + timedelta(minutes=5)
+    return start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _unisender_go_json_request(path: str, payload: dict[str, Any], *, api_key: str) -> dict[str, Any]:
+    request = Request(
+        _build_unisender_go_url(path),
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-API-KEY": api_key,
+        },
+    )
+    raw = _run_unisender_request(request, timeout=60, request_label="UniSender Go")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"UniSender Go вернул непонятный ответ event-dump: {raw[:300]}") from exc
+    if _safe_text(data.get("status")).lower() != "success":
+        raise RuntimeError(_safe_text(data.get("message")) or "UniSender Go не подтвердил event-dump.")
+    return data
+
+
+def _wait_unisender_go_dump_files(dump_id: str, *, api_key: str) -> list[dict[str, Any]]:
+    last_status = ""
+    files: list[dict[str, Any]] = []
+    for _ in range(EVENT_DUMP_POLL_ATTEMPTS):
+        data = _unisender_go_json_request("event-dump/get.json", {"dump_id": dump_id}, api_key=api_key)
+        event_dump = data.get("event_dump") if isinstance(data.get("event_dump"), dict) else {}
+        last_status = _safe_text(event_dump.get("dump_status")).lower()
+        files = event_dump.get("files") if isinstance(event_dump.get("files"), list) else []
+        if last_status == "ready" and files:
+            return [item for item in files if isinstance(item, dict) and _safe_text(item.get("url"))]
+        if last_status == "failed":
+            raise RuntimeError("UniSender Go не смог подготовить event-dump для аналитики.")
+        sleep(EVENT_DUMP_POLL_SECONDS)
+    raise RuntimeError(
+        f"UniSender Go ещё не подготовил event-dump (текущий статус: {last_status or 'unknown'}). Попробуйте обновить аналитику через минуту."
+    )
+
+
+def _import_unisender_go_dump_files(job_id: str, files: list[dict[str, Any]], items: list[dict[str, Any]]) -> int:
+    path = resolve_job_paths(job_id).root_dir / "state" / "unisender_go_events.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_events = load_unisender_go_events(job_id)
+    existing_keys = {_unisender_go_event_record_key(item) for item in existing_events if isinstance(item, dict)}
+    recipient_row_pairs = {
+        (_safe_text(item.get("recipient")).lower(), _safe_text(item.get("row_id")))
+        for item in items
+        if _safe_text(item.get("recipient"))
+    }
+    imported = 0
+    with path.open("a", encoding="utf-8") as handle:
+        for file_info in files:
+            url = _safe_text(file_info.get("url"))
+            if not url:
+                continue
+            for record in _load_unisender_go_dump_records(url, job_id=job_id, recipient_row_pairs=recipient_row_pairs):
+                key = _unisender_go_event_record_key(record)
+                if key in existing_keys:
+                    continue
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                existing_keys.add(key)
+                imported += 1
+    return imported
+
+
+def _load_unisender_go_dump_records(
+    url: str,
+    *,
+    job_id: str,
+    recipient_row_pairs: set[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    with urlopen(url, timeout=60) as response:
+        raw = response.read().decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(raw))
+    records: list[dict[str, Any]] = []
+    for row in reader:
+        metadata = _parse_event_dump_metadata(row.get("metadata"))
+        recipient = _safe_text(row.get("email")).lower()
+        row_id = _safe_text(metadata.get("app_row_id") or metadata.get("row_id"))
+        event_job_id = _safe_text(metadata.get("app_job_id") or metadata.get("job_id"))
+        if event_job_id != job_id and (recipient, row_id) not in recipient_row_pairs:
+            continue
+        event_type = _resolve_event_dump_status(row)
+        if not event_type:
+            continue
+        records.append(
+            {
+                "received_at": _safe_text(row.get("event_time")) or datetime.now().isoformat(timespec="seconds"),
+                "event": {
+                    "job_id": _safe_text(row.get("job_id")),
+                    "email": recipient,
+                    "status": _safe_text(row.get("status")),
+                    "delivery_status": _safe_text(row.get("delivery_status")),
+                    "metadata": metadata,
+                    "url": _safe_text(row.get("url")),
+                },
+                "event_type": event_type,
+                "recipient": recipient,
+                "provider_job_id": _safe_text(row.get("job_id")),
+                "row_id": row_id,
+                "mun_name": _safe_text(metadata.get("app_mun_name") or metadata.get("mun_name")),
+            }
+        )
+    return records
+
+
+def _parse_event_dump_metadata(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    text = _safe_text(value)
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _resolve_event_dump_status(row: dict[str, Any]) -> str:
+    status = _normalize_provider_status(_safe_text(row.get("status")))
+    delivery_status = _normalize_provider_status(_safe_text(row.get("delivery_status")))
+    if status in {"soft_bounced", "hard_bounced"} and delivery_status and delivery_status != "unknown":
+        return delivery_status
+    return status if status != "unknown" else delivery_status
+
+
+def _unisender_go_event_record_key(record: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    event = record.get("event") if isinstance(record.get("event"), dict) else {}
+    return (
+        _safe_text(record.get("recipient")).lower(),
+        _safe_text(record.get("row_id")),
+        _normalize_provider_status(_safe_text(record.get("event_type"))),
+        _safe_text(record.get("received_at")),
+        _safe_text(event.get("url")),
+    )
+
+
+def _delete_unisender_go_dump_safely(dump_id: str, *, api_key: str) -> None:
+    if not dump_id:
+        return
+    try:
+        _unisender_go_json_request("event-dump/delete.json", {"dump_id": dump_id}, api_key=api_key)
+    except Exception:
+        return
 
 
 def _delivery_status_cache_path(job_id: str | None) -> Path:
