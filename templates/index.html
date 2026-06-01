@@ -2097,6 +2097,7 @@
   let lastPhilologistUiState = {};
   let lastDocumentsUiState = {};
   let lastSenderUiState = {};
+  let deliveryAnalyticsFollowupTimer = null;
   let isRestoringUiState = false;
 
   function escapeHtml(value) {
@@ -2981,6 +2982,7 @@
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить аналитику отправки');
       const result = data.result || {};
       renderDeliveryAnalytics(result);
+      scheduleDeliveryAnalyticsFollowup(result);
       if (!silent) {
         if (result.refresh_started || result.refresh_in_progress) {
           showToast('Обновление аналитики запущено в фоне');
@@ -2993,6 +2995,23 @@
       if (!silent) showToast('Не удалось обновить аналитику');
       return null;
     }
+  }
+
+  function scheduleDeliveryAnalyticsFollowup(result = {}) {
+    if (deliveryAnalyticsFollowupTimer) {
+      clearTimeout(deliveryAnalyticsFollowupTimer);
+      deliveryAnalyticsFollowupTimer = null;
+    }
+    if (!(result.refresh_started || result.refresh_in_progress)) return;
+
+    const jobIdAtSchedule = currentJobId;
+    deliveryAnalyticsFollowupTimer = setTimeout(async () => {
+      if (!jobIdAtSchedule || jobIdAtSchedule !== currentJobId) return;
+      const next = await refreshDeliveryAnalytics({ refresh: false, silent: true });
+      if (next && next.refresh_in_progress) {
+        scheduleDeliveryAnalyticsFollowup(next);
+      }
+    }, 5000);
   }
 
   function formatJobHistoryDate(value) {
