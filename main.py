@@ -1792,7 +1792,6 @@ def _build_job_readiness_result(job_id: str | None = None) -> dict:
     parser_state = get_parser_status(job_id)
     generator_state = get_generator_status(job_id)
     philologist_state = get_philologist_status(job_id, include_details=False)
-    documents_status = get_documents_status(job_id)
 
     parser_verification_state = parser_state.get("municipality_name_verification_state") or {}
     parser_verification_result = parser_state.get("municipality_name_verification") or {}
@@ -1802,9 +1801,18 @@ def _build_job_readiness_result(job_id: str | None = None) -> dict:
         or str(parser_verification_result.get("status") or "") == "ok"
     )
     parser_running = str(parser_state.get("status") or "") == "running" or parser_verification_status == "running"
-    generator_running = str(generator_state.get("status") or "") == "running"
-    philologist_running = str(philologist_state.get("status") or "") in {"running", "finalizing"}
-    documents_completed = str(documents_status.get("status") or "") == "completed"
+    generator_status = str(generator_state.get("status") or "")
+    philologist_status = str(philologist_state.get("status") or "")
+    generator_running = generator_status == "running"
+    philologist_running = philologist_status in {"running", "finalizing"}
+    reviewed_documents = int(philologist_state.get("processed_documents") or 0)
+    total_documents = int(philologist_state.get("total_documents") or 0)
+    philologist_completed = philologist_status == "completed" or (
+        total_documents > 0
+        and reviewed_documents >= total_documents
+        and philologist_status in {"running", "finalizing"}
+    )
+    documents_completed = generator_status == "completed" and philologist_completed
     output_docx_count = max(
         int(generator_state.get("staged_docx_count") or 0),
         int(philologist_state.get("total_documents") or 0),
