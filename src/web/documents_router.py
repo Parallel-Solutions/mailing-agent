@@ -7,6 +7,7 @@ from typing import Any, Callable
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from src.jobs import resolve_job_paths
+from src.utils.logger import logger
 
 
 def create_documents_router(
@@ -40,11 +41,18 @@ def create_documents_router(
         if not xlsx_path.exists():
             raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
 
-        compact_documents_status(job_id)
-        generator_state = get_generator_status(job_id)
-        philologist_state = get_philologist_status(job_id)
-        generator_thread = get_generator_thread(job_id)
-        philologist_thread = get_philologist_thread(job_id)
+        try:
+            compact_documents_status(job_id)
+            generator_state = get_generator_status(job_id)
+            philologist_state = get_philologist_status(job_id)
+            generator_thread = get_generator_thread(job_id)
+            philologist_thread = get_philologist_thread(job_id)
+        except Exception as exc:
+            logger.exception("documents_start_state_read_failed", job_id=job_id)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Не удалось прочитать состояние подготовки: {type(exc).__name__}: {exc}",
+            ) from exc
         generator_thread_running = str(generator_state.get("status") or "") == "running" and generator_thread is not None
         philologist_thread_running = (
             str(philologist_state.get("status") or "") in {"running", "finalizing"}
@@ -65,20 +73,35 @@ def create_documents_router(
                 generator_state["summary_text"] = "Продолжаю подготовку документов с сохраненного места."
                 save_generator_state(generator_state, job_id)
             else:
-                primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id)
+                try:
+                    primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id)
+                except Exception as exc:
+                    logger.exception("documents_start_prime_generator_failed", job_id=job_id, xlsx_path=str(xlsx_path))
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Не удалось подготовить запуск документов: {type(exc).__name__}: {exc}",
+                    ) from exc
                 if primed_state.get("status") == "error":
                     raise HTTPException(
                         status_code=400,
                         detail=primed_state.get("summary_text") or "Ошибка подготовки документов",
                     )
 
-        start_documents_thread_if_absent(
-            job_id,
-            target=run_documents_pipeline_background,
-            kwargs={"xlsx_path": xlsx_path, "job_id": job_id, "mode": mode},
-            name=f"documents-{documents_job_key(job_id)}",
-        )
-        return {"status": "ok", "result": compact_documents_status(job_id)}
+        try:
+            start_documents_thread_if_absent(
+                job_id,
+                target=run_documents_pipeline_background,
+                kwargs={"xlsx_path": xlsx_path, "job_id": job_id, "mode": mode},
+                name=f"documents-{documents_job_key(job_id)}",
+            )
+            result = compact_documents_status(job_id)
+        except Exception as exc:
+            logger.exception("documents_start_thread_failed", job_id=job_id, xlsx_path=str(xlsx_path))
+            raise HTTPException(
+                status_code=500,
+                detail=f"Не удалось запустить подготовку документов: {type(exc).__name__}: {exc}",
+            ) from exc
+        return {"status": "ok", "result": result}
 
     @router.get("/api/documents/status")
     async def documents_status(job_id: str | None = None):
