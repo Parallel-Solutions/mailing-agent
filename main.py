@@ -14,6 +14,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from time import perf_counter
 import time
+from fastapi.responses import StreamingResponse        # рядом с HTMLResponse
+from fastapi.concurrency import run_in_threadpool
+from src.parser_new.progress import subscribe as parser_progress_subscribe
 
 app = FastAPI(title="Mailing Agent")
 security = HTTPBasic()
@@ -1748,24 +1751,30 @@ async def download_data_xlsx(job_id: str | None = None, username: str = Depends(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename="data.xlsx",
     )
-
 @app.get("/api/parser/download-result")
 async def download_parser_result(job_id: str | None = None, username: str = Depends(check_auth)):
-    """Скачать последний обработанный файл."""
-    search_dirs: list[Path] = []
+    """Скачать последний обработанный файл задачи."""
+    # 1. Приоритет — персональная папка задачи (изоляция по job_id)
+    if job_id:
+        try:
+            paths = resolve_job_paths(job_id)
+            latest = _latest_matching_file(
+                [paths.output_dir], pattern="batch_*.xlsx", exclude_substring="FAILED"
+            )
+            if latest is not None:
+                return FileResponse(
+                    latest,
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    filename=latest.name,
+                )
+        except Exception:
+            pass
 
-    try:
-        paths = resolve_job_paths(job_id)
-        if paths.output_dir.exists():
-            search_dirs.append(paths.output_dir)
-    except Exception:
-        pass
-
+    # 2. Фолбэк — общий output/latest (старое поведение, если папки задачи нет)
     parser_output = Path(__file__).parent / "src" / "parser_new" / "output" / "latest"
-    if parser_output.exists():
-        search_dirs.append(parser_output)
-
-    latest = _latest_matching_file(search_dirs, pattern="*.xlsx", exclude_substring="FAILED")
+    latest = _latest_matching_file(
+        [parser_output], pattern="batch_*.xlsx", exclude_substring="FAILED"
+    )
     if latest is None:
         raise HTTPException(status_code=404, detail="Файл результата не найден")
 
@@ -2226,8 +2235,40 @@ async def parser_chat(
     if not message:
         raise HTTPException(status_code=400, detail="Пустое сообщение")
     job_id = str(payload.get("job_id") or "").strip() or None
-    return {"status": "ok", **chat(message, job_id=job_id)}
 
+    result = await run_in_threadpool(chat, message, job_id=job_id)
+
+    # Если агент собрал новый файл — проверяем имена МО ИМЕННО на этом файле
+    result_file = result.get("result_file")
+    if result_file:
+        try:
+            from pathlib import Path as _Path
+            from src.generator.verification.municipality_name_verifier import (
+                verify_municipality_names_in_workbook,
+            )
+            verification = verify_municipality_names_in_workbook(_Path(result_file))
+            result["municipality_name_verification"] = verification
+            summary = format_municipality_verification_for_chat(verification, max_samples=20)
+            if summary:
+                logger.info(f"[parser] Верификация имён МО: {summary}")
+        except Exception as e:
+            logger.warning(f"Верификация имён МО не выполнена: {e}")
+
+    return {"status": "ok", **result}
+
+@app.get("/api/parser/progress")
+async def parser_progress(job_id: str | None = None, username: str = Depends(check_auth)):
+    job_key = str(job_id or "").strip()
+    if not job_key:
+        raise HTTPException(status_code=400, detail="Не указан job_id для потока прогресса")
+    return StreamingResponse(
+        parser_progress_subscribe(job_key),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # на случай, если впереди появится nginx
+        },
+    )
 
 @app.get("/api/orchestrator/status")
 async def orchestrator_status(session_id: str | None = None, username: str = Depends(check_auth)):

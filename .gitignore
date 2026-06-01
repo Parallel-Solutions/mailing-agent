@@ -14,3 +14,5 @@ wheels/
 data/
 logs/
 storage/
+src/parser_new/output/
+*.xlsx

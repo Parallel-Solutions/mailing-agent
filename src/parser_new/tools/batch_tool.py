@@ -35,12 +35,12 @@ def batch_search_tool(file_path: str, save_every: int = 10) -> str:
     """
     try:
         try:
-            from src.parser_new.batch_processor import run
+            from src.parser_new.batch_processor import run_with_retries
         except ImportError:
-            from batch_processor import run
+            from batch_processor import run_with_retries
 
-        logger.info(f"[batch_tool] Запуск пакетной обработки: {file_path}")
-        result = run(file_path=file_path, save_every=save_every)
+        logger.info(f"[batch_tool] Запуск пакетной обработки (с повторами): {file_path}")
+        result = run_with_retries(file_path=file_path, save_every=save_every, max_cycles=2)
 
         if not result:
             return "Ошибка: batch_processor не вернул результат"

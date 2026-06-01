@@ -123,11 +123,18 @@
   .content {
     padding: 1.75rem 2rem 2rem;
     overflow-y: auto;
-    max-height: calc(100vh - 3rem);
+    height: calc(100vh - 3rem);
+    display: flex;
+    flex-direction: column;
   }
 
   .screen { display: none; }
-  .screen.active { display: block; }
+  .screen.active {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
 
   .workflow-progress {
     display: flex;
@@ -137,6 +144,7 @@
     margin-bottom: 1rem;
     color: #a2aa98;
     font-size: 11px;
+    flex-shrink: 0;
   }
 
   .workflow-step {
@@ -174,19 +182,19 @@
   }
 
   .page-title {
-    font-size: 26px;
+    font-size: 22px;
     font-weight: 750;
     color: #132008;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
     letter-spacing: -0.35px;
   }
 
   .page-sub {
-    font-size: 15px;
+    font-size: 14px;
     color: #647056;
-    margin-bottom: 1.5rem;
+    margin-bottom: 0.7rem;
     max-width: 760px;
-    line-height: 1.45;
+    line-height: 1.4;
   }
 
   .divider {
@@ -392,7 +400,8 @@
     display: flex;
     justify-content: flex-end;
     gap: 10px;
-    margin-top: 1.25rem;
+    margin-top: 0.7rem;
+    flex-shrink: 0;
   }
 
   /* BADGES */
@@ -830,14 +839,14 @@
   .parser-choice-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
-    margin: 1rem 0;
+    gap: 12px;
+    margin: 0.5rem 0;
   }
 
   .parser-choice-card {
     border: 1px solid #dfe8d7;
-    border-radius: 16px;
-    padding: 16px;
+    border-radius: 10px;
+    padding: 6px 18px;
     background: linear-gradient(180deg, #fff 0%, #fbfcf8 100%);
   }
 
@@ -851,18 +860,17 @@
   }
 
   .parser-choice-title {
-    font-size: 17px;
+    font-size: 15px;
     font-weight: 750;
     color: #17240c;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
   }
 
   .parser-choice-text {
-    font-size: 13px;
+    font-size: 11px;
     color: #617156;
-    line-height: 1.5;
-    min-height: 58px;
-    margin-bottom: 12px;
+    line-height: 1.4;
+    margin-bottom: 8px;
   }
 
   .parser-choice-hint {
@@ -923,10 +931,14 @@
 
   /* CHAT */
   .chat-section {
-    margin-top: 1.5rem;
+    margin-top: 0.7rem;
     border: 1px solid #e4e8dc;
     border-radius: 12px;
     overflow: hidden;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .chat-header {
@@ -950,7 +962,8 @@
   }
 
   .chat-messages {
-    height: 200px;
+    flex: 1;
+    min-height: 150px;
     overflow-y: auto;
     padding: 12px 14px;
     display: flex;
@@ -1550,7 +1563,7 @@
           <!-- Скрытый input для файла -->
           <input type="file" id="p-attach-input" accept=".xlsx" style="display:none" onchange="attachFile(this)">
           <!-- Кнопка прикрепления -->
-          <button class="btn-outline" type="button" onclick="document.getElementById('p-attach-input').click()" title="Прикрепить Excel файл" style="padding:8px 12px">Прикрепить файл</button>
+          <!-- Кнопка прикрепления убрана: файл загружается через модал "Загрузить Excel" -->
           <input type="text" id="p-chat-input" placeholder="Напишите, что нужно найти или уточнить..." onkeydown="if(event.key==='Enter') sendChat('p-chat')">
           <button onclick="sendChat('p-chat')">Отправить</button>
         </div>
@@ -1558,7 +1571,7 @@
 
       <!-- Кнопка скачать результат (показывается после batch обработки) -->
       <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn-primary" id="p-download-result" type="button" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать результат</button>
+        <button class="btn-primary" id="p-download-result" type="button" onclick="downloadWithJob('/api/parser/download-result')" disabled>Скачать результат</button>
         <button class="btn-outline" id="p-download-failed" type="button" onclick="downloadWithJob('/api/parser/download-failed')" disabled>Скачать непроверенные строки</button>
       </div>
 
@@ -3403,6 +3416,17 @@
       return;
     }
 
+    console.log('[progress] chatId=', chatId, 'currentJobId=', currentJobId, 'ES=', typeof EventSource);  // временно
+
+    // Живой поток прогресса парсера (SSE). Необязателен: при сбое финал придёт по POST.
+    let progressStream = null;
+    if (chatId === 'p-chat' && currentJobId && typeof EventSource !== 'undefined') {
+      progressStream = openParserProgressStream(chatId);
+    }
+    const closeProgress = () => {
+      if (progressStream) { try { progressStream.close(); } catch (e) {} progressStream = null; }
+    };
+
     const payload = (chatId === 'p-chat' || chatId === 'g-chat' || chatId === 's-chat')
       ? withJobPayload({ message: text })
       : { message: text };
@@ -3418,6 +3442,7 @@
       .then(async res => {
         const data = await readJsonOrText(res);
         if (!res.ok) throw new Error(data.detail || 'Ошибка чата');
+        closeProgress();
         removeTypingIndicator(chatId);
         if (chatId === 'o-chat' && data.session_id) {
           chatSessions['o-chat'] = data.session_id;
@@ -3434,10 +3459,49 @@
         }
       })
       .catch(err => {
+        closeProgress();
         removeTypingIndicator(chatId);
         appendChatMessage(chatId, 'agent', 'Не удалось получить ответ агента: ' + err.message);
       });
   }
+
+  function openParserProgressStream(chatId) {
+    let stream;
+    try {
+      stream = new EventSource(apiUrl('/api/parser/progress'));
+    } catch (e) {
+      return null;
+    }
+    stream.onmessage = (event) => {
+      let data;
+      try { data = JSON.parse(event.data); } catch (e) { return; }
+      if (!data) return;
+      if (data.kind === 'done' || data.kind === 'timeout') {
+        try { stream.close(); } catch (e) {}
+        return;
+      }
+      if (!data.text) return;                 // служебные события без текста пропускаем
+      appendChatMessage(chatId, 'agent', data.text);
+      bumpTypingIndicator(chatId);            // держим "печатает" последним, под новым пузырём
+    };
+    stream.onerror = () => {
+      try { stream.close(); } catch (e) {}
+    };
+    return stream;
+  }
+
+  function bumpTypingIndicator(chatId) {
+    const messages = document.getElementById(chatId + '-messages');
+    if (!messages) return;
+    const typing = messages.querySelector('[data-typing="true"]');
+    if (typing) {
+      messages.appendChild(typing);          // двигаем существующий вниз
+    } else {
+      appendTypingIndicator(chatId);         // если вдруг сняли — вернём
+    }
+    messages.scrollTop = messages.scrollHeight;
+  }
+
 async function attachFile(input) {
   const file = input.files[0];
   if (!file) return;

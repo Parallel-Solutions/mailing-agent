@@ -15,6 +15,7 @@ src/parser/agent.py
 """
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -30,42 +31,83 @@ def get_memory_context() -> str:
 def _clear_memory() -> None:
     pass
 from src.parser_new.batch_processor import run as run_batch
+from src.parser_new import progress
 from src.utils.logger import logger
 
-
-# ==============================
 # ДИАЛОГ С АГЕНТОМ
-# ==============================
+
+def _latest_batch_file() -> tuple[Optional[str], float]:
+    """
+    Возвращает (путь, mtime) самого свежего собранного файла в общем output/latest.
+    Используется чтобы понять, создал ли агент новый файл за время запроса.
+    """
+    out_dir = Path(__file__).parent.parent / "parser_new" / "output" / "latest"
+    if not out_dir.exists():
+        return None, -1.0
+    latest, latest_mtime = None, -1.0
+    for p in out_dir.glob("batch_*.xlsx"):
+        if "FAILED" in p.name:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        if mtime >= latest_mtime:
+            latest, latest_mtime = str(p), mtime
+    return latest, latest_mtime
 
 def chat(message: str, job_id: Optional[str] = None) -> dict:
     """
     Диалог с агентом. Используется в /api/parser/chat.
-
-    Args:
-        message: текст вопроса
-        job_id:  идентификатор задачи (опционально)
-
-    Returns:
-        {"reply": str, "success": bool}
+    (док-строка прежняя)
     """
-    # Если есть job_id — подтягиваем путь к данным
-    uploaded_file = None
-    if job_id:
-        try:
-            paths = resolve_job_paths(job_id)
-            if paths.data_xlsx.exists():
-                uploaded_file = str(paths.data_xlsx)
-        except Exception as e:
-            logger.warning(f"Не удалось получить путь файла для job_id={job_id}: {e}")
+    progress.start(job_id)          # фиксируем job_id для потока прогресса
+    try:
+        uploaded_file = None
+        job_output_dir = None
+        if job_id:
+            try:
+                paths = resolve_job_paths(job_id)
+                if paths.data_xlsx.exists():
+                    uploaded_file = str(paths.data_xlsx)
+                job_output_dir = paths.output_dir
+            except Exception as e:
+                logger.warning(f"Не удалось получить пути для job_id={job_id}: {e}")
 
-    result = run_agent_task(
-        task=message,
-        chat_history=[],
-        uploaded_file_path=uploaded_file,
-        mode="Автоматический",
-    )
-    return {"reply": result.text, "success": result.success}
+        _, before_mtime = _latest_batch_file()
 
+        result = run_agent_task(
+            task=message,
+            chat_history=[],
+            uploaded_file_path=uploaded_file,
+            mode="Автоматический",
+        )
+
+        src_file, after_mtime = _latest_batch_file()
+        file_was_created = src_file is not None and after_mtime > before_mtime
+
+        result_file = None
+        if file_was_created:
+            if job_output_dir is not None:
+                try:
+                    job_output_dir.mkdir(parents=True, exist_ok=True)
+                    dst = job_output_dir / Path(src_file).name
+                    shutil.copy2(src_file, dst)
+                    result_file = str(dst)
+                    logger.info(f"[parser] Результат скопирован в папку задачи: {dst}")
+                except Exception as e:
+                    logger.warning(f"Не удалось скопировать результат в папку задачи: {e}")
+                    result_file = src_file
+            else:
+                result_file = src_file
+
+        return {
+            "reply": result.text,
+            "success": result.success,
+            "result_file": result_file,
+        }
+    finally:
+        progress.finish()
 
 # ==============================
 # ПАКЕТНАЯ ОБРАБОТКА ФАЙЛА

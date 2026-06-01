@@ -41,6 +41,12 @@ except ImportError:
     from logger import logger
     from tools.regions import get_region_code
 
+try:
+    from src.parser_new.progress import emit as _emit
+except Exception:
+    def _emit(*a, **k):
+        pass
+
 
 # ==============================
 # КОНСТАНТЫ
@@ -285,24 +291,37 @@ def _get_yandex_search():
 
 
 def _parse_yandex_xml(xml_bytes: bytes) -> list[dict]:
-    """Парсит XML ответ Яндекса, возвращает список {url, title, snippet}."""
-    try:
-        xml_text = xml_bytes.decode("utf-8")
-    except Exception:
-        return []
+    """Парсит XML-ответ Яндекса. Возвращает [{url, domain, title, snippet}].
+    Берёт именно <url> (не <saved-copy-url>), устойчиво к порядку тегов."""
+    if isinstance(xml_bytes, bytes):
+        xml_text = xml_bytes.decode("utf-8", errors="ignore")
+    else:
+        xml_text = str(xml_bytes or "")
 
     results = []
-    for doc in re.findall(r"<doc>(.*?)</doc>", xml_text, re.DOTALL):
-        url_m = re.search(r"<url>(.*?)</url>", doc)
+    for doc in re.findall(r"<doc\b[^>]*>(.*?)</doc>", xml_text, re.DOTALL):
+        # настоящий URL: тег <url>...</url>, НО не часть <saved-copy-url>
+        url_m = re.search(r"(?<![\w-])<url>\s*(.*?)\s*</url>", doc, re.DOTALL)
         if not url_m:
             continue
-        title_m = re.search(r"<title>(.*?)</title>", doc, re.DOTALL)
-        snippet_m = re.search(r"<passages>(.*?)</passages>", doc, re.DOTALL)
+        url = re.sub(r"<[^>]+>", "", url_m.group(1)).strip()
 
-        url = url_m.group(1).strip()
-        title = re.sub(r"<[^>]+>", "", title_m.group(1)).strip() if title_m else ""
-        snippet = re.sub(r"<[^>]+>", "", snippet_m.group(1)).strip() if snippet_m else ""
-        results.append({"url": url, "title": title, "snippet": snippet})
+        domain_m = re.search(r"<domain>\s*(.*?)\s*</domain>", doc, re.DOTALL)
+        title_m = re.search(r"<title>(.*?)</title>", doc, re.DOTALL)
+        pass_m = re.search(r"<passages>(.*?)</passages>", doc, re.DOTALL)
+
+        def _clean(s: str) -> str:
+            s = re.sub(r"<[^>]+>", "", s)          # снимаем <hlword> и пр.
+            s = (s.replace("&quot;", '"').replace("&amp;", "&")
+                   .replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " "))
+            return s.strip()
+
+        results.append({
+            "url": url,
+            "domain": _clean(domain_m.group(1)) if domain_m else "",
+            "title": _clean(title_m.group(1)) if title_m else "",
+            "snippet": _clean(pass_m.group(1)) if pass_m else "",
+        })
     return results
 
 
@@ -629,6 +648,7 @@ def run(
     file_path: str,
     save_every: int = 10,
     output_dir: str | None = None,
+    cycle: int = 1,
 ) -> dict:
     import shutil
 
@@ -664,12 +684,19 @@ def run(
 
     total = len(records)
     processed = found = not_found = liquidated_count = 0
+    progress_step = max(save_every, (total // 12) or 1)   # ~10–12 апдейтов, без спама
 
     logger.info(f"Начинаю обработку {total} строк...")
     print(f"\n{'='*50}")
     print(f"Найдено строк для обработки: {total}")
     print(f"Файл результата: {out_path}")
     print(f"{'='*50}\n")
+
+    if total:
+        if cycle > 1:
+            _emit(f"Прохожу ещё раз по {total} МО с неполными данными…")
+        else:
+            _emit(f"Начинаю сбор данных по {total} МО.")
 
     for i, rec in enumerate(records, 1):
         try:
@@ -701,6 +728,9 @@ def run(
                 print(f"✅ ИНН: {updated.inn}")
 
             processed += 1
+
+            if total and i % progress_step == 0 and i < total:
+                _emit(f"Собрал данные о {i} МО из {total}…")
 
             if i % save_every == 0:
                 wb.save(str(out_path))
@@ -770,7 +800,72 @@ def run(
         "output_path": str(out_path), "failed_path": str(failed_path),
     }
 
+def _count_final_stats(file_path: str) -> dict:
+    """Итог по всему файлу, а не по последнему циклу.
+    Считаем по наличию ИНН: notes между циклами могут устаревать
+    (строка, провалившаяся в 1-м проходе, могла дозаполниться во 2-м,
+    но пометка 'не найдено' в NOTE уже не перезаписывается)."""
+    try:
+        wb = load_workbook(file_path)
+        ws = wb.active
+        total = found = not_found = liquidated = 0
+        for row_idx in range(DATA_START_ROW, ws.max_row + 1):
+            mun = ws.cell(row_idx, COL["MUN_NAME"]).value
+            if not (mun and str(mun).strip()):
+                continue
+            total += 1
+            note = str(ws.cell(row_idx, COL["NOTE"]).value or "").lower()
+            inn = str(ws.cell(row_idx, COL["REQUISITES_INN"]).value or "").strip()
+            if "ликвид" in note:
+                liquidated += 1
+            elif inn:
+                found += 1
+            else:
+                not_found += 1
+        wb.close()
+        return {"processed": total, "found": found,
+                "not_found": not_found, "liquidated": liquidated}
+    except Exception as e:
+        logger.warning(f"[batch] Не удалось пересчитать итог по файлу: {e}")
+        return {}
 
+def run_with_retries(
+    file_path: str,
+    save_every: int = 10,
+    output_dir: str | None = None,
+    max_cycles: int = 2,
+) -> dict:
+    max_cycles = max(1, min(max_cycles, 3))
+    current_file = file_path
+    result: dict = {}
+
+    for cycle in range(1, max_cycles + 1):
+        logger.info(f"[batch] Цикл {cycle}/{max_cycles} по файлу {current_file}")
+        result = run(current_file, save_every, output_dir, cycle=cycle)   # + cycle
+
+        if not result or result.get("error"):
+            break
+
+        not_found = result.get("not_found", 0)
+        if not_found == 0:
+            logger.info(f"[batch] Все строки обработаны за {cycle} цикл(ов)")
+            break
+
+        if cycle < max_cycles:
+            current_file = result.get("output_path", current_file)
+            logger.info(f"[batch] Осталось ненайденных: {not_found}, повтор...")
+            # _emit(...) убрали — сообщение о повторе теперь даёт сам run() с верным числом
+            time.sleep(2)
+        else:
+            logger.info(f"[batch] Лимит циклов достигнут, осталось: {not_found}")
+
+    if result and not result.get("error"):
+        _emit("Завершил сбор, сохраняю результат в файл…")
+        final = _count_final_stats(result.get("output_path", current_file))
+        if final:
+            result.update(final)   # found/not_found/processed теперь по всему региону
+
+    return result
 # ==============================
 # ТОЧКА ВХОДА
 # ==============================

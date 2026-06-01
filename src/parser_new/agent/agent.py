@@ -35,6 +35,9 @@ def _build_tools() -> list:
     from src.parser_new.tools.maps_tool import geocode_tool, search_nearby_tool, search_2gis_tool
     tools.extend([geocode_tool, search_nearby_tool, search_2gis_tool])
 
+    from src.parser_new.tools.oktmo_tool import build_region_mo_file_tool, oktmo_region_list_tool
+    tools.extend([build_region_mo_file_tool, oktmo_region_list_tool])
+
     from src.parser_new.tools.excel_tool import (
         read_excel_tool, write_excel_tool,
         append_excel_tool, update_excel_tool,
@@ -58,6 +61,9 @@ def _build_tools() -> list:
 
     from src.parser_new.tools.batch_tool import batch_search_tool
     tools.append(batch_search_tool)
+
+    from src.parser_new.tools.email_tool import fix_emails_tool
+    tools.append(fix_emails_tool)
 
     logger.info(f"Загружено инструментов: {len(tools)}")
     return tools
