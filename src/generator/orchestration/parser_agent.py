@@ -84,8 +84,9 @@ def _row_count(job_id: str | None = None) -> int:
     data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
     if not data_xlsx_path.exists():
         return 0
+    workbook = None
     try:
-        _, _, rows = load_rows(data_xlsx_path)
+        workbook, _, rows = load_rows(data_xlsx_path)
         return len(rows)
     except (EOFError, BadZipFile, PermissionError) as exc:
         logger.warning(
@@ -95,6 +96,10 @@ def _row_count(job_id: str | None = None) -> int:
             error=str(exc),
         )
         return 0
+    finally:
+        close = getattr(workbook, "close", None)
+        if callable(close):
+            close()
 
 
 def _parser_data_xlsx_path(job_id: str | None = None):
@@ -271,13 +276,26 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
     use_official_sites = settings.municipality_official_sites_enabled and use_external_sources
     use_minjust = settings.municipality_minjust_lookup_enabled and use_external_sources
     verification_started = perf_counter()
-    result = verify_municipality_names_in_workbook(
-        data_xlsx_path,
-        use_official_sites=use_official_sites,
-        use_oktmo=True,
-        oktmo_lookup=_build_oktmo_lookup(),
-        use_minjust=use_minjust,
-    )
+    try:
+        result = verify_municipality_names_in_workbook(
+            data_xlsx_path,
+            use_official_sites=use_official_sites,
+            use_oktmo=True,
+            oktmo_lookup=_build_oktmo_lookup(),
+            use_minjust=use_minjust,
+        )
+    except Exception as exc:
+        logger.exception(
+            "municipality_verification_failed",
+            job_id=job_id,
+            source=source,
+            data_xlsx_path=str(data_xlsx_path),
+        )
+        return mark_municipality_verification_failed(
+            job_id,
+            source=source,
+            reason=f"{type(exc).__name__}: {exc}",
+        )
     result["timings"] = {
         "verification_seconds": round(perf_counter() - verification_started, 3),
         "overall_seconds": round(perf_counter() - overall_started, 3),

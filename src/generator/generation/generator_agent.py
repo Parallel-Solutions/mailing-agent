@@ -85,8 +85,8 @@ class GeneratorStopRequested(RuntimeError):
     """Soft stop signal for background generator execution."""
 
 
-def _load_generator_state(job_id: str | None = None) -> dict[str, Any]:
-    return load_agent_state("generator", GENERATOR_STATE, job_id)
+def _load_generator_state(job_id: str | None = None, *, include_details: bool = True) -> dict[str, Any]:
+    return load_agent_state("generator", GENERATOR_STATE, job_id, include_details=include_details)
 
 
 def _save_generator_state(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
@@ -482,7 +482,10 @@ def prime_generator_state(
         _save_generator_state(state, job_id)
         return dict(state)
 
-    _, _, rows = load_rows(source_path)
+    workbook, _, rows = load_rows(source_path)
+    close = getattr(workbook, "close", None)
+    if callable(close):
+        close()
     if not rows:
         state["status"] = "error"
         state["summary_text"] = "Нет данных для генерации."
@@ -554,7 +557,10 @@ def run_generator_agent(
         _save_generator_state(state, job_id)
         return dict(state)
 
-    _, _, rows = load_rows(source_path)
+    workbook, _, rows = load_rows(source_path)
+    close = getattr(workbook, "close", None)
+    if callable(close):
+        close()
     if not rows:
         state["status"] = "error"
         state["summary_text"] = "Нет данных для генерации."
@@ -923,8 +929,8 @@ def run_generator_agent(
         return dict(state)
 
 
-def get_generator_status(job_id: str | None = None) -> dict[str, Any]:
-    state = _load_generator_state(job_id)
+def get_generator_status(job_id: str | None = None, *, include_details: bool = False) -> dict[str, Any]:
+    state = _load_generator_state(job_id, include_details=include_details)
     job_paths = resolve_job_paths(job_id)
     output_dir = job_paths.output_dir if not job_paths.uses_legacy_layout else OUTPUT_DIR
     batch_docx_dir = job_paths.batch_docx_dir

@@ -1794,7 +1794,14 @@ def _build_job_readiness_result(job_id: str | None = None) -> dict:
     philologist_state = get_philologist_status(job_id, include_details=False)
     documents_status = get_documents_status(job_id)
 
-    parser_running = str(parser_state.get("status") or "") == "running"
+    parser_verification_state = parser_state.get("municipality_name_verification_state") or {}
+    parser_verification_result = parser_state.get("municipality_name_verification") or {}
+    parser_verification_status = str(parser_verification_state.get("status") or "idle")
+    parser_verification_completed = (
+        parser_verification_status == "completed"
+        or str(parser_verification_result.get("status") or "") == "ok"
+    )
+    parser_running = str(parser_state.get("status") or "") == "running" or parser_verification_status == "running"
     generator_running = str(generator_state.get("status") or "") == "running"
     philologist_running = str(philologist_state.get("status") or "") in {"running", "finalizing"}
     documents_completed = str(documents_status.get("status") or "") == "completed"
@@ -1825,6 +1832,8 @@ def _build_job_readiness_result(job_id: str | None = None) -> dict:
         generator_reasons.append("Не загружен шаблон договора.")
     if parser_running:
         generator_reasons.append("Парсер ещё работает.")
+    if data_path.exists() and row_count > 0 and not parser_verification_completed:
+        generator_reasons.append("Таблица ещё не проверена.")
 
     if output_docx_count <= 0:
         philologist_reasons.append("Нет готовых DOCX-документов.")

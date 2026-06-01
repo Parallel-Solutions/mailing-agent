@@ -782,7 +782,10 @@ def preview_recipients(*, limit: int | None = None, job_id: str | None = None) -
             "total_rows": 0,
         }
 
-    _, _, rows = load_rows(data_xlsx_path)
+    workbook, _, rows = load_rows(data_xlsx_path)
+    close = getattr(workbook, "close", None)
+    if callable(close):
+        close()
     effective_limit = _normalize_limit(limit, dry_run=True)
     candidates = rows[:effective_limit] if effective_limit else rows
     preview_rows: list[dict[str, Any]] = []
@@ -2552,6 +2555,9 @@ def run_sender(
             final_flush_warning = _flush_sender_workbook(workbook, data_xlsx_path)
             if final_flush_warning:
                 runtime_warnings.append(final_flush_warning)
+        close = getattr(workbook, "close", None)
+        if callable(close):
+            close()
         state["stats"] = _collect_excel_stats(data_xlsx_path)
         state["remaining_rows"] = int(state["stats"].get("pending", 0)) + int(state["stats"].get("error", 0))
     else:
@@ -2570,6 +2576,9 @@ def run_sender(
         if unique_warnings:
             state["summary_text"] = f"{state['summary_text']} {' '.join(unique_warnings)}".strip()
     _save_sender_state(state, job_id)
+    close = getattr(workbook, "close", None)
+    if callable(close):
+        close()
     return dict(state)
 
 

@@ -2652,7 +2652,7 @@
 
   async function ensureCurrentJobId() {
     if (currentJobId) return currentJobId;
-    const res = await fetch('/api/jobs', { method: 'POST' });
+    const res = await fetchWithTimeout('/api/jobs', { method: 'POST' }, 15000);
     const data = await readJsonOrText(res);
     if (!res.ok) throw new Error(data.detail || 'Не удалось создать рабочую сессию');
     setCurrentJobId(data.job_id || '');
@@ -2679,6 +2679,16 @@
     }
   }
 
+  async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   function appendJobId(formData) {
     if (currentJobId) {
       formData.append('job_id', currentJobId);
@@ -2692,7 +2702,7 @@
     if (includeDataInfo) {
       (async () => {
         try {
-          const infoRes = await fetch(apiUrl('/api/data/info'));
+          const infoRes = await fetchWithTimeout(apiUrl('/api/data/info'), {}, 15000);
           const info = await readJsonOrText(infoRes);
           if (!infoRes.ok || requestedJobId !== currentJobId) return;
           const rows = info.loaded ? info.total : '?';
@@ -2716,41 +2726,43 @@
   }
 
   async function recoverUploadedDataJob({ after = 0, fileName = '' } = {}) {
-    try {
-      const url = after > 0
-        ? `/api/jobs/latest-data?after=${encodeURIComponent(Math.max(0, after - 120))}`
-        : '/api/jobs/latest-data';
-      const res = await fetch(url);
-      const data = await readJsonOrText(res);
-      if (!res.ok) return false;
-      const result = data.result || {};
-      if (!result.found) return false;
-      setCurrentJobId(result.job_id || '');
-      resetModuleUiForNewDataUpload();
-      const uploadFilename = document.getElementById('upload-data-filename');
-      const uploadRows = document.getElementById('upload-data-rows');
-      const uploadStatus = document.getElementById('upload-data-status');
-      const uploadZone = document.getElementById('upload-zone-data');
-      const attachedName = document.getElementById('p-attached-name');
-      const attachedFile = document.getElementById('p-attached-file');
-      if (uploadFilename && fileName) uploadFilename.textContent = fileName;
-      if (uploadRows) uploadRows.textContent = Number(result.row_count || 0) > 0
-        ? `${Number(result.row_count || 0).toLocaleString('ru')} записей`
-        : 'Обновляю...';
-      if (uploadStatus) uploadStatus.style.display = 'block';
-      if (uploadZone) uploadZone.style.display = 'none';
-      if (attachedName && fileName) attachedName.textContent = fileName;
-      if (attachedFile && fileName) attachedFile.style.display = 'block';
-      upsertParserVerificationNotice(`Файл «${fileName || 'data.xlsx'}» загружен. Проверяю официальные названия МО — сообщу, когда будет готово.`, { loading: true });
-      flowNotificationState.parser.announcedStart = true;
-      flowNotificationState.parser.lastVerificationStatus = 'running';
-      flowNotificationState.parser.completedAnnounced = false;
-      schedulePostUploadRefreshes({ includeDataInfo: true, fileName });
-      followParserVerificationAfterUpload();
-      return true;
-    } catch (e) {
-      return false;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      if (attempt > 0) await sleep(1000);
+      try {
+        const url = after > 0
+          ? `/api/jobs/latest-data?after=${encodeURIComponent(Math.max(0, after - 120))}`
+          : '/api/jobs/latest-data';
+        const res = await fetchWithTimeout(url, {}, 15000);
+        const data = await readJsonOrText(res);
+        if (!res.ok) continue;
+        const result = data.result || {};
+        if (!result.found) continue;
+        setCurrentJobId(result.job_id || '');
+        resetModuleUiForNewDataUpload();
+        const uploadFilename = document.getElementById('upload-data-filename');
+        const uploadRows = document.getElementById('upload-data-rows');
+        const uploadStatus = document.getElementById('upload-data-status');
+        const uploadZone = document.getElementById('upload-zone-data');
+        const attachedName = document.getElementById('p-attached-name');
+        const attachedFile = document.getElementById('p-attached-file');
+        if (uploadFilename && fileName) uploadFilename.textContent = fileName;
+        if (uploadRows) uploadRows.textContent = Number(result.row_count || 0) > 0
+          ? `${Number(result.row_count || 0).toLocaleString('ru')} записей`
+          : 'Обновляю...';
+        if (uploadStatus) uploadStatus.style.display = 'block';
+        if (uploadZone) uploadZone.style.display = 'none';
+        if (attachedName && fileName) attachedName.textContent = fileName;
+        if (attachedFile && fileName) attachedFile.style.display = 'block';
+        upsertParserVerificationNotice(`Файл «${fileName || 'data.xlsx'}» загружен. Проверяю официальные названия МО — сообщу, когда будет готово.`, { loading: true });
+        flowNotificationState.parser.announcedStart = true;
+        flowNotificationState.parser.lastVerificationStatus = 'running';
+        flowNotificationState.parser.completedAnnounced = false;
+        schedulePostUploadRefreshes({ includeDataInfo: true, fileName });
+        followParserVerificationAfterUpload();
+        return true;
+      } catch (e) {}
     }
+    return false;
   }
 
   function downloadWithJob(path) {
@@ -3015,7 +3027,7 @@
     }
     try {
       const url = apiUrl(`/api/sender/analytics?refresh=${refresh ? '1' : '0'}`);
-      const res = await fetch(url);
+      const res = await fetchWithTimeout(url, {}, 20000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить аналитику отправки');
       const result = data.result || {};
@@ -3117,7 +3129,7 @@
       list.innerHTML = '<div class="jobs-history-empty">Загружаю список отправок...</div>';
     }
     try {
-      const res = await fetch('/api/jobs/history?limit=40');
+      const res = await fetchWithTimeout('/api/jobs/history?limit=40', {}, 20000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось загрузить список отправок');
       const jobs = (data.result || {}).jobs || [];
@@ -3496,7 +3508,7 @@
     goToScreen('settings');
 
     try {
-      const res = await fetch('/api/jobs', { method: 'POST' });
+      const res = await fetchWithTimeout('/api/jobs', { method: 'POST' }, 15000);
       const data = await readJsonOrText(res);
       if (res.ok && data.job_id) {
         setCurrentJobId(data.job_id);
@@ -3523,7 +3535,7 @@
     if (uploadLabel) uploadLabel.textContent = 'Загрузка...';
     let uploadCompleted = false;
     try {
-      const res = await fetch('/api/upload/data', { method: 'POST', body: form });
+      const res = await fetchWithTimeout('/api/upload/data', { method: 'POST', body: form }, 60000);
       const data = await readJsonOrText(res);
       if (res.ok) {
         uploadCompleted = true;
@@ -3589,7 +3601,7 @@
     const btn = document.getElementById(btnId);
     btn.innerHTML = '<span class="file-icon">⏳</span> Загрузка...';
     try {
-      const res = await fetch('/api/upload/template', { method: 'POST', body: form });
+      const res = await fetchWithTimeout('/api/upload/template', { method: 'POST', body: form }, 60000);
       const data = await readJsonOrText(res);
       if (res.ok) {
         if (data.job_id) setCurrentJobId(data.job_id);
@@ -3819,11 +3831,11 @@
       payload.session_id = chatSessions['o-chat'];
     }
 
-    fetch(endpoint, {
+    fetchWithTimeout(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    })
+    }, 120000)
       .then(async res => {
         const data = await readJsonOrText(res);
         if (!res.ok) throw new Error(data.detail || 'Ошибка чата');
@@ -3915,7 +3927,7 @@ async function attachFile(input) {
     const form = new FormData();
     form.append('file', file);
     appendJobId(form);
-    const res = await fetch('/api/upload/data', { method: 'POST', body: form });
+    const res = await fetchWithTimeout('/api/upload/data', { method: 'POST', body: form }, 60000);
     const data = await readJsonOrText(res);
     if (!res.ok) throw new Error(data.detail || 'Ошибка загрузки');
     uploadCompleted = true;
@@ -4144,7 +4156,7 @@ function clearAttachedFile() {
   async function refreshParserStatus({ silent = false } = {}) {
     const requestedJobId = currentJobId;
     try {
-      const res = await fetch(requestedJobId ? `/api/parser/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/parser/status');
+      const res = await fetchWithTimeout(requestedJobId ? `/api/parser/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/parser/status', {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус парсера');
       if (requestedJobId !== currentJobId) return null;
@@ -4166,11 +4178,11 @@ function clearAttachedFile() {
     setParserUiState({ force: true, status: 'running', row_count: 0, task_stats: {} });
     appendChatMessage('p-chat', 'agent', 'Начинаю поиск данных. Если нужно, уточните в чате регион, тип организаций или список МО.');
     try {
-        const res = await fetch('/api/parser/start', {
+        const res = await fetchWithTimeout('/api/parser/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(withJobPayload({})),
-        });
+        }, 120000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка запуска парсера');
       const result = data.result || {};
@@ -4195,7 +4207,7 @@ function clearAttachedFile() {
       if (chatSessions['o-chat']) {
         statusUrl += '?session_id=' + encodeURIComponent(chatSessions['o-chat']);
       }
-      const res = await fetch(statusUrl);
+      const res = await fetchWithTimeout(statusUrl, {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус оркестратора');
       const result = data.result || {};
@@ -4381,7 +4393,7 @@ function clearAttachedFile() {
   async function refreshPhilologistStatus({ silent = false } = {}) {
     const requestedJobId = currentJobId;
     try {
-      const res = await fetch(requestedJobId ? `/api/philologist/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/philologist/status');
+      const res = await fetchWithTimeout(requestedJobId ? `/api/philologist/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/philologist/status', {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус проверки текстов');
       if (requestedJobId !== currentJobId) return null;
@@ -4434,11 +4446,11 @@ function clearAttachedFile() {
       }
     }, 3000);
     try {
-      const res = await fetch('/api/philologist/run', {
+      const res = await fetchWithTimeout('/api/philologist/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({ ai_enabled: true, mode: 'fast' })),
-      });
+      }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) {
         throw new Error(data.detail || 'Ошибка запуска агента-филолога');
@@ -4460,11 +4472,11 @@ function clearAttachedFile() {
   }
   async function pausePhilologist() {
     try {
-      const res = await fetch('/api/philologist/stop', {
+      const res = await fetchWithTimeout('/api/philologist/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({})),
-      });
+      }, 15000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось остановить филолога');
       setPhilologistUiState(data.result || {});
@@ -4522,7 +4534,7 @@ function clearAttachedFile() {
   async function refreshGeneratorStatus({ silent = false } = {}) {
     const requestedJobId = currentJobId;
     try {
-      const res = await fetch(requestedJobId ? `/api/generator/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/generator/status');
+      const res = await fetchWithTimeout(requestedJobId ? `/api/generator/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/generator/status', {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус генератора');
       if (requestedJobId !== currentJobId) return null;
@@ -4551,7 +4563,7 @@ function clearAttachedFile() {
   async function refreshDocumentsStatus({ silent = false } = {}) {
     const requestedJobId = currentJobId;
     try {
-      const res = await fetch(requestedJobId ? `/api/documents/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/documents/status');
+      const res = await fetchWithTimeout(requestedJobId ? `/api/documents/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/documents/status', {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус подготовки документов');
       if (requestedJobId !== currentJobId) return null;
@@ -4603,11 +4615,11 @@ function clearAttachedFile() {
     stopGeneratorPolling();
     stopPhilologistPolling();
     try {
-      const res = await fetch('/api/documents/start', {
+      const res = await fetchWithTimeout('/api/documents/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({ mode: 'fast' })),
-      });
+      }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) {
         const detail = data.detail || 'неизвестная ошибка';
@@ -4635,11 +4647,11 @@ function clearAttachedFile() {
 
   async function pauseDocumentsPipeline() {
     try {
-      const res = await fetch('/api/documents/stop', {
+      const res = await fetchWithTimeout('/api/documents/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({})),
-      });
+      }, 15000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось остановить подготовку документов');
       setDocumentsUiState(data.result || {});
@@ -4663,11 +4675,11 @@ function clearAttachedFile() {
     stopGeneratorPolling();
     generatorStatusPoll = startPollingLoop(() => refreshGeneratorStatus({ silent: true }), 2000);
     try {
-      const res = await fetch('/api/generate', {
+      const res = await fetchWithTimeout('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({})),
-      });
+      }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) {
         const detail = data.detail || 'неизвестная ошибка';
@@ -4692,11 +4704,11 @@ function clearAttachedFile() {
   }
   async function pauseGenerator() {
     try {
-      const res = await fetch('/api/generator/stop', {
+      const res = await fetchWithTimeout('/api/generator/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({})),
-      });
+      }, 15000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось остановить генератор');
       setGeneratorUiState(data.result || {});
@@ -4841,7 +4853,7 @@ function clearAttachedFile() {
   async function refreshModuleReadiness() {
     const requestedJobId = currentJobId;
     try {
-      const res = await fetch(requestedJobId ? `/api/job/readiness?job_id=${encodeURIComponent(requestedJobId)}` : '/api/job/readiness');
+      const res = await fetchWithTimeout(requestedJobId ? `/api/job/readiness?job_id=${encodeURIComponent(requestedJobId)}` : '/api/job/readiness', {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить готовность модулей');
       if (requestedJobId !== currentJobId) return null;
@@ -6209,7 +6221,7 @@ function clearAttachedFile() {
   async function refreshSenderStatus({ silent = false } = {}) {
     const requestedJobId = currentJobId;
     try {
-      const res = await fetch(requestedJobId ? `/api/sender/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/sender/status');
+      const res = await fetchWithTimeout(requestedJobId ? `/api/sender/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/sender/status', {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус отправщика');
       if (requestedJobId !== currentJobId) return null;
@@ -6264,11 +6276,11 @@ function clearAttachedFile() {
       flowNotificationState.sender.terminalAnnounced = false;
       setSenderButtonsState({ status: 'running', mode: 'dry_run', canConfirm: false });
       safeSetSenderUiState({ status: 'running', total_rows: 0, processed_rows: 0, stats: {} });
-      const res = await fetch('/api/sender/run', {
+      const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport })),
-      });
+      }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
         let result = data.result || {};
@@ -6325,11 +6337,11 @@ function clearAttachedFile() {
       }
       safeAppendChatMessage('s-chat', 'agent', 'Подтверждение получено. Начинаю отправку писем.');
 
-      const res = await fetch('/api/sender/run', {
+      const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport })),
-      });
+      }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');
         const result = data.result || {};
@@ -6362,11 +6374,11 @@ function clearAttachedFile() {
 
   async function pauseSender() {
     try {
-      const res = await fetch('/api/sender/stop', {
+      const res = await fetchWithTimeout('/api/sender/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({})),
-      });
+      }, 15000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось остановить отправку');
       safeSetSenderUiState(data.result || {});
@@ -6399,7 +6411,7 @@ function clearAttachedFile() {
       await ensureCurrentJobId();
       showToast('Запрашиваю историю UniSender');
       safeAppendChatMessage('s-chat', 'agent', 'Смотрю историю UniSender и обновляю статусы доставки, если у писем есть email_id.');
-      const res = await fetch(apiUrl('/api/sender/unisender-history?limit=50&refresh=1'));
+      const res = await fetchWithTimeout(apiUrl('/api/sender/unisender-history?limit=50&refresh=1'), {}, 20000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить историю UniSender');
       const result = data.result || {};
@@ -6423,7 +6435,7 @@ function clearAttachedFile() {
   async function refreshCounts() {
     const requestedJobId = currentJobId;
     try {
-      const res = await fetch(requestedJobId ? `/api/counts?job_id=${encodeURIComponent(requestedJobId)}` : '/api/counts');
+      const res = await fetchWithTimeout(requestedJobId ? `/api/counts?job_id=${encodeURIComponent(requestedJobId)}` : '/api/counts', {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить счетчики модулей');
       if (requestedJobId !== currentJobId) return;
@@ -6449,11 +6461,11 @@ function clearAttachedFile() {
     }
     appendChatMessage('p-chat', 'agent', 'Запускаю слияние с RMZ7KH...');
     try {
-      const res = await fetch('/api/parser/merge-rmz', {
+      const res = await fetchWithTimeout('/api/parser/merge-rmz', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withJobPayload({})),
-      });
+      }, 120000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка слияния');
       let msg = `Слияние завершено. Записано: ${data.written}, пропущено (уже есть): ${data.skipped_existing}, не найдено: ${data.not_found}.`;
@@ -6553,6 +6565,9 @@ function clearAttachedFile() {
       passiveStatusRefreshTick += 1;
       if (passiveStatusRefreshTick % 6 === 0) {
         await Promise.allSettled([
+          refreshParserStatus({ silent }),
+          refreshDocumentsStatus({ silent }),
+          refreshSenderStatus({ silent }),
           refreshModuleReadiness(),
         ]);
       }
