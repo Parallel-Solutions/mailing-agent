@@ -334,7 +334,9 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
             "next_hint": next_hint,
         },
         "actions": {
-            "can_run": status in {"idle", "completed", "stopped", "error", "waiting_review"} and (status != "idle" or generator_ready),
+            # The start endpoint still validates files/templates. Keep the UI button clickable
+            # so stale readiness polling cannot trap the user on a disabled action.
+            "can_run": status in {"idle", "completed", "stopped", "error", "waiting_review"},
             "can_stop": status == "running",
             "can_download_output": status == "completed" and output_file_count > 0,
             "can_download_report": status == "completed" and (fixed_documents > 0 or total_documents > 0),

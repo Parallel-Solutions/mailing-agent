@@ -4828,8 +4828,8 @@ function clearAttachedFile() {
 
     applyButtonReadiness(
       generatorRunButton,
-      (!!moduleReadiness.generator_ready || currentGeneratorStatus === 'stopped') && !parserRunning && !generatorRunningNow,
-      moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.'
+      !parserRunning && !generatorRunningNow,
+      'Подготовка уже выполняется.'
     );
     applyButtonReadiness(
       philologistRunButton,
@@ -5260,15 +5260,9 @@ function clearAttachedFile() {
   function setGeneratorButtonsBusy(isBusy) {
     const runButton = document.getElementById('g-run');
     const pauseButton = document.getElementById('g-pause');
-    const serverActions = ((lastDocumentsUiState.ui || {}).actions || {});
-    const serverModule = ((lastDocumentsUiState.ui || {}).module || {});
-    const canRun = typeof serverActions.can_run === 'boolean' ? serverActions.can_run : !!moduleReadiness.generator_ready;
-    const runReason = serverModule.generator_hint || moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.';
     if (runButton) {
-      runButton.disabled = !!isBusy || !canRun;
-      runButton.title = (!isBusy && !canRun)
-        ? runReason
-        : '';
+      runButton.disabled = !!isBusy;
+      runButton.title = '';
     }
     if (pauseButton) {
       pauseButton.textContent = 'Остановить';
@@ -5714,11 +5708,13 @@ function clearAttachedFile() {
   function buildDocumentsUiCopy(vm, result = {}) {
     const serverModule = (result.ui || {}).module || {};
     const serverActions = (result.ui || {}).actions || {};
-    const canRun = typeof serverActions.can_run === 'boolean' ? serverActions.can_run : !!moduleReadiness.generator_ready;
+    const serverAllowsRun = typeof serverActions.can_run === 'boolean' ? serverActions.can_run : true;
+    const canRun = serverAllowsRun && vm.status !== 'running';
+    const hasRequiredInputs = !!moduleReadiness.generator_ready;
     const runReason = serverModule.generator_hint || moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.';
     if (serverModule.badge_text || serverModule.label_text || serverModule.run_text) {
       let runDisabled = !canRun;
-      let runTitle = runDisabled ? runReason : '';
+      let runTitle = '';
       if (vm.status === 'running') {
         runDisabled = true;
       }
@@ -5727,7 +5723,7 @@ function clearAttachedFile() {
       }
       const resolvedGeneratorHint = vm.status === 'idle'
         ? (
-          canRun
+          hasRequiredInputs
             ? 'Можно запускать. Дальше сервис всё сделает сам.'
             : runReason
         )
@@ -5810,9 +5806,7 @@ function clearAttachedFile() {
         badgeClass: 'badge badge-done',
         runText: 'Подготовить заново',
         runDisabled: !canRun,
-        runTitle: !canRun
-          ? runReason
-          : 'Запустить подготовку заново с текущими данными.',
+        runTitle: canRun ? 'Запустить подготовку заново с текущими данными.' : '',
         pauseDisabled: true,
         pauseText: 'Остановить',
         pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
@@ -5854,9 +5848,7 @@ function clearAttachedFile() {
         badgeClass: 'badge badge-error',
         runText: 'Повторить подготовку',
         runDisabled: !canRun,
-        runTitle: !canRun
-          ? runReason
-          : '',
+        runTitle: '',
         pauseDisabled: true,
         pauseText: 'Остановить',
         pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
@@ -5872,20 +5864,20 @@ function clearAttachedFile() {
     }
 
     return {
-      badgeText: canRun ? 'Готов к запуску' : 'Ожидание данных',
-      badgeClass: canRun ? 'badge badge-idle' : 'badge badge-wait',
+      badgeText: hasRequiredInputs ? 'Готов к запуску' : 'Готов к запуску',
+      badgeClass: 'badge badge-idle',
       runText: 'Подготовить документы',
       runDisabled: !canRun,
-      runTitle: !canRun ? runReason : '',
+      runTitle: '',
       pauseDisabled: true,
       pauseText: 'Остановить',
       pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
       doneValue: vm.processedRows,
       doneLabel: 'Подготовлено клиентов',
       labelText: defaultLabel,
-      generatorHint: canRun
+      generatorHint: hasRequiredInputs
         ? 'Можно запускать. Дальше сервис всё сделает сам.'
-        : runReason,
+        : `${runReason} Если всё уже загружено, нажмите кнопку: сервер перепроверит состояние.`,
       philologistHint: moduleReadiness.philologist_ready
         ? 'Документы уже готовы. При необходимости можно перепроверить текст отдельно.'
         : 'Отдельную проверку текста сейчас запускать не нужно.',
