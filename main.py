@@ -581,6 +581,31 @@ def _format_history_time(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
 
 
+def _clean_upload_token(value: str | None) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]+", "", str(value or "").strip())[:96]
+
+
+def _upload_meta_path(job_id: str | None) -> Path:
+    return resolve_job_paths(job_id).data_xlsx.parent / "upload_meta.json"
+
+
+def _read_upload_meta(job_id: str | None) -> dict:
+    return _read_state_json(_upload_meta_path(job_id))
+
+
+def _write_upload_meta(job_id: str | None, token: str, filename: str) -> None:
+    if not token:
+        return
+    path = _upload_meta_path(job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "upload_token": token,
+        "filename": filename,
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _job_history_mtime(job_dir: Path) -> float:
     state_dir = job_dir / "state"
     candidates = [
@@ -955,11 +980,18 @@ async def jobs_history(limit: int = 40, username: str = Depends(check_auth)):
 
 
 @app.get("/api/jobs/latest-data")
-async def latest_data_job(after: float = 0.0, username: str = Depends(check_auth)):
+async def latest_data_job(
+    after: float = 0.0,
+    upload_token: str | None = None,
+    username: str = Depends(check_auth),
+):
+    clean_token = _clean_upload_token(upload_token)
     latest: tuple[float, str, Path] | None = None
     if JOBS_DIR.exists():
         for job_dir in JOBS_DIR.iterdir():
             if not job_dir.is_dir() or not job_dir.name.startswith("job-"):
+                continue
+            if clean_token and _read_upload_meta(job_dir.name).get("upload_token") != clean_token:
                 continue
             data_path = resolve_job_paths(job_dir.name).data_xlsx
             updated_at = _state_file_mtime(data_path)
@@ -970,11 +1002,12 @@ async def latest_data_job(after: float = 0.0, username: str = Depends(check_auth
             if latest is None or updated_at > latest[0]:
                 latest = (updated_at, job_dir.name, data_path)
 
-    legacy_data_path = resolve_job_paths(None).data_xlsx
-    legacy_updated_at = _state_file_mtime(legacy_data_path)
-    if legacy_updated_at > 0 and (after <= 0 or legacy_updated_at >= after):
-        if latest is None or legacy_updated_at > latest[0]:
-            latest = (legacy_updated_at, "", legacy_data_path)
+    if not clean_token or _read_upload_meta(None).get("upload_token") == clean_token:
+        legacy_data_path = resolve_job_paths(None).data_xlsx
+        legacy_updated_at = _state_file_mtime(legacy_data_path)
+        if legacy_updated_at > 0 and (after <= 0 or legacy_updated_at >= after):
+            if latest is None or legacy_updated_at > latest[0]:
+                latest = (legacy_updated_at, "", legacy_data_path)
 
     if latest is None:
         return {"status": "ok", "result": {"found": False}}
@@ -1010,6 +1043,7 @@ async def upload_data(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     job_id: str | None = Form(default=None),
+    upload_token: str | None = Form(default=None),
     username: str = Depends(check_auth),
 ):
     request_started = perf_counter()
@@ -1034,10 +1068,13 @@ async def upload_data(
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
     file_save_seconds = round(perf_counter() - file_save_started, 3)
+    clean_upload_token = _clean_upload_token(upload_token)
+    _write_upload_meta(paths.job_id, clean_upload_token, safe_filename)
     logger.info(
         "upload_data_file_saved",
         filename=safe_filename,
         job_id=paths.job_id,
+        has_upload_token=bool(clean_upload_token),
         file_save_seconds=file_save_seconds,
         request_seconds=round(perf_counter() - request_started, 3),
     )

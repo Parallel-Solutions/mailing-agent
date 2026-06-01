@@ -2696,6 +2696,13 @@
     return formData;
   }
 
+  function createUploadToken() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return window.crypto.randomUUID();
+    }
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+
   function schedulePostUploadRefreshes({ includeDataInfo = false, fileName = '' } = {}) {
     const requestedJobId = currentJobId;
 
@@ -2725,13 +2732,15 @@
     })();
   }
 
-  async function recoverUploadedDataJob({ after = 0, fileName = '' } = {}) {
+  async function recoverUploadedDataJob({ after = 0, fileName = '', uploadToken = '' } = {}) {
     for (let attempt = 0; attempt < 6; attempt += 1) {
       if (attempt > 0) await sleep(1000);
       try {
-        const url = after > 0
-          ? `/api/jobs/latest-data?after=${encodeURIComponent(Math.max(0, after - 120))}`
-          : '/api/jobs/latest-data';
+        const params = new URLSearchParams();
+        if (after > 0) params.set('after', String(Math.max(0, after - 120)));
+        if (uploadToken) params.set('upload_token', uploadToken);
+        const query = params.toString();
+        const url = query ? `/api/jobs/latest-data?${query}` : '/api/jobs/latest-data';
         const res = await fetchWithTimeout(url, {}, 15000);
         const data = await readJsonOrText(res);
         if (!res.ok) continue;
@@ -3528,8 +3537,10 @@
     if (!file) return;
     await ensureCurrentJobId();
     const uploadStartedAtSeconds = Date.now() / 1000;
+    const uploadToken = createUploadToken();
     const form = new FormData();
     form.append('file', file);
+    form.append('upload_token', uploadToken);
     appendJobId(form);
     const uploadLabel = document.getElementById('upload-data-label');
     if (uploadLabel) uploadLabel.textContent = 'Загрузка...';
@@ -3574,7 +3585,7 @@
         showToast('Ошибка загрузки');
       }
     } catch(e) {
-      const recovered = await recoverUploadedDataJob({ after: uploadStartedAtSeconds, fileName: file.name });
+      const recovered = await recoverUploadedDataJob({ after: uploadStartedAtSeconds, fileName: file.name, uploadToken });
       if (recovered) {
         input.value = '';
         return;
@@ -3904,6 +3915,7 @@ async function attachFile(input) {
   if (!file) return;
   const uploadStartedAtSeconds = Date.now() / 1000;
   const uploadStartedAt = performance.now();
+  const uploadToken = createUploadToken();
   let uploadCompleted = false;
  
   const attachedName = document.getElementById('p-attached-name');
@@ -3926,6 +3938,7 @@ async function attachFile(input) {
     const previousJobId = currentJobId;
     const form = new FormData();
     form.append('file', file);
+    form.append('upload_token', uploadToken);
     appendJobId(form);
     const res = await fetchWithTimeout('/api/upload/data', { method: 'POST', body: form }, 60000);
     const data = await readJsonOrText(res);
@@ -3963,7 +3976,7 @@ async function attachFile(input) {
     followParserVerificationAfterUpload();
  
   } catch (err) {
-    const recovered = await recoverUploadedDataJob({ after: uploadStartedAtSeconds, fileName: file.name });
+    const recovered = await recoverUploadedDataJob({ after: uploadStartedAtSeconds, fileName: file.name, uploadToken });
     if (recovered) {
       input.value = '';
       return;
