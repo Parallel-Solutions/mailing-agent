@@ -1755,10 +1755,12 @@ def _build_job_readiness_result(job_id: str | None = None) -> dict:
     parser_state = get_parser_status(job_id)
     generator_state = get_generator_status(job_id)
     philologist_state = get_philologist_status(job_id, include_details=False)
+    documents_status = get_documents_status(job_id)
 
     parser_running = str(parser_state.get("status") or "") == "running"
     generator_running = str(generator_state.get("status") or "") == "running"
     philologist_running = str(philologist_state.get("status") or "") in {"running", "finalizing"}
+    documents_completed = str(documents_status.get("status") or "") == "completed"
     output_docx_count = max(
         int(generator_state.get("staged_docx_count") or 0),
         int(philologist_state.get("total_documents") or 0),
@@ -1792,11 +1794,11 @@ def _build_job_readiness_result(job_id: str | None = None) -> dict:
     if generator_running:
         philologist_reasons.append("Генератор ещё работает.")
 
-    if output_pdf_count <= 0:
+    if output_pdf_count <= 0 and not documents_completed:
         sender_reasons.append("Нет готовых PDF-вложений.")
-    if generator_running:
+    if generator_running and not documents_completed:
         sender_reasons.append("Генератор ещё работает.")
-    if philologist_running:
+    if philologist_running and not documents_completed:
         sender_reasons.append("Филолог ещё работает.")
 
     if job_id:

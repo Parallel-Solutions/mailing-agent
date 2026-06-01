@@ -4761,6 +4761,8 @@ function clearAttachedFile() {
     setSenderButtonsState({
       status: currentSenderStatus,
       mode: String(lastSenderUiState.mode || 'dry_run'),
+      total: Math.max(Number(lastSenderUiState.total_rows || 0), Number(((lastSenderUiState.stats || {}).total) || 0)),
+      ready: Number(lastSenderUiState.ready_rows || 0),
       hasPendingRows: getSenderOutstandingRows(lastSenderUiState) > 0,
       canConfirm: currentSenderStatus === 'completed'
         && String(lastSenderUiState.mode || 'dry_run') === 'dry_run'
@@ -5909,7 +5911,25 @@ function clearAttachedFile() {
     }
   }
 
-  function setSenderButtonsState({ status = 'idle', mode = 'dry_run', canConfirm = false, hasPendingRows = false } = {}) {
+  function isSenderActionReady({ status = 'idle', mode = 'dry_run', total = 0, ready = 0, canConfirm = false, hasPendingRows = false } = {}) {
+    const documentsNextButton = document.getElementById('documents-next-sender');
+    const documentsReady = !!(documentsNextButton && !documentsNextButton.disabled);
+    if (moduleReadiness.sender_ready || documentsReady) {
+      return true;
+    }
+    if (status === 'completed' && mode === 'dry_run' && (canConfirm || ready > 0)) {
+      return true;
+    }
+    if (status === 'completed' && mode === 'send' && hasPendingRows) {
+      return true;
+    }
+    if (status === 'stopped' && (canConfirm || hasPendingRows || total > 0)) {
+      return true;
+    }
+    return false;
+  }
+
+  function setSenderButtonsState({ status = 'idle', mode = 'dry_run', canConfirm = false, hasPendingRows = false, total = 0, ready = 0 } = {}) {
     const runButton = document.getElementById('s-run');
     if (runButton) {
       runButton.dataset.action = 'preview';
@@ -5925,22 +5945,24 @@ function clearAttachedFile() {
       }
 
       if (status === 'completed' && mode === 'dry_run' && canConfirm) {
+        const senderReady = isSenderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows });
         runButton.dataset.action = 'send';
         runButton.textContent = 'Отправить письма';
         runButton.className = 'btn-primary';
-        runButton.disabled = !moduleReadiness.sender_ready;
-        runButton.title = !moduleReadiness.sender_ready
+        runButton.disabled = !senderReady;
+        runButton.title = !senderReady
           ? (moduleReadiness.sender_reason || 'Сначала подготовьте документы.')
           : '';
         return;
       }
 
       if (status === 'stopped') {
+        const senderReady = isSenderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows });
         runButton.dataset.action = mode === 'send' ? 'send' : 'preview';
         runButton.textContent = mode === 'send' ? 'Продолжить отправку' : 'Проверить ещё раз';
         runButton.className = 'btn-primary';
-        runButton.disabled = !moduleReadiness.sender_ready;
-        runButton.title = !moduleReadiness.sender_ready
+        runButton.disabled = !senderReady;
+        runButton.title = !senderReady
           ? (moduleReadiness.sender_reason || 'Сначала подготовьте документы.')
           : '';
         return;
@@ -5948,11 +5970,12 @@ function clearAttachedFile() {
 
       if (status === 'completed' && mode === 'send') {
         if (hasPendingRows) {
+          const senderReady = isSenderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows });
           runButton.dataset.action = 'send';
           runButton.textContent = 'Отправить неотправленные';
           runButton.className = 'btn-primary';
-          runButton.disabled = !moduleReadiness.sender_ready;
-          runButton.title = !moduleReadiness.sender_ready
+          runButton.disabled = !senderReady;
+          runButton.title = !senderReady
             ? (moduleReadiness.sender_reason || 'Сначала подготовьте документы.')
             : 'Есть письма, которые ещё не отправлены. Нажмите, чтобы продолжить.';
           return;
@@ -5966,21 +5989,23 @@ function clearAttachedFile() {
       }
 
       if (status === 'error') {
+        const senderReady = isSenderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows });
         runButton.dataset.action = mode === 'send' ? 'send' : 'preview';
         runButton.textContent = mode === 'send' ? 'Продолжить отправку' : 'Проверить ещё раз';
         runButton.className = 'btn-primary';
-        runButton.disabled = !moduleReadiness.sender_ready;
-        runButton.title = !moduleReadiness.sender_ready
+        runButton.disabled = !senderReady;
+        runButton.title = !senderReady
           ? (moduleReadiness.sender_reason || 'Сначала подготовьте документы.')
           : '';
         return;
       }
 
+      const senderReady = isSenderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows });
       runButton.dataset.action = 'preview';
       runButton.textContent = 'Проверить перед отправкой';
       runButton.className = 'btn-primary';
-      runButton.disabled = !moduleReadiness.sender_ready;
-      runButton.title = !moduleReadiness.sender_ready
+      runButton.disabled = !senderReady;
+      runButton.title = !senderReady
         ? (moduleReadiness.sender_reason || 'Сначала подготовьте документы.')
         : '';
     }
@@ -6065,7 +6090,7 @@ function clearAttachedFile() {
         } else {
           label.textContent = mode === 'send' ? 'Начинаю отправку писем.' : 'Проверяю адреса и вложения.';
         }
-        setSenderButtonsState({ status: 'running', mode, canConfirm: false, hasPendingRows });
+        setSenderButtonsState({ status: 'running', mode, total, ready, canConfirm: false, hasPendingRows });
         return;
       }
 
@@ -6074,11 +6099,11 @@ function clearAttachedFile() {
         badge.textContent = 'Остановлено';
         badge.className = 'badge badge-wait';
         label.textContent = humanizeSenderMessage(nextState.summary_text, 'Отправка остановлена. Можно продолжить позже.');
-        setSenderButtonsState({ status: 'stopped', mode, canConfirm, hasPendingRows });
+        setSenderButtonsState({ status: 'stopped', mode, total, ready, canConfirm, hasPendingRows });
         return;
       }
 
-      setSenderButtonsState({ status, mode, canConfirm, hasPendingRows });
+      setSenderButtonsState({ status, mode, total, ready, canConfirm, hasPendingRows });
 
       if (status === 'completed') {
         senderRunning = false;
