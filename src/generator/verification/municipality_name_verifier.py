@@ -4,7 +4,7 @@ import html
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests
@@ -516,6 +516,7 @@ def verify_municipality_names_in_workbook(
     official_site_lookup: OfficialSiteLookup | None = None,
     use_minjust: bool = True,
     minjust_lookup: MinjustMunicipalityLookup | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Update data.xlsx with municipality-name verification.
 
@@ -553,9 +554,25 @@ def verify_municipality_names_in_workbook(
             "reason": "В таблице нет колонки MUN_NAME.",
         }
 
+    max_column = worksheet.max_column
+    row_values_list = list(
+        worksheet.iter_rows(
+            min_row=DATA_START_ROW,
+            max_row=worksheet.max_row,
+            max_col=max_column,
+            values_only=True,
+        )
+    )
+    estimated_total_rows = sum(
+        1
+        for row_values in row_values_list
+        if any(value not in (None, "") for value in _read_row_from_values(header_map, row_values).values())
+    )
+
     stats = {
         "status": "ok",
         "total_rows": 0,
+        "estimated_total_rows": estimated_total_rows,
         "unique_verification_keys": 0,
         "cached_verification_rows": 0,
         "updated_rows": 0,
@@ -576,16 +593,26 @@ def verify_municipality_names_in_workbook(
         "decision_samples": [],
     }
 
+    def report_progress(force: bool = False) -> None:
+        if progress_callback is None:
+            return
+        estimated_total = int(stats.get("estimated_total_rows") or 0)
+        processed = int(stats.get("total_rows") or 0)
+        step = max(1, estimated_total // 20) if estimated_total else 1
+        if force or processed <= 1 or processed % step == 0 or processed >= estimated_total:
+            progress_callback(
+                {
+                    "processed_rows": processed,
+                    "total_rows": estimated_total,
+                    "verified_rows": int(stats.get("verified_rows") or 0),
+                    "updated_rows": int(stats.get("updated_rows") or 0),
+                    "missing_rows": int(stats.get("missing_rows") or 0),
+                }
+            )
+
+    report_progress(force=True)
     verification_cache: dict[tuple[str, ...], MunicipalityNameVerification] = {}
-    max_column = worksheet.max_column
-    for offset, row_values in enumerate(
-        worksheet.iter_rows(
-            min_row=DATA_START_ROW,
-            max_row=worksheet.max_row,
-            max_col=max_column,
-            values_only=True,
-        )
-    ):
+    for offset, row_values in enumerate(row_values_list):
         row_index = DATA_START_ROW + offset
         row = _read_row_from_values(header_map, row_values)
         if not any(value not in (None, "") for value in row.values()):
@@ -638,6 +665,7 @@ def verify_municipality_names_in_workbook(
                     "auto_replaced": bool(verification.should_replace and verification.official_name != current_name),
                 }
             )
+        report_progress()
 
     stats["unique_verification_keys"] = len(verification_cache)
     if official_site_lookup and official_site_lookup.disabled_reason:
@@ -650,6 +678,7 @@ def verify_municipality_names_in_workbook(
     _remove_verification_columns(worksheet)
     workbook.save(xlsx_path)
     workbook.close()
+    report_progress(force=True)
     return stats
 
 

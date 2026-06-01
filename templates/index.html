@@ -4093,15 +4093,27 @@ function clearAttachedFile() {
     const totalEl = document.getElementById('p-total');
     if (totalEl) totalEl.textContent = total.toLocaleString('ru');
     if (verificationStatus === 'running') {
-      upsertParserVerificationNotice('Таблица загружена. Проверяю официальные названия МО — сообщу, когда будет готово.', { loading: true });
+      const verificationProcessedRows = Number(verificationState.processed_rows || 0);
+      const verificationTotalRows = Number(verificationState.total_rows || verificationResult.total_rows || total || 0);
+      const verificationPercent = verificationTotalRows > 0
+        ? Math.max(5, Math.min(98, Math.round((verificationProcessedRows / verificationTotalRows) * 100)))
+        : 35;
+      const verificationMessage = verificationTotalRows > 0
+        ? `Проверяю официальные названия МО: ${verificationProcessedRows.toLocaleString('ru')} из ${verificationTotalRows.toLocaleString('ru')} строк.`
+        : 'Таблица загружена. Проверяю официальные названия МО — сообщу, когда будет готово.';
+      upsertParserVerificationNotice(verificationMessage, { loading: true });
       if (badge) {
         badge.textContent = 'Проверка МО';
         badge.className = 'badge badge-running';
       }
       if (label) {
-        label.textContent = 'Проверяю официальные названия МО. Это может занять несколько минут.';
+        label.textContent = verificationMessage;
       }
-      if (fill) setProgressVisual(fill, { percent: 35, running: true, indeterminate: true });
+      if (fill) setProgressVisual(fill, {
+        percent: verificationPercent,
+        running: true,
+        indeterminate: verificationTotalRows <= 0,
+      });
       if (runButton) runButton.disabled = true;
       return;
     }

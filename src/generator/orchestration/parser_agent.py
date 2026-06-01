@@ -190,6 +190,65 @@ def _update_municipality_verification_state(
     _save_parser_state(state, job_id)
 
 
+def prime_municipality_verification_running(
+    job_id: str | None,
+    *,
+    source: str,
+    summary_text: str | None = None,
+) -> dict[str, Any]:
+    started_at = datetime.now().isoformat(timespec="seconds")
+    source_label = _municipality_verification_source_label(source)
+    state = _load_parser_state(job_id)
+    state["municipality_name_verification"] = {}
+    state["municipality_name_verification_state"] = {
+        "status": "running",
+        "source": source,
+        "started_at": started_at,
+        "completed_at": None,
+        "summary_text": summary_text or f"Идёт проверка официальных названий МО {source_label}.",
+        "processed_rows": 0,
+        "total_rows": 0,
+        "verified_rows": 0,
+        "updated_rows": 0,
+        "missing_rows": 0,
+        "updated_at": started_at,
+    }
+    _save_parser_state(state, job_id)
+    return dict(state)
+
+
+def _update_municipality_verification_progress(
+    job_id: str | None,
+    *,
+    source: str,
+    progress: dict[str, Any],
+) -> None:
+    state = _load_parser_state(job_id)
+    verification_state = dict(state.get("municipality_name_verification_state") or {})
+    processed_rows = int(progress.get("processed_rows") or 0)
+    total_rows = int(progress.get("total_rows") or 0)
+    verification_state.update(
+        {
+            "status": "running",
+            "source": source,
+            "completed_at": None,
+            "processed_rows": processed_rows,
+            "total_rows": total_rows,
+            "verified_rows": int(progress.get("verified_rows") or 0),
+            "updated_rows": int(progress.get("updated_rows") or 0),
+            "missing_rows": int(progress.get("missing_rows") or 0),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "summary_text": (
+                f"Проверяю официальные названия МО: {processed_rows} из {total_rows} строк."
+                if total_rows > 0
+                else "Проверяю официальные названия МО."
+            ),
+        }
+    )
+    state["municipality_name_verification_state"] = verification_state
+    _save_parser_state(state, job_id)
+
+
 def mark_municipality_verification_failed(
     job_id: str | None,
     *,
@@ -241,13 +300,10 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
         source=source,
         data_xlsx_path=str(data_xlsx_path),
     )
-    _update_municipality_verification_state(
+    prime_municipality_verification_running(
         job_id,
-        status="running",
         source=source,
         summary_text=f"Идёт проверка официальных названий МО {source_label}.",
-        started_at=started_at,
-        completed_at=None,
     )
     if not data_xlsx_path.exists():
         result = {
@@ -283,6 +339,11 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
             use_oktmo=True,
             oktmo_lookup=_build_oktmo_lookup(),
             use_minjust=use_minjust,
+            progress_callback=lambda progress: _update_municipality_verification_progress(
+                job_id,
+                source=source,
+                progress=progress,
+            ),
         )
     except Exception as exc:
         logger.exception(

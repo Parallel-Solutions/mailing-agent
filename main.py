@@ -21,7 +21,7 @@ from src.web.sender_service import (
     prime_sender_running_state,
     run_sender_background,
 )
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form
 import shutil
 import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -873,24 +873,33 @@ def _run_parser_verification_background(*, job_id: str | None, source: str) -> N
 
 def _start_parser_verification_process(*, job_id: str | None, filename: str, source: str = "upload") -> None:
     started_at = perf_counter()
-    existing_thread = _get_parser_verification_thread(job_id)
-    if existing_thread is not None:
-        logger.info(
-            "upload_data_verification_already_running",
-            filename=filename,
-            job_id=job_id,
-            worker_name=existing_thread.name,
-        )
-        return
+    key = _parser_job_key(job_id)
+    with _parser_verification_threads_lock:
+        existing_thread = _parser_verification_threads.get(key)
+        if existing_thread and existing_thread.is_alive():
+            logger.info(
+                "upload_data_verification_already_running",
+                filename=filename,
+                job_id=job_id,
+                worker_name=existing_thread.name,
+            )
+            return
+        if existing_thread and not existing_thread.is_alive():
+            _parser_verification_threads.pop(key, None)
 
-    verification_thread = threading.Thread(
-        target=_run_parser_verification_background,
-        kwargs={"job_id": job_id, "source": source},
-        daemon=True,
-        name=f"parser-verify-{_parser_job_key(job_id)}",
-    )
-    verification_thread.start()
-    _register_parser_verification_thread(job_id, verification_thread)
+        prime_municipality_verification_running(
+            job_id,
+            source=source,
+            summary_text="Файл загружен. Проверяю официальные названия МО.",
+        )
+        verification_thread = threading.Thread(
+            target=_run_parser_verification_background,
+            kwargs={"job_id": job_id, "source": source},
+            daemon=True,
+            name=f"parser-verify-{key}",
+        )
+        _parser_verification_threads[key] = verification_thread
+        verification_thread.start()
     logger.info(
         "upload_data_verification_scheduled",
         filename=filename,
@@ -1040,7 +1049,6 @@ def _clone_job_templates_if_present(source_job_id: str | None, target_job_id: st
 
 @app.post("/api/upload/data")
 async def upload_data(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     job_id: str | None = Form(default=None),
     upload_token: str | None = Form(default=None),
@@ -1079,8 +1087,7 @@ async def upload_data(
         request_seconds=round(perf_counter() - request_started, 3),
     )
 
-    background_tasks.add_task(
-        _start_parser_verification_process,
+    _start_parser_verification_process(
         job_id=paths.job_id,
         filename=safe_filename,
         source="upload",
@@ -1357,6 +1364,7 @@ from src.generator.orchestration.parser_agent import (
     format_municipality_verification_for_chat,
     get_parser_status,
     mark_municipality_verification_failed,
+    prime_municipality_verification_running,
     run_parser_agent,
     run_parser_municipality_verification,
 )
