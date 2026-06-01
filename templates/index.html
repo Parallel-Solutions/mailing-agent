@@ -6250,6 +6250,44 @@ function clearAttachedFile() {
     }
   }
 
+  function isSenderStartConnectionError(err) {
+    const message = String(err && err.message ? err.message : err || '').toLowerCase();
+    return (
+      message.includes('failed to fetch')
+      || message.includes('networkerror')
+      || message.includes('load failed')
+      || message.includes('abort')
+      || message.includes('сервер временно не отвечает')
+    );
+  }
+
+  function isSenderStatusForMode(result = {}, expectedMode = 'send') {
+    const status = String(result.status || '');
+    const mode = String(result.mode || '');
+    if (mode !== expectedMode) return false;
+    return ['running', 'completed', 'stopped', 'error'].includes(status);
+  }
+
+  async function recoverSenderAfterStartConnectionError(expectedMode = 'send') {
+    safeAppendChatMessage(
+      's-chat',
+      'agent',
+      'Ответ от сервера оборвался, но отправка могла уже начаться. Проверяю реальный статус, чтобы не показывать ложную ошибку.'
+    );
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      const result = await refreshSenderStatus({ silent: true });
+      if (!result || !isSenderStatusForMode(result, expectedMode)) {
+        continue;
+      }
+      if (result.status === 'running') {
+        return await waitForSenderCompletion();
+      }
+      return result;
+    }
+    throw new Error('Сервер не вернул статус отправки. Обновите страницу через несколько секунд: если отправка стартовала, прогресс подтянется из журнала.');
+  }
+
   function formatSenderPreviewRows(rows, limit = 10) {
     if (!Array.isArray(rows) || !rows.length) return 'Подходящих получателей для показа нет.';
     return rows.slice(0, limit).map(item => {
@@ -6296,6 +6334,21 @@ function clearAttachedFile() {
         showToast('Проверка завершена');
         safeAppendChatMessage('s-chat', 'agent', humanizeSenderMessage(result.summary_text, 'Проверка завершена. Если всё верно, можно запускать отправку писем.'));
       } catch (err) {
+      if (isSenderStartConnectionError(err)) {
+        try {
+          let recovered = await recoverSenderAfterStartConnectionError('dry_run');
+          safeSetSenderUiState(recovered || {});
+          maybeAnnounceSenderFlow(recovered || {});
+          if (recovered && recovered.status === 'error') {
+            throw new Error(recovered.summary_text || 'Проверка перед отправкой завершилась с ошибкой');
+          }
+          showToast('Проверка завершена');
+          safeAppendChatMessage('s-chat', 'agent', humanizeSenderMessage(recovered && recovered.summary_text, 'Проверка завершена. Если всё верно, можно запускать отправку писем.'));
+          return;
+        } catch (recoverErr) {
+          err = recoverErr;
+        }
+      }
       safeSetSenderUiState({ status: 'error', summary_text: 'Проверка перед отправкой не завершилась' });
       safeAppendChatMessage('s-chat', 'agent', 'Не удалось выполнить проверку перед отправкой: ' + (err && err.message ? err.message : String(err)));
       showToast('Ошибка проверки');
@@ -6356,6 +6409,24 @@ function clearAttachedFile() {
           }
         }
       } catch (err) {
+      if (isSenderStartConnectionError(err)) {
+        try {
+          const recovered = await recoverSenderAfterStartConnectionError('send');
+          safeSetSenderUiState(recovered || {});
+          maybeAnnounceSenderFlow(recovered || {});
+          if (recovered && recovered.status === 'error') {
+            throw new Error(recovered.summary_text || 'Отправка завершилась с ошибкой');
+          }
+          showToast('Отправка завершена');
+          if (!flowNotificationState.sender.terminalAnnounced) {
+            safeAppendChatMessage('s-chat', 'agent', humanizeSenderMessage(recovered && recovered.summary_text, 'Отправка завершена.'));
+            flowNotificationState.sender.terminalAnnounced = true;
+          }
+          return;
+        } catch (recoverErr) {
+          err = recoverErr;
+        }
+      }
       safeSetSenderUiState({ status: 'error', summary_text: 'Отправка завершилась с ошибкой' });
       safeAppendChatMessage('s-chat', 'agent', 'Не удалось завершить отправку: ' + (err && err.message ? err.message : String(err)));
       showToast('Ошибка отправки');
