@@ -1652,6 +1652,43 @@ async def jobs_history(limit: int = 40, username: str = Depends(check_auth)):
     return {"status": "ok", "result": {"jobs": jobs}}
 
 
+@app.get("/api/jobs/latest-data")
+async def latest_data_job(after: float = 0.0, username: str = Depends(check_auth)):
+    latest: tuple[float, str, Path] | None = None
+    if JOBS_DIR.exists():
+        for job_dir in JOBS_DIR.iterdir():
+            if not job_dir.is_dir() or not job_dir.name.startswith("job-"):
+                continue
+            data_path = resolve_job_paths(job_dir.name).data_xlsx
+            updated_at = _state_file_mtime(data_path)
+            if updated_at <= 0:
+                continue
+            if after > 0 and updated_at < after:
+                continue
+            if latest is None or updated_at > latest[0]:
+                latest = (updated_at, job_dir.name, data_path)
+
+    legacy_data_path = resolve_job_paths(None).data_xlsx
+    legacy_updated_at = _state_file_mtime(legacy_data_path)
+    if legacy_updated_at > 0 and (after <= 0 or legacy_updated_at >= after):
+        if latest is None or legacy_updated_at > latest[0]:
+            latest = (legacy_updated_at, "", legacy_data_path)
+
+    if latest is None:
+        return {"status": "ok", "result": {"found": False}}
+
+    updated_at, job_id, data_path = latest
+    return {
+        "status": "ok",
+        "result": {
+            "found": True,
+            "job_id": job_id,
+            "updated_at": _format_history_time(updated_at),
+            "row_count": _cached_excel_row_count(data_path),
+        },
+    }
+
+
 def _clone_job_templates_if_present(source_job_id: str | None, target_job_id: str | None) -> None:
     source_paths = resolve_job_paths(source_job_id)
     target_paths = resolve_job_paths(target_job_id)

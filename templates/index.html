@@ -2715,6 +2715,44 @@
     })();
   }
 
+  async function recoverUploadedDataJob({ after = 0, fileName = '' } = {}) {
+    try {
+      const url = after > 0
+        ? `/api/jobs/latest-data?after=${encodeURIComponent(Math.max(0, after - 120))}`
+        : '/api/jobs/latest-data';
+      const res = await fetch(url);
+      const data = await readJsonOrText(res);
+      if (!res.ok) return false;
+      const result = data.result || {};
+      if (!result.found) return false;
+      setCurrentJobId(result.job_id || '');
+      resetModuleUiForNewDataUpload();
+      const uploadFilename = document.getElementById('upload-data-filename');
+      const uploadRows = document.getElementById('upload-data-rows');
+      const uploadStatus = document.getElementById('upload-data-status');
+      const uploadZone = document.getElementById('upload-zone-data');
+      const attachedName = document.getElementById('p-attached-name');
+      const attachedFile = document.getElementById('p-attached-file');
+      if (uploadFilename && fileName) uploadFilename.textContent = fileName;
+      if (uploadRows) uploadRows.textContent = Number(result.row_count || 0) > 0
+        ? `${Number(result.row_count || 0).toLocaleString('ru')} записей`
+        : 'Обновляю...';
+      if (uploadStatus) uploadStatus.style.display = 'block';
+      if (uploadZone) uploadZone.style.display = 'none';
+      if (attachedName && fileName) attachedName.textContent = fileName;
+      if (attachedFile && fileName) attachedFile.style.display = 'block';
+      upsertParserVerificationNotice(`Файл «${fileName || 'data.xlsx'}» загружен. Проверяю официальные названия МО — сообщу, когда будет готово.`, { loading: true });
+      flowNotificationState.parser.announcedStart = true;
+      flowNotificationState.parser.lastVerificationStatus = 'running';
+      flowNotificationState.parser.completedAnnounced = false;
+      schedulePostUploadRefreshes({ includeDataInfo: true, fileName });
+      followParserVerificationAfterUpload();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function downloadWithJob(path) {
     window.location.href = apiUrl(path);
   }
@@ -3477,6 +3515,7 @@
     const file = input.files[0];
     if (!file) return;
     await ensureCurrentJobId();
+    const uploadStartedAtSeconds = Date.now() / 1000;
     const form = new FormData();
     form.append('file', file);
     appendJobId(form);
@@ -3516,12 +3555,18 @@
           upsertParserVerificationNotice('Не удалось проверить названия МО. Таблица загружена, можно продолжить работу.', { loading: false });
         }
         schedulePostUploadRefreshes({ includeDataInfo: true, fileName: file.name });
+        followParserVerificationAfterUpload();
       } else {
         const uploadLabelError = document.getElementById('upload-data-label');
         if (uploadLabelError) uploadLabelError.textContent = 'Нажмите чтобы выбрать файл data.xlsx';
         showToast('Ошибка загрузки');
       }
     } catch(e) {
+      const recovered = await recoverUploadedDataJob({ after: uploadStartedAtSeconds, fileName: file.name });
+      if (recovered) {
+        input.value = '';
+        return;
+      }
       const uploadLabelCatch = document.getElementById('upload-data-label');
       if (uploadLabelCatch) uploadLabelCatch.textContent = 'Нажмите чтобы выбрать файл data.xlsx';
       showToast(
@@ -3845,6 +3890,7 @@
 async function attachFile(input) {
   const file = input.files[0];
   if (!file) return;
+  const uploadStartedAtSeconds = Date.now() / 1000;
   const uploadStartedAt = performance.now();
   let uploadCompleted = false;
  
@@ -3905,6 +3951,11 @@ async function attachFile(input) {
     followParserVerificationAfterUpload();
  
   } catch (err) {
+    const recovered = await recoverUploadedDataJob({ after: uploadStartedAtSeconds, fileName: file.name });
+    if (recovered) {
+      input.value = '';
+      return;
+    }
     if (attachedFile) attachedFile.style.display = 'none';
     appendChatMessage(
       'p-chat',
