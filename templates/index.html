@@ -2351,6 +2351,10 @@
   function humanizeSenderMessage(text, fallback = '') {
     const raw = String(text || '').trim();
     if (!raw) return fallback;
+    const readyMatch = raw.match(/Проверка завершена\.\s*Готово к отправке:\s*(\d+),\s*ошибок:\s*0,\s*пропущено:\s*(\d+)\./i);
+    if (readyMatch) {
+      return `Проверка завершена: всё в порядке, письма готовы к отправке. Готово писем: ${Number(readyMatch[1] || 0).toLocaleString('ru')}.`;
+    }
     if (/Проверка перед отправкой ещё не запускалась/i.test(raw)) {
       return fallback || '';
     }
@@ -6216,10 +6220,19 @@ function clearAttachedFile() {
         badge.textContent = mode === 'dry_run' ? 'Проверено' : (isFailedSend ? 'Ошибка' : 'Готово');
         badge.className = isFailedSend ? 'badge badge-error' : 'badge badge-done';
         label.textContent = total > 0
-          ? (
+          ? humanizeSenderMessage(
+              nextState.summary_text,
               mode === 'send'
-                ? `Отправка завершена. Отправлено: ${sent.toLocaleString('ru')}. Не отправлено: ${errors.toLocaleString('ru')}.`
-                : `Проверка завершена. Готово к отправке: ${ready.toLocaleString('ru')}. Ошибок: ${errors.toLocaleString('ru')}.`
+                ? (
+                  errors > 0
+                    ? `Отправка завершена не полностью. Отправлено: ${sent.toLocaleString('ru')}. Не отправлено: ${errors.toLocaleString('ru')}.`
+                    : `Отправка завершена: все письма ушли. Отправлено: ${sent.toLocaleString('ru')}.`
+                )
+                : (
+                  errors > 0
+                    ? `Проверка завершена, но есть проблемные строки: ${errors.toLocaleString('ru')}. Готово к отправке: ${ready.toLocaleString('ru')}.`
+                    : `Проверка завершена: всё в порядке, письма готовы к отправке. Готово писем: ${ready.toLocaleString('ru')}.`
+                )
             )
           : 'Обработка завершена';
         return;

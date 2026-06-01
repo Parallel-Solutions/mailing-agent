@@ -613,6 +613,63 @@ def _collect_excel_stats(data_xlsx_path: Path | None = None) -> dict[str, int]:
 
 
 def _format_sender_summary(state: dict[str, Any]) -> str:
+    def _plural_rows(value: Any) -> str:
+        count = int(value or 0)
+        return f"{count} строк"
+
+    def _error_type_summary() -> str:
+        rows = state.get("rows") or []
+        if not isinstance(rows, list):
+            return ""
+        counters = {
+            "email": 0,
+            "documents": 0,
+            "attachments": 0,
+            "text_review": 0,
+            "provider": 0,
+            "other": 0,
+        }
+        samples: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            result = _safe_text(row.get("result"))
+            error = _safe_text(row.get("error"))
+            if not error and result not in {
+                "needs_enrichment",
+                "error_missing_output",
+                "error_missing_attachments",
+                "blocked_by_philologist",
+                "error",
+            }:
+                continue
+            if result == "needs_enrichment" or "email" in error.lower():
+                key = "email"
+                human = "у части строк нет корректного email получателя"
+            elif result == "error_missing_output":
+                key = "documents"
+                human = "для части строк не найдена папка с готовыми документами"
+            elif result == "error_missing_attachments":
+                key = "attachments"
+                human = "для части строк не найдены PDF-вложения"
+            elif result == "blocked_by_philologist":
+                key = "text_review"
+                human = "часть документов требует ручной проверки текста"
+            elif "unisender" in error.lower() or "smtp" in error.lower() or row.get("provider_status"):
+                key = "provider"
+                human = "провайдер отправки вернул ошибку"
+            else:
+                key = "other"
+                human = "часть строк требует ручной проверки"
+            counters[key] += 1
+            samples.setdefault(key, human)
+
+        parts = []
+        for key in ("email", "documents", "attachments", "text_review", "provider", "other"):
+            if counters[key] > 0:
+                parts.append(f"{_plural_rows(counters[key])}: {samples[key]}.")
+        return " ".join(parts)
+
     if state.get("status") == "stopped":
         summary = (
             f"Отправка остановлена. Уже отправлено {state.get('sent_rows', 0)}, "
@@ -629,15 +686,30 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
     if state.get("total_rows", 0) == 0:
         return "В таблице пока нет получателей для отправки."
     if state.get("mode") == "dry_run":
-        summary = (
-            f"Проверка завершена. Готово к отправке: {state.get('ready_rows', 0)}, "
-            f"ошибок: {state.get('error_rows', 0)}, пропущено: {state.get('skipped_rows', 0)}."
-        )
+        if int(state.get("error_rows") or 0) <= 0:
+            summary = (
+                "Проверка завершена: всё в порядке, письма готовы к отправке. "
+                f"Готово писем: {state.get('ready_rows', 0)}."
+            )
+        else:
+            summary = (
+                "Проверка завершена, но не все письма готовы. "
+                f"Готово к отправке: {state.get('ready_rows', 0)}. "
+                f"Проблемных строк: {state.get('error_rows', 0)}."
+            )
     else:
-        summary = (
-            f"Отправка завершена. Отправлено: {state.get('sent_rows', 0)}, "
-            f"ошибок: {state.get('error_rows', 0)}, осталось отправить: {state.get('remaining_rows', 0)}."
-        )
+        if int(state.get("error_rows") or 0) <= 0 and int(state.get("remaining_rows") or 0) <= 0:
+            summary = f"Отправка завершена: все письма ушли. Отправлено: {state.get('sent_rows', 0)}."
+        else:
+            summary = (
+                "Отправка завершена не полностью. "
+                f"Отправлено: {state.get('sent_rows', 0)}. "
+                f"Не отправлено: {state.get('error_rows', 0)}. "
+                f"Осталось в очереди: {state.get('remaining_rows', 0)}."
+            )
+    error_summary = _error_type_summary()
+    if error_summary:
+        summary = f"{summary} Что нужно проверить: {error_summary}"
     if state.get("generator_handoff_rows", 0) > 0:
         summary += f" Нужно заново подготовить документы: {state.get('generator_handoff_rows', 0)}."
     if state.get("philology_blocked_rows", 0) > 0:
