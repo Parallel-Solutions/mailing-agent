@@ -14,11 +14,10 @@ def create_documents_router(
     check_auth: Callable[..., str],
     prefer_existing_file: Callable[[Path, Path], Path],
     compact_documents_status: Callable[[str | None], dict],
-    get_documents_thread: Callable[[str | None], threading.Thread | None],
     get_generator_thread: Callable[[str | None], threading.Thread | None],
     get_philologist_thread: Callable[[str | None], threading.Thread | None],
     prime_philologist_running_state: Callable[[str | None, str | None], dict],
-    register_documents_thread: Callable[[str | None, threading.Thread], None],
+    start_documents_thread_if_absent: Callable[..., tuple[threading.Thread, bool]],
     run_documents_pipeline_background: Callable[..., None],
     documents_job_key: Callable[[str | None], str],
     clear_philologist_stop_request: Callable[[str | None], Any],
@@ -40,10 +39,6 @@ def create_documents_router(
         xlsx_path = prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
         if not xlsx_path.exists():
             raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
-
-        existing_documents_thread = get_documents_thread(job_id)
-        if existing_documents_thread is not None:
-            return {"status": "ok", "result": compact_documents_status(job_id)}
 
         compact_documents_status(job_id)
         generator_state = get_generator_status(job_id)
@@ -77,14 +72,12 @@ def create_documents_router(
                         detail=primed_state.get("summary_text") or "Ошибка подготовки документов",
                     )
 
-        thread = threading.Thread(
+        start_documents_thread_if_absent(
+            job_id,
             target=run_documents_pipeline_background,
             kwargs={"xlsx_path": xlsx_path, "job_id": job_id, "mode": mode},
-            daemon=True,
             name=f"documents-{documents_job_key(job_id)}",
         )
-        register_documents_thread(job_id, thread)
-        thread.start()
         return {"status": "ok", "result": compact_documents_status(job_id)}
 
     @router.get("/api/documents/status")
@@ -98,7 +91,7 @@ def create_documents_router(
         philologist_state = get_philologist_status(job_id)
         if str(generator_state.get("status") or "") == "running":
             request_generator_stop(job_id)
-        if str(philologist_state.get("status") or "") in {"running", "finalizing"}:
+        if str(philologist_state.get("status") or "") != "completed":
             request_philologist_stop(job_id)
         return {"status": "ok", "result": compact_documents_status(job_id)}
 

@@ -2685,6 +2685,35 @@
     return formData;
   }
 
+  function schedulePostUploadRefreshes({ includeDataInfo = false, fileName = '' } = {}) {
+    const requestedJobId = currentJobId;
+
+    if (includeDataInfo) {
+      (async () => {
+        try {
+          const infoRes = await fetch(apiUrl('/api/data/info'));
+          const info = await readJsonOrText(infoRes);
+          if (!infoRes.ok || requestedJobId !== currentJobId) return;
+          const rows = info.loaded ? info.total : '?';
+          const uploadRows = document.getElementById('upload-data-rows');
+          if (uploadRows) uploadRows.textContent = rows + ' записей';
+          if (fileName) {
+            appendChatMessage('p-chat', 'agent', `Файл «${fileName}» загружен. Найдено записей: ${rows}.`);
+          }
+          showToast('Файл загружен: ' + rows + ' записей');
+        } catch (e) {}
+      })();
+    }
+
+    (async () => {
+      await Promise.allSettled([
+        refreshCounts(),
+        refreshModuleReadiness(),
+        refreshParserStatus({ silent: true }),
+      ]);
+    })();
+  }
+
   function downloadWithJob(path) {
     window.location.href = apiUrl(path);
   }
@@ -3434,18 +3463,15 @@
         const previousJobId = currentJobId;
         if (data.job_id) setCurrentJobId(data.job_id);
         resetModuleUiForNewDataUpload();
-        const infoRes = await fetch(apiUrl('/api/data/info'));
-        const info = await readJsonOrText(infoRes);
-        const rows = info.loaded ? info.total : '?';
         const uploadFilename = document.getElementById('upload-data-filename');
         const uploadRows = document.getElementById('upload-data-rows');
         const uploadStatus = document.getElementById('upload-data-status');
         const uploadZone = document.getElementById('upload-zone-data');
         if (uploadFilename) uploadFilename.textContent = file.name;
-        if (uploadRows) uploadRows.textContent = rows + ' записей';
+        if (uploadRows) uploadRows.textContent = 'Обновляю...';
         if (uploadStatus) uploadStatus.style.display = 'block';
         if (uploadZone) uploadZone.style.display = 'none';
-        showToast('Файл загружен: ' + rows + ' записей');
+        showToast('Файл загружен');
         if (previousJobId && currentJobId && previousJobId !== currentJobId) {
           appendChatMessage('p-chat', 'agent', 'Начала новую рабочую сессию для этой таблицы.');
         }
@@ -3461,10 +3487,7 @@
         } else if (verification.status === 'error') {
           upsertParserVerificationNotice('Не удалось проверить названия МО. Таблица загружена, можно продолжить работу.', { loading: false });
         }
-        await refreshCounts();
-        await refreshModuleReadiness();
-        await refreshParserStatus({ silent: true });
-        appendChatMessage('p-chat', 'agent', `Файл «${file.name}» загружен. Найдено записей: ${rows}.`);
+        schedulePostUploadRefreshes({ includeDataInfo: true, fileName: file.name });
       } else {
         const uploadLabelError = document.getElementById('upload-data-label');
         if (uploadLabelError) uploadLabelError.textContent = 'Нажмите чтобы выбрать файл data.xlsx';
@@ -3841,9 +3864,7 @@ async function attachFile(input) {
         summary_text: 'Файл загружен. Идёт проверка официальных названий МО после загрузки таблицы.'
       }
     });
-    await refreshCounts();
-    await refreshModuleReadiness();
-    await refreshParserStatus({ silent: true });
+    schedulePostUploadRefreshes();
     followParserVerificationAfterUpload();
  
   } catch (err) {

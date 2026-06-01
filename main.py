@@ -88,9 +88,61 @@ def _prefer_existing_file(primary: Path, fallback: Path) -> Path:
     return primary if primary.exists() else fallback
 
 
+def _format_upload_size_limit(max_bytes: int) -> str:
+    if max_bytes >= 1024 * 1024:
+        return f"{max_bytes / (1024 * 1024):.0f} МБ"
+    if max_bytes >= 1024:
+        return f"{max_bytes / 1024:.0f} КБ"
+    return f"{max_bytes} Б"
+
+
+def _get_upload_size(upload: UploadFile) -> int | None:
+    stream = getattr(upload, "file", None)
+    if stream is None:
+        return None
+    try:
+        current_position = stream.tell()
+        stream.seek(0, 2)
+        size = int(stream.tell())
+        stream.seek(current_position)
+        return size
+    except Exception:
+        return None
+
+
+def _validate_uploaded_file(
+    upload: UploadFile,
+    *,
+    allowed_extensions: tuple[str, ...],
+    max_bytes: int,
+    human_name: str,
+) -> str:
+    filename = Path(upload.filename or "").name
+    if not filename:
+        raise HTTPException(status_code=400, detail=f"Не удалось определить имя файла для {human_name}.")
+    extension = Path(filename).suffix.lower()
+    if extension not in allowed_extensions:
+        allowed_text = ", ".join(allowed_extensions)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Для {human_name} подходит только файл формата {allowed_text}.",
+        )
+    size = _get_upload_size(upload)
+    if size is not None and size > max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Файл слишком большой для {human_name}. "
+                f"Максимальный размер: {_format_upload_size_limit(max_bytes)}."
+            ),
+        )
+    return filename
+
+
 _METADATA_CACHE_LOCK = threading.Lock()
 _EXCEL_ROW_COUNT_CACHE: dict[str, dict[str, float | int | tuple[int, int]]] = {}
 _TREE_FILE_COUNT_CACHE: dict[str, dict[str, float | int]] = {}
+_JOB_HISTORY_ITEM_CACHE: dict[str, dict[str, object]] = {}
 METADATA_CACHE_TTL_SECONDS = 10.0
 
 
@@ -354,6 +406,56 @@ def _register_documents_thread(job_id: str | None, thread: threading.Thread) -> 
         _documents_threads[_documents_job_key(job_id)] = thread
 
 
+def _start_sender_thread_if_absent(
+    job_id: str | None,
+    *,
+    target,
+    kwargs: dict | None = None,
+    name: str | None = None,
+) -> tuple[threading.Thread, bool]:
+    with _sender_threads_lock:
+        key = _sender_job_key(job_id)
+        existing = _sender_threads.get(key)
+        if existing and existing.is_alive():
+            return existing, False
+        if existing and not existing.is_alive():
+            _sender_threads.pop(key, None)
+        thread = threading.Thread(
+            target=target,
+            kwargs=kwargs or {},
+            daemon=True,
+            name=name or f"sender-{key}",
+        )
+        _sender_threads[key] = thread
+        thread.start()
+        return thread, True
+
+
+def _start_documents_thread_if_absent(
+    job_id: str | None,
+    *,
+    target,
+    kwargs: dict | None = None,
+    name: str | None = None,
+) -> tuple[threading.Thread, bool]:
+    with _documents_threads_lock:
+        key = _documents_job_key(job_id)
+        existing = _documents_threads.get(key)
+        if existing and existing.is_alive():
+            return existing, False
+        if existing and not existing.is_alive():
+            _documents_threads.pop(key, None)
+        thread = threading.Thread(
+            target=target,
+            kwargs=kwargs or {},
+            daemon=True,
+            name=name or f"documents-{key}",
+        )
+        _documents_threads[key] = thread
+        thread.start()
+        return thread, True
+
+
 def _unregister_sender_thread(job_id: str | None) -> None:
     with _sender_threads_lock:
         _sender_threads.pop(_sender_job_key(job_id), None)
@@ -537,6 +639,14 @@ def _job_history_status(
 
 
 def _build_job_history_item(job_dir: Path, updated_at_ts: float) -> dict:
+    cache_key = str(job_dir.resolve())
+    with _METADATA_CACHE_LOCK:
+        cached = _JOB_HISTORY_ITEM_CACHE.get(cache_key)
+        if cached and float(cached.get("updated_at_ts") or 0.0) == float(updated_at_ts):
+            cached_item = cached.get("item")
+            if isinstance(cached_item, dict):
+                return dict(cached_item)
+
     job_id = job_dir.name
     paths = resolve_job_paths(job_id)
     state_dir = job_dir / "state"
@@ -567,7 +677,7 @@ def _build_job_history_item(job_dir: Path, updated_at_ts: float) -> dict:
         data_exists=paths.data_xlsx.exists(),
     )
 
-    return {
+    item = {
         "job_id": job_id,
         "updated_at": _format_history_time(updated_at_ts),
         "status_label": label,
@@ -585,6 +695,12 @@ def _build_job_history_item(job_dir: Path, updated_at_ts: float) -> dict:
         "sender_status": sender_state.get("status", "idle"),
         "sender_mode": sender_state.get("mode", "dry_run"),
     }
+    with _METADATA_CACHE_LOCK:
+        _JOB_HISTORY_ITEM_CACHE[cache_key] = {
+            "updated_at_ts": float(updated_at_ts),
+            "item": dict(item),
+        }
+    return item
 
 
 def _job_history_is_mailing_session(item: dict) -> bool:
@@ -1525,7 +1641,13 @@ async def upload_data(
     username: str = Depends(check_auth),
 ):
     request_started = perf_counter()
-    logger.info("upload_data_request_started", filename=file.filename, requested_job_id=job_id)
+    safe_filename = _validate_uploaded_file(
+        file,
+        allowed_extensions=(".xlsx",),
+        max_bytes=settings.upload_data_max_bytes,
+        human_name="таблицы",
+    )
+    logger.info("upload_data_request_started", filename=safe_filename, requested_job_id=job_id)
     paths = resolve_job_paths(job_id)
     if not paths.uses_legacy_layout and paths.data_xlsx.exists():
         fresh_job_id = create_job_id()
@@ -1542,7 +1664,7 @@ async def upload_data(
     file_save_seconds = round(perf_counter() - file_save_started, 3)
     logger.info(
         "upload_data_file_saved",
-        filename=file.filename,
+        filename=safe_filename,
         job_id=paths.job_id,
         file_save_seconds=file_save_seconds,
         request_seconds=round(perf_counter() - request_started, 3),
@@ -1551,13 +1673,13 @@ async def upload_data(
     background_tasks.add_task(
         _start_parser_verification_process,
         job_id=paths.job_id,
-        filename=file.filename or "",
+        filename=safe_filename,
         source="upload",
     )
 
     return {
         "status": "ok",
-        "filename": file.filename,
+        "filename": safe_filename,
         "job_id": paths.job_id,
         "data_download_url": f"/api/download/data-xlsx?job_id={paths.job_id}",
         "verification_background": True,
@@ -1694,8 +1816,23 @@ async def upload_template(
     paths.ensure_dirs()
     templates_dir = paths.templates_dir
     templates_dir.mkdir(exist_ok=True)
-    original_name = Path(file.filename or "").name
     kind = (template_kind or "").strip().lower()
+    allowed_extensions = (".docx", ".txt") if kind == "mail" else (".docx",)
+    human_name = (
+        "почтового шаблона"
+        if kind == "mail"
+        else "шаблона КП"
+        if kind == "kp"
+        else "шаблона договора"
+        if kind == "contract"
+        else "шаблона"
+    )
+    original_name = _validate_uploaded_file(
+        file,
+        allowed_extensions=allowed_extensions,
+        max_bytes=settings.upload_template_max_bytes,
+        human_name=human_name,
+    )
     if kind == "mail":
         for stale_name in ("mail_template.txt", "mail_template.docx"):
             stale_path = templates_dir / stale_name
@@ -1897,11 +2034,10 @@ app.include_router(
         check_auth=check_auth,
         prefer_existing_file=_prefer_existing_file,
         compact_documents_status=compact_documents_status,
-        get_documents_thread=_get_documents_thread,
         get_generator_thread=_get_generator_thread,
         get_philologist_thread=_get_philologist_thread,
         prime_philologist_running_state=_prime_philologist_running_state,
-        register_documents_thread=_register_documents_thread,
+        start_documents_thread_if_absent=_start_documents_thread_if_absent,
         run_documents_pipeline_background=run_documents_pipeline_background,
         documents_job_key=_documents_job_key,
         clear_philologist_stop_request=clear_philologist_stop_request,
@@ -1921,11 +2057,10 @@ app.include_router(
         check_auth=check_auth,
         parse_optional_limit=_parse_optional_limit,
         compact_sender_status=compact_sender_status,
-        get_sender_thread=_get_sender_thread,
         clear_sender_stop_request=clear_sender_stop_request,
         prime_sender_checking_state=prime_sender_checking_state,
         prime_sender_running_state=prime_sender_running_state,
-        register_sender_thread=_register_sender_thread,
+        start_sender_thread_if_absent=_start_sender_thread_if_absent,
         run_sender_background=run_sender_background,
         sender_job_key=_sender_job_key,
         get_sender_status=get_sender_status,

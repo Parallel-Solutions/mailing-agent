@@ -642,6 +642,25 @@ def _documents_agent_should_delegate_to_philologist(message: str, documents_stat
     )
 
 
+def _documents_pipeline_stop_requested(job_id: str | None) -> bool:
+    generator_state = _require("load_generator_state")(job_id)
+    philologist_state = _require("load_philologist_state")(job_id)
+    return bool(generator_state.get("stop_requested")) or bool(philologist_state.get("stop_requested"))
+
+
+def _mark_documents_waiting_review_stopped(job_id: str | None) -> None:
+    philologist_state = _require("load_philologist_state")(job_id)
+    if str(philologist_state.get("status") or "") == "completed":
+        return
+    philologist_state["status"] = "stopped"
+    philologist_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+    philologist_state["summary_text"] = (
+        "Подготовка остановлена после создания документов. "
+        "Проверку текста можно запустить позже."
+    )
+    _require("save_philologist_state")(philologist_state, job_id)
+
+
 def documents_agent_choose_reply(message: str, job_id: str | None = None) -> dict[str, str]:
     documents_status = compact_documents_status(job_id)
     lowered = message.lower()
@@ -684,8 +703,15 @@ def run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mo
         if str(generator_state.get("status") or "") != "completed":
             return
 
+        if _documents_pipeline_stop_requested(job_id):
+            _mark_documents_waiting_review_stopped(job_id)
+            return
+
         philologist_state = get_philologist_status(job_id, include_details=False)
         if str(philologist_state.get("status") or "") != "completed":
+            if _documents_pipeline_stop_requested(job_id):
+                _mark_documents_waiting_review_stopped(job_id)
+                return
             clear_philologist_stop_request(job_id)
             philologist_state = run_philologist(ai_enabled=True, job_id=job_id, mode=mode or "fast")
 

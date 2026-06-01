@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     public_base_url: str = "https://31-130-150-209.sslip.io"
+    upload_data_max_bytes: int = 25 * 1024 * 1024
+    upload_template_max_bytes: int = 10 * 1024 * 1024
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.vsellm.ru/v1"
@@ -63,6 +65,7 @@ class Settings(BaseSettings):
     unisender_sender_email: str = ""
     unisender_list_id: int = 1
     unisender_webhook_secret: str = ""
+    unisender_webhook_token: str = ""
     mail_signature_image_url: str = ""
 
     municipality_oktmo_lookup_enabled: bool = True

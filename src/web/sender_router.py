@@ -12,11 +12,10 @@ def create_sender_router(
     check_auth: Callable[..., str],
     parse_optional_limit: Callable[[dict | None], int | None],
     compact_sender_status: Callable[[dict], dict],
-    get_sender_thread: Callable[[str | None], threading.Thread | None],
     clear_sender_stop_request: Callable[[str | None], Any],
     prime_sender_checking_state: Callable[[str | None, str | None], dict],
     prime_sender_running_state: Callable[[str | None, str | None], dict],
-    register_sender_thread: Callable[[str | None, threading.Thread], None],
+    start_sender_thread_if_absent: Callable[..., tuple[threading.Thread, bool]],
     run_sender_background: Callable[..., None],
     sender_job_key: Callable[[str | None], str],
     get_sender_status: Callable[[str | None], dict],
@@ -31,16 +30,29 @@ def create_sender_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    def resolve_webhook_token() -> str:
+        return str(
+            getattr(settings, "unisender_webhook_token", "")
+            or getattr(settings, "unisender_webhook_secret", "")
+            or ""
+        ).strip()
+
+    def ensure_webhook_token(token: str) -> None:
+        expected_token = resolve_webhook_token()
+        if not expected_token:
+            raise HTTPException(
+                status_code=503,
+                detail="Webhook UniSender Go отключён: не настроен токен webhook.",
+            )
+        if not secrets.compare_digest(str(token or "").strip(), expected_token):
+            raise HTTPException(status_code=401, detail="Некорректный токен webhook UniSender Go")
+
     @router.post("/api/sender/run")
     async def sender_run(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
         dry_run = True if payload is None else bool(payload.get("dry_run", True))
         limit = parse_optional_limit(payload)
         transport = None if payload is None else payload.get("transport")
         job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-
-        existing_thread = get_sender_thread(job_id)
-        if existing_thread:
-            return {"status": "ok", "result": compact_sender_status(get_sender_status(job_id))}
 
         try:
             clear_sender_stop_request(job_id)
@@ -49,14 +61,12 @@ def create_sender_router(
                 if dry_run
                 else prime_sender_running_state(job_id, transport)
             )
-            sender_thread = threading.Thread(
+            start_sender_thread_if_absent(
+                job_id,
                 target=run_sender_background,
                 kwargs={"dry_run": dry_run, "limit": limit, "transport": transport, "job_id": job_id},
-                daemon=True,
                 name=f"sender-{sender_job_key(job_id)}",
             )
-            register_sender_thread(job_id, sender_thread)
-            sender_thread.start()
         except Exception as exc:
             logger.exception("sender_run_start_failed", job_id=job_id, transport=transport)
             raise HTTPException(
@@ -94,18 +104,34 @@ def create_sender_router(
 
     @router.get("/api/webhooks/unisender-go")
     async def unisender_go_webhook_health():
-        return {"status": "ok", "message": "UniSender Go webhook endpoint is ready"}
+        token_configured = bool(resolve_webhook_token())
+        return {
+            "status": "ok",
+            "message": "UniSender Go webhook endpoint is ready",
+            "token_required": token_configured,
+            "url_format": "/api/webhooks/unisender-go/{token}",
+        }
 
     @router.post("/api/webhooks/unisender-go")
     async def unisender_go_webhook(request: Request):
-        if not settings.unisender_webhook_secret:
+        if not resolve_webhook_token():
             raise HTTPException(
                 status_code=503,
-                detail="Webhook UniSender Go отключён: не настроен обязательный секрет.",
+                detail="Webhook UniSender Go отключён: не настроен токен webhook.",
             )
-        provided_secret = request.headers.get("X-Webhook-Secret") or request.query_params.get("secret") or ""
-        if not secrets.compare_digest(provided_secret, settings.unisender_webhook_secret):
-            raise HTTPException(status_code=401, detail="Некорректный секрет webhook UniSender Go")
+        raise HTTPException(
+            status_code=401,
+            detail="Используйте токенизированный URL webhook UniSender Go.",
+        )
+
+    @router.get("/api/webhooks/unisender-go/{token}")
+    async def unisender_go_webhook_token_health(token: str):
+        ensure_webhook_token(token)
+        return {"status": "ok", "message": "UniSender Go token webhook endpoint is ready"}
+
+    @router.post("/api/webhooks/unisender-go/{token}")
+    async def unisender_go_webhook_tokenized(token: str, request: Request):
+        ensure_webhook_token(token)
         try:
             payload = await request.json()
         except Exception as exc:
