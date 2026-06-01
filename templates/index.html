@@ -3425,10 +3425,12 @@
     appendJobId(form);
     const uploadLabel = document.getElementById('upload-data-label');
     if (uploadLabel) uploadLabel.textContent = 'Загрузка...';
+    let uploadCompleted = false;
     try {
       const res = await fetch('/api/upload/data', { method: 'POST', body: form });
       const data = await readJsonOrText(res);
       if (res.ok) {
+        uploadCompleted = true;
         const previousJobId = currentJobId;
         if (data.job_id) setCurrentJobId(data.job_id);
         resetModuleUiForNewDataUpload();
@@ -3471,7 +3473,11 @@
     } catch(e) {
       const uploadLabelCatch = document.getElementById('upload-data-label');
       if (uploadLabelCatch) uploadLabelCatch.textContent = 'Нажмите чтобы выбрать файл data.xlsx';
-      showToast('Ошибка соединения');
+      showToast(
+        uploadCompleted
+          ? 'Файл загружен, но не удалось сразу обновить сведения о таблице'
+          : 'Ошибка соединения'
+      );
     }
     input.value = '';
   }
@@ -3789,6 +3795,7 @@ async function attachFile(input) {
   const file = input.files[0];
   if (!file) return;
   const uploadStartedAt = performance.now();
+  let uploadCompleted = false;
  
   const attachedName = document.getElementById('p-attached-name');
   const attachedFile = document.getElementById('p-attached-file');
@@ -3805,6 +3812,7 @@ async function attachFile(input) {
     const res = await fetch('/api/upload/data', { method: 'POST', body: form });
     const data = await readJsonOrText(res);
     if (!res.ok) throw new Error(data.detail || 'Ошибка загрузки');
+    uploadCompleted = true;
     const uploadFinishedAt = performance.now();
     console.log('[parser-upload] response', {
       file: file.name,
@@ -3840,7 +3848,13 @@ async function attachFile(input) {
  
   } catch (err) {
     if (attachedFile) attachedFile.style.display = 'none';
-    appendChatMessage('p-chat', 'agent', 'Не удалось загрузить файл: ' + err.message);
+    appendChatMessage(
+      'p-chat',
+      'agent',
+      uploadCompleted
+        ? 'Файл загружен, но не удалось сразу обновить сведения о таблице. Обновите страницу или подождите пару секунд.'
+        : 'Не удалось загрузить файл: ' + err.message
+    );
   }
 }
  

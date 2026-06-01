@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from datetime import datetime
+from zipfile import BadZipFile
 from time import perf_counter
 from pathlib import Path
 from typing import Any
@@ -83,8 +84,17 @@ def _row_count(job_id: str | None = None) -> int:
     data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
     if not data_xlsx_path.exists():
         return 0
-    _, _, rows = load_rows(data_xlsx_path)
-    return len(rows)
+    try:
+        _, _, rows = load_rows(data_xlsx_path)
+        return len(rows)
+    except (EOFError, BadZipFile, PermissionError) as exc:
+        logger.warning(
+            "parser_row_count_temporarily_unavailable",
+            job_id=job_id,
+            path=str(data_xlsx_path),
+            error=str(exc),
+        )
+        return 0
 
 
 def _parser_data_xlsx_path(job_id: str | None = None):
