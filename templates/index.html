@@ -4680,6 +4680,35 @@ function clearAttachedFile() {
     return moduleReadiness;
   }
 
+  function mergeModuleReadiness(serverState = {}, localState = {}) {
+    const serverGeneratorReady = !!serverState.generator_ready;
+    const localGeneratorReady = !!localState.generator_ready;
+    const serverPhilologistReady = !!serverState.philologist_ready;
+    const localPhilologistReady = !!localState.philologist_ready;
+    const serverSenderReady = !!serverState.sender_ready;
+    const localSenderReady = !!localState.sender_ready;
+
+    const generatorReady = serverGeneratorReady || localGeneratorReady;
+    const philologistReady = serverPhilologistReady || localPhilologistReady;
+    const senderReady = serverSenderReady || localSenderReady;
+
+    return {
+      ...moduleReadiness,
+      ...serverState,
+      ...localState,
+      data_loaded: !!serverState.data_loaded || !!localState.data_loaded,
+      kp_template_loaded: !!serverState.kp_template_loaded || !!localState.kp_template_loaded,
+      contract_template_loaded: !!serverState.contract_template_loaded || !!localState.contract_template_loaded,
+      mail_template_loaded: !!serverState.mail_template_loaded || !!localState.mail_template_loaded,
+      generator_ready: generatorReady,
+      philologist_ready: philologistReady,
+      sender_ready: senderReady,
+      generator_reason: generatorReady ? '' : (serverState.generator_reason || localState.generator_reason || ''),
+      philologist_reason: philologistReady ? '' : (serverState.philologist_reason || localState.philologist_reason || ''),
+      sender_reason: senderReady ? '' : (serverState.sender_reason || localState.sender_reason || ''),
+    };
+  }
+
   function applyModuleReadiness() {
     const generatorRunButton = document.getElementById('g-run');
     const philologistRunButton = document.getElementById('ph-run');
@@ -4715,9 +4744,9 @@ function clearAttachedFile() {
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить готовность модулей');
       if (requestedJobId !== currentJobId) return null;
-      moduleReadiness = { ...moduleReadiness, ...(data.result || {}), ...inferLocalModuleReadiness() };
+      moduleReadiness = mergeModuleReadiness(data.result || {}, inferLocalModuleReadiness());
     } catch (e) {
-      moduleReadiness = { ...moduleReadiness, ...inferLocalModuleReadiness() };
+      moduleReadiness = mergeModuleReadiness({}, inferLocalModuleReadiness());
     }
     applyModuleReadiness();
     saveUiState();
