@@ -800,7 +800,7 @@ def build_contract_replacements(context: dict) -> list[tuple[str, str]]:
         ),
         ("MUN_NAME", str(context.get("MUN_NAME", ""))),
         ("MUN_R_NAME_1", str(context.get("MUN_R_NAME_1", ""))),
-        ("MUN_R_NAME", str(context.get("MUN_R_NAME_1", context.get("MUN_R_NAME", "")))),
+        ("MUN_R_NAME", str(context.get("MUN_R_NAME", ""))),
         ("SUB_RF_1", str(context.get("SUB_RF_1", ""))),
         ("SUB_RF", str(context.get("SUB_RF", ""))),
         ("ADRES", str(context.get("ADRES", ""))),
