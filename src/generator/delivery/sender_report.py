@@ -380,6 +380,7 @@ def _refresh_unisender_go_event_dump(job_id: str | None, items: list[dict[str, A
     request_body = {
         "start_time": start_time,
         "end_time": end_time,
+        "limit": 100000,
         "dump_fields": [
             "event_time",
             "job_id",
