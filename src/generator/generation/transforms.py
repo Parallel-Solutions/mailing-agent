@@ -5,7 +5,9 @@ from typing import Optional
 from src.generator.case_engine import build_inflected_fields_with_trace
 
 
-def normalize_display_text(value: str) -> str:
+def normalize_display_text(value: object) -> str:
+    if value is None:
+        return ""
     text = " ".join(str(value).split())
     if text.isupper():
         result = text.lower()
@@ -318,7 +320,7 @@ def build_document_context(row: dict, outgoing_number: int) -> dict:
     is_district_context = not raw_mun_name and bool(normalized_mun_r_name)
     normalized_mun_name = normalized_mun_r_name if is_district_context else official_mo_name or raw_mun_name
     adm_name = (
-        build_district_admin_name(normalized_mun_r_name)
+        raw_adm_name or build_district_admin_name(normalized_mun_r_name)
         if is_district_context
         else build_unified_admin_name(normalized_mun_name)
     )
@@ -332,6 +334,7 @@ def build_document_context(row: dict, outgoing_number: int) -> dict:
     if "REQUISITES_OKTMO" not in row_for_inflection and "REQUISITES_OKTNO" in row_for_inflection:
         row_for_inflection["REQUISITES_OKTMO"] = row_for_inflection.get("REQUISITES_OKTNO")
     inflected, _ = build_inflected_fields_with_trace(row_for_inflection)
+    adm_name = patch_admin_name_components(adm_name, row_for_inflection, inflected)
     oktmo = row_for_inflection.get("REQUISITES_OKTNO", row_for_inflection.get("REQUISITES_OKTMO", ""))
     context = {
         "ID": row.get("ID"),

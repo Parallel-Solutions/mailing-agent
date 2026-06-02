@@ -542,13 +542,22 @@ def verify_municipality_names_in_workbook(
     if use_minjust and minjust_lookup is None:
         minjust_lookup = MinjustMunicipalityLookup()
 
+    max_column = worksheet.max_column
+    row_values_list = list(
+        worksheet.iter_rows(
+            min_row=DATA_START_ROW,
+            max_row=worksheet.max_row,
+            max_col=max_column,
+            values_only=True,
+        )
+    )
     mun_col = header_map.get(MUN_NAME_COLUMN)
+    district_col = header_map.get(MUN_R_NAME_COLUMN)
+    if district_col and (not mun_col or _mun_name_column_is_empty(row_values_list, header_map)):
+        stats = _district_table_verification_result(worksheet, header_map)
+        workbook.close()
+        return stats
     if not mun_col:
-        district_col = header_map.get(MUN_R_NAME_COLUMN)
-        if district_col:
-            stats = _district_table_verification_result(worksheet, header_map)
-            workbook.close()
-            return stats
         workbook.close()
         return {
             "status": "skipped",
@@ -560,15 +569,6 @@ def verify_municipality_names_in_workbook(
             "reason": "В таблице нет колонки MUN_NAME.",
         }
 
-    max_column = worksheet.max_column
-    row_values_list = list(
-        worksheet.iter_rows(
-            min_row=DATA_START_ROW,
-            max_row=worksheet.max_row,
-            max_col=max_column,
-            values_only=True,
-        )
-    )
     estimated_total_rows = sum(
         1
         for row_values in row_values_list
@@ -689,6 +689,16 @@ def verify_municipality_names_in_workbook(
     workbook.close()
     report_progress(force=True)
     return stats
+
+
+def _mun_name_column_is_empty(row_values_list: list[tuple[Any, ...]], header_map: dict[str, int]) -> bool:
+    for row_values in row_values_list:
+        row = _read_row_from_values(header_map, row_values)
+        if not any(value not in (None, "") for value in row.values()) or _is_service_row(row):
+            continue
+        if _clean(row.get(MUN_NAME_COLUMN)):
+            return False
+    return True
 
 
 def _district_table_verification_result(worksheet, header_map: dict[str, int]) -> dict[str, Any]:

@@ -32,7 +32,7 @@ class DistrictTableTests(unittest.TestCase):
             "ID",
             "SUB_RF",
             "MUN_R_NAME",
-            None,
+            "MUN_NAME",
             "ADM_NAME",
             "ADRES",
             "HEAD_FIO",
