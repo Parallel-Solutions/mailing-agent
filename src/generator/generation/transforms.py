@@ -130,6 +130,15 @@ def ensure_official_district_wording(value: str) -> str:
 
 
 def build_work_scope_fragment(context: dict) -> str:
+    if context.get("DOCUMENT_ENTITY_TYPE") == "district":
+        parts = _dedupe_scope_parts(
+            [
+                str(context.get("MUN_R_NAME_1", "")).strip(),
+                str(context.get("SUB_RF_1", "")).strip(),
+            ]
+        )
+        return ensure_official_district_wording(" ".join(parts).strip())
+
     parts = _dedupe_scope_parts(
         [
             str(context.get("MUN_NAME_2", "")).strip(),
@@ -159,6 +168,13 @@ def build_unified_admin_name(mun_name: str) -> str:
     if not normalized_mun_name:
         return ""
     return f'Администрация муниципального образования "{normalized_mun_name}"'
+
+
+def build_district_admin_name(district_name: str) -> str:
+    normalized_district_name = normalize_display_text(district_name).strip()
+    if not normalized_district_name:
+        return ""
+    return f"Администрация муниципального образования {normalized_district_name}"
 
 
 def _quoted_name_looks_like_mo_name(value: str) -> bool:
@@ -229,20 +245,31 @@ def extract_official_mo_name_from_adm_name(adm_name: str) -> str:
 
 
 def build_requisites(row: dict) -> str:
+    oktmo = row.get("REQUISITES_OKTNO", row.get("REQUISITES_OKTMO", ""))
     parts = [
         f"ИНН: {row.get('REQUISITES_INN', '')}",
         f"КПП: {row.get('REQUISITES_KPP', '')}",
         f"ОГРН: {row.get('REQUISITES_OGRN', '')}",
         f"ОКПО: {row.get('REQUISITES_OKPO', '')}",
-        f"ОКТМО: {row.get('REQUISITES_OKTNO', '')}",
+        f"ОКТМО: {oktmo}",
     ]
     return "\n".join(parts)
 
 
+WINDOWS_PATH_FORBIDDEN_PATTERN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def sanitize_path_component(value: object, *, fallback: str = "unknown") -> str:
+    """Return a Windows-safe file/folder name without changing source data."""
+    text = normalize_display_text(value)
+    text = WINDOWS_PATH_FORBIDDEN_PATTERN.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    return text or fallback
+
+
 def build_output_folder_name(row: dict) -> str:
-    row_id = row.get("ID", "unknown")
-    mun_name = str(row.get("MUN_NAME", "unknown")).strip()
-    safe_name = mun_name.replace("/", "-").replace("\\", "-")
+    row_id = sanitize_path_component(row.get("ID", "unknown"))
+    safe_name = sanitize_path_component(row.get("MUN_NAME") or row.get("MUN_R_NAME") or "unknown")
     return f"{row_id}_{safe_name}"
 
 
@@ -286,22 +313,35 @@ def build_population_with_unit(value) -> str:
 def build_document_context(row: dict, outgoing_number: int) -> dict:
     raw_adm_name = normalize_display_text(row.get("ADM_NAME", ""))
     official_mo_name = extract_official_mo_name_from_adm_name(raw_adm_name)
-    normalized_mun_name = official_mo_name or normalize_display_text(row.get("MUN_NAME", ""))
-    adm_name = build_unified_admin_name(normalized_mun_name)
+    raw_mun_name = normalize_display_text(row.get("MUN_NAME", ""))
+    normalized_mun_r_name = _capitalize_phrase_if_lower(row.get("MUN_R_NAME", ""))
+    is_district_context = not raw_mun_name and bool(normalized_mun_r_name)
+    normalized_mun_name = normalized_mun_r_name if is_district_context else official_mo_name or raw_mun_name
+    adm_name = (
+        build_district_admin_name(normalized_mun_r_name)
+        if is_district_context
+        else build_unified_admin_name(normalized_mun_name)
+    )
     row_for_inflection = dict(row)
     row_for_inflection["MUN_NAME"] = normalized_mun_name
     row_for_inflection["ADM_NAME"] = adm_name
-    row_for_inflection["MUN_R_NAME"] = _capitalize_phrase_if_lower(row.get("MUN_R_NAME", ""))
+    row_for_inflection["MUN_R_NAME"] = normalized_mun_r_name
     row_for_inflection["SUB_RF"] = _capitalize_phrase_if_lower(row.get("SUB_RF", ""))
+    if "REQUISITES_OKTNO" not in row_for_inflection and "REQUISITES_OKTMO" in row_for_inflection:
+        row_for_inflection["REQUISITES_OKTNO"] = row_for_inflection.get("REQUISITES_OKTMO")
+    if "REQUISITES_OKTMO" not in row_for_inflection and "REQUISITES_OKTNO" in row_for_inflection:
+        row_for_inflection["REQUISITES_OKTMO"] = row_for_inflection.get("REQUISITES_OKTNO")
     inflected, _ = build_inflected_fields_with_trace(row_for_inflection)
+    oktmo = row_for_inflection.get("REQUISITES_OKTNO", row_for_inflection.get("REQUISITES_OKTMO", ""))
     context = {
         "ID": row.get("ID"),
+        "DOCUMENT_ENTITY_TYPE": "district" if is_district_context else "municipality",
         "SUB_RF": row_for_inflection["SUB_RF"],
         "MUN_R_NAME": row_for_inflection["MUN_R_NAME"],
         "MUN_NAME": normalized_mun_name,
         "ADM_NAME": adm_name,
         "ADM_NAME_RAW": raw_adm_name,
-        "MUN_NAME_RAW": normalize_display_text(row.get("MUN_NAME", "")),
+        "MUN_NAME_RAW": raw_mun_name,
         "ADRES": row.get("ADRES"),
         "HEAD_FIO": row.get("HEAD_FIO"),
         "POPULATION": row.get("POPULATION"),
@@ -314,7 +354,8 @@ def build_document_context(row: dict, outgoing_number: int) -> dict:
         "REQUISITES_KPP": row.get("REQUISITES_KPP"),
         "REQUISITES_OGRN": row.get("REQUISITES_OGRN"),
         "REQUISITES_OKPO": row.get("REQUISITES_OKPO"),
-        "REQUISITES_OKTNO": row.get("REQUISITES_OKTNO"),
+        "REQUISITES_OKTNO": oktmo,
+        "REQUISITES_OKTMO": oktmo,
         "REQUISITES": build_requisites(row),
         "HEAD_FIO_SHORT": build_short_fio(row.get("HEAD_FIO", "")),
         "OUTGOING_NUMBER": outgoing_number,
@@ -322,6 +363,10 @@ def build_document_context(row: dict, outgoing_number: int) -> dict:
         "DATE": datetime.now().strftime("%d.%m.%Y"),
     }
     context.update(inflected)
-    context["HEAD_MO_FRAGMENT"] = str(context.get("MUN_NAME_1", "")).strip()
+    context["HEAD_MO_FRAGMENT"] = (
+        str(context.get("MUN_R_NAME_1", "")).strip()
+        if is_district_context
+        else str(context.get("MUN_NAME_1", "")).strip()
+    )
     context["WORK_SCOPE_FRAGMENT"] = build_work_scope_fragment(context)
     return context

@@ -1621,11 +1621,12 @@
 
       <div class="field">
         <label>Вид работ</label>
-        <select id="settings-work-type">
-          <option>МНГП (сельских и городских поселений)</option>
-          <option>ГП+ПЗЗ</option>
-          <option>Отдельно ГП и ПЗЗ</option>
-          <option>СТП</option>
+        <select id="settings-work-type" onchange="updateSettingsChecklist()">
+          <option value="mngp_settlements">МНГП (сельских и городских поселений)</option>
+          <option value="mngp_districts">МНГП по муниципальным районам</option>
+          <option value="gp_pzz">ГП+ПЗЗ</option>
+          <option value="gp_and_pzz_separate">Отдельно ГП и ПЗЗ</option>
+          <option value="stp">СТП</option>
         </select>
       </div>
 
@@ -2166,6 +2167,10 @@
       lastAgentEventIds,
       chatSessions,
       chats: collectChatHtmlSnapshot(),
+      settings: {
+        workType: document.getElementById('settings-work-type')?.value || '',
+        mailSubject: document.getElementById('settings-mail-subject')?.value || '',
+      },
       templates: {
         mail: collectTemplateButtonSnapshot('mail-btn'),
         kp: collectTemplateButtonSnapshot('kp-btn'),
@@ -2315,6 +2320,12 @@
     flowNotificationState = snapshot.flowNotificationState || createFlowNotificationState();
     Object.assign(lastAgentEventIds, snapshot.lastAgentEventIds || {});
     Object.assign(chatSessions, snapshot.chatSessions || {});
+
+    const settings = snapshot.settings || {};
+    const workType = document.getElementById('settings-work-type');
+    const mailSubject = document.getElementById('settings-mail-subject');
+    if (workType && settings.workType) workType.value = settings.workType;
+    if (mailSubject && typeof settings.mailSubject === 'string') mailSubject.value = settings.mailSubject;
 
     restoreChatHtmlSnapshot(snapshot.chats || {});
     const attachedFile = document.getElementById('p-attached-file');

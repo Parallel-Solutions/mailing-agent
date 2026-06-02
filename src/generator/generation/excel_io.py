@@ -8,6 +8,22 @@ HEADER_ROW = 2
 STATUS_HEADER_ALIASES = ("STATUS", "Статус отправки")
 
 
+def _is_service_row(row: dict) -> bool:
+    first_value = ""
+    for value in row.values():
+        if value not in (None, ""):
+            first_value = str(value).strip()
+            break
+    return first_value.lower().startswith("источники:")
+
+
+def _apply_header_aliases(row: dict) -> None:
+    if "REQUISITES_OKTNO" not in row and "REQUISITES_OKTMO" in row:
+        row["REQUISITES_OKTNO"] = row.get("REQUISITES_OKTMO")
+    if "REQUISITES_OKTMO" not in row and "REQUISITES_OKTNO" in row:
+        row["REQUISITES_OKTMO"] = row.get("REQUISITES_OKTNO")
+
+
 def load_rows(xlsx_path: Path, sheet_name: Optional[str] = None) -> tuple[object, object, list[dict]]:
     workbook = load_workbook(xlsx_path)
     worksheet = workbook[sheet_name] if sheet_name else workbook[workbook.sheetnames[0]]
@@ -28,7 +44,8 @@ def load_rows(xlsx_path: Path, sheet_name: Optional[str] = None) -> tuple[object
             row[header] = value
             if value not in (None, ""):
                 is_empty = False
-        if not is_empty:
+        if not is_empty and not _is_service_row(row):
+            _apply_header_aliases(row)
             row["_row_index"] = row_index
             rows.append(row)
 

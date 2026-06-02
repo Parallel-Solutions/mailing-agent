@@ -14,7 +14,12 @@ from docx.shared import Cm, Pt, RGBColor
 from docx.table import _Cell, Table
 
 from src.generator.generation.config_generator import BATCH_DOCX_DIR, OUTPUT_DIR, TEMPLATES_DIR
-from src.generator.generation.transforms import build_output_folder_name, ensure_official_district_wording
+from src.generator.generation.transforms import (
+    build_district_admin_name,
+    build_output_folder_name,
+    ensure_official_district_wording,
+    sanitize_path_component,
+)
 
 
 KP_TEMPLATE_FILENAME = "kp_template_source.docx"
@@ -759,27 +764,65 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
     return output_path
 
 
+def ensure_render_context(context: dict) -> dict:
+    if context.get("DOCUMENT_ENTITY_TYPE") != "district":
+        return context
+    district_name = str(context.get("MUN_R_NAME") or context.get("MUN_NAME") or "").strip()
+    if not district_name:
+        return context
+    if not str(context.get("MUN_NAME") or "").strip():
+        context["MUN_NAME"] = district_name
+    if not str(context.get("ADM_NAME") or "").strip():
+        context["ADM_NAME"] = build_district_admin_name(district_name)
+    if not str(context.get("ADM_NAME_1") or "").strip():
+        context["ADM_NAME_1"] = f"Администрации муниципального образования {district_name}"
+    if not str(context.get("HEAD_MO_FRAGMENT") or "").strip():
+        context["HEAD_MO_FRAGMENT"] = str(context.get("MUN_R_NAME_1") or district_name).strip()
+    if not str(context.get("WORK_SCOPE_FRAGMENT") or "").strip():
+        context["WORK_SCOPE_FRAGMENT"] = ensure_official_district_wording(
+            f"{context.get('MUN_R_NAME_1') or district_name} {context.get('SUB_RF_1') or context.get('SUB_RF') or ''}".strip()
+        )
+    return context
+
+
 def build_kp_replacements(context: dict) -> list[tuple[str, str]]:
+    context = ensure_render_context(context)
+    district_scope_fragment = ensure_official_district_wording(
+        f"{context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
+    )
     return [
         ("№ 101-КП от 12.05.2026", f"№ {context['OUTGOING_NUMBER']}-КП от {context['DATE']}"),
         ("ADM_NAME_1", str(context.get("ADM_NAME_1", ""))),
+        ("ADM_NAME", str(context.get("ADM_NAME", ""))),
         ("MUN_NAME_2", str(context.get("MUN_NAME_2", ""))),
+        ("MUN_NAME_1", str(context.get("MUN_NAME_1", ""))),
+        ("MUN_NAME", str(context.get("MUN_NAME", ""))),
         ("MUN_R_NAME_1", str(context.get("MUN_R_NAME_1", ""))),
+        ("MUN_R_NAME SUB_RF_1", district_scope_fragment),
+        ("MUN_R_NAME SUB_RF", district_scope_fragment),
+        ("MUN_R_NAME", str(context.get("MUN_R_NAME", ""))),
         ("SUB_RF_1", str(context.get("SUB_RF_1", ""))),
+        ("SUB_RF", str(context.get("SUB_RF", ""))),
     ]
 
 
 def build_contract_replacements(context: dict) -> list[tuple[str, str]]:
+    context = ensure_render_context(context)
     contract_number = str(context.get("CONTRACT_NUMBER", ""))
     date = str(context.get("DATE", ""))
     work_scope_fragment = ensure_official_district_wording(
         str(context.get("WORK_SCOPE_FRAGMENT", "")).strip()
         or f"{context.get('MUN_NAME_2', '')} {context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
     )
+    district_scope_fragment = ensure_official_district_wording(
+        f"{context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
+    )
     return [
         ("№ 101", f"№ {contract_number}"),
         ("« » мая 2026 г.", date),
         ("от «  » мая 2026 г.", f"от {date}"),
+        ("Глава ADM_NAME", f"Глава {context.get('ADM_NAME_1', '')}"),
+        ("Глава MUN_NAME", f"Глава {context.get('HEAD_MO_FRAGMENT') or context.get('MUN_NAME_1', '')}"),
         ("ADM_NAME_1", str(context.get("ADM_NAME_1", ""))),
         ("ADM_NAME", str(context.get("ADM_NAME", ""))),
         ("HEAD_FIO_1", str(context.get("HEAD_FIO_1", ""))),
@@ -798,6 +841,8 @@ def build_contract_replacements(context: dict) -> list[tuple[str, str]]:
             "MUN_NAME MUN_R_NAME SUB_RF",
             work_scope_fragment,
         ),
+        ("MUN_R_NAME SUB_RF_1", district_scope_fragment),
+        ("MUN_R_NAME SUB_RF", district_scope_fragment),
         ("MUN_NAME", str(context.get("MUN_NAME", ""))),
         ("MUN_R_NAME_1", str(context.get("MUN_R_NAME_1", ""))),
         ("MUN_R_NAME", str(context.get("MUN_R_NAME", ""))),
@@ -817,19 +862,20 @@ def build_contract_replacements(context: dict) -> list[tuple[str, str]]:
 
 
 def build_kp_filename(row: dict) -> str:
-    mun_name = str(row.get("MUN_NAME", "unknown")).strip()
+    mun_name = sanitize_path_component(row.get("MUN_NAME") or row.get("MUN_R_NAME") or "unknown")
     return f"КП_МНГП_{mun_name}.docx"
 
 
 def build_contract_filename(row: dict) -> str:
-    mun_name = str(row.get("MUN_NAME", "unknown")).strip()
+    mun_name = sanitize_path_component(row.get("MUN_NAME") or row.get("MUN_R_NAME") or "unknown")
     return f"Договор_МНГП_{mun_name}.docx"
 
 
 def build_staged_filename(row: dict, kind: str) -> str:
-    row_id = str(row.get("ID", "unknown")).strip()
-    mun_name = str(row.get("MUN_NAME", "unknown")).strip().replace("/", "-").replace("\\", "-")
-    return f"{row_id}_{kind}_{mun_name}.docx"
+    row_id = sanitize_path_component(row.get("ID", "unknown"))
+    safe_kind = sanitize_path_component(kind)
+    mun_name = sanitize_path_component(row.get("MUN_NAME") or row.get("MUN_R_NAME") or "unknown")
+    return f"{row_id}_{safe_kind}_{mun_name}.docx"
 
 
 def cleanup_batch_docx_dir(batch_docx_dir: Path | None = None) -> None:

@@ -18,6 +18,7 @@ from src.utils.config import settings
 HEADER_ROW = 2
 DATA_START_ROW = 3
 MUN_NAME_COLUMN = "MUN_NAME"
+MUN_R_NAME_COLUMN = "MUN_R_NAME"
 ADM_NAME_COLUMN = "ADM_NAME"
 
 ORIGINAL_COLUMN = "MUN_NAME_SOURCE_ORIGINAL"
@@ -543,6 +544,11 @@ def verify_municipality_names_in_workbook(
 
     mun_col = header_map.get(MUN_NAME_COLUMN)
     if not mun_col:
+        district_col = header_map.get(MUN_R_NAME_COLUMN)
+        if district_col:
+            stats = _district_table_verification_result(worksheet, header_map)
+            workbook.close()
+            return stats
         workbook.close()
         return {
             "status": "skipped",
@@ -566,7 +572,10 @@ def verify_municipality_names_in_workbook(
     estimated_total_rows = sum(
         1
         for row_values in row_values_list
-        if any(value not in (None, "") for value in _read_row_from_values(header_map, row_values).values())
+        if (
+            any(value not in (None, "") for value in _read_row_from_values(header_map, row_values).values())
+            and not _is_service_row(_read_row_from_values(header_map, row_values))
+        )
     )
 
     stats = {
@@ -615,7 +624,7 @@ def verify_municipality_names_in_workbook(
     for offset, row_values in enumerate(row_values_list):
         row_index = DATA_START_ROW + offset
         row = _read_row_from_values(header_map, row_values)
-        if not any(value not in (None, "") for value in row.values()):
+        if not any(value not in (None, "") for value in row.values()) or _is_service_row(row):
             continue
         stats["total_rows"] += 1
         cache_key = _verification_cache_key(row)
@@ -680,6 +689,70 @@ def verify_municipality_names_in_workbook(
     workbook.close()
     report_progress(force=True)
     return stats
+
+
+def _district_table_verification_result(worksheet, header_map: dict[str, int]) -> dict[str, Any]:
+    max_column = worksheet.max_column
+    total_rows = 0
+    missing_rows = 0
+    decision_samples: list[dict[str, Any]] = []
+    for row_values in worksheet.iter_rows(
+        min_row=DATA_START_ROW,
+        max_row=worksheet.max_row,
+        max_col=max_column,
+        values_only=True,
+    ):
+        row = _read_row_from_values(header_map, row_values)
+        if not any(value not in (None, "") for value in row.values()) or _is_service_row(row):
+            continue
+        total_rows += 1
+        district_name = _clean(row.get(MUN_R_NAME_COLUMN))
+        if not district_name:
+            missing_rows += 1
+        if len(decision_samples) < 20:
+            decision_samples.append(
+                {
+                    "row_id": _clean(row.get("ID")) or str(total_rows),
+                    "original_name": district_name,
+                    "official_name": district_name,
+                    "status": "kept" if district_name else "missing",
+                    "confidence": "medium" if district_name else "low",
+                    "source": MUN_R_NAME_COLUMN if district_name else "",
+                    "reason": (
+                        "Районная таблица: основная сущность взята из MUN_R_NAME, проверка MUN_NAME не требуется."
+                        if district_name
+                        else "В районной таблице не заполнен MUN_R_NAME."
+                    ),
+                    "source_url": "",
+                    "auto_replaced": False,
+                }
+            )
+
+    kept_rows = max(0, total_rows - missing_rows)
+    return {
+        "status": "ok",
+        "table_mode": "district",
+        "total_rows": total_rows,
+        "estimated_total_rows": total_rows,
+        "unique_verification_keys": kept_rows,
+        "cached_verification_rows": 0,
+        "updated_rows": 0,
+        "verified_rows": 0,
+        "kept_rows": kept_rows,
+        "missing_rows": missing_rows,
+        "official_site_checked_rows": 0,
+        "official_site_found_rows": 0,
+        "official_site_error_rows": 0,
+        "official_site_lookup_enabled": False,
+        "official_site_lookup_disabled_reason": "",
+        "oktmo_lookup_enabled": False,
+        "oktmo_lookup_disabled_reason": "Для районной таблицы без MUN_NAME проверка ОКТМО по MUN_NAME пропущена.",
+        "minjust_lookup_enabled": False,
+        "minjust_lookup_disabled_reason": "",
+        "replacements": [],
+        "replacement_samples": [],
+        "decision_samples": decision_samples,
+    }
 
 
 def _verify_with_official_site(
@@ -1069,6 +1142,15 @@ def _read_row_from_values(header_map: dict[str, int], row_values: tuple[Any, ...
         header: row_values[column_index - 1] if column_index <= len(row_values) else None
         for header, column_index in header_map.items()
     }
+
+
+def _is_service_row(row: dict[str, Any]) -> bool:
+    first_value = ""
+    for value in row.values():
+        if value not in (None, ""):
+            first_value = str(value).strip()
+            break
+    return first_value.lower().startswith("источники:")
 
 
 def _verification_cache_key(row: dict[str, Any]) -> tuple[str, ...]:
