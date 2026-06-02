@@ -83,13 +83,21 @@ def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: 
     return output_path
 
 
-def build_unisender_delivery_analytics(job_id: str | None = None, *, refresh: bool = False) -> dict[str, Any]:
+def build_unisender_delivery_analytics(
+    job_id: str | None = None,
+    *,
+    refresh: bool = False,
+    refresh_wait: bool = False,
+) -> dict[str, Any]:
     """Return lightweight dashboard metrics for the current UniSender sending job."""
 
     refresh_started = False
-    if refresh:
-        refresh_started = _start_unisender_delivery_refresh(job_id)
-    rows, refresh_error = _build_delivery_rows(job_id, refresh=False)
+    if refresh and refresh_wait:
+        rows, refresh_error = _build_delivery_rows(job_id, refresh=True)
+    else:
+        if refresh:
+            refresh_started = _start_unisender_delivery_refresh(job_id)
+        rows, refresh_error = _build_delivery_rows(job_id, refresh=False)
     statuses = Counter(_normalize_provider_status(row["provider_status"] or "unknown") for row in rows)
     providers = Counter(row.get("provider") or "unisender" for row in rows)
 

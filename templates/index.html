@@ -3039,8 +3039,8 @@
       return null;
     }
     try {
-      const url = apiUrl(`/api/sender/analytics?refresh=${refresh ? '1' : '0'}`);
-      const res = await fetchWithTimeout(url, {}, 20000);
+      const url = apiUrl(`/api/sender/analytics?refresh=${refresh ? '1' : '0'}&refresh_wait=${refresh ? '1' : '0'}`);
+      const res = await fetchWithTimeout(url, {}, refresh ? 90000 : 20000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить аналитику отправки');
       const result = data.result || {};

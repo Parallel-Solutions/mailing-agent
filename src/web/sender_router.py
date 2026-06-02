@@ -103,11 +103,16 @@ def create_sender_router(
     async def sender_analytics(
         job_id: str | None = None,
         refresh: bool = False,
+        refresh_wait: bool = False,
         username: str = Depends(check_auth),
     ):
         return {
             "status": "ok",
-            "result": build_unisender_delivery_analytics(job_id=job_id, refresh=refresh),
+            "result": build_unisender_delivery_analytics(
+                job_id=job_id,
+                refresh=refresh,
+                refresh_wait=refresh_wait,
+            ),
         }
 
     @router.get("/api/webhooks/unisender-go")
