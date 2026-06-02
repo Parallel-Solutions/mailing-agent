@@ -38,6 +38,22 @@ EVENT_DUMP_POLL_ATTEMPTS = 15
 EVENT_DUMP_POLL_SECONDS = 2.0
 _ANALYTICS_REFRESH_LOCK = threading.Lock()
 _ANALYTICS_REFRESH_THREADS: dict[str, threading.Thread] = {}
+UNISENDER_GO_SOFT_ERROR_STATUSES = {
+    "soft_bounced",
+    "err_will_retry",
+    "skip_dup_temp_unreachable",
+}
+UNISENDER_GO_HARD_ERROR_STATUSES = {
+    "hard_bounced",
+    "err_user_unknown",
+    "err_user_inactive",
+    "err_mailbox_full",
+    "err_delivery_failed",
+    "err_lost",
+    "err_spam_rejected",
+    "err_spam_skipped",
+    "skip_dup_unreachable",
+}
 
 
 def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: bool = True) -> Path:
@@ -119,17 +135,10 @@ def build_unisender_delivery_analytics(
     read_statuses = {"opened", "clicked", "subscribed", "unsubscribed", "spam", "ok_read", "ok_link_visited"}
     clicked_statuses = {"clicked", "ok_link_visited"}
     unsubscribed_statuses = {"unsubscribed", "ok_unsubscribed"}
-    spam_statuses = {"spam", "ok_spam_folder", "err_spam_rejected"}
-    soft_bounce_statuses = {"soft_bounced", "err_will_retry"}
-    hard_bounce_statuses = {
-        "hard_bounced",
-        "err_user_unknown",
-        "err_user_inactive",
-        "err_mailbox_full",
-        "err_delivery_failed",
-        "err_lost",
-    }
-    pending_statuses = accepted_statuses | {"unknown"} | soft_bounce_statuses
+    spam_statuses = {"spam", "ok_spam_folder"}
+    soft_bounce_statuses = UNISENDER_GO_SOFT_ERROR_STATUSES
+    hard_bounce_statuses = UNISENDER_GO_HARD_ERROR_STATUSES
+    pending_statuses = accepted_statuses | {"unknown"}
 
     delivered = sum(statuses.get(status, 0) for status in delivered_statuses)
     read = sum(statuses.get(status, 0) for status in read_statuses)
@@ -138,12 +147,15 @@ def build_unisender_delivery_analytics(
     spam = sum(statuses.get(status, 0) for status in spam_statuses)
     soft_bounced = sum(statuses.get(status, 0) for status in soft_bounce_statuses)
     hard_bounced = sum(statuses.get(status, 0) for status in hard_bounce_statuses)
-    warnings = unsubscribed + spam + soft_bounced
-    errors = hard_bounced + sum(
+    warnings = unsubscribed + spam
+    generic_errors = sum(
         count
         for status, count in statuses.items()
-        if status.startswith("err_") and status not in soft_bounce_statuses and status not in hard_bounce_statuses
+        if (status.startswith("err_") or status.startswith("skip_"))
+        and status not in soft_bounce_statuses
+        and status not in hard_bounce_statuses
     )
+    errors = hard_bounced + soft_bounced + generic_errors
     pending = sum(statuses.get(status, 0) for status in pending_statuses)
     accepted = total
     checked = sum(1 for row in rows if row.get("checked_at"))
@@ -232,7 +244,7 @@ def build_unisender_delivery_analytics(
         "delivery_rate": pct(delivered),
         "open_rate": pct(read, delivered or total),
         "ctr": pct(clicked),
-        "error_rate": pct(errors + hard_bounced),
+        "error_rate": pct(errors),
         "pending_rate": pct(pending),
     }
 
@@ -684,10 +696,24 @@ def _latest_unisender_go_events(job_id: str | None) -> dict[str, dict[str, Any]]
             if not key:
                 continue
             previous = latest.get(key)
-            previous_rank = priority.get(_safe_text(previous.get("provider_status")) if previous else "", 0)
-            if not previous or priority.get(status, 0) >= previous_rank:
+            previous_rank = _unisender_go_status_priority(
+                _safe_text(previous.get("provider_status")) if previous else "",
+                priority,
+            )
+            if not previous or _unisender_go_status_priority(status, priority) >= previous_rank:
                 latest[key] = {"provider_status": status, "checked_at": checked_at}
     return latest
+
+
+def _unisender_go_status_priority(status: str, priority: dict[str, int]) -> int:
+    normalized = _normalize_provider_status(status)
+    if normalized in UNISENDER_GO_HARD_ERROR_STATUSES or normalized.startswith("err_"):
+        return 90
+    if normalized in UNISENDER_GO_SOFT_ERROR_STATUSES:
+        return 70
+    if normalized.startswith("skip_"):
+        return 90
+    return priority.get(normalized, 0)
 
 
 def _match_unisender_go_event(item: dict[str, Any], events: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
@@ -816,9 +842,11 @@ def _delivery_outcome(status: str) -> str:
         "ok_link_visited",
     }:
         return "Успешно"
-    if normalized in {"unsubscribed", "spam", "soft_bounced", "ok_unsubscribed", "ok_spam_folder", "err_will_retry"}:
+    if normalized in {"unsubscribed", "spam", "ok_unsubscribed", "ok_spam_folder"}:
         return "Предупреждение"
-    if normalized in {"hard_bounced"} or normalized.startswith("err_"):
+    if normalized in UNISENDER_GO_SOFT_ERROR_STATUSES:
+        return "Временная ошибка"
+    if normalized in UNISENDER_GO_HARD_ERROR_STATUSES or normalized.startswith("err_") or normalized.startswith("skip_"):
         return "Ошибка"
     return "В обработке"
 
@@ -841,9 +869,12 @@ def _report_status_label(status: str) -> str:
         "err_user_inactive": "Ошибка: ящик неактивен",
         "err_mailbox_full": "Ошибка: ящик переполнен",
         "err_spam_rejected": "Ошибка: отклонено как спам",
+        "err_spam_skipped": "Ошибка: пропущено как спам",
         "err_delivery_failed": "Ошибка доставки",
         "err_will_retry": "Временная ошибка, UniSender повторит",
         "err_lost": "Статус потерян, нужна проверка вручную",
+        "skip_dup_unreachable": "Ошибка: адрес уже недоступен",
+        "skip_dup_temp_unreachable": "Временная ошибка: адрес временно недоступен",
     }
     label = overrides.get(normalized) or _unisender_status_label(normalized)
     return label[:1].upper() + label[1:] if label else "Статус неизвестен"
