@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import secrets
 from typing import Any
 
 from src.jobs import resolve_job_paths
@@ -136,10 +137,13 @@ def prime_sender_running_state(job_id: str | None, transport: str | None) -> dic
     state = _require("load_sender_state")(job_id)
     stats = _require("collect_excel_stats")(resolve_job_paths(job_id).data_xlsx)
     total_rows = int(state.get("total_rows") or stats.get("total", 0) or 0)
+    started_at = datetime.now().isoformat(timespec="seconds")
     state["status"] = "running"
     state["mode"] = "send"
     state["transport"] = transport or state.get("transport") or "smtp"
-    state["started_at"] = datetime.now().isoformat(timespec="seconds")
+    state["started_at"] = started_at
+    state["send_run_id"] = f"send-{started_at.replace(':', '').replace('-', '')}-{secrets.token_hex(4)}"
+    state["send_run_started_at"] = started_at
     state["completed_at"] = None
     state["processed_rows"] = 0
     state["ready_rows"] = 0

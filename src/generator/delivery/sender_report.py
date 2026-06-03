@@ -19,6 +19,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 from src.generator.delivery.sender_agent import (
     _build_unisender_go_url,
     _check_unisender_classic_messages,
+    _load_sender_state,
     _load_sent_mail_log_items,
     _run_unisender_request,
     _safe_text,
@@ -662,11 +663,48 @@ def _save_delivery_status_cache(job_id: str | None, statuses: dict[str, dict[str
 def _load_unisender_log_items(job_id: str | None) -> list[dict[str, Any]]:
     job_paths = resolve_job_paths(job_id)
     sent_mail_log_path = None if job_paths.uses_legacy_layout else job_paths.sent_mail_log_path
-    return [
+    items = [
         item
         for item in _load_sent_mail_log_items(sent_mail_log_path)
         if _safe_text(item.get("transport")) == "unisender"
     ]
+    send_run_id, send_run_started_at = _current_send_scope(job_id)
+    return _filter_items_by_send_scope(
+        items,
+        send_run_id=send_run_id,
+        send_run_started_at=send_run_started_at,
+    )
+
+
+def _current_send_scope(job_id: str | None) -> tuple[str, str]:
+    state = _load_sender_state(job_id)
+    send_run_id = _safe_text(state.get("send_run_id"))
+    send_run_started_at = _safe_text(state.get("send_run_started_at"))
+    if not send_run_started_at and _safe_text(state.get("mode")) == "send":
+        send_run_started_at = _safe_text(state.get("started_at"))
+    return send_run_id, send_run_started_at
+
+
+def _filter_items_by_send_scope(
+    items: list[dict[str, Any]],
+    *,
+    send_run_id: str,
+    send_run_started_at: str,
+) -> list[dict[str, Any]]:
+    expected_run_id = _safe_text(send_run_id)
+    if expected_run_id and any(_safe_text(item.get("send_run_id")) for item in items):
+        return [item for item in items if _safe_text(item.get("send_run_id")) == expected_run_id]
+
+    started_at = _safe_text(send_run_started_at)
+    if started_at:
+        scoped_items = [
+            item
+            for item in items
+            if not _safe_text(item.get("sent_at")) or _safe_text(item.get("sent_at")) >= started_at
+        ]
+        if scoped_items:
+            return scoped_items
+    return items
 
 
 def _latest_unisender_go_events(job_id: str | None) -> dict[str, dict[str, Any]]:
@@ -688,12 +726,14 @@ def _latest_unisender_go_events(job_id: str | None) -> dict[str, dict[str, Any]]
         checked_at = _safe_text(event.get("received_at"))
         recipient = _safe_text(event.get("recipient")).lower()
         row_id = _safe_text(event.get("row_id"))
+        provider_job_id = _safe_text(event.get("provider_job_id"))
         keys = [
+            f"provider_job:{provider_job_id}",
             f"row_email:{row_id}:{recipient}",
             f"email:{recipient}",
         ]
         for key in keys:
-            if not key:
+            if key.endswith(":"):
                 continue
             previous = latest.get(key)
             previous_rank = _unisender_go_status_priority(
@@ -717,6 +757,11 @@ def _unisender_go_status_priority(status: str, priority: dict[str, int]) -> int:
 
 
 def _match_unisender_go_event(item: dict[str, Any], events: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
+    provider_job_id = _safe_text(item.get("provider_job_id") or item.get("message_id") or provider.get("job_id"))
+    if provider_job_id:
+        return events.get(f"provider_job:{provider_job_id}")
+
     recipient = _safe_text(item.get("recipient")).lower()
     row_id = _safe_text(item.get("row_id"))
     keys = [

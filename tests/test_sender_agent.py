@@ -7,6 +7,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from src.generator.delivery import sender_agent
+from src.generator.delivery import sender_report
 
 
 class SenderAgentScalabilityTests(unittest.TestCase):
@@ -39,6 +40,53 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             self.assertEqual(sender_agent._unisender_parallel_workers(dry_run=False, transport="unisender"), 7)
             self.assertEqual(sender_agent._unisender_parallel_workers(dry_run=True, transport="unisender"), 1)
             self.assertEqual(sender_agent._unisender_parallel_workers(dry_run=False, transport="smtp"), 1)
+
+    def test_sent_mail_recipients_are_scoped_to_current_send_run(self) -> None:
+        item = {"send_run_id": "send-new", "sent_at": "2026-06-02T12:00:00"}
+
+        self.assertTrue(
+            sender_agent._sent_log_item_in_send_scope(
+                item,
+                send_run_id="send-new",
+                send_run_started_at="2026-06-02T12:00:00",
+            )
+        )
+        self.assertFalse(
+            sender_agent._sent_log_item_in_send_scope(
+                item,
+                send_run_id="send-old",
+                send_run_started_at="2026-06-02T12:00:00",
+            )
+        )
+
+    def test_unisender_analytics_filters_current_send_run_items(self) -> None:
+        items = [
+            {"send_run_id": "send-old", "sent_at": "2026-06-01T10:00:00", "row_id": "1"},
+            {"send_run_id": "send-new", "sent_at": "2026-06-02T10:00:00", "row_id": "2"},
+        ]
+
+        scoped = sender_report._filter_items_by_send_scope(
+            items,
+            send_run_id="send-new",
+            send_run_started_at="2026-06-02T09:00:00",
+        )
+
+        self.assertEqual([item["row_id"] for item in scoped], ["2"])
+
+    def test_unisender_go_event_prefers_provider_job_id(self) -> None:
+        events = {
+            "provider_job:new-provider-id": {"provider_status": "delivered"},
+            "row_email:1:test@example.com": {"provider_status": "hard_bounced"},
+        }
+        item = {
+            "row_id": "1",
+            "recipient": "test@example.com",
+            "provider_job_id": "new-provider-id",
+        }
+
+        matched = sender_report._match_unisender_go_event(item, events)
+
+        self.assertEqual(matched, {"provider_status": "delivered"})
 
     def test_run_unisender_request_retries_temporary_network_error(self) -> None:
         attempts = {"count": 0}

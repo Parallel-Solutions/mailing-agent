@@ -995,6 +995,8 @@ def _append_sent_mail_log(
     warning: str = "",
     provider: dict[str, Any] | None = None,
     sent_mail_log_path: Path | None = None,
+    send_run_id: str = "",
+    send_run_started_at: str = "",
 ) -> str | None:
     safe_provider = _safe_provider_payload(provider)
     record = {
@@ -1008,6 +1010,10 @@ def _append_sent_mail_log(
         "attachment_paths": [str(Path(path)) for path in attachments if _safe_text(path)],
         "warning": _safe_text(warning),
     }
+    if _safe_text(send_run_id):
+        record["send_run_id"] = _safe_text(send_run_id)
+    if _safe_text(send_run_started_at):
+        record["send_run_started_at"] = _safe_text(send_run_started_at)
     if safe_provider:
         record["provider"] = safe_provider
         if safe_provider.get("message_id"):
@@ -1031,7 +1037,12 @@ def _mail_key(value: Any) -> str:
     return _safe_text(value).lower()
 
 
-def _load_sent_mail_recipients(sent_mail_log_path: Path | None = None) -> dict[str, set[str]]:
+def _load_sent_mail_recipients(
+    sent_mail_log_path: Path | None = None,
+    *,
+    send_run_id: str = "",
+    send_run_started_at: str = "",
+) -> dict[str, set[str]]:
     log_path = sent_mail_log_path or SENT_MAIL_LOG_PATH
     sent_by_row: dict[str, set[str]] = {}
     if not log_path.exists():
@@ -1047,12 +1058,36 @@ def _load_sent_mail_recipients(sent_mail_log_path: Path | None = None) -> dict[s
             item = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not _sent_log_item_in_send_scope(
+            item,
+            send_run_id=send_run_id,
+            send_run_started_at=send_run_started_at,
+        ):
+            continue
         row_id = _safe_text(item.get("row_id"))
         recipient = _mail_key(item.get("recipient"))
         if not row_id or not recipient:
             continue
         sent_by_row.setdefault(row_id, set()).add(recipient)
     return sent_by_row
+
+
+def _sent_log_item_in_send_scope(
+    item: dict[str, Any],
+    *,
+    send_run_id: str = "",
+    send_run_started_at: str = "",
+) -> bool:
+    expected_run_id = _safe_text(send_run_id)
+    if expected_run_id:
+        item_run_id = _safe_text(item.get("send_run_id"))
+        if item_run_id:
+            return item_run_id == expected_run_id
+    started_at = _safe_text(send_run_started_at)
+    sent_at = _safe_text(item.get("sent_at"))
+    if started_at and sent_at:
+        return sent_at >= started_at
+    return True
 
 
 def _load_sent_mail_log_items(sent_mail_log_path: Path | None = None) -> list[dict[str, Any]]:
@@ -1992,6 +2027,8 @@ def _apply_send_result_to_entry(
     effective_transport: str,
     sent_mail_log_path: Path | None,
     sent_mail_recipients: dict[str, set[str]],
+    send_run_id: str,
+    send_run_started_at: str,
     workbook: Any,
     worksheet: Any,
     data_xlsx_path: Path,
@@ -2012,6 +2049,8 @@ def _apply_send_result_to_entry(
                 warning=entry["warning"],
                 provider=_provider_for_recipient(entry["attempts"], sent_recipient),
                 sent_mail_log_path=sent_mail_log_path,
+                send_run_id=send_run_id,
+                send_run_started_at=send_run_started_at,
             )
             sent_mail_recipients.setdefault(row_id_text, set()).add(_mail_key(sent_recipient))
             if log_warning:
@@ -2037,6 +2076,8 @@ def _apply_send_result_to_entry(
             warning=entry["warning"],
             provider=_provider_for_recipient(entry["attempts"], sent_recipient),
             sent_mail_log_path=sent_mail_log_path,
+            send_run_id=send_run_id,
+            send_run_started_at=send_run_started_at,
         )
         if log_warning:
             entry["warning"] = f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
@@ -2086,11 +2127,21 @@ def run_sender(
     effective_limit = _normalize_limit(limit, dry_run=dry_run)
     effective_transport = _normalize_transport(transport)
     stats = _collect_excel_stats(data_xlsx_path)
+    started_at = datetime.now().isoformat(timespec="seconds")
+    send_run_id = ""
+    send_run_started_at = ""
+    if not dry_run:
+        send_run_id = _safe_text(state.get("send_run_id"))
+        send_run_started_at = _safe_text(state.get("send_run_started_at"))
+        if not send_run_id:
+            send_run_id = f"send-{started_at.replace(':', '').replace('-', '')}-{secrets.token_hex(4)}"
+        if not send_run_started_at:
+            send_run_started_at = started_at
     state.update(
         {
             "status": "running",
             "mode": "dry_run" if dry_run else "send",
-            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "started_at": started_at,
             "completed_at": None,
             "processed_rows": 0,
             "ready_rows": 0,
@@ -2116,6 +2167,9 @@ def run_sender(
             "transport": effective_transport,
         }
     )
+    if not dry_run:
+        state["send_run_id"] = send_run_id
+        state["send_run_started_at"] = send_run_started_at
     _save_sender_state(state, job_id)
 
     if not data_xlsx_path.exists():
@@ -2146,7 +2200,15 @@ def run_sender(
     workbook_dirty = False
     started_at = perf_counter()
     subject = DEFAULT_MAIL_SUBJECT
-    sent_mail_recipients = _load_sent_mail_recipients(sent_mail_log_path) if not dry_run else {}
+    sent_mail_recipients = (
+        _load_sent_mail_recipients(
+            sent_mail_log_path,
+            send_run_id=send_run_id,
+            send_run_started_at=send_run_started_at,
+        )
+        if not dry_run
+        else {}
+    )
     parallel_workers = _unisender_parallel_workers(dry_run=dry_run, transport=effective_transport)
     parallel_send_jobs: list[dict[str, Any]] = []
 
@@ -2453,6 +2515,8 @@ def run_sender(
                             effective_transport=effective_transport,
                             sent_mail_log_path=sent_mail_log_path,
                             sent_mail_recipients=sent_mail_recipients,
+                            send_run_id=send_run_id,
+                            send_run_started_at=send_run_started_at,
                             workbook=workbook,
                             worksheet=worksheet,
                             data_xlsx_path=data_xlsx_path,
@@ -2557,6 +2621,8 @@ def run_sender(
                                 effective_transport=effective_transport,
                                 sent_mail_log_path=sent_mail_log_path,
                                 sent_mail_recipients=sent_mail_recipients,
+                                send_run_id=send_run_id,
+                                send_run_started_at=send_run_started_at,
                                 workbook=workbook,
                                 worksheet=worksheet,
                                 data_xlsx_path=data_xlsx_path,
