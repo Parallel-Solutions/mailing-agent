@@ -21,6 +21,7 @@ from src.generator.delivery.sender_agent import (
     _check_unisender_classic_messages,
     _load_sender_state,
     _load_sent_mail_log_items,
+    _parse_emails,
     _run_unisender_request,
     _safe_text,
     _unisender_status_label,
@@ -690,14 +691,46 @@ def _filter_items_by_current_data(job_id: str | None, items: list[dict[str, Any]
     except Exception:
         return items
 
-    current_row_ids = {_safe_text(row.get("ID")) for row in rows if _safe_text(row.get("ID"))}
+    current_row_ids: set[str] = set()
+    current_row_email_pairs: set[tuple[str, str]] = set()
+    for row in rows:
+        row_id = _safe_text(row.get("ID"))
+        if not row_id:
+            continue
+        current_row_ids.add(row_id)
+        for email in _parse_emails(row.get("EMAIL_OSN")) + _parse_emails(row.get("EMAIL_DOP")):
+            if _safe_text(email):
+                current_row_email_pairs.add((row_id, _safe_text(email).lower()))
     if not current_row_ids:
         return items
     return [
         item
         for item in items
-        if not _safe_text(item.get("row_id")) or _safe_text(item.get("row_id")) in current_row_ids
+        if _sent_log_item_matches_current_data(
+            item,
+            current_row_ids=current_row_ids,
+            current_row_email_pairs=current_row_email_pairs,
+        )
     ]
+
+
+def _sent_log_item_matches_current_data(
+    item: dict[str, Any],
+    *,
+    current_row_ids: set[str],
+    current_row_email_pairs: set[tuple[str, str]],
+) -> bool:
+    row_id = _safe_text(item.get("row_id"))
+    if not row_id:
+        return True
+    if row_id not in current_row_ids:
+        return False
+    if not current_row_email_pairs:
+        return True
+    recipient = _safe_text(item.get("recipient")).lower()
+    if not recipient:
+        return True
+    return (row_id, recipient) in current_row_email_pairs
 
 
 def _dedupe_latest_log_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

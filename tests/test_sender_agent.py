@@ -79,6 +79,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         items = [
             {"row_id": "1", "recipient": "one@example.com"},
             {"row_id": "2", "recipient": "two@example.com"},
+            {"row_id": "2", "recipient": "old-two@example.com"},
             {"row_id": "101", "recipient": "old@example.com"},
         ]
 
@@ -89,11 +90,19 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         ), patch.object(
             sender_report,
             "load_rows",
-            return_value=(None, None, [{"ID": "1"}, {"ID": "2"}]),
+            return_value=(
+                None,
+                None,
+                [
+                    {"ID": "1", "EMAIL_OSN": "one@example.com"},
+                    {"ID": "2", "EMAIL_OSN": "two@example.com"},
+                ],
+            ),
         ):
             scoped = sender_report._filter_items_by_current_data("job-current", items)
 
         self.assertEqual([item["row_id"] for item in scoped], ["1", "2"])
+        self.assertEqual([item["recipient"] for item in scoped], ["one@example.com", "two@example.com"])
 
     def test_unisender_analytics_deduplicates_latest_row_recipient_item(self) -> None:
         items = [
