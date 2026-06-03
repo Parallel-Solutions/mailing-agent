@@ -180,10 +180,10 @@ def build_unisender_delivery_analytics(
     cards = [
         {
             "id": "accepted",
-            "title": "Отправлено в UniSender",
+            "title": "Получателей в UniSender",
             "value": accepted,
             "percent": 100.0 if total else 0.0,
-            "hint": "Письма, которые наш сервис успешно передал провайдеру.",
+            "hint": "Email-получатели, которых наш сервис успешно передал провайдеру.",
             "tone": "good" if accepted and not errors else "neutral",
         },
         {

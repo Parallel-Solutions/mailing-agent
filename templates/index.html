@@ -701,6 +701,55 @@
     line-height: 1.45;
   }
 
+  .delivery-dashboard-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    min-width: 190px;
+  }
+
+  .delivery-refresh-status {
+    min-height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+    color: #68765d;
+    font-size: 12px;
+    text-align: right;
+  }
+
+  .delivery-refresh-status[hidden] {
+    display: none;
+  }
+
+  .delivery-refresh-dot {
+    width: 14px;
+    height: 14px;
+    border: 2px solid #cbd9be;
+    border-top-color: #5d8f39;
+    border-radius: 50%;
+    animation: delivery-spin 0.8s linear infinite;
+    flex: 0 0 auto;
+  }
+
+  .delivery-refresh-status.done .delivery-refresh-dot,
+  .delivery-refresh-status.error .delivery-refresh-dot {
+    animation: none;
+    border-width: 0;
+    border-radius: 50%;
+    background: #5d8f39;
+  }
+
+  .delivery-refresh-status.error .delivery-refresh-dot {
+    background: #b02020;
+  }
+
+  @keyframes delivery-spin {
+    to { transform: rotate(360deg); }
+  }
+
   .delivery-metrics-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1521,6 +1570,16 @@
     .delivery-dashboard-head {
       flex-direction: column;
     }
+
+    .delivery-dashboard-actions {
+      width: 100%;
+      align-items: stretch;
+    }
+
+    .delivery-refresh-status {
+      justify-content: flex-start;
+      text-align: left;
+    }
     .job-history-row {
       grid-template-columns: 1fr;
     }
@@ -1995,7 +2054,13 @@
               Здесь появятся доставка, открытия, переходы и ошибки по текущей отправке.
             </div>
           </div>
-          <button class="btn-outline" type="button" onclick="refreshDeliveryAnalytics({ refresh: true })">Обновить аналитику</button>
+          <div class="delivery-dashboard-actions">
+            <button class="btn-outline" id="delivery-refresh-button" type="button" onclick="refreshDeliveryAnalytics({ refresh: true })">Обновить аналитику</button>
+            <div class="delivery-refresh-status" id="delivery-refresh-status" hidden>
+              <span class="delivery-refresh-dot" aria-hidden="true"></span>
+              <span id="delivery-refresh-status-text">Обновляем аналитику...</span>
+            </div>
+          </div>
         </div>
         <div class="delivery-metrics-grid" id="delivery-metrics-grid"></div>
         <div class="delivery-dashboard-note" id="delivery-dashboard-note">
@@ -2099,6 +2164,7 @@
   let lastDocumentsUiState = {};
   let lastSenderUiState = {};
   let deliveryAnalyticsFollowupTimer = null;
+  let deliveryAnalyticsLoading = false;
   let isRestoringUiState = false;
   let moduleReadinessServerLoaded = false;
 
@@ -2995,6 +3061,39 @@
     if (reportButton) reportButton.disabled = !currentJobId || numbers.sent <= 0;
   }
 
+  function setDeliveryRefreshState(state = 'idle', message = '') {
+    const button = document.getElementById('delivery-refresh-button');
+    const status = document.getElementById('delivery-refresh-status');
+    const statusText = document.getElementById('delivery-refresh-status-text');
+    const isLoading = state === 'loading';
+    deliveryAnalyticsLoading = isLoading;
+
+    if (button) {
+      button.disabled = isLoading || !currentJobId;
+      button.textContent = isLoading ? 'Обновляем...' : 'Обновить аналитику';
+      button.setAttribute('aria-busy', isLoading ? 'true' : 'false');
+    }
+    if (!status || !statusText) return;
+
+    if (state === 'idle') {
+      status.hidden = true;
+      status.classList.remove('done', 'error');
+      statusText.textContent = '';
+      return;
+    }
+
+    status.hidden = false;
+    status.classList.toggle('done', state === 'done');
+    status.classList.toggle('error', state === 'error');
+    statusText.textContent = message || (
+      isLoading
+        ? 'Запрашиваем события UniSender...'
+        : state === 'error'
+          ? 'Не удалось обновить аналитику'
+          : 'Аналитика обновлена'
+    );
+  }
+
   function renderDeliveryAnalytics(analytics = {}) {
     const dashboard = document.getElementById('delivery-dashboard');
     const grid = document.getElementById('delivery-metrics-grid');
@@ -3018,8 +3117,8 @@
       const awaitingProviderEvents = !!analytics.awaiting_provider_events;
       const providerEventsCount = Number(analytics.provider_events_count || 0);
       sub.textContent = awaitingProviderEvents
-        ? `Письма уже переданы в UniSender: ${total.toLocaleString('ru')}. Ждём события доставки от провайдера. Обновлено: ${generatedAt}.`
-        : `Сводка по текущей отправке: ${total.toLocaleString('ru')} писем. Событий провайдера: ${providerEventsCount.toLocaleString('ru')}. Обновлено: ${generatedAt}.`;
+        ? `В UniSender передано ${total.toLocaleString('ru')} email-получателей. Ждём события доставки от провайдера. Обновлено: ${generatedAt}.`
+        : `Сводка по текущей отправке: ${total.toLocaleString('ru')} email-получателей. Событий провайдера: ${providerEventsCount.toLocaleString('ru')}. Обновлено: ${generatedAt}.`;
     }
     grid.innerHTML = cards.map(card => {
       const value = Number(card.value || 0).toLocaleString('ru');
@@ -3047,7 +3146,14 @@
   async function refreshDeliveryAnalytics({ refresh = false, silent = false } = {}) {
     if (!currentJobId) {
       renderDeliveryAnalytics({});
+      setDeliveryRefreshState('idle');
       return null;
+    }
+    if (deliveryAnalyticsLoading && !silent) return null;
+    if (refresh) {
+      setDeliveryRefreshState('loading', 'Запрашиваем события UniSender...');
+    } else if (!silent) {
+      setDeliveryRefreshState('loading', 'Обновляем показатели...');
     }
     try {
       const url = apiUrl(`/api/sender/analytics?refresh=${refresh ? '1' : '0'}&refresh_wait=${refresh ? '1' : '0'}`);
@@ -3057,6 +3163,17 @@
       const result = data.result || {};
       renderDeliveryAnalytics(result);
       scheduleDeliveryAnalyticsFollowup(result);
+      if (result.refresh_started || result.refresh_in_progress) {
+        setDeliveryRefreshState('loading', 'UniSender ещё готовит события. Проверим повторно...');
+      } else if (!silent || refresh) {
+        const total = Number(result.total || 0).toLocaleString('ru');
+        setDeliveryRefreshState('done', `Готово: ${total} email-получателей`);
+        setTimeout(() => {
+          if (!deliveryAnalyticsLoading) setDeliveryRefreshState('idle');
+        }, 3500);
+      } else {
+        setDeliveryRefreshState('idle');
+      }
       if (!silent) {
         if (result.refresh_started || result.refresh_in_progress) {
           showToast('Обновление аналитики запущено в фоне');
@@ -3066,6 +3183,7 @@
       }
       return result;
     } catch (err) {
+      setDeliveryRefreshState('error', 'Не удалось обновить аналитику');
       if (!silent) showToast('Не удалось обновить аналитику');
       return null;
     }
