@@ -122,6 +122,31 @@
     padding-top: 0.5rem;
   }
 
+  .sidebar-reset-wrap {
+    padding: 0.35rem 0.75rem 0.6rem;
+  }
+
+  .sidebar-reset-button {
+    width: 100%;
+    border: 1px solid #dfe6d7;
+    border-radius: 8px;
+    background: #fff;
+    color: #5f6b56;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 8px 10px;
+    text-align: left;
+    transition: all 0.15s;
+  }
+
+  .sidebar-reset-button:hover {
+    border-color: #cbdabc;
+    background: #f7faf4;
+    color: #2d5a0e;
+  }
+
   /* CONTENT */
   .content {
     padding: 1.75rem 2rem 2rem;
@@ -1809,6 +1834,9 @@
     </div>
 
     <div class="sidebar-bottom">
+      <div class="sidebar-reset-wrap">
+        <button class="sidebar-reset-button" type="button" onclick="resetAllMailingState()">Очистить поля</button>
+      </div>
       <div class="nav-item" data-nav-screen="status" onclick="show('status', this)">
         <div class="nav-dot dot-amber"></div> Статистика отправок
       </div>
