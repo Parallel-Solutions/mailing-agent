@@ -26,6 +26,7 @@ from src.generator.delivery.sender_agent import (
     _unisender_status_label,
 )
 from src.generator.delivery.unisender_go_events import load_unisender_go_events
+from src.generator.generation.excel_io import load_rows
 from src.jobs import resolve_job_paths
 from src.utils.config import settings
 
@@ -668,12 +669,59 @@ def _load_unisender_log_items(job_id: str | None) -> list[dict[str, Any]]:
         for item in _load_sent_mail_log_items(sent_mail_log_path)
         if _safe_text(item.get("transport")) == "unisender"
     ]
+    items = _filter_items_by_current_data(job_id, items)
     send_run_id, send_run_started_at = _current_send_scope(job_id)
-    return _filter_items_by_send_scope(
+    items = _filter_items_by_send_scope(
         items,
         send_run_id=send_run_id,
         send_run_started_at=send_run_started_at,
     )
+    return _dedupe_latest_log_items(items)
+
+
+def _filter_items_by_current_data(job_id: str | None, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not job_id or not items:
+        return items
+    data_path = resolve_job_paths(job_id).data_xlsx
+    if not data_path.exists():
+        return items
+    try:
+        _, _, rows = load_rows(data_path)
+    except Exception:
+        return items
+
+    current_row_ids = {_safe_text(row.get("ID")) for row in rows if _safe_text(row.get("ID"))}
+    if not current_row_ids:
+        return items
+    return [
+        item
+        for item in items
+        if not _safe_text(item.get("row_id")) or _safe_text(item.get("row_id")) in current_row_ids
+    ]
+
+
+def _dedupe_latest_log_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    passthrough: list[dict[str, Any]] = []
+    for item in items:
+        key = _sent_log_dedupe_key(item)
+        if not key:
+            passthrough.append(item)
+            continue
+        latest[key] = item
+    return passthrough + list(latest.values())
+
+
+def _sent_log_dedupe_key(item: dict[str, Any]) -> str:
+    row_id = _safe_text(item.get("row_id"))
+    recipient = _safe_text(item.get("recipient")).lower()
+    if row_id and recipient:
+        return f"row_email:{row_id}:{recipient}"
+    provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
+    provider_job_id = _safe_text(item.get("provider_job_id") or item.get("message_id") or provider.get("job_id"))
+    if provider_job_id:
+        return f"provider_job:{provider_job_id}"
+    return ""
 
 
 def _current_send_scope(job_id: str | None) -> tuple[str, str]:

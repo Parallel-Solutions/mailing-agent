@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
@@ -72,6 +74,36 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         )
 
         self.assertEqual([item["row_id"] for item in scoped], ["2"])
+
+    def test_unisender_analytics_filters_items_outside_current_data(self) -> None:
+        items = [
+            {"row_id": "1", "recipient": "one@example.com"},
+            {"row_id": "2", "recipient": "two@example.com"},
+            {"row_id": "101", "recipient": "old@example.com"},
+        ]
+
+        with patch.object(
+            sender_report,
+            "resolve_job_paths",
+            return_value=SimpleNamespace(data_xlsx=Path(__file__)),
+        ), patch.object(
+            sender_report,
+            "load_rows",
+            return_value=(None, None, [{"ID": "1"}, {"ID": "2"}]),
+        ):
+            scoped = sender_report._filter_items_by_current_data("job-current", items)
+
+        self.assertEqual([item["row_id"] for item in scoped], ["1", "2"])
+
+    def test_unisender_analytics_deduplicates_latest_row_recipient_item(self) -> None:
+        items = [
+            {"row_id": "1", "recipient": "one@example.com", "provider_job_id": "old"},
+            {"row_id": "1", "recipient": "one@example.com", "provider_job_id": "new"},
+        ]
+
+        deduped = sender_report._dedupe_latest_log_items(items)
+
+        self.assertEqual(deduped, [items[1]])
 
     def test_unisender_go_event_prefers_provider_job_id(self) -> None:
         events = {
