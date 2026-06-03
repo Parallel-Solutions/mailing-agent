@@ -6135,7 +6135,7 @@ function clearAttachedFile() {
       const clientsDone = Number(serverProcess.clients_done ?? vm.processedRows ?? 0);
       const isEarlyGeneration = status === 'running' && stage === 'generate' && clientsDone > 0 && documentsDone <= 0;
       filesEl.textContent = isEarlyGeneration
-        ? 'готовятся'
+        ? 'появятся позже'
         : `${documentsDone.toLocaleString('ru')}/${documentsTotal.toLocaleString('ru')}`;
     }
     if (reviewEl) {
