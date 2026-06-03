@@ -271,7 +271,7 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
         elif expected_documents > 0 and shown_documents > 0:
             label_text = f"Создано документов: {shown_documents} из {expected_documents}."
         elif total_rows > 0:
-            label_text = f"Обрабатываем клиентов: {processed_rows} из {total_rows}. Документы появятся чуть позже."
+            label_text = f"Готовим данные клиентов: {processed_rows} из {total_rows}. Документы появятся после обработки первых строк."
         generator_hint = (
             f"Проверяем текст: {reviewed_documents} из {total_documents} документов."
             if stage == "review"

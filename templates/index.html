@@ -6348,6 +6348,20 @@ function clearAttachedFile() {
     const canRun = vm.status !== 'running';
     const hasRequiredInputs = !!moduleReadiness.generator_ready;
     const runReason = serverModule.generator_hint || moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.';
+    const normalizeDocumentsLabelText = (labelText = '') => {
+      const rawLabel = String(labelText || '').trim();
+      const isEarlyGeneration = vm.status === 'running'
+        && vm.stage === 'generate'
+        && vm.processedRows > 0
+        && vm.shownDocuments <= 0;
+      if (isEarlyGeneration || /^Создано документов:\s*0\s+из\s+\d+/i.test(rawLabel)) {
+        if (vm.totalRows > 0) {
+          return `Готовим данные клиентов: ${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')}. Документы появятся после обработки первых строк.`;
+        }
+        return 'Готовим данные клиентов. Документы появятся после обработки первых строк.';
+      }
+      return rawLabel;
+    };
     if (serverModule.badge_text || serverModule.label_text || serverModule.run_text) {
       let runDisabled = !canRun;
       let runTitle = '';
@@ -6384,7 +6398,7 @@ function clearAttachedFile() {
           ? (vm.totalRows || Math.floor(vm.totalDocuments / 2))
           : vm.processedRows,
         doneLabel: 'Обработано',
-        labelText: serverModule.label_text || '',
+        labelText: normalizeDocumentsLabelText(serverModule.label_text),
         generatorHint: resolvedGeneratorHint,
         philologistHint: resolvedPhilologistHint,
         actionsHint: serverModule.actions_hint || '',
@@ -6410,7 +6424,7 @@ function clearAttachedFile() {
         return `Создано документов: ${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')}.`;
       }
       if (vm.totalRows > 0) {
-        return `Обрабатываем клиентов: ${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')}. Документы появятся чуть позже.`;
+        return `Готовим данные клиентов: ${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')}. Документы появятся после обработки первых строк.`;
       }
       return humanizeDocumentsMessage(result.stage_text, 'Готовлю документы. Скоро покажу прогресс.');
     })();
