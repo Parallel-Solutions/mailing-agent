@@ -25,12 +25,11 @@
     display: grid;
     grid-template-columns: 260px minmax(0, 1fr);
     min-height: calc(100vh - 3rem);
-    max-height: calc(100vh - 3rem);
     width: 100%;
     max-width: 1420px;
     border: 1px solid #d8ddd0;
     border-radius: 18px;
-    overflow: hidden;
+    overflow: visible;
     background: #fff;
     box-shadow: 0 18px 50px rgba(45, 66, 25, 0.11);
   }
@@ -126,8 +125,9 @@
   /* CONTENT */
   .content {
     padding: 1.75rem 2rem 2rem;
-    overflow-y: auto;
-    height: calc(100vh - 3rem);
+    overflow: visible;
+    height: auto;
+    min-height: calc(100vh - 3rem);
     display: flex;
     flex-direction: column;
   }
@@ -343,6 +343,11 @@
     border-color: #ecd6d6;
     color: #d0aaaa;
     background: #fdf7f7;
+  }
+
+  .busy-locked {
+    opacity: 0.55;
+    cursor: not-allowed !important;
   }
 
   /* MODULE CARDS */
@@ -609,8 +614,119 @@
     line-height: 1.45;
   }
 
+  .document-process-detail:empty {
+    display: none;
+  }
+
+  .document-current-item {
+    margin-top: 6px;
+    color: #25331b;
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1.35;
+  }
+
+  .document-current-item:empty {
+    display: none;
+  }
+
   .document-process-next {
     color: #43791d;
+  }
+
+  .document-progress-summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-end;
+    margin-top: 10px;
+  }
+
+  .document-progress-caption {
+    color: #849078;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.35px;
+    text-transform: uppercase;
+  }
+
+  .document-progress-label {
+    margin-top: 3px;
+    color: #334028;
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1.35;
+  }
+
+  .document-progress-percent {
+    color: #5f7354;
+    font-size: 15px;
+    font-weight: 650;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .document-progress-bar {
+    margin-top: 8px;
+  }
+
+  .document-step-track {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .document-step {
+    min-height: 42px;
+    border: 1px solid #dfe8d5;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.72);
+    color: #738067;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.2;
+    padding: 8px;
+  }
+
+  .document-step.is-active {
+    border-color: #8fc961;
+    background: #f2faea;
+    color: #244f0d;
+    box-shadow: inset 0 0 0 1px rgba(83, 151, 38, 0.16);
+  }
+
+  .document-step.is-done {
+    border-color: #b8dca0;
+    background: #f7fbf2;
+    color: #376a14;
+  }
+
+  .document-step.is-error {
+    border-color: #efc2c2;
+    background: #fff8f8;
+    color: #9a1f1f;
+  }
+
+  .document-technical-details {
+    margin-top: 10px;
+  }
+
+  .document-technical-details summary {
+    width: fit-content;
+    cursor: pointer;
+    color: #5d6f51;
+    font-size: 12px;
+    font-weight: 650;
+    list-style-position: inside;
+  }
+
+  .document-technical-details[open] summary {
+    margin-bottom: 2px;
   }
 
   .document-process-list {
@@ -640,7 +756,11 @@
   }
 
   .generator-stats {
-    display: none;
+    display: none !important;
+  }
+
+  .sender-stats {
+    display: none !important;
   }
 
   /* STATS */
@@ -1257,11 +1377,74 @@
   }
 
   #g-chat-messages {
-    height: 320px;
+    height: 260px;
+    min-height: 220px;
   }
 
   #s-chat-messages {
     height: 320px;
+  }
+
+  .generator-chat-section {
+    margin-top: 12px;
+  }
+
+  @media (max-height: 820px), (max-width: 1120px) {
+    #s-generator {
+      padding-bottom: 24px;
+    }
+
+    #s-generator .page-sub-row {
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    #s-generator .document-process-panel {
+      padding: 12px 14px;
+      margin-bottom: 10px;
+    }
+
+    #s-generator .document-step {
+      min-height: 34px;
+      padding: 6px 8px;
+      font-size: 11px;
+    }
+
+    #s-generator .document-process-next,
+    #s-generator .document-technical-details {
+      margin-top: 7px;
+    }
+
+    .generator-chat-section {
+      position: static;
+      width: auto;
+      max-height: none;
+      margin-top: 12px;
+      background: #fff;
+      box-shadow: none;
+    }
+
+    .generator-chat-section .chat-header {
+      padding: 8px 12px;
+    }
+
+    .generator-chat-section .chat-header::after {
+      content: none;
+    }
+
+    .generator-chat-section .chat-input-row {
+      padding: 8px;
+    }
+
+    #g-chat-messages {
+      height: clamp(220px, 30vh, 300px);
+      min-height: 220px;
+      padding: 10px 12px;
+    }
+
+    #s-generator .document-primary-card {
+      margin-top: 12px;
+    }
   }
 
   @keyframes spin {
@@ -1580,6 +1763,10 @@
       justify-content: flex-start;
       text-align: left;
     }
+
+    .document-step-track {
+      grid-template-columns: 1fr;
+    }
     .job-history-row {
       grid-template-columns: 1fr;
     }
@@ -1644,7 +1831,7 @@
       <button class="workflow-step" type="button" data-workflow-screen="generator" onclick="goToScreen('generator')">
         <span class="workflow-step-kicker">Шаг 2</span>
         <span class="workflow-step-title">Документы</span>
-        <span class="workflow-step-sub">КП, договор, PDF</span>
+        <span class="workflow-step-sub">КП, договор, архив</span>
       </button>
       <button class="workflow-step" type="button" data-workflow-screen="sender" onclick="goToScreen('sender')">
         <span class="workflow-step-kicker">Шаг 3</span>
@@ -1700,21 +1887,21 @@
         <div class="field">
           <label>Шаблон текста письма (.txt/.docx)</label>
           <input type="file" id="upload-mail-input" accept=".txt,.docx" style="display:none" onchange="uploadTemplate(this, 'mail-btn', 'Шаблон письма', 'mail')">
-          <button class="file-btn" id="mail-btn" data-default-label="Выбрать файл" onclick="document.getElementById('upload-mail-input').click()">
+          <button class="file-btn" id="mail-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-mail-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
         <div class="field">
           <label>Шаблон КП (.docx)</label>
           <input type="file" id="upload-kp-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'kp-btn', 'Шаблон КП', 'kp')">
-          <button class="file-btn" id="kp-btn" data-default-label="Выбрать файл" onclick="document.getElementById('upload-kp-input').click()">
+          <button class="file-btn" id="kp-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-kp-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
         <div class="field">
           <label>Шаблон договора (.docx)</label>
           <input type="file" id="upload-contract-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'contract-btn', 'Шаблон Договор', 'contract')">
-          <button class="file-btn" id="contract-btn" data-default-label="Выбрать файл" onclick="document.getElementById('upload-contract-input').click()">
+          <button class="file-btn" id="contract-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-contract-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
@@ -1733,8 +1920,8 @@
       </div>
 
       <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn-primary" onclick="saveSettingsAndValidate()">Сохранить настройки</button>
-        <button class="btn-outline" type="button" onclick="resetAllMailingState()">Очистить все поля</button>
+        <button class="btn-primary" id="settings-save-button" data-process-lock="true" onclick="saveSettingsAndValidate()">Сохранить настройки</button>
+        <button class="btn-outline" id="settings-reset-button" data-process-lock="true" type="button" onclick="resetAllMailingState()">Очистить все поля</button>
       </div>
 
       <div class="step-nav">
@@ -1751,14 +1938,14 @@
           <div class="parser-choice-kicker">Вариант 1</div>
           <div class="parser-choice-title">У меня уже есть таблица</div>
           <div class="parser-choice-text">Загрузите Excel-файл. Система проверит официальные названия МО и подготовит таблицу для документов.</div>
-          <button class="btn-primary" type="button" onclick="document.getElementById('p-attach-input').click()">Загрузить Excel</button>
+          <button class="btn-primary" id="p-upload-button" data-process-lock="true" type="button" onclick="document.getElementById('p-attach-input').click()">Загрузить Excel</button>
           <div class="parser-choice-hint">После проверки появится сообщение: можно переходить к подготовке документов.</div>
         </div>
         <div class="parser-choice-card">
           <div class="parser-choice-kicker">Вариант 2</div>
           <div class="parser-choice-title">Нужно найти данные с нуля</div>
           <div class="parser-choice-text">Напишите запрос в чат ниже: какие МО, организации или регион нужны. Парсер соберёт данные и покажет результат в журнале.</div>
-          <button class="btn-outline" type="button" onclick="openParserSearchModal()">Заполнить параметры поиска</button>
+          <button class="btn-outline" id="p-search-button" data-process-lock="true" type="button" onclick="openParserSearchModal()">Заполнить параметры поиска</button>
           <div class="parser-choice-hint">Пример: “найди сельские поселения Забайкальского края”.</div>
         </div>
       </div>
@@ -1783,13 +1970,13 @@
           <div class="dot-green"></div> Журнал проверки таблицы
         </div>
         <div class="chat-messages" id="p-chat-messages">
-          <div class="chat-msg agent">Выберите удобный способ: прикрепите готовый Excel-файл или напишите в чат, какие данные нужно найти. Здесь появятся сообщения о загрузке, поиске и проверке таблицы.</div>
+          <div class="chat-msg agent">Загрузите готовый Excel-файл или напишите в чат, какие данные нужно найти. Здесь появятся сообщения о загрузке, поиске и проверке таблицы.</div>
         </div>
 
         <!-- Чип с прикреплённым файлом (показывается только если файл прикреплён) -->
         <div id="p-attached-file" style="display:none;margin:8px 0;padding:8px 14px;background:#f0f7ea;border:1px solid #b7d9a0;border-radius:8px;font-size:13px;color:#2d6a0e">
           <span id="p-attached-name"></span>
-          <button onclick="clearAttachedFile()" style="margin-left:12px;background:none;border:none;color:#888;cursor:pointer;font-size:12px">✕ Убрать</button>
+          <button id="p-clear-attached-button" data-process-lock="true" onclick="clearAttachedFile()" style="margin-left:12px;background:none;border:none;color:#888;cursor:pointer;font-size:12px">✕ Убрать</button>
         </div>
 
         <div class="chat-input-row">
@@ -1804,8 +1991,8 @@
 
       <!-- Кнопка скачать результат (показывается после batch обработки) -->
       <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn-primary" id="p-download-result" type="button" onclick="downloadWithJob('/api/parser/download-result')" disabled>Скачать результат</button>
-        <button class="btn-outline" id="p-download-failed" type="button" onclick="downloadWithJob('/api/parser/download-failed')" disabled>Скачать непроверенные строки</button>
+        <button class="btn-primary" id="p-download-result" data-process-lock="true" type="button" onclick="downloadWithJob('/api/parser/download-result')" disabled>Скачать результат</button>
+        <button class="btn-outline" id="p-download-failed" data-process-lock="true" type="button" onclick="downloadWithJob('/api/parser/download-failed')" disabled>Скачать непроверенные строки</button>
       </div>
 
       <div class="step-nav">
@@ -1817,7 +2004,7 @@
     <div class="screen" id="s-generator">
       <div class="page-title">Подготовка документов</div>
       <div class="page-sub-row">
-        <div class="page-sub">На этом шаге нужно просто запустить подготовку и дождаться завершения. Сервис сам создаст документы, проверит текст и подготовит результат.</div>
+        <div class="page-sub">Запустите подготовку один раз. Сервис сам создаст документы, проверит текст и подготовит результат.</div>
         <div class="help-popover-wrap">
           <button
             class="help-popover-trigger"
@@ -1842,24 +2029,42 @@
       </div>
 
       <div class="document-process-panel document-process-panel-top" aria-label="Что сейчас происходит с документами">
-        <div class="document-process-title" id="g-process-title">Состояние</div>
-        <div class="document-process-main" id="g-process-main">Для каждого клиента система подготовит комплект документов.</div>
-        <div class="document-process-detail" id="g-process-detail">Сначала создадим файлы, затем проверим текст и подготовим итог к скачиванию.</div>
-        <div class="document-process-next" id="g-process-next">Когда всё будет готово, можно будет перейти к проверке отправки.</div>
-        <div class="document-process-list">
-          <div class="document-process-row">
-            <span>Клиенты готовы:</span>
-            <strong id="g-process-clients">0/0</strong>
+        <div class="document-process-title" id="g-process-title">Готово к запуску</div>
+        <div class="document-process-main" id="g-process-main">Сервис подготовит документы по вашей таблице.</div>
+        <div class="document-process-detail" id="g-process-detail">После запуска ничего дополнительно делать не нужно.</div>
+        <div class="document-current-item" id="g-current-item"></div>
+        <div class="document-progress-summary" aria-live="polite">
+          <div>
+            <div class="document-progress-label" id="g-label">Подготовка документов ещё не запускалась.</div>
           </div>
-          <div class="document-process-row">
-            <span>Файлы DOCX:</span>
-            <strong id="g-process-files">0/0</strong>
-          </div>
-          <div class="document-process-row">
-            <span>Проверка текста:</span>
-            <strong id="g-process-review">0/0</strong>
-          </div>
+          <div class="document-progress-percent" id="g-progress-percent">0%</div>
         </div>
+        <div class="progress-bar document-progress-bar">
+          <div class="progress-fill" id="g-fill" style="width:0%"></div>
+        </div>
+        <div class="document-step-track" aria-label="Этапы подготовки документов">
+          <div class="document-step" id="g-step-generate">Готовим документы</div>
+          <div class="document-step" id="g-step-review">Проверяем текст</div>
+          <div class="document-step" id="g-step-ready">Собираем результат</div>
+        </div>
+        <div class="document-process-next" id="g-process-next">Когда всё будет готово, можно будет скачать архив или перейти к отправке.</div>
+        <details class="document-technical-details">
+          <summary>Подробности</summary>
+          <div class="document-process-list">
+            <div class="document-process-row">
+              <span>Клиенты:</span>
+              <strong id="g-process-clients">0/0</strong>
+            </div>
+            <div class="document-process-row">
+              <span>Документы:</span>
+              <strong id="g-process-files">0/0</strong>
+            </div>
+            <div class="document-process-row" id="g-process-review-row">
+              <span>Проверено:</span>
+              <strong id="g-process-review">0/0</strong>
+            </div>
+          </div>
+        </details>
       </div>
 
       <div class="stats-row generator-stats" style="grid-template-columns: repeat(3, minmax(0, 1fr))">
@@ -1869,7 +2074,7 @@
         </div>
         <div class="stat">
           <div class="stat-n" id="g-done" style="color:#2d6e0a">0</div>
-          <div class="stat-l" id="g-done-label">Клиентов подготовлено</div>
+          <div class="stat-l" id="g-done-label">Обработано</div>
         </div>
         <div class="stat">
           <div class="stat-n" id="g-err" style="color:#a02020">0</div>
@@ -1877,30 +2082,38 @@
         </div>
       </div>
 
-
-      <div class="module-card">
+      <div class="module-card document-primary-card">
         <div class="module-header">
-          <span class="module-num">Главная кнопка</span>
+          <span class="module-num">Основное действие</span>
           <span class="badge badge-idle" id="g-badge">Готов к запуску</span>
         </div>
-        <div class="module-title">Подготовить документы</div>
+        <div class="module-title">Подготовка документов</div>
         <div class="module-desc">
           Нажмите кнопку ниже. Дальше сервис всё сделает сам.
         </div>
-        <div class="progress-wrap">
-          <div class="progress-bar"><div class="progress-fill" id="g-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="g-label">Подготовка документов ещё не запускалась.</div>
-          <div class="progress-label" id="g-inflection-summary" style="margin-top:6px">Подробности по текстовым правкам появятся после подготовки документов.</div>
-        </div>
+        <div class="progress-label" id="g-inflection-summary" style="display:none"></div>
         <div class="module-actions" style="margin-top:12px">
           <div class="module-actions-primary">
-            <button class="btn-primary" id="g-run" onclick="startDocumentsPipeline()">Подготовить документы</button>
+            <button class="btn-primary" id="g-run" data-process-lock="true" onclick="startDocumentsPipeline()">Подготовить документы</button>
             <button class="btn-outline" id="g-pause" onclick="pauseDocumentsPipeline()" disabled>Остановить</button>
-            <button class="btn-outline" id="g-download-output" onclick="downloadWithJob('/api/download/output')" disabled>Скачать архив документов</button>
-            <button class="btn-outline" id="ph-download-report" onclick="downloadWithJob('/api/download/correction-report')" disabled>Скачать отчёт по исправлениям</button>
+            <button class="btn-outline" id="g-download-output" data-process-lock="true" onclick="downloadWithJob('/api/download/output')" disabled>Скачать документы</button>
+            <button class="btn-outline" id="ph-download-report" data-process-lock="true" onclick="downloadWithJob('/api/download/correction-report')" disabled>Скачать отчёт</button>
           </div>
         </div>
         <div class="module-actions-hint" id="g-actions-hint">Сначала загрузите таблицу и шаблоны. Потом нажмите кнопку выше и дождитесь завершения.</div>
+      </div>
+
+      <div class="chat-section process-log generator-chat-section" id="g-chat-panel">
+        <div class="chat-header">
+          <div class="dot-green"></div> Что сейчас происходит
+        </div>
+        <div class="chat-messages" id="g-chat-messages">
+          <div class="chat-msg agent">Здесь появятся важные сообщения о подготовке. Можно спросить про статус, ошибки или готовые документы.</div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="g-chat-input" placeholder="Можно спросить про статус, ошибки или документы..." onkeydown="if(event.key==='Enter') sendChat('g-chat')">
+          <button onclick="sendChat('g-chat')">Отправить</button>
+        </div>
       </div>
 
       <div class="module-card" style="border-color:#c8e0a0; background:#fafdf6; display:none">
@@ -1908,7 +2121,7 @@
           <span class="module-num">Дополнительный запуск</span>
           <span class="badge badge-idle" id="ph-badge">Готов к проверке</span>
         </div>
-        <div class="module-title">Проверка текстов</div>
+        <div class="module-title">Проверка текста</div>
         <div class="module-desc">
           Проверяет готовые документы на ошибки в тексте, вносит безопасные исправления и показывает, что требует ручной проверки.
         </div>
@@ -1917,25 +2130,12 @@
           <div class="progress-label" id="ph-label">0 из 0 документов проверено, осталось 0</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
-          <button class="btn-primary" id="ph-run" onclick="startPhilologist()">Проверить тексты</button>
+          <button class="btn-primary" id="ph-run" data-process-lock="true" onclick="startPhilologist()">Проверить тексты</button>
           <button class="btn-outline" id="ph-pause" onclick="pausePhilologist()" disabled>Остановить</button>
         </div>
         <div class="module-actions-hint" id="ph-actions-hint">Обычно этот шаг вручную запускать не нужно: проверка текста входит в общую подготовку документов.</div>
       </div>
 
-
-      <div class="chat-section process-log">
-        <div class="chat-header">
-          <div class="dot-green"></div> Журнал подготовки документов
-        </div>
-        <div class="chat-messages" id="g-chat-messages">
-          <div class="chat-msg agent">Здесь будут появляться сообщения о подготовке документов. Можно спросить, что сейчас происходит, что уже готово, были ли ошибки и что делать дальше.</div>
-        </div>
-        <div class="chat-input-row">
-          <input type="text" id="g-chat-input" placeholder="Можно спросить про статус, ошибки или документы..." onkeydown="if(event.key==='Enter') sendChat('g-chat')">
-          <button onclick="sendChat('g-chat')">Отправить</button>
-        </div>
-      </div>
 
       <div class="step-nav">
         <button class="btn-outline" type="button" onclick="goToScreen('parser')">Назад к таблице</button>
@@ -1949,15 +2149,53 @@
       <div class="page-title">Проверить и отправить письма?</div>
       <div class="page-sub">Сначала система проверит адреса и вложения. Реальная отправка начнётся только после вашего подтверждения.</div>
 
-      <div class="friendly-lead">
-        <div>
-          <div class="friendly-lead-title">Отправка проходит в два шага</div>
-          <div class="friendly-lead-text">Сначала проверьте адреса и готовность вложений. После проверки появится отдельная кнопка подтверждения, и только тогда письма уйдут получателям.</div>
+      <div class="document-process-panel document-process-panel-top" aria-label="Что сейчас происходит с отправкой">
+        <div class="document-process-title" id="s-process-title">Готово к проверке</div>
+        <div class="document-process-main" id="s-process-main">Сервис проверит письма перед отправкой.</div>
+        <div class="document-process-detail" id="s-process-detail">Реальная отправка начнётся только после вашего подтверждения.</div>
+        <div class="document-progress-summary" aria-live="polite">
+          <div>
+            <div class="document-progress-label" id="s-label">Проверка перед отправкой ещё не запускалась.</div>
+          </div>
+          <div class="document-progress-percent" id="s-progress-percent">0%</div>
         </div>
-        <div class="friendly-lead-badge">Безопасно</div>
+        <div class="progress-bar document-progress-bar">
+          <div class="progress-fill" id="s-fill" style="width:0%"></div>
+        </div>
+        <div class="document-step-track" aria-label="Этапы отправки">
+          <div class="document-step" id="s-step-check">Проверяем письма</div>
+          <div class="document-step" id="s-step-confirm">Ждём подтверждение</div>
+          <div class="document-step" id="s-step-send">Отправляем</div>
+        </div>
+        <div class="document-process-next" id="s-process-next">После проверки появится кнопка отправки.</div>
+        <details class="document-technical-details">
+          <summary>Подробности</summary>
+          <div class="document-process-list">
+            <div class="document-process-row">
+              <span>Проверено:</span>
+              <strong id="s-process-checked">0/0</strong>
+            </div>
+            <div class="document-process-row">
+              <span>Готово к отправке:</span>
+              <strong id="s-process-ready">0</strong>
+            </div>
+            <div class="document-process-row">
+              <span>Отправлено:</span>
+              <strong id="s-process-sent">0</strong>
+            </div>
+            <div class="document-process-row">
+              <span>Ошибок:</span>
+              <strong id="s-process-errors">0</strong>
+            </div>
+            <div class="document-process-row">
+              <span>Осталось:</span>
+              <strong id="s-process-left">0</strong>
+            </div>
+          </div>
+        </details>
       </div>
 
-        <div class="stats-row" style="grid-template-columns: repeat(3, 1fr)">
+        <div class="stats-row sender-stats" style="grid-template-columns: repeat(3, 1fr)">
           <div class="stat">
             <div class="stat-n" id="s-sent" style="color:#2d6e0a">0</div>
             <div class="stat-l">Отправлено</div>
@@ -1971,26 +2209,23 @@
             <div class="stat-l">Ошибок</div>
           </div>
         </div>
-      <div class="module-card">
+      <div class="module-card document-primary-card">
         <div class="module-header">
           <span class="module-num">Основное действие</span>
           <span class="badge badge-idle" id="s-badge">Готов к проверке</span>
         </div>
-        <div class="module-title">Проверить письма перед отправкой</div>
+        <div class="module-title">Проверка и отправка писем</div>
         <div class="module-desc">
           Проверим, кому уйдёт письмо, есть ли готовые вложения и нет ли ошибок. Если всё хорошо, появится кнопка отправки.
         </div>
-        <div class="progress-wrap">
-          <div class="progress-bar"><div class="progress-fill" id="s-fill" style="width:0%"></div></div>
-          <div class="progress-label" id="s-label">Проверка перед отправкой ещё не запускалась.</div>
-        </div>
           <div class="module-actions" style="margin-top:12px">
             <div class="module-actions-primary">
-              <button type="button" class="btn-primary" id="s-run">Проверить перед отправкой</button>
-              <button type="button" class="btn-outline" id="s-download-xlsx" onclick="downloadWithJob('/api/download/data-xlsx')">Скачать таблицу с результатами</button>
-              <button type="button" class="btn-outline" id="s-delivery-report" onclick="downloadWithJob('/api/download/sender-delivery-report')">Скачать отчёт отправки</button>
+              <button type="button" class="btn-primary" id="s-run" data-process-lock="true">Проверить перед отправкой</button>
+              <button type="button" class="btn-outline" id="s-download-xlsx" data-process-lock="true" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать таблицу с результатами</button>
+              <button type="button" class="btn-outline" id="s-delivery-report" data-process-lock="true" onclick="downloadWithJob('/api/download/sender-delivery-report')" disabled>Скачать отчёт отправки</button>
             </div>
           </div>
+          <div class="module-actions-hint" id="s-actions-hint">Сначала запустите проверку. Реальная отправка начнётся только после подтверждения.</div>
         </div>
 
       <div class="chat-section process-log">
@@ -2055,7 +2290,7 @@
             </div>
           </div>
           <div class="delivery-dashboard-actions">
-            <button class="btn-outline" id="delivery-refresh-button" type="button" onclick="refreshDeliveryAnalytics({ refresh: true })">Обновить аналитику</button>
+            <button class="btn-outline" id="delivery-refresh-button" data-process-lock="true" type="button" onclick="refreshDeliveryAnalytics({ refresh: true })">Обновить аналитику</button>
             <div class="delivery-refresh-status" id="delivery-refresh-status" hidden>
               <span class="delivery-refresh-dot" aria-hidden="true"></span>
               <span id="delivery-refresh-status-text">Обновляем аналитику...</span>
@@ -2069,9 +2304,9 @@
       </div>
 
       <div style="display:flex; gap:8px; flex-wrap:wrap">
-        <button class="btn-outline" id="status-download-data" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать таблицу текущей отправки</button>
-        <button class="btn-outline" id="status-download-report" onclick="downloadWithJob('/api/download/sender-delivery-report')" disabled>Скачать отчёт текущей отправки</button>
-        <button class="btn-outline" onclick="refreshCurrentJobStatusScreen()">Обновить статусы</button>
+        <button class="btn-outline" id="status-download-data" data-process-lock="true" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать таблицу текущей отправки</button>
+        <button class="btn-outline" id="status-download-report" data-process-lock="true" onclick="downloadWithJob('/api/download/sender-delivery-report')" disabled>Скачать отчёт текущей отправки</button>
+        <button class="btn-outline" id="status-refresh-button" data-process-lock="true" onclick="refreshCurrentJobStatusScreen()">Обновить статусы</button>
       </div>
 
       <div class="jobs-history-card">
@@ -2080,7 +2315,7 @@
             <div class="jobs-history-title">Все отправки на сервере</div>
             <div class="jobs-history-sub">Можно открыть любую рабочую сессию и посмотреть её таблицу, документы, отправку и статистику.</div>
           </div>
-          <button class="btn-outline" type="button" onclick="refreshJobsHistory()">Обновить список</button>
+          <button class="btn-outline" id="jobs-refresh-button" data-process-lock="true" type="button" onclick="refreshJobsHistory()">Обновить список</button>
         </div>
         <div class="jobs-history-list" id="jobs-history-list">
           <div class="jobs-history-empty">Список отправок ещё не загружен.</div>
@@ -2108,7 +2343,7 @@
         <label for="parser-search-volume">Объём</label>
         <div class="modal-inline-row">
           <input id="parser-search-volume" type="text" placeholder="Например: 3000 записей, все районы, первые 500">
-          <button class="btn-outline" type="button" onclick="setParserSearchAll()">Искать всё</button>
+          <button class="btn-outline" id="parser-search-all-button" data-process-lock="true" type="button" onclick="setParserSearchAll()">Искать всё</button>
         </div>
       </div>
       <div class="modal-field">
@@ -2118,7 +2353,7 @@
     </div>
     <div class="modal-actions">
       <button class="btn-outline" type="button" onclick="closeParserSearchModal()">Отмена</button>
-      <button class="btn-primary" type="button" onclick="submitParserSearchModal()">Сформировать и отправить</button>
+      <button class="btn-primary" id="parser-search-submit-button" data-process-lock="true" type="button" onclick="submitParserSearchModal()">Сформировать и отправить</button>
     </div>
   </div>
 </div>
@@ -2131,7 +2366,7 @@
   const ACTIVE_SCREEN_STORAGE_KEY = 'mailing-agent-active-screen';
   const UI_STATE_STORAGE_KEY_PREFIX = 'mailing-agent-ui-state-v1:';
   const INITIAL_CHAT_MESSAGES = {
-    'p-chat': 'Выберите удобный способ: прикрепите готовый Excel-файл или напишите в чат, какие данные нужно найти. Здесь появятся сообщения о загрузке, поиске и проверке таблицы.',
+    'p-chat': 'Загрузите готовый Excel-файл или напишите в чат, какие данные нужно найти. Здесь появятся сообщения о загрузке, поиске и проверке таблицы.',
     'g-chat': 'Здесь будут появляться сообщения о подготовке документов. Можно спросить, что сейчас происходит, что уже готово, были ли ошибки и что делать дальше.',
     's-chat': 'Здесь будет видно, какие письма готовы к отправке, что уже отправлено и где нужна проверка.',
   };
@@ -2182,11 +2417,34 @@
     return safeJobId ? `${UI_STATE_STORAGE_KEY_PREFIX}${safeJobId}` : '';
   }
 
+  function isNoisyDocumentsChatMessage(text) {
+    const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return false;
+    return [
+      /создаю документы по шаблонам\. уже готово \d+ из \d+ клиентов\.?/i,
+      /проверяю текст в документах:\s*\d+ из \d+\.?/i,
+      /готовлю документы к скачиванию:\s*\d+ из \d+\.?/i,
+      /проверено документов:\s*\d+ из \d+\.?/i,
+    ].some(pattern => pattern.test(normalized));
+  }
+
+  function removeNoisyDocumentsChatMessages(messages) {
+    if (!messages) return;
+    messages.querySelectorAll('.chat-msg.agent:not(.typing)').forEach(node => {
+      if (isNoisyDocumentsChatMessage(node.textContent || '')) {
+        node.remove();
+      }
+    });
+  }
+
   function serializeChatHtml(chatId) {
     const messages = document.getElementById(`${chatId}-messages`);
     if (!messages) return '';
     const clone = messages.cloneNode(true);
     clone.querySelectorAll('[data-typing="true"]').forEach(node => node.remove());
+    if (chatId === 'g-chat') {
+      removeNoisyDocumentsChatMessages(clone);
+    }
     return clone.innerHTML;
   }
 
@@ -2376,6 +2634,9 @@
       if (!messages || typeof html !== 'string') return;
       messages.innerHTML = html;
       messages.querySelectorAll('[data-typing="true"]').forEach(node => node.remove());
+      if (chatId === 'g-chat') {
+        removeNoisyDocumentsChatMessages(messages);
+      }
       messages.scrollTop = messages.scrollHeight;
     });
   }
@@ -2409,6 +2670,138 @@
 
   function resetFlowNotificationState() {
     flowNotificationState = createFlowNotificationState();
+  }
+
+  function resetModuleRuntimeState() {
+    senderPreviewState = null;
+    parserRunning = false;
+    phRunning = false;
+    senderRunning = false;
+    currentParserStatus = 'idle';
+    currentGeneratorStatus = 'idle';
+    currentPhilologistStatus = 'idle';
+    currentSenderStatus = 'idle';
+    lastParserUiState = {
+      status: 'idle',
+      row_count: 0,
+      task_stats: {},
+      municipality_name_verification: {},
+      municipality_name_verification_state: { status: 'idle' },
+    };
+    lastGeneratorUiState = {
+      status: 'idle',
+      total_rows: 0,
+      processed_rows: 0,
+      ok_rows: 0,
+      error_rows: 0,
+    };
+    lastPhilologistUiState = {
+      status: 'idle',
+      total_documents: 0,
+      processed_documents: 0,
+      fixed_documents: 0,
+      documents_with_issues: 0,
+    };
+    lastDocumentsUiState = { status: 'idle' };
+    lastSenderUiState = {
+      status: 'idle',
+      total_rows: 0,
+      processed_rows: 0,
+      ready_rows: 0,
+      error_rows: 0,
+      sent_rows: 0,
+      stats: { total: 0, sent: 0, error: 0, pending: 0 },
+    };
+    moduleReadinessServerLoaded = false;
+    moduleReadiness = {
+      generator_ready: false,
+      philologist_ready: false,
+      sender_ready: false,
+      generator_reason: '',
+      philologist_reason: '',
+      sender_reason: '',
+      counts: { parser_total: 0, generator_total: 0, sender_total: 0 },
+    };
+  }
+
+  function getActiveProcessState() {
+    const parserVerificationStatus = parserVerificationStatusFromResult(lastParserUiState || {});
+    const parserStatus = String(currentParserStatus || lastParserUiState.status || 'idle');
+    const documentsStatus = String((lastDocumentsUiState || {}).status || '');
+    const generatorStatus = String(currentGeneratorStatus || lastGeneratorUiState.status || 'idle');
+    const philologistStatus = String(currentPhilologistStatus || lastPhilologistUiState.status || 'idle');
+    const senderStatus = String(currentSenderStatus || lastSenderUiState.status || 'idle');
+
+    if (parserRunning || parserVerificationStatus === 'running' || parserStatus === 'running') {
+      return {
+        active: true,
+        key: 'parser',
+        message: 'Сейчас проверяем таблицу. Дождитесь завершения проверки.',
+      };
+    }
+    if (documentsStatus === 'running' || documentsStatus === 'waiting_review' || generatorStatus === 'running') {
+      return {
+        active: true,
+        key: 'documents',
+        message: 'Сейчас готовим документы. Дождитесь завершения подготовки или остановите процесс.',
+      };
+    }
+    if (phRunning || ['running', 'finalizing'].includes(philologistStatus)) {
+      return {
+        active: true,
+        key: 'philologist',
+        message: 'Сейчас проверяем текст документов. Дождитесь завершения проверки.',
+      };
+    }
+    if (senderRunning || senderStatus === 'running') {
+      return {
+        active: true,
+        key: 'sender',
+        message: 'Сейчас идёт проверка или отправка писем. Дождитесь завершения или остановите процесс.',
+      };
+    }
+    if (deliveryAnalyticsLoading) {
+      return {
+        active: true,
+        key: 'analytics',
+        message: 'Сейчас обновляем аналитику. Дождитесь завершения обновления.',
+      };
+    }
+    return { active: false, key: '', message: '' };
+  }
+
+  function shouldBypassProcessLock(button) {
+    if (!button) return true;
+    if (
+      button.id === 's-run'
+      && (
+        button.dataset.action === 'stop'
+        || senderRunning
+        || currentSenderStatus === 'running'
+        || String((lastSenderUiState || {}).status || '') === 'running'
+      )
+    ) return true;
+    return false;
+  }
+
+  function applyGlobalProcessLock() {
+    const process = getActiveProcessState();
+    document.querySelectorAll('[data-process-lock="true"]').forEach(button => {
+      const locked = !!process.active && !shouldBypassProcessLock(button);
+      button.classList.toggle('busy-locked', locked);
+      button.setAttribute('aria-disabled', locked ? 'true' : 'false');
+      if (locked) {
+        if (!button.dataset.processLockTitleSaved) {
+          button.dataset.processLockTitleSaved = '1';
+          button.dataset.processLockTitle = button.title || '';
+        }
+        button.title = process.message;
+      } else if (button.dataset.processLockTitleSaved) {
+        button.title = button.dataset.processLockTitle || '';
+        delete button.dataset.processLockTitleSaved;
+        delete button.dataset.processLockTitle;
+      }
+    });
   }
 
   function announceProcessStep(chatId, toastText, chatText = '') {
@@ -2511,14 +2904,14 @@
       if (stage === 'convert_pdf') {
         announceProcessStep(
           'g-chat',
-          'Сохраняю в PDF',
-          'Документы созданы. Сейчас сохраняю их в PDF.'
+          'Собираю результат',
+          'Документы созданы. Подготавливаю результат.'
         );
       } else if (stage === 'finalize_output') {
         announceProcessStep(
           'g-chat',
-          'Файлы почти готовы',
-          'PDF готовы. Подготавливаю файлы к скачиванию.'
+          'Собираю результат',
+          'Подготавливаю результат.'
         );
       }
       state.lastStage = stage;
@@ -2711,15 +3104,7 @@
     const nextJobId = String(jobId || '').trim();
     if (nextJobId !== currentJobId) {
       resetFlowNotificationState();
-      moduleReadinessServerLoaded = false;
-      moduleReadiness = {
-        generator_ready: false,
-        philologist_ready: false,
-        sender_ready: false,
-        generator_reason: '',
-        philologist_reason: '',
-        sender_reason: '',
-      };
+      resetModuleRuntimeState();
     }
     currentJobId = nextJobId;
     if (currentJobId) {
@@ -2886,6 +3271,7 @@
     const parserStatus = String(currentParserStatus || lastParserUiState.status || 'idle');
     const generatorStatus = String(currentGeneratorStatus || lastGeneratorUiState.status || 'idle');
     const philologistStatus = String(currentPhilologistStatus || lastPhilologistUiState.status || 'idle');
+    const documentsStatus = String((lastDocumentsUiState || {}).status || 'idle');
     const senderStatus = String(currentSenderStatus || lastSenderUiState.status || 'idle');
     const senderStats = lastSenderUiState.stats || {};
     const senderErrors = Math.max(Number(lastSenderUiState.error_rows || 0), Number(senderStats.error || 0));
@@ -2904,11 +3290,13 @@
       setSidebarStepState('parser', 'idle', 'Загрузите Excel-таблицу клиентов.');
     }
 
-    if (generatorStatus === 'error' || philologistStatus === 'error') {
+    if (documentsStatus === 'error' || generatorStatus === 'error' || philologistStatus === 'error') {
       setSidebarStepState('generator', 'error', 'При подготовке документов возникла ошибка.');
-    } else if (generatorStatus === 'running' || ['running', 'finalizing'].includes(philologistStatus)) {
+    } else if (documentsStatus === 'stopped' || generatorStatus === 'stopped' || philologistStatus === 'stopped') {
+      setSidebarStepState('generator', 'progress', 'Подготовка документов остановлена. Можно продолжить с сохранённого места.');
+    } else if (documentsStatus === 'running' || documentsStatus === 'waiting_review' || generatorStatus === 'running' || ['running', 'finalizing'].includes(philologistStatus)) {
       setSidebarStepState('generator', 'progress', 'Документы сейчас готовятся или проверяются.');
-    } else if (generatorStatus === 'completed' && philologistStatus === 'completed') {
+    } else if (documentsStatus === 'completed' || (generatorStatus === 'completed' && philologistStatus === 'completed')) {
       setSidebarStepState('generator', 'ok', 'Документы готовы. Можно переходить к отправке.');
     } else if (generatorStatus === 'completed') {
       setSidebarStepState('generator', 'progress', 'Документы созданы, осталось завершить проверку текстов.');
@@ -2938,6 +3326,7 @@
       setSidebarStepState('status', 'idle', 'Результаты появятся после отправки писем.');
     }
     updateFlowNavigationButtons();
+    applyGlobalProcessLock();
   }
 
   function isParserReadyForDocuments() {
@@ -3067,6 +3456,7 @@
     const statusText = document.getElementById('delivery-refresh-status-text');
     const isLoading = state === 'loading';
     deliveryAnalyticsLoading = isLoading;
+    applyGlobalProcessLock();
 
     if (button) {
       button.disabled = isLoading || !currentJobId;
@@ -3259,7 +3649,7 @@
           <div class="job-history-metric"><strong>${totalRows}</strong>строк</div>
           <div class="job-history-metric"><strong>${sentRows}</strong>отправлено</div>
           <div class="job-history-metric"><strong>${errorRows}</strong>ошибок</div>
-          <button class="btn-outline" type="button" onclick="openJobFromHistory('${jobId}')">${isCurrent ? 'Обновить' : 'Открыть'}</button>
+          <button class="btn-outline" type="button" data-process-lock="true" onclick="openJobFromHistory('${jobId}')">${isCurrent ? 'Обновить' : 'Открыть'}</button>
         </div>
       `;
     }).join('');
@@ -3348,6 +3738,9 @@
       if (content && typeof content.scrollTo === 'function') {
         content.scrollTo({ top: 0, behavior: 'smooth' });
       }
+      if (typeof window.scrollTo === 'function') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
     }
     if (id === 'status') {
       renderJobSenderStatusScreen(lastSenderUiState || {});
@@ -3413,6 +3806,17 @@
     clearTimeout(t.dataset.hideTimer);
     t.dataset.hideTimer = setTimeout(() => t.classList.remove('show'), 6000);
   }
+
+  document.addEventListener('click', event => {
+    const button = event.target.closest('[data-process-lock="true"]');
+    if (!button) return;
+    const process = getActiveProcessState();
+    if (!process.active || shouldBypassProcessLock(button)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    applyGlobalProcessLock();
+    showToast(process.message);
+  }, true);
 
   function closeAllHelpPopovers() {
     document.querySelectorAll('.help-popover.open').forEach(popover => {
@@ -3527,18 +3931,7 @@
   }
 
   function resetModuleUiForNewDataUpload() {
-    senderPreviewState = null;
-    parserRunning = false;
-    phRunning = false;
-    senderRunning = false;
-    moduleReadiness = {
-      generator_ready: false,
-      philologist_ready: false,
-      sender_ready: false,
-      generator_reason: '',
-      philologist_reason: '',
-      sender_reason: '',
-    };
+    resetModuleRuntimeState();
     setParserUiState({ force: true, status: 'idle', row_count: 0, task_stats: {} });
     setParserDownloadButtonsState({ hasResult: false, hasFailed: false });
     setGeneratorUiState({ force: true, status: 'idle', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
@@ -3616,19 +4009,35 @@
     const confirmed = window.confirm('Очистить все поля и начать заново?');
     if (!confirmed) return;
     const previousJobIdForCleanup = currentJobId;
+    let freshJobId = '';
 
     stopGeneratorPolling();
     stopDocumentsPolling();
     stopPhilologistPolling();
     stopGlobalStatusPolling();
+    parserVerificationFollowToken += 1;
+    if (deliveryAnalyticsFollowupTimer) {
+      clearTimeout(deliveryAnalyticsFollowupTimer);
+      deliveryAnalyticsFollowupTimer = null;
+    }
+    deliveryAnalyticsLoading = false;
 
-    senderRunning = false;
-    parserRunning = false;
-    phRunning = false;
-    senderPreviewState = null;
-    chatSessions['o-chat'] = '';
+    try {
+      const res = await fetchWithTimeout('/api/jobs', { method: 'POST' }, 15000);
+      const data = await readJsonOrText(res);
+      if (res.ok && data.job_id) {
+        freshJobId = String(data.job_id || '').trim();
+      }
+    } catch (e) {}
+
+    resetModuleRuntimeState();
+    Object.keys(chatSessions).forEach(key => { chatSessions[key] = ''; });
     clearSavedUiState(previousJobIdForCleanup);
-    setCurrentJobId('');
+    if (freshJobId) clearSavedUiState(freshJobId);
+    const wasRestoringUiState = isRestoringUiState;
+    isRestoringUiState = true;
+    setCurrentJobId(freshJobId);
+    isRestoringUiState = wasRestoringUiState;
     resetFlowNotificationState();
 
     resetSettingsFormFields();
@@ -3648,21 +4057,7 @@
     lastAgentEventIds.sender = '';
     showToast('Все поля и состояния модулей очищены');
     goToScreen('settings');
-
-    try {
-      const res = await fetchWithTimeout('/api/jobs', { method: 'POST' }, 15000);
-      const data = await readJsonOrText(res);
-      if (res.ok && data.job_id) {
-        setCurrentJobId(data.job_id);
-      }
-    } catch (e) {}
-
-    if (currentJobId) {
-      await refreshModuleReadiness();
-      await refreshParserStatus({ silent: true });
-      await refreshDocumentsStatus({ silent: true });
-      await refreshSenderStatus({ silent: true });
-    }
+    if (currentJobId) startGlobalStatusPolling();
   }
 
   async function uploadData(input) {
@@ -3778,6 +4173,9 @@
     if (!messages) return;
     const normalizedText = String(text || '').replace(/\s+/g, ' ').trim();
     if (!normalizedText) return;
+    if (chatId === 'g-chat' && role === 'agent' && isNoisyDocumentsChatMessage(normalizedText)) {
+      return;
+    }
     if (role === 'agent') {
       const existingAgentMessages = Array.from(messages.querySelectorAll('.chat-msg.agent:not(.typing)'));
       const alreadyShown = existingAgentMessages.some(message => (
@@ -3971,8 +4369,8 @@
     const payload = (chatId === 'p-chat' || chatId === 'g-chat' || chatId === 's-chat')
       ? withJobPayload({ message: text })
       : { message: text };
-    if (chatId === 'o-chat' && chatSessions['o-chat']) {
-      payload.session_id = chatSessions['o-chat'];
+    if (chatSessions[chatId]) {
+      payload.session_id = chatSessions[chatId];
     }
 
     fetchWithTimeout(endpoint, {
@@ -3985,14 +4383,14 @@
         if (!res.ok) throw new Error(data.detail || 'Ошибка чата');
         closeProgress();
         removeTypingIndicator(chatId);
-        if (chatId === 'o-chat' && data.session_id) {
-          chatSessions['o-chat'] = data.session_id;
+        if (data.session_id) {
+          chatSessions[chatId] = data.session_id;
         }
         appendChatMessage(chatId, 'agent', data.reply || 'Ответ недоступен.');
-        if (chatId === 'o-chat' && Array.isArray(data.downloads) && data.downloads.length) {
+        if (Array.isArray(data.downloads) && data.downloads.length) {
           appendDownloadMessage(chatId, data.downloads);
         }
-        if (chatId === 'o-chat') {
+        if (chatId === 'o-chat' || chatId === 'g-chat') {
           refreshOrchestratorStatus({ silent: true });
           refreshParserStatus({ silent: true });
           refreshSenderStatus({ silent: true });
@@ -4144,10 +4542,20 @@ function clearAttachedFile() {
     const verificationState = result.municipality_name_verification_state || {};
     const verificationResult = result.municipality_name_verification || {};
     const hasCompletedVerificationResult = verificationResult.status === 'ok' && Number(verificationResult.total_rows || 0) > 0;
-    if (hasCompletedVerificationResult && String(verificationState.status || 'idle') !== 'running') {
+    if (hasCompletedVerificationResult) {
       return 'completed';
     }
+    if (verificationResult.status === 'error') {
+      return 'error';
+    }
     return String(verificationState.status || 'idle');
+  }
+
+  function isParserTableVerified(state = lastParserUiState) {
+    const verificationStatus = parserVerificationStatusFromResult(state || {});
+    const verificationResult = (state || {}).municipality_name_verification || {};
+    const rowCount = Number((state || {}).row_count || verificationResult.total_rows || 0);
+    return verificationStatus === 'completed' && rowCount > 0;
   }
 
   async function followParserVerificationAfterUpload() {
@@ -4166,11 +4574,11 @@ function clearAttachedFile() {
     const failedButton = document.getElementById('p-download-failed');
     if (resultButton) {
       resultButton.disabled = !hasResult;
-      resultButton.title = hasResult ? '' : 'Сначала загрузите или соберите таблицу.';
+      resultButton.title = hasResult ? '' : 'Дождитесь завершения проверки таблицы.';
     }
     if (failedButton) {
       failedButton.disabled = !hasFailed;
-      failedButton.title = hasFailed ? '' : 'Непроверенных строк пока нет.';
+      failedButton.title = hasFailed ? '' : (hasResult ? 'Непроверенных строк пока нет.' : 'Дождитесь завершения проверки таблицы.');
     }
   }
 
@@ -4184,13 +4592,13 @@ function clearAttachedFile() {
       nextState.municipality_name_verification_state = { ...previousVerificationState };
     }
     const normalizedVerificationState = nextState.municipality_name_verification_state || {};
-    if (verificationResult.status === 'ok' && String(normalizedVerificationState.status || '') !== 'running') {
+    if (verificationResult.status === 'ok' && Number(verificationResult.total_rows || 0) > 0) {
       nextState.municipality_name_verification_state = {
         ...normalizedVerificationState,
         status: 'completed',
         summary_text: normalizedVerificationState.summary_text || 'Проверка таблицы завершена.',
       };
-    } else if (verificationResult.status === 'error' && String(normalizedVerificationState.status || '') !== 'running') {
+    } else if (verificationResult.status === 'error') {
       nextState.municipality_name_verification_state = {
         ...normalizedVerificationState,
         status: 'error',
@@ -4216,9 +4624,9 @@ function clearAttachedFile() {
     currentParserStatus = status;
     const verificationState = nextState.municipality_name_verification_state || {};
     const verificationStatus = verificationState.status || 'idle';
-    const hasResultFile = total > 0 || Number(verificationResult.total_rows || 0) > 0 || ['completed', 'error'].includes(verificationStatus);
+    const tableVerified = isParserTableVerified(nextState);
     const hasFailedRows = Number(verificationResult.missing_rows || 0) > 0 || Number(verificationResult.error_rows || 0) > 0;
-    setParserDownloadButtonsState({ hasResult: hasResultFile, hasFailed: hasFailedRows });
+    setParserDownloadButtonsState({ hasResult: tableVerified, hasFailed: tableVerified && hasFailedRows });
     parserRunning = status === 'running' || verificationStatus === 'running';
     updateSidebarStatusIndicators();
 
@@ -4476,7 +4884,7 @@ function clearAttachedFile() {
       if (pauseButton) {
         pauseButton.disabled = true;
         pauseButton.textContent = 'Остановить';
-        pauseButton.title = 'Документы уже проверены, сейчас сохраняется итоговый отчет.';
+        pauseButton.title = 'Документы уже проверены, сейчас готовится итоговый отчет.';
       }
       return;
     }
@@ -4828,7 +5236,7 @@ function clearAttachedFile() {
     flowNotificationState.generator.terminalAnnounced = false;
     appendChatMessage('g-chat', 'agent', isResume
       ? 'Продолжаю генерацию с сохраненного места.'
-      : 'Начинаю подготовку документов. Сначала проверю шаблоны, затем создам файлы и сохраню их в PDF.');
+      : 'Начинаю подготовку документов. Сначала проверю шаблоны, затем создам файлы и подготовлю результат.');
     generatorCompletionAnnounced = false;
     stopGeneratorPolling();
     generatorStatusPoll = startPollingLoop(() => refreshGeneratorStatus({ silent: true }), 1000);
@@ -5050,9 +5458,10 @@ function clearAttachedFile() {
     if (senderTotalEl) senderTotalEl.textContent = senderTotal.toLocaleString('ru');
 
     const failedButton = document.getElementById('p-download-failed');
+    const tableVerified = isParserTableVerified();
     setParserDownloadButtonsState({
-      hasResult: parserTotal > 0,
-      hasFailed: !!(failedButton && !failedButton.disabled),
+      hasResult: tableVerified,
+      hasFailed: tableVerified && !!(failedButton && !failedButton.disabled),
     });
   }
 
@@ -5369,6 +5778,7 @@ function clearAttachedFile() {
       const eventId = String(item && item.id || '').trim();
       const text = String(item && item.text || '').trim();
       if (!eventId || !text) continue;
+      if (chatId === 'g-chat' && isNoisyDocumentsChatMessage(text)) continue;
       if (eventId === lastAgentEventIds[agentKey]) {
         unseen.length = 0;
       } else {
@@ -5389,13 +5799,18 @@ function clearAttachedFile() {
   function setProgressVisual(fillEl, { percent = 0, running = false, indeterminate = false } = {}) {
     if (!fillEl) return;
     fillEl.classList.remove('running', 'indeterminate');
+    const percentEl = fillEl.id === 'g-fill'
+      ? document.getElementById('g-progress-percent')
+      : (fillEl.id === 's-fill' ? document.getElementById('s-progress-percent') : null);
     if (indeterminate) {
       fillEl.style.width = '35%';
       fillEl.classList.add('running', 'indeterminate');
+      if (percentEl) percentEl.textContent = '...';
       return;
     }
     const safePercent = Math.max(0, Math.min(Number(percent) || 0, 100));
     fillEl.style.width = `${safePercent}%`;
+    if (percentEl) percentEl.textContent = `${Math.round(safePercent)}%`;
     if (running) fillEl.classList.add('running');
   }
 
@@ -5555,26 +5970,16 @@ function clearAttachedFile() {
     })();
 
     let doneValue = 0;
-    let doneLabel = 'Клиентов подготовлено';
+    let doneLabel = 'Обработано';
     if (status === 'running') {
-      if (stage === 'convert_pdf' || stage === 'finalize_output') {
-        doneValue = pdfProcessed;
-        doneLabel = 'PDF готово';
-      } else {
-        doneValue = processed;
-        doneLabel = 'Документы готовы';
-      }
+      doneValue = processed;
+      doneLabel = 'Обработано';
     } else if (status === 'completed') {
       doneValue = total;
-      doneLabel = 'Клиентов подготовлено';
+      doneLabel = 'Обработано';
     } else if (status === 'error') {
-      if (stage === 'convert_pdf' || stage === 'finalize_output') {
-        doneValue = pdfProcessed;
-        doneLabel = 'PDF готово';
-      } else {
-        doneValue = processed;
-        doneLabel = 'Документы готовы';
-      }
+      doneValue = processed;
+      doneLabel = 'Обработано';
     }
 
     if (totalStat && total > 0) totalStat.textContent = total.toLocaleString('ru');
@@ -5592,9 +5997,9 @@ function clearAttachedFile() {
       if (stage === 'review_templates') {
         label.textContent = humanizeDocumentsMessage(nextState.summary_text, stageText || 'Проверяю шаблоны перед созданием документов.');
       } else if (stage === 'convert_pdf' && pdfTotal > 0) {
-        label.textContent = `Сохраняю документы в PDF: ${pdfProcessed.toLocaleString('ru')} из ${pdfTotal.toLocaleString('ru')}.`;
+        label.textContent = 'Собираю результат.';
       } else if (stage === 'finalize_output') {
-        label.textContent = `Подготавливаю готовые файлы к скачиванию. Файлов готово: ${outputFileCount.toLocaleString('ru')}.`;
+        label.textContent = 'Собираю результат.';
       } else {
         if (total > 0) {
           const baseText = formatProgressText({
@@ -5705,10 +6110,12 @@ function clearAttachedFile() {
     const titleEl = document.getElementById('g-process-title');
     const mainEl = document.getElementById('g-process-main');
     const detailEl = document.getElementById('g-process-detail');
+    const currentItemEl = document.getElementById('g-current-item');
     const nextEl = document.getElementById('g-process-next');
     const clientsEl = document.getElementById('g-process-clients');
     const filesEl = document.getElementById('g-process-files');
     const reviewEl = document.getElementById('g-process-review');
+    updateDocumentsStepTrack(status, stage);
     const setText = ({ title, main, detail, next }) => {
       if (titleEl) titleEl.textContent = title;
       if (mainEl) mainEl.textContent = main;
@@ -5723,7 +6130,16 @@ function clearAttachedFile() {
         : '0/0';
     }
     if (filesEl) filesEl.textContent = `${Number(serverProcess.documents_done ?? vm.shownDocuments ?? 0).toLocaleString('ru')}/${Number(serverProcess.documents_total ?? vm.expectedDocuments ?? 0).toLocaleString('ru')}`;
-    if (reviewEl) reviewEl.textContent = `${Number(serverProcess.review_done ?? vm.reviewedDocuments ?? 0).toLocaleString('ru')}/${Number(serverProcess.review_total ?? vm.totalDocuments ?? 0).toLocaleString('ru')}`;
+    if (reviewEl) {
+      const reviewDone = Number(serverProcess.review_done ?? vm.reviewedDocuments ?? 0);
+      const reviewTotal = Number(serverProcess.review_total ?? vm.totalDocuments ?? 0);
+      reviewEl.textContent = `${reviewDone.toLocaleString('ru')}/${reviewTotal.toLocaleString('ru')}`;
+      const reviewRow = document.getElementById('g-process-review-row');
+      if (reviewRow) reviewRow.hidden = reviewTotal <= 0;
+    }
+    if (currentItemEl) {
+      currentItemEl.textContent = '';
+    }
     if (serverProcess.title || serverProcess.main || serverProcess.detail || serverProcess.next) {
       setText({
         title: serverProcess.title || 'Состояние',
@@ -5736,14 +6152,13 @@ function clearAttachedFile() {
     const clientsText = vm.totalRows > 0
       ? `${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')} клиентов`
       : 'клиентов пока не найдено';
-    const documentsText = `${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')} файлов DOCX`;
-    const pdfText = `${vm.shownPdfDone.toLocaleString('ru')} из ${vm.shownPdfTotal.toLocaleString('ru')} PDF`;
+    const documentsText = `${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')} документов`;
 
     if (status === 'running' && stage === 'review') {
       setText({
         title: 'Идёт подготовка',
-        main: 'Сейчас сервис проверяет текст в документах.',
-        detail: `Проверено ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')} документов. Ничего нажимать не нужно.`,
+        main: 'Проверяем текст.',
+        detail: '',
         next: 'После завершения можно будет скачать результат или перейти дальше.'
       });
       return;
@@ -5752,8 +6167,8 @@ function clearAttachedFile() {
     if (status === 'running' && (stage === 'convert_pdf' || stage === 'finalize_output')) {
       setText({
         title: 'Идёт подготовка',
-        main: 'Сейчас сервис сохраняет готовые файлы.',
-        detail: `Подготовлено ${pdfText}.`,
+        main: 'Готовим документы.',
+        detail: '',
         next: 'Скоро подготовка завершится автоматически.'
       });
       return;
@@ -5762,8 +6177,8 @@ function clearAttachedFile() {
     if (status === 'running') {
       setText({
         title: 'Идёт подготовка',
-        main: 'Сейчас сервис создаёт документы.',
-        detail: `Клиенты: ${clientsText}. Файлы DOCX: ${documentsText}. Просто дождитесь завершения.`,
+        main: 'Готовим документы.',
+        detail: '',
         next: 'После этого система сама закончит остальные шаги.'
       });
       return;
@@ -5776,7 +6191,7 @@ function clearAttachedFile() {
         setText({
           title: 'Подготовка завершена с замечаниями',
           main: 'Часть документов готова, но не всё удалось собрать автоматически.',
-          detail: `Документы: ${documentsText}. PDF: ${pdfText}.`,
+          detail: `Документы: ${documentsText}. Результат подготовлен.`,
           next: 'Скачайте результат и проверьте строки с ошибками.'
         });
         return;
@@ -5822,6 +6237,51 @@ function clearAttachedFile() {
     });
   }
 
+  function updateDocumentsStepTrack(status = 'idle', stage = 'generate') {
+    const steps = [
+      { id: 'g-step-generate', key: 'generate' },
+      { id: 'g-step-review', key: 'review' },
+      { id: 'g-step-ready', key: 'ready' },
+    ];
+    const normalizedStatus = String(status || 'idle');
+    const normalizedStage = String(stage || 'generate');
+    let activeIndex = -1;
+    if (normalizedStatus === 'completed') {
+      activeIndex = 2;
+    } else if (normalizedStatus === 'running' || normalizedStatus === 'waiting_review') {
+      if (normalizedStage === 'review' || normalizedStatus === 'waiting_review') {
+        activeIndex = 1;
+      } else {
+        activeIndex = 0;
+      }
+    } else if (normalizedStatus === 'error' || normalizedStatus === 'stopped') {
+      if (normalizedStage === 'review') {
+        activeIndex = 1;
+      } else {
+        activeIndex = 0;
+      }
+    }
+    steps.forEach((step, index) => {
+      const el = document.getElementById(step.id);
+      if (!el) return;
+      el.classList.remove('is-active', 'is-done', 'is-error');
+      if (normalizedStatus === 'completed') {
+        el.classList.add('is-done');
+        if (index === 2) el.classList.add('is-active');
+        return;
+      }
+      if ((normalizedStatus === 'error' || normalizedStatus === 'stopped') && index === activeIndex) {
+        el.classList.add(normalizedStatus === 'error' ? 'is-error' : 'is-active');
+        return;
+      }
+      if (index < activeIndex) {
+        el.classList.add('is-done');
+      } else if (index === activeIndex) {
+        el.classList.add('is-active');
+      }
+    });
+  }
+
   function buildDocumentsScreenViewModel(result = {}) {
     const generatorState = result.generator || {};
     const philologistState = result.philologist || {};
@@ -5832,6 +6292,7 @@ function clearAttachedFile() {
     const totalDocuments = Number(result.total_documents || philologistState.total_documents || 0);
     const reviewedDocuments = Number(result.reviewed_documents || philologistState.processed_documents || 0);
     const stagedDocxCount = Number(generatorState.staged_docx_count || 0);
+    const generatedDocxCount = Math.max(stagedDocxCount, Number(generatorState.generated_docx_count || 0));
     const pdfTotal = Number(generatorState.pdf_total || 0);
     const pdfProcessed = Number(generatorState.pdf_processed || generatorState.staged_pdf_count || 0);
     const outputFileCount = Number(result.output_file_count || generatorState.output_file_count || 0);
@@ -5841,18 +6302,13 @@ function clearAttachedFile() {
     const status = rawStatus === 'running' && stage === 'review' && reviewActuallyDone ? 'completed' : rawStatus;
     const expectedDocuments = totalRows > 0
       ? totalRows * 2
-      : Math.max(totalDocuments, pdfTotal, stagedDocxCount, outputFileCount);
+      : Math.max(totalDocuments, generatedDocxCount, outputFileCount);
     const generatedDocuments = Math.max(
-      stagedDocxCount,
-      pdfTotal,
-      totalDocuments,
-      stage === 'generate' && totalRows > 0 ? Math.min(totalRows * 2, processedRows * 2) : 0,
+      generatedDocxCount,
       stage === 'review' ? totalDocuments : 0
     );
-    const hasGeneratedDocumentsCount = generatedDocuments > 0 || stagedDocxCount > 0 || pdfTotal > 0 || totalDocuments > 0;
-    const shownDocuments = status === 'completed' && expectedDocuments > 0 && !hasGeneratedDocumentsCount
-      ? expectedDocuments
-      : generatedDocuments;
+    const hasGeneratedDocumentsCount = generatedDocuments > 0 || generatedDocxCount > 0 || totalDocuments > 0;
+    const shownDocuments = generatedDocuments;
     const shownPdfTotal = expectedDocuments || pdfTotal;
     const hasPdfCount = pdfProcessed > 0 || outputFileCount > 0 || pdfTotal > 0;
     const shownPdfDone = status === 'completed' && shownPdfTotal > 0 && !hasPdfCount
@@ -5869,6 +6325,7 @@ function clearAttachedFile() {
       reviewedDocuments,
       errorRows,
       fixedDocuments,
+      generatedDocxCount,
       expectedDocuments,
       shownDocuments,
       shownPdfTotal,
@@ -5902,8 +6359,8 @@ function clearAttachedFile() {
       const resolvedPhilologistHint = vm.status === 'idle'
         ? (
           moduleReadiness.philologist_ready
-            ? 'Документы уже готовы. При необходимости можно перепроверить текст отдельно.'
-            : 'Отдельную проверку текста сейчас запускать не нужно.'
+            ? 'Документы уже готовы.'
+            : 'Проверка текста запустится автоматически после подготовки документов.'
         )
         : (serverModule.philologist_hint || '');
       return {
@@ -5918,10 +6375,11 @@ function clearAttachedFile() {
         doneValue: vm.status === 'completed'
           ? (vm.totalRows || Math.floor(vm.totalDocuments / 2))
           : vm.processedRows,
-        doneLabel: 'Клиентов подготовлено',
+        doneLabel: 'Обработано',
         labelText: serverModule.label_text || '',
         generatorHint: resolvedGeneratorHint,
         philologistHint: resolvedPhilologistHint,
+        actionsHint: serverModule.actions_hint || '',
         nextHint: serverModule.next_hint || '',
         progressPercent: vm.status === 'completed' ? 100 : vm.progressPercent,
         progressRunning: vm.status === 'running',
@@ -5929,40 +6387,44 @@ function clearAttachedFile() {
     }
     const defaultLabel = humanizeDocumentsMessage(result.stage_text, 'Подготовка документов ещё не запускалась.');
     const completedLabel = vm.fixedDocuments > 0
-      ? 'Документы готовы. Безопасные правки внесены.'
-      : 'Документы созданы и проверены. Можно переходить к отправке.';
+      ? 'Документы готовы. Есть отчёт по исправлениям.'
+      : 'Документы готовы. Можно скачать результат или перейти к отправке.';
     const stoppedLabel = humanizeDocumentsMessage(result.stage_text, 'Подготовка остановлена. Можно продолжить с того же места.');
     const errorLabel = humanizeDocumentsMessage(result.stage_text, 'Не удалось завершить подготовку документов.');
     const runningLabel = (() => {
       if (vm.stage === 'review' && vm.totalDocuments > 0) {
-        return `Документы созданы. Проверяю тексты: ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')}.`;
+        return `Проверено документов: ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')}.`;
       }
       if (vm.shownPdfTotal > 0 && (vm.stage === 'convert_pdf' || vm.stage === 'finalize_output')) {
-        return `Сохраняю документы в PDF: ${vm.shownPdfDone.toLocaleString('ru')} из ${vm.shownPdfTotal.toLocaleString('ru')}.`;
+        return 'Собираю результат.';
+      }
+      if (vm.expectedDocuments > 0) {
+        return `Создано документов: ${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')}.`;
       }
       if (vm.totalRows > 0) {
-        return `Готовлю документы: ${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')} клиентов.`;
+        return `Обработано клиентов: ${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')}.`;
       }
       return humanizeDocumentsMessage(result.stage_text, 'Готовлю документы. Скоро покажу прогресс.');
     })();
 
     if (vm.status === 'running') {
       return {
-        badgeText: vm.stage === 'review' ? 'Проверка текстов' : 'Подготовка',
+        badgeText: vm.stage === 'review' ? 'Проверяем текст' : 'Подготовка',
         badgeClass: 'badge badge-running',
-        runText: vm.stage === 'review' ? 'Проверяю документы' : 'Документы готовятся',
+        runText: 'Документы готовятся',
         runDisabled: true,
         runTitle: '',
         pauseDisabled: false,
         pauseText: 'Остановить',
         pauseTitle: '',
         doneValue: vm.processedRows,
-        doneLabel: 'Клиентов подготовлено',
+        doneLabel: 'Обработано',
         labelText: runningLabel,
         generatorHint: vm.stage === 'review'
-          ? 'Идёт проверка текста. Просто дождитесь завершения.'
+          ? 'Проверяем текст. Просто дождитесь завершения.'
           : 'Идёт подготовка документов. Просто дождитесь завершения.',
         philologistHint: 'Ничего дополнительно запускать не нужно.',
+        actionsHint: 'Идёт подготовка документов. Просто дождитесь завершения.',
         nextHint: 'Когда всё будет готово, кнопка перехода дальше включится сама.',
         progressPercent: vm.progressPercent,
         progressRunning: true,
@@ -5980,10 +6442,11 @@ function clearAttachedFile() {
         pauseText: 'Остановить',
         pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
         doneValue: vm.totalRows || Math.floor(vm.totalDocuments / 2),
-        doneLabel: 'Клиентов подготовлено',
+        doneLabel: 'Обработано',
         labelText: completedLabel,
-        generatorHint: 'Готово. Можно скачать архив документов.',
-        philologistHint: 'Если очень нужно, можно отдельно запустить повторную проверку текста.',
+        generatorHint: 'Готово. Можно скачать документы.',
+        philologistHint: 'Проверка текста уже входит в подготовку.',
+        actionsHint: 'Готово. Можно скачать документы.',
         nextHint: 'Теперь можно переходить к следующему шагу.',
         progressPercent: 100,
         progressRunning: false,
@@ -6001,10 +6464,11 @@ function clearAttachedFile() {
         pauseText: 'Остановить',
         pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
         doneValue: vm.processedRows,
-        doneLabel: 'Клиентов подготовлено',
+        doneLabel: 'Обработано',
         labelText: stoppedLabel,
         generatorHint: 'Прогресс сохранён. Можно продолжить с этого места.',
         philologistHint: 'Сначала продолжите подготовку.',
+        actionsHint: 'Прогресс сохранён. Можно продолжить с этого места.',
         nextHint: 'Пока процесс не завершён, перейти дальше нельзя.',
         progressPercent: vm.progressPercent,
         progressRunning: false,
@@ -6022,10 +6486,11 @@ function clearAttachedFile() {
         pauseText: 'Остановить',
         pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
         doneValue: vm.processedRows,
-        doneLabel: 'Клиентов подготовлено',
+        doneLabel: 'Обработано',
         labelText: errorLabel,
         generatorHint: 'Попробуйте повторить запуск. Если ошибка повторяется, проверьте таблицу и шаблоны.',
         philologistHint: 'Сначала завершите подготовку без ошибки.',
+        actionsHint: 'Сначала повторите подготовку документов.',
         nextHint: 'Пока есть ошибка, перейти дальше нельзя.',
         progressPercent: vm.progressPercent,
         progressRunning: false,
@@ -6042,14 +6507,17 @@ function clearAttachedFile() {
       pauseText: 'Остановить',
       pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
       doneValue: vm.processedRows,
-      doneLabel: 'Клиентов подготовлено',
+        doneLabel: 'Обработано',
       labelText: defaultLabel,
       generatorHint: hasRequiredInputs
         ? 'Можно запускать. Дальше сервис всё сделает сам.'
         : `${runReason} Если всё уже загружено, нажмите кнопку: сервер перепроверит состояние.`,
       philologistHint: moduleReadiness.philologist_ready
-        ? 'Документы уже готовы. При необходимости можно перепроверить текст отдельно.'
-        : 'Отдельную проверку текста сейчас запускать не нужно.',
+        ? 'Документы уже готовы.'
+        : 'Проверка текста запустится автоматически после подготовки документов.',
+      actionsHint: hasRequiredInputs
+        ? 'Можно запускать. Дальше сервис всё сделает сам.'
+        : runReason,
       nextHint: 'Сначала завершите подготовку документов.',
       progressPercent: vm.progressPercent,
       progressRunning: false,
@@ -6113,7 +6581,7 @@ function clearAttachedFile() {
     if (doneLabelStat) doneLabelStat.textContent = uiCopy.doneLabel;
     if (label) label.textContent = uiCopy.labelText;
     updateDocumentsActionHints({
-      generatorHint: uiCopy.generatorHint,
+      generatorHint: uiCopy.actionsHint || uiCopy.generatorHint,
       philologistHint: uiCopy.philologistHint,
       nextHint: uiCopy.nextHint,
     });
@@ -6268,9 +6736,149 @@ function clearAttachedFile() {
     }
   }
 
-  function setSenderDownloadEnabled(isEnabled) {
+  function setSenderDownloadEnabled({ data = false, report = false } = {}) {
     const downloadButton = document.getElementById('s-download-xlsx');
-    if (downloadButton) downloadButton.disabled = !isEnabled;
+    const reportButton = document.getElementById('s-delivery-report');
+    if (downloadButton) downloadButton.disabled = !data;
+    if (reportButton) reportButton.disabled = !report;
+  }
+
+  function updateSenderStepTrack(status = 'idle', mode = 'dry_run') {
+    const steps = [
+      { id: 's-step-check', key: 'check' },
+      { id: 's-step-confirm', key: 'confirm' },
+      { id: 's-step-send', key: 'send' },
+    ];
+    const normalizedStatus = String(status || 'idle');
+    const normalizedMode = String(mode || 'dry_run');
+    let activeIndex = -1;
+    if (normalizedStatus === 'running') {
+      activeIndex = normalizedMode === 'send' ? 2 : 0;
+    } else if (normalizedStatus === 'completed') {
+      activeIndex = normalizedMode === 'send' ? 2 : 1;
+    } else if (normalizedStatus === 'stopped' || normalizedStatus === 'error') {
+      activeIndex = normalizedMode === 'send' ? 2 : 0;
+    }
+
+    steps.forEach((step, index) => {
+      const el = document.getElementById(step.id);
+      if (!el) return;
+      el.classList.remove('is-active', 'is-done', 'is-error');
+      if (normalizedStatus === 'completed' && normalizedMode === 'send') {
+        el.classList.add('is-done');
+        if (index === 2) el.classList.add('is-active');
+        return;
+      }
+      if ((normalizedStatus === 'error' || normalizedStatus === 'stopped') && index === activeIndex) {
+        el.classList.add(normalizedStatus === 'error' ? 'is-error' : 'is-active');
+        return;
+      }
+      if (index < activeIndex) {
+        el.classList.add('is-done');
+      } else if (index === activeIndex) {
+        el.classList.add('is-active');
+      }
+    });
+  }
+
+  function updateSenderProcessPanel({
+    status = 'idle',
+    mode = 'dry_run',
+    total = 0,
+    processed = 0,
+    ready = 0,
+    sent = 0,
+    errors = 0,
+    pending = 0,
+  } = {}) {
+    updateSenderStepTrack(status, mode);
+    const titleEl = document.getElementById('s-process-title');
+    const mainEl = document.getElementById('s-process-main');
+    const detailEl = document.getElementById('s-process-detail');
+    const nextEl = document.getElementById('s-process-next');
+    const checkedEl = document.getElementById('s-process-checked');
+    const readyEl = document.getElementById('s-process-ready');
+    const sentEl = document.getElementById('s-process-sent');
+    const errorsEl = document.getElementById('s-process-errors');
+    const leftEl = document.getElementById('s-process-left');
+    const fmt = value => Number(value || 0).toLocaleString('ru');
+    if (checkedEl) checkedEl.textContent = `${fmt(processed)}/${fmt(total)}`;
+    if (readyEl) readyEl.textContent = fmt(ready);
+    if (sentEl) sentEl.textContent = fmt(sent);
+    if (errorsEl) errorsEl.textContent = fmt(errors);
+    if (leftEl) leftEl.textContent = fmt(Math.max(0, pending));
+
+    const setText = ({ title, main, detail, next }) => {
+      if (titleEl) titleEl.textContent = title;
+      if (mainEl) mainEl.textContent = main;
+      if (detailEl) detailEl.textContent = detail;
+      if (nextEl) nextEl.textContent = next;
+    };
+
+    if (status === 'running') {
+      if (mode === 'send') {
+        setText({
+          title: 'Идёт отправка',
+          main: 'Отправляем письма.',
+          detail: total > 0 ? `Отправлено: ${fmt(sent)}. Обработано: ${fmt(processed)} из ${fmt(total)}.` : 'Письма уходят получателям.',
+          next: 'Дождитесь завершения. Уже отправленные письма повторно не уйдут.',
+        });
+        return;
+      }
+      setText({
+        title: 'Идёт проверка',
+        main: 'Проверяем письма перед отправкой.',
+        detail: total > 0 ? `Проверено: ${fmt(processed)} из ${fmt(total)}. Готово к отправке: ${fmt(ready)}.` : 'Проверяем адреса и вложения.',
+        next: 'После проверки появится отдельная кнопка отправки.',
+      });
+      return;
+    }
+
+    if (status === 'completed') {
+      if (mode === 'send') {
+        setText({
+          title: errors > 0 ? 'Отправка завершена с ошибками' : 'Готово',
+          main: errors > 0 ? 'Часть писем не удалось отправить.' : 'Письма отправлены.',
+          detail: `Отправлено: ${fmt(sent)}. Ошибок: ${fmt(errors)}.`,
+          next: 'Можно перейти к статистике отправок.',
+        });
+        return;
+      }
+      setText({
+        title: 'Проверка завершена',
+        main: errors > 0 ? 'Есть строки, которые нужно проверить.' : 'Письма готовы к отправке.',
+        detail: `Готово к отправке: ${fmt(ready)}. Ошибок: ${fmt(errors)}.`,
+        next: ready > 0 ? 'Нажмите «Отправить письма», когда будете готовы.' : 'Проверьте ошибки перед отправкой.',
+      });
+      return;
+    }
+
+    if (status === 'stopped') {
+      setText({
+        title: 'Процесс остановлен',
+        main: mode === 'send' ? 'Отправка остановлена.' : 'Проверка остановлена.',
+        detail: 'Прогресс сохранён.',
+        next: 'Можно продолжить с сохранённого места.',
+      });
+      return;
+    }
+
+    if (status === 'error') {
+      setText({
+        title: 'Есть ошибка',
+        main: mode === 'send' ? 'Не удалось завершить отправку.' : 'Не удалось завершить проверку.',
+        detail: errors > 0 ? `Ошибок: ${fmt(errors)}.` : 'Проверьте журнал отправки.',
+        next: 'Исправьте проблему или повторите действие.',
+      });
+      return;
+    }
+
+    setText({
+      title: 'Готово к проверке',
+      main: 'Сервис проверит письма перед отправкой.',
+      detail: 'Реальная отправка начнётся только после вашего подтверждения.',
+      next: 'После проверки появится кнопка отправки.',
+    });
   }
 
   function setSenderUiState(result = {}) {
@@ -6304,7 +6912,8 @@ function clearAttachedFile() {
         const isDryRunReady = status === 'completed' && mode === 'dry_run' && hasReadyRows;
         const canResumeStopped = status === 'stopped' && hasPendingRows;
         const canConfirm = hasPreviewRows || isDryRunReady || canResumeStopped;
-        const canDownloadStatuses = sent > 0;
+        const canDownloadResultTable = status === 'completed' && (mode === 'dry_run' || sent > 0 || errors > 0 || total > 0);
+        const canDownloadDeliveryReport = status === 'completed' && mode === 'send' && sent > 0;
 
         if ((!senderPreviewState || !Array.isArray(senderPreviewState.rows) || !senderPreviewState.rows.length) && Array.isArray(nextState.rows) && nextState.rows.length) {
           senderPreviewState = {
@@ -6317,7 +6926,11 @@ function clearAttachedFile() {
       document.getElementById('s-sent').textContent = sent.toLocaleString('ru');
       document.getElementById('s-left').textContent = Math.max(0, pending).toLocaleString('ru');
       document.getElementById('s-err2').textContent = errors.toLocaleString('ru');
-      setSenderDownloadEnabled(canDownloadStatuses);
+      setSenderDownloadEnabled({
+        data: canDownloadResultTable,
+        report: canDownloadDeliveryReport,
+      });
+      updateSenderProcessPanel({ status, mode, total, processed, ready, sent, errors, pending });
       renderJobSenderStatusScreen(nextState);
 
       if (status === 'running') {
@@ -6332,6 +6945,10 @@ function clearAttachedFile() {
         } else {
           label.textContent = mode === 'send' ? 'Начинаю отправку писем.' : 'Проверяю адреса и вложения.';
         }
+        const actionsHint = document.getElementById('s-actions-hint');
+        if (actionsHint) actionsHint.textContent = mode === 'send'
+          ? 'Идёт отправка. Просто дождитесь завершения.'
+          : 'Идёт проверка. Реальная отправка ещё не началась.';
         setSenderButtonsState({ status: 'running', mode, total, ready, canConfirm: false, hasPendingRows });
         return;
       }
@@ -6341,6 +6958,8 @@ function clearAttachedFile() {
         badge.textContent = 'Остановлено';
         badge.className = 'badge badge-wait';
         label.textContent = humanizeSenderMessage(nextState.summary_text, 'Отправка остановлена. Можно продолжить позже.');
+        const actionsHint = document.getElementById('s-actions-hint');
+        if (actionsHint) actionsHint.textContent = 'Прогресс сохранён. Можно продолжить с этого места.';
         setSenderButtonsState({ status: 'stopped', mode, total, ready, canConfirm, hasPendingRows });
         return;
       }
@@ -6368,6 +6987,10 @@ function clearAttachedFile() {
                 )
             )
           : 'Обработка завершена';
+        const actionsHint = document.getElementById('s-actions-hint');
+        if (actionsHint) actionsHint.textContent = mode === 'send'
+          ? 'Отправка завершена. Можно перейти к статистике или скачать отчёт.'
+          : 'Проверка завершена. Отправка начнётся только после нажатия «Отправить письма».';
         return;
       }
 
@@ -6376,6 +6999,8 @@ function clearAttachedFile() {
         badge.textContent = 'Ошибка';
         badge.className = 'badge badge-error';
         label.textContent = humanizeSenderMessage(nextState.summary_text, 'Не удалось завершить проверку или отправку.');
+        const actionsHint = document.getElementById('s-actions-hint');
+        if (actionsHint) actionsHint.textContent = 'Проверьте журнал отправки и повторите действие.';
         return;
       }
 
@@ -6385,6 +7010,8 @@ function clearAttachedFile() {
       label.textContent = total > 0
         ? `Готово к проверке: ${total.toLocaleString('ru')}.`
         : 'Проверка перед отправкой ещё не запускалась.';
+      const actionsHint = document.getElementById('s-actions-hint');
+      if (actionsHint) actionsHint.textContent = 'Сначала запустите проверку. Реальная отправка начнётся только после подтверждения.';
       setProgressVisual(fill, { percent: 0, running: false, indeterminate: false });
   }
 
@@ -6685,9 +7312,10 @@ function clearAttachedFile() {
       document.getElementById('g-total').textContent = data.generator_total.toLocaleString('ru');
       document.getElementById('g-total-label').textContent = data.generator_total.toLocaleString('ru');
       const failedButton = document.getElementById('p-download-failed');
+      const tableVerified = isParserTableVerified();
       setParserDownloadButtonsState({
-        hasResult: parserTotal > 0,
-        hasFailed: !!(failedButton && !failedButton.disabled),
+        hasResult: tableVerified,
+        hasFailed: tableVerified && !!(failedButton && !failedButton.disabled),
       });
       saveUiState();
     } catch(e) {}

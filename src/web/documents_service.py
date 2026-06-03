@@ -24,23 +24,15 @@ def _documents_generator_percent(generator_state: dict) -> int:
     stage = str(generator_state.get("stage") or "")
     total = max(0, int(generator_state.get("total_rows") or 0))
     processed = max(0, int(generator_state.get("processed_rows") or 0))
-    pdf_total = max(0, int(generator_state.get("pdf_total") or 0))
-    pdf_processed = max(
-        0,
-        int(generator_state.get("pdf_processed") or generator_state.get("staged_pdf_count") or 0),
-    )
     if status == "completed":
         return 100
     if stage == "review_templates":
         return 5
     if stage == "render_docx":
-        return min(60, 5 + round((processed / total) * 55)) if total else 5
-    if stage == "convert_pdf":
-        safe_pdf_total = pdf_total or max(int(generator_state.get("staged_docx_count") or 0), total, 1)
-        return min(95, 60 + round((pdf_processed / safe_pdf_total) * 35))
-    if stage == "finalize_output":
-        return 97
-    return min(95, round((processed / total) * 60)) if total else 0
+        return min(95, 5 + round((processed / total) * 90)) if total else 5
+    if stage in {"convert_pdf", "finalize_output"}:
+        return 100
+    return min(95, round((processed / total) * 95)) if total else 0
 
 
 def _documents_philologist_percent(philologist_state: dict) -> int:
@@ -52,6 +44,14 @@ def _documents_philologist_percent(philologist_state: dict) -> int:
     if status == "finalizing":
         return 95
     return min(95, round((processed / total) * 100)) if total else 0
+
+
+def _safe_label(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _documents_current_item_text(*, status: str, stage: str, generator: dict, philologist: dict) -> str:
+    return ""
 
 
 def _stop_orphaned_documents_worker_state(
@@ -136,23 +136,23 @@ def compact_documents_status(job_id: str | None) -> dict:
 
     if not generator_done:
         stage = "generate"
-        stage_text = "Создаю документы."
-        progress_percent = round(_documents_generator_percent(generator_state) * 0.7)
+        stage_text = "Готовим документы."
+        progress_percent = round(_documents_generator_percent(generator_state) * 0.6)
     elif not philologist_done:
         stage = "review"
-        stage_text = "Проверяю готовые документы."
-        progress_percent = 70 + round(_documents_philologist_percent(philologist_state) * 0.28)
+        stage_text = "Проверяем текст."
+        progress_percent = 60 + round(_documents_philologist_percent(philologist_state) * 0.35)
     else:
         stage = "completed"
-        stage_text = "Документы созданы и проверены."
+        stage_text = "Результат собран."
         progress_percent = 100
 
     if status == "idle":
         stage_text = "Подготовка документов ещё не запускалась."
         progress_percent = 0
     elif status == "waiting_review":
-        stage_text = "Документы созданы. Можно запустить проверку."
-        progress_percent = max(progress_percent, 70)
+        stage_text = "Документы готовы. Можно запустить проверку текста."
+        progress_percent = max(progress_percent, 60)
     elif status == "stopped":
         stage_text = "Работа остановлена. Можно продолжить с сохраненного места."
     elif status == "error":
@@ -166,12 +166,19 @@ def compact_documents_status(job_id: str | None) -> dict:
     processed_rows = int(generator_state.get("processed_rows") or 0)
     if generator_done and total_rows:
         processed_rows = total_rows
+    current_item_text = _documents_current_item_text(
+        status=status,
+        stage=stage,
+        generator=generator_state,
+        philologist=philologist_state,
+    )
 
     result = {
         "job_id": job_id or "",
         "status": status,
         "stage": stage,
         "stage_text": stage_text,
+        "current_item_text": current_item_text,
         "progress_percent": max(0, min(100, progress_percent)),
         "generator": generator_state,
         "philologist": philologist_state,
@@ -207,17 +214,16 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
     fixed_documents = max(0, int(documents_status.get("fixed_documents") or 0))
     output_file_count = max(0, int(documents_status.get("output_file_count") or 0))
     staged_docx_count = max(0, int(generator.get("staged_docx_count") or 0))
+    generated_docx_count = max(staged_docx_count, int(generator.get("generated_docx_count") or 0))
     pdf_total = max(0, int(generator.get("pdf_total") or 0))
     pdf_processed = max(0, int(generator.get("pdf_processed") or generator.get("staged_pdf_count") or 0))
-    expected_documents = total_rows * 2 if total_rows > 0 else max(total_documents, pdf_total, staged_docx_count, output_file_count)
-    shown_documents = max(staged_docx_count, pdf_total, total_documents, expected_documents if status == "completed" else 0)
-    if stage == "generate" and total_rows > 0:
-        shown_documents = max(shown_documents, min(expected_documents, processed_rows * 2))
+    expected_documents = total_rows * 2 if total_rows > 0 else max(total_documents, generated_docx_count, output_file_count)
+    shown_documents = max(generated_docx_count, total_documents if stage in {"review", "completed"} else 0)
     shown_pdf_total = expected_documents or pdf_total
     shown_pdf_done = shown_pdf_total if status == "completed" and output_file_count <= 0 and pdf_processed <= 0 else max(pdf_processed, min(output_file_count, shown_pdf_total or output_file_count))
     clients_text = f"{processed_rows} из {total_rows} клиентов" if total_rows > 0 else "клиентов пока не найдено"
-    documents_text = f"{shown_documents} из {expected_documents} файлов DOCX"
-    pdf_text = f"{shown_pdf_done} из {shown_pdf_total} PDF"
+    documents_text = f"{shown_documents} из {expected_documents} документов"
+    pdf_text = f"{shown_pdf_done} из {shown_pdf_total} файлов"
 
     process_title = "Готово к запуску" if generator_ready else "Нужно подготовить входные данные"
     process_main = (
@@ -244,50 +250,50 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
     next_hint = "Кнопка перехода дальше включится автоматически после завершения подготовки."
     next_button_text = "Дальше: проверить отправку"
     next_button_title = "Сначала завершите подготовку документов."
+    current_item_text = _safe_label(documents_status.get("current_item_text"))
 
     if status == "running":
         process_title = "Идёт подготовка"
         process_main = (
-            "Сейчас сервис проверяет текст в документах."
+            "Проверяем текст."
             if stage == "review"
-            else "Сейчас сервис сохраняет готовые файлы."
-            if str(generator.get("stage") or "") in {"convert_pdf", "finalize_output"}
-            else "Сейчас сервис создаёт документы."
+            else "Готовим документы."
         )
-        process_detail = (
-            f"Проверка текста: {reviewed_documents} из {total_documents} документов. Ничего нажимать не нужно."
-            if stage == "review" and total_documents > 0
-            else f"Клиенты: {processed_rows} из {total_rows}. Файлы DOCX: {shown_documents} из {expected_documents}. Ничего нажимать не нужно."
-            if total_rows > 0
-            else "Ничего нажимать не нужно."
-        )
-        process_next = "Скоро подготовка завершится автоматически."
-        badge_text = "Проверка текстов" if stage == "review" else "Подготовка"
+        process_detail = ""
+        process_next = "Скоро сервис перейдёт к следующему этапу."
+        badge_text = "Проверяем текст" if stage == "review" else "Подготовка"
         badge_tone = "progress"
-        run_text = "Проверяю документы" if stage == "review" else "Документы готовятся"
+        run_text = "Документы готовятся"
+        if stage == "review" and total_documents > 0:
+            label_text = f"Проверено документов: {reviewed_documents} из {total_documents}."
+        elif str(generator.get("stage") or "") in {"convert_pdf", "finalize_output"}:
+            label_text = "Собираем результат."
+        elif expected_documents > 0:
+            label_text = f"Создано документов: {shown_documents} из {expected_documents}."
+        elif total_rows > 0:
+            label_text = f"Обработано клиентов: {processed_rows} из {total_rows}."
         generator_hint = (
-            f"Документы созданы. Проверяю тексты: {reviewed_documents} из {total_documents}."
+            f"Проверяем текст: {reviewed_documents} из {total_documents} документов."
             if stage == "review"
-            else f"Сохраняю документы в PDF: {pdf_processed} из {shown_pdf_total}."
+            else "Собираем результат."
             if str(generator.get("stage") or "") in {"convert_pdf", "finalize_output"}
-            else f"Создаю документы по шаблонам: {processed_rows} из {total_rows} клиентов, {shown_documents} из {expected_documents} файлов DOCX."
+            else f"Готовим документы: {processed_rows} из {total_rows} клиентов."
         )
         actions_hint = "Идёт подготовка документов. Просто дождитесь завершения."
     elif status == "completed":
         process_title = "Готово"
-        process_main = "Документы подготовлены."
+        process_main = "Результат собран."
         process_detail = (
-            f"Готовы комплекты для {total_rows} клиентов: {shown_documents} из {expected_documents} файлов DOCX, "
-            f"проверено {reviewed_documents} из {total_documents} документов."
+            f"Готовы комплекты для {total_rows} клиентов. Проверено {reviewed_documents} из {total_documents} документов."
             if total_rows > 0
             else "Подготовка завершена."
         )
-        process_next = "Теперь можно скачать архив или перейти к проверке отправки."
+        process_next = "Теперь можно скачать результат или перейти к проверке отправки."
         badge_text = "Готово"
         badge_tone = "done"
         run_text = "Подготовить заново"
-        generator_hint = "Документы готовы. Безопасные правки внесены."
-        actions_hint = "Готово. Можно скачать архив документов."
+        generator_hint = "Документы готовы. Можно скачать результат."
+        actions_hint = "Готово. Можно скачать документы."
         next_hint = "Теперь можно переходить к следующему шагу."
         next_button_title = "Перейти к проверке отправки."
     elif status == "stopped":
@@ -313,12 +319,12 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
     elif status == "waiting_review":
         process_title = "Проверка ожидается"
         process_main = "Документы уже созданы."
-        process_detail = f"Файлы DOCX созданы: {shown_documents} из {expected_documents}. Осталось проверить текст."
+        process_detail = ""
         process_next = "После проверки текста можно будет скачать результат и перейти дальше."
         badge_text = "Ожидает проверки"
         badge_tone = "wait"
         run_text = "Продолжить подготовку"
-        generator_hint = "Документы созданы. Следующий этап: проверка текста."
+        generator_hint = "Документы созданы. Следующий этап запустится автоматически."
         actions_hint = "Дождитесь завершения проверки текста."
 
     return {
@@ -327,6 +333,7 @@ def build_documents_ui_payload(documents_status: dict) -> dict:
             "main": process_main,
             "detail": process_detail,
             "next": process_next,
+            "current_item_text": current_item_text,
             "clients_text": clients_text,
             "documents_text": documents_text,
             "pdf_text": pdf_text,
@@ -377,6 +384,10 @@ def _documents_recent_events_payload(events: list[dict] | None, *, prefix: str, 
             "прочитан журнал склонений",
             "план агента",
             "цикл исполнения",
+            "уже готово",
+            "из 100 клиентов",
+            "из 200",
+            "проверяю текст в документах:",
         )):
             continue
         payload.append({
@@ -440,40 +451,28 @@ def build_documents_chat_events(documents_status: dict) -> list[dict]:
                 "text": "Проверяю шаблоны перед созданием документов.",
             })
         elif generator_stage == "render_docx":
-            progress_percent = round((processed_rows / total_rows) * 100) if total_rows > 0 else 0
-            progress_bucket = 50 if progress_percent >= 50 and progress_percent < 100 else 0
             events.append({
-                "id": f"documents:stage:render_docx:{progress_bucket or 'start'}",
+                "id": "documents:stage:render_docx",
                 "title": "Создаю документы",
-                "text": (
-                    f"Создаю документы по шаблонам. Уже готово {processed_rows} из {total_rows} клиентов."
-                    if total_rows > 0 and progress_bucket >= 50
-                    else "Создаю документы по шаблонам."
-                ),
+                "text": "Создаю документы по шаблонам.",
             })
         elif generator_stage == "convert_pdf":
             events.append({
                 "id": "documents:stage:convert_pdf",
-                "title": "Сохраняю PDF",
-                "text": "Документы созданы. Сейчас сохраняю их в PDF.",
+                "title": "Собираю результат",
+                "text": "Документы созданы. Подготавливаю результат.",
             })
         elif generator_stage == "finalize_output":
             events.append({
                 "id": "documents:stage:finalize_output",
-                "title": "Готовлю результат",
-                "text": "PDF уже готовы. Собираю итоговые файлы и архив к скачиванию.",
+                "title": "Собираю результат",
+                "text": "Подготавливаю результат.",
             })
     elif stage == "review":
-        review_percent = round((reviewed_documents / total_documents) * 100) if total_documents > 0 else 0
-        review_bucket = 50 if review_percent >= 50 and review_percent < 100 else 0
         events.append({
-            "id": f"documents:stage:review:{review_bucket or 'start'}",
+            "id": "documents:stage:review",
             "title": "Проверяю текст",
-            "text": (
-                f"Проверяю текст в документах: {reviewed_documents} из {total_documents}."
-                if total_documents > 0 and review_bucket >= 50
-                else "Проверяю текст в готовых документах."
-            ),
+            "text": "Проверяю текст в готовых документах.",
         })
 
     if status == "waiting_review":
@@ -534,11 +533,11 @@ def _documents_agent_stage_label(documents_status: dict) -> str:
     if generator_stage == "review_templates":
         return "проверка шаблонов"
     if generator_stage == "render_docx":
-        return "создание документов"
+        return "подготовка документов"
     if generator_stage == "convert_pdf":
-        return "сохранение PDF"
+        return "сбор результата"
     if generator_stage == "finalize_output":
-        return "подготовка файлов к скачиванию"
+        return "сбор результата"
     if stage == "completed":
         return "подготовка завершена"
     return "подготовка документов"
@@ -580,7 +579,7 @@ def _documents_agent_process_reply(documents_status: dict) -> str:
             parts.append(f"Безопасные исправления внесены в {fixed_documents} документах.")
         if documents_with_issues > 0:
             parts.append(f"Замечания остались в {documents_with_issues} документах.")
-        parts.append("Можно скачать архив документов и перейти к проверке отправки.")
+        parts.append("Можно скачать документы и перейти к проверке отправки.")
         return " ".join(parts)
 
     if status == "stopped":
@@ -694,7 +693,59 @@ def _mark_documents_waiting_review_stopped(job_id: str | None) -> None:
     _require("save_philologist_state")(philologist_state, job_id)
 
 
-def documents_agent_choose_reply(message: str, job_id: str | None = None) -> dict[str, str]:
+def _documents_agent_ai_reply(message: str, documents_status: dict, job_id: str | None) -> dict[str, Any] | None:
+    chat_with_orchestrator = _deps.get("chat_with_orchestrator")
+    if not callable(chat_with_orchestrator):
+        return None
+
+    generator = documents_status.get("generator") or {}
+    philologist = documents_status.get("philologist") or {}
+    context = {
+        "screen": "documents",
+        "job_id": job_id or "",
+        "status": documents_status.get("status"),
+        "stage": documents_status.get("stage"),
+        "stage_text": documents_status.get("stage_text"),
+        "current_item_text": documents_status.get("current_item_text"),
+        "progress_percent": documents_status.get("progress_percent"),
+        "total_rows": documents_status.get("total_rows"),
+        "processed_rows": documents_status.get("processed_rows"),
+        "total_documents": documents_status.get("total_documents"),
+        "reviewed_documents": documents_status.get("reviewed_documents"),
+        "error_rows": documents_status.get("error_rows"),
+        "fixed_documents": documents_status.get("fixed_documents"),
+        "documents_with_issues": documents_status.get("documents_with_issues"),
+        "generator_status": generator.get("status"),
+        "generator_stage": generator.get("stage"),
+        "philologist_status": philologist.get("status"),
+    }
+    agent_message = (
+        "Ты отвечаешь в чате экрана «Документы» сервиса рассылки. "
+        "Отвечай пользователю коротко, по-русски и по делу. "
+        "Используй контекст текущей job-сессии ниже как главный источник правды. "
+        "Не говори пользователю, что он должен ничего не нажимать, если это не нужно для ответа. "
+        "Не запускай тяжёлые действия и инструменты, если пользователь прямо не просит запуск. "
+        "Если пользователь просто здоровается, ответь живо и предложи помочь со статусом документов.\n\n"
+        f"Контекст экрана документов:\n{context}\n\n"
+        f"Сообщение пользователя: {message}"
+    )
+    session_id = f"documents:{job_id or 'default'}"
+    try:
+        result = chat_with_orchestrator(agent_message, session_id=session_id)
+    except Exception:
+        return None
+    reply = str((result or {}).get("reply") or "").strip()
+    if not reply:
+        return None
+    return {
+        "reply": reply,
+        "session_id": str((result or {}).get("session_id") or session_id),
+        "downloads": (result or {}).get("downloads") or [],
+        "source": "orchestrator",
+    }
+
+
+def documents_agent_choose_reply(message: str, job_id: str | None = None) -> dict[str, Any]:
     documents_status = compact_documents_status(job_id)
     lowered = message.lower()
 
@@ -703,6 +754,10 @@ def documents_agent_choose_reply(message: str, job_id: str | None = None) -> dic
         reply = str(delegated.get("reply") or "").strip()
         if reply:
             return {"reply": reply}
+
+    ai_reply = _documents_agent_ai_reply(message, documents_status, job_id)
+    if ai_reply:
+        return ai_reply
 
     if any(token in lowered for token in ("что происходит", "на каком этапе", "статус", "идет ли", "что сейчас", "процесс")):
         return {"reply": _documents_agent_process_reply(documents_status)}
