@@ -2052,7 +2052,7 @@
           <summary>Подробности</summary>
           <div class="document-process-list">
             <div class="document-process-row">
-              <span>Клиенты:</span>
+              <span>Обработано:</span>
               <strong id="g-process-clients">0/0</strong>
             </div>
             <div class="document-process-row">
@@ -6129,7 +6129,15 @@ function clearAttachedFile() {
         ? `${clientsDone.toLocaleString('ru')}/${clientsTotal.toLocaleString('ru')}`
         : '0/0';
     }
-    if (filesEl) filesEl.textContent = `${Number(serverProcess.documents_done ?? vm.shownDocuments ?? 0).toLocaleString('ru')}/${Number(serverProcess.documents_total ?? vm.expectedDocuments ?? 0).toLocaleString('ru')}`;
+    if (filesEl) {
+      const documentsDone = Number(serverProcess.documents_done ?? vm.shownDocuments ?? 0);
+      const documentsTotal = Number(serverProcess.documents_total ?? vm.expectedDocuments ?? 0);
+      const clientsDone = Number(serverProcess.clients_done ?? vm.processedRows ?? 0);
+      const isEarlyGeneration = status === 'running' && stage === 'generate' && clientsDone > 0 && documentsDone <= 0;
+      filesEl.textContent = isEarlyGeneration
+        ? 'готовятся'
+        : `${documentsDone.toLocaleString('ru')}/${documentsTotal.toLocaleString('ru')}`;
+    }
     if (reviewEl) {
       const reviewDone = Number(serverProcess.review_done ?? vm.reviewedDocuments ?? 0);
       const reviewTotal = Number(serverProcess.review_total ?? vm.totalDocuments ?? 0);
@@ -6398,11 +6406,11 @@ function clearAttachedFile() {
       if (vm.shownPdfTotal > 0 && (vm.stage === 'convert_pdf' || vm.stage === 'finalize_output')) {
         return 'Собираю результат.';
       }
-      if (vm.expectedDocuments > 0) {
+      if (vm.expectedDocuments > 0 && vm.shownDocuments > 0) {
         return `Создано документов: ${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')}.`;
       }
       if (vm.totalRows > 0) {
-        return `Обработано клиентов: ${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')}.`;
+        return `Обрабатываем клиентов: ${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')}. Документы появятся чуть позже.`;
       }
       return humanizeDocumentsMessage(result.stage_text, 'Готовлю документы. Скоро покажу прогресс.');
     })();
