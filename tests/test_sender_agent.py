@@ -75,6 +75,40 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
         self.assertEqual([item["row_id"] for item in scoped], ["2"])
 
+    def test_unisender_analytics_filters_by_complete_sender_state(self) -> None:
+        items = [
+            {"row_id": "1", "recipient": "one@example.com"},
+            {"row_id": "1", "recipient": "old-one@example.com"},
+            {"row_id": "2", "recipient": "two@example.com"},
+        ]
+        state = {
+            "total_rows": 2,
+            "rows": [
+                {"id": "1", "sent_recipients": ["one@example.com"]},
+                {"id": "2", "recipient": "two@example.com"},
+            ],
+        }
+
+        with patch.object(sender_report, "_load_sender_state", return_value=state):
+            scoped = sender_report._filter_items_by_current_sender_state("job-current", items)
+
+        self.assertEqual(
+            [(item["row_id"], item["recipient"]) for item in scoped],
+            [("1", "one@example.com"), ("2", "two@example.com")],
+        )
+
+    def test_unisender_analytics_does_not_filter_by_partial_sender_state(self) -> None:
+        items = [
+            {"row_id": "1", "recipient": "one@example.com"},
+            {"row_id": "2", "recipient": "two@example.com"},
+        ]
+        state = {"total_rows": 3, "rows": [{"id": "1", "sent_recipients": ["one@example.com"]}]}
+
+        with patch.object(sender_report, "_load_sender_state", return_value=state):
+            scoped = sender_report._filter_items_by_current_sender_state("job-current", items)
+
+        self.assertEqual(scoped, items)
+
     def test_unisender_analytics_filters_items_outside_current_data(self) -> None:
         items = [
             {"row_id": "1", "recipient": "one@example.com"},

@@ -670,6 +670,7 @@ def _load_unisender_log_items(job_id: str | None) -> list[dict[str, Any]]:
         for item in _load_sent_mail_log_items(sent_mail_log_path)
         if _safe_text(item.get("transport")) == "unisender"
     ]
+    items = _filter_items_by_current_sender_state(job_id, items)
     items = _filter_items_by_current_data(job_id, items)
     send_run_id, send_run_started_at = _current_send_scope(job_id)
     items = _filter_items_by_send_scope(
@@ -678,6 +679,53 @@ def _load_unisender_log_items(job_id: str | None) -> list[dict[str, Any]]:
         send_run_started_at=send_run_started_at,
     )
     return _dedupe_latest_log_items(items)
+
+
+def _filter_items_by_current_sender_state(job_id: str | None, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not job_id or not items:
+        return items
+    state = _load_sender_state(job_id)
+    state_rows = state.get("rows")
+    if not isinstance(state_rows, list) or not state_rows:
+        return items
+    total_rows = _safe_int(state.get("total_rows"))
+    if total_rows and len(state_rows) < total_rows:
+        return items
+
+    sent_pairs = _sender_state_sent_pairs(state_rows)
+    if not sent_pairs:
+        return items
+    return [
+        item
+        for item in items
+        if (_safe_text(item.get("row_id")), _safe_text(item.get("recipient")).lower()) in sent_pairs
+    ]
+
+
+def _sender_state_sent_pairs(state_rows: list[Any]) -> set[tuple[str, str]]:
+    pairs: set[tuple[str, str]] = set()
+    for entry in state_rows:
+        if not isinstance(entry, dict):
+            continue
+        row_id = _safe_text(entry.get("id") or entry.get("row_id"))
+        if not row_id:
+            continue
+        recipients = entry.get("sent_recipients")
+        if not isinstance(recipients, list) or not recipients:
+            recipient = _safe_text(entry.get("recipient"))
+            recipients = [recipient] if recipient else []
+        for recipient in recipients:
+            recipient_key = _safe_text(recipient).lower()
+            if recipient_key:
+                pairs.add((row_id, recipient_key))
+    return pairs
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _filter_items_by_current_data(job_id: str | None, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
