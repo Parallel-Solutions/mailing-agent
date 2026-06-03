@@ -4790,7 +4790,7 @@ function clearAttachedFile() {
       const result = data.result || {};
       setDocumentsUiState(result);
       if (result.status && ['running', 'waiting_review'].includes(String(result.status))) {
-        documentsStatusPoll = startPollingLoop(() => refreshDocumentsStatus({ silent: true }), 2000);
+        documentsStatusPoll = startPollingLoop(() => refreshDocumentsStatus({ silent: true }), 1000);
       } else {
         stopDocumentsPolling();
         await refreshModuleReadiness();
@@ -4831,7 +4831,7 @@ function clearAttachedFile() {
       : 'Начинаю подготовку документов. Сначала проверю шаблоны, затем создам файлы и сохраню их в PDF.');
     generatorCompletionAnnounced = false;
     stopGeneratorPolling();
-    generatorStatusPoll = startPollingLoop(() => refreshGeneratorStatus({ silent: true }), 2000);
+    generatorStatusPoll = startPollingLoop(() => refreshGeneratorStatus({ silent: true }), 1000);
     try {
       const res = await fetchWithTimeout('/api/generate', {
         method: 'POST',
@@ -5842,7 +5842,13 @@ function clearAttachedFile() {
     const expectedDocuments = totalRows > 0
       ? totalRows * 2
       : Math.max(totalDocuments, pdfTotal, stagedDocxCount, outputFileCount);
-    const generatedDocuments = Math.max(stagedDocxCount, pdfTotal, totalDocuments, stage === 'review' ? totalDocuments : 0);
+    const generatedDocuments = Math.max(
+      stagedDocxCount,
+      pdfTotal,
+      totalDocuments,
+      stage === 'generate' && totalRows > 0 ? Math.min(totalRows * 2, processedRows * 2) : 0,
+      stage === 'review' ? totalDocuments : 0
+    );
     const hasGeneratedDocumentsCount = generatedDocuments > 0 || stagedDocxCount > 0 || pdfTotal > 0 || totalDocuments > 0;
     const shownDocuments = status === 'completed' && expectedDocuments > 0 && !hasGeneratedDocumentsCount
       ? expectedDocuments
@@ -5911,10 +5917,8 @@ function clearAttachedFile() {
         pauseTitle: vm.status === 'running' ? '' : 'Остановка станет доступна после запуска подготовки документов.',
         doneValue: vm.status === 'completed'
           ? (vm.totalRows || Math.floor(vm.totalDocuments / 2))
-          : (vm.stage === 'review' ? vm.reviewedDocuments : vm.processedRows),
-        doneLabel: vm.status === 'completed'
-          ? 'Клиентов подготовлено'
-          : (vm.stage === 'review' ? 'Проверено документов' : 'Подготовлено клиентов'),
+          : vm.processedRows,
+        doneLabel: 'Клиентов подготовлено',
         labelText: serverModule.label_text || '',
         generatorHint: resolvedGeneratorHint,
         philologistHint: resolvedPhilologistHint,
@@ -5952,8 +5956,8 @@ function clearAttachedFile() {
         pauseDisabled: false,
         pauseText: 'Остановить',
         pauseTitle: '',
-        doneValue: vm.stage === 'review' ? vm.reviewedDocuments : vm.processedRows,
-        doneLabel: vm.stage === 'review' ? 'Проверено документов' : 'Подготовлено клиентов',
+        doneValue: vm.processedRows,
+        doneLabel: 'Клиентов подготовлено',
         labelText: runningLabel,
         generatorHint: vm.stage === 'review'
           ? 'Идёт проверка текста. Просто дождитесь завершения.'
@@ -5996,8 +6000,8 @@ function clearAttachedFile() {
         pauseDisabled: true,
         pauseText: 'Остановить',
         pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
-        doneValue: vm.stage === 'review' ? vm.reviewedDocuments : vm.processedRows,
-        doneLabel: vm.stage === 'review' ? 'Проверено документов' : 'Подготовлено клиентов',
+        doneValue: vm.processedRows,
+        doneLabel: 'Клиентов подготовлено',
         labelText: stoppedLabel,
         generatorHint: 'Прогресс сохранён. Можно продолжить с этого места.',
         philologistHint: 'Сначала продолжите подготовку.',
@@ -6018,7 +6022,7 @@ function clearAttachedFile() {
         pauseText: 'Остановить',
         pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
         doneValue: vm.processedRows,
-        doneLabel: 'Подготовлено клиентов',
+        doneLabel: 'Клиентов подготовлено',
         labelText: errorLabel,
         generatorHint: 'Попробуйте повторить запуск. Если ошибка повторяется, проверьте таблицу и шаблоны.',
         philologistHint: 'Сначала завершите подготовку без ошибки.',
@@ -6038,7 +6042,7 @@ function clearAttachedFile() {
       pauseText: 'Остановить',
       pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
       doneValue: vm.processedRows,
-      doneLabel: 'Подготовлено клиентов',
+      doneLabel: 'Клиентов подготовлено',
       labelText: defaultLabel,
       generatorHint: hasRequiredInputs
         ? 'Можно запускать. Дальше сервис всё сделает сам.'

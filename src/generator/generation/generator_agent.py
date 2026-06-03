@@ -793,7 +793,7 @@ def run_generator_agent(
             batch_pdf_dir=pdf_target_dir,
             progress_callback=_save_pdf_progress,
             should_stop=lambda: bool(_refresh_generator_stop_flag(state, job_id).get("stop_requested")),
-            chunk_size=PDF_CHUNK_SIZE,
+            chunk_size=1,
             worker_count=PDF_WORKERS,
         )
         state["stage"] = "finalize_output"
