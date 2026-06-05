@@ -94,7 +94,7 @@ def correction_report_has_data(job_id: str | None = None) -> bool:
 
 
 def _load_philologist_state(job_id: str | None) -> dict[str, Any]:
-    return load_agent_state("philologist", {}, job_id)
+    return load_agent_state("philologist", {}, job_id, include_details=True)
 
 
 def _iter_philologist_corrections(state: dict[str, Any]) -> Iterable[dict[str, Any]]:

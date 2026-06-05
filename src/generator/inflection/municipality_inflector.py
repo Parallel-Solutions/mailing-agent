@@ -356,7 +356,21 @@ def _simple_word_inflect_cached(word: str, grammemes_key: tuple[str, ...]) -> st
 
 
 def _simple_word_inflect(word: str, grammemes: set[str]) -> str:
+    rule_value = _simple_adjective_inflect(word, grammemes)
+    if rule_value:
+        return rule_value
     return _simple_word_inflect_cached(word, tuple(sorted(grammemes)))
+
+
+def _simple_adjective_inflect(word: str, grammemes: set[str]) -> str | None:
+    lower = word.casefold()
+    if "gent" in grammemes:
+        if lower.endswith(("ский", "цкий")):
+            return word[:-2] + "ого"
+    if "loct" in grammemes:
+        if lower.endswith(("ский", "цкий")):
+            return word[:-2] + "ом"
+    return None
 
 
 def _phrase_inflect(phrase: str, grammemes: set[str]) -> str:

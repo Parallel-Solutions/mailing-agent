@@ -110,8 +110,8 @@ PHILOLOGIST_STATE: dict[str, Any] = {
 }
 
 
-def _load_philologist_state(job_id: str | None = None) -> dict[str, Any]:
-    return load_agent_state("philologist", PHILOLOGIST_STATE, job_id)
+def _load_philologist_state(job_id: str | None = None, *, include_details: bool = True) -> dict[str, Any]:
+    return load_agent_state("philologist", PHILOLOGIST_STATE, job_id, include_details=include_details)
 
 
 def _save_philologist_state(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
@@ -2410,7 +2410,7 @@ def run_philologist(
 
 
 def get_philologist_status(job_id: str | None = None, *, include_details: bool = True) -> dict[str, Any]:
-    state = _load_philologist_state(job_id)
+    state = _load_philologist_state(job_id, include_details=include_details)
     job_paths = resolve_job_paths(job_id)
     target_dir = job_paths.output_dir if not job_paths.uses_legacy_layout else OUTPUT_DIR
     state["task_stats"] = count_tasks_for_agent("philologist", job_id)

@@ -526,9 +526,15 @@ def _resolve_pdf_attachments(folder: Path | None) -> tuple[list[str], str | None
         return [], "Папка документов не определена."
 
     pdf_files = sorted(folder.glob("*.pdf"))
-    if len(pdf_files) < 2:
-        return [str(path) for path in pdf_files], f"В папке {folder.name} найдено меньше двух PDF."
-    return [str(path) for path in pdf_files], None
+    if len(pdf_files) >= 2:
+        return [str(path) for path in pdf_files], None
+
+    docx_files = sorted(folder.glob("*.docx"))
+    if len(docx_files) >= 2:
+        return [str(path) for path in docx_files], None
+
+    files = pdf_files or docx_files
+    return [str(path) for path in files], f"В папке {folder.name} найдено меньше двух документов для вложения."
 
 
 def _status_class(raw_status: Any) -> str:
@@ -973,12 +979,7 @@ def _build_message(
 
 def _build_mail_body(row: dict[str, Any], *, mail_template_path: Path | None = None) -> str:
     body = _render_mail_template(_read_mail_template(mail_template_path), row)
-    body = re.sub(
-        r"(?im)^\s*Срок\s+действия\s+коммерческого\s+предложения\s*[—-]\s*до\s+31\.05\.2026\.\s*\n?",
-        "",
-        body,
-    ).strip()
-    return _append_mail_footer_text(body)
+    return _append_mail_footer_text(body.strip())
 
 
 def _build_mail_subject(subject_template: str, row: dict[str, Any]) -> str:

@@ -27,6 +27,7 @@ def create_sender_router(
     request_sender_stop: Callable[..., dict],
     preview_recipients: Callable[..., dict],
     chat_with_sender: Callable[..., dict[str, str]],
+    is_load_test_job: Callable[[str | None], bool],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -53,6 +54,14 @@ def create_sender_router(
         limit = parse_optional_limit(payload)
         transport = None if payload is None else payload.get("transport")
         job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+        if not dry_run and is_load_test_job(job_id):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Это нагрузочный тест. Реальная отправка для тестовых job запрещена: "
+                    "можно только проверить письма без отправки."
+                ),
+            )
 
         try:
             clear_sender_stop_request(job_id)

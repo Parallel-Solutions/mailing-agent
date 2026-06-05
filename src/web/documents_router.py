@@ -29,7 +29,7 @@ def create_documents_router(
     prime_generator_state: Callable[..., dict],
     request_generator_stop: Callable[[str | None], dict],
     request_philologist_stop: Callable[[str | None], dict],
-    documents_agent_choose_reply: Callable[[str, str | None], dict[str, str]],
+    documents_agent_choose_reply: Callable[[str, str | None], dict[str, Any]],
 ) -> APIRouter:
     router = APIRouter(dependencies=[Depends(check_auth)])
 

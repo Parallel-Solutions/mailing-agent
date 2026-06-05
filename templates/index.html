@@ -719,10 +719,10 @@
   }
 
   .document-step.is-active {
-    border-color: #8fc961;
-    background: #f2faea;
-    color: #244f0d;
-    box-shadow: inset 0 0 0 1px rgba(83, 151, 38, 0.16);
+    border-color: #e0b735;
+    background: #fff7d8;
+    color: #6b4b00;
+    box-shadow: inset 0 0 0 1px rgba(190, 143, 18, 0.2);
   }
 
   .document-step.is-done {
@@ -1338,6 +1338,7 @@
     padding: 8px 12px;
     border-radius: 10px;
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .chat-msg.agent {
@@ -1412,6 +1413,24 @@
 
   .generator-chat-section {
     margin-top: 12px;
+    flex: none;
+    height: clamp(360px, 44vh, 520px);
+    max-height: 520px;
+    min-height: 320px;
+  }
+
+  .generator-chat-section .chat-messages {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .generator-chat-section .chat-msg.agent:not(.typing) {
+    max-height: none;
+    overflow: visible;
   }
 
   @media (max-height: 820px), (max-width: 1120px) {
@@ -1443,7 +1462,9 @@
     .generator-chat-section {
       position: static;
       width: auto;
-      max-height: none;
+      height: clamp(300px, 42vh, 420px);
+      max-height: 420px;
+      min-height: 280px;
       margin-top: 12px;
       background: #fff;
       box-shadow: none;
@@ -1462,8 +1483,8 @@
     }
 
     #g-chat-messages {
-      height: clamp(220px, 30vh, 300px);
-      min-height: 220px;
+      height: auto;
+      min-height: 0;
       padding: 10px 12px;
     }
 
@@ -1604,6 +1625,12 @@
   }
 
   .chat-input-row button:hover { background: #2a5409; }
+
+  .chat-input-row input:disabled,
+  .chat-input-row button:disabled {
+    opacity: 0.62;
+    cursor: wait;
+  }
 
   .chat-section-flat {
     border: none;
@@ -2158,8 +2185,8 @@
           <div class="progress-label" id="ph-label">0 из 0 документов проверено, осталось 0</div>
         </div>
         <div class="module-actions" style="margin-top:12px">
-          <button class="btn-primary" id="ph-run" data-process-lock="true" onclick="startPhilologist()">Проверить тексты</button>
-          <button class="btn-outline" id="ph-pause" onclick="pausePhilologist()" disabled>Остановить</button>
+          <button class="btn-primary" id="ph-run" data-process-lock="true" onclick="startDocumentsPipeline()">Проверить тексты</button>
+          <button class="btn-outline" id="ph-pause" onclick="pauseDocumentsPipeline()" disabled>Остановить</button>
         </div>
         <div class="module-actions-hint" id="ph-actions-hint">Обычно этот шаг вручную запускать не нужно: проверка текста входит в общую подготовку документов.</div>
       </div>
@@ -2390,6 +2417,7 @@
 
 <script>
   const chatSessions = {};
+  const activeChatRequests = {};
   const JOB_STORAGE_KEY = 'mailing-agent-current-job-id';
   const ACTIVE_SCREEN_STORAGE_KEY = 'mailing-agent-active-screen';
   const UI_STATE_STORAGE_KEY_PREFIX = 'mailing-agent-ui-state-v1:';
@@ -2399,6 +2427,7 @@
     's-chat': 'Здесь будет видно, какие письма готовы к отправке, что уже отправлено и где нужна проверка.',
   };
   let currentJobId = localStorage.getItem(JOB_STORAGE_KEY) || '';
+  let resetJobCreationToken = 0;
   let activeScreenId = localStorage.getItem(ACTIVE_SCREEN_STORAGE_KEY) || 'settings';
   let uiPersistenceEnabled = false;
   let moduleReadiness = {
@@ -2453,6 +2482,12 @@
       /проверяю текст в документах:\s*\d+ из \d+\.?/i,
       /готовлю документы к скачиванию:\s*\d+ из \d+\.?/i,
       /проверено документов:\s*\d+ из \d+\.?/i,
+      /журнал склонений/i,
+      /applied current local rule/i,
+      /legacy_rule/i,
+      /read_inflection_log/i,
+      /review_docx/i,
+      /agent_loop/i,
     ].some(pattern => pattern.test(normalized));
   }
 
@@ -2752,12 +2787,37 @@
     };
   }
 
+  function getEffectiveDocumentsStatusSnapshot() {
+    const documentsStatus = String((lastDocumentsUiState || {}).status || 'idle');
+    const documentsStage = String((lastDocumentsUiState || {}).stage || 'generate');
+    const isTerminal = ['completed', 'error', 'stopped'].includes(documentsStatus);
+    let generatorStatus = String(currentGeneratorStatus || lastGeneratorUiState.status || 'idle');
+    let philologistStatus = String(currentPhilologistStatus || lastPhilologistUiState.status || 'idle');
+
+    if (documentsStatus === 'completed') {
+      generatorStatus = 'completed';
+      philologistStatus = 'completed';
+    } else if (documentsStatus === 'stopped') {
+      if (generatorStatus === 'running') generatorStatus = 'stopped';
+      if (['running', 'finalizing'].includes(philologistStatus)) philologistStatus = 'stopped';
+    }
+
+    return {
+      documentsStatus,
+      documentsStage,
+      generatorStatus,
+      philologistStatus,
+      isTerminal,
+    };
+  }
+
   function getActiveProcessState() {
     const parserVerificationStatus = parserVerificationStatusFromResult(lastParserUiState || {});
     const parserStatus = String(currentParserStatus || lastParserUiState.status || 'idle');
-    const documentsStatus = String((lastDocumentsUiState || {}).status || '');
-    const generatorStatus = String(currentGeneratorStatus || lastGeneratorUiState.status || 'idle');
-    const philologistStatus = String(currentPhilologistStatus || lastPhilologistUiState.status || 'idle');
+    const documentsSnapshot = getEffectiveDocumentsStatusSnapshot();
+    const documentsStatus = documentsSnapshot.documentsStatus;
+    const generatorStatus = documentsSnapshot.generatorStatus;
+    const philologistStatus = documentsSnapshot.philologistStatus;
     const senderStatus = String(currentSenderStatus || lastSenderUiState.status || 'idle');
 
     if (parserRunning || parserVerificationStatus === 'running' || parserStatus === 'running') {
@@ -2767,14 +2827,14 @@
         message: 'Сейчас проверяем таблицу. Дождитесь завершения проверки.',
       };
     }
-    if (documentsStatus === 'running' || documentsStatus === 'waiting_review' || generatorStatus === 'running') {
+    if (!documentsSnapshot.isTerminal && (documentsStatus === 'running' || documentsStatus === 'waiting_review' || generatorStatus === 'running')) {
       return {
         active: true,
         key: 'documents',
         message: 'Сейчас готовим документы. Дождитесь завершения подготовки или остановите процесс.',
       };
     }
-    if (phRunning || ['running', 'finalizing'].includes(philologistStatus)) {
+    if (!documentsSnapshot.isTerminal && (phRunning || ['running', 'finalizing'].includes(philologistStatus))) {
       return {
         active: true,
         key: 'philologist',
@@ -2933,13 +2993,13 @@
         announceProcessStep(
           'g-chat',
           'Собираю результат',
-          'Документы созданы. Подготавливаю результат.'
+          'Проверка текста завершена. Собираю итоговый результат.'
         );
       } else if (stage === 'finalize_output') {
         announceProcessStep(
           'g-chat',
           'Собираю результат',
-          'Подготавливаю результат.'
+          'Проверка текста завершена. Собираю итоговый результат.'
         );
       }
       state.lastStage = stage;
@@ -3297,9 +3357,10 @@
     const parserVerificationStatus = String((lastParserUiState.municipality_name_verification_state || {}).status || 'idle');
     const parserRows = Number(lastParserUiState.row_count || 0);
     const parserStatus = String(currentParserStatus || lastParserUiState.status || 'idle');
-    const generatorStatus = String(currentGeneratorStatus || lastGeneratorUiState.status || 'idle');
-    const philologistStatus = String(currentPhilologistStatus || lastPhilologistUiState.status || 'idle');
-    const documentsStatus = String((lastDocumentsUiState || {}).status || 'idle');
+    const documentsSnapshot = getEffectiveDocumentsStatusSnapshot();
+    const generatorStatus = documentsSnapshot.generatorStatus;
+    const philologistStatus = documentsSnapshot.philologistStatus;
+    const documentsStatus = documentsSnapshot.documentsStatus;
     const senderStatus = String(currentSenderStatus || lastSenderUiState.status || 'idle');
     const senderStats = lastSenderUiState.stats || {};
     const senderErrors = Math.max(Number(lastSenderUiState.error_rows || 0), Number(senderStats.error || 0));
@@ -3318,14 +3379,14 @@
       setSidebarStepState('parser', 'idle', 'Загрузите Excel-таблицу клиентов.');
     }
 
-    if (documentsStatus === 'error' || generatorStatus === 'error' || philologistStatus === 'error') {
+    if (documentsStatus === 'completed' || (generatorStatus === 'completed' && philologistStatus === 'completed')) {
+      setSidebarStepState('generator', 'ok', 'Документы готовы. Можно переходить к отправке.');
+    } else if (documentsStatus === 'error' || generatorStatus === 'error' || philologistStatus === 'error') {
       setSidebarStepState('generator', 'error', 'При подготовке документов возникла ошибка.');
     } else if (documentsStatus === 'stopped' || generatorStatus === 'stopped' || philologistStatus === 'stopped') {
       setSidebarStepState('generator', 'progress', 'Подготовка документов остановлена. Можно продолжить с сохранённого места.');
     } else if (documentsStatus === 'running' || documentsStatus === 'waiting_review' || generatorStatus === 'running' || ['running', 'finalizing'].includes(philologistStatus)) {
       setSidebarStepState('generator', 'progress', 'Документы сейчас готовятся или проверяются.');
-    } else if (documentsStatus === 'completed' || (generatorStatus === 'completed' && philologistStatus === 'completed')) {
-      setSidebarStepState('generator', 'ok', 'Документы готовы. Можно переходить к отправке.');
     } else if (generatorStatus === 'completed') {
       setSidebarStepState('generator', 'progress', 'Документы созданы, осталось завершить проверку текстов.');
     } else {
@@ -4033,11 +4094,26 @@
     });
   }
 
+  async function createFreshJobAfterReset(resetToken) {
+    try {
+      const res = await fetchWithTimeout('/api/jobs', { method: 'POST' }, 15000);
+      const data = await readJsonOrText(res);
+      const freshJobId = res.ok && data.job_id ? String(data.job_id || '').trim() : '';
+      if (!freshJobId || resetToken !== resetJobCreationToken || currentJobId) return;
+      clearSavedUiState(freshJobId);
+      const wasRestoringUiState = isRestoringUiState;
+      isRestoringUiState = true;
+      setCurrentJobId(freshJobId);
+      isRestoringUiState = wasRestoringUiState;
+      startGlobalStatusPolling();
+    } catch (e) {}
+  }
+
   async function resetAllMailingState() {
     const confirmed = window.confirm('Очистить все поля и начать заново?');
     if (!confirmed) return;
     const previousJobIdForCleanup = currentJobId;
-    let freshJobId = '';
+    const resetToken = ++resetJobCreationToken;
 
     stopGeneratorPolling();
     stopDocumentsPolling();
@@ -4050,21 +4126,12 @@
     }
     deliveryAnalyticsLoading = false;
 
-    try {
-      const res = await fetchWithTimeout('/api/jobs', { method: 'POST' }, 15000);
-      const data = await readJsonOrText(res);
-      if (res.ok && data.job_id) {
-        freshJobId = String(data.job_id || '').trim();
-      }
-    } catch (e) {}
-
     resetModuleRuntimeState();
     Object.keys(chatSessions).forEach(key => { chatSessions[key] = ''; });
     clearSavedUiState(previousJobIdForCleanup);
-    if (freshJobId) clearSavedUiState(freshJobId);
     const wasRestoringUiState = isRestoringUiState;
     isRestoringUiState = true;
-    setCurrentJobId(freshJobId);
+    setCurrentJobId('');
     isRestoringUiState = wasRestoringUiState;
     resetFlowNotificationState();
 
@@ -4085,7 +4152,7 @@
     lastAgentEventIds.sender = '';
     showToast('Все поля и состояния модулей очищены');
     goToScreen('settings');
-    if (currentJobId) startGlobalStatusPolling();
+    createFreshJobAfterReset(resetToken);
   }
 
   async function uploadData(input) {
@@ -4252,6 +4319,7 @@
 
   function appendTypingIndicator(chatId) {
     const messages = document.getElementById(chatId + '-messages');
+    removeTypingIndicator(chatId);
     const msg = document.createElement('div');
     msg.className = 'chat-msg agent typing';
     msg.dataset.typing = 'true';
@@ -4263,11 +4331,46 @@
 
   function removeTypingIndicator(chatId) {
     const messages = document.getElementById(chatId + '-messages');
-    const typing = messages.querySelector('[data-typing="true"]');
-    if (typing) {
-      typing.remove();
+    if (!messages) return;
+    const typingItems = messages.querySelectorAll('[data-typing="true"]');
+    if (typingItems.length) {
+      typingItems.forEach(item => item.remove());
       saveUiState();
     }
+  }
+
+  function setChatBusy(chatId, isBusy) {
+    const input = document.getElementById(chatId + '-input');
+    const button = input ? input.closest('.chat-input-row')?.querySelector('button') : null;
+    if (input) input.disabled = !!isBusy;
+    if (button) button.disabled = !!isBusy;
+  }
+
+  function chatTimeoutMs(chatId) {
+    if (chatId === 'g-chat') return 20000;
+    if (chatId === 'o-chat') return 30000;
+    if (chatId === 's-chat') return 60000;
+    return 120000;
+  }
+
+  function chatTimeoutMessage(chatId) {
+    if (chatId === 'g-chat') {
+      return 'Сервер сейчас занят и не успел ответить за 20 секунд. Я убрала ожидание; статус можно обновить чуть позже.';
+    }
+    return 'Сервер сейчас занят и не успел ответить. Попробуйте ещё раз чуть позже.';
+  }
+
+  function chatNetworkErrorMessage(chatId) {
+    if (chatId === 'g-chat') {
+      return 'Не получилось быстро связаться с агентом документов. Я обновлю статус подготовки отдельно; если процесс идёт, он продолжит работать в фоне.';
+    }
+    if (chatId === 's-chat') {
+      return 'Не получилось быстро связаться с агентом отправки. Проверьте статус чуть позже.';
+    }
+    if (chatId === 'p-chat') {
+      return 'Не получилось быстро связаться с агентом таблицы. Попробуйте ещё раз чуть позже.';
+    }
+    return 'Не получилось связаться с агентом. Попробуйте ещё раз чуть позже.';
   }
 
   function appendDownloadMessage(chatId, downloads) {
@@ -4365,12 +4468,20 @@
 
   function sendChat(chatId) {
     const input = document.getElementById(chatId + '-input');
+    if (!input) return;
+    if (activeChatRequests[chatId]) {
+      input.focus();
+      return;
+    }
     const text = input.value.trim();
     if (!text) return;
 
     appendChatMessage(chatId, 'user', text);
     input.value = '';
+    setChatBusy(chatId, true);
     const typingIndicator = appendTypingIndicator(chatId);
+    const requestToken = `${Date.now()}:${Math.random()}`;
+    activeChatRequests[chatId] = requestToken;
 
     let endpoint = null;
     if (chatId === 'o-chat') endpoint = '/api/orchestrator/chat';
@@ -4379,11 +4490,12 @@
     if (chatId === 's-chat') endpoint = '/api/sender/chat';
 
     if (!endpoint) {
+      removeTypingIndicator(chatId);
+      delete activeChatRequests[chatId];
+      setChatBusy(chatId, false);
       setTimeout(() => appendChatMessage(chatId, 'agent', 'Функция чата для этого модуля будет подключена позже.'), 400);
       return;
     }
-
-    console.log('[progress] chatId=', chatId, 'currentJobId=', currentJobId, 'ES=', typeof EventSource);  // временно
 
     // Живой поток прогресса парсера (SSE). Необязателен: при сбое финал придёт по POST.
     let progressStream = null;
@@ -4405,12 +4517,15 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    }, 120000)
+    }, chatTimeoutMs(chatId))
       .then(async res => {
         const data = await readJsonOrText(res);
         if (!res.ok) throw new Error(data.detail || 'Ошибка чата');
+        if (activeChatRequests[chatId] !== requestToken) return;
         closeProgress();
         removeTypingIndicator(chatId);
+        delete activeChatRequests[chatId];
+        setChatBusy(chatId, false);
         if (data.session_id) {
           chatSessions[chatId] = data.session_id;
         }
@@ -4426,9 +4541,17 @@
         }
       })
       .catch(err => {
+        if (activeChatRequests[chatId] !== requestToken) return;
         closeProgress();
         removeTypingIndicator(chatId);
-        appendChatMessage(chatId, 'agent', 'Не удалось получить ответ агента: ' + err.message);
+        delete activeChatRequests[chatId];
+        setChatBusy(chatId, false);
+        const isAbort = err && (err.name === 'AbortError' || /abort/i.test(String(err.message || '')));
+        const isNetworkError = err && /failed to fetch|network|load failed/i.test(String(err.message || ''));
+        appendChatMessage(chatId, 'agent', isAbort ? chatTimeoutMessage(chatId) : chatNetworkErrorMessage(chatId));
+        if (chatId === 'g-chat' && (isNetworkError || isAbort)) {
+          refreshDocumentsStatus({ silent: true });
+        }
       });
   }
 
@@ -4985,101 +5108,15 @@ function clearAttachedFile() {
   }
 
   async function refreshPhilologistStatus({ silent = false } = {}) {
-    const requestedJobId = currentJobId;
-    try {
-      const res = await fetchWithTimeout(requestedJobId ? `/api/philologist/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/philologist/status', {}, 12000);
-      const data = await readJsonOrText(res);
-      if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус проверки текстов');
-      if (requestedJobId !== currentJobId) return null;
-      const result = data.result || {};
-      setPhilologistUiState(result);
-      maybeAnnouncePhilologistFlow(result);
-      return result;
-    } catch (err) {
-      if (!silent) {
-        appendChatMessage('g-chat', 'agent', 'Не удалось обновить статус проверки текстов: ' + err.message);
-      }
-      return null;
-    }
+    const documentsStatus = await refreshDocumentsStatus({ silent });
+    return documentsStatus ? (documentsStatus.philologist || null) : null;
   }
 
   async function startPhilologist() {
-    await ensureCurrentJobId();
-    const isResume = currentPhilologistStatus === 'stopped';
-    phRunning = true;
-    setPhilologistUiState({ force: true, status: 'running', total_documents: 0, processed_documents: 0 });
-    flowNotificationState.philologist.terminalAnnounced = false;
-    appendChatMessage('g-chat', 'agent', isResume
-      ? 'Продолжаю проверку документов с сохраненного места.'
-      : 'Запускаю проверку документов. После завершения расскажу, что нашёл и что удалось исправить.');
-    stopPhilologistPolling();
-    philologistStatusPoll = startPollingLoop(async () => {
-      const status = await refreshPhilologistStatus({ silent: true });
-      if (!status || ['running', 'finalizing'].includes(status.status)) return;
-      phRunning = false;
-      stopPhilologistPolling();
-      if (status.status === 'completed') {
-        showToast('Тексты проверены');
-        if (!flowNotificationState.philologist.terminalAnnounced) {
-          appendChatMessage('g-chat', 'agent', humanizeDocumentsMessage(status.summary_text, 'Документы проверены. Можно переходить к отправке.'));
-          flowNotificationState.philologist.terminalAnnounced = true;
-        }
-        await refreshModuleReadiness();
-      } else if (status.status === 'stopped') {
-        showToast('Проверка остановлена');
-        if (!flowNotificationState.philologist.terminalAnnounced) {
-          appendChatMessage('g-chat', 'agent', status.summary_text || 'Проверка остановлена. Можно продолжить позже.');
-          flowNotificationState.philologist.terminalAnnounced = true;
-        }
-      } else if (status.status === 'error') {
-        showToast('Ошибка проверки текстов');
-        if (!flowNotificationState.philologist.terminalAnnounced) {
-          appendChatMessage('g-chat', 'agent', status.summary_text || 'Проверка завершилась с ошибкой.');
-          flowNotificationState.philologist.terminalAnnounced = true;
-        }
-      }
-    }, 3000);
-    try {
-      const res = await fetchWithTimeout('/api/philologist/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ ai_enabled: true, mode: 'fast' })),
-      }, 30000);
-      const data = await readJsonOrText(res);
-      if (!res.ok) {
-        throw new Error(data.detail || 'Ошибка запуска агента-филолога');
-      }
-
-      const result = data.result || {};
-      setPhilologistUiState(result);
-      maybeAnnouncePhilologistFlow(result);
-      if (!['running', 'finalizing'].includes(String(result.status || ''))) {
-        appendChatMessage('g-chat', 'agent', result.summary_text || 'Фоновая проверка документов запущена.');
-      }
-    } catch (err) {
-      phRunning = false;
-      stopPhilologistPolling();
-      setPhilologistUiState({ force: true, status: 'error', summary_text: 'Проверка не завершилась' });
-      appendChatMessage('g-chat', 'agent', 'Не удалось завершить проверку: ' + err.message);
-      showToast('Ошибка проверки текстов');
-    }
+    return startDocumentsPipeline();
   }
   async function pausePhilologist() {
-    try {
-      const res = await fetchWithTimeout('/api/philologist/stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({})),
-      }, 15000);
-      const data = await readJsonOrText(res);
-      if (!res.ok) throw new Error(data.detail || 'Не удалось остановить филолога');
-      setPhilologistUiState(data.result || {});
-      appendChatMessage('g-chat', 'agent', 'Останавливаю филолога после текущего документа.');
-      showToast('Остановка филолога запрошена');
-    } catch (err) {
-      appendChatMessage('g-chat', 'agent', 'Не удалось остановить филолога: ' + (err && err.message ? err.message : String(err)));
-      showToast('Ошибка остановки филолога');
-    }
+    return pauseDocumentsPipeline();
   }
 
   let generatorStatusPoll = null;
@@ -5121,36 +5158,70 @@ function clearAttachedFile() {
       }
     }
     await refreshModuleReadiness();
-    await refreshPhilologistStatus({ silent: true });
+    await refreshDocumentsStatus({ silent: true });
     await refreshSenderStatus({ silent: true });
   }
 
   async function refreshGeneratorStatus({ silent = false } = {}) {
-    const requestedJobId = currentJobId;
-    try {
-      const res = await fetchWithTimeout(requestedJobId ? `/api/generator/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/generator/status', {}, 12000);
-      const data = await readJsonOrText(res);
-      if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус генератора');
-      if (requestedJobId !== currentJobId) return null;
-      const result = data.result || {};
-      setGeneratorUiState(result);
-      maybeAnnounceGeneratorFlow(result);
-      if (generatorStatusPoll && result.status && result.status !== 'running') {
-        await finalizeGeneratorPolling(result);
-      }
-      return result;
-    } catch (err) {
-      if (!silent) {
-        appendChatMessage('g-chat', 'agent', 'Не удалось обновить статус генератора: ' + err.message);
-      }
-      return null;
-    }
+    const documentsStatus = await refreshDocumentsStatus({ silent });
+    return documentsStatus ? (documentsStatus.generator || null) : null;
   }
 
   function stopDocumentsPolling() {
     if (documentsStatusPoll) {
       documentsStatusPoll.stopped = true;
       documentsStatusPoll = null;
+    }
+  }
+
+  async function startDocumentsLoadTest(rowCount = 500) {
+    const button = document.getElementById('g-load-test');
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Создаю тест...';
+    }
+    try {
+      const sourceJobId = currentJobId || '';
+      const res = await fetchWithTimeout('/api/load-test/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ row_count: rowCount, source_job_id: sourceJobId }),
+      }, 30000);
+      const data = await readJsonOrText(res);
+      if (!res.ok) throw new Error(data.detail || 'Не удалось создать нагрузочный тест');
+      const result = data.result || {};
+      const jobId = String(result.job_id || '').trim();
+      if (!jobId) throw new Error('Сервер не вернул job_id для нагрузочного теста');
+
+      stopDocumentsPolling();
+      stopGeneratorPolling();
+      stopPhilologistPolling();
+      resetModuleRuntimeState();
+      resetFlowNotificationState();
+      setCurrentJobId(jobId);
+      goToScreen('generator');
+      appendChatMessage(
+        'g-chat',
+        'agent',
+        `Создала тестовую таблицу на ${Number(result.row_count || rowCount).toLocaleString('ru')} клиентов. Реальная отправка для этой job запрещена сервером. Запускаю подготовку документов.`
+      );
+      await refreshModuleReadiness();
+      if (Array.isArray(result.missing_templates) && result.missing_templates.length) {
+        const message = 'Тестовая таблица создана, но запуск невозможен: не найден ' + result.missing_templates.join(', ') + '. Сначала загрузите шаблоны в обычной сессии и повторите тест.';
+        appendChatMessage('g-chat', 'agent', message);
+        showToast('Не хватает шаблонов для теста');
+        await refreshDocumentsStatus({ silent: true });
+        return;
+      }
+      await startDocumentsPipeline();
+    } catch (err) {
+      appendChatMessage('g-chat', 'agent', 'Не удалось запустить нагрузочный тест: ' + (err && err.message ? err.message : String(err)));
+      showToast('Ошибка нагрузочного теста');
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Нагрузочный тест 500';
+      }
     }
   }
 
@@ -5258,60 +5329,10 @@ function clearAttachedFile() {
   }
 
   async function startGenerator() {
-    await ensureCurrentJobId();
-    const isResume = currentGeneratorStatus === 'stopped';
-    setGeneratorUiState({ force: true, status: 'running', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
-    flowNotificationState.generator.terminalAnnounced = false;
-    appendChatMessage('g-chat', 'agent', isResume
-      ? 'Продолжаю генерацию с сохраненного места.'
-      : 'Начинаю подготовку документов. Сначала проверю шаблоны, затем создам файлы и подготовлю результат.');
-    generatorCompletionAnnounced = false;
-    stopGeneratorPolling();
-    generatorStatusPoll = startPollingLoop(() => refreshGeneratorStatus({ silent: true }), 1000);
-    try {
-      const res = await fetchWithTimeout('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({})),
-      }, 30000);
-      const data = await readJsonOrText(res);
-      if (!res.ok) {
-        const detail = data.detail || 'неизвестная ошибка';
-        showToast('Ошибка: ' + detail);
-        setGeneratorUiState({ force: true, status: 'error', summary_text: detail });
-        appendChatMessage('g-chat', 'agent', 'Не удалось запустить генератор: ' + detail);
-        stopGeneratorPolling();
-        return;
-      }
-      const result = data.result || {};
-      setGeneratorUiState(result);
-      maybeAnnounceGeneratorFlow(result);
-      if (result.status && result.status !== 'running') {
-        await finalizeGeneratorPolling(result);
-      }
-      } catch(e) {
-      showToast('Ошибка соединения с сервером');
-      setGeneratorUiState({ force: true, status: 'error', summary_text: 'Ошибка соединения с сервером' });
-      appendChatMessage('g-chat', 'agent', 'Не удалось запустить генератор: ошибка соединения с сервером.');
-      stopGeneratorPolling();
-    }
+    return startDocumentsPipeline();
   }
   async function pauseGenerator() {
-    try {
-      const res = await fetchWithTimeout('/api/generator/stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({})),
-      }, 15000);
-      const data = await readJsonOrText(res);
-      if (!res.ok) throw new Error(data.detail || 'Не удалось остановить генератор');
-      setGeneratorUiState(data.result || {});
-      appendChatMessage('g-chat', 'agent', 'Останавливаю генератор после текущего безопасного шага.');
-      showToast('Остановка генератора запрошена');
-    } catch (err) {
-      appendChatMessage('g-chat', 'agent', 'Не удалось остановить генератор: ' + (err && err.message ? err.message : String(err)));
-      showToast('Ошибка остановки генератора');
-    }
+    return pauseDocumentsPipeline();
   }
 
   // SENDER
@@ -5411,11 +5432,13 @@ function clearAttachedFile() {
   function applyModuleReadiness() {
     const generatorRunButton = document.getElementById('g-run');
     const philologistRunButton = document.getElementById('ph-run');
-    const documentsStatusNow = String((lastDocumentsUiState || {}).status || '');
+    const documentsSnapshot = getEffectiveDocumentsStatusSnapshot();
+    const documentsStatusNow = documentsSnapshot.documentsStatus;
     const generatorRunningNow = documentsStatusNow
       ? documentsStatusNow === 'running'
-      : currentGeneratorStatus === 'running';
-    const philologistRunningNow = ['running', 'finalizing'].includes(currentPhilologistStatus);
+      : documentsSnapshot.generatorStatus === 'running';
+    const philologistRunningNow = !documentsSnapshot.isTerminal
+      && ['running', 'finalizing'].includes(documentsSnapshot.philologistStatus);
     if (moduleReadinessServerLoaded) {
       setTemplateButtonServerState('mail-btn', moduleReadiness.mail_template_loaded, 'Шаблон письма загружен');
       setTemplateButtonServerState('kp-btn', moduleReadiness.kp_template_loaded, 'Шаблон КП загружен');
@@ -5898,7 +5921,7 @@ function clearAttachedFile() {
     return Boolean(
       lastDocumentsUiState.generator
       || lastDocumentsUiState.philologist
-      || ['running', 'stopped', 'completed', 'error'].includes(String(lastDocumentsUiState.status || ''))
+      || ['running', 'waiting_review', 'stopped', 'completed', 'error'].includes(String(lastDocumentsUiState.status || ''))
     );
   }
 
@@ -6025,9 +6048,9 @@ function clearAttachedFile() {
       if (stage === 'review_templates') {
         label.textContent = humanizeDocumentsMessage(nextState.summary_text, stageText || 'Проверяю шаблоны перед созданием документов.');
       } else if (stage === 'convert_pdf' && pdfTotal > 0) {
-        label.textContent = 'Собираю результат.';
+        label.textContent = `Собираю результат: ${pdfProcessed.toLocaleString('ru')} из ${pdfTotal.toLocaleString('ru')} файлов.`;
       } else if (stage === 'finalize_output') {
-        label.textContent = 'Собираю результат.';
+        label.textContent = 'Собираю итоговый результат.';
       } else {
         if (total > 0) {
           const baseText = formatProgressText({
@@ -6171,7 +6194,11 @@ function clearAttachedFile() {
       const reviewTotal = Number(serverProcess.review_total ?? vm.totalDocuments ?? 0);
       reviewEl.textContent = `${reviewDone.toLocaleString('ru')}/${reviewTotal.toLocaleString('ru')}`;
       const reviewRow = document.getElementById('g-process-review-row');
-      if (reviewRow) reviewRow.hidden = reviewTotal <= 0;
+      const philologistStatus = String(((result.philologist || {}).status) || '');
+      const reviewHasStarted = vm.stage === 'review'
+        || vm.status === 'completed'
+        || ['running', 'finalizing', 'completed', 'stopped', 'error'].includes(philologistStatus);
+      if (reviewRow) reviewRow.hidden = !reviewHasStarted || reviewTotal <= 0;
     }
     if (currentItemEl) {
       currentItemEl.textContent = '';
@@ -6200,10 +6227,10 @@ function clearAttachedFile() {
       return;
     }
 
-    if (status === 'running' && (stage === 'convert_pdf' || stage === 'finalize_output')) {
+    if (status === 'running' && (stage === 'ready' || stage === 'convert_pdf' || stage === 'finalize_output')) {
       setText({
         title: 'Идёт подготовка',
-        main: 'Готовим документы.',
+        main: 'Собираем результат.',
         detail: '',
         next: 'Скоро подготовка завершится автоматически.'
       });
@@ -6287,12 +6314,16 @@ function clearAttachedFile() {
     } else if (normalizedStatus === 'running' || normalizedStatus === 'waiting_review') {
       if (normalizedStage === 'review' || normalizedStatus === 'waiting_review') {
         activeIndex = 1;
+      } else if (['ready', 'convert_pdf', 'finalize_output'].includes(normalizedStage)) {
+        activeIndex = 2;
       } else {
         activeIndex = 0;
       }
     } else if (normalizedStatus === 'error' || normalizedStatus === 'stopped') {
       if (normalizedStage === 'review') {
         activeIndex = 1;
+      } else if (['ready', 'convert_pdf', 'finalize_output'].includes(normalizedStage)) {
+        activeIndex = 2;
       } else {
         activeIndex = 0;
       }
@@ -6322,7 +6353,11 @@ function clearAttachedFile() {
     const generatorState = result.generator || {};
     const philologistState = result.philologist || {};
     const rawStatus = String(result.status || 'idle');
-    const stage = String(result.stage || 'generate');
+    const rawStage = String(result.stage || 'generate');
+    const generatorStage = String(generatorState.stage || '');
+    const stage = rawStage === 'generate' && ['convert_pdf', 'finalize_output'].includes(generatorStage)
+      ? 'ready'
+      : rawStage;
     const totalRows = Number(result.total_rows || generatorState.total_rows || 0);
     const processedRows = Number(result.processed_rows || generatorState.processed_rows || 0);
     const totalDocuments = Number(result.total_documents || philologistState.total_documents || 0);
@@ -6334,8 +6369,7 @@ function clearAttachedFile() {
     const outputFileCount = Number(result.output_file_count || generatorState.output_file_count || 0);
     const errorRows = Number(result.error_rows || generatorState.error_rows || 0);
     const fixedDocuments = Number(result.fixed_documents || philologistState.fixed_documents || 0);
-    const reviewActuallyDone = totalDocuments > 0 && reviewedDocuments >= totalDocuments;
-    const status = rawStatus === 'running' && stage === 'review' && reviewActuallyDone ? 'completed' : rawStatus;
+    const status = rawStatus;
     const expectedDocuments = totalRows > 0
       ? totalRows * 2
       : Math.max(totalDocuments, generatedDocxCount, outputFileCount);
@@ -6350,7 +6384,10 @@ function clearAttachedFile() {
     const shownPdfDone = status === 'completed' && shownPdfTotal > 0 && !hasPdfCount
       ? shownPdfTotal
       : Math.max(pdfProcessed, Math.min(outputFileCount, shownPdfTotal || outputFileCount));
-    const progressPercent = Number(result.progress_percent || 0);
+    const rawProgressPercent = Math.max(0, Math.min(100, Number(result.progress_percent || 0)));
+    const progressPercent = status === 'completed'
+      ? 100
+      : Math.min(rawProgressPercent, 99);
     return {
       status,
       rawStatus,
@@ -6445,8 +6482,8 @@ function clearAttachedFile() {
       if (vm.stage === 'review' && vm.totalDocuments > 0) {
         return `Проверено документов: ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')}.`;
       }
-      if (vm.shownPdfTotal > 0 && (vm.stage === 'convert_pdf' || vm.stage === 'finalize_output')) {
-        return 'Собираю результат.';
+      if (vm.shownPdfTotal > 0 && ['ready', 'convert_pdf', 'finalize_output'].includes(vm.stage)) {
+        return `Собираю результат: ${vm.shownPdfDone.toLocaleString('ru')} из ${vm.shownPdfTotal.toLocaleString('ru')} файлов.`;
       }
       if (vm.expectedDocuments > 0 && vm.shownDocuments > 0) {
         return `Создано документов: ${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')}.`;
@@ -6459,7 +6496,7 @@ function clearAttachedFile() {
 
     if (vm.status === 'running') {
       return {
-        badgeText: vm.stage === 'review' ? 'Проверяем текст' : 'Подготовка',
+        badgeText: vm.stage === 'review' ? 'Проверяем текст' : (vm.stage === 'ready' ? 'Собираем результат' : 'Подготовка'),
         badgeClass: 'badge badge-running',
         runText: 'Документы готовятся',
         runDisabled: true,
@@ -6472,6 +6509,8 @@ function clearAttachedFile() {
         labelText: runningLabel,
         generatorHint: vm.stage === 'review'
           ? 'Проверяем текст. Просто дождитесь завершения.'
+          : vm.stage === 'ready'
+          ? 'Собираем результат. Просто дождитесь завершения.'
           : 'Идёт подготовка документов. Просто дождитесь завершения.',
         philologistHint: 'Ничего дополнительно запускать не нужно.',
         actionsHint: 'Идёт подготовка документов. Просто дождитесь завершения.',
@@ -6590,6 +6629,19 @@ function clearAttachedFile() {
       currentPhilologistStatus = (result.philologist || {}).status || currentPhilologistStatus;
       phRunning = ['running', 'finalizing'].includes(String(currentPhilologistStatus || ''));
     }
+    if (vm.status === 'completed') {
+      currentGeneratorStatus = 'completed';
+      currentPhilologistStatus = 'completed';
+      lastGeneratorUiState = { ...lastGeneratorUiState, status: 'completed' };
+      lastPhilologistUiState = { ...lastPhilologistUiState, status: 'completed' };
+      phRunning = false;
+    } else if (vm.status === 'stopped') {
+      if (currentGeneratorStatus === 'running') currentGeneratorStatus = 'stopped';
+      if (['running', 'finalizing'].includes(String(currentPhilologistStatus || ''))) {
+        currentPhilologistStatus = 'stopped';
+        phRunning = false;
+      }
+    }
 
     const badge = document.getElementById('g-badge');
     const fill = document.getElementById('g-fill');
@@ -6639,9 +6691,11 @@ function clearAttachedFile() {
   }
 
   function isDocumentsReadyForSender() {
-    const documentsStatus = String(lastDocumentsUiState.status || '');
-    const generatorStatus = String((lastDocumentsUiState.generator || {}).status || currentGeneratorStatus || '');
-    const philologistStatus = String((lastDocumentsUiState.philologist || {}).status || currentPhilologistStatus || '');
+    const snapshot = getEffectiveDocumentsStatusSnapshot();
+    const documentsStatus = snapshot.documentsStatus;
+    const generatorStatus = snapshot.generatorStatus;
+    const philologistStatus = snapshot.philologistStatus;
+    if (documentsStatus === 'completed') return true;
     const modulesCompleted = generatorStatus === 'completed' && philologistStatus === 'completed';
     return modulesCompleted && (documentsStatus === 'completed' || !documentsStatus);
   }

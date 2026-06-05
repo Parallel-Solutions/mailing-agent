@@ -14,6 +14,7 @@ from .storage import resolve_job_paths
 
 LEGACY_STATE_DIR = Path("data/state")
 TERMINAL_STATE_STATUSES = {"completed", "error", "stopped"}
+ALWAYS_SPLIT_DETAIL_AGENTS = {"philologist"}
 DETAIL_KEYS_BY_AGENT: dict[str, tuple[str, ...]] = {
     "generator": ("results",),
     "philologist": ("documents", "tool_trace", "tasks", "recent_events", "plan", "agent_loop", "tool_manifest"),
@@ -127,6 +128,8 @@ def _compact_state_for_primary(agent_name: str, state: dict[str, Any], details_p
 def _should_split_state(agent_name: str, state: dict[str, Any]) -> bool:
     if agent_name not in DETAIL_KEYS_BY_AGENT:
         return False
+    if agent_name in ALWAYS_SPLIT_DETAIL_AGENTS:
+        return True
     return str(state.get("status") or "") in TERMINAL_STATE_STATUSES
 
 

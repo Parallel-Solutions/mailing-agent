@@ -81,7 +81,12 @@ def _build_llm_client() -> OpenAI | None:
 
 def _row_count(job_id: str | None = None) -> int:
     job_paths = resolve_job_paths(job_id)
-    data_xlsx_path = job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    if job_paths.data_xlsx.exists():
+        data_xlsx_path = job_paths.data_xlsx
+    elif job_paths.uses_legacy_layout:
+        data_xlsx_path = DATA_XLSX_PATH
+    else:
+        return 0
     if not data_xlsx_path.exists():
         return 0
     workbook = None
@@ -104,7 +109,11 @@ def _row_count(job_id: str | None = None) -> int:
 
 def _parser_data_xlsx_path(job_id: str | None = None):
     job_paths = resolve_job_paths(job_id)
-    return job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+    if job_paths.data_xlsx.exists():
+        return job_paths.data_xlsx
+    if job_paths.uses_legacy_layout:
+        return DATA_XLSX_PATH
+    return job_paths.data_xlsx
 
 
 def _build_oktmo_lookup() -> OktmoMunicipalityLookup | None:
@@ -124,6 +133,18 @@ def format_municipality_verification_for_chat(result: dict[str, Any], *, max_sam
         return ""
     if result.get("status") == "error":
         return f"Не смог проверить официальные названия МО: {result.get('reason') or 'неизвестная ошибка'}."
+    if result.get("table_mode") == "district":
+        total_rows = int(result.get("total_rows", 0) or 0)
+        missing_rows = int(result.get("missing_rows", 0) or 0)
+        if missing_rows:
+            return (
+                f"Принял районную таблицу: строк {total_rows}. "
+                f"В {missing_rows} строках не заполнен MUN_R_NAME, их лучше проверить перед генерацией."
+            )
+        return (
+            f"Принял районную таблицу: строк {total_rows}. "
+            "Основная сущность берётся из MUN_R_NAME, проверка MUN_NAME для этого формата не требуется."
+        )
 
     total_rows = int(result.get("total_rows", 0) or 0)
     verified_rows = int(result.get("verified_rows", 0) or 0)

@@ -148,7 +148,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
         self.assertEqual(deduped, [items[1]])
 
-    def test_unisender_go_event_prefers_provider_job_id(self) -> None:
+    def test_unisender_go_event_prefers_row_recipient_over_provider_job_fallback(self) -> None:
         events = {
             "provider_job:new-provider-id": {"provider_status": "delivered"},
             "row_email:1:test@example.com": {"provider_status": "hard_bounced"},
@@ -161,7 +161,68 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
         matched = sender_report._match_unisender_go_event(item, events)
 
+        self.assertEqual(matched, {"provider_status": "hard_bounced"})
+
+    def test_unisender_go_event_uses_provider_job_fallback_without_recipient(self) -> None:
+        events = {
+            "provider_job:new-provider-id": {"provider_status": "delivered"},
+        }
+        item = {
+            "row_id": "1",
+            "recipient": "",
+            "provider_job_id": "new-provider-id",
+        }
+
+        matched = sender_report._match_unisender_go_event(item, events)
+
         self.assertEqual(matched, {"provider_status": "delivered"})
+
+    def test_unisender_go_event_prefers_provider_job_and_recipient(self) -> None:
+        events = {
+            "provider_job:shared-provider-id": {"provider_status": "hard_bounced"},
+            "provider_job_email:shared-provider-id:first@example.com": {"provider_status": "delivered"},
+            "provider_job_email:shared-provider-id:second@example.com": {"provider_status": "err_user_unknown"},
+        }
+
+        first = sender_report._match_unisender_go_event(
+            {
+                "row_id": "1",
+                "recipient": "first@example.com",
+                "provider_job_id": "shared-provider-id",
+            },
+            events,
+        )
+        second = sender_report._match_unisender_go_event(
+            {
+                "row_id": "1",
+                "recipient": "second@example.com",
+                "provider_job_id": "shared-provider-id",
+            },
+            events,
+        )
+
+        self.assertEqual(first, {"provider_status": "delivered"})
+        self.assertEqual(second, {"provider_status": "err_user_unknown"})
+
+    def test_unisender_go_technical_spam_skip_is_not_hard_bounce(self) -> None:
+        with patch.object(
+            sender_report,
+            "_build_delivery_rows",
+            return_value=(
+                [
+                    {
+                        "provider": "unisender_go",
+                        "provider_status": "err_spam_skipped",
+                        "checked_at": "2026-06-04T10:00:00",
+                    }
+                ],
+                "",
+            ),
+        ):
+            analytics = sender_report.build_unisender_delivery_analytics("job-current", refresh=False)
+
+        self.assertEqual(analytics["summary"]["hard_bounced"], 0)
+        self.assertEqual(analytics["summary"]["errors"], 1)
 
     def test_run_unisender_request_retries_temporary_network_error(self) -> None:
         attempts = {"count": 0}

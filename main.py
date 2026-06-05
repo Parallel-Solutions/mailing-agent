@@ -2,10 +2,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pathlib import Path
 import secrets
-import re
-import json
+import zipfile
 from src.utils.logger import logger
 from src.utils.config import settings
+from src.web.agent_router import create_agent_router
 from src.web.documents_router import create_documents_router
 from src.web.documents_service import (
     compact_documents_status,
@@ -13,6 +13,13 @@ from src.web.documents_service import (
     documents_agent_choose_reply,
     run_documents_pipeline_background,
 )
+from src.web.download_router import create_download_router
+from src.web.generator_router import create_generator_router
+from src.web.jobs_router import JobsWebController
+from src.web.load_test_service import create_documents_load_test_job, is_load_test_job
+from src.web.parser_router import create_parser_router
+from src.web.philologist_router import create_philologist_router
+from src.web.public_router import create_public_router
 from src.web.sender_router import create_sender_router
 from src.web.sender_service import (
     compact_sender_status,
@@ -21,15 +28,13 @@ from src.web.sender_service import (
     prime_sender_running_state,
     run_sender_background,
 )
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Body, Form
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile
 import shutil
 import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from time import perf_counter
 import time
-from fastapi.responses import StreamingResponse        # рядом с HTMLResponse
-from fastapi.concurrency import run_in_threadpool
 from src.parser_new.progress import subscribe as parser_progress_subscribe
 
 app = FastAPI(title="Mailing Agent")
@@ -140,8 +145,6 @@ def _validate_uploaded_file(
 _METADATA_CACHE_LOCK = threading.Lock()
 _EXCEL_ROW_COUNT_CACHE: dict[str, dict[str, float | int | tuple[int, int]]] = {}
 _TREE_FILE_COUNT_CACHE: dict[str, dict[str, float | int]] = {}
-_JOB_HISTORY_ITEM_CACHE: dict[str, dict[str, object]] = {}
-_JOB_HISTORY_SCAN_CACHE: dict[str, dict[str, object]] = {}
 METADATA_CACHE_TTL_SECONDS = 10.0
 
 
@@ -527,6 +530,23 @@ def _compact_generator_status(state: dict) -> dict:
     if isinstance(inflection_summary, dict) and inflection_summary.get("sample_warnings"):
         inflection_summary = dict(inflection_summary)
         inflection_summary["sample_warnings"] = list(inflection_summary.get("sample_warnings") or [])[:3]
+    current_client = state.get("current_client")
+    if isinstance(current_client, dict):
+        current_client = {
+            "index": current_client.get("index"),
+            "total": current_client.get("total"),
+            "row_id": current_client.get("row_id"),
+            "name": current_client.get("name"),
+        }
+    generated_docx_count = int(state.get("staged_docx_count") or 0)
+    if generated_docx_count <= 0:
+        generated_docx_count = sum(
+            1
+            for result in (state.get("results") or [])
+            if isinstance(result, dict)
+            for key, value in (result.get("generated_files") or {}).items()
+            if key in {"kp", "contract"} and str(value or "").lower().endswith(".docx")
+        )
     return {
         "status": state.get("status", "idle"),
         "started_at": state.get("started_at"),
@@ -539,6 +559,7 @@ def _compact_generator_status(state: dict) -> dict:
         "stage": state.get("stage", "idle"),
         "stage_text": state.get("stage_text", ""),
         "summary_text": state.get("summary_text", ""),
+        "generated_docx_count": generated_docx_count,
         "staged_docx_count": state.get("staged_docx_count", 0),
         "staged_pdf_count": state.get("staged_pdf_count", 0),
         "pdf_total": state.get("pdf_total", 0),
@@ -546,6 +567,7 @@ def _compact_generator_status(state: dict) -> dict:
         "output_file_count": state.get("output_file_count", 0),
         "inflection_summary": inflection_summary if isinstance(inflection_summary, dict) else {},
         "template_review": state.get("template_review", {}),
+        "current_client": current_client,
         "stop_requested": state.get("stop_requested", False),
         "task_stats": state.get("task_stats", {}),
         "recent_events": (state.get("recent_events") or [])[:5],
@@ -557,260 +579,6 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return default
-
-
-def _read_state_json(path: Path) -> dict:
-    try:
-        if not path.exists() or not path.is_file():
-            return {}
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-    except Exception:
-        return {}
-
-
-def _state_file_mtime(path: Path) -> float:
-    try:
-        return path.stat().st_mtime if path.exists() else 0.0
-    except OSError:
-        return 0.0
-
-
-def _format_history_time(timestamp: float) -> str:
-    if timestamp <= 0:
-        return ""
-    return datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
-
-
-def _clean_upload_token(value: str | None) -> str:
-    return re.sub(r"[^a-zA-Z0-9_-]+", "", str(value or "").strip())[:96]
-
-
-def _upload_meta_path(job_id: str | None) -> Path:
-    return resolve_job_paths(job_id).data_xlsx.parent / "upload_meta.json"
-
-
-def _read_upload_meta(job_id: str | None) -> dict:
-    return _read_state_json(_upload_meta_path(job_id))
-
-
-def _write_upload_meta(job_id: str | None, token: str, filename: str) -> None:
-    if not token:
-        return
-    path = _upload_meta_path(job_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "upload_token": token,
-        "filename": filename,
-        "saved_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _job_history_mtime(job_dir: Path) -> float:
-    state_dir = job_dir / "state"
-    candidates = [
-        job_dir,
-        job_dir / "input" / "data.xlsx",
-        state_dir / "parser.json",
-        state_dir / "generator.json",
-        state_dir / "philologist.json",
-        state_dir / "sender.json",
-        state_dir / "unisender_go_events.jsonl",
-        job_dir / "sent_mail_log.jsonl",
-    ]
-    return max((_state_file_mtime(path) for path in candidates), default=0.0)
-
-
-def _job_history_sender_hint(job_dir: Path) -> bool:
-    sent_log_path = job_dir / "sent_mail_log.jsonl"
-    try:
-        if sent_log_path.exists() and sent_log_path.stat().st_size > 0:
-            return True
-    except OSError:
-        pass
-
-    sender_state = _read_state_json(job_dir / "state" / "sender.json")
-    if not sender_state:
-        return False
-
-    sender_mode = str(sender_state.get("mode") or "")
-    sender_status = str(sender_state.get("status") or "")
-    sender_stats = sender_state.get("stats") if isinstance(sender_state.get("stats"), dict) else {}
-    sent_rows = max(_safe_int(sender_stats.get("sent")), _safe_int(sender_state.get("sent_rows")))
-    error_rows = max(_safe_int(sender_stats.get("error")), _safe_int(sender_state.get("error_rows")))
-    total_rows = max(_safe_int(sender_stats.get("total")), _safe_int(sender_state.get("total_rows")))
-    pending_rows = max(0, total_rows - sent_rows - error_rows) if total_rows else 0
-
-    if sender_mode == "send":
-        return True
-    if sent_rows > 0 or error_rows > 0:
-        return True
-    if sender_status == "running" and pending_rows > 0:
-        return True
-    return False
-
-
-def _job_history_candidate(job_dir: Path) -> tuple[float, bool]:
-    state_dir = job_dir / "state"
-    sender_path = state_dir / "sender.json"
-    sent_log_path = job_dir / "sent_mail_log.jsonl"
-    cache_key = str(job_dir.resolve())
-    root_mtime = _state_file_mtime(job_dir)
-    state_mtime = _state_file_mtime(state_dir)
-    sender_mtime = _state_file_mtime(sender_path)
-    sent_log_mtime = _state_file_mtime(sent_log_path)
-
-    with _METADATA_CACHE_LOCK:
-        cached = _JOB_HISTORY_SCAN_CACHE.get(cache_key)
-        if (
-            cached
-            and float(cached.get("root_mtime") or 0.0) == float(root_mtime)
-            and float(cached.get("state_mtime") or 0.0) == float(state_mtime)
-            and float(cached.get("sender_mtime") or 0.0) == float(sender_mtime)
-            and float(cached.get("sent_log_mtime") or 0.0) == float(sent_log_mtime)
-        ):
-            return (
-                float(cached.get("updated_at_ts") or 0.0),
-                bool(cached.get("is_mailing_hint")),
-            )
-
-    updated_at_ts = _job_history_mtime(job_dir)
-    is_mailing_hint = _job_history_sender_hint(job_dir)
-    with _METADATA_CACHE_LOCK:
-        _JOB_HISTORY_SCAN_CACHE[cache_key] = {
-            "root_mtime": float(root_mtime),
-            "state_mtime": float(state_mtime),
-            "sender_mtime": float(sender_mtime),
-            "sent_log_mtime": float(sent_log_mtime),
-            "updated_at_ts": float(updated_at_ts),
-            "is_mailing_hint": bool(is_mailing_hint),
-        }
-    return updated_at_ts, is_mailing_hint
-
-
-def _job_history_status(
-    *,
-    parser_state: dict,
-    generator_state: dict,
-    philologist_state: dict,
-    sender_state: dict,
-    data_exists: bool,
-) -> tuple[str, str]:
-    sender_status = str(sender_state.get("status") or "idle")
-    sender_mode = str(sender_state.get("mode") or "")
-    sent_rows = _safe_int(sender_state.get("sent_rows") or (sender_state.get("stats") or {}).get("sent"))
-    error_rows = _safe_int(sender_state.get("error_rows") or (sender_state.get("stats") or {}).get("error"))
-    ready_rows = _safe_int(sender_state.get("ready_rows"))
-    if sender_status == "running":
-        return ("Отправка идёт" if sender_mode == "send" else "Проверка отправки", "progress")
-    if sent_rows > 0 or sender_mode == "send":
-        return ("Есть ошибки отправки" if error_rows else "Отправка завершена", "error" if error_rows else "ok")
-    if ready_rows > 0 or (sender_status == "completed" and sender_mode == "dry_run"):
-        return ("Проверка отправки готова", "ok")
-
-    philologist_status = str(philologist_state.get("status") or "idle")
-    if philologist_status == "running":
-        return ("Проверка документов идёт", "progress")
-    if philologist_status == "stopped":
-        return ("Документы остановлены", "wait")
-    if philologist_status == "completed":
-        return ("Документы готовы", "ok")
-
-    generator_status = str(generator_state.get("status") or "idle")
-    if generator_status == "running":
-        return ("Документы готовятся", "progress")
-    if generator_status == "completed":
-        return ("Документы созданы", "ok")
-    if generator_status == "error":
-        return ("Ошибка документов", "error")
-
-    parser_status = str((parser_state.get("municipality_name_verification_state") or {}).get("status") or parser_state.get("status") or "idle")
-    if parser_status == "running":
-        return ("Таблица проверяется", "progress")
-    if data_exists:
-        return ("Таблица загружена", "wait")
-    return ("Черновик", "idle")
-
-
-def _build_job_history_item(job_dir: Path, updated_at_ts: float) -> dict:
-    cache_key = str(job_dir.resolve())
-    with _METADATA_CACHE_LOCK:
-        cached = _JOB_HISTORY_ITEM_CACHE.get(cache_key)
-        if cached and float(cached.get("updated_at_ts") or 0.0) == float(updated_at_ts):
-            cached_item = cached.get("item")
-            if isinstance(cached_item, dict):
-                return dict(cached_item)
-
-    job_id = job_dir.name
-    paths = resolve_job_paths(job_id)
-    state_dir = job_dir / "state"
-    parser_state = _read_state_json(state_dir / "parser.json")
-    generator_state = _read_state_json(state_dir / "generator.json")
-    philologist_state = _read_state_json(state_dir / "philologist.json")
-    sender_state = _read_state_json(state_dir / "sender.json")
-
-    sender_stats = sender_state.get("stats") if isinstance(sender_state.get("stats"), dict) else {}
-    total_rows = max(
-        _safe_int(sender_stats.get("total")),
-        _safe_int(sender_state.get("total_rows")),
-        _safe_int(generator_state.get("total_rows")),
-        _safe_int(parser_state.get("row_count")),
-    )
-    sent_rows = max(_safe_int(sender_stats.get("sent")), _safe_int(sender_state.get("sent_rows")))
-    error_rows = max(_safe_int(sender_stats.get("error")), _safe_int(sender_state.get("error_rows")))
-    pending_rows = max(0, total_rows - sent_rows - error_rows) if total_rows else 0
-    ready_rows = _safe_int(sender_state.get("ready_rows"))
-    reviewed_documents = _safe_int(philologist_state.get("processed_documents"))
-    total_documents = _safe_int(philologist_state.get("total_documents"))
-    generated_rows = max(_safe_int(generator_state.get("ok_rows")), _safe_int(generator_state.get("processed_rows")))
-    label, tone = _job_history_status(
-        parser_state=parser_state,
-        generator_state=generator_state,
-        philologist_state=philologist_state,
-        sender_state=sender_state,
-        data_exists=paths.data_xlsx.exists(),
-    )
-
-    item = {
-        "job_id": job_id,
-        "updated_at": _format_history_time(updated_at_ts),
-        "status_label": label,
-        "status_tone": tone,
-        "total_rows": total_rows,
-        "generated_rows": generated_rows,
-        "reviewed_documents": reviewed_documents,
-        "total_documents": total_documents,
-        "ready_rows": ready_rows,
-        "sent_rows": sent_rows,
-        "error_rows": error_rows,
-        "pending_rows": pending_rows,
-        "has_data": paths.data_xlsx.exists(),
-        "has_output": paths.output_dir.exists(),
-        "sender_status": sender_state.get("status", "idle"),
-        "sender_mode": sender_state.get("mode", "dry_run"),
-    }
-    with _METADATA_CACHE_LOCK:
-        _JOB_HISTORY_ITEM_CACHE[cache_key] = {
-            "updated_at_ts": float(updated_at_ts),
-            "item": dict(item),
-        }
-    return item
-
-
-def _job_history_is_mailing_session(item: dict) -> bool:
-    sender_mode = str(item.get("sender_mode") or "")
-    sender_status = str(item.get("sender_status") or "")
-    sent_rows = _safe_int(item.get("sent_rows"))
-    error_rows = _safe_int(item.get("error_rows"))
-    pending_rows = _safe_int(item.get("pending_rows"))
-
-    if sender_mode == "send":
-        return True
-    if sent_rows > 0 or error_rows > 0:
-        return True
-    if sender_status == "running" and pending_rows > 0:
-        return True
-    return False
 
 
 def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: str | None) -> None:
@@ -948,381 +716,12 @@ async def index(username: str = Depends(check_auth)):
 async def app_status(username: str = Depends(check_auth)):
     return {"status": "ok", "message": "Сервер работает"}
 
-
-@app.post("/api/jobs")
-async def create_job(username: str = Depends(check_auth)):
-    job_id = create_job_id()
-    paths = resolve_job_paths(job_id)
-    paths.ensure_dirs()
-    return {"status": "ok", "job_id": job_id}
-
-
-@app.get("/api/jobs/history")
-async def jobs_history(limit: int = 40, username: str = Depends(check_auth)):
-    safe_limit = max(1, min(int(limit or 40), 200))
-    if not JOBS_DIR.exists():
-        return {"status": "ok", "result": {"jobs": []}}
-
-    candidates: list[tuple[float, Path]] = []
-    for job_dir in JOBS_DIR.iterdir():
-        if not job_dir.is_dir() or not job_dir.name.startswith("job-"):
-            continue
-        updated_at, is_mailing_hint = _job_history_candidate(job_dir)
-        if not is_mailing_hint:
-            continue
-        candidates.append((updated_at, job_dir))
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    jobs: list[dict] = []
-    for updated_at, job_dir in candidates:
-        try:
-            item = _build_job_history_item(job_dir, updated_at)
-        except Exception:
-            logger.exception("jobs_history_item_failed", job_dir=str(job_dir))
-            continue
-        if not _job_history_is_mailing_session(item):
-            continue
-        jobs.append(item)
-        if len(jobs) >= safe_limit:
-            break
-    return {"status": "ok", "result": {"jobs": jobs}}
-
-
-@app.get("/api/jobs/latest-data")
-async def latest_data_job(
-    after: float = 0.0,
-    upload_token: str | None = None,
-    username: str = Depends(check_auth),
-):
-    clean_token = _clean_upload_token(upload_token)
-    latest: tuple[float, str, Path] | None = None
-    if JOBS_DIR.exists():
-        for job_dir in JOBS_DIR.iterdir():
-            if not job_dir.is_dir() or not job_dir.name.startswith("job-"):
-                continue
-            if clean_token and _read_upload_meta(job_dir.name).get("upload_token") != clean_token:
-                continue
-            data_path = resolve_job_paths(job_dir.name).data_xlsx
-            updated_at = _state_file_mtime(data_path)
-            if updated_at <= 0:
-                continue
-            if after > 0 and updated_at < after:
-                continue
-            if latest is None or updated_at > latest[0]:
-                latest = (updated_at, job_dir.name, data_path)
-
-    if not clean_token or _read_upload_meta(None).get("upload_token") == clean_token:
-        legacy_data_path = resolve_job_paths(None).data_xlsx
-        legacy_updated_at = _state_file_mtime(legacy_data_path)
-        if legacy_updated_at > 0 and (after <= 0 or legacy_updated_at >= after):
-            if latest is None or legacy_updated_at > latest[0]:
-                latest = (legacy_updated_at, "", legacy_data_path)
-
-    if latest is None:
-        return {"status": "ok", "result": {"found": False}}
-
-    updated_at, job_id, data_path = latest
-    return {
-        "status": "ok",
-        "result": {
-            "found": True,
-            "job_id": job_id,
-            "updated_at": _format_history_time(updated_at),
-            "row_count": _cached_excel_row_count(data_path),
-        },
-    }
-
-
-def _clone_job_templates_if_present(source_job_id: str | None, target_job_id: str | None) -> None:
-    source_paths = resolve_job_paths(source_job_id)
-    target_paths = resolve_job_paths(target_job_id)
-    source_dir = source_paths.templates_dir
-    target_dir = target_paths.templates_dir
-    if not source_dir.exists():
-        return
-    target_dir.mkdir(parents=True, exist_ok=True)
-    for source_path in source_dir.iterdir():
-        if not source_path.is_file():
-            continue
-        shutil.copy2(source_path, target_dir / source_path.name)
-
-
-@app.post("/api/upload/data")
-async def upload_data(
-    file: UploadFile = File(...),
-    job_id: str | None = Form(default=None),
-    upload_token: str | None = Form(default=None),
-    username: str = Depends(check_auth),
-):
-    request_started = perf_counter()
-    safe_filename = _validate_uploaded_file(
-        file,
-        allowed_extensions=(".xlsx",),
-        max_bytes=settings.upload_data_max_bytes,
-        human_name="таблицы",
-    )
-    logger.info("upload_data_request_started", filename=safe_filename, requested_job_id=job_id)
-    paths = resolve_job_paths(job_id)
-    if not paths.uses_legacy_layout and paths.data_xlsx.exists():
-        fresh_job_id = create_job_id()
-        fresh_paths = resolve_job_paths(fresh_job_id)
-        fresh_paths.ensure_dirs()
-        _clone_job_templates_if_present(paths.job_id, fresh_job_id)
-        paths = fresh_paths
-    paths.ensure_dirs()
-    dest = paths.data_xlsx
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    file_save_started = perf_counter()
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
-    file_save_seconds = round(perf_counter() - file_save_started, 3)
-    clean_upload_token = _clean_upload_token(upload_token)
-    _write_upload_meta(paths.job_id, clean_upload_token, safe_filename)
-    logger.info(
-        "upload_data_file_saved",
-        filename=safe_filename,
-        job_id=paths.job_id,
-        has_upload_token=bool(clean_upload_token),
-        file_save_seconds=file_save_seconds,
-        request_seconds=round(perf_counter() - request_started, 3),
-    )
-
-    _start_parser_verification_process(
-        job_id=paths.job_id,
-        filename=safe_filename,
-        source="upload",
-    )
-
-    return {
-        "status": "ok",
-        "filename": safe_filename,
-        "job_id": paths.job_id,
-        "data_download_url": f"/api/download/data-xlsx?job_id={paths.job_id}",
-        "verification_background": True,
-        "municipality_name_verification_state": {
-            "status": "running",
-            "source": "upload",
-            "summary_text": "Файл загружен. Идёт проверка официальных названий МО после загрузки таблицы.",
-        },
-        "timings": {
-            "file_save_seconds": file_save_seconds,
-            "request_seconds": round(perf_counter() - request_started, 3),
-        },
-    }
-
-
-@app.get("/api/data/info")
-async def data_info(job_id: str | None = None, username: str = Depends(check_auth)):
-    data_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
-    if not data_path.exists():
-        return {"loaded": False, "total": 0}
-    return {"loaded": True, "total": _cached_excel_row_count(data_path)}
-
-
-def _build_job_readiness_result(job_id: str | None = None) -> dict:
-    paths = resolve_job_paths(job_id)
-    data_path = _prefer_existing_file(paths.data_xlsx, Path("data/data.xlsx"))
-    row_count = 0
-    if data_path.exists():
-        row_count = _cached_excel_row_count(data_path)
-
-    templates_dir = paths.templates_dir
-    kp_template_loaded = (templates_dir / "kp_template_source.docx").exists()
-    contract_template_loaded = (templates_dir / "contract_template_source.docx").exists()
-    mail_template_loaded = any(
-        (templates_dir / name).exists()
-        for name in ("mail_template.docx", "mail_template.txt")
-    )
-
-    output_dir = paths.output_dir
-    parser_state = get_parser_status(job_id)
-    generator_state = get_generator_status(job_id)
-    philologist_state = get_philologist_status(job_id, include_details=False)
-
-    parser_verification_state = parser_state.get("municipality_name_verification_state") or {}
-    parser_verification_result = parser_state.get("municipality_name_verification") or {}
-    parser_verification_status = str(parser_verification_state.get("status") or "idle")
-    parser_verification_completed = (
-        parser_verification_status == "completed"
-        or str(parser_verification_result.get("status") or "") == "ok"
-    )
-    parser_running = str(parser_state.get("status") or "") == "running" or parser_verification_status == "running"
-    generator_status = str(generator_state.get("status") or "")
-    philologist_status = str(philologist_state.get("status") or "")
-    generator_running = generator_status == "running"
-    philologist_running = philologist_status in {"running", "finalizing"}
-    reviewed_documents = int(philologist_state.get("processed_documents") or 0)
-    total_documents = int(philologist_state.get("total_documents") or 0)
-    philologist_completed = philologist_status == "completed" or (
-        total_documents > 0
-        and reviewed_documents >= total_documents
-        and philologist_status in {"running", "finalizing"}
-    )
-    documents_completed = generator_status == "completed" and philologist_completed
-    output_docx_count = max(
-        int(generator_state.get("staged_docx_count") or 0),
-        int(philologist_state.get("total_documents") or 0),
-    )
-    if output_docx_count <= 0:
-        output_docx_count = _cached_tree_file_count(output_dir, "*.docx")
-    output_pdf_count = int(generator_state.get("staged_pdf_count") or 0)
-    if output_pdf_count <= 0:
-        output_pdf_count = _cached_tree_file_count(output_dir, "*.pdf")
-
-    generator_reasons: list[str] = []
-    philologist_reasons: list[str] = []
-    sender_reasons: list[str] = []
-
-    if not data_path.exists():
-        generator_reasons.append("Не загружен data.xlsx.")
-        sender_reasons.append("Не загружен data.xlsx.")
-    elif row_count <= 0:
-        generator_reasons.append("В data.xlsx нет строк для обработки.")
-        sender_reasons.append("В data.xlsx нет строк для отправки.")
-
-    if not kp_template_loaded:
-        generator_reasons.append("Не загружен шаблон КП.")
-    if not contract_template_loaded:
-        generator_reasons.append("Не загружен шаблон договора.")
-    if parser_running:
-        generator_reasons.append("Парсер ещё работает.")
-    if data_path.exists() and row_count > 0 and not parser_verification_completed:
-        generator_reasons.append("Таблица ещё не проверена.")
-
-    if output_docx_count <= 0:
-        philologist_reasons.append("Нет готовых DOCX-документов.")
-    if generator_running:
-        philologist_reasons.append("Генератор ещё работает.")
-
-    if output_pdf_count <= 0 and not documents_completed:
-        sender_reasons.append("Нет готовых PDF-вложений.")
-    if generator_running and not documents_completed:
-        sender_reasons.append("Генератор ещё работает.")
-    if philologist_running and not documents_completed:
-        sender_reasons.append("Филолог ещё работает.")
-
-    if job_id:
-        base_path = paths.base_xlsx
-    else:
-        base_path = _prefer_existing_file(paths.base_xlsx, Path("service_docs/base.xlsx"))
-
-    parser_total = _cached_excel_row_count(base_path) if base_path.exists() else 0
-    generator_total = max(
-        row_count,
-        int(generator_state.get("total_rows", 0) or 0),
-    )
-    if generator_total <= 0:
-        philologist_total = int(philologist_state.get("total_documents", 0) or 0)
-        if philologist_total > 0:
-            generator_total = max(generator_total, philologist_total // 2)
-    sender_state = get_sender_status(job_id)
-    sender_total = max(
-        generator_total,
-        int(sender_state.get("total_rows", 0) or 0),
-        int((sender_state.get("stats") or {}).get("total", 0) or 0),
-    )
-
-    return {
-        "data_loaded": data_path.exists(),
-        "row_count": row_count,
-        "kp_template_loaded": kp_template_loaded,
-        "contract_template_loaded": contract_template_loaded,
-        "mail_template_loaded": mail_template_loaded,
-        "output_docx_count": output_docx_count,
-        "output_pdf_count": output_pdf_count,
-        "parser_running": parser_running,
-        "generator_running": generator_running,
-        "philologist_running": philologist_running,
-        "generator_ready": not generator_reasons,
-        "philologist_ready": not philologist_reasons,
-        "sender_ready": not sender_reasons,
-        "generator_reason": " ".join(generator_reasons).strip(),
-        "philologist_reason": " ".join(philologist_reasons).strip(),
-        "sender_reason": " ".join(sender_reasons).strip(),
-        "counts": {
-            "parser_total": parser_total,
-            "generator_total": generator_total,
-            "sender_total": sender_total,
-        },
-    }
-
-
-@app.get("/api/job/readiness")
-async def job_readiness(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": _build_job_readiness_result(job_id)}
-
-
-@app.post("/api/data/verify-municipality-names")
-async def data_verify_municipality_names(
-    payload: dict | None = Body(default=None),
-    username: str = Depends(check_auth),
-):
-    job_id = (payload or {}).get("job_id")
-    data_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
-    if not data_path.exists():
-        raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
-    return {
-        "status": "ok",
-        "result": run_parser_municipality_verification(job_id, source="api"),
-    }
-
-
-@app.post("/api/upload/template")
-async def upload_template(
-    file: UploadFile = File(...),
-    job_id: str | None = Form(default=None),
-    template_kind: str | None = Form(default=None),
-    username: str = Depends(check_auth),
-):
-    paths = resolve_job_paths(job_id)
-    paths.ensure_dirs()
-    templates_dir = paths.templates_dir
-    templates_dir.mkdir(exist_ok=True)
-    kind = (template_kind or "").strip().lower()
-    allowed_extensions = (".docx", ".txt") if kind == "mail" else (".docx",)
-    human_name = (
-        "почтового шаблона"
-        if kind == "mail"
-        else "шаблона КП"
-        if kind == "kp"
-        else "шаблона договора"
-        if kind == "contract"
-        else "шаблона"
-    )
-    original_name = _validate_uploaded_file(
-        file,
-        allowed_extensions=allowed_extensions,
-        max_bytes=settings.upload_template_max_bytes,
-        human_name=human_name,
-    )
-    if kind == "mail":
-        for stale_name in ("mail_template.txt", "mail_template.docx"):
-            stale_path = templates_dir / stale_name
-            if stale_path.exists():
-                stale_path.unlink()
-        dest = templates_dir / ("mail_template.docx" if original_name.lower().endswith(".docx") else "mail_template.txt")
-    elif kind == "kp":
-        dest = templates_dir / "kp_template_source.docx"
-    elif kind == "contract":
-        dest = templates_dir / "contract_template_source.docx"
-    else:
-        raise HTTPException(status_code=400, detail="Не указан тип шаблона.")
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
-    return {
-        "status": "ok",
-        "filename": file.filename,
-        "stored_as": dest.name,
-        "job_id": paths.job_id,
-    }
-
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.transforms import build_document_context
 from src.generator.generation.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
 from src.generator.generation.config_generator import (
     BATCH_PDF_DIR,
     DOCX_WORKERS,
-    ONLYOFFICE_PUBLIC_FILES_DIR,
     START_OUTGOING_NUMBER,
     WEB_CASE_AGENT_MAX_WORKERS,
 )
@@ -1355,12 +754,9 @@ from src.generator.delivery.sender_agent import (
 )
 from src.generator.delivery.sender_report import (
     build_unisender_delivery_analytics,
-    build_unisender_delivery_report_xlsx,
-    unisender_delivery_report_has_data,
 )
 from src.generator.delivery.unisender_go_events import append_unisender_go_events
 from src.generator.orchestration.parser_agent import (
-    chat_with_parser,
     format_municipality_verification_for_chat,
     get_parser_status,
     mark_municipality_verification_failed,
@@ -1370,34 +766,16 @@ from src.generator.orchestration.parser_agent import (
 )
 from src.generator.orchestration.orchestrator_agent import (
     chat_with_orchestrator,
-    get_orchestrator_status,
 )
 from src.generator.orchestration.autonomous_worker import (
     get_autonomous_worker_state,
-    start_autonomous_worker,
-    stop_autonomous_worker,
-)
-from src.generator.knowledge.agent_memory import (
-    build_agent_report,
-    build_quarantine_items,
-    build_learning_candidates,
-    get_agent_memory_csv_path,
-    get_agent_quarantine_csv_path,
-    get_agent_report_path,
-    save_agent_report,
-    save_learning_memory_csv,
-    save_quarantine_csv,
-)
-from src.generator.knowledge.correction_report import (
-    build_correction_report_xlsx,
-    correction_report_has_data,
 )
 from src.generator.case_engine.overrides import upsert_override
-from src.generator.inflection.inflection_report import load_inflection_log, save_inflection_csv
 from src.generator.generation.generator_agent import (
     _load_generator_state,
     _save_generator_state,
     clear_generator_stop_request,
+    finalize_output_pdfs_for_job,
     get_generator_status,
     prime_generator_state,
     request_generator_stop,
@@ -1417,7 +795,7 @@ def cleanup_batch_pdf_dir() -> None:
 def process_web_row(payload: tuple[int, int, dict]) -> dict:
     result_index, outgoing_number, row = payload
     row_id = row.get("ID")
-    mun_name = row.get("MUN_NAME", "unknown")
+    mun_name = row.get("MUN_NAME") or row.get("MUN_R_NAME") or "unknown"
     started_at = perf_counter()
     print(f"[web-row:{result_index}] start id={row_id} mun={mun_name}")
 
@@ -1460,6 +838,28 @@ def process_web_row(payload: tuple[int, int, dict]) -> dict:
     }
 
 
+jobs_controller = JobsWebController(
+    check_auth=check_auth,
+    settings=settings,
+    logger=logger,
+    prefer_existing_file=_prefer_existing_file,
+    validate_uploaded_file=_validate_uploaded_file,
+    cached_excel_row_count=_cached_excel_row_count,
+    cached_tree_file_count=_cached_tree_file_count,
+    safe_int=_safe_int,
+    create_job_id=create_job_id,
+    resolve_job_paths=resolve_job_paths,
+    jobs_dir=JOBS_DIR,
+    create_documents_load_test_job=create_documents_load_test_job,
+    start_parser_verification_process=_start_parser_verification_process,
+    get_parser_status=get_parser_status,
+    get_generator_status=get_generator_status,
+    get_philologist_status=get_philologist_status,
+    get_sender_status=get_sender_status,
+    run_parser_municipality_verification=run_parser_municipality_verification,
+)
+
+
 configure_documents_service(
     compact_generator_status=_compact_generator_status,
     get_generator_status=get_generator_status,
@@ -1475,11 +875,13 @@ configure_documents_service(
     clear_generator_stop_request=clear_generator_stop_request,
     run_philologist=run_philologist,
     clear_philologist_stop_request=clear_philologist_stop_request,
+    finalize_documents_output=finalize_output_pdfs_for_job,
     load_generator_state=_load_generator_state,
     load_philologist_state=_load_philologist_state,
     schedule_output_archive_build=_schedule_output_archive_build,
     unregister_documents_thread=_unregister_documents_thread,
-    build_job_readiness_result=_build_job_readiness_result,
+    build_job_readiness_result=jobs_controller.build_job_readiness_result,
+    chat_with_orchestrator=chat_with_orchestrator,
     logger=logger,
 )
 
@@ -1492,6 +894,8 @@ configure_sender_service(
     collect_excel_stats=_collect_excel_stats,
 )
 
+
+app.include_router(jobs_controller.router)
 
 app.include_router(
     create_documents_router(
@@ -1536,547 +940,83 @@ app.include_router(
         request_sender_stop=request_sender_stop,
         preview_recipients=preview_recipients,
         chat_with_sender=chat_with_sender,
+        is_load_test_job=is_load_test_job,
     )
 )
 
-
-@app.get("/api/counts")
-async def counts(job_id: str | None = None, username: str = Depends(check_auth)):
-    readiness = await job_readiness(job_id=job_id, username=username)
-    counts_result = ((readiness or {}).get("result") or {}).get("counts") or {}
-    return {
-        "parser_total": int(counts_result.get("parser_total", 0) or 0),
-        "generator_total": int(counts_result.get("generator_total", 0) or 0),
-        "sender_total": int(counts_result.get("sender_total", 0) or 0),
-    }
-
-
-@app.post("/api/generate")
-async def generate(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-    job_id = str((payload or {}).get("job_id") or "").strip() or None
-    xlsx_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
-    if not xlsx_path.exists():
-        raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
-    existing_thread = _get_generator_thread(job_id)
-    if existing_thread is not None:
-        return {"status": "ok", "result": _compact_generator_status(get_generator_status(job_id))}
-
-    existing_state = get_generator_status(job_id)
-    if str(existing_state.get("status") or "") == "running":
-        return {"status": "ok", "result": _compact_generator_status(existing_state)}
-    if str(existing_state.get("status") or "") == "stopped":
-        clear_generator_stop_request(job_id)
-        primed_state = existing_state
-        primed_state["status"] = "running"
-        primed_state["completed_at"] = None
-        primed_state["summary_text"] = "Продолжаю генерацию с сохраненного места."
-    else:
-        primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id)
-    if primed_state.get("status") == "error":
-        raise HTTPException(status_code=400, detail=primed_state.get("summary_text") or "Ошибка генерации")
-
-    if primed_state.get("status") == "completed":
-        _schedule_output_archive_build(job_id)
-        return {"status": "ok", "result": _compact_generator_status(primed_state)}
-
-    thread = threading.Thread(
-        target=_run_generator_background,
-        kwargs={"xlsx_path": xlsx_path, "job_id": job_id},
-        daemon=True,
-        name=f"generator-{_generator_job_key(job_id)}",
+app.include_router(
+    create_download_router(
+        check_auth=check_auth,
+        prefer_existing_file=_prefer_existing_file,
+        latest_matching_file=_latest_matching_file,
+        resolve_cached_output_archive=_resolve_cached_output_archive,
+        build_output_archive=_build_output_archive,
+        is_cache_fresh=_is_cache_fresh,
+        job_state_dir=_job_state_dir,
+        get_parser_status=get_parser_status,
+        safe_int=_safe_int,
     )
-    _register_generator_thread(job_id, thread)
-    thread.start()
-    return {"status": "ok", "result": _compact_generator_status(primed_state)}
+)
 
+app.include_router(create_public_router())
 
-@app.get("/api/generator/status")
-async def generator_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": _compact_generator_status(get_generator_status(job_id))}
-
-
-@app.post("/api/generator/stop")
-async def generator_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    return {"status": "ok", "result": _compact_generator_status(request_generator_stop(job_id))}
-
-
-from fastapi.responses import FileResponse
-import zipfile
-
-PUBLIC_ASSETS_DIR = Path("src/generator/assets")
-
-
-@app.get("/public/mail-signature.png")
-async def public_mail_signature():
-    signature_path = PUBLIC_ASSETS_DIR / "parresh-signature-logo.png"
-    if not signature_path.exists():
-        raise HTTPException(status_code=404, detail="Mail signature image not found.")
-    return FileResponse(signature_path, media_type="image/png")
-
-
-@app.get("/public/onlyoffice/{token}/{filename}")
-async def public_onlyoffice_document(token: str, filename: str):
-    if not re.fullmatch(r"[a-f0-9]{32}", token):
-        raise HTTPException(status_code=404, detail="Document not found.")
-    safe_filename = Path(filename).name
-    document_path = (ONLYOFFICE_PUBLIC_FILES_DIR / token / safe_filename).resolve()
-    public_root = ONLYOFFICE_PUBLIC_FILES_DIR.resolve()
-    if public_root not in document_path.parents or not document_path.exists():
-        raise HTTPException(status_code=404, detail="Document not found.")
-    return FileResponse(
-        document_path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=safe_filename,
+app.include_router(
+    create_generator_router(
+        check_auth=check_auth,
+        job_readiness=jobs_controller.job_readiness,
+        prefer_existing_file=_prefer_existing_file,
+        resolve_job_paths=resolve_job_paths,
+        get_generator_thread=_get_generator_thread,
+        compact_generator_status=_compact_generator_status,
+        get_generator_status=get_generator_status,
+        clear_generator_stop_request=clear_generator_stop_request,
+        prime_generator_state=prime_generator_state,
+        schedule_output_archive_build=_schedule_output_archive_build,
+        run_generator_background=_run_generator_background,
+        generator_job_key=_generator_job_key,
+        register_generator_thread=_register_generator_thread,
+        request_generator_stop=request_generator_stop,
     )
+)
 
-
-@app.get("/api/download/output")
-async def download_output(job_id: str | None = None, username: str = Depends(check_auth)):
-    output_dir = resolve_job_paths(job_id).output_dir
-    if not output_dir.exists():
-        raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
-
-    archive_path, cache_is_fresh = _resolve_cached_output_archive(job_id)
-    if not cache_is_fresh:
-        if not any(output_dir.rglob("*.*")):
-            raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
-        archive_path = _build_output_archive(job_id)
-
-    return FileResponse(
-        archive_path,
-        media_type="application/zip",
-        filename="output.zip"
+app.include_router(
+    create_parser_router(
+        check_auth=check_auth,
+        parse_optional_limit=_parse_optional_limit,
+        run_parser_agent=run_parser_agent,
+        get_parser_status=get_parser_status,
+        run_parser_municipality_verification=run_parser_municipality_verification,
+        format_municipality_verification_for_chat=format_municipality_verification_for_chat,
+        parser_progress_subscribe=parser_progress_subscribe,
+        logger=logger,
     )
+)
 
-
-@app.get("/api/download/data-xlsx")
-async def download_data_xlsx(job_id: str | None = None, username: str = Depends(check_auth)):
-    data_path = _prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
-    if not data_path.exists():
-        raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
-    return FileResponse(
-        data_path,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename="data.xlsx",
+app.include_router(
+    create_philologist_router(
+        check_auth=check_auth,
+        get_philologist_thread=_get_philologist_thread,
+        compact_philologist_status=_compact_philologist_status,
+        get_philologist_status=lambda job_id: get_philologist_status(job_id, include_details=False),
+        clear_philologist_stop_request=clear_philologist_stop_request,
+        prime_philologist_running_state=_prime_philologist_running_state,
+        run_philologist_background=_run_philologist_background,
+        philologist_job_key=_philologist_job_key,
+        register_philologist_thread=_register_philologist_thread,
+        request_philologist_stop=request_philologist_stop,
+        build_philologist_plan=build_philologist_plan,
+        chat_with_philologist=chat_with_philologist,
     )
-@app.get("/api/parser/download-result")
-async def download_parser_result(job_id: str | None = None, username: str = Depends(check_auth)):
-    """Скачать последний обработанный файл задачи."""
-    # 1. Приоритет — персональная папка задачи (изоляция по job_id)
-    if job_id:
-        try:
-            paths = resolve_job_paths(job_id)
-            latest = _latest_matching_file(
-                [paths.output_dir], pattern="batch_*.xlsx", exclude_substring="FAILED"
-            )
-            if latest is not None:
-                return FileResponse(
-                    latest,
-                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    filename=latest.name,
-                )
-        except Exception:
-            pass
+)
 
-    # 2. Фолбэк — общий output/latest (старое поведение, если папки задачи нет)
-    parser_output = Path(__file__).parent / "src" / "parser_new" / "output" / "latest"
-    latest = _latest_matching_file(
-        [parser_output], pattern="batch_*.xlsx", exclude_substring="FAILED"
+app.include_router(
+    create_agent_router(
+        check_auth=check_auth,
+        upsert_override=upsert_override,
+        get_autonomous_worker_state=get_autonomous_worker_state,
     )
-    if latest is None:
-        raise HTTPException(status_code=404, detail="Файл результата не найден")
+)
 
-    return FileResponse(
-        latest,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=latest.name,
-    )
-
-
-@app.get("/api/parser/download-failed")
-async def download_parser_failed(job_id: str | None = None, username: str = Depends(check_auth)):
-    """Скачать файл с непроверенными МО."""
-    search_dirs: list[Path] = []
-
-    try:
-        paths = resolve_job_paths(job_id)
-        if paths.output_dir.exists():
-            search_dirs.append(paths.output_dir)
-    except Exception:
-        pass
-
-    parser_output = Path(__file__).parent / "src" / "parser_new" / "output" / "latest"
-    if parser_output.exists():
-        search_dirs.append(parser_output)
-
-    latest = _latest_matching_file(search_dirs, pattern="*FAILED*.xlsx")
-    if latest is None:
-        raise HTTPException(status_code=404, detail="Файл непроверенных не найден")
-
-    return FileResponse(
-        latest,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=latest.name,
-    )
-
-@app.get("/api/download/sent-mail-log")
-async def download_sent_mail_log(job_id: str | None = None, username: str = Depends(check_auth)):
-    job_paths = resolve_job_paths(job_id)
-    log_path = (
-        job_paths.sent_mail_log_path
-        if not job_paths.uses_legacy_layout
-        else Path("data/sent_mail_log.jsonl")
-    )
-    if not log_path.exists():
-        raise HTTPException(status_code=404, detail="Журнал отправленных писем пока не создан.")
-    return FileResponse(
-        log_path,
-        media_type="application/x-ndjson",
-        filename="sent_mail_log.jsonl",
-    )
-
-
-@app.get("/api/download/sender-delivery-report")
-async def download_sender_delivery_report(job_id: str | None = None, username: str = Depends(check_auth)):
-    if not unisender_delivery_report_has_data(job_id):
-        raise HTTPException(status_code=404, detail="Журнал отправки UniSender пока пуст. Сначала запустите отправщик через UniSender.")
-    job_paths = resolve_job_paths(job_id)
-    report_path = _job_state_dir(job_id) / "unisender_delivery_report.xlsx"
-    sent_log_path = (
-        job_paths.sent_mail_log_path
-        if not job_paths.uses_legacy_layout
-        else Path("data/sent_mail_log.jsonl")
-    )
-    if not _is_cache_fresh(report_path, [sent_log_path], max_age_seconds=180):
-        report_path = build_unisender_delivery_report_xlsx(job_id, refresh=True)
-    return FileResponse(
-        report_path,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename="unisender_delivery_report.xlsx",
-    )
-
-
-@app.get("/api/download/inflection-log")
-async def download_inflection_log(job_id: str | None = None, username: str = Depends(check_auth)):
-    job_paths = resolve_job_paths(job_id)
-    log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
-    if not log_path.exists():
-        raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
-    return FileResponse(
-        log_path,
-        media_type="application/x-ndjson",
-        filename="inflection_log.jsonl",
-    )
-
-
-@app.get("/api/download/inflection-report")
-async def download_inflection_report(job_id: str | None = None, username: str = Depends(check_auth)):
-    rows = load_inflection_log(job_id)
-    if not rows:
-        raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
-    job_paths = resolve_job_paths(job_id)
-    report_path = job_paths.root_dir / "state" / "inflection_report.csv"
-    log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
-    if not _is_cache_fresh(report_path, [log_path]):
-        save_inflection_csv(rows, report_path)
-    return FileResponse(
-        report_path,
-        media_type="text/csv",
-        filename="inflection_report.csv",
-    )
-
-
-@app.get("/api/download/agent-memory")
-async def download_agent_memory(job_id: str | None = None, username: str = Depends(check_auth)):
-    candidates = build_learning_candidates(job_id)
-    if not candidates:
-        raise HTTPException(status_code=404, detail="Кандидаты для памяти агента пока не найдены.")
-    report_path = get_agent_memory_csv_path(job_id)
-    save_learning_memory_csv(candidates, report_path)
-    return FileResponse(
-        report_path,
-        media_type="text/csv",
-        filename="agent_memory_candidates.csv",
-    )
-
-
-@app.get("/api/download/agent-quarantine")
-async def download_agent_quarantine(job_id: str | None = None, username: str = Depends(check_auth)):
-    items = build_quarantine_items(job_id)
-    if not items:
-        raise HTTPException(status_code=404, detail="Карантин агента пока пуст.")
-    report_path = get_agent_quarantine_csv_path(job_id)
-    save_quarantine_csv(items, report_path)
-    return FileResponse(
-        report_path,
-        media_type="text/csv",
-        filename="agent_quarantine.csv",
-    )
-
-
-@app.get("/api/download/agent-report")
-async def download_agent_report(job_id: str | None = None, username: str = Depends(check_auth)):
-    report_text = build_agent_report(job_id)
-    if not report_text.strip():
-        raise HTTPException(status_code=404, detail="Отчет агента пока пуст.")
-    report_path = get_agent_report_path(job_id)
-    save_agent_report(job_id)
-    return FileResponse(
-        report_path,
-        media_type="text/plain; charset=utf-8",
-        filename="agent_report.txt",
-    )
-
-
-@app.get("/api/download/correction-report")
-async def download_correction_report(job_id: str | None = None, username: str = Depends(check_auth)):
-    if not correction_report_has_data(job_id):
-        raise HTTPException(status_code=404, detail="Журнал исправлений пока пуст. Сначала запустите генератор/филолога.")
-    report_path = _job_state_dir(job_id) / "journal_corrections_report.xlsx"
-    source_paths = [
-        _job_state_dir(job_id) / "philologist.json",
-        _job_state_dir(job_id) / "inflection_log.jsonl",
-    ]
-    if not _is_cache_fresh(report_path, source_paths):
-        report_path = build_correction_report_xlsx(job_id)
-    return FileResponse(
-        report_path,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename="journal_corrections_report.xlsx",
-    )
-
-
-@app.post("/api/agent-memory/approve-inflection")
-async def approve_inflection_memory(payload: dict = Body(...), username: str = Depends(check_auth)):
-    try:
-        result = upsert_override(
-            entity_type=str(payload.get("entity_type") or ""),
-            source_value=str(payload.get("source_value") or ""),
-            target_case=str(payload.get("target_case") or ""),
-            result_value=str(payload.get("result_value") or ""),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"status": "ok", "result": result}
-
-
-@app.post("/api/philologist/run")
-async def philologist_run(
-    payload: dict | None = Body(default=None),
-    username: str = Depends(check_auth),
-):
-    ai_enabled = True if payload is None else bool(payload.get("ai_enabled", True))
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    mode = None if payload is None else str(payload.get("mode") or "").strip().lower() or None
-    existing_thread = _get_philologist_thread(job_id)
-    if existing_thread:
-        return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id, include_details=False))}
-
-    existing_state = get_philologist_status(job_id, include_details=False)
-    if str(existing_state.get("status") or "") in {"running", "finalizing"}:
-        return {"status": "ok", "result": _compact_philologist_status(existing_state)}
-
-    clear_philologist_stop_request(job_id)
-    primed_state = _prime_philologist_running_state(job_id, mode or "fast")
-    philologist_thread = threading.Thread(
-        target=_run_philologist_background,
-        kwargs={"ai_enabled": ai_enabled, "job_id": job_id, "mode": mode},
-        daemon=True,
-        name=f"philologist-{_philologist_job_key(job_id)}",
-    )
-    _register_philologist_thread(job_id, philologist_thread)
-    philologist_thread.start()
-    return {"status": "ok", "result": primed_state}
-
-
-@app.get("/api/philologist/status")
-async def philologist_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": _compact_philologist_status(get_philologist_status(job_id, include_details=False))}
-
-
-@app.post("/api/philologist/stop")
-async def philologist_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    return {"status": "ok", "result": _compact_philologist_status(request_philologist_stop(job_id))}
-
-
-@app.get("/api/philologist/plan")
-async def philologist_plan(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": build_philologist_plan(job_id)}
-
-
-@app.post("/api/philologist/chat")
-async def philologist_chat(
-    payload: dict = Body(...),
-    username: str = Depends(check_auth),
-):
-    message = str(payload.get("message", "")).strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="Пустое сообщение")
-    job_id = str(payload.get("job_id") or "").strip() or None
-    return {"status": "ok", **chat_with_philologist(message, job_id=job_id)}
-
-from src.parser.agent import chat, clear_memory, get_memory, run_batch_parser, set_system_prompt
-
-@app.post("/api/parser/chat-v2")
-async def parser_chat_v2(payload: dict = Body(...), username: str = Depends(check_auth)):
-    message = str(payload.get("message", "")).strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="Пустое сообщение")
-    job_id = str(payload.get("job_id") or "").strip() or None
-    result = chat(message, job_id=job_id)
-    return result
-
-@app.post("/api/parser/start")
-async def parser_start(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    parser_result = run_batch_parser(job_id=job_id)
-    verification_result = {}
-    if parser_result.get("status") != "error":
-        verification_result = run_parser_municipality_verification(job_id, source="parser")
-    verification_summary = format_municipality_verification_for_chat(verification_result, max_samples=20)
-    parser_reply = str(parser_result.get("reply") or "").strip()
-    summary_parts = [part for part in [verification_summary, parser_reply] if part]
-    result = {
-        **parser_result,
-        "summary_text": "\n\n".join(summary_parts).strip() or "Парсер завершил обработку.",
-        "municipality_name_verification": verification_result,
-    }
-    return {"status": "ok", "result": result}
-
-@app.get("/api/parser/memory")
-async def parser_memory(job_id: str | None = None, username: str = Depends(check_auth)):
-    return get_memory(job_id=job_id)
-
-@app.post("/api/parser/memory/clear")
-async def parser_memory_clear(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    clear_memory(job_id=job_id)
-    return {"status": "ok"}
-
-@app.post("/api/parser/prompt")
-async def parser_prompt(payload: dict = Body(...), username: str = Depends(check_auth)):
-    prompt = str(payload.get("prompt", "")).strip()
-    if not prompt:
-        raise HTTPException(status_code=400, detail="Пустой промпт")
-    job_id = str(payload.get("job_id") or "").strip() or None
-    set_system_prompt(prompt, job_id=job_id)
-    return {"status": "ok"}
-
-
-@app.post("/api/parser/run")
-async def parser_run(
-    payload: dict | None = Body(default=None),
-    username: str = Depends(check_auth),
-):
-    limit = _parse_optional_limit(payload)
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    result = run_parser_agent(limit=limit, job_id=job_id)
-    return {"status": "ok", "result": result}
-
-
-@app.get("/api/parser/status")
-async def parser_status(job_id: str | None = None, username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_parser_status(job_id)}
-
-@app.post("/api/parser/merge-rmz")
-async def merge_rmz(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-    from src.parser.rmz_merger import run_merge
-    job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-    result = run_merge(job_id=job_id)
-    # Если есть спорные совпадения — просим агента проверить
-    if result.suspicious:
-        suspicious_list = [
-            {
-                "mo_name": s.mo_name,
-                "org_name": s.org_name,
-                "sub_rf": s.sub_rf,
-                "mun_r_name": s.mun_r_name,
-                "reason": s.reason,
-            }
-            for s in result.suspicious
-        ]
-        agent_reply = chat(
-            f"Из {len(suspicious_list)} спорных совпадений коротко скажи сколько верных и сколько неверных. "
-            f"Только цифры, без перечисления. Данные: {suspicious_list}",
-            job_id=job_id,
-        )
-        return {
-            "written": result.written,
-            "skipped_existing": result.skipped_existing,
-            "not_found": result.not_found,
-            "suspicious_count": len(result.suspicious),
-            "agent_review": agent_reply.get("reply", ""),
-        }
-    return {
-        "written": result.written,
-        "skipped_existing": result.skipped_existing,
-        "not_found": result.not_found,
-        "suspicious_count": 0,
-    }
-
-
-@app.post("/api/parser/chat")
-async def parser_chat(
-    payload: dict = Body(...),
-    username: str = Depends(check_auth),
-):
-    message = str(payload.get("message", "")).strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="Пустое сообщение")
-    job_id = str(payload.get("job_id") or "").strip() or None
-
-    result = await run_in_threadpool(chat, message, job_id=job_id)
-
-    # Если агент собрал новый файл — проверяем имена МО ИМЕННО на этом файле
-    result_file = result.get("result_file")
-    if result_file:
-        try:
-            from pathlib import Path as _Path
-            from src.generator.verification.municipality_name_verifier import (
-                verify_municipality_names_in_workbook,
-            )
-            verification = verify_municipality_names_in_workbook(_Path(result_file))
-            result["municipality_name_verification"] = verification
-            summary = format_municipality_verification_for_chat(verification, max_samples=20)
-            if summary:
-                logger.info(f"[parser] Верификация имён МО: {summary}")
-        except Exception as e:
-            logger.warning(f"Верификация имён МО не выполнена: {e}")
-
-    return {"status": "ok", **result}
-
-@app.get("/api/parser/progress")
-async def parser_progress(job_id: str | None = None, username: str = Depends(check_auth)):
-    job_key = str(job_id or "").strip()
-    if not job_key:
-        raise HTTPException(status_code=400, detail="Не указан job_id для потока прогресса")
-    return StreamingResponse(
-        parser_progress_subscribe(job_key),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",   # на случай, если впереди появится nginx
-        },
-    )
-
-@app.get("/api/orchestrator/status")
-async def orchestrator_status(session_id: str | None = None, username: str = Depends(check_auth)):
-    raise HTTPException(status_code=404, detail="Оркестратор отключён в этой ветке.")
-
-
-@app.get("/api/autonomous-worker/status")
-async def autonomous_worker_status(username: str = Depends(check_auth)):
-    return {"status": "ok", "result": get_autonomous_worker_state()}
-
-
-@app.post("/api/orchestrator/chat")
-async def orchestrator_chat(
-    payload: dict = Body(...),
-    username: str = Depends(check_auth),
-):
-    raise HTTPException(status_code=404, detail="Оркестратор отключён в этой ветке.")
 
 
 if __name__ == "__main__":

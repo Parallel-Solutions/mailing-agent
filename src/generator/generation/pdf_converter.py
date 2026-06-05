@@ -4,13 +4,14 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 import httpx
@@ -91,7 +92,7 @@ def _convert_libreoffice_chunk(args: Tuple[str, List[str], str, str]) -> List[Tu
 
     results: List[Tuple[str, Optional[str]]] = []
     try:
-        subprocess.run(
+        _run_libreoffice_convert(
             [
                 soffice,
                 f"-env:UserInstallation={profile_uri}",
@@ -101,11 +102,7 @@ def _convert_libreoffice_chunk(args: Tuple[str, List[str], str, str]) -> List[Tu
                 "--outdir",
                 output_dir,
                 *chunk_paths,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
+            ]
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return [(docx_path_str, None) for docx_path_str in chunk_paths]
@@ -115,6 +112,41 @@ def _convert_libreoffice_chunk(args: Tuple[str, List[str], str, str]) -> List[Tu
         pdf_path = Path(output_dir) / f"{docx_path.stem}.pdf"
         results.append((docx_path_str, str(pdf_path) if pdf_path.exists() else None))
     return results
+
+
+def _run_libreoffice_convert(command: list[str]) -> None:
+    popen_kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    process = subprocess.Popen(command, **popen_kwargs)
+    try:
+        stdout, stderr = process.communicate(timeout=LIBREOFFICE_CONVERT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        raise
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, command, output=stdout, stderr=stderr)
+
+
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception:
+            process.kill()
+        return
+    process.kill()
 
 
 ProgressCallback = Callable[[], None]
@@ -150,8 +182,8 @@ def _convert_with_libreoffice(
         for chunk_results in executor.map(_convert_libreoffice_chunk, tasks):
             for docx_path_str, pdf_path_str in chunk_results:
                 result[Path(docx_path_str)] = Path(pdf_path_str) if pdf_path_str else None
-            if progress_callback:
-                progress_callback()
+                if progress_callback:
+                    progress_callback()
     return result
 
 
@@ -369,6 +401,19 @@ def _pending_paths(result: Dict[Path, Optional[Path]]) -> List[Path]:
     return [path for path, value in result.items() if value is None]
 
 
+def _existing_pdf_for_docx(docx_path: Path, output_dir: Path) -> Optional[Path]:
+    pdf_path = output_dir / f"{docx_path.stem}.pdf"
+    if not pdf_path.exists():
+        return None
+    try:
+        if pdf_path.stat().st_size <= 4:
+            return None
+        with pdf_path.open("rb") as handle:
+            return pdf_path if handle.read(4) == b"%PDF" else None
+    except OSError:
+        return None
+
+
 def convert_docx_batch(
     docx_paths: List[Path],
     output_dir: Path,
@@ -381,6 +426,12 @@ def convert_docx_batch(
     result: Dict[Path, Optional[Path]] = {path: None for path in docx_paths}
     if not docx_paths:
         return result
+    for docx_path in docx_paths:
+        existing_pdf = _existing_pdf_for_docx(docx_path, output_dir)
+        if existing_pdf is not None:
+            result[docx_path] = existing_pdf
+            if progress_callback:
+                progress_callback()
 
     for backend in _backend_sequence():
         pending = _pending_paths(result)

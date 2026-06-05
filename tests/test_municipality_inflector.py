@@ -79,6 +79,10 @@ class MunicipalityInflectorTests(unittest.TestCase):
             "Белебеевского района",
         )
         self.assertEqual(
+            inflect_mun_r_name_genitive("Усть-Кутский район").value,
+            "Усть-Кутского района",
+        )
+        self.assertEqual(
             inflect_mun_r_name_genitive("Муниципальный район Баймакский район").value,
             "муниципального района Баймакский район",
         )

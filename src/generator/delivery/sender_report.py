@@ -52,6 +52,8 @@ UNISENDER_GO_HARD_ERROR_STATUSES = {
     "err_user_inactive",
     "err_mailbox_full",
     "err_delivery_failed",
+}
+UNISENDER_GO_TECHNICAL_ERROR_STATUSES = {
     "err_lost",
     "err_spam_rejected",
     "err_spam_skipped",
@@ -856,14 +858,16 @@ def _latest_unisender_go_events(job_id: str | None) -> dict[str, dict[str, Any]]
         recipient = _safe_text(event.get("recipient")).lower()
         row_id = _safe_text(event.get("row_id"))
         provider_job_id = _safe_text(event.get("provider_job_id"))
-        keys = [
-            f"provider_job:{provider_job_id}",
-            f"row_email:{row_id}:{recipient}",
-            f"email:{recipient}",
-        ]
+        keys = []
+        if provider_job_id and recipient:
+            keys.append(f"provider_job_email:{provider_job_id}:{recipient}")
+        if provider_job_id and not recipient:
+            keys.append(f"provider_job:{provider_job_id}")
+        if row_id and recipient:
+            keys.append(f"row_email:{row_id}:{recipient}")
+        if recipient:
+            keys.append(f"email:{recipient}")
         for key in keys:
-            if key.endswith(":"):
-                continue
             previous = latest.get(key)
             previous_rank = _unisender_go_status_priority(
                 _safe_text(previous.get("provider_status")) if previous else "",
@@ -876,23 +880,30 @@ def _latest_unisender_go_events(job_id: str | None) -> dict[str, dict[str, Any]]
 
 def _unisender_go_status_priority(status: str, priority: dict[str, int]) -> int:
     normalized = _normalize_provider_status(status)
+    if normalized in UNISENDER_GO_TECHNICAL_ERROR_STATUSES:
+        return 22
     if normalized in UNISENDER_GO_HARD_ERROR_STATUSES or normalized.startswith("err_"):
-        return 90
+        return 28
     if normalized in UNISENDER_GO_SOFT_ERROR_STATUSES:
-        return 70
+        return 26
     if normalized.startswith("skip_"):
-        return 90
+        return 22
     return priority.get(normalized, 0)
 
 
 def _match_unisender_go_event(item: dict[str, Any], events: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
     provider_job_id = _safe_text(item.get("provider_job_id") or item.get("message_id") or provider.get("job_id"))
-    if provider_job_id:
-        return events.get(f"provider_job:{provider_job_id}")
-
     recipient = _safe_text(item.get("recipient")).lower()
     row_id = _safe_text(item.get("row_id"))
+    if provider_job_id:
+        precise_provider_match = events.get(f"provider_job_email:{provider_job_id}:{recipient}") if recipient else None
+        if precise_provider_match:
+            return precise_provider_match
+        provider_match = events.get(f"provider_job:{provider_job_id}") if not recipient else None
+        if provider_match:
+            return provider_match
+
     keys = [
         f"row_email:{row_id}:{recipient}",
         f"email:{recipient}",
