@@ -984,6 +984,44 @@
     line-height: 1.45;
   }
 
+  .jobs-history-filter {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 10px 0 12px;
+    padding: 10px;
+    border: 1px solid #e1e8d9;
+    border-radius: 12px;
+    background: #fff;
+  }
+
+  .jobs-history-filter label {
+    display: grid;
+    gap: 5px;
+    color: #5f6d50;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .jobs-history-filter select {
+    min-width: 210px;
+    height: 36px;
+    border: 1px solid #ccd6c2;
+    border-radius: 9px;
+    background: #fff;
+    color: #18270d;
+    padding: 0 10px;
+    font: inherit;
+  }
+
+  .jobs-history-day-summary {
+    color: #4d5d42;
+    font-size: 13px;
+    line-height: 1.4;
+    text-align: right;
+  }
+
   .jobs-history-list {
     display: grid;
     gap: 8px;
@@ -1816,6 +1854,15 @@
       text-align: left;
     }
 
+    .jobs-history-filter {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .jobs-history-day-summary {
+      text-align: left;
+    }
+
     .document-step-track {
       grid-template-columns: 1fr;
     }
@@ -2367,10 +2414,17 @@
       <div class="jobs-history-card">
         <div class="jobs-history-head">
           <div>
-            <div class="jobs-history-title">Все отправки на сервере</div>
-            <div class="jobs-history-sub">Можно открыть любую рабочую сессию и посмотреть её таблицу, документы, отправку и статистику.</div>
+            <div class="jobs-history-title">Отправки по дням</div>
+            <div class="jobs-history-sub">Выберите дату и откройте нужную отправку за этот день.</div>
           </div>
           <button class="btn-outline" id="jobs-refresh-button" data-process-lock="true" type="button" onclick="refreshJobsHistory()">Обновить список</button>
+        </div>
+        <div class="jobs-history-filter" id="jobs-history-filter" hidden>
+          <label for="jobs-history-date">
+            Дата отправки
+            <select id="jobs-history-date" onchange="selectJobsHistoryDate(this.value)"></select>
+          </label>
+          <div class="jobs-history-day-summary" id="jobs-history-day-summary"></div>
         </div>
         <div class="jobs-history-list" id="jobs-history-list">
           <div class="jobs-history-empty">Список отправок ещё не загружен.</div>
@@ -2429,6 +2483,8 @@
   let currentJobId = localStorage.getItem(JOB_STORAGE_KEY) || '';
   let resetJobCreationToken = 0;
   let activeScreenId = localStorage.getItem(ACTIVE_SCREEN_STORAGE_KEY) || 'settings';
+  let jobsHistoryAll = [];
+  let jobsHistorySelectedDate = '';
   let uiPersistenceEnabled = false;
   let moduleReadiness = {
     generator_ready: false,
@@ -3710,14 +3766,109 @@
     });
   }
 
-  function renderJobsHistory(jobs = []) {
+  function getJobHistoryDate(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function getJobHistoryDayKey(job = {}) {
+    const date = getJobHistoryDate(job.updated_at);
+    if (!date) return 'unknown';
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function formatJobHistoryDayLabel(dayKey) {
+    if (!dayKey || dayKey === 'unknown') return 'Дата неизвестна';
+    const [year, month, day] = dayKey.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    if (Number.isNaN(date.getTime())) return dayKey;
+    return date.toLocaleDateString('ru', {
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric',
+    });
+  }
+
+  function formatJobHistoryTime(value) {
+    const date = getJobHistoryDate(value);
+    if (!date) return 'время неизвестно';
+    return date.toLocaleTimeString('ru', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function groupJobsHistoryByDate(jobs = []) {
+    const groups = new Map();
+    for (const job of jobs) {
+      const key = getJobHistoryDayKey(job);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(job);
+    }
+    return Array.from(groups.entries())
+      .sort(([left], [right]) => {
+        if (left === 'unknown') return 1;
+        if (right === 'unknown') return -1;
+        return String(right).localeCompare(String(left));
+      });
+  }
+
+  function renderJobsHistoryDateFilter(groups) {
+    const filter = document.getElementById('jobs-history-filter');
+    const select = document.getElementById('jobs-history-date');
+    const summary = document.getElementById('jobs-history-day-summary');
+    if (!filter || !select || !summary) return;
+
+    if (!groups.length) {
+      filter.hidden = true;
+      select.innerHTML = '';
+      summary.textContent = '';
+      jobsHistorySelectedDate = '';
+      return;
+    }
+
+    const availableKeys = groups.map(([key]) => key);
+    if (!jobsHistorySelectedDate || !availableKeys.includes(jobsHistorySelectedDate)) {
+      jobsHistorySelectedDate = availableKeys[0];
+    }
+
+    select.innerHTML = groups.map(([key, items]) => {
+      const selected = key === jobsHistorySelectedDate ? ' selected' : '';
+      return `<option value="${escapeHtml(key)}"${selected}>${escapeHtml(formatJobHistoryDayLabel(key))} · ${items.length.toLocaleString('ru')}</option>`;
+    }).join('');
+
+    const selectedItems = groups.find(([key]) => key === jobsHistorySelectedDate)?.[1] || [];
+    const totalRows = selectedItems.reduce((sum, job) => sum + Number(job.total_rows || 0), 0);
+    const sentRows = selectedItems.reduce((sum, job) => sum + Number(job.sent_rows || 0), 0);
+    const errorRows = selectedItems.reduce((sum, job) => sum + Number(job.error_rows || 0), 0);
+    summary.textContent = `${selectedItems.length.toLocaleString('ru')} отправок за день · ${totalRows.toLocaleString('ru')} строк · ${sentRows.toLocaleString('ru')} отправлено · ${errorRows.toLocaleString('ru')} ошибок`;
+    filter.hidden = false;
+  }
+
+  function selectJobsHistoryDate(dayKey) {
+    jobsHistorySelectedDate = String(dayKey || '');
+    renderJobsHistory(jobsHistoryAll);
+  }
+
+  function renderJobsHistory(jobs = jobsHistoryAll) {
     const list = document.getElementById('jobs-history-list');
     if (!list) return;
     if (!Array.isArray(jobs) || !jobs.length) {
+      renderJobsHistoryDateFilter([]);
       list.innerHTML = '<div class="jobs-history-empty">На сервере пока нет сохранённых отправок.</div>';
       return;
     }
-    list.innerHTML = jobs.map(job => {
+    const groups = groupJobsHistoryByDate(jobs);
+    renderJobsHistoryDateFilter(groups);
+    const selectedJobs = groups.find(([key]) => key === jobsHistorySelectedDate)?.[1] || [];
+    if (!selectedJobs.length) {
+      list.innerHTML = '<div class="jobs-history-empty">За выбранную дату отправок нет.</div>';
+      return;
+    }
+    list.innerHTML = selectedJobs.map(job => {
       const jobId = escapeHtml(job.job_id || '');
       const isCurrent = job.job_id === currentJobId;
       const statusTone = escapeHtml(job.status_tone || 'idle');
@@ -3727,7 +3878,7 @@
       const errorRows = Number(job.error_rows || 0).toLocaleString('ru');
       const readyRows = Number(job.ready_rows || 0).toLocaleString('ru');
       const updatedAt = escapeHtml(formatJobHistoryDate(job.updated_at));
-      const safeTitle = escapeHtml(`Отправка от ${formatJobHistoryTitleDate(job.updated_at)}`);
+      const safeTitle = escapeHtml(`Рассылка ${formatJobHistoryTime(job.updated_at)}`);
       return `
         <div class="job-history-row ${isCurrent ? 'current' : ''}">
           <div class="job-history-main">
@@ -3750,11 +3901,12 @@
       list.innerHTML = '<div class="jobs-history-empty">Загружаю список отправок...</div>';
     }
     try {
-      const res = await fetchWithTimeout('/api/jobs/history?limit=40', {}, 20000);
+      const res = await fetchWithTimeout('/api/jobs/history?limit=200', {}, 20000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось загрузить список отправок');
       const jobs = (data.result || {}).jobs || [];
-      renderJobsHistory(jobs);
+      jobsHistoryAll = Array.isArray(jobs) ? jobs : [];
+      renderJobsHistory(jobsHistoryAll);
       return jobs;
     } catch (err) {
       if (list) {
@@ -3772,7 +3924,8 @@
     try {
       localStorage.setItem(ACTIVE_SCREEN_STORAGE_KEY, activeScreenId);
     } catch (e) {}
-    renderJobsHistory([]);
+    const list = document.getElementById('jobs-history-list');
+    if (list) list.innerHTML = '<div class="jobs-history-empty">Открываю выбранную отправку...</div>';
     await refreshCurrentJobStatusScreen();
     await refreshJobsHistory({ silent: true });
     refreshAllModuleStatuses({ silent: true, full: true });
