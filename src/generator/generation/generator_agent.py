@@ -459,10 +459,12 @@ def finalize_generated_files(
     batch_pdf_dir: Path | None = None,
     progress_callback: Any | None = None,
     should_stop: Any | None = None,
-    chunk_size: int = PDF_CHUNK_SIZE,
-    worker_count: int = PDF_WORKERS,
+    chunk_size: int | None = None,
+    worker_count: int | None = None,
     create_pdf: bool = False,
 ) -> None:
+    chunk_size = max(1, int(chunk_size or PDF_CHUNK_SIZE))
+    worker_count = max(1, int(worker_count or PDF_WORKERS))
     jobs = build_docx_jobs(results)
     pending_pdf_jobs = []
     ready_jobs = []
@@ -470,7 +472,7 @@ def finalize_generated_files(
         staged_docx = job["staged_docx"]
         final_docx = job["final_docx"]
         final_pdf = job["final_pdf"]
-        final_is_ready = final_docx.exists() and (not create_pdf or final_pdf.exists())
+        final_is_ready = final_docx.exists() and (not create_pdf or _is_pdf_current(final_pdf, final_docx))
         if not staged_docx.exists() and final_is_ready:
             result_entry = results[job["result_index"]]
             result_files = result_entry.setdefault("files", {})
@@ -480,7 +482,7 @@ def finalize_generated_files(
             continue
         if staged_docx.exists():
             pending_pdf_jobs.append(job)
-        elif create_pdf and final_docx.exists() and not final_pdf.exists():
+        elif create_pdf and final_docx.exists() and not _is_pdf_current(final_pdf, final_docx):
             recovery_job = dict(job)
             recovery_job["staged_docx"] = final_docx
             pending_pdf_jobs.append(recovery_job)
@@ -539,6 +541,15 @@ def _is_valid_pdf(path: Path) -> bool:
         return False
 
 
+def _is_pdf_current(pdf_path: Path, docx_path: Path) -> bool:
+    if not _is_valid_pdf(pdf_path):
+        return False
+    try:
+        return pdf_path.stat().st_mtime >= docx_path.stat().st_mtime
+    except OSError:
+        return False
+
+
 def _count_output_files_now(output_dir: Path) -> int:
     return sum(1 for path in output_dir.rglob("*") if path.is_file()) if output_dir.exists() else 0
 
@@ -553,8 +564,9 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
 
     docx_paths = sorted(path for path in output_dir.rglob("*.docx") if path.is_file()) if output_dir.exists() else []
     total = len(docx_paths)
-    ready = [path for path in docx_paths if _is_valid_pdf(path.with_suffix(".pdf"))]
-    pending = [path for path in docx_paths if path not in set(ready)]
+    ready = [path for path in docx_paths if _is_pdf_current(path.with_suffix(".pdf"), path)]
+    ready_set = set(ready)
+    pending = [path for path in docx_paths if path not in ready_set]
 
     state.update(
         {
@@ -609,7 +621,7 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
         pdf_map = convert_docx_batch(
             list(staged_to_final.keys()),
             pdf_work_dir,
-            chunk_size=1,
+            chunk_size=PDF_CHUNK_SIZE,
             worker_count=PDF_WORKERS,
             progress_callback=_report_pdf_progress,
         )
@@ -978,7 +990,7 @@ def run_generator_agent(
             batch_pdf_dir=pdf_target_dir,
             progress_callback=_report_pdf_progress,
             should_stop=lambda: bool(_refresh_generator_stop_flag(state, job_id).get("stop_requested")),
-            chunk_size=1,
+            chunk_size=PDF_CHUNK_SIZE,
             worker_count=PDF_WORKERS,
             create_pdf=create_pdf,
         )

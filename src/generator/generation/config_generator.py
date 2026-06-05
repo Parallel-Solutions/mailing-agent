@@ -32,8 +32,8 @@ def _read_env_override(key_name: str, default: str) -> str:
     return resolve_env_value(key_name, default) or default
 
 
-PDF_WORKERS = max(1, int(_read_env_override("PDF_WORKERS", "2")))
-PDF_CHUNK_SIZE = max(1, int(_read_env_override("PDF_CHUNK_SIZE", "1")))
+PDF_WORKERS = max(1, int(_read_env_override("PDF_WORKERS", "3")))
+PDF_CHUNK_SIZE = max(1, int(_read_env_override("PDF_CHUNK_SIZE", "10")))
 
 
 # AI-агент проверки падежей

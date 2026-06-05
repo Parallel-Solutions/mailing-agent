@@ -96,6 +96,39 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(results[0]["status"], "error")
         self.assertIn("Не удалось создать PDF", results[0]["error"])
 
+    def test_finalize_generated_files_uses_configured_pdf_chunk_size(self) -> None:
+        staged_docx = self.tmp_dir / "batch_docx" / "kp.docx"
+        final_dir = self.tmp_dir / "output" / "1_Test"
+        final_docx = final_dir / "kp.docx"
+        final_pdf = final_dir / "kp.pdf"
+        staged_docx.parent.mkdir(parents=True)
+        staged_docx.write_bytes(b"fake-docx")
+        results = [
+            {
+                "status": "ok",
+                "result_index": 0,
+                "generated_files": {
+                    "kp": staged_docx,
+                    "kp_final_docx": final_docx,
+                    "kp_final_pdf": final_pdf,
+                },
+            }
+        ]
+
+        def fake_convert(docx_paths, output_dir, **kwargs):
+            output_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path = output_dir / f"{docx_paths[0].stem}.pdf"
+            pdf_path.write_bytes(b"%PDF recovered")
+            return {docx_paths[0]: pdf_path}
+
+        with (
+            patch.object(generator_agent, "PDF_CHUNK_SIZE", 7),
+            patch.object(generator_agent, "convert_docx_batch", side_effect=fake_convert) as convert_mock,
+        ):
+            generator_agent.finalize_generated_files(results, batch_pdf_dir=self.tmp_dir / "batch_pdf", create_pdf=True)
+
+        self.assertEqual(convert_mock.call_args.kwargs["chunk_size"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()
