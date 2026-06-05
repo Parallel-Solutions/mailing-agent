@@ -2107,15 +2107,15 @@
           <summary>Подробности</summary>
           <div class="document-process-list">
             <div class="document-process-row">
-              <span>Обработано:</span>
+              <span>Клиентов:</span>
               <strong id="g-process-clients">0/0</strong>
             </div>
             <div class="document-process-row">
-              <span>Документы:</span>
+              <span>Создано документов:</span>
               <strong id="g-process-files">0/0</strong>
             </div>
             <div class="document-process-row" id="g-process-review-row">
-              <span>Проверено:</span>
+              <span>Проверено текстов:</span>
               <strong id="g-process-review">0/0</strong>
             </div>
           </div>
@@ -2129,7 +2129,7 @@
         </div>
         <div class="stat">
           <div class="stat-n" id="g-done" style="color:#2d6e0a">0</div>
-          <div class="stat-l" id="g-done-label">Обработано</div>
+          <div class="stat-l" id="g-done-label">Клиентов</div>
         </div>
         <div class="stat">
           <div class="stat-n" id="g-err" style="color:#a02020">0</div>
@@ -6021,16 +6021,16 @@ function clearAttachedFile() {
     })();
 
     let doneValue = 0;
-    let doneLabel = 'Обработано';
+    let doneLabel = 'Клиентов';
     if (status === 'running') {
       doneValue = processed;
-      doneLabel = 'Обработано';
+      doneLabel = 'Клиентов';
     } else if (status === 'completed') {
       doneValue = total;
-      doneLabel = 'Обработано';
+      doneLabel = 'Клиентов';
     } else if (status === 'error') {
       doneValue = processed;
-      doneLabel = 'Обработано';
+      doneLabel = 'Клиентов';
     }
 
     if (totalStat && total > 0) totalStat.textContent = total.toLocaleString('ru');
@@ -6462,7 +6462,7 @@ function clearAttachedFile() {
         doneValue: vm.status === 'completed'
           ? (vm.totalRows || Math.floor(vm.totalDocuments / 2))
           : vm.processedRows,
-        doneLabel: 'Обработано',
+        doneLabel: 'Клиентов',
         labelText: normalizeDocumentsLabelText(serverModule.label_text),
         generatorHint: resolvedGeneratorHint,
         philologistHint: resolvedPhilologistHint,
@@ -6505,7 +6505,7 @@ function clearAttachedFile() {
         pauseText: 'Остановить',
         pauseTitle: '',
         doneValue: vm.processedRows,
-        doneLabel: 'Обработано',
+        doneLabel: 'Клиентов',
         labelText: runningLabel,
         generatorHint: vm.stage === 'review'
           ? 'Проверяем текст. Просто дождитесь завершения.'
@@ -6531,7 +6531,7 @@ function clearAttachedFile() {
         pauseText: 'Остановить',
         pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
         doneValue: vm.totalRows || Math.floor(vm.totalDocuments / 2),
-        doneLabel: 'Обработано',
+        doneLabel: 'Клиентов',
         labelText: completedLabel,
         generatorHint: 'Готово. Можно скачать документы.',
         philologistHint: 'Проверка текста уже входит в подготовку.',
@@ -6553,7 +6553,7 @@ function clearAttachedFile() {
         pauseText: 'Остановить',
         pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
         doneValue: vm.processedRows,
-        doneLabel: 'Обработано',
+        doneLabel: 'Клиентов',
         labelText: stoppedLabel,
         generatorHint: 'Прогресс сохранён. Можно продолжить с этого места.',
         philologistHint: 'Сначала продолжите подготовку.',
@@ -6575,7 +6575,7 @@ function clearAttachedFile() {
         pauseText: 'Остановить',
         pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
         doneValue: vm.processedRows,
-        doneLabel: 'Обработано',
+        doneLabel: 'Клиентов',
         labelText: errorLabel,
         generatorHint: 'Попробуйте повторить запуск. Если ошибка повторяется, проверьте таблицу и шаблоны.',
         philologistHint: 'Сначала завершите подготовку без ошибки.',
@@ -6596,7 +6596,7 @@ function clearAttachedFile() {
       pauseText: 'Остановить',
       pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
       doneValue: vm.processedRows,
-        doneLabel: 'Обработано',
+      doneLabel: 'Клиентов',
       labelText: defaultLabel,
       generatorHint: hasRequiredInputs
         ? 'Можно запускать. Дальше сервис всё сделает сам.'
