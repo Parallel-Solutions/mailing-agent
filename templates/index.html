@@ -3487,6 +3487,19 @@
       && parserFinished;
   }
 
+  function isDocumentsPreparationReady() {
+    return areSettingsReady() && isParserReadyForDocuments();
+  }
+
+  function getDocumentsPreparationBlockReason() {
+    const missingSettings = getMissingSettingsFields();
+    if (missingSettings.length) {
+      return 'Сначала добавьте: ' + missingSettings.join(', ');
+    }
+    if (parserRunning) return 'Дождитесь завершения проверки таблицы.';
+    return 'Сначала загрузите и проверьте таблицу.';
+  }
+
   function isSenderReadyForStatus() {
     const status = String(currentSenderStatus || lastSenderUiState.status || 'idle');
     const stats = lastSenderUiState.stats || {};
@@ -3506,13 +3519,13 @@
   function updateFlowNavigationButtons() {
     setFlowButtonState(
       'settings-next-parser',
-      areSettingsReady(),
-      'Сначала загрузите шаблон письма, КП, договор и заполните тему письма.'
+      true,
+      ''
     );
     setFlowButtonState(
       'parser-next-generator',
-      isParserReadyForDocuments(),
-      parserRunning ? 'Дождитесь завершения проверки таблицы.' : 'Сначала загрузите и проверьте таблицу.'
+      isDocumentsPreparationReady(),
+      getDocumentsPreparationBlockReason()
     );
     updateDocumentsNextButton();
     setFlowButtonState(
@@ -4006,10 +4019,15 @@
     const movingForward = currentIndex >= 0 && targetIndex > currentIndex;
     const openingStatusScreen = id === 'status';
 
-    if (!openingStatusScreen && movingForward && activeScreenId === 'settings' && !areSettingsReady()) {
-      const missing = getMissingSettingsFields();
-      showToast('Сначала добавьте: ' + missing.join(', '));
+    if (!openingStatusScreen && movingForward && activeScreenId === 'settings' && id !== 'parser' && !areSettingsReady()) {
+      showToast(getDocumentsPreparationBlockReason());
       updateSettingsChecklist();
+      return;
+    }
+    if (id === 'generator' && !isDocumentsPreparationReady()) {
+      showToast(getDocumentsPreparationBlockReason());
+      updateSettingsChecklist();
+      refreshParserStatus({ silent: true });
       return;
     }
     if (!openingStatusScreen && movingForward && activeScreenId === 'parser' && !isParserReadyForDocuments()) {
