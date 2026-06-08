@@ -8,6 +8,40 @@ def _safe_label(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _build_step_track(*, status: str, stage: str) -> list[dict[str, str]]:
+    steps = [
+        {"id": "generate", "state": "idle"},
+        {"id": "review", "state": "idle"},
+        {"id": "ready", "state": "idle"},
+    ]
+    active_index = -1
+    if status == "completed":
+        active_index = 2
+    elif status in {"running", "waiting_review"}:
+        if stage == "review" or status == "waiting_review":
+            active_index = 1
+        elif stage in {"ready", "convert_pdf", "finalize_output"}:
+            active_index = 2
+        else:
+            active_index = 0
+    elif status in {"error", "stopped"}:
+        if stage == "review":
+            active_index = 1
+        elif stage in {"ready", "convert_pdf", "finalize_output"}:
+            active_index = 2
+        else:
+            active_index = 0
+
+    for index, step in enumerate(steps):
+        if status == "completed":
+            step["state"] = "done"
+        elif index < active_index:
+            step["state"] = "done"
+        elif index == active_index:
+            step["state"] = "error" if status == "error" else "active"
+    return steps
+
+
 def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> dict:
     generator_ready = bool(readiness.get("generator_ready"))
     generator_reason = str(readiness.get("generator_reason") or "").strip()
@@ -60,6 +94,14 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
     next_button_text = "Дальше: проверить отправку"
     next_button_title = "Сначала завершите подготовку документов."
     current_item_text = _safe_label(documents_status.get("current_item_text"))
+    progress_percent = max(0, min(100, int(documents_status.get("progress_percent") or 0)))
+    if status == "completed":
+        progress_percent = 100
+    elif status == "idle":
+        progress_percent = 0
+    progress_running = status == "running"
+    done_value = processed_rows
+    done_label = "Клиентов"
 
     if status == "running":
         process_title = "Идёт подготовка"
@@ -107,10 +149,12 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
         badge_text = "Готово"
         badge_tone = "done"
         run_text = "Подготовить заново"
+        label_text = "Документы подготовлены. Можно скачать результат и перейти к проверке отправки."
         generator_hint = "Документы готовы. Можно скачать результат."
         actions_hint = "Готово. Можно скачать документы."
         next_hint = "Теперь можно переходить к следующему шагу."
         next_button_title = "Перейти к проверке отправки."
+        done_value = total_rows or total_documents // 2
     elif status == "stopped":
         process_title = "Остановлено"
         process_main = "Подготовка остановлена."
@@ -158,6 +202,12 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
             "documents_done": shown_documents,
             "review_total": total_documents,
             "review_done": reviewed_documents,
+            "show_review": total_documents > 0 and (
+                stage == "review"
+                or status == "completed"
+                or str(philologist.get("status") or "") in {"running", "finalizing", "completed", "stopped", "error"}
+            ),
+            "steps": _build_step_track(status=status, stage=stage),
         },
         "module": {
             "badge_text": badge_text,
@@ -165,8 +215,17 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
             "run_text": run_text,
             "label_text": label_text,
             "generator_hint": generator_hint,
+            "philologist_hint": "",
             "actions_hint": actions_hint,
             "next_hint": next_hint,
+            "done_value": done_value,
+            "done_label": done_label,
+            "error_value": int(documents_status.get("error_rows") or 0),
+            "total_value": total_rows,
+        },
+        "progress": {
+            "percent": progress_percent,
+            "running": progress_running,
         },
         "actions": {
             # The start endpoint still validates files/templates. Keep the UI button clickable

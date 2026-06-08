@@ -35,6 +35,12 @@ from src.generator.orchestration.agent_handoff import (
 from src.generator.generation.config_generator import DATA_DIR, DATA_XLSX_PATH, OUTPUT_DIR, START_OUTGOING_NUMBER, TEMPLATES_DIR
 from src.generator.generation.excel_io import load_rows, save_workbook, update_status
 from src.generator.generation.generator_agent import run_generator_agent
+from src.generator.delivery.consent_store import (
+    CONSENT_TEXT,
+    has_confirmed_consent,
+    mark_consent_request_sent,
+    prepare_consent_request,
+)
 from src.generator.case_engine import build_inflected_fields_with_trace
 from src.generator.philologist.philologist_agent import run_philologist
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
@@ -47,6 +53,7 @@ MAIL_TEMPLATE_PATH = TEMPLATES_DIR / "mail_template.txt"
 MAIL_TEMPLATE_DOCX_PATH = TEMPLATES_DIR / "mail_template.docx"
 SENT_MAIL_LOG_PATH = DATA_DIR / "sent_mail_log.jsonl"
 DEFAULT_MAIL_SUBJECT = "Коммерческое предложение на разработку МНГП."
+CONSENT_REQUEST_SUBJECT = "Запрос согласия на получение материалов"
 DEFAULT_MAIL_BODY = (
     "Добрый день!\n"
     "Направляем для рассмотрения коммерческое предложение на выполнение работ по разработке проекта "
@@ -80,12 +87,14 @@ MAIL_FOOTER_HTML_TEMPLATE = """
 </table>
 """.strip()
 STATUS_SENT_VALUE = "Отправлено"
+STATUS_CONSENT_REQUEST_SENT_VALUE = "Запрос согласия отправлен"
 STATUS_ERROR_VALUE = "Ошибка"
 STATUS_OK_VALUES = {"ОК", "OK", "SENT", "ОТПРАВЛЕНО", "ОТПРАВЛЕНО (ОК)"}
 MAX_STATUS_ERROR_LENGTH = 240
 UNISENDER_GO_SEND_PATH = "email/send.json"
 UNISENDER_CLASSIC_SEND_PATH = "sendEmail"
 UNISENDER_CLASSIC_CHECK_PATH = "checkEmail"
+RUSENDER_SEND_PATH = "external-mails/send"
 
 
 SENDER_STATE: dict[str, Any] = {
@@ -127,6 +136,13 @@ UNISENDER_MIN_REQUEST_INTERVAL_SECONDS = 60.0 / UNISENDER_REQUESTS_PER_MINUTE
 UNISENDER_RATE_LIMIT_RETRY_SECONDS = 65.0
 _UNISENDER_RATE_LIMIT_LOCK = threading.Lock()
 _last_unisender_request_at = 0.0
+RUSENDER_RETRY_ATTEMPTS = 3
+RUSENDER_RETRY_BASE_SECONDS = 2.0
+RUSENDER_RETRYABLE_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+RUSENDER_REQUESTS_PER_SECOND = 10
+RUSENDER_MIN_REQUEST_INTERVAL_SECONDS = 1.0 / RUSENDER_REQUESTS_PER_SECOND
+_RUSENDER_RATE_LIMIT_LOCK = threading.Lock()
+_last_rusender_request_at = 0.0
 _EXCEL_STATS_CACHE_LOCK = threading.Lock()
 _EXCEL_STATS_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -526,21 +542,37 @@ def _resolve_pdf_attachments(folder: Path | None) -> tuple[list[str], str | None
         return [], "Папка документов не определена."
 
     pdf_files = sorted(folder.glob("*.pdf"))
-    if len(pdf_files) >= 2:
-        return [str(path) for path in pdf_files], None
-
     docx_files = sorted(folder.glob("*.docx"))
-    if len(docx_files) >= 2:
-        return [str(path) for path in docx_files], None
+    kp_pdf = next(
+        (
+            path
+            for path in pdf_files
+            if "кп" in path.name.lower() or "коммер" in path.name.lower()
+        ),
+        None,
+    )
+    contract_docx = next(
+        (path for path in docx_files if "договор" in path.name.lower()),
+        None,
+    )
 
-    files = pdf_files or docx_files
-    return [str(path) for path in files], f"В папке {folder.name} найдено меньше двух документов для вложения."
+    attachments = [str(path) for path in (kp_pdf, contract_docx) if path]
+    missing = []
+    if not kp_pdf:
+        missing.append("КП в PDF")
+    if not contract_docx:
+        missing.append("договор в Word")
+    if not missing:
+        return attachments, None
+    return attachments, f"В папке {folder.name} не найдено: {', '.join(missing)}."
 
 
 def _status_class(raw_status: Any) -> str:
     status_text = _safe_text(raw_status).upper()
     if not status_text:
         return "pending"
+    if "ЗАПРОС СОГЛАСИЯ" in status_text:
+        return "consent_requested"
     if status_text in STATUS_OK_VALUES:
         return "sent"
     if "ОШИБ" in status_text or "ERROR" in status_text:
@@ -691,12 +723,16 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
         return summary
     if state.get("total_rows", 0) == 0:
         return "В таблице пока нет получателей для отправки."
+    is_consent_mode = _safe_text(state.get("send_mode")) == "consent_request"
     if state.get("mode") == "dry_run":
         if int(state.get("error_rows") or 0) <= 0:
-            summary = (
-                "Проверка завершена: всё в порядке, письма готовы к отправке. "
-                f"Готово писем: {state.get('ready_rows', 0)}."
-            )
+            if is_consent_mode:
+                summary = f"Проверка завершена: запросы согласия готовы. Готово писем: {state.get('ready_rows', 0)}."
+            else:
+                summary = (
+                    "Проверка завершена: всё в порядке, письма готовы к отправке. "
+                    f"Готово писем: {state.get('ready_rows', 0)}."
+                )
         else:
             summary = (
                 "Проверка завершена, но не все письма готовы. "
@@ -705,7 +741,10 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
             )
     else:
         if int(state.get("error_rows") or 0) <= 0 and int(state.get("remaining_rows") or 0) <= 0:
-            summary = f"Отправка завершена: все письма ушли. Отправлено: {state.get('sent_rows', 0)}."
+            if is_consent_mode:
+                summary = f"Запросы согласия отправлены. Отправлено: {state.get('sent_rows', 0)}."
+            else:
+                summary = f"Отправка завершена: все письма ушли. Отправлено: {state.get('sent_rows', 0)}."
         else:
             summary = (
                 "Отправка завершена не полностью. "
@@ -742,10 +781,17 @@ def _normalize_limit(limit: int | None, *, dry_run: bool) -> int | None:
 
 def _normalize_transport(transport: str | None) -> str:
     value = _safe_text(transport).lower()
-    if value in {"unisender", "smtp"}:
+    if value in {"unisender", "smtp", "rusender"}:
         return value
     configured = _safe_text(settings.sender_transport).lower()
-    return configured if configured in {"unisender", "smtp"} else "smtp"
+    return configured if configured in {"unisender", "smtp", "rusender"} else "smtp"
+
+
+def _normalize_send_mode(send_mode: str | None) -> str:
+    value = _safe_text(send_mode).lower()
+    if value in {"consent_request", "materials"}:
+        return value
+    return "materials"
 
 
 def request_sender_stop(job_id: str | None = None) -> dict[str, Any]:
@@ -945,8 +991,9 @@ def _build_message(
     subject: str,
     *,
     mail_template_path: Path | None = None,
+    body_override: str | None = None,
 ) -> EmailMessage:
-    body = _build_mail_body(row, mail_template_path=mail_template_path)
+    body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
     message = EmailMessage()
     message["From"] = settings.smtp_sender_email
     message["To"] = recipient
@@ -968,10 +1015,12 @@ def _build_message(
 
     for attachment_path in attachments:
         path = Path(attachment_path)
+        content_type, _ = mimetypes.guess_type(str(path))
+        maintype, subtype = (content_type or "application/octet-stream").split("/", 1)
         message.add_attachment(
             path.read_bytes(),
-            maintype="application",
-            subtype="pdf",
+            maintype=maintype,
+            subtype=subtype,
             filename=path.name,
         )
     return message
@@ -984,6 +1033,37 @@ def _build_mail_body(row: dict[str, Any], *, mail_template_path: Path | None = N
 
 def _build_mail_subject(subject_template: str, row: dict[str, Any]) -> str:
     return _render_mail_template(_safe_text(subject_template) or DEFAULT_MAIL_SUBJECT, row).strip()
+
+
+def _build_consent_request_body(row: dict[str, Any], *, consent_url: str) -> str:
+    mun_name = _safe_text(row.get("MUN_R_NAME")) or _safe_text(row.get("MUN_NAME"))
+    subject_name = _safe_text(row.get("SUB_RF"))
+    addressee_parts = [part for part in (mun_name, subject_name) if part]
+    addressee = " ".join(addressee_parts)
+    addressee_line = (
+        f"Для {addressee} у нас сформированы материалы с описанием состава работ, условий и проекта договора."
+        if addressee
+        else "У нас сформированы материалы с описанием состава работ, условий и проекта договора."
+    )
+    return _append_mail_footer_text(
+        "\n".join(
+            [
+                "Здравствуйте!",
+                "",
+                "ООО «Параллельные Решения» готовит предложения по разработке проектов местных нормативов градостроительного проектирования для муниципальных образований.",
+                addressee_line,
+                "",
+                "Если это направление вам актуально, мы можем направить вам полный пакет документов: описание, условия, проект договора, техническое задание и календарный план.",
+                "Пожалуйста, ответьте на это письмо словом «Да» или перейдите по ссылке, чтобы получить материалы.",
+                "Если тема неактуальна — просто удалите это сообщение, мы не будем беспокоить вас повторно.",
+                "",
+                f"Получить предложение по МНГП: {consent_url}",
+                f"Текст согласия: {CONSENT_TEXT}",
+                "",
+                "Вы получили это письмо, так как ваш контакт был найден в открытых источниках информации о муниципальных образованиях.",
+            ]
+        )
+    )
 
 
 def _append_sent_mail_log(
@@ -1373,6 +1453,7 @@ def _send_via_smtp(
     subject: str,
     *,
     mail_template_path: Path | None = None,
+    body_override: str | None = None,
 ) -> str | None:
     if not settings.smtp_allow_real_send:
         raise RuntimeError(
@@ -1384,7 +1465,14 @@ def _send_via_smtp(
     if not settings.smtp_host:
         raise RuntimeError("Не указан SMTP host.")
 
-    message = _build_message(row, recipient, attachments, subject, mail_template_path=mail_template_path)
+    message = _build_message(
+        row,
+        recipient,
+        attachments,
+        subject,
+        mail_template_path=mail_template_path,
+        body_override=body_override,
+    )
 
     if settings.smtp_use_ssl:
         with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
@@ -1440,6 +1528,55 @@ def _build_unisender_classic_url(path: str) -> str:
     return f"{base_url}/{path.lstrip('/')}"
 
 
+def _build_rusender_url(path: str) -> str:
+    base_url = _safe_text(settings.rusender_api_base_url).rstrip("/")
+    if not base_url:
+        base_url = "https://api.rusender.ru/api/v1"
+    return f"{base_url}/{path.lstrip('/')}"
+
+
+def _is_retryable_rusender_exception(exc: Exception) -> bool:
+    if isinstance(exc, HTTPError):
+        return int(exc.code) in RUSENDER_RETRYABLE_HTTP_CODES
+    return isinstance(exc, (TimeoutError, URLError, OSError))
+
+
+def _wait_rusender_api_slot() -> None:
+    global _last_rusender_request_at
+    with _RUSENDER_RATE_LIMIT_LOCK:
+        now = perf_counter()
+        wait_seconds = RUSENDER_MIN_REQUEST_INTERVAL_SECONDS - (now - _last_rusender_request_at)
+        if wait_seconds > 0:
+            sleep(wait_seconds)
+        _last_rusender_request_at = perf_counter()
+
+
+def _run_rusender_request(request: Request, *, timeout: float) -> str:
+    last_error: Exception | None = None
+    for attempt in range(1, RUSENDER_RETRY_ATTEMPTS + 1):
+        try:
+            _wait_rusender_api_slot()
+            with urlopen(request, timeout=timeout) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            exc.raw_body = raw  # type: ignore[attr-defined]
+            if attempt < RUSENDER_RETRY_ATTEMPTS and _is_retryable_rusender_exception(exc):
+                _sleep_sender_retry(RUSENDER_RETRY_BASE_SECONDS * attempt)
+                last_error = exc
+                continue
+            raise
+        except Exception as exc:
+            if attempt < RUSENDER_RETRY_ATTEMPTS and _is_retryable_rusender_exception(exc):
+                _sleep_sender_retry(RUSENDER_RETRY_BASE_SECONDS * attempt)
+                last_error = exc
+                continue
+            raise
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("RuSender не ответил после повторных попыток.")
+
+
 def _safe_provider_payload(provider: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(provider, dict):
         return {}
@@ -1449,10 +1586,12 @@ def _safe_provider_payload(provider: dict[str, Any] | None) -> dict[str, Any]:
         "message_id",
         "email_id",
         "job_id",
+        "uuid",
         "recipient",
         "accepted_emails",
         "failed_emails",
         "idempotence_key",
+        "idempotency_key",
     }
     safe: dict[str, Any] = {}
     for key in allowed_keys:
@@ -1465,6 +1604,111 @@ def _safe_provider_payload(provider: dict[str, Any] | None) -> dict[str, Any]:
     return safe
 
 
+def _send_via_rusender(
+    row: dict[str, Any],
+    recipient: str,
+    attachments: list[str],
+    subject: str,
+    *,
+    mail_template_path: Path | None = None,
+    body_override: str | None = None,
+    job_id: str | None = None,
+) -> dict[str, Any]:
+    api_key = _safe_text(settings.rusender_api_key)
+    sender_email = _safe_text(settings.rusender_sender_email or settings.smtp_sender_email)
+    sender_name = _safe_text(settings.rusender_sender_name) or "ООО «ПР»"
+    if not api_key:
+        raise RuntimeError("Не указан API-ключ RuSender.")
+    if not sender_email:
+        raise RuntimeError("Не указан подтверждённый email отправителя RuSender.")
+
+    plaintext_body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
+    html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
+    idempotency_key = ":".join(
+        item for item in (
+            "mailing-agent",
+            _safe_text(job_id) or "default",
+            _safe_text(row.get("ID")) or secrets.token_urlsafe(8),
+            _mail_key(recipient),
+            secrets.token_urlsafe(12),
+        )
+        if item
+    )
+    encoded_attachments: list[dict[str, str]] = []
+    for attachment_path in attachments:
+        path = Path(attachment_path)
+        encoded_attachments.append({path.name: base64.b64encode(path.read_bytes()).decode("ascii")})
+
+    payload: dict[str, Any] = {
+        "idempotencyKey": idempotency_key,
+        "mail": {
+            "to": {
+                "email": recipient,
+                "name": _safe_text(row.get("MUN_NAME")),
+            },
+            "from": {
+                "email": sender_email,
+                "name": sender_name,
+            },
+            "subject": subject,
+            "html": html_body,
+            "text": plaintext_body,
+        },
+    }
+    if encoded_attachments:
+        payload["mail"]["attachments"] = encoded_attachments
+
+    request = Request(
+        _build_rusender_url(RUSENDER_SEND_PATH),
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Api-Key": api_key,
+        },
+    )
+    try:
+        raw = _run_rusender_request(request, timeout=60)
+    except HTTPError as exc:
+        raw = getattr(exc, "raw_body", "")
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"RuSender вернул HTTP {exc.code}: {raw[:300]}") from exc
+        message = _safe_text(data.get("message") or data.get("error"))
+        status_code = data.get("statusCode") or exc.code
+        if message:
+            raise RuntimeError(f"{message} (code {status_code})") from exc
+        raise RuntimeError(f"RuSender вернул HTTP {exc.code}: {raw[:300]}") from exc
+
+    try:
+        data = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"RuSender вернул непонятный ответ: {raw[:300]}") from exc
+
+    uuid = _safe_text(data.get("uuid"))
+    if not uuid:
+        message = _safe_text(data.get("message") or data.get("error"))
+        raise RuntimeError(message or "RuSender не подтвердил отправку письма.")
+
+    failed_recipients: list[str] = []
+    for item in data.get("additionalRecipients") or []:
+        if isinstance(item, dict) and item.get("error"):
+            failed_recipients.append(_safe_text(item.get("error")))
+    if failed_recipients:
+        raise RuntimeError("; ".join(failed_recipients))
+
+    return {
+        "provider": "rusender",
+        "status": "accepted",
+        "message_id": uuid,
+        "uuid": uuid,
+        "recipient": recipient,
+        "idempotency_key": idempotency_key,
+    }
+
+
 def _send_via_unisender_classic(
     row: dict[str, Any],
     recipient: str,
@@ -1472,6 +1716,7 @@ def _send_via_unisender_classic(
     subject: str,
     *,
     mail_template_path: Path | None = None,
+    body_override: str | None = None,
 ) -> dict[str, Any]:
     api_key = _safe_text(settings.unisender_api_key)
     sender_email = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
@@ -1483,7 +1728,7 @@ def _send_via_unisender_classic(
         raise RuntimeError("Не указан подтверждённый email отправителя UniSender.")
 
     body = _htmlify_mail_body(
-        _build_mail_body(row, mail_template_path=mail_template_path),
+        body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path),
         include_unsubscribe=False,
     )
     payload: dict[str, Any] = {
@@ -1566,6 +1811,7 @@ def _send_via_unisender(
     subject: str,
     *,
     mail_template_path: Path | None = None,
+    body_override: str | None = None,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     if not _uses_unisender_go_api():
@@ -1575,6 +1821,7 @@ def _send_via_unisender(
             attachments,
             subject,
             mail_template_path=mail_template_path,
+            body_override=body_override,
         )
 
     api_key = _safe_text(settings.unisender_api_key)
@@ -1585,7 +1832,7 @@ def _send_via_unisender(
     if not sender_email:
         raise RuntimeError("Не указан email отправителя UniSender Go.")
 
-    plaintext_body = _build_mail_body(row, mail_template_path=mail_template_path)
+    plaintext_body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
     html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
     idempotence_key = secrets.token_urlsafe(24)
     payload: dict[str, Any] = {
@@ -1680,6 +1927,7 @@ def _send_via_unisender_go_bulk(
     subject: str,
     *,
     mail_template_path: Path | None = None,
+    body_override: str | None = None,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     api_key = _safe_text(settings.unisender_api_key)
@@ -1694,7 +1942,7 @@ def _send_via_unisender_go_bulk(
     if not cleaned_recipients:
         raise RuntimeError("Не найден получатель для отправки.")
 
-    plaintext_body = _build_mail_body(row, mail_template_path=mail_template_path)
+    plaintext_body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
     html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
     idempotence_key = secrets.token_urlsafe(24)
     payload: dict[str, Any] = {
@@ -1807,6 +2055,7 @@ def _send_with_transport(
     *,
     transport: str,
     mail_template_path: Path | None = None,
+    body_override: str | None = None,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
@@ -1820,6 +2069,7 @@ def _send_with_transport(
                 attachments,
                 subject,
                 mail_template_path=mail_template_path,
+                body_override=body_override,
                 job_id=job_id,
             )
         except Exception as exc:
@@ -1883,6 +2133,17 @@ def _send_with_transport(
                     attachments,
                     subject,
                     mail_template_path=mail_template_path,
+                    body_override=body_override,
+                    job_id=job_id,
+                )
+            elif transport == "rusender":
+                provider = _send_via_rusender(
+                    row,
+                    recipient,
+                    attachments,
+                    subject,
+                    mail_template_path=mail_template_path,
+                    body_override=body_override,
                     job_id=job_id,
                 )
             else:
@@ -1892,9 +2153,10 @@ def _send_with_transport(
                     attachments,
                     subject,
                     mail_template_path=mail_template_path,
+                    body_override=body_override,
                 )
         except Exception as exc:
-            attempts.append({"recipient": recipient, "status": "error", "error": _safe_text(exc) or "SMTP error"})
+            attempts.append({"recipient": recipient, "status": "error", "error": _safe_text(exc) or f"{transport} error"})
             continue
         attempt: dict[str, Any] = {"recipient": recipient, "status": "sent", "error": ""}
         safe_provider = _safe_provider_payload(provider)
@@ -1940,7 +2202,10 @@ def _provider_for_recipient(attempts: list[dict[str, Any]], recipient: str) -> d
 def _unisender_parallel_workers(*, dry_run: bool, transport: str) -> int:
     if dry_run or transport != "unisender":
         return 1
-    return 1
+    try:
+        return max(1, int(settings.sender_unisender_concurrency or 1))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _build_parallel_send_job(
@@ -1954,6 +2219,8 @@ def _build_parallel_send_job(
     transport: str,
     mail_template_path: Path | None,
     job_id: str | None,
+    body_override: str | None = None,
+    success_status_value: str = STATUS_SENT_VALUE,
 ) -> dict[str, Any]:
     return {
         "row": row,
@@ -1964,6 +2231,8 @@ def _build_parallel_send_job(
         "subject": subject,
         "transport": transport,
         "mail_template_path": mail_template_path,
+        "body_override": body_override,
+        "success_status_value": success_status_value,
         "job_id": job_id,
     }
 
@@ -1976,6 +2245,7 @@ def _run_parallel_send_job(job: dict[str, Any]) -> dict[str, Any]:
         job["subject"],
         transport=job["transport"],
         mail_template_path=job["mail_template_path"],
+        body_override=job.get("body_override"),
         job_id=job.get("job_id"),
     )
     return {"job": job, "send_result": send_result}
@@ -2033,6 +2303,7 @@ def _apply_send_result_to_entry(
     workbook: Any,
     worksheet: Any,
     data_xlsx_path: Path,
+    success_status_value: str = STATUS_SENT_VALUE,
 ) -> bool:
     entry["attempts"] = send_result["attempts"]
     entry["warning"] = _safe_text(send_result.get("warning"))
@@ -2089,7 +2360,7 @@ def _apply_send_result_to_entry(
         worksheet,
         data_xlsx_path,
         row,
-        STATUS_SENT_VALUE,
+        success_status_value,
         flush=False,
     )
     if status_warning:
@@ -2106,6 +2377,7 @@ def run_sender(
     auto_recover: bool = False,
     row_ids: list[str] | None = None,
     transport: str | None = None,
+    send_mode: str | None = None,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
@@ -2127,6 +2399,7 @@ def run_sender(
     state = _load_sender_state(job_id)
     effective_limit = _normalize_limit(limit, dry_run=dry_run)
     effective_transport = _normalize_transport(transport)
+    effective_send_mode = _normalize_send_mode(send_mode)
     stats = _collect_excel_stats(data_xlsx_path)
     started_at = datetime.now().isoformat(timespec="seconds")
     send_run_id = ""
@@ -2134,6 +2407,9 @@ def run_sender(
     if not dry_run:
         send_run_id = _safe_text(state.get("send_run_id"))
         send_run_started_at = _safe_text(state.get("send_run_started_at"))
+        if _safe_text(state.get("send_mode")) != effective_send_mode:
+            send_run_id = ""
+            send_run_started_at = ""
         if not send_run_id:
             send_run_id = f"send-{started_at.replace(':', '').replace('-', '')}-{secrets.token_hex(4)}"
         if not send_run_started_at:
@@ -2142,15 +2418,20 @@ def run_sender(
         {
             "status": "running",
             "mode": "dry_run" if dry_run else "send",
+            "send_mode": effective_send_mode,
             "started_at": started_at,
             "completed_at": None,
             "processed_rows": 0,
             "ready_rows": 0,
-            "sent_rows": stats["sent"],
+            "sent_rows": stats["sent"] if effective_send_mode == "materials" else 0,
             "error_rows": 0,
             "skipped_rows": 0,
             "total_rows": 0,
-            "summary_text": "Начинаю проверку перед отправкой.",
+            "summary_text": (
+                "Начинаю проверку запроса согласия."
+                if effective_send_mode == "consent_request"
+                else "Начинаю проверку перед отправкой."
+            ),
             "rows": [],
             "stats": stats,
             "warning_rows": 0,
@@ -2200,7 +2481,7 @@ def run_sender(
     runtime_warnings: list[str] = []
     workbook_dirty = False
     started_at = perf_counter()
-    subject = DEFAULT_MAIL_SUBJECT
+    subject = CONSENT_REQUEST_SUBJECT if effective_send_mode == "consent_request" else DEFAULT_MAIL_SUBJECT
     sent_mail_recipients = (
         _load_sent_mail_recipients(
             sent_mail_log_path,
@@ -2240,9 +2521,18 @@ def run_sender(
         }
 
         status_class = _status_class(row_status)
-        if status_class == "sent":
+        if status_class == "sent" and effective_send_mode == "materials":
             entry["result"] = "skipped_duplicate"
             entry["decision_reason"] = "Строка уже помечена как успешно отправленная."
+            processed_entries.append(entry)
+            state["skipped_rows"] += 1
+            state["processed_rows"] += 1
+            state["rows"] = _state_rows_snapshot(processed_entries)
+            _save_sender_state(state, job_id)
+            continue
+        if status_class == "consent_requested" and effective_send_mode == "consent_request":
+            entry["result"] = "skipped_consent_request_duplicate"
+            entry["decision_reason"] = "Запрос согласия уже отправлялся по этой строке."
             processed_entries.append(entry)
             state["skipped_rows"] += 1
             state["processed_rows"] += 1
@@ -2257,17 +2547,35 @@ def run_sender(
         entry["email_strategy"] = email_decision["strategy"]
         entry["decision_reason"] = email_decision["decision_reason"]
         entry["fallback_candidates"] = email_decision["fallback_candidates"]
-
-        folder, folder_error = _resolve_output_folder(
-            row_id,
-            output_dir=output_dir,
-            folder_index=output_folder_index,
-            folder_errors=output_folder_errors,
+        missing_confirmed_consent = (
+            effective_send_mode == "materials"
+            and bool(entry["recipient"])
+            and not has_confirmed_consent(
+                job_id=job_id,
+                row_id=row_id,
+                recipient=entry["recipient"],
+            )
         )
-        entry["folder"] = str(folder) if folder else None
-        attachments, attachment_error = _resolve_pdf_attachments(folder)
-        entry["attachments"] = attachments
-        review_task = _active_sender_review_task(row_id, job_id=job_id)
+
+        folder: Path | None = None
+        folder_error: str | None = None
+        attachments: list[str] = []
+        attachment_error: str | None = None
+        review_task: dict[str, Any] | None = None
+        if effective_send_mode == "materials" and not missing_confirmed_consent:
+            folder, folder_error = _resolve_output_folder(
+                row_id,
+                output_dir=output_dir,
+                folder_index=output_folder_index,
+                folder_errors=output_folder_errors,
+            )
+            entry["folder"] = str(folder) if folder else None
+            attachments, attachment_error = _resolve_pdf_attachments(folder)
+            entry["attachments"] = attachments
+            review_task = _active_sender_review_task(row_id, job_id=job_id)
+        else:
+            entry["folder"] = None
+            entry["attachments"] = []
         recovery_info: dict[str, Any] | None = None
 
         if not entry["recipient"]:
@@ -2328,6 +2636,10 @@ def run_sender(
                     entry["result"] = "ready_after_recovery" if dry_run else "sent"
                     entry["decision_reason"] += " Генератор автоматически пересобрал комплект документов."
                     state["autonomous_recovery_rows"] += 1
+        elif missing_confirmed_consent:
+            entry["result"] = "blocked_no_consent"
+            entry["error"] = "Нет подтверждённого согласия на отправку КП и договора."
+            entry["next_action"] = "Сначала отправьте запрос согласия и дождитесь подтверждения."
         elif attachment_error:
             entry["result"] = "error_missing_attachments"
             entry["error"] = attachment_error
@@ -2410,6 +2722,7 @@ def run_sender(
             "error_missing_output",
             "error_missing_attachments",
             "blocked_by_philologist",
+            "blocked_no_consent",
             "error",
         }:
             if not dry_run:
@@ -2445,6 +2758,12 @@ def run_sender(
 
         state["ready_rows"] += 1
         row_subject = _build_mail_subject(subject, row)
+        row_body_override: str | None = None
+        success_status_value = (
+            STATUS_CONSENT_REQUEST_SENT_VALUE
+            if effective_send_mode == "consent_request"
+            else STATUS_SENT_VALUE
+        )
 
         if not dry_run:
             _refresh_sender_stop_flag(state, job_id)
@@ -2460,12 +2779,38 @@ def run_sender(
             try:
                 row_id_text = _safe_text(row_id)
                 already_logged = sent_mail_recipients.get(row_id_text, set())
-                intended_recipients = _allowed_send_recipients(email_decision)
+                intended_recipients = (
+                    [entry["recipient"]]
+                    if effective_send_mode == "consent_request" and entry.get("recipient")
+                    else _allowed_send_recipients(email_decision)
+                )
+                if effective_send_mode == "materials":
+                    intended_recipients = [
+                        recipient
+                        for recipient in intended_recipients
+                        if has_confirmed_consent(
+                            job_id=job_id,
+                            row_id=row_id,
+                            recipient=recipient,
+                        )
+                    ]
                 recipients_to_send = [
                     recipient
                     for recipient in intended_recipients
                     if _mail_key(recipient) not in already_logged
                 ]
+                if effective_send_mode == "consent_request" and recipients_to_send:
+                    consent_record = prepare_consent_request(
+                        job_id=job_id,
+                        row=row,
+                        recipient=recipients_to_send[0],
+                        transport=effective_transport,
+                    )
+                    entry["consent_url"] = consent_record.get("consent_url")
+                    row_body_override = _build_consent_request_body(
+                        row,
+                        consent_url=_safe_text(consent_record.get("consent_url")),
+                    )
                 if not recipients_to_send:
                     workbook_dirty = (
                         _restore_sent_from_local_log(
@@ -2490,6 +2835,8 @@ def run_sender(
                             subject=row_subject,
                             transport=effective_transport,
                             mail_template_path=mail_template_path,
+                            body_override=row_body_override,
+                            success_status_value=success_status_value,
                             job_id=job_id,
                         )
                     )
@@ -2503,6 +2850,7 @@ def run_sender(
                         row_subject,
                         transport=effective_transport,
                         mail_template_path=mail_template_path,
+                        body_override=row_body_override,
                         job_id=job_id,
                     )
                     workbook_dirty = (
@@ -2521,9 +2869,18 @@ def run_sender(
                             workbook=workbook,
                             worksheet=worksheet,
                             data_xlsx_path=data_xlsx_path,
+                            success_status_value=success_status_value,
                         )
                         or workbook_dirty
                     )
+                    if effective_send_mode == "consent_request" and entry.get("sent_recipients"):
+                        for sent_recipient in entry["sent_recipients"]:
+                            mark_consent_request_sent(
+                                job_id=job_id,
+                                row_id=row_id,
+                                recipient=sent_recipient,
+                                provider=_provider_for_recipient(entry.get("attempts") or [], sent_recipient),
+                            )
                     state["sent_rows"] += 1
                 if entry["warning"]:
                     state["warning_rows"] += 1
@@ -2550,7 +2907,7 @@ def run_sender(
             entry["attempts"] = [
                 {
                     "recipient": entry["recipient"],
-                    "status": "ready",
+                    "status": "consent_request_ready" if effective_send_mode == "consent_request" else "ready",
                     "error": "",
                 }
             ]
@@ -2577,7 +2934,7 @@ def run_sender(
         state["rows"] = _state_rows_snapshot(processed_entries)
         _save_sender_state(state, job_id)
 
-        if not dry_run and entry.get("result") == "sent" and effective_transport != "unisender":
+        if not dry_run and entry.get("result") == "sent" and effective_transport == "smtp":
             delay_seconds = max(0.0, float(settings.sender_delay_seconds or 0))
             if delay_seconds > 0 and state["processed_rows"] < state["total_rows"]:
                 if not _wait_sender_delay(delay_seconds, state, job_id):
@@ -2627,10 +2984,19 @@ def run_sender(
                                 workbook=workbook,
                                 worksheet=worksheet,
                                 data_xlsx_path=data_xlsx_path,
+                                success_status_value=job.get("success_status_value", STATUS_SENT_VALUE),
                             )
                             or workbook_dirty
                         )
                         state["sent_rows"] += 1
+                        if job.get("success_status_value") == STATUS_CONSENT_REQUEST_SENT_VALUE and entry.get("sent_recipients"):
+                            for sent_recipient in entry["sent_recipients"]:
+                                mark_consent_request_sent(
+                                    job_id=job_id,
+                                    row_id=row.get("ID"),
+                                    recipient=sent_recipient,
+                                    provider=_provider_for_recipient(entry.get("attempts") or [], sent_recipient),
+                                )
                         if entry["warning"]:
                             state["warning_rows"] += 1
                             entry["next_action"] = entry["warning"]

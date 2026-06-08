@@ -6,6 +6,7 @@ import zipfile
 from src.utils.logger import logger
 from src.utils.config import settings
 from src.web.agent_router import create_agent_router
+from src.web.consent_router import create_consent_router
 from src.web.documents_router import create_documents_router
 from src.web.documents_service import (
     compact_documents_status,
@@ -896,6 +897,7 @@ configure_sender_service(
 
 
 app.include_router(jobs_controller.router)
+app.include_router(create_consent_router())
 
 app.include_router(
     create_documents_router(

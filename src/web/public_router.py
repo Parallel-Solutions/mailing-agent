@@ -10,6 +10,7 @@ from src.generator.generation.config_generator import ONLYOFFICE_PUBLIC_FILES_DI
 
 
 PUBLIC_ASSETS_DIR = Path("src/generator/assets")
+WEB_STATIC_DIR = Path("src/web/static")
 
 
 def create_public_router() -> APIRouter:
@@ -21,6 +22,20 @@ def create_public_router() -> APIRouter:
         if not signature_path.exists():
             raise HTTPException(status_code=404, detail="Mail signature image not found.")
         return FileResponse(signature_path, media_type="image/png")
+
+    @router.get("/public/documents-ui.js")
+    async def public_documents_ui_script():
+        script_path = WEB_STATIC_DIR / "documents_ui.js"
+        if not script_path.exists():
+            raise HTTPException(status_code=404, detail="Documents UI script not found.")
+        return FileResponse(script_path, media_type="application/javascript")
+
+    @router.get("/public/sender-ui.js")
+    async def public_sender_ui_script():
+        script_path = WEB_STATIC_DIR / "sender_ui.js"
+        if not script_path.exists():
+            raise HTTPException(status_code=404, detail="Sender UI script not found.")
+        return FileResponse(script_path, media_type="application/javascript")
 
     @router.get("/public/onlyoffice/{token}/{filename}")
     async def public_onlyoffice_document(token: str, filename: str):

@@ -53,6 +53,7 @@ def create_sender_router(
         dry_run = True if payload is None else bool(payload.get("dry_run", True))
         limit = parse_optional_limit(payload)
         transport = None if payload is None else payload.get("transport")
+        send_mode = None if payload is None else payload.get("send_mode")
         job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
         if not dry_run and is_load_test_job(job_id):
             raise HTTPException(
@@ -77,7 +78,13 @@ def create_sender_router(
             _, started = start_sender_thread_if_absent(
                 job_id,
                 target=run_sender_background,
-                kwargs={"dry_run": dry_run, "limit": limit, "transport": transport, "job_id": job_id},
+                kwargs={
+                    "dry_run": dry_run,
+                    "limit": limit,
+                    "transport": transport,
+                    "send_mode": send_mode,
+                    "job_id": job_id,
+                },
                 name=f"sender-{sender_job_key(job_id)}",
                 before_start=_prime_state,
             )

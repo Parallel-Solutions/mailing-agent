@@ -437,6 +437,47 @@
     line-height: 1.45;
   }
 
+  .sender-transport-row {
+    display: grid;
+    grid-template-columns: minmax(190px, 260px) minmax(220px, 280px) minmax(0, 1fr);
+    gap: 12px;
+    align-items: end;
+    margin-top: 14px;
+  }
+
+  .sender-transport-field label {
+    display: block;
+    margin-bottom: 6px;
+    color: #6f7b65;
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .sender-transport-field select {
+    width: 100%;
+    height: 36px;
+    border: 1px solid #cfd9c7;
+    border-radius: 8px;
+    background: #fff;
+    color: #08220d;
+    padding: 0 10px;
+    font: inherit;
+  }
+
+  @media (max-width: 760px) {
+    .sender-transport-row {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+    }
+  }
+
+  .sender-transport-note {
+    color: #6f7b65;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
   .page-sub-row {
     display: flex;
     align-items: center;
@@ -2190,9 +2231,7 @@
           <span class="badge badge-idle" id="g-badge">Готов к запуску</span>
         </div>
         <div class="module-title">Подготовка документов</div>
-        <div class="module-desc">
-          Нажмите кнопку ниже. Дальше сервис всё сделает сам.
-        </div>
+        <div class="module-desc" id="g-start-desc" hidden></div>
         <div class="progress-label" id="g-inflection-summary" style="display:none"></div>
         <div class="module-actions" style="margin-top:12px">
           <div class="module-actions-primary">
@@ -2319,6 +2358,27 @@
         <div class="module-title">Проверка и отправка писем</div>
         <div class="module-desc">
           Проверим, кому уйдёт письмо, есть ли готовые вложения и нет ли ошибок. Если всё хорошо, появится кнопка отправки.
+        </div>
+        <div class="sender-transport-row">
+          <div class="sender-transport-field">
+            <label for="sender-transport">Способ отправки</label>
+            <select id="sender-transport">
+              <option value="smtp">Почта SMTP</option>
+              <option value="unisender">UniSender</option>
+              <option value="rusender">RuSender API</option>
+              <option value="mailopost" disabled>MailoPost API — скоро</option>
+            </select>
+          </div>
+          <div class="sender-transport-field">
+            <label for="sender-send-mode">Что отправляем</label>
+            <select id="sender-send-mode">
+              <option value="consent_request">Запрос согласия</option>
+              <option value="materials">КП и договор после согласия</option>
+            </select>
+          </div>
+          <div class="sender-transport-note" id="sender-transport-note">
+            Выберите канал перед проверкой. Реальная отправка всё равно начнётся только после подтверждения.
+          </div>
         </div>
           <div class="module-actions" style="margin-top:12px">
             <div class="module-actions-primary">
@@ -2469,6 +2529,8 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="/public/documents-ui.js"></script>
+<script src="/public/sender-ui.js"></script>
 <script>
   const chatSessions = {};
   const activeChatRequests = {};
@@ -2511,6 +2573,7 @@
   let lastPhilologistUiState = {};
   let lastDocumentsUiState = {};
   let lastSenderUiState = {};
+  let documentsStartClicked = false;
   let deliveryAnalyticsFollowupTimer = null;
   let deliveryAnalyticsLoading = false;
   let isRestoringUiState = false;
@@ -2596,6 +2659,7 @@
       generatorUiState: lastGeneratorUiState,
       philologistUiState: lastPhilologistUiState,
       documentsUiState: lastDocumentsUiState,
+      documentsStartClicked,
       senderUiState: lastSenderUiState,
       senderPreviewState,
       parserRunning,
@@ -2763,6 +2827,7 @@
   function restoreUiState(snapshot) {
     if (!snapshot || typeof snapshot !== 'object') return;
     senderPreviewState = snapshot.senderPreviewState || null;
+    documentsStartClicked = !!snapshot.documentsStartClicked;
     flowNotificationState = snapshot.flowNotificationState || createFlowNotificationState();
     Object.assign(lastAgentEventIds, snapshot.lastAgentEventIds || {});
     Object.assign(chatSessions, snapshot.chatSessions || {});
@@ -2800,6 +2865,7 @@
     currentGeneratorStatus = 'idle';
     currentPhilologistStatus = 'idle';
     currentSenderStatus = 'idle';
+    documentsStartClicked = false;
     lastParserUiState = {
       status: 'idle',
       row_count: 0,
@@ -2841,6 +2907,7 @@
       sender_reason: '',
       counts: { parser_total: 0, generator_total: 0, sender_total: 0 },
     };
+    syncGeneratorStartDescriptionVisibility('idle');
   }
 
   function getEffectiveDocumentsStatusSnapshot() {
@@ -5432,24 +5499,31 @@ function clearAttachedFile() {
   // GENERATOR
   async function startDocumentsPipeline() {
     await ensureCurrentJobId();
+    documentsStartClicked = true;
+    scheduleUiStateSave();
     const isResume = currentGeneratorStatus === 'stopped' || currentPhilologistStatus === 'stopped';
     const resumeStage = currentGeneratorStatus === 'completed' && currentPhilologistStatus === 'stopped' ? 'review' : 'generate';
-    setDocumentsUiState({
-      force: true,
-      status: 'running',
-      stage: isResume ? resumeStage : 'generate',
-      progress_percent: isResume && lastGeneratorUiState.status === 'completed' ? 70 : 0,
-      total_rows: Number(lastGeneratorUiState.total_rows || 0),
-      processed_rows: Number(lastGeneratorUiState.processed_rows || 0),
-      generator: lastGeneratorUiState,
-      philologist: lastPhilologistUiState,
-    });
-    appendChatMessage('g-chat', 'agent', isResume
-      ? 'Продолжаю подготовку документов с сохраненного места.'
-      : 'Начинаю подготовку документов. Сначала создам КП и договоры, затем проверю тексты перед отправкой.');
-    stopDocumentsPolling();
-    stopGeneratorPolling();
-    stopPhilologistPolling();
+    try {
+      syncGeneratorStartDescriptionVisibility('running');
+      setDocumentsUiState({
+        force: true,
+        status: 'running',
+        stage: isResume ? resumeStage : 'generate',
+        progress_percent: isResume && lastGeneratorUiState.status === 'completed' ? 70 : 0,
+        total_rows: Number(lastGeneratorUiState.total_rows || 0),
+        processed_rows: Number(lastGeneratorUiState.processed_rows || 0),
+        generator: lastGeneratorUiState,
+        philologist: lastPhilologistUiState,
+      });
+      appendChatMessage('g-chat', 'agent', isResume
+        ? 'Продолжаю подготовку документов с сохраненного места.'
+        : 'Начинаю подготовку документов. Сначала создам КП и договоры, затем проверю тексты перед отправкой.');
+      stopDocumentsPolling();
+      stopGeneratorPolling();
+      stopPhilologistPolling();
+    } catch (uiError) {
+      console.warn('documents_start_ui_update_failed', uiError);
+    }
     try {
       const res = await fetchWithTimeout('/api/documents/start', {
         method: 'POST',
@@ -5515,13 +5589,29 @@ function clearAttachedFile() {
   }
 
   function getSenderTransport() {
-    return 'unisender';
+    const select = document.getElementById('sender-transport');
+    const value = String((select && select.value) || '').trim();
+    return value || 'smtp';
+  }
+
+  function getSenderSendMode() {
+    const select = document.getElementById('sender-send-mode');
+    const value = String((select && select.value) || '').trim();
+    return value || 'consent_request';
   }
 
   function applyButtonReadiness(button, isEnabled, reason = '') {
     if (!button) return;
     button.disabled = !isEnabled;
     button.title = isEnabled ? '' : reason;
+  }
+
+  function syncGeneratorStartDescriptionVisibility(status = String((lastDocumentsUiState || {}).status || 'idle')) {
+    const startDescription = document.getElementById('g-start-desc');
+    if (!startDescription) return;
+    const shouldShow = String(status || 'idle') === 'idle' && !documentsStartClicked;
+    startDescription.hidden = !shouldShow;
+    startDescription.style.display = shouldShow ? '' : 'none';
   }
 
   function getSenderOutstandingRows(state = {}) {
@@ -5627,6 +5717,7 @@ function clearAttachedFile() {
       (!!moduleReadiness.philologist_ready || currentPhilologistStatus === 'stopped') && !philologistRunningNow,
       moduleReadiness.philologist_reason || 'Сначала подготовьте документы.'
     );
+    syncGeneratorStartDescriptionVisibility(documentsStatusNow);
     setSenderButtonsState({
       status: currentSenderStatus,
       mode: String(lastSenderUiState.mode || 'dry_run'),
@@ -6138,6 +6229,7 @@ function clearAttachedFile() {
     const label = document.getElementById('g-label');
     const runButton = document.getElementById('g-run');
     const pauseButton = document.getElementById('g-pause');
+    const startDescription = document.getElementById('g-start-desc');
     const doneStat = document.getElementById('g-done');
     const doneLabelStat = document.getElementById('g-done-label');
     const errorStat = document.getElementById('g-err');
@@ -6323,471 +6415,22 @@ function clearAttachedFile() {
     setProgressVisual(fill, { percent: 0, running: false });
   }
 
-  function updateDocumentsStageBreakdown(result = {}) {
-    const vm = buildDocumentsScreenViewModel(result);
-    const serverUi = result.ui || {};
-    const serverProcess = serverUi.process || {};
-    const status = vm.status;
-    const stage = vm.stage;
-    const titleEl = document.getElementById('g-process-title');
-    const mainEl = document.getElementById('g-process-main');
-    const detailEl = document.getElementById('g-process-detail');
-    const currentItemEl = document.getElementById('g-current-item');
-    const nextEl = document.getElementById('g-process-next');
-    const clientsEl = document.getElementById('g-process-clients');
-    const filesEl = document.getElementById('g-process-files');
-    const reviewEl = document.getElementById('g-process-review');
-    updateDocumentsStepTrack(status, stage);
-    const setText = ({ title, main, detail, next }) => {
-      if (titleEl) titleEl.textContent = title;
-      if (mainEl) mainEl.textContent = main;
-      if (detailEl) detailEl.textContent = detail;
-      if (nextEl) nextEl.textContent = next;
-    };
-    if (clientsEl) {
-      const clientsDone = Number(serverProcess.clients_done ?? vm.processedRows ?? 0);
-      const clientsTotal = Number(serverProcess.clients_total ?? vm.totalRows ?? 0);
-      clientsEl.textContent = clientsTotal > 0
-        ? `${clientsDone.toLocaleString('ru')}/${clientsTotal.toLocaleString('ru')}`
-        : '0/0';
-    }
-    if (filesEl) {
-      const documentsDone = Number(serverProcess.documents_done ?? vm.shownDocuments ?? 0);
-      const documentsTotal = Number(serverProcess.documents_total ?? vm.expectedDocuments ?? 0);
-      const clientsDone = Number(serverProcess.clients_done ?? vm.processedRows ?? 0);
-      const isEarlyGeneration = status === 'running' && stage === 'generate' && clientsDone > 0 && documentsDone <= 0;
-      filesEl.textContent = isEarlyGeneration
-        ? 'появятся позже'
-        : `${documentsDone.toLocaleString('ru')}/${documentsTotal.toLocaleString('ru')}`;
-    }
-    if (reviewEl) {
-      const reviewDone = Number(serverProcess.review_done ?? vm.reviewedDocuments ?? 0);
-      const reviewTotal = Number(serverProcess.review_total ?? vm.totalDocuments ?? 0);
-      reviewEl.textContent = `${reviewDone.toLocaleString('ru')}/${reviewTotal.toLocaleString('ru')}`;
-      const reviewRow = document.getElementById('g-process-review-row');
-      const philologistStatus = String(((result.philologist || {}).status) || '');
-      const reviewHasStarted = vm.stage === 'review'
-        || vm.status === 'completed'
-        || ['running', 'finalizing', 'completed', 'stopped', 'error'].includes(philologistStatus);
-      if (reviewRow) reviewRow.hidden = !reviewHasStarted || reviewTotal <= 0;
-    }
-    if (currentItemEl) {
-      currentItemEl.textContent = '';
-    }
-    if (serverProcess.title || serverProcess.main || serverProcess.detail || serverProcess.next) {
-      setText({
-        title: serverProcess.title || 'Состояние',
-        main: serverProcess.main || '',
-        detail: serverProcess.detail || '',
-        next: serverProcess.next || '',
-      });
+  function renderDocumentsStatus(result = {}) {
+    if (!window.DocumentsUi || typeof window.DocumentsUi.renderDocumentsStatus !== 'function') {
+      console.warn('documents_ui_module_missing');
       return;
     }
-    const clientsText = vm.totalRows > 0
-      ? `${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')} клиентов`
-      : 'клиентов пока не найдено';
-    const documentsText = `${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')} документов`;
-
-    if (status === 'running' && stage === 'review') {
-      setText({
-        title: 'Идёт подготовка',
-        main: 'Проверяем текст.',
-        detail: '',
-        next: 'После завершения можно будет скачать результат или перейти дальше.'
-      });
-      return;
-    }
-
-    if (status === 'running' && (stage === 'ready' || stage === 'convert_pdf' || stage === 'finalize_output')) {
-      setText({
-        title: 'Идёт подготовка',
-        main: 'Собираем результат.',
-        detail: '',
-        next: 'Скоро подготовка завершится автоматически.'
-      });
-      return;
-    }
-
-    if (status === 'running') {
-      setText({
-        title: 'Идёт подготовка',
-        main: 'Готовим документы.',
-        detail: '',
-        next: 'После этого система сама закончит остальные шаги.'
-      });
-      return;
-    }
-
-    if (status === 'completed') {
-      const hasMissingDocuments = vm.expectedDocuments > 0 && vm.shownDocuments > 0 && vm.shownDocuments < vm.expectedDocuments;
-      const hasMissingPdf = vm.shownPdfTotal > 0 && vm.shownPdfDone > 0 && vm.shownPdfDone < vm.shownPdfTotal;
-      if (hasMissingDocuments || hasMissingPdf || vm.errorRows > 0) {
-        setText({
-          title: 'Подготовка завершена с замечаниями',
-          main: 'Часть документов готова, но не всё удалось собрать автоматически.',
-          detail: `Документы: ${documentsText}. Результат подготовлен.`,
-          next: 'Скачайте результат и проверьте строки с ошибками.'
-        });
-        return;
-      }
-      setText({
-        title: 'Готово',
-        main: 'Документы подготовлены.',
-        detail: `Подготовка завершена для ${vm.totalRows.toLocaleString('ru')} клиентов.`,
-        next: 'Теперь можно скачать архив или перейти к проверке отправки.'
-      });
-      return;
-    }
-
-    if (status === 'stopped') {
-      setText({
-        title: 'Подготовка остановлена',
-        main: 'Процесс остановлен.',
-        detail: stage === 'review'
-          ? `Проверка текста выполнена частично: ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')}.`
-          : `Подготовка выполнена частично: ${clientsText}.`,
-        next: 'Нажмите «Продолжить подготовку», чтобы продолжить.'
-      });
-      return;
-    }
-
-    if (status === 'error') {
-      setText({
-        title: 'Есть ошибка',
-        main: 'Сервис не смог завершить подготовку.',
-        detail: vm.errorRows > 0
-          ? `Строк с ошибками: ${vm.errorRows.toLocaleString('ru')}. Часть файлов может быть уже готова.`
-          : 'Часть файлов может быть уже готова.',
-        next: 'Исправьте данные или просто попробуйте повторить запуск.'
-      });
-      return;
-    }
-
-    setText({
-      title: 'Готово к запуску',
-      main: 'Сервис подготовит документы по вашей таблице.',
-      detail: 'После запуска ничего дополнительно делать не нужно.',
-      next: 'Когда всё будет готово, можно будет скачать результат и перейти дальше.'
+    window.DocumentsUi.renderDocumentsStatus(result, {
+      humanizeDocumentsMessage,
+      updateDocumentsActionHints,
+      setProgressVisual,
+      updateDocumentsNextButton,
+      syncGeneratorStartDescriptionVisibility,
     });
-  }
-
-  function updateDocumentsStepTrack(status = 'idle', stage = 'generate') {
-    const steps = [
-      { id: 'g-step-generate', key: 'generate' },
-      { id: 'g-step-review', key: 'review' },
-      { id: 'g-step-ready', key: 'ready' },
-    ];
-    const normalizedStatus = String(status || 'idle');
-    const normalizedStage = String(stage || 'generate');
-    let activeIndex = -1;
-    if (normalizedStatus === 'completed') {
-      activeIndex = 2;
-    } else if (normalizedStatus === 'running' || normalizedStatus === 'waiting_review') {
-      if (normalizedStage === 'review' || normalizedStatus === 'waiting_review') {
-        activeIndex = 1;
-      } else if (['ready', 'convert_pdf', 'finalize_output'].includes(normalizedStage)) {
-        activeIndex = 2;
-      } else {
-        activeIndex = 0;
-      }
-    } else if (normalizedStatus === 'error' || normalizedStatus === 'stopped') {
-      if (normalizedStage === 'review') {
-        activeIndex = 1;
-      } else if (['ready', 'convert_pdf', 'finalize_output'].includes(normalizedStage)) {
-        activeIndex = 2;
-      } else {
-        activeIndex = 0;
-      }
-    }
-    steps.forEach((step, index) => {
-      const el = document.getElementById(step.id);
-      if (!el) return;
-      el.classList.remove('is-active', 'is-done', 'is-error');
-      if (normalizedStatus === 'completed') {
-        el.classList.add('is-done');
-        if (index === 2) el.classList.add('is-active');
-        return;
-      }
-      if ((normalizedStatus === 'error' || normalizedStatus === 'stopped') && index === activeIndex) {
-        el.classList.add(normalizedStatus === 'error' ? 'is-error' : 'is-active');
-        return;
-      }
-      if (index < activeIndex) {
-        el.classList.add('is-done');
-      } else if (index === activeIndex) {
-        el.classList.add('is-active');
-      }
-    });
-  }
-
-  function buildDocumentsScreenViewModel(result = {}) {
-    const generatorState = result.generator || {};
-    const philologistState = result.philologist || {};
-    const rawStatus = String(result.status || 'idle');
-    const rawStage = String(result.stage || 'generate');
-    const generatorStage = String(generatorState.stage || '');
-    const stage = rawStage === 'generate' && ['convert_pdf', 'finalize_output'].includes(generatorStage)
-      ? 'ready'
-      : rawStage;
-    const totalRows = Number(result.total_rows || generatorState.total_rows || 0);
-    const processedRows = Number(result.processed_rows || generatorState.processed_rows || 0);
-    const totalDocuments = Number(result.total_documents || philologistState.total_documents || 0);
-    const reviewedDocuments = Number(result.reviewed_documents || philologistState.processed_documents || 0);
-    const stagedDocxCount = Number(generatorState.staged_docx_count || 0);
-    const generatedDocxCount = Math.max(stagedDocxCount, Number(generatorState.generated_docx_count || 0));
-    const pdfTotal = Number(generatorState.pdf_total || 0);
-    const pdfProcessed = Number(generatorState.pdf_processed || generatorState.staged_pdf_count || 0);
-    const outputFileCount = Number(result.output_file_count || generatorState.output_file_count || 0);
-    const errorRows = Number(result.error_rows || generatorState.error_rows || 0);
-    const fixedDocuments = Number(result.fixed_documents || philologistState.fixed_documents || 0);
-    const status = rawStatus;
-    const expectedDocuments = totalRows > 0
-      ? totalRows * 2
-      : Math.max(totalDocuments, generatedDocxCount, outputFileCount);
-    const generatedDocuments = Math.max(
-      generatedDocxCount,
-      stage === 'review' ? totalDocuments : 0
-    );
-    const hasGeneratedDocumentsCount = generatedDocuments > 0 || generatedDocxCount > 0 || totalDocuments > 0;
-    const shownDocuments = generatedDocuments;
-    const shownPdfTotal = expectedDocuments || pdfTotal;
-    const hasPdfCount = pdfProcessed > 0 || outputFileCount > 0 || pdfTotal > 0;
-    const shownPdfDone = status === 'completed' && shownPdfTotal > 0 && !hasPdfCount
-      ? shownPdfTotal
-      : Math.max(pdfProcessed, Math.min(outputFileCount, shownPdfTotal || outputFileCount));
-    const rawProgressPercent = Math.max(0, Math.min(100, Number(result.progress_percent || 0)));
-    const progressPercent = status === 'completed'
-      ? 100
-      : Math.min(rawProgressPercent, 99);
-    return {
-      status,
-      rawStatus,
-      stage,
-      totalRows,
-      processedRows,
-      totalDocuments,
-      reviewedDocuments,
-      errorRows,
-      fixedDocuments,
-      generatedDocxCount,
-      expectedDocuments,
-      shownDocuments,
-      shownPdfTotal,
-      shownPdfDone,
-      outputFileCount,
-      progressPercent,
-    };
-  }
-
-  function buildDocumentsUiCopy(vm, result = {}) {
-    const serverModule = (result.ui || {}).module || {};
-    const canRun = vm.status !== 'running';
-    const hasRequiredInputs = !!moduleReadiness.generator_ready;
-    const runReason = serverModule.generator_hint || moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.';
-    const normalizeDocumentsLabelText = (labelText = '') => {
-      const rawLabel = String(labelText || '').trim();
-      const isEarlyGeneration = vm.status === 'running'
-        && vm.stage === 'generate'
-        && vm.processedRows > 0
-        && vm.shownDocuments <= 0;
-      if (isEarlyGeneration || /^Создано документов:\s*0\s+из\s+\d+/i.test(rawLabel)) {
-        if (vm.totalRows > 0) {
-          return `Готовим данные клиентов: ${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')}. Документы появятся после обработки первых строк.`;
-        }
-        return 'Готовим данные клиентов. Документы появятся после обработки первых строк.';
-      }
-      return rawLabel;
-    };
-    if (serverModule.badge_text || serverModule.label_text || serverModule.run_text) {
-      let runDisabled = !canRun;
-      let runTitle = '';
-      if (vm.status === 'running') {
-        runDisabled = true;
-      }
-      if (vm.status === 'completed' && !runDisabled) {
-        runTitle = 'Запустить подготовку заново с текущими данными.';
-      }
-      const resolvedGeneratorHint = vm.status === 'idle'
-        ? (
-          hasRequiredInputs
-            ? 'Можно запускать. Дальше сервис всё сделает сам.'
-            : runReason
-        )
-        : (serverModule.generator_hint || '');
-      const resolvedPhilologistHint = vm.status === 'idle'
-        ? (
-          moduleReadiness.philologist_ready
-            ? 'Документы уже готовы.'
-            : 'Проверка текста запустится автоматически после подготовки документов.'
-        )
-        : (serverModule.philologist_hint || '');
-      return {
-        badgeText: serverModule.badge_text || 'Готов к запуску',
-        badgeClass: `badge badge-${serverModule.badge_tone || 'idle'}`,
-        runText: serverModule.run_text || 'Подготовить документы',
-        runDisabled,
-        runTitle,
-        pauseDisabled: vm.status !== 'running',
-        pauseText: 'Остановить',
-        pauseTitle: vm.status === 'running' ? '' : 'Остановка станет доступна после запуска подготовки документов.',
-        doneValue: vm.status === 'completed'
-          ? (vm.totalRows || Math.floor(vm.totalDocuments / 2))
-          : vm.processedRows,
-        doneLabel: 'Клиентов',
-        labelText: normalizeDocumentsLabelText(serverModule.label_text),
-        generatorHint: resolvedGeneratorHint,
-        philologistHint: resolvedPhilologistHint,
-        actionsHint: serverModule.actions_hint || '',
-        nextHint: serverModule.next_hint || '',
-        progressPercent: vm.status === 'completed' ? 100 : vm.progressPercent,
-        progressRunning: vm.status === 'running',
-      };
-    }
-    const defaultLabel = humanizeDocumentsMessage(result.stage_text, 'Подготовка документов ещё не запускалась.');
-    const completedLabel = vm.fixedDocuments > 0
-      ? 'Документы готовы. Есть отчёт по исправлениям.'
-      : 'Документы готовы. Можно скачать результат или перейти к отправке.';
-    const stoppedLabel = humanizeDocumentsMessage(result.stage_text, 'Подготовка остановлена. Можно продолжить с того же места.');
-    const errorLabel = humanizeDocumentsMessage(result.stage_text, 'Не удалось завершить подготовку документов.');
-    const runningLabel = (() => {
-      if (vm.stage === 'review' && vm.totalDocuments > 0) {
-        return `Проверено документов: ${vm.reviewedDocuments.toLocaleString('ru')} из ${vm.totalDocuments.toLocaleString('ru')}.`;
-      }
-      if (vm.shownPdfTotal > 0 && ['ready', 'convert_pdf', 'finalize_output'].includes(vm.stage)) {
-        return `Собираю результат: ${vm.shownPdfDone.toLocaleString('ru')} из ${vm.shownPdfTotal.toLocaleString('ru')} файлов.`;
-      }
-      if (vm.expectedDocuments > 0 && vm.shownDocuments > 0) {
-        return `Создано документов: ${vm.shownDocuments.toLocaleString('ru')} из ${vm.expectedDocuments.toLocaleString('ru')}.`;
-      }
-      if (vm.totalRows > 0) {
-        return `Готовим данные клиентов: ${vm.processedRows.toLocaleString('ru')} из ${vm.totalRows.toLocaleString('ru')}. Документы появятся после обработки первых строк.`;
-      }
-      return humanizeDocumentsMessage(result.stage_text, 'Готовлю документы. Скоро покажу прогресс.');
-    })();
-
-    if (vm.status === 'running') {
-      return {
-        badgeText: vm.stage === 'review' ? 'Проверяем текст' : (vm.stage === 'ready' ? 'Собираем результат' : 'Подготовка'),
-        badgeClass: 'badge badge-running',
-        runText: 'Документы готовятся',
-        runDisabled: true,
-        runTitle: '',
-        pauseDisabled: false,
-        pauseText: 'Остановить',
-        pauseTitle: '',
-        doneValue: vm.processedRows,
-        doneLabel: 'Клиентов',
-        labelText: runningLabel,
-        generatorHint: vm.stage === 'review'
-          ? 'Проверяем текст. Просто дождитесь завершения.'
-          : vm.stage === 'ready'
-          ? 'Собираем результат. Просто дождитесь завершения.'
-          : 'Идёт подготовка документов. Просто дождитесь завершения.',
-        philologistHint: 'Ничего дополнительно запускать не нужно.',
-        actionsHint: 'Идёт подготовка документов. Просто дождитесь завершения.',
-        nextHint: 'Когда всё будет готово, кнопка перехода дальше включится сама.',
-        progressPercent: vm.progressPercent,
-        progressRunning: true,
-      };
-    }
-
-    if (vm.status === 'completed') {
-      return {
-        badgeText: 'Готово',
-        badgeClass: 'badge badge-done',
-        runText: 'Подготовить заново',
-        runDisabled: !canRun,
-        runTitle: canRun ? 'Запустить подготовку заново с текущими данными.' : '',
-        pauseDisabled: true,
-        pauseText: 'Остановить',
-        pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
-        doneValue: vm.totalRows || Math.floor(vm.totalDocuments / 2),
-        doneLabel: 'Клиентов',
-        labelText: completedLabel,
-        generatorHint: 'Готово. Можно скачать документы.',
-        philologistHint: 'Проверка текста уже входит в подготовку.',
-        actionsHint: 'Готово. Можно скачать документы.',
-        nextHint: 'Теперь можно переходить к следующему шагу.',
-        progressPercent: 100,
-        progressRunning: false,
-      };
-    }
-
-    if (vm.status === 'stopped') {
-      return {
-        badgeText: 'Остановлено',
-        badgeClass: 'badge badge-wait',
-        runText: 'Продолжить подготовку',
-        runDisabled: false,
-        runTitle: '',
-        pauseDisabled: true,
-        pauseText: 'Остановить',
-        pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
-        doneValue: vm.processedRows,
-        doneLabel: 'Клиентов',
-        labelText: stoppedLabel,
-        generatorHint: 'Прогресс сохранён. Можно продолжить с этого места.',
-        philologistHint: 'Сначала продолжите подготовку.',
-        actionsHint: 'Прогресс сохранён. Можно продолжить с этого места.',
-        nextHint: 'Пока процесс не завершён, перейти дальше нельзя.',
-        progressPercent: vm.progressPercent,
-        progressRunning: false,
-      };
-    }
-
-    if (vm.status === 'error') {
-      return {
-        badgeText: 'Ошибка',
-        badgeClass: 'badge badge-error',
-        runText: 'Повторить подготовку',
-        runDisabled: !canRun,
-        runTitle: '',
-        pauseDisabled: true,
-        pauseText: 'Остановить',
-        pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
-        doneValue: vm.processedRows,
-        doneLabel: 'Клиентов',
-        labelText: errorLabel,
-        generatorHint: 'Попробуйте повторить запуск. Если ошибка повторяется, проверьте таблицу и шаблоны.',
-        philologistHint: 'Сначала завершите подготовку без ошибки.',
-        actionsHint: 'Сначала повторите подготовку документов.',
-        nextHint: 'Пока есть ошибка, перейти дальше нельзя.',
-        progressPercent: vm.progressPercent,
-        progressRunning: false,
-      };
-    }
-
-    return {
-      badgeText: hasRequiredInputs ? 'Готов к запуску' : 'Готов к запуску',
-      badgeClass: 'badge badge-idle',
-      runText: 'Подготовить документы',
-      runDisabled: !canRun,
-      runTitle: '',
-      pauseDisabled: true,
-      pauseText: 'Остановить',
-      pauseTitle: 'Остановка станет доступна после запуска подготовки документов.',
-      doneValue: vm.processedRows,
-      doneLabel: 'Клиентов',
-      labelText: defaultLabel,
-      generatorHint: hasRequiredInputs
-        ? 'Можно запускать. Дальше сервис всё сделает сам.'
-        : `${runReason} Если всё уже загружено, нажмите кнопку: сервер перепроверит состояние.`,
-      philologistHint: moduleReadiness.philologist_ready
-        ? 'Документы уже готовы.'
-        : 'Проверка текста запустится автоматически после подготовки документов.',
-      actionsHint: hasRequiredInputs
-        ? 'Можно запускать. Дальше сервис всё сделает сам.'
-        : runReason,
-      nextHint: 'Сначала завершите подготовку документов.',
-      progressPercent: vm.progressPercent,
-      progressRunning: false,
-    };
   }
 
   function setDocumentsUiState(result = {}) {
-    const vm = buildDocumentsScreenViewModel(result);
-    const uiCopy = buildDocumentsUiCopy(vm, result);
-    const serverActions = ((result.ui || {}).actions || {});
+    const status = String(result.status || 'idle');
     lastDocumentsUiState = { ...stripUiStateMeta(result) };
     scheduleUiStateSave();
 
@@ -6800,65 +6443,20 @@ function clearAttachedFile() {
       currentPhilologistStatus = (result.philologist || {}).status || currentPhilologistStatus;
       phRunning = ['running', 'finalizing'].includes(String(currentPhilologistStatus || ''));
     }
-    if (vm.status === 'completed') {
+    if (status === 'completed') {
       currentGeneratorStatus = 'completed';
       currentPhilologistStatus = 'completed';
       lastGeneratorUiState = { ...lastGeneratorUiState, status: 'completed' };
       lastPhilologistUiState = { ...lastPhilologistUiState, status: 'completed' };
       phRunning = false;
-    } else if (vm.status === 'stopped') {
+    } else if (status === 'stopped') {
       if (currentGeneratorStatus === 'running') currentGeneratorStatus = 'stopped';
       if (['running', 'finalizing'].includes(String(currentPhilologistStatus || ''))) {
         currentPhilologistStatus = 'stopped';
         phRunning = false;
       }
     }
-
-    const badge = document.getElementById('g-badge');
-    const fill = document.getElementById('g-fill');
-    const label = document.getElementById('g-label');
-    const runButton = document.getElementById('g-run');
-    const pauseButton = document.getElementById('g-pause');
-    const doneStat = document.getElementById('g-done');
-    const doneLabelStat = document.getElementById('g-done-label');
-    const errorStat = document.getElementById('g-err');
-    const totalStat = document.getElementById('g-total');
-    const reportButton = document.getElementById('ph-download-report');
-    const outputButton = document.getElementById('g-download-output');
-    updateDocumentsStageBreakdown(result);
-    updateDocumentsNextButton(vm.status, serverActions);
-
-    if (totalStat && vm.totalRows > 0) totalStat.textContent = vm.totalRows.toLocaleString('ru');
-    if (errorStat) errorStat.textContent = vm.errorRows.toLocaleString('ru');
-    if (reportButton) reportButton.disabled = typeof serverActions.can_download_report === 'boolean'
-      ? !serverActions.can_download_report
-      : vm.status !== 'completed';
-    if (outputButton) outputButton.disabled = typeof serverActions.can_download_output === 'boolean'
-      ? !serverActions.can_download_output
-      : !(vm.status === 'completed' || vm.outputFileCount > 0);
-    if (badge) {
-      badge.textContent = uiCopy.badgeText;
-      badge.className = uiCopy.badgeClass;
-    }
-    if (runButton) {
-      runButton.textContent = uiCopy.runText;
-      runButton.disabled = uiCopy.runDisabled;
-      runButton.title = uiCopy.runTitle;
-    }
-    if (pauseButton) {
-      pauseButton.disabled = uiCopy.pauseDisabled;
-      pauseButton.textContent = uiCopy.pauseText;
-      pauseButton.title = uiCopy.pauseTitle;
-    }
-    if (doneStat) doneStat.textContent = Number(uiCopy.doneValue || 0).toLocaleString('ru');
-    if (doneLabelStat) doneLabelStat.textContent = uiCopy.doneLabel;
-    if (label) label.textContent = uiCopy.labelText;
-    updateDocumentsActionHints({
-      generatorHint: uiCopy.actionsHint || uiCopy.generatorHint,
-      philologistHint: uiCopy.philologistHint,
-      nextHint: uiCopy.nextHint,
-    });
-    setProgressVisual(fill, { percent: uiCopy.progressPercent, running: uiCopy.progressRunning, indeterminate: false });
+    renderDocumentsStatus(result);
   }
 
   function isDocumentsReadyForSender() {
@@ -6914,86 +6512,15 @@ function clearAttachedFile() {
     return false;
   }
 
-  function setSenderButtonsState({ status = 'idle', mode = 'dry_run', canConfirm = false, hasPendingRows = false, total = 0, ready = 0 } = {}) {
-    const runButton = document.getElementById('s-run');
-    if (runButton) {
-      runButton.dataset.action = 'preview';
-      runButton.className = 'btn-primary';
-      runButton.disabled = false;
-      runButton.title = '';
-
-      if (status === 'running') {
-        runButton.dataset.action = 'stop';
-        runButton.textContent = mode === 'send' ? 'Остановить отправку' : 'Остановить проверку';
-        runButton.className = 'btn-danger';
-        return;
-      }
-
-      if (status === 'completed' && mode === 'dry_run' && canConfirm) {
-        const senderReady = isSenderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows });
-        runButton.dataset.action = 'send';
-        runButton.textContent = 'Отправить письма';
-        runButton.className = 'btn-primary';
-        runButton.disabled = !senderReady;
-        runButton.title = !senderReady
-          ? (moduleReadiness.sender_reason || 'Сначала подготовьте документы.')
-          : '';
-        return;
-      }
-
-      if (status === 'stopped') {
-        const senderReady = isSenderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows });
-        runButton.dataset.action = mode === 'send' ? 'send' : 'preview';
-        runButton.textContent = mode === 'send' ? 'Продолжить отправку' : 'Проверить ещё раз';
-        runButton.className = 'btn-primary';
-        runButton.disabled = !senderReady;
-        runButton.title = !senderReady
-          ? (moduleReadiness.sender_reason || 'Сначала подготовьте документы.')
-          : '';
-        return;
-      }
-
-      if (status === 'completed' && mode === 'send') {
-        if (hasPendingRows) {
-          const senderReady = isSenderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows });
-          runButton.dataset.action = 'send';
-          runButton.textContent = 'Отправить неотправленные';
-          runButton.className = 'btn-primary';
-          runButton.disabled = !senderReady;
-          runButton.title = !senderReady
-            ? (moduleReadiness.sender_reason || 'Сначала подготовьте документы.')
-            : 'Есть письма, которые ещё не отправлены. Нажмите, чтобы продолжить.';
-          return;
-        }
-        runButton.dataset.action = 'done';
-        runButton.textContent = 'Отправка завершена';
-        runButton.className = 'btn-outline';
-        runButton.disabled = true;
-        runButton.title = 'Письма уже отправлены.';
-        return;
-      }
-
-      if (status === 'error') {
-        const senderReady = isSenderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows });
-        runButton.dataset.action = mode === 'send' ? 'send' : 'preview';
-        runButton.textContent = mode === 'send' ? 'Продолжить отправку' : 'Проверить ещё раз';
-        runButton.className = 'btn-primary';
-        runButton.disabled = !senderReady;
-        runButton.title = !senderReady
-          ? (moduleReadiness.sender_reason || 'Сначала подготовьте документы.')
-          : '';
-        return;
-      }
-
-      const senderReady = isSenderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows });
-      runButton.dataset.action = 'preview';
-      runButton.textContent = 'Проверить перед отправкой';
-      runButton.className = 'btn-primary';
-      runButton.disabled = !senderReady;
-      runButton.title = !senderReady
-        ? (moduleReadiness.sender_reason || 'Сначала подготовьте документы.')
-        : '';
+  function setSenderButtonsState(options = {}) {
+    if (!window.SenderUi || typeof window.SenderUi.setSenderButtonsState !== 'function') {
+      console.warn('sender_ui_module_missing');
+      return;
     }
+    window.SenderUi.setSenderButtonsState(options, {
+      isSenderActionReady,
+      senderDisabledReason: moduleReadiness.sender_reason || 'Сначала подготовьте документы.',
+    });
   }
 
   async function handleSenderPrimaryAction() {
@@ -7018,276 +6545,44 @@ function clearAttachedFile() {
     if (reportButton) reportButton.disabled = !report;
   }
 
-  function updateSenderStepTrack(status = 'idle', mode = 'dry_run') {
-    const steps = [
-      { id: 's-step-check', key: 'check' },
-      { id: 's-step-confirm', key: 'confirm' },
-      { id: 's-step-send', key: 'send' },
-    ];
-    const normalizedStatus = String(status || 'idle');
-    const normalizedMode = String(mode || 'dry_run');
-    let activeIndex = -1;
-    if (normalizedStatus === 'running') {
-      activeIndex = normalizedMode === 'send' ? 2 : 0;
-    } else if (normalizedStatus === 'completed') {
-      activeIndex = normalizedMode === 'send' ? 2 : 1;
-    } else if (normalizedStatus === 'stopped' || normalizedStatus === 'error') {
-      activeIndex = normalizedMode === 'send' ? 2 : 0;
-    }
-
-    steps.forEach((step, index) => {
-      const el = document.getElementById(step.id);
-      if (!el) return;
-      el.classList.remove('is-active', 'is-done', 'is-error');
-      if (normalizedStatus === 'completed' && normalizedMode === 'send') {
-        el.classList.add('is-done');
-        if (index === 2) el.classList.add('is-active');
-        return;
-      }
-      if ((normalizedStatus === 'error' || normalizedStatus === 'stopped') && index === activeIndex) {
-        el.classList.add(normalizedStatus === 'error' ? 'is-error' : 'is-active');
-        return;
-      }
-      if (index < activeIndex) {
-        el.classList.add('is-done');
-      } else if (index === activeIndex) {
-        el.classList.add('is-active');
-      }
-    });
-  }
-
-  function updateSenderProcessPanel({
-    status = 'idle',
-    mode = 'dry_run',
-    total = 0,
-    processed = 0,
-    ready = 0,
-    sent = 0,
-    errors = 0,
-    pending = 0,
-  } = {}) {
-    updateSenderStepTrack(status, mode);
-    const titleEl = document.getElementById('s-process-title');
-    const mainEl = document.getElementById('s-process-main');
-    const detailEl = document.getElementById('s-process-detail');
-    const nextEl = document.getElementById('s-process-next');
-    const checkedEl = document.getElementById('s-process-checked');
-    const readyEl = document.getElementById('s-process-ready');
-    const sentEl = document.getElementById('s-process-sent');
-    const errorsEl = document.getElementById('s-process-errors');
-    const leftEl = document.getElementById('s-process-left');
-    const fmt = value => Number(value || 0).toLocaleString('ru');
-    if (checkedEl) checkedEl.textContent = `${fmt(processed)}/${fmt(total)}`;
-    if (readyEl) readyEl.textContent = fmt(ready);
-    if (sentEl) sentEl.textContent = fmt(sent);
-    if (errorsEl) errorsEl.textContent = fmt(errors);
-    if (leftEl) leftEl.textContent = fmt(Math.max(0, pending));
-
-    const setText = ({ title, main, detail, next }) => {
-      if (titleEl) titleEl.textContent = title;
-      if (mainEl) mainEl.textContent = main;
-      if (detailEl) detailEl.textContent = detail;
-      if (nextEl) nextEl.textContent = next;
-    };
-
-    if (status === 'running') {
-      if (mode === 'send') {
-        setText({
-          title: 'Идёт отправка',
-          main: 'Отправляем письма.',
-          detail: total > 0 ? `Отправлено: ${fmt(sent)}. Обработано: ${fmt(processed)} из ${fmt(total)}.` : 'Письма уходят получателям.',
-          next: 'Дождитесь завершения. Уже отправленные письма повторно не уйдут.',
-        });
-        return;
-      }
-      setText({
-        title: 'Идёт проверка',
-        main: 'Проверяем письма перед отправкой.',
-        detail: total > 0 ? `Проверено: ${fmt(processed)} из ${fmt(total)}. Готово к отправке: ${fmt(ready)}.` : 'Проверяем адреса и вложения.',
-        next: 'После проверки появится отдельная кнопка отправки.',
-      });
-      return;
-    }
-
-    if (status === 'completed') {
-      if (mode === 'send') {
-        setText({
-          title: errors > 0 ? 'Отправка завершена с ошибками' : 'Готово',
-          main: errors > 0 ? 'Часть писем не удалось отправить.' : 'Письма отправлены.',
-          detail: `Отправлено: ${fmt(sent)}. Ошибок: ${fmt(errors)}.`,
-          next: 'Можно перейти к статистике отправок.',
-        });
-        return;
-      }
-      setText({
-        title: 'Проверка завершена',
-        main: errors > 0 ? 'Есть строки, которые нужно проверить.' : 'Письма готовы к отправке.',
-        detail: `Готово к отправке: ${fmt(ready)}. Ошибок: ${fmt(errors)}.`,
-        next: ready > 0 ? 'Нажмите «Отправить письма», когда будете готовы.' : 'Проверьте ошибки перед отправкой.',
-      });
-      return;
-    }
-
-    if (status === 'stopped') {
-      setText({
-        title: 'Процесс остановлен',
-        main: mode === 'send' ? 'Отправка остановлена.' : 'Проверка остановлена.',
-        detail: 'Прогресс сохранён.',
-        next: 'Можно продолжить с сохранённого места.',
-      });
-      return;
-    }
-
-    if (status === 'error') {
-      setText({
-        title: 'Есть ошибка',
-        main: mode === 'send' ? 'Не удалось завершить отправку.' : 'Не удалось завершить проверку.',
-        detail: errors > 0 ? `Ошибок: ${fmt(errors)}.` : 'Проверьте журнал отправки.',
-        next: 'Исправьте проблему или повторите действие.',
-      });
-      return;
-    }
-
-    setText({
-      title: 'Готово к проверке',
-      main: 'Сервис проверит письма перед отправкой.',
-      detail: 'Реальная отправка начнётся только после вашего подтверждения.',
-      next: 'После проверки появится кнопка отправки.',
-    });
-  }
-
   function setSenderUiState(result = {}) {
-        const force = !!result.force;
-        const nextState = stripUiStateMeta(result);
-        const previousSenderUiState = lastSenderUiState || {};
-        if (!force && !shouldAcceptSenderUiState(nextState, previousSenderUiState)) {
-          return;
-        }
-        lastSenderUiState = { ...nextState };
-        scheduleUiStateSave();
-        const badge = document.getElementById('s-badge');
-        const fill = document.getElementById('s-fill');
-        const label = document.getElementById('s-label');
-      const processed = Number(nextState.processed_rows || 0);
-      const stats = nextState.stats || {};
-      const totalRaw = Math.max(Number(nextState.total_rows || 0), Number(stats.total || 0));
-      const total = totalRaw > 0 ? totalRaw : (processed > 0 ? processed : 0);
-      const ready = Number(nextState.ready_rows || 0);
-      const errors = Math.max(Number(nextState.error_rows || 0), Number(stats.error || 0));
-      const sent = Math.max(Number(nextState.sent_rows || 0), Number(stats.sent || 0));
-      const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
-        const status = nextState.status || 'idle';
-        currentSenderStatus = status;
-        updateSidebarStatusIndicators();
-        const mode = nextState.mode || 'dry_run';
-        const pending = getSenderOutstandingRows(nextState);
-        const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
-        const hasPendingRows = Math.max(0, pending) > 0;
-        const hasReadyRows = ready > 0;
-        const isDryRunReady = status === 'completed' && mode === 'dry_run' && hasReadyRows;
-        const canResumeStopped = status === 'stopped' && hasPendingRows;
-        const canConfirm = hasPreviewRows || isDryRunReady || canResumeStopped;
-        const canDownloadResultTable = status === 'completed' && (mode === 'dry_run' || sent > 0 || errors > 0 || total > 0);
-        const canDownloadDeliveryReport = status === 'completed' && mode === 'send' && sent > 0;
+    const force = !!result.force;
+    const nextState = stripUiStateMeta(result);
+    const previousSenderUiState = lastSenderUiState || {};
+    if (!force && !shouldAcceptSenderUiState(nextState, previousSenderUiState)) {
+      return;
+    }
+    lastSenderUiState = { ...nextState };
+    scheduleUiStateSave();
 
-        if ((!senderPreviewState || !Array.isArray(senderPreviewState.rows) || !senderPreviewState.rows.length) && Array.isArray(nextState.rows) && nextState.rows.length) {
-          senderPreviewState = {
-            rows: nextState.rows,
-            summary_text: nextState.summary_text || ''
-          };
-        }
+    const status = nextState.status || 'idle';
+    currentSenderStatus = status;
+    updateSidebarStatusIndicators();
 
-      setProgressVisual(fill, { percent, running: status === 'running' && total > 0, indeterminate: false });
-      document.getElementById('s-sent').textContent = sent.toLocaleString('ru');
-      document.getElementById('s-left').textContent = Math.max(0, pending).toLocaleString('ru');
-      document.getElementById('s-err2').textContent = errors.toLocaleString('ru');
-      setSenderDownloadEnabled({
-        data: canDownloadResultTable,
-        report: canDownloadDeliveryReport,
-      });
-      updateSenderProcessPanel({ status, mode, total, processed, ready, sent, errors, pending });
-      renderJobSenderStatusScreen(nextState);
+    if ((!senderPreviewState || !Array.isArray(senderPreviewState.rows) || !senderPreviewState.rows.length) && Array.isArray(nextState.rows) && nextState.rows.length) {
+      senderPreviewState = {
+        rows: nextState.rows,
+        summary_text: nextState.summary_text || ''
+      };
+    }
 
-      if (status === 'running') {
-        senderRunning = true;
-        badge.textContent = mode === 'send' ? 'Отправка' : 'Проверка';
-        badge.className = 'badge badge-running';
-        if (total > 0) {
-          const base = mode === 'send'
-            ? `Отправляю письма: ${processed.toLocaleString('ru')} из ${total.toLocaleString('ru')}. Отправлено: ${sent.toLocaleString('ru')}.`
-            : `Проверяю перед отправкой: ${processed.toLocaleString('ru')} из ${total.toLocaleString('ru')}. Готово к отправке: ${ready.toLocaleString('ru')}.`;
-          label.textContent = errors > 0 ? `${base} Ошибок: ${errors.toLocaleString('ru')}.` : base;
-        } else {
-          label.textContent = mode === 'send' ? 'Начинаю отправку писем.' : 'Проверяю адреса и вложения.';
-        }
-        const actionsHint = document.getElementById('s-actions-hint');
-        if (actionsHint) actionsHint.textContent = mode === 'send'
-          ? 'Идёт отправка. Просто дождитесь завершения.'
-          : 'Идёт проверка. Реальная отправка ещё не началась.';
-        setSenderButtonsState({ status: 'running', mode, total, ready, canConfirm: false, hasPendingRows });
-        return;
-      }
+    if (!window.SenderUi || typeof window.SenderUi.renderSenderState !== 'function') {
+      console.warn('sender_ui_module_missing');
+      return;
+    }
 
-      if (status === 'stopped') {
-        senderRunning = false;
-        badge.textContent = 'Остановлено';
-        badge.className = 'badge badge-wait';
-        label.textContent = humanizeSenderMessage(nextState.summary_text, 'Отправка остановлена. Можно продолжить позже.');
-        const actionsHint = document.getElementById('s-actions-hint');
-        if (actionsHint) actionsHint.textContent = 'Прогресс сохранён. Можно продолжить с этого места.';
-        setSenderButtonsState({ status: 'stopped', mode, total, ready, canConfirm, hasPendingRows });
-        return;
-      }
+    const renderResult = window.SenderUi.renderSenderState(nextState, {
+      pending: getSenderOutstandingRows(nextState),
+      hasPreviewRows: !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length),
+      humanizeSenderMessage,
+      setProgressVisual,
+      setSenderDownloadEnabled,
+      renderJobSenderStatusScreen,
+      isSenderActionReady,
+      senderDisabledReason: moduleReadiness.sender_reason || 'Сначала подготовьте документы.',
+    });
 
-      setSenderButtonsState({ status, mode, total, ready, canConfirm, hasPendingRows });
-
-      if (status === 'completed') {
-        senderRunning = false;
-        const isFailedSend = mode === 'send' && sent === 0 && errors > 0;
-        badge.textContent = mode === 'dry_run' ? 'Проверено' : (isFailedSend ? 'Ошибка' : 'Готово');
-        badge.className = isFailedSend ? 'badge badge-error' : 'badge badge-done';
-        label.textContent = total > 0
-          ? humanizeSenderMessage(
-              nextState.summary_text,
-              mode === 'send'
-                ? (
-                  errors > 0
-                    ? `Отправка завершена не полностью. Отправлено: ${sent.toLocaleString('ru')}. Не отправлено: ${errors.toLocaleString('ru')}.`
-                    : `Отправка завершена: все письма ушли. Отправлено: ${sent.toLocaleString('ru')}.`
-                )
-                : (
-                  errors > 0
-                    ? `Проверка завершена, но есть проблемные строки: ${errors.toLocaleString('ru')}. Готово к отправке: ${ready.toLocaleString('ru')}.`
-                    : `Проверка завершена: всё в порядке, письма готовы к отправке. Готово писем: ${ready.toLocaleString('ru')}.`
-                )
-            )
-          : 'Обработка завершена';
-        const actionsHint = document.getElementById('s-actions-hint');
-        if (actionsHint) actionsHint.textContent = mode === 'send'
-          ? 'Отправка завершена. Можно перейти к статистике или скачать отчёт.'
-          : 'Проверка завершена. Отправка начнётся только после нажатия «Отправить письма».';
-        return;
-      }
-
-      if (status === 'error') {
-        senderRunning = false;
-        badge.textContent = 'Ошибка';
-        badge.className = 'badge badge-error';
-        label.textContent = humanizeSenderMessage(nextState.summary_text, 'Не удалось завершить проверку или отправку.');
-        const actionsHint = document.getElementById('s-actions-hint');
-        if (actionsHint) actionsHint.textContent = 'Проверьте журнал отправки и повторите действие.';
-        return;
-      }
-
-      senderRunning = false;
-      badge.textContent = 'Готов к проверке';
-      badge.className = 'badge badge-idle';
-      label.textContent = total > 0
-        ? `Готово к проверке: ${total.toLocaleString('ru')}.`
-        : 'Проверка перед отправкой ещё не запускалась.';
-      const actionsHint = document.getElementById('s-actions-hint');
-      if (actionsHint) actionsHint.textContent = 'Сначала запустите проверку. Реальная отправка начнётся только после подтверждения.';
-      setProgressVisual(fill, { percent: 0, running: false, indeterminate: false });
+    senderRunning = !!(renderResult && renderResult.senderRunning);
   }
 
   async function refreshSenderStatus({ silent = false } = {}) {
@@ -7381,6 +6676,7 @@ function clearAttachedFile() {
       await ensureCurrentJobId();
       const limit = getSenderBatchLimit();
       const transport = getSenderTransport();
+      const sendMode = getSenderSendMode();
       showToast('Проверяю перед отправкой');
       senderRunning = true;
       flowNotificationState.sender.terminalAnnounced = false;
@@ -7389,7 +6685,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport })),
+        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
@@ -7442,6 +6738,7 @@ function clearAttachedFile() {
         await ensureCurrentJobId();
         const limit = getSenderBatchLimit();
         const transport = getSenderTransport();
+        const sendMode = getSenderSendMode();
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
         const hasPreviousSendProgress = Number((lastSenderUiState && lastSenderUiState.sent_rows) || 0) > 0
           || Number((((lastSenderUiState && lastSenderUiState.stats) || {}).sent) || 0) > 0;
@@ -7465,7 +6762,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport })),
+        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');

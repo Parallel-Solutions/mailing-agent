@@ -70,9 +70,14 @@ def compact_sender_status(state: dict) -> dict:
         stats = {}
     status = str(state.get("status") or "idle")
     mode = str(state.get("mode") or "dry_run")
+    send_mode = str(state.get("send_mode") or "materials")
     processed_rows = _safe_int(state.get("processed_rows"))
     ready_rows = _safe_int(state.get("ready_rows"))
-    sent_rows = max(_safe_int(state.get("sent_rows")), _safe_int(stats.get("sent")))
+    sent_rows = (
+        _safe_int(state.get("sent_rows"))
+        if send_mode == "consent_request"
+        else max(_safe_int(state.get("sent_rows")), _safe_int(stats.get("sent")))
+    )
     error_rows = max(_safe_int(state.get("error_rows")), _safe_int(stats.get("error")))
     total_rows = max(_safe_int(state.get("total_rows")), _safe_int(stats.get("total")), processed_rows)
     if status == "running":
@@ -87,6 +92,7 @@ def compact_sender_status(state: dict) -> dict:
     return {
         "status": status,
         "mode": mode,
+        "send_mode": send_mode,
         "started_at": state.get("started_at"),
         "completed_at": state.get("completed_at"),
         "processed_rows": processed_rows,
@@ -119,9 +125,23 @@ def compact_sender_status(state: dict) -> dict:
     }
 
 
-def run_sender_background(*, dry_run: bool = False, limit: int | None, transport: str | None, job_id: str | None) -> None:
+def run_sender_background(
+    *,
+    dry_run: bool = False,
+    limit: int | None,
+    transport: str | None,
+    send_mode: str | None = None,
+    job_id: str | None,
+) -> None:
     try:
-        _require("run_sender")(dry_run=dry_run, limit=limit, transport=transport, auto_recover=False, job_id=job_id)
+        _require("run_sender")(
+            dry_run=dry_run,
+            limit=limit,
+            transport=transport,
+            send_mode=send_mode,
+            auto_recover=False,
+            job_id=job_id,
+        )
     except Exception as exc:
         _require("logger").exception("sender_background_failed", job_id=job_id, transport=transport)
         state = _require("load_sender_state")(job_id)

@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     smtp_save_sent_copy: bool = True
     sender_default_batch_size: int = 25
     sender_max_batch_size: int = 100
-    sender_delay_seconds: float = 30.0
+    sender_delay_seconds: float = 60.0
     sender_transport: str = "smtp"
     sender_unisender_concurrency: int = 1
     unisender_api_key: str = ""
@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     unisender_list_id: int = 1
     unisender_webhook_secret: str = ""
     unisender_webhook_token: str = ""
+    rusender_api_key: str = ""
+    rusender_api_base_url: str = "https://api.rusender.ru/api/v1"
+    rusender_sender_name: str = "ООО «ПР»"
+    rusender_sender_email: str = ""
     mail_signature_image_url: str = ""
 
     municipality_oktmo_lookup_enabled: bool = True
