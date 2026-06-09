@@ -1058,7 +1058,6 @@ def _build_consent_request_body(row: dict[str, Any], *, consent_url: str) -> str
                 "Если тема неактуальна — просто удалите это сообщение, мы не будем беспокоить вас повторно.",
                 "",
                 f"Получить предложение по МНГП: {consent_url}",
-                f"Текст согласия: {CONSENT_TEXT}",
                 "",
                 "Вы получили это письмо, так как ваш контакт был найден в открытых источниках информации о муниципальных образованиях.",
             ]
@@ -1503,11 +1502,13 @@ def _htmlify_mail_body(
         if consent_match:
             consent_url = escape(consent_match.group(1), quote=True)
             parts.append(
+                "<div style=\"margin:18px 0;\">"
                 "<a "
                 f"href=\"{consent_url}\" "
                 "style=\"display:inline-block;padding:12px 18px;background:#2d720d;"
                 "color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;\""
                 ">Получить предложение по МНГП</a>"
+                "</div>"
             )
             continue
         parts.append(escape(stripped))
