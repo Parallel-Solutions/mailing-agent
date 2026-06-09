@@ -79,7 +79,8 @@ def compact_sender_status(state: dict) -> dict:
         else max(_safe_int(state.get("sent_rows")), _safe_int(stats.get("sent")))
     )
     error_rows = max(_safe_int(state.get("error_rows")), _safe_int(stats.get("error")))
-    total_rows = max(_safe_int(state.get("total_rows")), _safe_int(stats.get("total")), processed_rows)
+    state_total_rows = _safe_int(state.get("total_rows"))
+    total_rows = max(state_total_rows, processed_rows) if state_total_rows > 0 else max(_safe_int(stats.get("total")), processed_rows)
     if status == "running":
         remaining_rows = max(0, total_rows - processed_rows)
     else:
