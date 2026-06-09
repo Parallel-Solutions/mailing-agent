@@ -3569,11 +3569,12 @@
 
   function isSenderReadyForStatus() {
     const status = String(currentSenderStatus || lastSenderUiState.status || 'idle');
+    const mode = String(lastSenderUiState.mode || 'dry_run');
     const stats = lastSenderUiState.stats || {};
     const sent = Math.max(Number(lastSenderUiState.sent_rows || 0), Number(stats.sent || 0));
     const errors = Math.max(Number(lastSenderUiState.error_rows || 0), Number(stats.error || 0));
-    const total = Math.max(Number(lastSenderUiState.total_rows || 0), Number(stats.total || 0));
-    return !senderRunning && status !== 'running' && (status === 'completed' || sent > 0 || errors > 0 || total > 0);
+    const hasSendResult = mode === 'send' && status === 'completed';
+    return !senderRunning && status !== 'running' && (hasSendResult || sent > 0 || errors > 0);
   }
 
   function setFlowButtonState(id, enabled, title = '') {
