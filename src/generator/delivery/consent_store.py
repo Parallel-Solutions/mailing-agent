@@ -105,9 +105,7 @@ def _save_consent_document(record: dict[str, Any], *, job_id: str | None) -> Pat
     )
     _add_consent_paragraph(
         document,
-        "Цель обработки: направление запрошенных мной материалов, а также последующее информирование "
-        "о товарах, работах, услугах Оператора, включая рекламные и информационные рассылки, "
-        "в рамках уставной деятельности Оператора.",
+        "Цель обработки: направление запрошенных мной материалов по электронной почте.",
     )
     _add_consent_paragraph(
         document,
@@ -118,8 +116,8 @@ def _save_consent_document(record: dict[str, Any], *, job_id: str | None) -> Pat
     )
     _add_consent_paragraph(
         document,
-        "Согласие действует бессрочно либо до момента моего отзыва через ссылку отписки в каждом письме "
-        "или по запросу на email: personal.offer@parresh.ru.",
+        "Согласие действует до момента направления запрошенных материалов либо до момента моего отзыва "
+        "по запросу на email: personal.offer@parresh.ru.",
     )
     _add_consent_paragraph(
         document,
