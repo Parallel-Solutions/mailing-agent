@@ -343,8 +343,15 @@ def _mail_template_values(row: dict[str, Any]) -> dict[str, str]:
         inflected = {}
     mun_name = _safe_text(row.get("MUN_NAME"))
     mun_name_genitive = (
-        _safe_text(row.get("MUN_R_NAME"))
+        _safe_text(inflected.get("MUN_R_NAME_1"))
+        or _safe_text(row.get("MUN_R_NAME_1"))
+        or _safe_text(row.get("MUN_R_NAME"))
         or _mail_mun_name_genitive(mun_name, _safe_text(inflected.get("MUN_NAME_1")))
+    )
+    subject_name_genitive = (
+        _safe_text(inflected.get("SUB_RF_1"))
+        or _safe_text(row.get("SUB_RF_1"))
+        or _safe_text(row.get("SUB_RF"))
     )
     return {
         "HEAD_FIO": _safe_text(row.get("HEAD_FIO")),
@@ -353,6 +360,7 @@ def _mail_template_values(row: dict[str, Any]) -> dict[str, str]:
         "MUN_NAME_GENITIVE": mun_name_genitive,
         "MUN_R_NAME": mun_name_genitive,
         "SUB_RF": _safe_text(row.get("SUB_RF")),
+        "SUB_RF_1": subject_name_genitive,
         "DATE": datetime.now().strftime("%d.%m.%Y"),
         "OUTGOING_NUMBER": outgoing_number,
         "OUTGOING_NUMBER_KP": f"{outgoing_number}-КП" if outgoing_number else "",
@@ -1040,8 +1048,9 @@ def _build_mail_subject(subject_template: str, row: dict[str, Any]) -> str:
 
 
 def _build_consent_request_body(row: dict[str, Any], *, consent_url: str) -> str:
-    mun_name = _safe_text(row.get("MUN_R_NAME")) or _safe_text(row.get("MUN_NAME"))
-    subject_name = _safe_text(row.get("SUB_RF"))
+    values = _mail_template_values(row)
+    mun_name = _safe_text(values.get("MUN_R_NAME")) or _safe_text(values.get("MUN_NAME"))
+    subject_name = _safe_text(values.get("SUB_RF_1")) or _safe_text(values.get("SUB_RF"))
     object_text = (
         f"для {mun_name} ({subject_name})"
         if mun_name and subject_name
