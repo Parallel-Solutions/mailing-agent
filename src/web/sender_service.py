@@ -84,10 +84,22 @@ def compact_sender_status(state: dict) -> dict:
         remaining_rows = max(0, total_rows - processed_rows)
     else:
         remaining_rows = _safe_int(state.get("remaining_rows"))
-        if remaining_rows <= 0 and mode == "send":
+        if send_mode == "consent_request":
+            remaining_rows = max(0, total_rows - processed_rows)
+        elif remaining_rows <= 0 and mode == "send":
             remaining_rows = max(0, _safe_int(stats.get("pending")) + error_rows)
         elif remaining_rows <= 0:
             remaining_rows = max(0, total_rows - processed_rows)
+    summary_text = state.get("summary_text", "")
+    if send_mode == "consent_request" and status == "completed" and mode == "send":
+        if error_rows <= 0 and remaining_rows <= 0:
+            summary_text = f"Запросы согласия отправлены. Отправлено: {sent_rows}."
+        else:
+            summary_text = (
+                "Отправка запросов согласия завершена не полностью. "
+                f"Отправлено: {sent_rows}. Не отправлено: {error_rows}. "
+                f"Осталось в очереди: {remaining_rows}."
+            )
 
     return {
         "status": status,
@@ -102,7 +114,7 @@ def compact_sender_status(state: dict) -> dict:
         "skipped_rows": state.get("skipped_rows", 0),
         "handoff_rows": state.get("handoff_rows", 0),
         "total_rows": total_rows,
-        "summary_text": state.get("summary_text", ""),
+        "summary_text": summary_text,
         "stats": {
             "total": total_rows,
             "sent": sent_rows,

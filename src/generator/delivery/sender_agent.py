@@ -3064,7 +3064,10 @@ def run_sender(
         if callable(close):
             close()
         state["stats"] = _collect_excel_stats(data_xlsx_path)
-        state["remaining_rows"] = int(state["stats"].get("pending", 0)) + int(state["stats"].get("error", 0))
+        if effective_send_mode == "consent_request":
+            state["remaining_rows"] = max(0, int(state.get("total_rows") or 0) - int(state.get("processed_rows") or 0))
+        else:
+            state["remaining_rows"] = int(state["stats"].get("pending", 0)) + int(state["stats"].get("error", 0))
     else:
         state["remaining_rows"] = max(0, len(rows) - len(candidates))
 
