@@ -1486,8 +1486,26 @@
     min-height: 220px;
   }
 
-  #s-chat-messages {
-    height: 320px;
+  .sender-chat-section {
+    margin-top: 14px;
+    flex: none;
+    height: clamp(300px, 36vh, 430px);
+    max-height: 430px;
+    min-height: 280px;
+  }
+
+  .sender-chat-section .chat-messages {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .sender-chat-section .chat-msg.agent:not(.typing) {
+    max-height: none;
+    overflow: visible;
   }
 
   .generator-chat-section {
@@ -2390,7 +2408,7 @@
           <div class="module-actions-hint" id="s-actions-hint">Сначала запустите проверку. Реальная отправка начнётся только после подтверждения.</div>
         </div>
 
-      <div class="chat-section process-log">
+      <div class="chat-section process-log sender-chat-section">
         <div class="chat-header">
           <div class="dot-green"></div> Журнал отправки
         </div>
