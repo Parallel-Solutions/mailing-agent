@@ -439,7 +439,7 @@
 
   .sender-transport-row {
     display: grid;
-    grid-template-columns: minmax(190px, 260px) minmax(220px, 280px) minmax(0, 1fr);
+    grid-template-columns: minmax(170px, 230px) minmax(220px, 300px) minmax(170px, 220px) minmax(0, 1fr);
     gap: 12px;
     align-items: end;
     margin-top: 14px;
@@ -2410,10 +2410,18 @@
             </select>
           </div>
           <div class="sender-transport-field">
-            <label for="sender-send-mode">Что отправляем</label>
+            <label for="sender-send-mode">Сценарий</label>
             <select id="sender-send-mode">
-              <option value="consent_request">Запрос согласия на рассылку с последующей автоотправкой КП</option>
-              <option value="materials">Отправить сразу КП и договор</option>
+              <option value="consent_request">Запрос согласия с последующей автоотправкой</option>
+              <option value="materials">Отправить сразу выбранные вложения</option>
+            </select>
+          </div>
+          <div class="sender-transport-field">
+            <label for="sender-attachment-mode">Вложения</label>
+            <select id="sender-attachment-mode">
+              <option value="kp">КП</option>
+              <option value="contract">Договор</option>
+              <option value="both">КП + договор</option>
             </select>
           </div>
           <div class="sender-transport-note" id="sender-transport-note">
@@ -5658,6 +5666,12 @@ function clearAttachedFile() {
     return value || 'consent_request';
   }
 
+  function getSenderAttachmentMode() {
+    const select = document.getElementById('sender-attachment-mode');
+    const value = String((select && select.value) || '').trim();
+    return value || 'kp';
+  }
+
   function applyButtonReadiness(button, isEnabled, reason = '') {
     if (!button) return;
     button.disabled = !isEnabled;
@@ -6735,6 +6749,7 @@ function clearAttachedFile() {
       const limit = getSenderBatchLimit();
       const transport = getSenderTransport();
       const sendMode = getSenderSendMode();
+      const attachmentMode = getSenderAttachmentMode();
       showToast('Проверяю перед отправкой');
       senderRunning = true;
       flowNotificationState.sender.terminalAnnounced = false;
@@ -6743,7 +6758,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode })),
+        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
@@ -6797,6 +6812,7 @@ function clearAttachedFile() {
         const limit = getSenderBatchLimit();
         const transport = getSenderTransport();
         const sendMode = getSenderSendMode();
+        const attachmentMode = getSenderAttachmentMode();
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
         const hasPreviousSendProgress = Number((lastSenderUiState && lastSenderUiState.sent_rows) || 0) > 0
           || Number((((lastSenderUiState && lastSenderUiState.stats) || {}).sent) || 0) > 0;
@@ -6820,7 +6836,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode })),
+        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');

@@ -181,6 +181,7 @@ def prepare_consent_request(
     row: dict[str, Any],
     recipient: str,
     transport: str,
+    attachment_mode: str = "kp",
 ) -> dict[str, Any]:
     records = _load_records(job_id)
     row_id = row.get("ID")
@@ -191,6 +192,7 @@ def prepare_consent_request(
             record["status"] = _safe_text(record.get("status")) or "pending"
             record["last_request_prepared_at"] = now
             record["transport"] = _safe_text(transport)
+            record["attachment_mode"] = _safe_text(attachment_mode) or "kp"
             _save_records(job_id, records)
             return dict(record, consent_url=public_consent_url(record["token"]))
 
@@ -206,6 +208,7 @@ def prepare_consent_request(
         "created_at": now,
         "last_request_prepared_at": now,
         "transport": _safe_text(transport),
+        "attachment_mode": _safe_text(attachment_mode) or "kp",
     }
     records.append(record)
     _save_records(job_id, records)

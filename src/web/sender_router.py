@@ -13,8 +13,8 @@ def create_sender_router(
     parse_optional_limit: Callable[[dict | None], int | None],
     compact_sender_status: Callable[[dict], dict],
     clear_sender_stop_request: Callable[[str | None], Any],
-    prime_sender_checking_state: Callable[[str | None, str | None], dict],
-    prime_sender_running_state: Callable[[str | None, str | None], dict],
+    prime_sender_checking_state: Callable[[str | None, str | None, str | None], dict],
+    prime_sender_running_state: Callable[[str | None, str | None, str | None], dict],
     start_sender_thread_if_absent: Callable[..., tuple[threading.Thread, bool]],
     run_sender_background: Callable[..., None],
     sender_job_key: Callable[[str | None], str],
@@ -54,6 +54,7 @@ def create_sender_router(
         limit = parse_optional_limit(payload)
         transport = None if payload is None else payload.get("transport")
         send_mode = None if payload is None else payload.get("send_mode")
+        attachment_mode = None if payload is None else payload.get("attachment_mode")
         job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
         if not dry_run and is_load_test_job(job_id):
             raise HTTPException(
@@ -70,9 +71,9 @@ def create_sender_router(
 
             def _prime_state() -> None:
                 primed_state_box["state"] = (
-                    prime_sender_checking_state(job_id, transport)
+                    prime_sender_checking_state(job_id, transport, attachment_mode)
                     if dry_run
-                    else prime_sender_running_state(job_id, transport)
+                    else prime_sender_running_state(job_id, transport, attachment_mode)
                 )
 
             _, started = start_sender_thread_if_absent(
@@ -83,6 +84,7 @@ def create_sender_router(
                     "limit": limit,
                     "transport": transport,
                     "send_mode": send_mode,
+                    "attachment_mode": attachment_mode,
                     "job_id": job_id,
                 },
                 name=f"sender-{sender_job_key(job_id)}",

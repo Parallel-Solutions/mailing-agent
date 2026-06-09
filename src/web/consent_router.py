@@ -13,6 +13,15 @@ def _safe_text(value: object) -> str:
     return str(value or "").strip()
 
 
+def _materials_sent_text(record: dict) -> str:
+    attachment_mode = _safe_text(record.get("attachment_mode")).lower()
+    if attachment_mode == "contract":
+        return "Проект договора отправлен."
+    if attachment_mode == "both":
+        return "КП и проект договора отправлены."
+    return "КП отправлено."
+
+
 def _format_materials_dispatch_summary(record: dict, result: dict) -> str:
     recipient = _safe_text(record.get("recipient"))
     mun_name = _safe_text(record.get("mun_name"))
@@ -23,7 +32,7 @@ def _format_materials_dispatch_summary(record: dict, result: dict) -> str:
     if sent_rows > 0 and error_rows <= 0:
         return (
             f"Клиент дал согласие{f' ({target})' if target else ''}. "
-            "КП и проект договора отправлены."
+            f"{_materials_sent_text(record)}"
         )
     return (
         f"Клиент дал согласие{f' ({target})' if target else ''}, "
@@ -45,6 +54,7 @@ def _dispatch_materials_after_consent(record: dict) -> None:
     job_id = str(record.get("job_id") or "").strip() or None
     row_id = str(record.get("row_id") or "").strip()
     transport = str(record.get("transport") or "").strip() or "smtp"
+    attachment_mode = str(record.get("attachment_mode") or "").strip() or "kp"
     if not row_id:
         return
     result = run_sender(
@@ -52,6 +62,7 @@ def _dispatch_materials_after_consent(record: dict) -> None:
         row_ids=[row_id],
         transport=transport,
         send_mode="materials",
+        attachment_mode=attachment_mode,
         job_id=job_id,
     )
     _save_materials_dispatch_summary(record, result)

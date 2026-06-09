@@ -90,6 +90,10 @@ STATUS_SENT_VALUE = "Отправлено"
 STATUS_CONSENT_REQUEST_SENT_VALUE = "Запрос согласия отправлен"
 STATUS_ERROR_VALUE = "Ошибка"
 STATUS_OK_VALUES = {"ОК", "OK", "SENT", "ОТПРАВЛЕНО", "ОТПРАВЛЕНО (ОК)"}
+ATTACHMENT_MODE_KP = "kp"
+ATTACHMENT_MODE_CONTRACT = "contract"
+ATTACHMENT_MODE_BOTH = "both"
+ATTACHMENT_MODE_VALUES = {ATTACHMENT_MODE_KP, ATTACHMENT_MODE_CONTRACT, ATTACHMENT_MODE_BOTH}
 MAX_STATUS_ERROR_LENGTH = 240
 UNISENDER_GO_SEND_PATH = "email/send.json"
 UNISENDER_CLASSIC_SEND_PATH = "sendEmail"
@@ -124,6 +128,7 @@ SENDER_STATE: dict[str, Any] = {
     "stop_requested": False,
     "stop_requested_at": None,
     "transport": "smtp",
+    "attachment_mode": ATTACHMENT_MODE_KP,
 }
 
 SENDER_STATE_ROWS_LIMIT = 200
@@ -549,10 +554,20 @@ def _resolve_output_folder(
     return matches[0], None
 
 
-def _resolve_pdf_attachments(folder: Path | None) -> tuple[list[str], str | None]:
+def _normalize_attachment_mode(attachment_mode: str | None) -> str:
+    value = _safe_text(attachment_mode).lower()
+    return value if value in ATTACHMENT_MODE_VALUES else ATTACHMENT_MODE_KP
+
+
+def _resolve_pdf_attachments(
+    folder: Path | None,
+    *,
+    attachment_mode: str = ATTACHMENT_MODE_KP,
+) -> tuple[list[str], str | None]:
     if folder is None:
         return [], "Папка документов не определена."
 
+    mode = _normalize_attachment_mode(attachment_mode)
     pdf_files = sorted(folder.glob("*.pdf"))
     docx_files = sorted(folder.glob("*.docx"))
     kp_pdf = next(
@@ -568,12 +583,17 @@ def _resolve_pdf_attachments(folder: Path | None) -> tuple[list[str], str | None
         None,
     )
 
-    attachments = [str(path) for path in (kp_pdf, contract_docx) if path]
+    requested_paths: list[tuple[Path | None, str]] = []
+    if mode in {ATTACHMENT_MODE_KP, ATTACHMENT_MODE_BOTH}:
+        requested_paths.append((kp_pdf, "КП в PDF"))
+    if mode in {ATTACHMENT_MODE_CONTRACT, ATTACHMENT_MODE_BOTH}:
+        requested_paths.append((contract_docx, "договор в Word"))
+
+    attachments = [str(path) for path, _ in requested_paths if path]
     missing = []
-    if not kp_pdf:
-        missing.append("КП в PDF")
-    if not contract_docx:
-        missing.append("договор в Word")
+    for path, label in requested_paths:
+        if not path:
+            missing.append(label)
     if not missing:
         return attachments, None
     return attachments, f"В папке {folder.name} не найдено: {', '.join(missing)}."
@@ -844,9 +864,10 @@ def _retry_row_resources(
     row_id: Any,
     *,
     output_dir: Path | None = None,
+    attachment_mode: str = ATTACHMENT_MODE_KP,
 ) -> tuple[Path | None, str | None, list[str], str | None]:
     folder, folder_error = _resolve_output_folder(row_id, output_dir=output_dir)
-    attachments, attachment_error = _resolve_pdf_attachments(folder)
+    attachments, attachment_error = _resolve_pdf_attachments(folder, attachment_mode=attachment_mode)
     return folder, folder_error, attachments, attachment_error
 
 
@@ -1047,10 +1068,84 @@ def _build_mail_subject(subject_template: str, row: dict[str, Any]) -> str:
     return _render_mail_template(_safe_text(subject_template) or DEFAULT_MAIL_SUBJECT, row).strip()
 
 
-def _build_consent_request_body(row: dict[str, Any], *, consent_url: str) -> str:
+def _materials_subject(attachment_mode: str) -> str:
+    mode = _normalize_attachment_mode(attachment_mode)
+    if mode == ATTACHMENT_MODE_CONTRACT:
+        return "Проект договора на разработку МНГП."
+    return DEFAULT_MAIL_SUBJECT
+
+
+def _build_materials_body(row: dict[str, Any], *, attachment_mode: str) -> str | None:
+    mode = _normalize_attachment_mode(attachment_mode)
+    if mode == ATTACHMENT_MODE_BOTH:
+        return None
+    if mode == ATTACHMENT_MODE_CONTRACT:
+        body = "\n".join(
+            [
+                "Добрый день!",
+                "",
+                "Направляем для рассмотрения проект договора на разработку местных нормативов градостроительного проектирования.",
+                "",
+                "Во вложении: проект договора.",
+                "",
+                "С уважением,",
+            ]
+        )
+        return _append_mail_footer_text(_render_mail_template(body, row).strip())
+    body = "\n".join(
+        [
+            "Добрый день!",
+            "",
+            "Направляем для рассмотрения коммерческое предложение на разработку местных нормативов градостроительного проектирования.",
+            "",
+            "Во вложении: коммерческое предложение.",
+            "",
+            "С уважением,",
+        ]
+    )
+    return _append_mail_footer_text(_render_mail_template(body, row).strip())
+
+
+def _consent_request_subject(attachment_mode: str) -> str:
+    mode = _normalize_attachment_mode(attachment_mode)
+    if mode == ATTACHMENT_MODE_CONTRACT:
+        return "МНГП для {MUN_R_NAME}: согласие на получение проекта договора"
+    if mode == ATTACHMENT_MODE_BOTH:
+        return CONSENT_REQUEST_SUBJECT
+    return "МНГП для {MUN_R_NAME}: согласие на получение КП"
+
+
+def _consent_request_material_text(attachment_mode: str) -> tuple[str, str, str]:
+    mode = _normalize_attachment_mode(attachment_mode)
+    if mode == ATTACHMENT_MODE_CONTRACT:
+        return (
+            "проект договора",
+            "проект договора",
+            "Получить проект договора по разработке МНГП.",
+        )
+    if mode == ATTACHMENT_MODE_BOTH:
+        return (
+            "коммерческое предложение и проект договора",
+            "полный пакет документов: описание, условия, проект договора, техническое задание, календарный план",
+            "Получить КП и проект договора по разработке МНГП.",
+        )
+    return (
+        "коммерческое предложение",
+        "коммерческое предложение с описанием состава работ и условий",
+        "Получить персонализированное коммерческое предложение по разработке МНГП.",
+    )
+
+
+def _build_consent_request_body(
+    row: dict[str, Any],
+    *,
+    consent_url: str,
+    attachment_mode: str = ATTACHMENT_MODE_KP,
+) -> str:
     values = _mail_template_values(row)
     mun_name = _safe_text(values.get("MUN_R_NAME")) or _safe_text(values.get("MUN_NAME"))
     subject_name = _safe_text(values.get("SUB_RF_1")) or _safe_text(values.get("SUB_RF"))
+    prepared_materials, package_text, button_text = _consent_request_material_text(attachment_mode)
     object_text = (
         f"для {mun_name} ({subject_name})"
         if mun_name and subject_name
@@ -1065,12 +1160,12 @@ def _build_consent_request_body(row: dict[str, Any], *, consent_url: str) -> str
             [
                 "Здравствуйте!",
                 "",
-                f"ООО «Параллельные Решения» уже подготовило {object_text} коммерческое предложение и проект договора на разработку местных нормативов градостроительного проектирования (далее — МНГП).",
+                f"ООО «Параллельные Решения» уже подготовило {object_text} {prepared_materials} на разработку местных нормативов градостроительного проектирования (далее — МНГП).",
                 "",
-                "Если это направление вам актуально, мы можем направить вам полный пакет документов: описание, условия, проект договора, техническое задание, календарный план.",
+                f"Если это направление вам актуально, мы можем направить вам {package_text}.",
                 "Чтобы получить документы, просто кликните:",
                 "",
-                f"Получить персонализированное коммерческое предложение по разработке МНГП. {consent_url}",
+                f"{button_text} {consent_url}",
                 "",
                 "После этого мы отправим вам файлы отдельным письмом.",
                 "Если тема неактуальна — просто удалите или проигнорируйте это сообщение.",
@@ -2413,6 +2508,7 @@ def run_sender(
     row_ids: list[str] | None = None,
     transport: str | None = None,
     send_mode: str | None = None,
+    attachment_mode: str | None = None,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
@@ -2435,6 +2531,7 @@ def run_sender(
     effective_limit = _normalize_limit(limit, dry_run=dry_run)
     effective_transport = _normalize_transport(transport)
     effective_send_mode = _normalize_send_mode(send_mode)
+    effective_attachment_mode = _normalize_attachment_mode(attachment_mode)
     stats = _collect_excel_stats(data_xlsx_path)
     started_at = datetime.now().isoformat(timespec="seconds")
     send_run_id = ""
@@ -2482,6 +2579,7 @@ def run_sender(
             "stop_requested": False,
             "stop_requested_at": None,
             "transport": effective_transport,
+            "attachment_mode": effective_attachment_mode,
         }
     )
     if not dry_run:
@@ -2516,7 +2614,11 @@ def run_sender(
     runtime_warnings: list[str] = []
     workbook_dirty = False
     started_at = perf_counter()
-    subject = CONSENT_REQUEST_SUBJECT if effective_send_mode == "consent_request" else DEFAULT_MAIL_SUBJECT
+    subject = (
+        _consent_request_subject(effective_attachment_mode)
+        if effective_send_mode == "consent_request"
+        else _materials_subject(effective_attachment_mode)
+    )
     sent_mail_recipients = (
         _load_sent_mail_recipients(
             sent_mail_log_path,
@@ -2605,7 +2707,10 @@ def run_sender(
                 folder_errors=output_folder_errors,
             )
             entry["folder"] = str(folder) if folder else None
-            attachments, attachment_error = _resolve_pdf_attachments(folder)
+            attachments, attachment_error = _resolve_pdf_attachments(
+                folder,
+                attachment_mode=effective_attachment_mode,
+            )
             entry["attachments"] = attachments
             review_task = _active_sender_review_task(row_id, job_id=job_id)
         else:
@@ -2664,6 +2769,7 @@ def run_sender(
                 folder, folder_error, attachments, attachment_error = _retry_row_resources(
                     row_id,
                     output_dir=output_dir,
+                    attachment_mode=effective_attachment_mode,
                 )
                 entry["folder"] = str(folder) if folder else None
                 entry["attachments"] = attachments
@@ -2703,6 +2809,7 @@ def run_sender(
                 folder, folder_error, attachments, attachment_error = _retry_row_resources(
                     row_id,
                     output_dir=output_dir,
+                    attachment_mode=effective_attachment_mode,
                 )
                 entry["folder"] = str(folder) if folder else None
                 entry["attachments"] = attachments
@@ -2793,7 +2900,11 @@ def run_sender(
 
         state["ready_rows"] += 1
         row_subject = _build_mail_subject(subject, row)
-        row_body_override: str | None = None
+        row_body_override: str | None = (
+            _build_materials_body(row, attachment_mode=effective_attachment_mode)
+            if effective_send_mode == "materials"
+            else None
+        )
         success_status_value = (
             STATUS_CONSENT_REQUEST_SENT_VALUE
             if effective_send_mode == "consent_request"
@@ -2840,12 +2951,15 @@ def run_sender(
                         row=row,
                         recipient=recipients_to_send[0],
                         transport=effective_transport,
+                        attachment_mode=effective_attachment_mode,
                     )
                     entry["consent_url"] = consent_record.get("consent_url")
                     row_body_override = _build_consent_request_body(
                         row,
                         consent_url=_safe_text(consent_record.get("consent_url")),
+                        attachment_mode=effective_attachment_mode,
                     )
+                attachments_to_send = [] if effective_send_mode == "consent_request" else attachments
                 if not recipients_to_send:
                     workbook_dirty = (
                         _restore_sent_from_local_log(
@@ -2866,7 +2980,7 @@ def run_sender(
                             entry=entry,
                             email_decision=email_decision,
                             recipients_to_send=recipients_to_send,
-                            attachments=attachments,
+                            attachments=attachments_to_send,
                             subject=row_subject,
                             transport=effective_transport,
                             mail_template_path=mail_template_path,
@@ -2881,7 +2995,7 @@ def run_sender(
                     send_result = _send_with_transport(
                         row,
                         recipients_to_send,
-                        attachments,
+                        attachments_to_send,
                         row_subject,
                         transport=effective_transport,
                         mail_template_path=mail_template_path,
@@ -2894,7 +3008,7 @@ def run_sender(
                             send_result=send_result,
                             row=row,
                             email_decision=email_decision,
-                            attachments=attachments,
+                            attachments=attachments_to_send,
                             row_subject=row_subject,
                             effective_transport=effective_transport,
                             sent_mail_log_path=sent_mail_log_path,
@@ -3232,7 +3346,7 @@ def chat_with_sender(message: str, *, job_id: str | None = None) -> dict[str, An
         )
 
     prompt = (
-        "Ты агент-отправщик писем с КП и договором. "
+        "Ты агент-отправщик писем с выбранными вложениями: КП, договором или КП и договором. "
         "Отвечай кратко, по-русски, только на основе текущего состояния запуска и предпросмотра адресов из data.xlsx. "
         "Если пользователь спрашивает про адреса или почты до рассылки, опирайся на предпросмотр, а не проси запускать отправку. "
         "Не выдумывай информацию, которой нет в данных.\n\n"
