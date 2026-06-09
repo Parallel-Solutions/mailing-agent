@@ -56,7 +56,7 @@ def public_consent_url(token: str) -> str:
     base_url = _safe_text(settings.public_base_url).rstrip("/")
     if not base_url:
         base_url = "http://127.0.0.1:8000"
-    return f"{base_url}/consent/request/{token}"
+    return f"{base_url}/consent/confirm/{token}"
 
 
 def prepare_consent_request(

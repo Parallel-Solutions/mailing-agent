@@ -28,7 +28,7 @@ class ConsentStoreTests(unittest.TestCase):
                     transport="smtp",
                 )
 
-                self.assertIn("/consent/request/", record["consent_url"])
+                self.assertIn("/consent/confirm/", record["consent_url"])
                 self.assertFalse(
                     consent_store.has_confirmed_consent(
                         job_id="job-1",

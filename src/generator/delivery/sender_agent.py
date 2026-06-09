@@ -1496,7 +1496,21 @@ def _htmlify_mail_body(
     inline_footer_image: bool = False,
     include_unsubscribe: bool = True,
 ) -> str:
-    parts = [escape(line.strip()) for line in body.splitlines()]
+    parts: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        consent_match = re.match(r"^Получить предложение по МНГП:\s*(https?://\S+)\s*$", stripped)
+        if consent_match:
+            consent_url = escape(consent_match.group(1), quote=True)
+            parts.append(
+                "<a "
+                f"href=\"{consent_url}\" "
+                "style=\"display:inline-block;padding:12px 18px;background:#2d720d;"
+                "color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;\""
+                ">Получить предложение по МНГП</a>"
+            )
+            continue
+        parts.append(escape(stripped))
     non_empty = [line for line in parts if line]
     html = "<br>".join(non_empty)
     if "Черкашина Наталья Александровна" in body:
