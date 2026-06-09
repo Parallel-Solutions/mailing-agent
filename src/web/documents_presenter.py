@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, document_mode_kinds, normalize_document_mode
+
 
 def _safe_label(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -56,11 +58,13 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
     reviewed_documents = max(0, int(documents_status.get("reviewed_documents") or 0))
     fixed_documents = max(0, int(documents_status.get("fixed_documents") or 0))
     output_file_count = max(0, int(documents_status.get("output_file_count") or 0))
+    document_mode = normalize_document_mode(documents_status.get("document_mode") or generator.get("document_mode") or DOCUMENT_MODE_BOTH)
+    documents_per_row = len(document_mode_kinds(document_mode))
     staged_docx_count = max(0, int(generator.get("staged_docx_count") or 0))
     generated_docx_count = max(staged_docx_count, int(generator.get("generated_docx_count") or 0))
     pdf_total = max(0, int(generator.get("pdf_total") or 0))
     pdf_processed = max(0, int(generator.get("pdf_processed") or generator.get("staged_pdf_count") or 0))
-    expected_documents = total_rows * 2 if total_rows > 0 else max(total_documents, generated_docx_count, output_file_count)
+    expected_documents = total_rows * documents_per_row if total_rows > 0 else max(total_documents, generated_docx_count, output_file_count)
     shown_documents = max(generated_docx_count, total_documents if stage in {"review", "completed"} else 0)
     shown_pdf_total = expected_documents or pdf_total
     shown_pdf_done = shown_pdf_total if status == "completed" and output_file_count <= 0 and pdf_processed <= 0 else max(pdf_processed, min(output_file_count, shown_pdf_total or output_file_count))

@@ -36,9 +36,12 @@ from src.generator.generation.config_generator import (
 )
 from src.generator.generation.document_builder import (
     CONTRACT_TEMPLATE_FILENAME,
+    DOCUMENT_MODE_BOTH,
     KP_TEMPLATE_FILENAME,
     cleanup_batch_docx_dir,
+    document_mode_kinds,
     generate_documents_for_row,
+    normalize_document_mode,
 )
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.pdf_converter import convert_docx_batch
@@ -76,6 +79,7 @@ GENERATOR_STATE: dict[str, Any] = {
     "task_stats": {"total": 0, "pending": 0, "in_progress": 0, "done": 0, "blocked": 0},
     "tasks": [],
     "recent_events": [],
+    "document_mode": DOCUMENT_MODE_BOTH,
 }
 _STATUS_FILE_COUNT_CACHE_LOCK = threading.Lock()
 _STATUS_FILE_COUNT_CACHE: dict[str, dict[str, float | int]] = {}
@@ -208,16 +212,18 @@ def _template_review_report_items(template_review: dict[str, Any]) -> list[str]:
     return items
 
 
-def review_templates_before_generation(job_id: str | None) -> dict[str, Any]:
+def review_templates_before_generation(job_id: str | None, *, document_mode: str | None = None) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
     templates_dir = None if job_paths.uses_legacy_layout else job_paths.templates_dir
     if templates_dir is None:
         return {"checked_templates": 0, "applied_fix_count": 0, "skipped_fix_count": 0, "issue_count": 0, "templates": []}
 
-    templates = [
-        ("КП", templates_dir / KP_TEMPLATE_FILENAME),
-        ("Договор", templates_dir / CONTRACT_TEMPLATE_FILENAME),
-    ]
+    requested_kinds = set(document_mode_kinds(document_mode))
+    templates = []
+    if "kp" in requested_kinds:
+        templates.append(("КП", templates_dir / KP_TEMPLATE_FILENAME))
+    if "contract" in requested_kinds:
+        templates.append(("Договор", templates_dir / CONTRACT_TEMPLATE_FILENAME))
     report: dict[str, Any] = {
         "checked_templates": 0,
         "issue_count": 0,
@@ -285,6 +291,7 @@ def process_generator_row(
     output_dir: Path | None = None,
     batch_docx_dir: Path | None = None,
     templates_dir: Path | None = None,
+    document_mode: str | None = None,
 ) -> dict:
     result_index, outgoing_number, row = payload
     context = build_document_context(row, outgoing_number)
@@ -296,6 +303,7 @@ def process_generator_row(
         output_dir=output_dir,
         batch_docx_dir=batch_docx_dir,
         templates_dir=templates_dir,
+        document_mode=document_mode,
     )
     return {
         "result_index": result_index,
@@ -661,6 +669,7 @@ def prime_generator_state(
     limit: int | None = None,
     row_ids: list[str] | None = None,
     job_id: str | None = None,
+    document_mode: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
     source_path = xlsx_path or (job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH)
@@ -687,6 +696,7 @@ def prime_generator_state(
         rows = [row for row in rows if str(row.get("ID")).strip() in requested_row_ids]
     if limit:
         rows = rows[:limit]
+    effective_document_mode = normalize_document_mode(document_mode or state.get("document_mode") or DOCUMENT_MODE_BOTH)
 
     if not rows:
         state["status"] = "completed"
@@ -708,6 +718,7 @@ def prime_generator_state(
             "error_rows": 0,
             "stage": "review_templates",
             "stage_text": "Проверяю шаблоны перед подготовкой документов.",
+            "document_mode": effective_document_mode,
             "staged_docx_count": 0,
             "staged_pdf_count": 0,
             "pdf_total": 0,
@@ -737,6 +748,7 @@ def run_generator_agent(
     job_id: str | None = None,
     create_pdf: bool = True,
     auto_run_philologist: bool | None = None,
+    document_mode: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
     source_path = xlsx_path or (job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH)
@@ -765,6 +777,7 @@ def run_generator_agent(
         rows = [row for row in rows if str(row.get("ID")).strip() in requested_row_ids]
     if limit:
         rows = rows[:limit]
+    effective_document_mode = normalize_document_mode(document_mode or state.get("document_mode") or DOCUMENT_MODE_BOTH)
 
     if not rows:
         state["status"] = "completed"
@@ -797,6 +810,7 @@ def run_generator_agent(
             "ok_rows": state.get("ok_rows", 0) if was_stopped else 0,
             "error_rows": state.get("error_rows", 0) if was_stopped else 0,
             "stage": resume_stage,
+            "document_mode": effective_document_mode,
             "stage_text": (
                 "Проверяю шаблоны перед подготовкой документов."
                 if resume_stage == "review_templates"
@@ -847,7 +861,7 @@ def run_generator_agent(
             for index, _, row in payloads
         ]
 
-    logger.info("generator_agent_start", row_count=len(payloads))
+    logger.info("generator_agent_start", row_count=len(payloads), document_mode=effective_document_mode)
     state["total_rows"] = len(payloads)
     _save_generator_state(state, job_id)
 
@@ -856,7 +870,7 @@ def run_generator_agent(
             _refresh_generator_stop_flag(state, job_id)
             if state.get("stop_requested"):
                 raise GeneratorStopRequested("Генерация остановлена до начала обработки строк.")
-            template_review = review_templates_before_generation(job_id)
+            template_review = review_templates_before_generation(job_id, document_mode=effective_document_mode)
             state["template_review"] = template_review
             state["stage"] = "render_docx"
             state["stage_text"] = "Создаю документы по шаблонам."
@@ -888,6 +902,7 @@ def run_generator_agent(
                         output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
                         batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
                         templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
+                        document_mode=effective_document_mode,
                     )
                 except Exception as exc:
                     results[result_index] = {
@@ -922,6 +937,7 @@ def run_generator_agent(
                         output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
                         batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
                         templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
+                        document_mode=effective_document_mode,
                     )
                     future_map[future] = payload
                     return True

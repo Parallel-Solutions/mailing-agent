@@ -878,6 +878,26 @@ def build_staged_filename(row: dict, kind: str) -> str:
     return f"{row_id}_{safe_kind}_{mun_name}.docx"
 
 
+DOCUMENT_MODE_KP = "kp"
+DOCUMENT_MODE_CONTRACT = "contract"
+DOCUMENT_MODE_BOTH = "both"
+DOCUMENT_MODE_VALUES = {DOCUMENT_MODE_KP, DOCUMENT_MODE_CONTRACT, DOCUMENT_MODE_BOTH}
+
+
+def normalize_document_mode(value: str | None) -> str:
+    mode = str(value or "").strip().lower()
+    return mode if mode in DOCUMENT_MODE_VALUES else DOCUMENT_MODE_BOTH
+
+
+def document_mode_kinds(value: str | None) -> tuple[str, ...]:
+    mode = normalize_document_mode(value)
+    if mode == DOCUMENT_MODE_KP:
+        return ("kp",)
+    if mode == DOCUMENT_MODE_CONTRACT:
+        return ("contract",)
+    return ("kp", "contract")
+
+
 def cleanup_batch_docx_dir(batch_docx_dir: Path | None = None) -> None:
     target_dir = batch_docx_dir or BATCH_DOCX_DIR
     if target_dir.exists():
@@ -891,21 +911,23 @@ def generate_documents_for_row(
     output_dir: Path | None = None,
     batch_docx_dir: Path | None = None,
     templates_dir: Path | None = None,
+    document_mode: str | None = None,
 ) -> dict[str, Path]:
     output_folder = ensure_output_folder(row, output_dir=output_dir)
     batch_docx_dir = ensure_batch_docx_dir(batch_docx_dir=batch_docx_dir)
     kp_template_path, contract_template_path = resolve_template_paths(templates_dir)
     kp_path = batch_docx_dir / build_staged_filename(row, "kp")
     contract_path = batch_docx_dir / build_staged_filename(row, "contract")
+    requested_kinds = set(document_mode_kinds(document_mode))
 
     generated_files: dict[str, Path] = {}
 
-    if kp_template_path.exists():
+    if "kp" in requested_kinds and kp_template_path.exists():
         generated_files["kp"] = render_docx(kp_template_path, build_kp_replacements(context), kp_path, context)
         generated_files["kp_final_docx"] = output_folder / build_kp_filename(row)
         generated_files["kp_final_pdf"] = output_folder / build_kp_filename(row).replace(".docx", ".pdf")
 
-    if contract_template_path.exists():
+    if "contract" in requested_kinds and contract_template_path.exists():
         generated_files["contract"] = render_docx(
             contract_template_path,
             build_contract_replacements(context),

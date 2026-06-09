@@ -478,6 +478,21 @@
     line-height: 1.35;
   }
 
+  .document-mode-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+    gap: 12px;
+    align-items: end;
+    margin-top: 14px;
+  }
+
+  @media (max-width: 760px) {
+    .document-mode-row {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+    }
+  }
+
   .page-sub-row {
     display: flex;
     align-items: center;
@@ -2273,6 +2288,19 @@
         <div class="module-title">Подготовка документов</div>
         <div class="module-desc" id="g-start-desc" hidden></div>
         <div class="progress-label" id="g-inflection-summary" style="display:none"></div>
+        <div class="document-mode-row">
+          <div class="sender-transport-field">
+            <label for="documents-document-mode">Что формируем</label>
+            <select id="documents-document-mode" onchange="syncSenderAttachmentModeFromDocuments({ force: true }); scheduleUiStateSave();">
+              <option value="kp">Только КП</option>
+              <option value="both">КП + договор</option>
+              <option value="contract">Только договор</option>
+            </select>
+          </div>
+          <div class="sender-transport-note" id="documents-document-mode-note">
+            Если выбрать только КП, договор не создаётся и не проверяется в этой сессии.
+          </div>
+        </div>
         <div class="module-actions" style="margin-top:12px">
           <div class="module-actions-primary">
             <button class="btn-primary" id="g-run" data-process-lock="true" onclick="startDocumentsPipeline()">Подготовить документы</button>
@@ -2418,7 +2446,7 @@
           </div>
           <div class="sender-transport-field">
             <label for="sender-attachment-mode">Вложения</label>
-            <select id="sender-attachment-mode">
+            <select id="sender-attachment-mode" onchange="scheduleUiStateSave()">
               <option value="kp">КП</option>
               <option value="contract">Договор</option>
               <option value="both">КП + договор</option>
@@ -2725,6 +2753,8 @@
       settings: {
         workType: document.getElementById('settings-work-type')?.value || '',
         mailSubject: document.getElementById('settings-mail-subject')?.value || '',
+        documentMode: getDocumentMode(),
+        senderAttachmentMode: getSenderAttachmentMode(),
       },
       templates: {
         mail: collectTemplateButtonSnapshot('mail-btn'),
@@ -2820,9 +2850,10 @@
 
   function getMissingSettingsFields() {
     const missing = [];
+    const documentMode = getDocumentMode();
     if (!isTemplateUploaded('mail-btn')) missing.push('шаблон письма');
-    if (!isTemplateUploaded('kp-btn')) missing.push('шаблон КП');
-    if (!isTemplateUploaded('contract-btn')) missing.push('шаблон договора');
+    if (documentMode !== 'contract' && !isTemplateUploaded('kp-btn')) missing.push('шаблон КП');
+    if (documentMode !== 'kp' && !isTemplateUploaded('contract-btn')) missing.push('шаблон договора');
     const subject = document.getElementById('settings-mail-subject');
     if (!subject || !subject.value.trim()) missing.push('тему письма');
     return missing;
@@ -2883,8 +2914,12 @@
     const settings = snapshot.settings || {};
     const workType = document.getElementById('settings-work-type');
     const mailSubject = document.getElementById('settings-mail-subject');
+    const documentMode = document.getElementById('documents-document-mode');
+    const senderAttachmentMode = document.getElementById('sender-attachment-mode');
     if (workType && settings.workType) workType.value = settings.workType;
     if (mailSubject && typeof settings.mailSubject === 'string') mailSubject.value = settings.mailSubject;
+    if (documentMode && settings.documentMode) documentMode.value = settings.documentMode;
+    if (senderAttachmentMode && settings.senderAttachmentMode) senderAttachmentMode.value = settings.senderAttachmentMode;
 
     restoreChatHtmlSnapshot(snapshot.chats || {});
     const attachedFile = document.getElementById('p-attached-file');
@@ -5566,6 +5601,8 @@ function clearAttachedFile() {
   async function startDocumentsPipeline() {
     await ensureCurrentJobId();
     documentsStartClicked = true;
+    const documentMode = getDocumentMode();
+    syncSenderAttachmentModeFromDocuments({ force: true });
     scheduleUiStateSave();
     const isResume = currentGeneratorStatus === 'stopped' || currentPhilologistStatus === 'stopped';
     const resumeStage = currentGeneratorStatus === 'completed' && currentPhilologistStatus === 'stopped' ? 'review' : 'generate';
@@ -5581,9 +5618,7 @@ function clearAttachedFile() {
         generator: lastGeneratorUiState,
         philologist: lastPhilologistUiState,
       });
-      appendChatMessage('g-chat', 'agent', isResume
-        ? 'Продолжаю подготовку документов с сохраненного места.'
-        : 'Начинаю подготовку документов. Сначала создам КП и договоры, затем проверю тексты перед отправкой.');
+      appendChatMessage('g-chat', 'agent', getDocumentModeStartMessage(documentMode, isResume));
       stopDocumentsPolling();
       stopGeneratorPolling();
       stopPhilologistPolling();
@@ -5594,7 +5629,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/documents/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ mode: 'fast' })),
+        body: JSON.stringify(withJobPayload({ mode: 'fast', document_mode: documentMode })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) {
@@ -5664,6 +5699,34 @@ function clearAttachedFile() {
     const select = document.getElementById('sender-send-mode');
     const value = String((select && select.value) || '').trim();
     return value || 'consent_request';
+  }
+
+  function getDocumentMode() {
+    const select = document.getElementById('documents-document-mode');
+    const value = String((select && select.value) || '').trim();
+    return ['kp', 'contract', 'both'].includes(value) ? value : 'kp';
+  }
+
+  function getDocumentModeStartMessage(documentMode, isResume) {
+    if (isResume) return 'Продолжаю подготовку документов с сохраненного места.';
+    if (documentMode === 'kp') {
+      return 'Начинаю подготовку документов. Сначала создам КП, затем проверю текст перед отправкой.';
+    }
+    if (documentMode === 'contract') {
+      return 'Начинаю подготовку документов. Сначала создам договоры, затем проверю текст перед отправкой.';
+    }
+    return 'Начинаю подготовку документов. Сначала создам КП и договоры, затем проверю тексты перед отправкой.';
+  }
+
+  function syncSenderAttachmentModeFromDocuments(options = {}) {
+    const senderSelect = document.getElementById('sender-attachment-mode');
+    if (!senderSelect) return;
+    const force = !!options.force;
+    const documentMode = getDocumentMode();
+    if (force || !senderSelect.value) {
+      senderSelect.value = documentMode;
+      scheduleUiStateSave();
+    }
   }
 
   function getSenderAttachmentMode() {
@@ -6504,6 +6567,11 @@ function clearAttachedFile() {
   function setDocumentsUiState(result = {}) {
     const status = String(result.status || 'idle');
     lastDocumentsUiState = { ...stripUiStateMeta(result) };
+    const resultDocumentMode = String(result.document_mode || (result.generator || {}).document_mode || '').trim();
+    if (status !== 'idle' && ['kp', 'contract', 'both'].includes(resultDocumentMode)) {
+      const documentModeSelect = document.getElementById('documents-document-mode');
+      if (documentModeSelect) documentModeSelect.value = resultDocumentMode;
+    }
     scheduleUiStateSave();
 
     if (result.generator) {

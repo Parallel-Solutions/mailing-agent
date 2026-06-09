@@ -6,6 +6,7 @@ from typing import Any
 
 from src.web.documents_agent_chat import choose_documents_agent_reply
 from src.web.documents_presenter import build_documents_ui_payload
+from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, document_mode_kinds, normalize_document_mode
 
 _deps: dict[str, Any] = {}
 
@@ -32,6 +33,10 @@ def _clamp_done(done: int, total: int) -> int:
     return max(0, min(done, total)) if total > 0 else 0
 
 
+def _document_count_per_row(document_mode: str | None) -> int:
+    return len(document_mode_kinds(document_mode))
+
+
 def _documents_progress_units(
     *,
     status: str,
@@ -43,8 +48,10 @@ def _documents_progress_units(
     total_documents: int,
     reviewed_documents: int,
     output_file_count: int,
+    document_mode: str | None,
 ) -> dict[str, Any]:
-    expected_documents = total_rows * 2 if total_rows > 0 else max(
+    documents_per_row = _document_count_per_row(document_mode)
+    expected_documents = total_rows * documents_per_row if total_rows > 0 else max(
         total_documents,
         _safe_int(generator.get("staged_docx_count")),
         _safe_int(generator.get("generated_docx_count")),
@@ -55,7 +62,7 @@ def _documents_progress_units(
     generated_done = max(
         _safe_int(generator.get("staged_docx_count")),
         _safe_int(generator.get("generated_docx_count")),
-        processed_rows * 2 if total_rows > 0 else 0,
+        processed_rows * documents_per_row if total_rows > 0 else 0,
     )
     if str(generator.get("status") or "") == "completed":
         generated_done = generated_total
@@ -191,6 +198,7 @@ def compact_documents_status(job_id: str | None) -> dict:
     )
     generator_status = str(generator_state.get("status") or "idle")
     philologist_status = str(philologist_state.get("status") or "idle")
+    document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
     generator_done = generator_status == "completed"
     reviewed_documents = int(philologist_state.get("processed_documents") or 0)
     total_documents = int(philologist_state.get("total_documents") or 0)
@@ -244,7 +252,11 @@ def compact_documents_status(job_id: str | None) -> dict:
             or "Не удалось завершить подготовку документов."
         )
 
-    total_rows = max(int(generator_state.get("total_rows") or 0), int(philologist_state.get("total_documents") or 0) // 2)
+    documents_per_row = _document_count_per_row(document_mode)
+    total_rows = max(
+        int(generator_state.get("total_rows") or 0),
+        int(philologist_state.get("total_documents") or 0) // max(1, documents_per_row),
+    )
     processed_rows = int(generator_state.get("processed_rows") or 0)
     if generator_done and total_rows:
         processed_rows = total_rows
@@ -258,6 +270,7 @@ def compact_documents_status(job_id: str | None) -> dict:
         total_documents=total_documents,
         reviewed_documents=reviewed_documents,
         output_file_count=int(generator_state.get("output_file_count") or 0),
+        document_mode=document_mode,
     )
     progress_percent = progress_units["percent"]
     current_item_text = _documents_current_item_text(
@@ -286,6 +299,7 @@ def compact_documents_status(job_id: str | None) -> dict:
         "documents_with_issues": int(philologist_state.get("documents_with_issues") or 0),
         "output_file_count": int(generator_state.get("output_file_count") or 0),
         "summary_text": stage_text,
+        "document_mode": document_mode,
     }
     readiness = _require("build_job_readiness_result")(job_id)
     result["ui"] = build_documents_ui_payload(result, readiness=readiness)
@@ -320,8 +334,9 @@ def documents_agent_choose_reply(message: str, job_id: str | None = None) -> dic
     )
 
 
-def run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mode: str | None) -> None:
+def run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mode: str | None, document_mode: str | None = None) -> None:
     try:
+        effective_document_mode = normalize_document_mode(document_mode or DOCUMENT_MODE_BOTH)
         get_generator_status = _require("get_generator_status")
         clear_generator_stop_request = _require("clear_generator_stop_request")
         run_generator_agent = _require("run_generator_agent")
@@ -332,13 +347,15 @@ def run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mo
         schedule_output_archive_build = _require("schedule_output_archive_build")
 
         generator_state = get_generator_status(job_id)
-        if str(generator_state.get("status") or "") != "completed":
+        generator_document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
+        if str(generator_state.get("status") or "") != "completed" or generator_document_mode != effective_document_mode:
             clear_generator_stop_request(job_id)
             generator_state = run_generator_agent(
                 xlsx_path=xlsx_path,
                 job_id=job_id,
                 create_pdf=False,
                 auto_run_philologist=False,
+                document_mode=effective_document_mode,
             )
 
         if str(generator_state.get("status") or "") != "completed":
@@ -349,12 +366,16 @@ def run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mo
             return
 
         philologist_state = get_philologist_status(job_id, include_details=False)
-        if str(philologist_state.get("status") or "") != "completed":
+        philologist_document_mode = normalize_document_mode(philologist_state.get("document_mode") or DOCUMENT_MODE_BOTH)
+        if str(philologist_state.get("status") or "") != "completed" or philologist_document_mode != effective_document_mode:
             if _documents_pipeline_stop_requested(job_id):
                 _mark_documents_waiting_review_stopped(job_id)
                 return
             clear_philologist_stop_request(job_id)
             philologist_state = run_philologist(ai_enabled=True, job_id=job_id, mode=mode or "fast")
+            if isinstance(philologist_state, dict):
+                philologist_state["document_mode"] = effective_document_mode
+                _require("save_philologist_state")(philologist_state, job_id)
 
         if isinstance(philologist_state, dict) and philologist_state.get("status") == "completed":
             generator_state = finalize_documents_output(job_id=job_id)

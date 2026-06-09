@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, normalize_document_mode
 from src.jobs import resolve_job_paths
 from src.utils.logger import logger
 
@@ -37,6 +38,7 @@ def create_documents_router(
     async def documents_start(payload: dict | None = Body(default=None)):
         job_id = str((payload or {}).get("job_id") or "").strip() or None
         mode = str((payload or {}).get("mode") or "fast").strip().lower() or "fast"
+        document_mode = normalize_document_mode((payload or {}).get("document_mode") or DOCUMENT_MODE_BOTH)
         xlsx_path = prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
         if not xlsx_path.exists():
             raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
@@ -61,12 +63,27 @@ def create_documents_router(
         if generator_thread_running or philologist_thread_running:
             return {"status": "ok", "result": compact_documents_status(job_id)}
 
+        generator_document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
         if str(generator_state.get("status") or "") == "completed":
-            if str(philologist_state.get("status") or "") != "completed":
+            if generator_document_mode == document_mode and str(philologist_state.get("status") or "") != "completed":
                 clear_philologist_stop_request(job_id)
                 prime_philologist_running_state(job_id, mode)
+            elif generator_document_mode != document_mode:
+                try:
+                    primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id, document_mode=document_mode)
+                except Exception as exc:
+                    logger.exception("documents_start_reprime_generator_failed", job_id=job_id, xlsx_path=str(xlsx_path))
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Не удалось подготовить новый режим документов: {type(exc).__name__}: {exc}",
+                    ) from exc
+                if primed_state.get("status") == "error":
+                    raise HTTPException(
+                        status_code=400,
+                        detail=primed_state.get("summary_text") or "Ошибка подготовки документов",
+                    )
         else:
-            if str(generator_state.get("status") or "") == "stopped":
+            if str(generator_state.get("status") or "") == "stopped" and generator_document_mode == document_mode:
                 clear_generator_stop_request(job_id)
                 generator_state["status"] = "running"
                 generator_state["completed_at"] = None
@@ -74,7 +91,7 @@ def create_documents_router(
                 save_generator_state(generator_state, job_id)
             else:
                 try:
-                    primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id)
+                    primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id, document_mode=document_mode)
                 except Exception as exc:
                     logger.exception("documents_start_prime_generator_failed", job_id=job_id, xlsx_path=str(xlsx_path))
                     raise HTTPException(
@@ -91,7 +108,7 @@ def create_documents_router(
             start_documents_thread_if_absent(
                 job_id,
                 target=run_documents_pipeline_background,
-                kwargs={"xlsx_path": xlsx_path, "job_id": job_id, "mode": mode},
+                kwargs={"xlsx_path": xlsx_path, "job_id": job_id, "mode": mode, "document_mode": document_mode},
                 name=f"documents-{documents_job_key(job_id)}",
             )
             result = compact_documents_status(job_id)
