@@ -2509,6 +2509,7 @@ def run_sender(
     transport: str | None = None,
     send_mode: str | None = None,
     attachment_mode: str | None = None,
+    require_confirmed_consent: bool = False,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
@@ -2686,6 +2687,7 @@ def run_sender(
         entry["fallback_candidates"] = email_decision["fallback_candidates"]
         missing_confirmed_consent = (
             effective_send_mode == "materials"
+            and require_confirmed_consent
             and bool(entry["recipient"])
             and not has_confirmed_consent(
                 job_id=job_id,
@@ -2930,7 +2932,7 @@ def run_sender(
                     if effective_send_mode == "consent_request" and entry.get("recipient")
                     else _allowed_send_recipients(email_decision)
                 )
-                if effective_send_mode == "materials":
+                if effective_send_mode == "materials" and require_confirmed_consent:
                     intended_recipients = [
                         recipient
                         for recipient in intended_recipients

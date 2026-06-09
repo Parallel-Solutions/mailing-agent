@@ -63,6 +63,7 @@ def _dispatch_materials_after_consent(record: dict) -> None:
         transport=transport,
         send_mode="materials",
         attachment_mode=attachment_mode,
+        require_confirmed_consent=True,
         job_id=job_id,
     )
     _save_materials_dispatch_summary(record, result)

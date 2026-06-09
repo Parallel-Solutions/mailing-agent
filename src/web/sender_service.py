@@ -146,6 +146,7 @@ def run_sender_background(
     transport: str | None,
     send_mode: str | None = None,
     attachment_mode: str | None = None,
+    require_confirmed_consent: bool = False,
     job_id: str | None,
 ) -> None:
     try:
@@ -155,6 +156,7 @@ def run_sender_background(
             transport=transport,
             send_mode=send_mode,
             attachment_mode=attachment_mode,
+            require_confirmed_consent=require_confirmed_consent,
             auto_recover=False,
             job_id=job_id,
         )
