@@ -34,6 +34,7 @@ class JobPaths:
     base_xlsx: Path
     templates_dir: Path
     output_dir: Path
+    consents_dir: Path
     batch_docx_dir: Path
     batch_pdf_dir: Path
     sent_mail_log_path: Path
@@ -45,6 +46,7 @@ class JobPaths:
         self.base_xlsx.parent.mkdir(parents=True, exist_ok=True)
         self.templates_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.consents_dir.mkdir(parents=True, exist_ok=True)
         self.batch_docx_dir.mkdir(parents=True, exist_ok=True)
         self.batch_pdf_dir.mkdir(parents=True, exist_ok=True)
         self.sent_mail_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +62,7 @@ def resolve_job_paths(job_id: str | None = None) -> JobPaths:
             base_xlsx=SERVICE_DOCS_DIR / "base.xlsx",
             templates_dir=DATA_DIR / "templates",
             output_dir=DATA_DIR / "output",
+            consents_dir=DATA_DIR / "consents",
             batch_docx_dir=DATA_DIR / "_batch_docx_default",
             batch_pdf_dir=DATA_DIR / "_batch_pdf_default",
             sent_mail_log_path=DATA_DIR / "sent_mail_log.jsonl",
@@ -74,6 +77,7 @@ def resolve_job_paths(job_id: str | None = None) -> JobPaths:
         base_xlsx=root_dir / "input" / "base.xlsx",
         templates_dir=root_dir / "templates",
         output_dir=root_dir / "output",
+        consents_dir=root_dir / "consents",
         batch_docx_dir=root_dir / "_batch_docx",
         batch_pdf_dir=root_dir / "_batch_pdf",
         sent_mail_log_path=root_dir / "sent_mail_log.jsonl",
