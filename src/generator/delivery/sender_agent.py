@@ -1517,7 +1517,7 @@ def _htmlify_mail_body(
                 "color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;\""
                 f">{button_text}</a>"
                 "<div style=\"margin-top:8px;font-size:12px;line-height:1.45;color:#60705a;\">"
-                "Ваш email используется только для отправки этих документов. Без рекламных рассылок."
+                "Нажимая на кнопку, вы просто даёте нам знать, что документы нужны. Мы вышлем их сразу."
                 "</div>"
                 "</div>"
             )
