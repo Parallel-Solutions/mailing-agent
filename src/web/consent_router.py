@@ -6,6 +6,37 @@ from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 
 from src.generator.delivery.consent_store import confirm_consent
+from src.jobs import load_agent_state, save_agent_state
+
+
+def _safe_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _format_materials_dispatch_summary(record: dict, result: dict) -> str:
+    recipient = _safe_text(record.get("recipient"))
+    mun_name = _safe_text(record.get("mun_name"))
+    target = ", ".join(part for part in (mun_name, recipient) if part)
+    sent_rows = int(result.get("sent_rows") or 0)
+    error_rows = int(result.get("error_rows") or 0)
+
+    if sent_rows > 0 and error_rows <= 0:
+        return (
+            f"Клиент дал согласие{f' ({target})' if target else ''}. "
+            "КП и проект договора отправлены."
+        )
+    return (
+        f"Клиент дал согласие{f' ({target})' if target else ''}, "
+        "но материалы пока не отправились. Проверьте журнал отправки."
+    )
+
+
+def _save_materials_dispatch_summary(record: dict, result: dict) -> None:
+    job_id = _safe_text(record.get("job_id")) or None
+    summary = _format_materials_dispatch_summary(record, result)
+    state = load_agent_state("sender", {}, job_id)
+    state["summary_text"] = summary
+    save_agent_state("sender", state, job_id)
 
 
 def _dispatch_materials_after_consent(record: dict) -> None:
@@ -16,13 +47,14 @@ def _dispatch_materials_after_consent(record: dict) -> None:
     transport = str(record.get("transport") or "").strip() or "smtp"
     if not row_id:
         return
-    run_sender(
+    result = run_sender(
         dry_run=False,
         row_ids=[row_id],
         transport=transport,
         send_mode="materials",
         job_id=job_id,
     )
+    _save_materials_dispatch_summary(record, result)
 
 
 def create_consent_router() -> APIRouter:

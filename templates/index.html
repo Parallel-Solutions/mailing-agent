@@ -2563,7 +2563,7 @@
       documents: { announcedStart: false, terminalAnnounced: false, lastStatus: 'idle', lastStage: '', lastGeneratorStage: '' },
       generator: { announcedStart: false, terminalAnnounced: false, lastStatus: 'idle', lastStage: '', milestones: {}, stageMilestones: {} },
       philologist: { announcedStart: false, terminalAnnounced: false, finalizingAnnounced: false, lastStatus: 'idle', milestones: {} },
-      sender: { announcedStart: false, terminalAnnounced: false, lastStatus: 'idle', lastMode: '', milestones: {} },
+      sender: { announcedStart: false, terminalAnnounced: false, terminalKey: '', lastStatus: 'idle', lastMode: '', milestones: {} },
     };
   }
 
@@ -3211,9 +3211,25 @@
     const sent = Number(result.sent_rows || (result.stats || {}).sent || 0);
     const errors = Number(result.error_rows || (result.stats || {}).error || 0);
     const state = flowNotificationState.sender;
+    const terminalKey = [
+      status,
+      mode,
+      result.started_at || '',
+      result.completed_at || '',
+      sent,
+      errors,
+      result.summary_text || '',
+    ].join('|');
 
     if (status !== 'running') {
-      if (wasRunningBefore(state) && !state.terminalAnnounced) {
+      const isTerminalStatus = ['completed', 'stopped', 'error'].includes(status);
+      const shouldAnnounceTerminal = isTerminalStatus && terminalKey !== state.terminalKey && (
+        wasRunningBefore(state)
+        || mode === 'send'
+        || status === 'error'
+        || status === 'stopped'
+      );
+      if (shouldAnnounceTerminal) {
         if (status === 'completed') {
           announceProcessStep(
             's-chat',
@@ -3237,7 +3253,8 @@
             humanizeSenderMessage(result.summary_text, 'Не удалось завершить отправку. Уже отправленные письма сохранены.')
           );
         }
-        if (['completed', 'stopped', 'error'].includes(status)) state.terminalAnnounced = true;
+        state.terminalAnnounced = true;
+        state.terminalKey = terminalKey;
       }
       state.lastStatus = status;
       return;
