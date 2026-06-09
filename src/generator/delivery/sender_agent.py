@@ -53,7 +53,7 @@ MAIL_TEMPLATE_PATH = TEMPLATES_DIR / "mail_template.txt"
 MAIL_TEMPLATE_DOCX_PATH = TEMPLATES_DIR / "mail_template.docx"
 SENT_MAIL_LOG_PATH = DATA_DIR / "sent_mail_log.jsonl"
 DEFAULT_MAIL_SUBJECT = "Коммерческое предложение на разработку МНГП."
-CONSENT_REQUEST_SUBJECT = "Запрос согласия на получение материалов"
+CONSENT_REQUEST_SUBJECT = "МНГП для {MUN_R_NAME}: согласие на получение КП и проекта договора"
 DEFAULT_MAIL_BODY = (
     "Добрый день!\n"
     "Направляем для рассмотрения коммерческое предложение на выполнение работ по разработке проекта "
@@ -342,13 +342,17 @@ def _mail_template_values(row: dict[str, Any]) -> dict[str, str]:
     except Exception:
         inflected = {}
     mun_name = _safe_text(row.get("MUN_NAME"))
-    mun_name_genitive = _mail_mun_name_genitive(mun_name, _safe_text(inflected.get("MUN_NAME_1")))
+    mun_name_genitive = (
+        _safe_text(row.get("MUN_R_NAME"))
+        or _mail_mun_name_genitive(mun_name, _safe_text(inflected.get("MUN_NAME_1")))
+    )
     return {
         "HEAD_FIO": _safe_text(row.get("HEAD_FIO")),
         "ADM_NAME": _safe_text(row.get("ADM_NAME")),
         "MUN_NAME": mun_name,
         "MUN_NAME_GENITIVE": mun_name_genitive,
         "MUN_R_NAME": mun_name_genitive,
+        "SUB_RF": _safe_text(row.get("SUB_RF")),
         "DATE": datetime.now().strftime("%d.%m.%Y"),
         "OUTGOING_NUMBER": outgoing_number,
         "OUTGOING_NUMBER_KP": f"{outgoing_number}-КП" if outgoing_number else "",
@@ -1038,28 +1042,31 @@ def _build_mail_subject(subject_template: str, row: dict[str, Any]) -> str:
 def _build_consent_request_body(row: dict[str, Any], *, consent_url: str) -> str:
     mun_name = _safe_text(row.get("MUN_R_NAME")) or _safe_text(row.get("MUN_NAME"))
     subject_name = _safe_text(row.get("SUB_RF"))
-    addressee_parts = [part for part in (mun_name, subject_name) if part]
-    addressee = " ".join(addressee_parts)
-    addressee_line = (
-        f"Для {addressee} у нас сформированы материалы с описанием состава работ, условий и проекта договора."
-        if addressee
-        else "У нас сформированы материалы с описанием состава работ, условий и проекта договора."
+    object_text = (
+        f"для {mun_name} ({subject_name})"
+        if mun_name and subject_name
+        else f"для {mun_name}"
+        if mun_name
+        else f"для муниципального образования ({subject_name})"
+        if subject_name
+        else "для муниципального образования"
     )
     return _append_mail_footer_text(
         "\n".join(
             [
                 "Здравствуйте!",
                 "",
-                "ООО «Параллельные Решения» готовит предложения по разработке проектов местных нормативов градостроительного проектирования для муниципальных образований.",
-                addressee_line,
+                f"ООО «Параллельные Решения» уже подготовило {object_text} коммерческое предложение и проект договора на разработку местных нормативов градостроительного проектирования.",
                 "",
-                "Если это направление вам актуально, мы можем направить вам полный пакет документов: описание, условия, проект договора, техническое задание и календарный план.",
-                "Пожалуйста, ответьте на это письмо словом «Да» или перейдите по ссылке, чтобы получить материалы.",
-                "Если тема неактуальна — просто удалите это сообщение, мы не будем беспокоить вас повторно.",
+                "Если это направление вам актуально, мы можем направить вам полный пакет документов: описание, условия, проект договора, техническое задание, календарный план.",
+                "Чтобы получить документы, просто кликните:",
                 "",
-                f"Получить предложение по МНГП: {consent_url}",
+                f"Получить персонализированное коммерческое предложение по МНГП: {consent_url}",
                 "",
-                "Вы получили это письмо, так как ваш контакт был найден в открытых источниках информации о муниципальных образованиях.",
+                "После этого мы отправим вам файлы отдельным письмом.",
+                "Если тема неактуальна — просто удалите это сообщение. Повторных писем не будет.",
+                "",
+                "Вы получили это письмо, так как ваш контакт указан в открытых источниках информации о муниципальных образованиях.",
             ]
         )
     )
@@ -1498,16 +1505,17 @@ def _htmlify_mail_body(
     parts: list[str] = []
     for line in body.splitlines():
         stripped = line.strip()
-        consent_match = re.match(r"^Получить предложение по МНГП:\s*(https?://\S+)\s*$", stripped)
+        consent_match = re.match(r"^(Получить .+?МНГП):\s*(https?://\S+)\s*$", stripped)
         if consent_match:
-            consent_url = escape(consent_match.group(1), quote=True)
+            button_text = escape(consent_match.group(1), quote=False)
+            consent_url = escape(consent_match.group(2), quote=True)
             parts.append(
                 "<div style=\"margin:18px 0;\">"
                 "<a "
                 f"href=\"{consent_url}\" "
                 "style=\"display:inline-block;padding:12px 18px;background:#2d720d;"
                 "color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;\""
-                ">Получить предложение по МНГП</a>"
+                f">{button_text}</a>"
                 "</div>"
             )
             continue
