@@ -35,8 +35,8 @@ def _build_tools() -> list:
     from src.parser_new.tools.maps_tool import geocode_tool, search_nearby_tool, search_2gis_tool
     tools.extend([geocode_tool, search_nearby_tool, search_2gis_tool])
 
-    from src.parser_new.tools.oktmo_tool import build_region_mo_file_tool, oktmo_region_list_tool
-    tools.extend([build_region_mo_file_tool, oktmo_region_list_tool])
+    from src.parser_new.tools.oktmo_tool import (build_region_mo_file_tool, oktmo_region_list_tool, build_okrugs_file_tool,)
+    tools.extend([build_region_mo_file_tool, oktmo_region_list_tool, build_okrugs_file_tool])
 
     from src.parser_new.tools.excel_tool import (
         read_excel_tool, write_excel_tool,

@@ -24,6 +24,7 @@ src/parser_new/progress.py — канал прогресса парсера дл
 """
 from __future__ import annotations
 
+import os
 import json
 import time
 import contextvars
@@ -55,19 +56,28 @@ def _channel(job_id: str) -> str:
 # СТОРОНА ЗАПИСИ (вызывается из chat / инструментов сбора)
 # ==============================
 
+_ENV_KEY = "PARSER_PROGRESS_JOB_ID"
+
+
 def set_job(job_id: Optional[str]) -> None:
-    """Запоминает job_id текущего запроса в контексте выполнения."""
+    """Запоминает job_id текущего запроса — и в contextvar, и в окружении процесса.
+    Окружение видно из любого потока, поэтому переживает переход
+    chat() → агент LangGraph → инструмент (где contextvar теряется)."""
     _current_job_id.set(job_id)
+    if job_id:
+        os.environ[_ENV_KEY] = job_id
+    else:
+        os.environ.pop(_ENV_KEY, None)
 
 
 def get_job() -> Optional[str]:
-    return _current_job_id.get()
+    return _current_job_id.get() or os.environ.get(_ENV_KEY) or None
 
 
 def start(job_id: Optional[str]) -> None:
     """
-    Начало запроса: фиксирует job_id и очищает хвост прошлого прогона
-    (чтобы старые сообщения не подмешались к новому). Вызывать в chat() ДО агента.
+    Начало запроса: фиксирует job_id и очищает хвост прошлого прогона.
+    Вызывать в chat() ДО агента.
     """
     set_job(job_id)
     if not job_id:
@@ -85,7 +95,7 @@ def emit(text: str, kind: str = "progress") -> None:
     Шлёт короткое сообщение прогресса в канал текущего job_id.
     Молча выходит, если мы вне запроса или Redis недоступен.
     """
-    job_id = _current_job_id.get()
+    job_id = get_job()
     if not job_id:
         return
     try:
@@ -105,8 +115,9 @@ def emit(text: str, kind: str = "progress") -> None:
 
 
 def finish() -> None:
-    """Помечает поток завершённым — SSE-эндпоинт закроет соединение."""
+    """Помечает поток завершённым и сбрасывает job_id процесса."""
     emit(_DONE, kind="done")
+    set_job(None)
 
 
 # ==============================

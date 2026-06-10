@@ -21,6 +21,7 @@ import argparse
 import re
 import sys
 import time
+import random
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -112,7 +113,21 @@ class MORecord:
         return len(self.missing_fields()) == 0
 
     def needs_processing(self) -> bool:
-        return bool(self.mun_name or self.adm_name) and not self.is_complete()
+        has_anchor = bool(
+            self.mun_name or self.mun_r_name or self.adm_name
+            or self.inn or self.email_osn
+        )
+        return has_anchor and not self.is_complete()
+    
+    @property
+    def search_name(self) -> str:
+        """Название для поиска: МО (D) если есть, иначе район (C).
+        Для МО возвращает прежнее значение — старое поведение не меняется."""
+        return self.mun_name or self.mun_r_name
+
+    @property
+    def is_district(self) -> bool:
+        return not self.mun_name and bool(self.mun_r_name)
 
 
 # ==============================
@@ -180,22 +195,25 @@ def _is_valid_admin(title: str) -> bool:
 
 
 def _extract_key_words(text: str) -> list[str]:
-    text = text.lower()
-    for sw in [
+    text = text.lower().replace("ё", "е").replace("-", " ")
+    stop = [
         "сельское поселение", "городское поселение", "муниципальный район",
         "муниципальное образование", "сельсовет", "посёлок", "поселок",
         "село", "город", "район", "поселение", "администрация", "мо",
         "республика", "край", "область", "округ",
-    ]:
-        text = text.replace(sw, " ")
+    ]
+    for sw in stop:
+        # \b — граница слова: вырезаем "село" как слово, но не из "веселовский"
+        text = re.sub(rf"\b{sw}\b", " ", text)
     return [w.strip() for w in text.split() if len(w.strip()) > 3]
-
 
 def _check_mun_match(combined: str, mun_keywords: list[str]) -> bool:
     if not mun_keywords:
         return True
+    combined = combined.replace("ё", "е")
     for kw in mun_keywords:
-        root = kw[:max(5, len(kw) - 3)]
+        kw = kw.replace("ё", "е")
+        root = kw[:max(4, len(kw) - 4)]
         if root in combined:
             return True
     return False
@@ -227,6 +245,10 @@ def _extract_inn_from_text(text: str) -> str | None:
         return candidate
     return None
 
+def _is_liquidated_status(status: str) -> bool:
+    """Ликвидирована / недействующая — по статусу из Checko."""
+    s = (status or "").lower()
+    return "ликвид" in s or "не действ" in s or "прекращ" in s
 
 def _check_liquidated(text: str) -> bool:
     t = text.lower()
@@ -240,15 +262,8 @@ def _check_liquidated(text: str) -> bool:
 def validate_org_matches(org_name: str, rec: MORecord) -> bool:
     if not org_name:
         return False
-    org_lower = org_name.lower()
-    mun_keywords = _extract_key_words(rec.mun_name)
-    if not mun_keywords:
-        return True
-    for kw in mun_keywords:
-        root = kw[:max(5, len(kw) - 3)]
-        if root in org_lower:
-            return True
-    return False
+    mun_keywords = _extract_key_words(rec.search_name)
+    return _check_mun_match(org_name.lower(), mun_keywords)
 
 
 def _parse_rusprofile_page(soup) -> dict:
@@ -268,6 +283,16 @@ def _parse_rusprofile_page(soup) -> dict:
     page_text = soup.get_text()
     result["inn"] = _extract_inn_from_text(page_text)
     return result
+
+def _rusprofile_clean_name(url: str) -> str:
+    """Открывает карточку rusprofile и возвращает чистое название организации."""
+    try:
+        time.sleep(2)
+        resp = httpx.get(url, headers=HEADERS, timeout=10, follow_redirects=True)
+        return _parse_rusprofile_page(BeautifulSoup(resp.text, "lxml")).get("name", "")
+    except Exception as e:
+        logger.debug(f"[yandex] не удалось снять имя с {url[:50]}: {e}")
+        return ""
 
 
 # ==============================
@@ -324,11 +349,12 @@ def _parse_yandex_xml(xml_bytes: bytes) -> list[dict]:
         })
     return results
 
-
-def _search_yandex(rec: MORecord) -> tuple[str | None, bool]:
-    """Ищет администрацию МО через Yandex Search API → rusprofile."""
+def _search_yandex(rec: MORecord) -> tuple[str | None, bool, str]:
+    """Ищет администрацию МО через Yandex Search API → rusprofile.
+    Возвращает (inn, liquidated, name). name заполняется прежде всего для
+    ликвидированных — чтобы записать настоящее название, а не слово."""
     if not config.YANDEX_API_KEY or not config.YANDEX_FOLDER_ID:
-        return None, False
+        return None, False, ""
 
     try:
         search = _get_yandex_search()
@@ -343,7 +369,7 @@ def _search_yandex(rec: MORecord) -> tuple[str | None, bool]:
         for i, r in enumerate(parsed):
             logger.debug(f"[yandex]   {i+1}. {r['url'][:60]}  title={r['title'][:50]}")
 
-        mun_keywords = _extract_key_words(rec.mun_name)
+        mun_keywords = _extract_key_words(rec.search_name)
 
         # Способ 1: ищем по title/snippet из XML
         candidates = []
@@ -358,36 +384,36 @@ def _search_yandex(rec: MORecord) -> tuple[str | None, bool]:
             candidates.append(r)
 
         if candidates:
-            # Приоритет: администрация / исполнительный комитет
             prio = [c for c in candidates if any(k in c["title"].lower() for k in ["администрац", "исполнител", "комитет"])]
             best = (prio + [c for c in candidates if c not in prio])[0]
             full_text = best["title"] + " " + best["snippet"]
 
             if _check_liquidated(full_text):
-                logger.info(f"[yandex] Ликвидирована (из XML): {best['title'][:60]}")
-                return None, True
+                # имя из сниппета грязное — открываем страницу за чистым названием
+                name = _rusprofile_clean_name(best["url"])
+                logger.info(f"[yandex] Ликвидирована: {name or best['title'][:60]}")
+                return None, True, name
 
             inn = _extract_inn_from_text(full_text)
             if inn:
                 logger.info(f"[yandex] ИНН из XML: {inn} ({best['title'][:50]})")
-                return inn, False
+                return inn, False, ""
 
-            # ИНН не в сниппете — заходим на страницу
             logger.debug(f"[yandex] ИНН не в XML, открываю: {best['url']}")
             time.sleep(2)
             resp = httpx.get(best["url"], headers=HEADERS, timeout=10, follow_redirects=True)
             page = _parse_rusprofile_page(BeautifulSoup(resp.text, "lxml"))
             if page["liquidated"]:
-                return None, True
+                logger.info(f"[yandex] Ликвидирована: {page['name'][:60]}")
+                return None, True, page["name"]
             if page["inn"]:
                 logger.info(f"[yandex] ИНН со страницы: {page['inn']} ({page['name'][:50]})")
-                return page["inn"], False
-            return None, False
+                return page["inn"], False, page["name"]
+            return None, False, ""
 
         # Способ 2: XML не дал title — заходим на первую /id/ ссылку
         rusprofile_urls = [r["url"] for r in parsed if "rusprofile.ru" in r["url"] and "/id/" in r["url"]]
         if not rusprofile_urls:
-            # Также пробуем из raw URL (на случай если XML парсинг пуст)
             raw_urls = re.findall(r"<url>(.*?)</url>", xml_result.decode("utf-8", errors="ignore"))
             rusprofile_urls = [u for u in raw_urls if "rusprofile.ru" in u and "/id/" in u]
 
@@ -403,28 +429,24 @@ def _search_yandex(rec: MORecord) -> tuple[str | None, bool]:
                 if page["name"] and _is_valid_admin(page["name"]) and _check_mun_match(page["name"].lower(), mun_keywords):
                     if page["liquidated"]:
                         logger.info(f"[yandex] Ликвидирована: {page['name'][:60]}")
-                        return None, True
+                        return None, True, page["name"]
                     if page["inn"]:
                         logger.info(f"[yandex] ИНН найден: {page['inn']} ({page['name'][:50]})")
-                        return page["inn"], False
+                        return page["inn"], False, page["name"]
                     logger.warning(f"[yandex] Организация найдена но ИНН не извлечён: {page['name'][:60]}")
             except Exception as e:
                 logger.debug(f"[yandex] Ошибка при заходе на страницу: {e}")
 
         logger.debug(f"[yandex] Подходящих результатов не найдено для: {rec.mun_name}")
-        return None, False
+        return None, False, ""
 
     except Exception as e:
         logger.warning(f"[yandex] Ошибка для {rec.mun_name}: {e}")
-        return None, False
+        return None, False, ""
 
 
-# ==============================
-# ОСНОВНАЯ ФУНКЦИЯ ПОИСКА
-# ==============================
-
-def search_rusprofile(rec: MORecord) -> tuple[str | None, bool]:
-    """Ищет администрацию МО через Yandex Search API."""
+def search_rusprofile(rec: MORecord) -> tuple[str | None, bool, str]:
+    """Ищет администрацию МО через Yandex Search API. Возвращает (inn, liquidated, name)."""
     return _search_yandex(rec)
 
 
@@ -461,6 +483,17 @@ def fetch_checko_by_inn(inn: str) -> dict | None:
         if isinstance(adres, dict):
             adres = adres.get("АдресРФ", "") or str(adres)
 
+        # статус: в company-ответе Checko это бывает и строкой, и объектом
+        status_raw = org.get("Статус", "")
+        if isinstance(status_raw, dict):
+            status_str = status_raw.get("Наим") or status_raw.get("Код") or ""
+        else:
+            status_str = status_raw or ""
+        
+        # блок "Ликвид" — определённый признак ликвидации, даже если статус странный
+        if isinstance(org.get("Ликвид"), dict) and org["Ликвид"]:
+            status_str = (status_str + " ликвидирована").strip()
+
         head_fio = ""
         for r in (org.get("Руковод", []) or []):
             if not r.get("Недост") and not r.get("ДисквЛицо"):
@@ -480,7 +513,9 @@ def fetch_checko_by_inn(inn: str) -> dict | None:
             "ogrn": org.get("ОГРН", ""),
             "okpo": org.get("ОКПО", ""),
             "oktmo": oktmo.get("Код", ""),
+            "status": status_str,
         }
+        logger.info(f"[checko] ИНН {inn} → {result['adm_name'][:60]} | статус: {status_str or '—'}")
         _checko_cache[inn] = result
         return result
     except Exception as e:
@@ -497,7 +532,7 @@ def search_checko_by_name(rec: MORecord) -> str | None:
             "https://api.checko.ru/v2/search",
             params={
                 "key": config.CHECKO_API_KEY, "by": "name",
-                "obj": "org", "query": rec.mun_name, "region": region_code,
+                "obj": "org", "query": rec.search_name, "region": region_code,
             },
             timeout=15,
         )
@@ -570,19 +605,45 @@ def search_contacts_online(adm_name: str) -> dict:
 
 def process_record(rec: MORecord) -> MORecord:
     inn = rec.inn
-    inn_from_user = bool(inn)
+    source = "inn" if inn else None
 
-    if not inn:
-        found_inn, liquidated = search_rusprofile(rec)
-        if liquidated:
-            if not rec.adm_name:
-                rec.adm_name = "ликвидирована"
-            rec.note = "ликвидирована"
-            return rec
+    # 1) ИНН нет, но есть почта — ищем организацию по почте
+    if not inn and rec.email_osn:
+        try:
+            from src.parser_new.email_lookup import search_inn_by_email
+        except ImportError:
+            from email_lookup import search_inn_by_email
+        found_inn, liquidated, found_name = search_inn_by_email(rec.email_osn)
         if found_inn:
-            inn = found_inn
-        else:
-            inn = search_checko_by_name(rec)
+            inn, source = found_inn, "email"
+            # ликвидация видна прямо на rusprofile — в Checko НЕ идём
+            if liquidated:
+                rec.inn = inn
+                if not rec.adm_name:
+                    rec.adm_name = found_name
+                rec.note = "ликвидирована"
+                logger.info(f"[email] {rec.email_osn} → {inn} ликвидирована, Checko пропущен")
+                return rec
+            logger.info(f"[email] {rec.email_osn} → ИНН {inn}")
+
+    # 2) ИНН всё ещё нет — старый путь по названию МО.
+    #    ВАЖНО: только если в строке есть название/район/администрация.
+    #    Иначе (строка «только с почтой») search_rusprofile уйдёт в Яндекс
+    #    с пустым запросом и притащит случайную организацию.
+    if not inn:
+        if rec.mun_name or rec.mun_r_name or rec.adm_name:
+            found_inn, liquidated, org_name = search_rusprofile(rec)
+            if liquidated:
+                if not rec.adm_name and org_name:
+                    rec.adm_name = org_name        # настоящее название, а не слово
+                rec.note = "ликвидирована"
+                return rec
+            if found_inn:
+                inn, source = found_inn, "name"
+            else:
+                inn = search_checko_by_name(rec)
+                if inn:
+                    source = "name"
         if not inn:
             rec.note = "не найдено"
             return rec
@@ -593,10 +654,20 @@ def process_record(rec: MORecord) -> MORecord:
         rec.inn = inn
         return rec
 
-    if not inn_from_user:
+    # Ликвидированная организация — помечаем и НЕ дозаполняем (любой источник)
+    if _is_liquidated_status(checko_data.get("status", "")):
+        rec.inn = inn
+        if not rec.adm_name:
+            rec.adm_name = checko_data.get("adm_name", "")
+        rec.note = "ликвидирована"
+        logger.info(f"[process] ИНН {inn} ликвидирована — дозаполнение пропущено")
+        return rec
+
+    # Проверка соответствия — ТОЛЬКО для поиска по названию.
+    if source == "name":
         found_name = checko_data.get("adm_name", "")
         if not validate_org_matches(found_name, rec):
-            logger.warning(f"Несоответствие: искали '{rec.mun_name}', нашли '{found_name}'")
+            logger.warning(f"Несоответствие: искали '{rec.search_name}', нашли '{found_name}'")
             rec.note = f"проверить вручную: нашли {found_name[:80]}"
             return rec
 
@@ -684,7 +755,7 @@ def run(
 
     total = len(records)
     processed = found = not_found = liquidated_count = 0
-    progress_step = max(save_every, (total // 12) or 1)   # ~10–12 апдейтов, без спама
+    progress_step = max(1, min(save_every, total // 5)) if total < 50 else max(save_every, total // 12)   # ~10–12 апдейтов, без спама
 
     logger.info(f"Начинаю обработку {total} строк...")
     print(f"\n{'='*50}")
@@ -737,7 +808,7 @@ def run(
                 wb_failed.save(str(failed_path))
                 logger.info(f"Прогресс сохранён: {i}/{total}")
 
-            time.sleep(0.5)
+            time.sleep(random.uniform(6.0, 16.0))
 
         except KeyboardInterrupt:
             logger.info("Прерывание пользователем — сохраняю прогресс...")
@@ -758,8 +829,20 @@ def run(
             print(f"❌ ошибка: {e}")
 
     # Финальное сохранение
+    # Финальное сохранение
     wb.save(str(out_path))
     wb_failed.save(str(failed_path))
+
+    # Дозаполнение B/C/D по названию из E — ДО постпроверки названий МО,
+    # чтобы верификатор проверил уже заполненный столбец D
+    try:
+        from src.parser_new.admin_levels import fill_admin_levels
+        lvl = fill_admin_levels(str(out_path))
+        logger.info(f"Уровни B/C/D: {lvl}")
+        print(f"   Уровни B/C/D: B={lvl.get('filled_b',0)} C={lvl.get('filled_c',0)} "
+              f"D={lvl.get('filled_d',0)} (ликв. пропущено: {lvl.get('skipped_liquidated',0)})")
+    except Exception as e:
+        logger.warning(f"Не удалось заполнить B/C/D: {e}")
 
     # Постпроверка
     try:
@@ -776,6 +859,14 @@ def run(
         logger.warning("Модуль municipality_name_verifier не найден — постпроверка пропущена")
     except Exception as e:
         logger.warning(f"Ошибка постпроверки: {e}")
+    
+    try:
+        from src.parser_new.admin_levels import fill_admin_levels
+        lvl = fill_admin_levels(str(out_path))
+        logger.info(f"Уровни B/C/D: {lvl}")
+        print(f"   Уровни B/C/D: B={lvl.get('filled_b',0)} C={lvl.get('filled_c',0)} D={lvl.get('filled_d',0)}")
+    except Exception as e:
+        logger.warning(f"Не удалось заполнить B/C/D: {e}")
 
     # Архив (только если не job-папка)
     if not output_dir:
@@ -810,7 +901,7 @@ def _count_final_stats(file_path: str) -> dict:
         ws = wb.active
         total = found = not_found = liquidated = 0
         for row_idx in range(DATA_START_ROW, ws.max_row + 1):
-            mun = ws.cell(row_idx, COL["MUN_NAME"]).value
+            mun = ws.cell(row_idx, COL["MUN_NAME"]).value or ws.cell(row_idx, COL["MUN_R_NAME"]).value
             if not (mun and str(mun).strip()):
                 continue
             total += 1

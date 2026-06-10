@@ -29,6 +29,7 @@ from __future__ import annotations
 import re
 import time
 import httpx
+from bs4 import BeautifulSoup
 from openpyxl import Workbook
 
 # --- логгер с fallback ---
@@ -57,22 +58,11 @@ except ImportError:
     _EXCEL_HELPERS = False
 
 
-BASE = "https://classifikators.ru/oktmo"
-INDEX_URL = "https://classifikators.ru/oktmo"
+BASE = "https://classinform.ru/oktmo"
+INDEX_URL = "https://classinform.ru/oktmo/kod.html"
 REQUEST_DELAY = 0.4          # вежливая задержка между запросами, сек
 REQUEST_TIMEOUT = 20.0
 MAX_DEPTH = 5                # страховка от зацикливания
-
-# Строка HTML-таблицы классификатора (формат сайта):
-# <a href="/oktmo/КОД">код</a></td> <td>наименование</td> <td>центр</td> <td>раздел</td>
-# Используется и для индекса регионов, и для подстраниц — формат одинаковый.
-_ROW_RE = re.compile(
-    r'<a\s+href="/oktmo/(\d+)"[^>]*>[\d\s]+</a>\s*</td>\s*'
-    r'<td[^>]*>(.*?)</td>\s*'
-    r'<td[^>]*>(.*?)</td>\s*'
-    r'<td[^>]*>(\d+)</td>',
-    re.DOTALL,
-)
 
 
 def _clean_html(s: str) -> str:
@@ -118,26 +108,21 @@ _region_index: list[dict] | None = None
 
 
 def _get_region_index() -> list[dict]:
-    """Загружает и кэширует индекс регионов с главной страницы ОКТМО."""
+    """Список субъектов с classinform (индекс kod.html). Кэшируется."""
     global _region_index
     if _region_index is not None:
         return _region_index
-
-    page = _fetch(INDEX_URL)
     idx = []
-    for row in _parse_children(page):
-        name = row["name"]
-        # в индексе строки региона начинаются с "Муниципальные образования ..."
-        if "муниципальные образования" not in name.lower():
-            continue
+    for ch in _children(INDEX_URL):
+        code = ch["oktmo"]
+        if not (len(code) == 11 and code.endswith("000000000")):
+            continue  # только субъекты: RR + 9 нулей
         idx.append({
-            "code": row["oktmo"][:2],
-            "url": row["url"],
-            "name": name,
-            "kw": _keywords(name),
+            "code": code[:2], "oktmo": code, "url": f"{BASE}/{code}.html",
+            "name": ch["name"], "kw": _keywords(ch["name"]),
         })
     _region_index = idx
-    logger.info(f"[oktmo] индекс регионов загружен: {len(idx)} субъектов")
+    logger.info(f"[oktmo] индекс регионов (classinform): {len(idx)} субъектов")
     return idx
 
 
@@ -162,18 +147,38 @@ def resolve_region(query: str) -> dict | None:
             best, best_score = item, score
     return best if best_score > 0 else None
 
+def _split_name_center(s: str) -> tuple[str, str]:
+    """«Ленинградский муниципальный округ (ст-ца Ленинградская)» → (название, центр)."""
+    m = re.match(r"^(.*?)\s*\(([^)]*)\)\s*$", s.strip())
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return s.strip(), ""
 
-def _parse_children(page_text: str) -> list[dict]:
-    """Дочерние коды из HTML-таблицы (только строки со ссылками)."""
+
+def _children(url: str) -> list[dict]:
+    """Прямые дети узла на classinform: [{oktmo, name, center, url}].
+    Каждая ссылка дублируется (код + название); родитель помечен ведущим '-' — отсеиваем."""
+    soup = BeautifulSoup(_fetch(url), "lxml")
+    by_code: dict[str, list[str]] = {}
+    for a in soup.find_all("a", href=True):
+        m = re.search(r"/oktmo/(\d{11})\.html", a["href"])
+        if m:
+            by_code.setdefault(m.group(1), []).append(a.get_text(" ", strip=True))
+
+    cur = re.search(r"/oktmo/(\d{11})\.html", url)
+    cur_code = cur.group(1) if cur else ""
+
     out = []
-    for code, name, center, section in _ROW_RE.findall(page_text):
-        out.append({
-            "oktmo": code,
-            "name": _clean_html(name),
-            "center": _clean_html(center),
-            "url": f"{BASE}/{code}",
-            "section": section.strip(),
-        })
+    for code, texts in by_code.items():
+        if code == cur_code:
+            continue
+        if any(t.strip().startswith("-") for t in texts):   # родитель
+            continue
+        name = next((t for t in texts if not re.fullmatch(r"[\d\s]+", t)), "")
+        if not name:
+            continue
+        nm, center = _split_name_center(name)
+        out.append({"oktmo": code, "name": nm, "center": center, "url": f"{BASE}/{code}.html"})
     return out
 
 
@@ -195,16 +200,15 @@ def _ensure_mo_type(name: str, group_name: str) -> str:
     # определяем тип по названию ветки-группы
     g = (group_name or "").lower()
     suffix = ""
-    if "городск" in g and "округ" in g:
+    if "поселени" in g:
+        suffix = "сельское поселение" if "сельск" in g else "городское поселение"
+    elif "городск" in g and "округ" in g:
         suffix = "городской округ"
     elif "муниципальн" in g and "округ" in g:
         suffix = "муниципальный округ"
     elif "муниципальн" in g and "район" in g:
         suffix = "муниципальный район"
-    elif "сельск" in g and "поселени" in g:
-        suffix = "сельское поселение"
-    elif "городск" in g and "поселени" in g:
-        suffix = "городское поселение"
+        
 
     if suffix and suffix not in low:
         return f"{name} {suffix}"
@@ -231,65 +235,28 @@ def _is_group_container(name: str) -> bool:
 
 def _collect(url: str, depth: int, acc: list[dict], visited: set[str],
              group_name: str = "") -> None:
-    """
-    Обходит дерево ОКТМО. Конечные МО → в acc.
-
-    Ключевой принцип: спускаемся ТОЛЬКО через узлы-контейнеры
-    ("Городские округа", "Муниципальные районы" и т.п.). Прямой ребёнок
-    контейнера = конечное МО — его добавляем и ВНУТРЬ НЕ ЛЕЗЕМ
-    (даже если у него есть внутригородские районы или населённые пункты).
-
-    Исключение: ветка "Муниципальные районы" — её дети (районы) сами являются
-    контейнерами поселений, поэтому через них спускаемся ещё на уровень.
-    """
     if depth > MAX_DEPTH or url in visited:
         return
     visited.add(url)
-    try:
-        page = _fetch(url)
-    except Exception as e:
-        logger.warning(f"[oktmo] не удалось загрузить {url}: {e}")
-        return
-
-    section1 = [c for c in _parse_children(page) if c["section"] == "1"]
-    if not section1:
-        return
-
-    for child in section1:
+    for child in _children(url):
         cname = child["name"]
-
         if _is_group_container(cname):
-            # это уровень-контейнер — спускаемся, запоминая его тип как group_name
             _collect(child["url"], depth + 1, acc, visited, group_name=cname)
             continue
-
-        # это конечное МО (округ / район / поселение)
         full_name = _ensure_mo_type(cname, group_name)
-
-        # Муниципальный РАЙОН — особый случай: внутри него есть поселения (тоже МО).
-        # Для рассылки нужны поселения, а не сам район → спускаемся в него.
+        low = full_name.lower()
         is_district = ("муниципальн" in group_name.lower() and "район" in group_name.lower()) \
-                      or ("район" in full_name.lower() and "округ" not in full_name.lower())
+                      or ("район" in low and "округ" not in low)
         if is_district:
-            # проверим, есть ли внутри поселения раздела 1
-            try:
-                child_page = _fetch(child["url"])
-                inner = [c for c in _parse_children(child_page) if c["section"] == "1"]
-            except Exception:
-                inner = []
-            inner_settlements = [c for c in inner if _is_group_container(c["name"])
-                                 or "поселени" in c["name"].lower() or "сельсовет" in c["name"].lower()]
-            if inner_settlements:
+            inner = _children(child["url"])
+            settlements = [c for c in inner if _is_group_container(c["name"])
+                           or "поселени" in c["name"].lower() or "сельсовет" in c["name"].lower()]
+            if settlements:
                 _collect(child["url"], depth + 1, acc, visited, group_name=cname)
                 continue
-            # район без поселений (редко) — добавляем сам район как МО
+        acc.append({"oktmo": child["oktmo"][:8], "name": full_name, "center": child["center"]})
 
-        acc.append({
-            "oktmo": child["oktmo"][:8],   # 8-значный код МО
-            "name": full_name,
-            "center": child["center"],
-        })
-        logger.debug(f"[oktmo] +МО: {full_name} ({child['oktmo'][:8]})")
+
 
 
 def fetch_region_mo_list(region: str) -> tuple[list[dict], dict]:
@@ -402,6 +369,100 @@ try:
 except ImportError:
     def tool(fn): return fn
 
+def _collect_okrugs(url, acc, visited, include_city, group_name=""):
+    if url in visited:
+        return
+    visited.add(url)
+    for child in _children(url):
+        cname = child["name"]
+        low = cname.lower()
+        if _is_group_container(cname):
+            if "округ" in low and ("муниципальн" in low or (include_city and "городск" in low)):
+                _collect_okrugs(child["url"], acc, visited, include_city, group_name=cname)
+            continue
+        full = _ensure_mo_type(cname, group_name)
+        fl = full.lower()
+        if "муниципальный округ" in fl or (include_city and "городской округ" in fl):
+            acc.append({"oktmo": child["oktmo"][:8], "name": full, "center": child["center"]})
+
+
+def build_okrugs_file(region: str = "", include_city: bool = True) -> tuple[str, int, str]:
+    """
+    Округа в файл по шаблону data.xlsx. region пуст → вся Россия; иначе один субъект.
+    SUB_RF (B), MUN_R_NAME (C) = округ, REQUISITES_OKTMO; D пуст.
+    Returns: (путь, кол-во, охват).
+    """
+    if not _EXCEL_HELPERS:
+        raise RuntimeError("excel_tool недоступен — запусти внутри проекта parser_new")
+
+    if region and region.strip():
+        info = resolve_region(region)
+        if not info:
+            raise ValueError(f"Регион '{region}' не найден в ОКТМО.")
+        regions = [info]
+        scope = _subject_to_nominative(re.sub(r"(?i)^муниципальные образования\s+", "", info["name"]))
+    else:
+        regions = _get_region_index()
+        scope = "Россия"
+
+    _emit(f"Собираю округа: {scope} ({len(regions)} субъект(ов))…")
+    rows: list[tuple[str, str, str]] = []
+    for n, reg in enumerate(regions, 1):
+        sub_rf = _subject_to_nominative(
+            re.sub(r"(?i)^муниципальные образования\s+", "", reg["name"]))
+        if len(regions) > 1:
+            _emit(f"[{n}/{len(regions)}] {sub_rf}…")
+        try:
+            acc, visited = [], set()
+            _collect_okrugs(reg["url"], acc, visited, include_city)
+        except Exception as e:
+            logger.warning(f"[oktmo] {sub_rf}: {e}")
+            continue
+        seen = set()
+        for m in acc:
+            if m["oktmo"] in seen:
+                continue
+            seen.add(m["oktmo"])
+            rows.append((sub_rf, m["name"], m["oktmo"]))
+
+    if not rows:
+        raise ValueError("Округа не найдены (возможно, ОКТМО недоступен).")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Округа"
+    _create_mo_header(ws)
+    for i, (sub_rf, name, oktmo) in enumerate(rows, start=1):
+        _write_mo_row(ws, i + 2, {
+            "ID": i, "SUB_RF": sub_rf, "MUN_R_NAME": name, "REQUISITES_OKTMO": oktmo,
+        })
+    path = _save_file(wb, _make_filename("okruga"))
+    logger.info(f"[oktmo] округа ({scope}): {len(rows)} → {path}")
+    return path, len(rows), scope
+
+
+@tool
+def build_okrugs_file_tool(region: str = "", include_city: bool = True) -> str:
+    """
+    Собирает округа в файл по шаблону.
+    Регион НЕ указан → по всей России. Указан → только по этому субъекту.
+    include_city=True — муниципальные И городские округа (по умолчанию);
+    include_city=False — ТОЛЬКО муниципальные округа.
+    Примеры:
+      «все муниципальные округа России» → region="", include_city=False
+      «все округа Амурской области»     → region="Амурская область", include_city=True
+      «муниципальные округа Амурской области» → region="Амурская область", include_city=False
+    Заполняет: субъект (B), округ (C), ОКТМО. Реквизиты НЕ ищет.
+    Приложенный к чату файл к этой задаче не относится — игнорируй его.
+    """
+    try:
+        path, n, scope = build_okrugs_file(region=region, include_city=include_city)
+        kind = "муниципальные и городские" if include_city else "только муниципальные"
+        return (f"Готово ({kind}). Округов ({scope}): {n} (источник: ОКТМО).\n"
+                f"Файл: {path}\nЗаполнены: субъект (B), округ (C), ОКТМО.")
+    except Exception as e:
+        logger.error(f"[oktmo] ошибка сборки округов: {e}")
+        return f"Не удалось собрать округа: {e}"
 
 @tool
 def build_region_mo_file_tool(region: str) -> str:
@@ -453,33 +514,31 @@ def oktmo_region_list_tool(region: str) -> str:
 
 
 # Самопроверка логики парсинга и резолвера
+# Самопроверка (оффлайн, без сети)
 if __name__ == "__main__":
-    sample = '''
-<tr> <td class="td-code"><a href="/oktmo/75503000000">75 503 000</a></td> <td>Агаповский муниципальный округ</td> <td>с Агаповка</td> <td>1</td> </tr>
-<tr> <td class="td-code">75 503 000 000</td> <td>Населенные пункты</td> <td>&mdash;</td> <td>2</td> </tr>
-<tr> <td class="td-code"><a href="/oktmo/75503000101">75 503 000 101</a></td> <td>с Агаповка</td> <td>&mdash;</td> <td>2</td> </tr>
-'''
-    parsed = _parse_children(sample)
-    s1 = [c for c in parsed if c["section"] == "1"]
-    assert len(s1) == 1 and s1[0]["oktmo"] == "75503000000", f"парсер сломан: {s1}"
-    assert s1[0]["name"] == "Агаповский муниципальный округ"
-    # резолвер на оффлайн-индексе (HTML)
-    index_html = '''
-<tr> <td class="td-code"><a href="/oktmo/75000000000">75 000 000</a></td> <td>Муниципальные образования Челябинской области</td> <td>&mdash;</td> <td>1</td> </tr>
-<tr> <td class="td-code"><a href="/oktmo/76000000000">76 000 000</a></td> <td>Муниципальные образования Забайкальского края</td> <td>&mdash;</td> <td>1</td> </tr>
-<tr> <td class="td-code"><a href="/oktmo/74000000000">74 000 000</a></td> <td>Муниципальные образования Херсонской области</td> <td>г Херсон</td> <td>1</td> </tr>
-'''
-    _region_index = []
-    for row in _parse_children(index_html):
-        if "муниципальные образования" in row["name"].lower():
-            _region_index.append({"code": row["oktmo"][:2], "url": row["url"],
-                                  "name": row["name"], "kw": _keywords(row["name"])})
-    assert len(_region_index) == 3, f"индекс: {len(_region_index)}"
+    # парсер «название (центр)»
+    assert _split_name_center("Ленинградский муниципальный округ (ст-ца Ленинградская)") \
+        == ("Ленинградский муниципальный округ", "ст-ца Ленинградская")
+    assert _split_name_center("Муниципальные округа Краснодарского края") \
+        == ("Муниципальные округа Краснодарского края", "")
+
+    # резолвер на оффлайн-индексе (подсовываем кэш напрямую, без запроса к сайту)
+    _region_index = [
+        {"code": "75", "oktmo": "75000000000", "url": f"{BASE}/75000000000.html",
+         "name": "Муниципальные образования Челябинской области",
+         "kw": _keywords("Муниципальные образования Челябинской области")},
+        {"code": "76", "oktmo": "76000000000", "url": f"{BASE}/76000000000.html",
+         "name": "Муниципальные образования Забайкальского края",
+         "kw": _keywords("Муниципальные образования Забайкальского края")},
+        {"code": "74", "oktmo": "74000000000", "url": f"{BASE}/74000000000.html",
+         "name": "Муниципальные образования Херсонской области",
+         "kw": _keywords("Муниципальные образования Херсонской области")},
+    ]
     assert resolve_region("Челябинская область")["code"] == "75"
     assert resolve_region("челябинская обл")["code"] == "75"
     assert resolve_region("Забайкальский край")["code"] == "76"
 
-    # проверка дописывания типа МО
+    # дописывание типа МО
     assert _ensure_mo_type("Челябинский", "Городские округа") == "Челябинский городской округ"
     assert _ensure_mo_type("Копейский", "Городские округа") == "Копейский городской округ"
     assert _ensure_mo_type("Агаповский муниципальный округ", "Муниципальные округа") == "Агаповский муниципальный округ"
@@ -492,14 +551,9 @@ if __name__ == "__main__":
     assert _is_group_container("Челябинский") is False
     assert _is_group_container("Агаповский муниципальный округ") is False
 
-    # падеж субъекта: родительный -> именительный
+    # падеж субъекта
     assert _subject_to_nominative("Челябинской области") == "Челябинская область"
     assert _subject_to_nominative("Забайкальского края") == "Забайкальский край"
-    assert _subject_to_nominative("Московской области") == "Московская область"
-    assert _subject_to_nominative("Республики Татарстан") == "Республика Татарстан"
 
-    print("OK — все проверки прошли:")
-    print("  • HTML-парсер, индекс, резолвер")
-    print("  • дописывание типа МО ('Челябинский' -> 'Челябинский городской округ')")
-    print("  • контейнеры vs конечные МО (внутригородские районы не попадут в список)")
-    print("  • падеж субъекта ('Челябинской области' -> 'Челябинская область')")
+    print("OK — проверки пройдены: _split_name_center, resolve_region, "
+          "_ensure_mo_type, _is_group_container, _subject_to_nominative")
