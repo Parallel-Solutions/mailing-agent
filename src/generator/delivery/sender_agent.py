@@ -1075,37 +1075,6 @@ def _materials_subject(attachment_mode: str) -> str:
     return DEFAULT_MAIL_SUBJECT
 
 
-def _build_materials_body(row: dict[str, Any], *, attachment_mode: str) -> str | None:
-    mode = _normalize_attachment_mode(attachment_mode)
-    if mode == ATTACHMENT_MODE_BOTH:
-        return None
-    if mode == ATTACHMENT_MODE_CONTRACT:
-        body = "\n".join(
-            [
-                "Добрый день!",
-                "",
-                "Направляем для рассмотрения проект договора на разработку местных нормативов градостроительного проектирования.",
-                "",
-                "Во вложении: проект договора.",
-                "",
-                "С уважением,",
-            ]
-        )
-        return _append_mail_footer_text(_render_mail_template(body, row).strip())
-    body = "\n".join(
-        [
-            "Добрый день!",
-            "",
-            "Направляем для рассмотрения коммерческое предложение на разработку местных нормативов градостроительного проектирования.",
-            "",
-            "Во вложении: коммерческое предложение.",
-            "",
-            "С уважением,",
-        ]
-    )
-    return _append_mail_footer_text(_render_mail_template(body, row).strip())
-
-
 def _consent_request_subject(attachment_mode: str) -> str:
     mode = _normalize_attachment_mode(attachment_mode)
     if mode == ATTACHMENT_MODE_CONTRACT:
@@ -1136,6 +1105,24 @@ def _consent_request_material_text(attachment_mode: str) -> tuple[str, str, str]
     )
 
 
+def _consent_request_action_text(attachment_mode: str) -> tuple[str, str]:
+    mode = _normalize_attachment_mode(attachment_mode)
+    if mode == ATTACHMENT_MODE_CONTRACT:
+        return (
+            "Чтобы получить проект договора, просто кликните:",
+            "После этого мы отправим вам файл отдельным письмом.",
+        )
+    if mode == ATTACHMENT_MODE_BOTH:
+        return (
+            "Чтобы получить документы, просто кликните:",
+            "После этого мы отправим вам файлы отдельным письмом.",
+        )
+    return (
+        "Чтобы получить КП, просто кликните:",
+        "После этого мы отправим вам файл отдельным письмом.",
+    )
+
+
 def _build_consent_request_body(
     row: dict[str, Any],
     *,
@@ -1146,6 +1133,7 @@ def _build_consent_request_body(
     mun_name = _safe_text(values.get("MUN_R_NAME")) or _safe_text(values.get("MUN_NAME"))
     subject_name = _safe_text(values.get("SUB_RF_1")) or _safe_text(values.get("SUB_RF"))
     prepared_materials, package_text, button_text = _consent_request_material_text(attachment_mode)
+    action_text, dispatch_text = _consent_request_action_text(attachment_mode)
     object_text = (
         f"для {mun_name} ({subject_name})"
         if mun_name and subject_name
@@ -1163,11 +1151,11 @@ def _build_consent_request_body(
                 f"ООО «Параллельные Решения» уже подготовило {object_text} {prepared_materials} на разработку местных нормативов градостроительного проектирования (далее — МНГП).",
                 "",
                 f"Если это направление вам актуально, мы можем направить вам {package_text}.",
-                "Чтобы получить документы, просто кликните:",
+                action_text,
                 "",
                 f"{button_text} {consent_url}",
                 "",
-                "После этого мы отправим вам файлы отдельным письмом.",
+                dispatch_text,
                 "Если тема неактуальна — просто удалите или проигнорируйте это сообщение.",
                 "",
                 "Вы получили это письмо, так как ваш контакт указан в открытых источниках информации о муниципальных образованиях.",
@@ -2509,6 +2497,7 @@ def run_sender(
     transport: str | None = None,
     send_mode: str | None = None,
     attachment_mode: str | None = None,
+    subject_template: str | None = None,
     require_confirmed_consent: bool = False,
     job_id: str | None = None,
 ) -> dict[str, Any]:
@@ -2533,6 +2522,7 @@ def run_sender(
     effective_transport = _normalize_transport(transport)
     effective_send_mode = _normalize_send_mode(send_mode)
     effective_attachment_mode = _normalize_attachment_mode(attachment_mode)
+    effective_subject_template = _safe_text(subject_template)
     stats = _collect_excel_stats(data_xlsx_path)
     started_at = datetime.now().isoformat(timespec="seconds")
     send_run_id = ""
@@ -2581,6 +2571,7 @@ def run_sender(
             "stop_requested_at": None,
             "transport": effective_transport,
             "attachment_mode": effective_attachment_mode,
+            "subject_template": effective_subject_template,
         }
     )
     if not dry_run:
@@ -2618,7 +2609,7 @@ def run_sender(
     subject = (
         _consent_request_subject(effective_attachment_mode)
         if effective_send_mode == "consent_request"
-        else _materials_subject(effective_attachment_mode)
+        else (effective_subject_template or _materials_subject(effective_attachment_mode))
     )
     sent_mail_recipients = (
         _load_sent_mail_recipients(
@@ -2902,11 +2893,7 @@ def run_sender(
 
         state["ready_rows"] += 1
         row_subject = _build_mail_subject(subject, row)
-        row_body_override: str | None = (
-            _build_materials_body(row, attachment_mode=effective_attachment_mode)
-            if effective_send_mode == "materials"
-            else None
-        )
+        row_body_override: str | None = None
         success_status_value = (
             STATUS_CONSENT_REQUEST_SENT_VALUE
             if effective_send_mode == "consent_request"
@@ -2954,6 +2941,7 @@ def run_sender(
                         recipient=recipients_to_send[0],
                         transport=effective_transport,
                         attachment_mode=effective_attachment_mode,
+                        subject_template=effective_subject_template,
                     )
                     entry["consent_url"] = consent_record.get("consent_url")
                     row_body_override = _build_consent_request_body(

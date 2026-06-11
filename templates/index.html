@@ -465,6 +465,18 @@
     font: inherit;
   }
 
+  .sender-fixed-value {
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    border: 1px solid #dbe7d0;
+    border-radius: 8px;
+    background: #f7fbf2;
+    color: #08220d;
+    padding: 0 10px;
+    font-weight: 700;
+  }
+
   @media (max-width: 760px) {
     .sender-transport-row {
       grid-template-columns: 1fr;
@@ -490,6 +502,28 @@
     .document-mode-row {
       grid-template-columns: 1fr;
       align-items: stretch;
+    }
+  }
+
+  .settings-document-mode-row {
+    grid-template-columns: minmax(220px, 300px) minmax(260px, 520px);
+    align-items: center;
+    margin: 18px 0 16px;
+  }
+
+  .settings-document-mode-row .sender-transport-note {
+    padding-top: 18px;
+    color: #75806c;
+  }
+
+  @media (max-width: 760px) {
+    .settings-document-mode-row {
+      grid-template-columns: 1fr;
+      margin: 16px 0 14px;
+    }
+
+    .settings-document-mode-row .sender-transport-note {
+      padding-top: 0;
     }
   }
 
@@ -1278,6 +1312,20 @@
     content: "✓";
   }
 
+  .settings-check-item.not-needed {
+    border-color: #e3e7dc;
+    background: #fafbf7;
+    color: #8a9580;
+  }
+
+  .settings-check-item.not-needed .settings-check-dot::before {
+    content: "—";
+  }
+
+  .template-field[hidden] {
+    display: none;
+  }
+
   .warn-box {
     background: #fdf8e8;
     border: 1px solid #e8d080;
@@ -2051,7 +2099,7 @@
       <div class="friendly-lead">
         <div>
           <div class="friendly-lead-title">Что нужно на старте?</div>
-          <div class="friendly-lead-text">Шаблон письма, шаблон КП, шаблон договора и тема письма. Остальное система будет подсказывать по шагам.</div>
+          <div class="friendly-lead-text">Выберите, что формируем, загрузите нужные шаблоны и проверьте тему письма. Остальное система будет подсказывать по шагам.</div>
         </div>
         <div class="friendly-lead-badge">Начальный шаг</div>
       </div>
@@ -2068,10 +2116,22 @@
         <select id="settings-work-type" onchange="updateSettingsChecklist()">
           <option value="mngp_settlements">МНГП (сельских и городских поселений)</option>
           <option value="mngp_districts">МНГП по муниципальным районам</option>
-          <option value="gp_pzz">ГП+ПЗЗ</option>
-          <option value="gp_and_pzz_separate">Отдельно ГП и ПЗЗ</option>
-          <option value="stp">СТП</option>
+          <option value="territorial_zone_boundaries">Описание местоположения границ территориальных зон</option>
         </select>
+      </div>
+
+      <div class="document-mode-row settings-document-mode-row">
+        <div class="sender-transport-field">
+          <label for="settings-document-mode">Что формируем</label>
+          <select id="settings-document-mode" onchange="handleSettingsDocumentModeChange(this.value)">
+            <option value="kp">Только КП</option>
+            <option value="both">КП + договор</option>
+            <option value="contract">Только договор</option>
+          </select>
+        </div>
+        <div class="sender-transport-note" id="settings-document-mode-note">
+          Загрузить нужно только те шаблоны, которые будут использоваться в этой сессии.
+        </div>
       </div>
 
       <div class="field">
@@ -2089,14 +2149,14 @@
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
-        <div class="field">
+        <div class="field template-field" id="settings-kp-template-field">
           <label>Шаблон КП (.docx)</label>
           <input type="file" id="upload-kp-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'kp-btn', 'Шаблон КП', 'kp')">
           <button class="file-btn" id="kp-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-kp-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
         </div>
-        <div class="field">
+        <div class="field template-field" id="settings-contract-template-field">
           <label>Шаблон договора (.docx)</label>
           <input type="file" id="upload-contract-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'contract-btn', 'Шаблон Договор', 'contract')">
           <button class="file-btn" id="contract-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-contract-input').click()">
@@ -2291,7 +2351,7 @@
         <div class="document-mode-row">
           <div class="sender-transport-field">
             <label for="documents-document-mode">Что формируем</label>
-            <select id="documents-document-mode" onchange="syncSenderAttachmentModeFromDocuments({ force: true }); scheduleUiStateSave();">
+            <select id="documents-document-mode" onchange="handleDocumentsDocumentModeChange(this.value)">
               <option value="kp">Только КП</option>
               <option value="both">КП + договор</option>
               <option value="contract">Только договор</option>
@@ -2441,19 +2501,15 @@
             <label for="sender-send-mode">Сценарий</label>
             <select id="sender-send-mode">
               <option value="consent_request">Запрос согласия с последующей автоотправкой</option>
-              <option value="materials">Отправить сразу выбранные вложения</option>
+              <option value="materials">Отправить сразу подготовленные материалы</option>
             </select>
           </div>
           <div class="sender-transport-field">
-            <label for="sender-attachment-mode">Вложения</label>
-            <select id="sender-attachment-mode" onchange="scheduleUiStateSave()">
-              <option value="kp">КП</option>
-              <option value="contract">Договор</option>
-              <option value="both">КП + договор</option>
-            </select>
+            <label>Что отправляем</label>
+            <div class="sender-fixed-value" id="sender-attachment-mode-label">КП</div>
           </div>
           <div class="sender-transport-note" id="sender-transport-note">
-            Выберите канал перед проверкой. Реальная отправка всё равно начнётся только после подтверждения.
+            Отправщик использует документы, выбранные и подготовленные на предыдущем шаге.
           </div>
         </div>
           <div class="module-actions" style="margin-top:12px">
@@ -2754,7 +2810,6 @@
         workType: document.getElementById('settings-work-type')?.value || '',
         mailSubject: document.getElementById('settings-mail-subject')?.value || '',
         documentMode: getDocumentMode(),
-        senderAttachmentMode: getSenderAttachmentMode(),
       },
       templates: {
         mail: collectTemplateButtonSnapshot('mail-btn'),
@@ -2863,17 +2918,53 @@
     return getMissingSettingsFields().length === 0;
   }
 
-  function setSettingsCheckItem(id, ready) {
+  function setSettingsCheckItem(id, ready, options = {}) {
     const item = document.getElementById(id);
     if (!item) return;
-    item.classList.toggle('ready', !!ready);
+    const notNeeded = !!options.notNeeded;
+    item.classList.toggle('ready', !!ready && !notNeeded);
+    item.classList.toggle('not-needed', notNeeded);
+  }
+
+  function updateDocumentTemplateVisibility(documentMode = getDocumentMode()) {
+    const kpField = document.getElementById('settings-kp-template-field');
+    const contractField = document.getElementById('settings-contract-template-field');
+    if (kpField) kpField.hidden = documentMode === 'contract';
+    if (contractField) contractField.hidden = documentMode === 'kp';
+  }
+
+  function isDocumentModeAvailableForGeneration(documentMode) {
+    const mode = normalizeDocumentModeClient(documentMode);
+    const kpReady = isTemplateUploaded('kp-btn');
+    const contractReady = isTemplateUploaded('contract-btn');
+    if (mode === 'kp') return kpReady;
+    if (mode === 'contract') return contractReady;
+    return kpReady && contractReady;
+  }
+
+  function updateDocumentsDocumentModeAvailability() {
+    const documentsSelect = document.getElementById('documents-document-mode');
+    if (!documentsSelect) return;
+    const selectedInSettings = getSettingsDocumentMode();
+    documentsSelect.value = selectedInSettings;
+    Array.from(documentsSelect.options).forEach(option => {
+      const matchesSettings = option.value === selectedInSettings;
+      const hasTemplates = isDocumentModeAvailableForGeneration(option.value);
+      option.disabled = !matchesSettings || !hasTemplates;
+      option.title = matchesSettings
+        ? (hasTemplates ? '' : 'Сначала загрузите нужный шаблон в настройках.')
+        : 'Этот вариант не выбран в настройках.';
+    });
   }
 
   function updateSettingsChecklist() {
     const subject = document.getElementById('settings-mail-subject');
+    const documentMode = getDocumentMode();
+    updateDocumentTemplateVisibility(documentMode);
+    updateDocumentsDocumentModeAvailability();
     setSettingsCheckItem('settings-check-mail', isTemplateUploaded('mail-btn'));
-    setSettingsCheckItem('settings-check-kp', isTemplateUploaded('kp-btn'));
-    setSettingsCheckItem('settings-check-contract', isTemplateUploaded('contract-btn'));
+    setSettingsCheckItem('settings-check-kp', isTemplateUploaded('kp-btn'), { notNeeded: documentMode === 'contract' });
+    setSettingsCheckItem('settings-check-contract', isTemplateUploaded('contract-btn'), { notNeeded: documentMode === 'kp' });
     setSettingsCheckItem('settings-check-subject', !!(subject && subject.value.trim()));
     updateFlowNavigationButtons();
     scheduleUiStateSave();
@@ -2914,12 +3005,10 @@
     const settings = snapshot.settings || {};
     const workType = document.getElementById('settings-work-type');
     const mailSubject = document.getElementById('settings-mail-subject');
-    const documentMode = document.getElementById('documents-document-mode');
-    const senderAttachmentMode = document.getElementById('sender-attachment-mode');
     if (workType && settings.workType) workType.value = settings.workType;
     if (mailSubject && typeof settings.mailSubject === 'string') mailSubject.value = settings.mailSubject;
-    if (documentMode && settings.documentMode) documentMode.value = settings.documentMode;
-    if (senderAttachmentMode && settings.senderAttachmentMode) senderAttachmentMode.value = settings.senderAttachmentMode;
+    if (settings.documentMode) syncDocumentModeControls(settings.documentMode);
+    syncSenderAttachmentModeFromDocuments();
 
     restoreChatHtmlSnapshot(snapshot.chats || {});
     const attachedFile = document.getElementById('p-attached-file');
@@ -4415,13 +4504,16 @@
   function resetSettingsFormFields() {
     const workType = document.getElementById('settings-work-type');
     const subject = document.getElementById('settings-mail-subject');
+    const settingsDocumentMode = document.getElementById('settings-document-mode');
     const senderEmail = document.getElementById('settings-sender-email');
     const senderPassword = document.getElementById('settings-sender-password');
 
     if (workType) workType.selectedIndex = 0;
     if (subject) subject.value = 'Коммерческое предложение на разработку МНГП.';
+    if (settingsDocumentMode) settingsDocumentMode.value = 'kp';
     if (senderEmail) senderEmail.value = '';
     if (senderPassword) senderPassword.value = '';
+    syncDocumentModeControls('kp');
     updateSettingsChecklist();
   }
 
@@ -5567,7 +5659,11 @@ function clearAttachedFile() {
   async function refreshDocumentsStatus({ silent = false } = {}) {
     const requestedJobId = currentJobId;
     try {
-      const res = await fetchWithTimeout(requestedJobId ? `/api/documents/status?job_id=${encodeURIComponent(requestedJobId)}` : '/api/documents/status', {}, 12000);
+      const params = new URLSearchParams();
+      if (requestedJobId) params.set('job_id', requestedJobId);
+      params.set('document_mode', getDocumentMode());
+      const url = `/api/documents/status?${params.toString()}`;
+      const res = await fetchWithTimeout(url, {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус подготовки документов');
       if (requestedJobId !== currentJobId) return null;
@@ -5701,10 +5797,73 @@ function clearAttachedFile() {
     return value || 'consent_request';
   }
 
+  function getMailSubjectTemplate() {
+    const input = document.getElementById('settings-mail-subject');
+    return String((input && input.value) || '').trim();
+  }
+
+  function normalizeDocumentModeClient(value) {
+    const mode = String(value || '').trim();
+    return ['kp', 'contract', 'both'].includes(mode) ? mode : 'kp';
+  }
+
+  function getSettingsDocumentMode() {
+    const settingsSelect = document.getElementById('settings-document-mode');
+    return normalizeDocumentModeClient(settingsSelect && settingsSelect.value);
+  }
+
+  function syncDocumentModeControls(value = getDocumentMode()) {
+    const mode = normalizeDocumentModeClient(value);
+    const settingsSelect = document.getElementById('settings-document-mode');
+    const documentsSelect = document.getElementById('documents-document-mode');
+    if (settingsSelect) settingsSelect.value = mode;
+    if (documentsSelect) documentsSelect.value = mode;
+    updateDocumentTemplateVisibility(mode);
+    updateDocumentsDocumentModeAvailability();
+    syncSenderAttachmentModeFromDocuments();
+    return mode;
+  }
+
+  function handleSettingsDocumentModeChange(value) {
+    syncDocumentModeControls(value);
+    updateSettingsChecklist();
+    scheduleUiStateSave();
+    refreshModuleReadiness();
+    refreshDocumentsStatus({ silent: true });
+  }
+
+  function handleDocumentsDocumentModeChange(value) {
+    const mode = normalizeDocumentModeClient(value);
+    const selectedInSettings = getSettingsDocumentMode();
+    if (mode !== selectedInSettings) {
+      const documentsSelect = document.getElementById('documents-document-mode');
+      if (documentsSelect) documentsSelect.value = selectedInSettings;
+      showToast('Изменить тип документов можно в настройках');
+      updateDocumentsDocumentModeAvailability();
+      return;
+    }
+    if (!isDocumentModeAvailableForGeneration(mode)) {
+      const documentsSelect = document.getElementById('documents-document-mode');
+      if (documentsSelect) documentsSelect.value = getDocumentMode();
+      showToast('Сначала загрузите нужный шаблон в настройках');
+      updateDocumentsDocumentModeAvailability();
+      return;
+    }
+    syncDocumentModeControls(mode);
+    updateSettingsChecklist();
+    scheduleUiStateSave();
+    refreshModuleReadiness();
+    refreshDocumentsStatus({ silent: true });
+  }
+
   function getDocumentMode() {
-    const select = document.getElementById('documents-document-mode');
-    const value = String((select && select.value) || '').trim();
-    return ['kp', 'contract', 'both'].includes(value) ? value : 'kp';
+    const documentsSelect = document.getElementById('documents-document-mode');
+    const value = String(
+      getSettingsDocumentMode()
+      || (documentsSelect && documentsSelect.value)
+      || ''
+    ).trim();
+    return normalizeDocumentModeClient(value);
   }
 
   function getDocumentModeStartMessage(documentMode, isResume) {
@@ -5718,21 +5877,26 @@ function clearAttachedFile() {
     return 'Начинаю подготовку документов. Сначала создам КП и договоры, затем проверю тексты перед отправкой.';
   }
 
+  function getAttachmentModeLabel(attachmentMode) {
+    if (attachmentMode === 'contract') return 'Договор';
+    if (attachmentMode === 'both') return 'КП + договор';
+    return 'КП';
+  }
+
   function syncSenderAttachmentModeFromDocuments(options = {}) {
-    const senderSelect = document.getElementById('sender-attachment-mode');
-    if (!senderSelect) return;
-    const force = !!options.force;
-    const documentMode = getDocumentMode();
-    if (force || !senderSelect.value) {
-      senderSelect.value = documentMode;
-      scheduleUiStateSave();
-    }
+    const label = document.getElementById('sender-attachment-mode-label');
+    if (label) label.textContent = getAttachmentModeLabel(getSenderAttachmentMode());
+    scheduleUiStateSave();
   }
 
   function getSenderAttachmentMode() {
-    const select = document.getElementById('sender-attachment-mode');
-    const value = String((select && select.value) || '').trim();
-    return value || 'kp';
+    const statusMode = String(
+      (lastDocumentsUiState && lastDocumentsUiState.document_mode)
+      || (lastGeneratorUiState && lastGeneratorUiState.document_mode)
+      || ''
+    ).trim();
+    if (['kp', 'contract', 'both'].includes(statusMode)) return statusMode;
+    return getDocumentMode();
   }
 
   function applyButtonReadiness(button, isEnabled, reason = '') {
@@ -5870,7 +6034,11 @@ function clearAttachedFile() {
   async function refreshModuleReadiness() {
     const requestedJobId = currentJobId;
     try {
-      const res = await fetchWithTimeout(requestedJobId ? `/api/job/readiness?job_id=${encodeURIComponent(requestedJobId)}` : '/api/job/readiness', {}, 12000);
+      const params = new URLSearchParams();
+      if (requestedJobId) params.set('job_id', requestedJobId);
+      params.set('document_mode', getDocumentMode());
+      const url = `/api/job/readiness?${params.toString()}`;
+      const res = await fetchWithTimeout(url, {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить готовность модулей');
       if (requestedJobId !== currentJobId) return null;
@@ -6569,9 +6737,9 @@ function clearAttachedFile() {
     lastDocumentsUiState = { ...stripUiStateMeta(result) };
     const resultDocumentMode = String(result.document_mode || (result.generator || {}).document_mode || '').trim();
     if (status !== 'idle' && ['kp', 'contract', 'both'].includes(resultDocumentMode)) {
-      const documentModeSelect = document.getElementById('documents-document-mode');
-      if (documentModeSelect) documentModeSelect.value = resultDocumentMode;
+      syncDocumentModeControls(resultDocumentMode);
     }
+    syncSenderAttachmentModeFromDocuments();
     scheduleUiStateSave();
 
     if (result.generator) {
@@ -6818,6 +6986,7 @@ function clearAttachedFile() {
       const transport = getSenderTransport();
       const sendMode = getSenderSendMode();
       const attachmentMode = getSenderAttachmentMode();
+      const mailSubject = getMailSubjectTemplate();
       showToast('Проверяю перед отправкой');
       senderRunning = true;
       flowNotificationState.sender.terminalAnnounced = false;
@@ -6826,7 +6995,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode })),
+        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, mail_subject: mailSubject })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
@@ -6881,6 +7050,7 @@ function clearAttachedFile() {
         const transport = getSenderTransport();
         const sendMode = getSenderSendMode();
         const attachmentMode = getSenderAttachmentMode();
+        const mailSubject = getMailSubjectTemplate();
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
         const hasPreviousSendProgress = Number((lastSenderUiState && lastSenderUiState.sent_rows) || 0) > 0
           || Number((((lastSenderUiState && lastSenderUiState.stats) || {}).sent) || 0) > 0;
@@ -6904,7 +7074,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode })),
+        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, mail_subject: mailSubject })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');

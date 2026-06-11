@@ -15,7 +15,7 @@ def create_documents_router(
     *,
     check_auth: Callable[..., str],
     prefer_existing_file: Callable[[Path, Path], Path],
-    compact_documents_status: Callable[[str | None], dict],
+    compact_documents_status: Callable[[str | None, str | None], dict],
     get_generator_thread: Callable[[str | None], threading.Thread | None],
     get_philologist_thread: Callable[[str | None], threading.Thread | None],
     prime_philologist_running_state: Callable[[str | None, str | None], dict],
@@ -44,7 +44,7 @@ def create_documents_router(
             raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
 
         try:
-            compact_documents_status(job_id)
+            compact_documents_status(job_id, document_mode)
             generator_state = get_generator_status(job_id)
             philologist_state = get_philologist_status(job_id)
             generator_thread = get_generator_thread(job_id)
@@ -61,7 +61,7 @@ def create_documents_router(
             and philologist_thread is not None
         )
         if generator_thread_running or philologist_thread_running:
-            return {"status": "ok", "result": compact_documents_status(job_id)}
+            return {"status": "ok", "result": compact_documents_status(job_id, document_mode)}
 
         generator_document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
         if str(generator_state.get("status") or "") == "completed":
@@ -111,7 +111,7 @@ def create_documents_router(
                 kwargs={"xlsx_path": xlsx_path, "job_id": job_id, "mode": mode, "document_mode": document_mode},
                 name=f"documents-{documents_job_key(job_id)}",
             )
-            result = compact_documents_status(job_id)
+            result = compact_documents_status(job_id, document_mode)
         except Exception as exc:
             logger.exception("documents_start_thread_failed", job_id=job_id, xlsx_path=str(xlsx_path))
             raise HTTPException(
@@ -121,8 +121,8 @@ def create_documents_router(
         return {"status": "ok", "result": result}
 
     @router.get("/api/documents/status")
-    async def documents_status(job_id: str | None = None):
-        return {"status": "ok", "result": compact_documents_status(job_id)}
+    async def documents_status(job_id: str | None = None, document_mode: str | None = None):
+        return {"status": "ok", "result": compact_documents_status(job_id, document_mode)}
 
     @router.post("/api/documents/stop")
     async def documents_stop(payload: dict | None = Body(default=None)):

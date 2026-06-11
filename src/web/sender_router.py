@@ -19,6 +19,7 @@ def create_sender_router(
     run_sender_background: Callable[..., None],
     sender_job_key: Callable[[str | None], str],
     get_sender_status: Callable[[str | None], dict],
+    get_generator_status: Callable[[str | None], dict],
     get_unisender_history: Callable[..., dict],
     build_unisender_delivery_analytics: Callable[..., dict],
     settings: Any,
@@ -48,14 +49,30 @@ def create_sender_router(
         if not secrets.compare_digest(str(token or "").strip(), expected_token):
             raise HTTPException(status_code=401, detail="Некорректный токен webhook UniSender Go")
 
+    def _attachment_mode_from_documents(job_id: str | None, fallback: object = None) -> str:
+        generator_state = get_generator_status(job_id)
+        document_mode = str(generator_state.get("document_mode") or "").strip().lower()
+        if document_mode in {"kp", "contract", "both"}:
+            return document_mode
+        fallback_mode = str(fallback or "").strip().lower()
+        if fallback_mode in {"kp", "contract", "both"}:
+            return fallback_mode
+        sender_state = get_sender_status(job_id)
+        sender_mode = str(sender_state.get("attachment_mode") or "").strip().lower()
+        return sender_mode if sender_mode in {"kp", "contract", "both"} else "kp"
+
     @router.post("/api/sender/run")
     async def sender_run(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
         dry_run = True if payload is None else bool(payload.get("dry_run", True))
         limit = parse_optional_limit(payload)
         transport = None if payload is None else payload.get("transport")
         send_mode = None if payload is None else payload.get("send_mode")
-        attachment_mode = None if payload is None else payload.get("attachment_mode")
+        subject_template = None if payload is None else payload.get("mail_subject")
         job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+        attachment_mode = _attachment_mode_from_documents(
+            job_id,
+            None if payload is None else payload.get("attachment_mode"),
+        )
         if not dry_run and is_load_test_job(job_id):
             raise HTTPException(
                 status_code=409,
@@ -85,6 +102,7 @@ def create_sender_router(
                     "transport": transport,
                     "send_mode": send_mode,
                     "attachment_mode": attachment_mode,
+                    "subject_template": subject_template,
                     "job_id": job_id,
                 },
                 name=f"sender-{sender_job_key(job_id)}",

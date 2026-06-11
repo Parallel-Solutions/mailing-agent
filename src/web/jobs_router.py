@@ -11,6 +11,8 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 
+from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, document_mode_kinds, normalize_document_mode
+
 
 class JobsWebController:
     def __init__(
@@ -317,7 +319,7 @@ class JobsWebController:
                 continue
             shutil.copy2(source_path, target_dir / source_path.name)
 
-    def build_job_readiness_result(self, job_id: str | None = None) -> dict:
+    def build_job_readiness_result(self, job_id: str | None = None, document_mode: str | None = None) -> dict:
         paths = self.resolve_job_paths(job_id)
         data_path = self.prefer_existing_file(paths.data_xlsx, Path("data/data.xlsx"))
         row_count = self.cached_excel_row_count(data_path) if data_path.exists() else 0
@@ -331,6 +333,10 @@ class JobsWebController:
         parser_state = self.get_parser_status(job_id)
         generator_state = self.get_generator_status(job_id)
         philologist_state = self.get_philologist_status(job_id, include_details=False)
+        effective_document_mode = normalize_document_mode(
+            document_mode or generator_state.get("document_mode") or DOCUMENT_MODE_BOTH
+        )
+        required_document_kinds = set(document_mode_kinds(effective_document_mode))
 
         parser_verification_state = parser_state.get("municipality_name_verification_state") or {}
         parser_verification_result = parser_state.get("municipality_name_verification") or {}
@@ -373,9 +379,9 @@ class JobsWebController:
             generator_reasons.append("В data.xlsx нет строк для обработки.")
             sender_reasons.append("В data.xlsx нет строк для отправки.")
 
-        if not kp_template_loaded:
+        if "kp" in required_document_kinds and not kp_template_loaded:
             generator_reasons.append("Не загружен шаблон КП.")
-        if not contract_template_loaded:
+        if "contract" in required_document_kinds and not contract_template_loaded:
             generator_reasons.append("Не загружен шаблон договора.")
         if parser_running:
             generator_reasons.append("Парсер ещё работает.")
@@ -414,6 +420,7 @@ class JobsWebController:
             "kp_template_loaded": kp_template_loaded,
             "contract_template_loaded": contract_template_loaded,
             "mail_template_loaded": mail_template_loaded,
+            "document_mode": effective_document_mode,
             "output_docx_count": output_docx_count,
             "output_pdf_count": output_pdf_count,
             "parser_running": parser_running,
@@ -432,8 +439,13 @@ class JobsWebController:
             },
         }
 
-    async def job_readiness(self, job_id: str | None = None, username: str | None = None) -> dict:
-        return {"status": "ok", "result": self.build_job_readiness_result(job_id)}
+    async def job_readiness(
+        self,
+        job_id: str | None = None,
+        document_mode: str | None = None,
+        username: str | None = None,
+    ) -> dict:
+        return {"status": "ok", "result": self.build_job_readiness_result(job_id, document_mode=document_mode)}
 
     def _build_router(self) -> APIRouter:
         router = APIRouter()

@@ -170,7 +170,7 @@ def _stop_orphaned_documents_worker_state(
     return recovered_state
 
 
-def compact_documents_status(job_id: str | None) -> dict:
+def compact_documents_status(job_id: str | None, document_mode: str | None = None) -> dict:
     compact_generator_status = _require("compact_generator_status")
     get_generator_status = _require("get_generator_status")
     compact_philologist_status = _require("compact_philologist_status")
@@ -198,7 +198,7 @@ def compact_documents_status(job_id: str | None) -> dict:
     )
     generator_status = str(generator_state.get("status") or "idle")
     philologist_status = str(philologist_state.get("status") or "idle")
-    document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
+    document_mode = normalize_document_mode(document_mode or generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
     generator_done = generator_status == "completed"
     reviewed_documents = int(philologist_state.get("processed_documents") or 0)
     total_documents = int(philologist_state.get("total_documents") or 0)
@@ -301,7 +301,7 @@ def compact_documents_status(job_id: str | None) -> dict:
         "summary_text": stage_text,
         "document_mode": document_mode,
     }
-    readiness = _require("build_job_readiness_result")(job_id)
+    readiness = _require("build_job_readiness_result")(job_id, document_mode=document_mode)
     result["ui"] = build_documents_ui_payload(result, readiness=readiness)
     return result
 

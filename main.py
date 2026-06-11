@@ -936,6 +936,7 @@ app.include_router(
         run_sender_background=run_sender_background,
         sender_job_key=_sender_job_key,
         get_sender_status=get_sender_status,
+        get_generator_status=get_generator_status,
         get_unisender_history=get_unisender_history,
         build_unisender_delivery_analytics=build_unisender_delivery_analytics,
         settings=settings,

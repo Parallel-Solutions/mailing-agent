@@ -18,10 +18,38 @@ CONSENT_FILENAME = "consents.json"
 CONSENT_TEXT = "Согласен получить коммерческое предложение и проект договора от ООО «Параллельные Решения»."
 CONSENT_OPERATOR_NAME = "ООО «Параллельные Решения»"
 CONSENT_OPERATOR_INN = "5038110107"
+ATTACHMENT_MODE_KP = "kp"
+ATTACHMENT_MODE_CONTRACT = "contract"
+ATTACHMENT_MODE_BOTH = "both"
 
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalize_attachment_mode(value: Any) -> str:
+    mode = _safe_text(value).lower()
+    if mode in {ATTACHMENT_MODE_KP, ATTACHMENT_MODE_CONTRACT, ATTACHMENT_MODE_BOTH}:
+        return mode
+    return ATTACHMENT_MODE_KP
+
+
+def _consent_text_for_attachment_mode(attachment_mode: Any) -> str:
+    mode = _normalize_attachment_mode(attachment_mode)
+    if mode == ATTACHMENT_MODE_CONTRACT:
+        return "Согласен получить проект договора от ООО «Параллельные Решения»."
+    if mode == ATTACHMENT_MODE_BOTH:
+        return CONSENT_TEXT
+    return "Согласен получить коммерческое предложение от ООО «Параллельные Решения»."
+
+
+def _materials_list_for_attachment_mode(attachment_mode: Any) -> str:
+    mode = _normalize_attachment_mode(attachment_mode)
+    if mode == ATTACHMENT_MODE_CONTRACT:
+        return "проекта договора и сопутствующих материалов"
+    if mode == ATTACHMENT_MODE_BOTH:
+        return "коммерческого предложения, проекта договора, технического задания, календарного плана и иных материалов"
+    return "коммерческого предложения и сопутствующих материалов"
 
 
 def _consent_path(job_id: str | None) -> Path:
@@ -95,8 +123,7 @@ def _save_consent_document(record: dict[str, Any], *, job_id: str | None) -> Pat
     )
     _add_consent_paragraph(
         document,
-        "1. Получение от Оператора по электронной почте коммерческого предложения, проекта договора, "
-        "технического задания, календарного плана и иных материалов.",
+        f"1. Получение от Оператора по электронной почте {_materials_list_for_attachment_mode(record.get('attachment_mode'))}.",
     )
     _add_consent_paragraph(
         document,
@@ -182,6 +209,7 @@ def prepare_consent_request(
     recipient: str,
     transport: str,
     attachment_mode: str = "kp",
+    subject_template: str | None = None,
 ) -> dict[str, Any]:
     records = _load_records(job_id)
     row_id = row.get("ID")
@@ -192,7 +220,9 @@ def prepare_consent_request(
             record["status"] = _safe_text(record.get("status")) or "pending"
             record["last_request_prepared_at"] = now
             record["transport"] = _safe_text(transport)
-            record["attachment_mode"] = _safe_text(attachment_mode) or "kp"
+            record["attachment_mode"] = _normalize_attachment_mode(attachment_mode)
+            record["consent_text"] = _consent_text_for_attachment_mode(attachment_mode)
+            record["subject_template"] = _safe_text(subject_template)
             _save_records(job_id, records)
             return dict(record, consent_url=public_consent_url(record["token"]))
 
@@ -204,11 +234,12 @@ def prepare_consent_request(
         "row_id": _safe_text(row_id),
         "mun_name": _safe_text(row.get("MUN_NAME")),
         "recipient": _safe_text(recipient),
-        "consent_text": CONSENT_TEXT,
+        "consent_text": _consent_text_for_attachment_mode(attachment_mode),
         "created_at": now,
         "last_request_prepared_at": now,
         "transport": _safe_text(transport),
-        "attachment_mode": _safe_text(attachment_mode) or "kp",
+        "attachment_mode": _normalize_attachment_mode(attachment_mode),
+        "subject_template": _safe_text(subject_template),
     }
     records.append(record)
     _save_records(job_id, records)

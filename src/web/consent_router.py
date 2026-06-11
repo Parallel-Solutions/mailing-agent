@@ -22,6 +22,17 @@ def _materials_sent_text(record: dict) -> str:
     return "КП отправлено."
 
 
+def _consent_page_message(record: dict) -> str:
+    attachment_mode = _safe_text(record.get("attachment_mode")).lower()
+    if attachment_mode == "contract":
+        materials = "проект договора"
+    elif attachment_mode == "both":
+        materials = "КП и проект договора"
+    else:
+        materials = "КП"
+    return f"Спасибо. Мы получили ваш запрос. {materials} отправим на указанный email отдельным письмом."
+
+
 def _format_materials_dispatch_summary(record: dict, result: dict) -> str:
     recipient = _safe_text(record.get("recipient"))
     mun_name = _safe_text(record.get("mun_name"))
@@ -55,6 +66,7 @@ def _dispatch_materials_after_consent(record: dict) -> None:
     row_id = str(record.get("row_id") or "").strip()
     transport = str(record.get("transport") or "").strip() or "smtp"
     attachment_mode = str(record.get("attachment_mode") or "").strip() or "kp"
+    subject_template = str(record.get("subject_template") or "").strip() or None
     if not row_id:
         return
     result = run_sender(
@@ -63,6 +75,7 @@ def _dispatch_materials_after_consent(record: dict) -> None:
         transport=transport,
         send_mode="materials",
         attachment_mode=attachment_mode,
+        subject_template=subject_template,
         require_confirmed_consent=True,
         job_id=job_id,
     )
@@ -97,22 +110,26 @@ async def _confirm_and_render(token: str, request: Request, background_tasks: Ba
         return HTMLResponse(
             _render_page(
                 "Ссылка не найдена",
-                "Не удалось найти согласие по этой ссылке. Возможно, ссылка устарела или была скопирована не полностью.",
+                "Не удалось найти запрос по этой ссылке. Возможно, ссылка устарела или была скопирована не полностью.",
+                note="Пожалуйста, вернитесь к письму и попробуйте открыть кнопку ещё раз.",
             ),
             status_code=404,
         )
     background_tasks.add_task(_dispatch_materials_after_consent, record)
     return HTMLResponse(
         _render_page(
-            "Согласие получено",
-            "Спасибо. Мы зафиксировали согласие. Коммерческое предложение и проект договора будут отправлены на указанный адрес.",
+            "Запрос получен",
+            _consent_page_message(record),
+            note="Окно можно закрыть.",
         )
     )
 
 
-def _render_page(title: str, message: str) -> str:
+def _render_page(title: str, message: str, *, note: str = "") -> str:
     safe_title = escape(title)
     safe_message = escape(message)
+    safe_note = escape(note)
+    note_html = f"<p class=\"note\">{safe_note}</p>" if safe_note else ""
     return f"""<!doctype html>
 <html lang="ru">
 <head>
@@ -131,27 +148,47 @@ def _render_page(title: str, message: str) -> str:
     }}
     main {{
       width: min(560px, calc(100vw - 32px));
-      padding: 28px;
+      padding: 30px;
       border: 1px solid #dbe7d0;
       border-radius: 8px;
       background: white;
       box-shadow: 0 18px 40px rgba(20, 45, 20, .08);
     }}
+    .status-mark {{
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      margin-bottom: 18px;
+      border-radius: 50%;
+      background: #edf7e6;
+      color: #2d720d;
+      font-size: 24px;
+      font-weight: 800;
+    }}
     h1 {{
       margin: 0 0 12px;
       font-size: 24px;
+      line-height: 1.2;
     }}
     p {{
       margin: 0;
       font-size: 16px;
       line-height: 1.5;
     }}
+    .note {{
+      margin-top: 16px;
+      color: #657260;
+      font-size: 14px;
+    }}
   </style>
 </head>
 <body>
   <main>
+    <div class="status-mark">✓</div>
     <h1>{safe_title}</h1>
     <p>{safe_message}</p>
+    {note_html}
   </main>
 </body>
 </html>"""
