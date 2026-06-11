@@ -2350,12 +2350,8 @@
         <div class="progress-label" id="g-inflection-summary" style="display:none"></div>
         <div class="document-mode-row">
           <div class="sender-transport-field">
-            <label for="documents-document-mode">Что формируем</label>
-            <select id="documents-document-mode" onchange="handleDocumentsDocumentModeChange(this.value)">
-              <option value="kp">Только КП</option>
-              <option value="both">КП + договор</option>
-              <option value="contract">Только договор</option>
-            </select>
+            <label>Что формируем</label>
+            <div class="sender-fixed-value" id="documents-document-mode-label">КП</div>
           </div>
           <div class="sender-transport-note" id="documents-document-mode-note">
             Если выбрать только КП, договор не создаётся и не проверяется в этой сессии.
@@ -2942,26 +2938,16 @@
     return kpReady && contractReady;
   }
 
-  function updateDocumentsDocumentModeAvailability() {
-    const documentsSelect = document.getElementById('documents-document-mode');
-    if (!documentsSelect) return;
-    const selectedInSettings = getSettingsDocumentMode();
-    documentsSelect.value = selectedInSettings;
-    Array.from(documentsSelect.options).forEach(option => {
-      const matchesSettings = option.value === selectedInSettings;
-      const hasTemplates = isDocumentModeAvailableForGeneration(option.value);
-      option.disabled = !matchesSettings || !hasTemplates;
-      option.title = matchesSettings
-        ? (hasTemplates ? '' : 'Сначала загрузите нужный шаблон в настройках.')
-        : 'Этот вариант не выбран в настройках.';
-    });
+  function updateDocumentsDocumentModeLabel(documentMode = getDocumentMode()) {
+    const label = document.getElementById('documents-document-mode-label');
+    if (label) label.textContent = getDocumentModeLabel(documentMode);
   }
 
   function updateSettingsChecklist() {
     const subject = document.getElementById('settings-mail-subject');
     const documentMode = getDocumentMode();
     updateDocumentTemplateVisibility(documentMode);
-    updateDocumentsDocumentModeAvailability();
+    updateDocumentsDocumentModeLabel(documentMode);
     setSettingsCheckItem('settings-check-mail', isTemplateUploaded('mail-btn'));
     setSettingsCheckItem('settings-check-kp', isTemplateUploaded('kp-btn'), { notNeeded: documentMode === 'contract' });
     setSettingsCheckItem('settings-check-contract', isTemplateUploaded('contract-btn'), { notNeeded: documentMode === 'kp' });
@@ -5815,11 +5801,9 @@ function clearAttachedFile() {
   function syncDocumentModeControls(value = getDocumentMode()) {
     const mode = normalizeDocumentModeClient(value);
     const settingsSelect = document.getElementById('settings-document-mode');
-    const documentsSelect = document.getElementById('documents-document-mode');
     if (settingsSelect) settingsSelect.value = mode;
-    if (documentsSelect) documentsSelect.value = mode;
     updateDocumentTemplateVisibility(mode);
-    updateDocumentsDocumentModeAvailability();
+    updateDocumentsDocumentModeLabel(mode);
     syncSenderAttachmentModeFromDocuments();
     return mode;
   }
@@ -5832,38 +5816,8 @@ function clearAttachedFile() {
     refreshDocumentsStatus({ silent: true });
   }
 
-  function handleDocumentsDocumentModeChange(value) {
-    const mode = normalizeDocumentModeClient(value);
-    const selectedInSettings = getSettingsDocumentMode();
-    if (mode !== selectedInSettings) {
-      const documentsSelect = document.getElementById('documents-document-mode');
-      if (documentsSelect) documentsSelect.value = selectedInSettings;
-      showToast('Изменить тип документов можно в настройках');
-      updateDocumentsDocumentModeAvailability();
-      return;
-    }
-    if (!isDocumentModeAvailableForGeneration(mode)) {
-      const documentsSelect = document.getElementById('documents-document-mode');
-      if (documentsSelect) documentsSelect.value = getDocumentMode();
-      showToast('Сначала загрузите нужный шаблон в настройках');
-      updateDocumentsDocumentModeAvailability();
-      return;
-    }
-    syncDocumentModeControls(mode);
-    updateSettingsChecklist();
-    scheduleUiStateSave();
-    refreshModuleReadiness();
-    refreshDocumentsStatus({ silent: true });
-  }
-
   function getDocumentMode() {
-    const documentsSelect = document.getElementById('documents-document-mode');
-    const value = String(
-      getSettingsDocumentMode()
-      || (documentsSelect && documentsSelect.value)
-      || ''
-    ).trim();
-    return normalizeDocumentModeClient(value);
+    return getSettingsDocumentMode();
   }
 
   function getDocumentModeStartMessage(documentMode, isResume) {
@@ -5881,6 +5835,12 @@ function clearAttachedFile() {
     if (attachmentMode === 'contract') return 'Договор';
     if (attachmentMode === 'both') return 'КП + договор';
     return 'КП';
+  }
+
+  function getDocumentModeLabel(documentMode) {
+    if (documentMode === 'contract') return 'Только договор';
+    if (documentMode === 'both') return 'КП + договор';
+    return 'Только КП';
   }
 
   function syncSenderAttachmentModeFromDocuments(options = {}) {
