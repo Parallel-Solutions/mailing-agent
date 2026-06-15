@@ -1,5 +1,7 @@
 # n8n Workflows
 
+Эта папка содержит исторические примеры n8n-сценариев. Скрипты `src/n8n_*.py`, на которые они ссылались, удалены из актуальной ветки, поэтому эти workflow нельзя считать готовыми к запуску без переработки.
+
 ## Files
 
 - `kp_batch_orchestrator.json` - importable n8n workflow for running the current Python batch from n8n.

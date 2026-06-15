@@ -25,7 +25,7 @@ def _materials_sent_text(record: dict) -> str:
 def _consent_page_message(record: dict) -> str:
     attachment_mode = _safe_text(record.get("attachment_mode")).lower()
     if attachment_mode == "contract":
-        materials = "проект договора"
+        materials = "Проект договора"
     elif attachment_mode == "both":
         materials = "КП и проект договора"
     else:
