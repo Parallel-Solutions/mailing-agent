@@ -20,12 +20,14 @@ from src.generator.generation.transforms import (
     ensure_official_district_wording,
     sanitize_path_component,
 )
+from src.generator.generation.work_types import WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES
 
 
 KP_TEMPLATE_FILENAME = "kp_template_source.docx"
 CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
 KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
 CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
+DOCUMENT_RENDERER_VERSION = "2026-06-18-docx-content-only-v9"
 
 SVG_BLIP_PATTERN = re.compile(
     r'<a:blip r:embed="(?P<png>rId\d+)">'
@@ -316,6 +318,9 @@ def reset_cell_text(cell, paragraphs: list[str], first_bold: bool = False) -> No
 
 
 def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
+    if str(context.get("WORK_TYPE") or "") == WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES:
+        return
+
     gray = RGBColor(0x59, 0x59, 0x59)
     body_font_size = 10
     compact_body_font_size = 9.5
@@ -328,6 +333,7 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
         or f"{context.get('MUN_NAME_2', '')} {context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
     )
     work_scope_fragment = ensure_official_district_wording(work_scope_fragment)
+    work_title = str(context.get("WORK_TITLE") or "разработке проекта местных нормативов градостроительного проектирования").strip()
 
     for section in doc.sections:
         section.top_margin = Cm(1.3)
@@ -338,8 +344,8 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
             rebuild_paragraph_with_format(
                 paragraph,
                 [
-                    ("ООО «Параллельные Решения» предлагает выполнить работы по разработке ", False),
-                    ("проекта местных нормативов градостроительного проектирования", True),
+                    ("ООО «Параллельные Решения» предлагает выполнить работы по ", False),
+                    (work_title, True),
                     (f" {work_scope_fragment}.", False),
                 ],
                 "Tahoma",
@@ -364,10 +370,10 @@ def normalize_kp_formatting(doc: DocumentObject, context: dict) -> None:
             doc.tables[1].rows[1].cells[0].paragraphs[0],
                 [
                     (
-                        "Выполнение работ по разработке проекта местных нормативов градостроительного "
-                        "проектирования",
+                        "Выполнение работ по ",
                         False,
                     ),
+                    (work_title, False),
                     (f" {work_scope_fragment}", False),
                 ],
             "Tahoma",
@@ -404,6 +410,7 @@ def normalize_contract_formatting(doc: DocumentObject, context: dict) -> None:
     )
     work_scope_fragment = ensure_official_district_wording(work_scope_fragment)
     population_with_unit = str(context.get("POPULATION_WITH_UNIT", "")).strip()
+    work_title = str(context.get("WORK_TITLE") or "разработке проекта местных нормативов градостроительного проектирования").strip()
 
     for section in doc.sections:
         section.bottom_margin = Cm(1.2)
@@ -443,7 +450,8 @@ def normalize_contract_formatting(doc: DocumentObject, context: dict) -> None:
                 paragraph,
                 [
                     ("1.1. Исполнитель обязуется своевременно оказать услуги ", False),
-                    ("по разработке проекта местных нормативов градостроительного проектирования", True),
+                    ("по ", False),
+                    (work_title, True),
                     (" ", False),
                     (work_scope_fragment, False),
                     (
@@ -752,11 +760,6 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
     for paragraph in iter_paragraphs(doc):
         replace_text_in_runs(paragraph, replacements)
 
-    clear_highlights(doc)
-    if template_path.name.startswith("kp_"):
-        normalize_kp_formatting(doc, context)
-    if template_path.name.startswith("contract_"):
-        normalize_contract_formatting(doc, context)
     doc.save(output_path)
     if template_path.name.startswith("kp_"):
         restore_svg_assets_from_template(template_path, output_path)
@@ -790,16 +793,28 @@ def build_kp_replacements(context: dict) -> list[tuple[str, str]]:
     district_scope_fragment = ensure_official_district_wording(
         f"{context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
     )
+    placeholder_scope_fragment = district_scope_fragment
+    if str(context.get("WORK_TYPE") or "") == WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES:
+        placeholder_scope_fragment = ensure_official_district_wording(
+            str(context.get("WORK_SCOPE_FRAGMENT") or "").strip()
+            or f"{context.get('MUN_NAME_2', '')} {context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
+        )
     return [
         ("№ 101-КП от 12.05.2026", f"№ {context['OUTGOING_NUMBER']}-КП от {context['DATE']}"),
+        ("WORK_TYPE_LABEL", str(context.get("WORK_TYPE_LABEL", ""))),
+        ("WORK_SHORT_NAME", str(context.get("WORK_SHORT_NAME", ""))),
+        ("WORK_TITLE_NOMINATIVE", str(context.get("WORK_TITLE_NOMINATIVE", ""))),
+        ("WORK_TITLE_1", str(context.get("WORK_TITLE_1", context.get("WORK_TITLE", "")))),
+        ("WORK_TITLE", str(context.get("WORK_TITLE", ""))),
+        ("WORK_RESULT_NAME", str(context.get("WORK_RESULT_NAME", ""))),
         ("ADM_NAME_1", str(context.get("ADM_NAME_1", ""))),
         ("ADM_NAME", str(context.get("ADM_NAME", ""))),
         ("MUN_NAME_2", str(context.get("MUN_NAME_2", ""))),
         ("MUN_NAME_1", str(context.get("MUN_NAME_1", ""))),
         ("MUN_NAME", str(context.get("MUN_NAME", ""))),
         ("MUN_R_NAME_1", str(context.get("MUN_R_NAME_1", ""))),
-        ("MUN_R_NAME SUB_RF_1", district_scope_fragment),
-        ("MUN_R_NAME SUB_RF", district_scope_fragment),
+        ("MUN_R_NAME SUB_RF_1", placeholder_scope_fragment),
+        ("MUN_R_NAME SUB_RF", placeholder_scope_fragment),
         ("MUN_R_NAME", str(context.get("MUN_R_NAME", ""))),
         ("SUB_RF_1", str(context.get("SUB_RF_1", ""))),
         ("SUB_RF", str(context.get("SUB_RF", ""))),
@@ -821,6 +836,12 @@ def build_contract_replacements(context: dict) -> list[tuple[str, str]]:
         ("№ 101", f"№ {contract_number}"),
         ("« » мая 2026 г.", date),
         ("от «  » мая 2026 г.", f"от {date}"),
+        ("WORK_TYPE_LABEL", str(context.get("WORK_TYPE_LABEL", ""))),
+        ("WORK_SHORT_NAME", str(context.get("WORK_SHORT_NAME", ""))),
+        ("WORK_TITLE_NOMINATIVE", str(context.get("WORK_TITLE_NOMINATIVE", ""))),
+        ("WORK_TITLE_1", str(context.get("WORK_TITLE_1", context.get("WORK_TITLE", "")))),
+        ("WORK_TITLE", str(context.get("WORK_TITLE", ""))),
+        ("WORK_RESULT_NAME", str(context.get("WORK_RESULT_NAME", ""))),
         ("ADM_NAME_1", str(context.get("ADM_NAME_1", ""))),
         ("Глава ADM_NAME", f"Глава {context.get('ADM_NAME_1', '')}"),
         ("ADM_NAME", str(context.get("ADM_NAME", ""))),
@@ -861,14 +882,16 @@ def build_contract_replacements(context: dict) -> list[tuple[str, str]]:
     ]
 
 
-def build_kp_filename(row: dict) -> str:
+def build_kp_filename(row: dict, context: dict | None = None) -> str:
     mun_name = sanitize_path_component(row.get("MUN_NAME") or row.get("MUN_R_NAME") or "unknown")
-    return f"КП_МНГП_{mun_name}.docx"
+    filename_label = sanitize_path_component((context or {}).get("WORK_FILENAME_LABEL") or "МНГП")
+    return f"КП_{filename_label}_{mun_name}.docx"
 
 
-def build_contract_filename(row: dict) -> str:
+def build_contract_filename(row: dict, context: dict | None = None) -> str:
     mun_name = sanitize_path_component(row.get("MUN_NAME") or row.get("MUN_R_NAME") or "unknown")
-    return f"Договор_МНГП_{mun_name}.docx"
+    filename_label = sanitize_path_component((context or {}).get("WORK_FILENAME_LABEL") or "МНГП")
+    return f"Договор_{filename_label}_{mun_name}.docx"
 
 
 def build_staged_filename(row: dict, kind: str) -> str:
@@ -923,18 +946,20 @@ def generate_documents_for_row(
     generated_files: dict[str, Path] = {}
 
     if "kp" in requested_kinds and kp_template_path.exists():
+        kp_filename = build_kp_filename(row, context)
         generated_files["kp"] = render_docx(kp_template_path, build_kp_replacements(context), kp_path, context)
-        generated_files["kp_final_docx"] = output_folder / build_kp_filename(row)
-        generated_files["kp_final_pdf"] = output_folder / build_kp_filename(row).replace(".docx", ".pdf")
+        generated_files["kp_final_docx"] = output_folder / kp_filename
+        generated_files["kp_final_pdf"] = output_folder / kp_filename.replace(".docx", ".pdf")
 
     if "contract" in requested_kinds and contract_template_path.exists():
+        contract_filename = build_contract_filename(row, context)
         generated_files["contract"] = render_docx(
             contract_template_path,
             build_contract_replacements(context),
             contract_path,
             context,
         )
-        generated_files["contract_final_docx"] = output_folder / build_contract_filename(row)
-        generated_files["contract_final_pdf"] = output_folder / build_contract_filename(row).replace(".docx", ".pdf")
+        generated_files["contract_final_docx"] = output_folder / contract_filename
+        generated_files["contract_final_pdf"] = output_folder / contract_filename.replace(".docx", ".pdf")
 
     return generated_files

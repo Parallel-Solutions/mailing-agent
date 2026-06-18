@@ -6,7 +6,8 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, normalize_document_mode
+from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, DOCUMENT_RENDERER_VERSION, normalize_document_mode
+from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 from src.jobs import resolve_job_paths
 from src.utils.logger import logger
 
@@ -39,6 +40,7 @@ def create_documents_router(
         job_id = str((payload or {}).get("job_id") or "").strip() or None
         mode = str((payload or {}).get("mode") or "fast").strip().lower() or "fast"
         document_mode = normalize_document_mode((payload or {}).get("document_mode") or DOCUMENT_MODE_BOTH)
+        work_type = normalize_work_type((payload or {}).get("work_type") or DEFAULT_WORK_TYPE)
         xlsx_path = prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
         if not xlsx_path.exists():
             raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
@@ -64,13 +66,20 @@ def create_documents_router(
             return {"status": "ok", "result": compact_documents_status(job_id, document_mode)}
 
         generator_document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
+        generator_work_type = normalize_work_type(generator_state.get("work_type") or DEFAULT_WORK_TYPE)
+        generator_renderer_version = str(generator_state.get("renderer_version") or "")
+        generator_is_current = (
+            generator_document_mode == document_mode
+            and generator_work_type == work_type
+            and generator_renderer_version == DOCUMENT_RENDERER_VERSION
+        )
         if str(generator_state.get("status") or "") == "completed":
-            if generator_document_mode == document_mode and str(philologist_state.get("status") or "") != "completed":
+            if generator_is_current and str(philologist_state.get("status") or "") != "completed":
                 clear_philologist_stop_request(job_id)
                 prime_philologist_running_state(job_id, mode)
-            elif generator_document_mode != document_mode:
+            elif not generator_is_current:
                 try:
-                    primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id, document_mode=document_mode)
+                    primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id, document_mode=document_mode, work_type=work_type)
                 except Exception as exc:
                     logger.exception("documents_start_reprime_generator_failed", job_id=job_id, xlsx_path=str(xlsx_path))
                     raise HTTPException(
@@ -83,7 +92,7 @@ def create_documents_router(
                         detail=primed_state.get("summary_text") or "Ошибка подготовки документов",
                     )
         else:
-            if str(generator_state.get("status") or "") == "stopped" and generator_document_mode == document_mode:
+            if str(generator_state.get("status") or "") == "stopped" and generator_is_current:
                 clear_generator_stop_request(job_id)
                 generator_state["status"] = "running"
                 generator_state["completed_at"] = None
@@ -91,7 +100,7 @@ def create_documents_router(
                 save_generator_state(generator_state, job_id)
             else:
                 try:
-                    primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id, document_mode=document_mode)
+                    primed_state = prime_generator_state(xlsx_path=xlsx_path, job_id=job_id, document_mode=document_mode, work_type=work_type)
                 except Exception as exc:
                     logger.exception("documents_start_prime_generator_failed", job_id=job_id, xlsx_path=str(xlsx_path))
                     raise HTTPException(
@@ -108,7 +117,7 @@ def create_documents_router(
             start_documents_thread_if_absent(
                 job_id,
                 target=run_documents_pipeline_background,
-                kwargs={"xlsx_path": xlsx_path, "job_id": job_id, "mode": mode, "document_mode": document_mode},
+                kwargs={"xlsx_path": xlsx_path, "job_id": job_id, "mode": mode, "document_mode": document_mode, "work_type": work_type},
                 name=f"documents-{documents_job_key(job_id)}",
             )
             result = compact_documents_status(job_id, document_mode)

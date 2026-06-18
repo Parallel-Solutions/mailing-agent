@@ -3,6 +3,7 @@ import re
 from typing import Optional
 
 from src.generator.case_engine import build_inflected_fields_with_trace
+from src.generator.generation.work_types import build_work_type_context, normalize_work_type
 
 
 def normalize_display_text(value: object) -> str:
@@ -312,7 +313,8 @@ def build_population_with_unit(value) -> str:
     return f"{raw} {unit}"
 
 
-def build_document_context(row: dict, outgoing_number: int) -> dict:
+def build_document_context(row: dict, outgoing_number: int, work_type: str | None = None) -> dict:
+    effective_work_type = normalize_work_type(work_type)
     raw_adm_name = normalize_display_text(row.get("ADM_NAME", ""))
     official_mo_name = extract_official_mo_name_from_adm_name(raw_adm_name)
     raw_mun_name = normalize_display_text(row.get("MUN_NAME", ""))
@@ -329,6 +331,7 @@ def build_document_context(row: dict, outgoing_number: int) -> dict:
     row_for_inflection["ADM_NAME"] = adm_name
     row_for_inflection["MUN_R_NAME"] = normalized_mun_r_name
     row_for_inflection["SUB_RF"] = _capitalize_phrase_if_lower(row.get("SUB_RF", ""))
+    row_for_inflection.update(build_work_type_context(effective_work_type))
     if "REQUISITES_OKTNO" not in row_for_inflection and "REQUISITES_OKTMO" in row_for_inflection:
         row_for_inflection["REQUISITES_OKTNO"] = row_for_inflection.get("REQUISITES_OKTMO")
     if "REQUISITES_OKTMO" not in row_for_inflection and "REQUISITES_OKTNO" in row_for_inflection:
@@ -338,6 +341,7 @@ def build_document_context(row: dict, outgoing_number: int) -> dict:
     oktmo = row_for_inflection.get("REQUISITES_OKTNO", row_for_inflection.get("REQUISITES_OKTMO", ""))
     context = {
         "ID": row.get("ID"),
+        **build_work_type_context(effective_work_type),
         "DOCUMENT_ENTITY_TYPE": "district" if is_district_context else "municipality",
         "SUB_RF": row_for_inflection["SUB_RF"],
         "MUN_R_NAME": row_for_inflection["MUN_R_NAME"],
@@ -366,6 +370,7 @@ def build_document_context(row: dict, outgoing_number: int) -> dict:
         "DATE": datetime.now().strftime("%d.%m.%Y"),
     }
     context.update(inflected)
+    context.update(build_work_type_context(effective_work_type))
     context["HEAD_MO_FRAGMENT"] = (
         str(context.get("MUN_R_NAME_1", "")).strip()
         if is_district_context

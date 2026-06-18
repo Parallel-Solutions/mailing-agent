@@ -5,6 +5,7 @@ import secrets
 import zipfile
 from src.utils.logger import logger
 from src.utils.config import settings
+from src.workers.process_manager import list_worker_statuses, start_worker_process_thread, terminate_worker_process
 from src.web.agent_router import create_agent_router
 from src.web.consent_router import create_consent_router
 from src.web.documents_router import create_documents_router
@@ -22,6 +23,7 @@ from src.web.parser_router import create_parser_router
 from src.web.philologist_router import create_philologist_router
 from src.web.public_router import create_public_router
 from src.web.sender_router import create_sender_router
+from src.web.workers_router import create_workers_router
 from src.web.sender_service import (
     compact_sender_status,
     configure_sender_service,
@@ -52,6 +54,7 @@ _parser_verification_threads: dict[str, threading.Thread] = {}
 _parser_verification_threads_lock = threading.Lock()
 _output_archive_threads: dict[str, threading.Thread] = {}
 _output_archive_threads_lock = threading.Lock()
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 @app.on_event("startup")
@@ -409,6 +412,65 @@ def _register_documents_thread(job_id: str | None, thread: threading.Thread) -> 
         _documents_threads[_documents_job_key(job_id)] = thread
 
 
+def _mark_worker_process_failed(task: str, job_id: str | None, message: str) -> None:
+    completed_at = datetime.now().isoformat(timespec="seconds")
+    if task == "sender":
+        state = _load_sender_state(job_id)
+        if str(state.get("status") or "") == "running":
+            state["status"] = "error"
+            state["completed_at"] = completed_at
+            state["summary_text"] = f"Агент-отправщик остановился с ошибкой: {message}"
+            _save_sender_state(state, job_id)
+        return
+
+    if task == "documents":
+        generator_state = _load_generator_state(job_id)
+        philologist_state = _load_philologist_state(job_id)
+        if str(generator_state.get("status") or "") == "running":
+            generator_state["status"] = "error"
+            generator_state["completed_at"] = completed_at
+            generator_state["summary_text"] = f"Подготовка документов остановилась с ошибкой: {message}"
+            _save_generator_state(generator_state, job_id)
+        elif str(philologist_state.get("status") or "") in {"running", "finalizing"}:
+            philologist_state["status"] = "error"
+            philologist_state["completed_at"] = completed_at
+            philologist_state["summary_text"] = f"Проверка документов остановилась с ошибкой: {message}"
+            _save_philologist_state(philologist_state, job_id)
+
+
+def _start_background_worker_process(
+    job_id: str | None,
+    *,
+    task: str,
+    kwargs: dict | None = None,
+    name: str | None = None,
+    registry: dict[str, threading.Thread],
+    registry_lock: threading.Lock,
+    key_factory,
+    unregister,
+    max_workers: int,
+    timeout_seconds: int,
+    before_start=None,
+) -> tuple[threading.Thread, bool]:
+    return start_worker_process_thread(
+        job_id,
+        task=task,
+        kwargs=kwargs,
+        name=name,
+        registry=registry,
+        registry_lock=registry_lock,
+        key_factory=key_factory,
+        unregister=unregister,
+        state_dir_factory=_job_state_dir,
+        project_root=PROJECT_ROOT,
+        mark_failed=_mark_worker_process_failed,
+        logger=logger,
+        max_workers=max_workers,
+        timeout_seconds=timeout_seconds,
+        before_start=before_start,
+    )
+
+
 def _start_sender_thread_if_absent(
     job_id: str | None,
     *,
@@ -417,24 +479,19 @@ def _start_sender_thread_if_absent(
     name: str | None = None,
     before_start=None,
 ) -> tuple[threading.Thread, bool]:
-    with _sender_threads_lock:
-        key = _sender_job_key(job_id)
-        existing = _sender_threads.get(key)
-        if existing and existing.is_alive():
-            return existing, False
-        if existing and not existing.is_alive():
-            _sender_threads.pop(key, None)
-        if before_start is not None:
-            before_start()
-        thread = threading.Thread(
-            target=target,
-            kwargs=kwargs or {},
-            daemon=True,
-            name=name or f"sender-{key}",
-        )
-        _sender_threads[key] = thread
-        thread.start()
-        return thread, True
+    return _start_background_worker_process(
+        job_id,
+        task="sender",
+        kwargs=kwargs,
+        name=name,
+        registry=_sender_threads,
+        registry_lock=_sender_threads_lock,
+        key_factory=_sender_job_key,
+        unregister=_unregister_sender_thread,
+        max_workers=max(1, int(settings.sender_worker_max_processes or 1)),
+        timeout_seconds=max(0, int(settings.sender_worker_timeout_seconds or 0)),
+        before_start=before_start,
+    )
 
 
 def _start_documents_thread_if_absent(
@@ -444,22 +501,18 @@ def _start_documents_thread_if_absent(
     kwargs: dict | None = None,
     name: str | None = None,
 ) -> tuple[threading.Thread, bool]:
-    with _documents_threads_lock:
-        key = _documents_job_key(job_id)
-        existing = _documents_threads.get(key)
-        if existing and existing.is_alive():
-            return existing, False
-        if existing and not existing.is_alive():
-            _documents_threads.pop(key, None)
-        thread = threading.Thread(
-            target=target,
-            kwargs=kwargs or {},
-            daemon=True,
-            name=name or f"documents-{key}",
-        )
-        _documents_threads[key] = thread
-        thread.start()
-        return thread, True
+    return _start_background_worker_process(
+        job_id,
+        task="documents",
+        kwargs=kwargs,
+        name=name,
+        registry=_documents_threads,
+        registry_lock=_documents_threads_lock,
+        key_factory=_documents_job_key,
+        unregister=_unregister_documents_thread,
+        max_workers=max(1, int(settings.documents_worker_max_processes or 1)),
+        timeout_seconds=max(0, int(settings.documents_worker_timeout_seconds or 0)),
+    )
 
 
 def _unregister_sender_thread(job_id: str | None) -> None:
@@ -561,6 +614,7 @@ def _compact_generator_status(state: dict) -> dict:
         "stage": state.get("stage", "idle"),
         "stage_text": state.get("stage_text", ""),
         "document_mode": state.get("document_mode", ""),
+        "work_type": state.get("work_type", ""),
         "summary_text": state.get("summary_text", ""),
         "generated_docx_count": generated_docx_count,
         "staged_docx_count": state.get("staged_docx_count", 0),
@@ -756,8 +810,9 @@ from src.generator.delivery.sender_agent import (
     run_sender,
 )
 from src.generator.delivery.sender_report import (
-    build_unisender_delivery_analytics,
+    build_sender_delivery_analytics,
 )
+from src.generator.delivery.rusender_events import append_rusender_events
 from src.generator.delivery.unisender_go_events import append_unisender_go_events
 from src.generator.orchestration.parser_agent import (
     format_municipality_verification_for_chat,
@@ -900,6 +955,14 @@ configure_sender_service(
 
 app.include_router(jobs_controller.router)
 app.include_router(create_consent_router())
+app.include_router(
+    create_workers_router(
+        check_auth=check_auth,
+        jobs_dir=JOBS_DIR,
+        list_worker_statuses=list_worker_statuses,
+        terminate_worker_process=terminate_worker_process,
+    )
+)
 
 app.include_router(
     create_documents_router(
@@ -938,9 +1001,10 @@ app.include_router(
         get_sender_status=get_sender_status,
         get_generator_status=get_generator_status,
         get_unisender_history=get_unisender_history,
-        build_unisender_delivery_analytics=build_unisender_delivery_analytics,
+        build_sender_delivery_analytics=build_sender_delivery_analytics,
         settings=settings,
         append_unisender_go_events=append_unisender_go_events,
+        append_rusender_events=append_rusender_events,
         logger=logger,
         request_sender_stop=request_sender_stop,
         preview_recipients=preview_recipients,

@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     httpx = None
 
 PLACEHOLDER_PATTERN = re.compile(
-    r"\b(?:ADM_NAME|MUN_NAME(?:_[12])?|MUN_R_NAME(?:_1)?|SUB_RF(?:_1)?|HEAD_FIO(?:_1)?|POPULATION|ADRES|EMAIL_OSN|TEL_OSN|REQUISITES_[A-Z]+)\b"
+    r"\b(?:ADM_NAME|MUN_NAME(?:_[12])?|MUN_R_NAME(?:_1)?|SUB_RF(?:_1)?|HEAD_FIO(?:_1)?|POPULATION|ADRES|EMAIL_OSN|TEL_OSN|REQUISITES_[A-Z]+|WORK_[A-Z0-9_]+)\b"
 )
 POPULATION_PATTERN = re.compile(
     r"(Численность населения проектируемой территории составляет )(\d+)\s+(человек(?:а)?)",

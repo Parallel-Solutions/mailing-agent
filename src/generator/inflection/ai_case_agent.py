@@ -506,6 +506,10 @@ def _derive_canonical_mo_name(row: dict, context: dict) -> dict:
 
 
 def _build_context_sentence(field: str, context: dict) -> str:
+    work_title = _safe_str(
+        context.get("WORK_TITLE")
+        or "разработке проекта местных нормативов градостроительного проектирования"
+    )
     if field == "HEAD_FIO_1":
         return f'в лице главы {context.get("HEAD_MO_FRAGMENT", "")} [SLOT]'
     if field == "HEAD_FIO_2":
@@ -513,7 +517,7 @@ def _build_context_sentence(field: str, context: dict) -> str:
     if field == "MUN_NAME_1":
         return "для подготовки документов в отношении [SLOT]"
     if field == "MUN_NAME_2":
-        return "по разработке проекта местных нормативов градостроительного проектирования [SLOT]"
+        return f"по {work_title} [SLOT]"
     if field == "ADM_NAME_1":
         return "обязательства главы [SLOT] подтверждаются уставом"
     return context.get(field, "")
@@ -524,7 +528,7 @@ def _slot_instruction(field: str) -> str:
         "HEAD_FIO_1": "Верни только форму ФИО для позиции после слов 'в лице главы'.",
         "HEAD_FIO_2": "Верни только форму текста, которая грамматически корректно вставляется в [SLOT].",
         "MUN_NAME_1": "Верни только корректную форму названия муниципального образования для позиции [SLOT].",
-        "MUN_NAME_2": "Верни только корректную форму названия муниципального образования для проектной фразы в [SLOT].",
+        "MUN_NAME_2": "Верни только корректную форму названия муниципального образования для фразы выбранного вида работ в [SLOT].",
         "ADM_NAME_1": "Верни только корректную форму названия администрации для позиции [SLOT].",
     }
     return mapping.get(field, "Верни только текст для позиции [SLOT].")

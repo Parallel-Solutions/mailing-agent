@@ -53,6 +53,9 @@ def _compact_sender_row(row: dict) -> dict:
         "decision_reason": row.get("decision_reason"),
         "error": row.get("error"),
         "warning": row.get("warning"),
+        "next_action": row.get("next_action"),
+        "folder": row.get("folder"),
+        "attachments": row.get("attachments") or [],
         "provider": row.get("provider"),
         "provider_status": row.get("provider_status"),
         "provider_status_label": row.get("provider_status_label"),
@@ -71,17 +74,37 @@ def compact_sender_status(state: dict) -> dict:
     status = str(state.get("status") or "idle")
     mode = str(state.get("mode") or "dry_run")
     send_mode = str(state.get("send_mode") or "materials")
+    selection_scoped = bool(state.get("selection_scoped"))
+    show_table_totals = (
+        selection_scoped
+        and status in {"completed", "stopped"}
+        and mode == "send"
+        and send_mode == "materials"
+        and _safe_int(stats.get("total")) > 0
+    )
     processed_rows = _safe_int(state.get("processed_rows"))
     ready_rows = _safe_int(state.get("ready_rows"))
     sent_rows = (
         _safe_int(state.get("sent_rows"))
-        if send_mode == "consent_request"
+        if send_mode == "consent_request" or (selection_scoped and not show_table_totals)
         else max(_safe_int(state.get("sent_rows")), _safe_int(stats.get("sent")))
     )
-    error_rows = max(_safe_int(state.get("error_rows")), _safe_int(stats.get("error")))
+    error_rows = (
+        _safe_int(state.get("error_rows"))
+        if selection_scoped and not show_table_totals
+        else max(_safe_int(state.get("error_rows")), _safe_int(stats.get("error")))
+    )
     state_total_rows = _safe_int(state.get("total_rows"))
-    total_rows = max(state_total_rows, processed_rows) if state_total_rows > 0 else max(_safe_int(stats.get("total")), processed_rows)
+    total_rows = (
+        max(state_total_rows, processed_rows)
+        if (selection_scoped and not show_table_totals) or state_total_rows > 0
+        else max(_safe_int(stats.get("total")), processed_rows)
+    )
+    if show_table_totals:
+        total_rows = max(_safe_int(stats.get("total")), total_rows)
     if status == "running":
+        remaining_rows = max(0, total_rows - processed_rows)
+    elif selection_scoped and not show_table_totals:
         remaining_rows = max(0, total_rows - processed_rows)
     else:
         remaining_rows = _safe_int(state.get("remaining_rows"))
@@ -101,6 +124,13 @@ def compact_sender_status(state: dict) -> dict:
                 f"Отправлено: {sent_rows}. Не отправлено: {error_rows}. "
                 f"Осталось в очереди: {remaining_rows}."
             )
+
+    problem_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict) and (row.get("error") or str(row.get("result") or "").startswith(("error", "blocked", "needs_")))
+    ]
+    visible_rows = [*problem_rows, *[row for row in rows if isinstance(row, dict) and row not in problem_rows]]
 
     return {
         "status": status,
@@ -128,12 +158,13 @@ def compact_sender_status(state: dict) -> dict:
         "philology_blocked_rows": state.get("philology_blocked_rows", 0),
         "autonomous_recovery_rows": state.get("autonomous_recovery_rows", 0),
         "effective_limit": state.get("effective_limit"),
+        "selection_scoped": selection_scoped,
         "remaining_rows": remaining_rows,
         "stop_requested": state.get("stop_requested", False),
         "stop_requested_at": state.get("stop_requested_at"),
         "transport": state.get("transport", "unisender"),
         "row_count": len(rows),
-        "rows": [_compact_sender_row(row) for row in rows[:20] if isinstance(row, dict)],
+        "rows": [_compact_sender_row(row) for row in visible_rows[:20] if isinstance(row, dict)],
         "task_stats": state.get("task_stats", {}),
         "recent_events": (state.get("recent_events") or [])[:5],
     }
@@ -148,6 +179,7 @@ def run_sender_background(
     attachment_mode: str | None = None,
     subject_template: str | None = None,
     require_confirmed_consent: bool = False,
+    work_type: str | None = None,
     job_id: str | None,
 ) -> None:
     try:
@@ -159,6 +191,7 @@ def run_sender_background(
             attachment_mode=attachment_mode,
             subject_template=subject_template,
             require_confirmed_consent=require_confirmed_consent,
+            work_type=work_type,
             auto_recover=False,
             job_id=job_id,
         )

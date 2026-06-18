@@ -21,9 +21,10 @@ def create_sender_router(
     get_sender_status: Callable[[str | None], dict],
     get_generator_status: Callable[[str | None], dict],
     get_unisender_history: Callable[..., dict],
-    build_unisender_delivery_analytics: Callable[..., dict],
+    build_sender_delivery_analytics: Callable[..., dict],
     settings: Any,
     append_unisender_go_events: Callable[[dict], dict],
+    append_rusender_events: Callable[[dict], dict],
     logger: Any,
     request_sender_stop: Callable[..., dict],
     preview_recipients: Callable[..., dict],
@@ -49,6 +50,23 @@ def create_sender_router(
         if not secrets.compare_digest(str(token or "").strip(), expected_token):
             raise HTTPException(status_code=401, detail="Некорректный токен webhook UniSender Go")
 
+    def resolve_rusender_webhook_token() -> str:
+        return str(
+            getattr(settings, "rusender_webhook_token", "")
+            or getattr(settings, "rusender_webhook_secret", "")
+            or ""
+        ).strip()
+
+    def ensure_rusender_webhook_token(token: str) -> None:
+        expected_token = resolve_rusender_webhook_token()
+        if not expected_token:
+            raise HTTPException(
+                status_code=503,
+                detail="Webhook RuSender отключён: не настроен токен webhook.",
+            )
+        if not secrets.compare_digest(str(token or "").strip(), expected_token):
+            raise HTTPException(status_code=401, detail="Некорректный токен webhook RuSender")
+
     def _attachment_mode_from_documents(job_id: str | None, fallback: object = None) -> str:
         generator_state = get_generator_status(job_id)
         document_mode = str(generator_state.get("document_mode") or "").strip().lower()
@@ -69,6 +87,8 @@ def create_sender_router(
         send_mode = None if payload is None else payload.get("send_mode")
         subject_template = None if payload is None else payload.get("mail_subject")
         job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+        generator_state = get_generator_status(job_id)
+        work_type = str((payload or {}).get("work_type") or generator_state.get("work_type") or "").strip() or None
         attachment_mode = _attachment_mode_from_documents(
             job_id,
             None if payload is None else payload.get("attachment_mode"),
@@ -103,6 +123,7 @@ def create_sender_router(
                     "send_mode": send_mode,
                     "attachment_mode": attachment_mode,
                     "subject_template": subject_template,
+                    "work_type": work_type,
                     "job_id": job_id,
                 },
                 name=f"sender-{sender_job_key(job_id)}",
@@ -144,7 +165,7 @@ def create_sender_router(
     ):
         return {
             "status": "ok",
-            "result": build_unisender_delivery_analytics(
+            "result": build_sender_delivery_analytics(
                 job_id=job_id,
                 refresh=refresh,
                 refresh_wait=refresh_wait,
@@ -190,6 +211,57 @@ def create_sender_router(
         except Exception as exc:
             logger.exception("unisender_go_webhook_save_failed")
             raise HTTPException(status_code=500, detail=f"Не удалось сохранить webhook UniSender Go: {exc}") from exc
+        return {"status": "ok", "result": result}
+
+    @router.get("/api/webhooks/rusender")
+    async def rusender_webhook_health():
+        token_configured = bool(resolve_rusender_webhook_token())
+        return {
+            "status": "ok",
+            "message": "RuSender webhook endpoint is ready",
+            "token_required": token_configured,
+            "url_format": "/api/webhooks/rusender/{token}",
+            "events": [
+                "external_mail.delivered",
+                "external_mail.hard_bounced",
+                "external_mail.soft_bounced",
+                "external_mail.error",
+                "external_mail.open",
+                "external_mail.click",
+                "external_mail.unsubscribe",
+                "external_mail.complaint",
+            ],
+        }
+
+    @router.post("/api/webhooks/rusender")
+    async def rusender_webhook(request: Request):
+        if not resolve_rusender_webhook_token():
+            raise HTTPException(
+                status_code=503,
+                detail="Webhook RuSender отключён: не настроен токен webhook.",
+            )
+        raise HTTPException(
+            status_code=401,
+            detail="Используйте токенизированный URL webhook RuSender.",
+        )
+
+    @router.get("/api/webhooks/rusender/{token}")
+    async def rusender_webhook_token_health(token: str):
+        ensure_rusender_webhook_token(token)
+        return {"status": "ok", "message": "RuSender token webhook endpoint is ready"}
+
+    @router.post("/api/webhooks/rusender/{token}")
+    async def rusender_webhook_tokenized(token: str, request: Request):
+        ensure_rusender_webhook_token(token)
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Некорректный JSON webhook RuSender") from exc
+        try:
+            result = append_rusender_events(payload)
+        except Exception as exc:
+            logger.exception("rusender_webhook_save_failed")
+            raise HTTPException(status_code=500, detail=f"Не удалось сохранить webhook RuSender: {exc}") from exc
         return {"status": "ok", "result": result}
 
     @router.post("/api/sender/stop")

@@ -1,0 +1,213 @@
+from __future__ import annotations
+
+import argparse
+import json
+import zipfile
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from src.jobs import resolve_job_paths
+from src.utils.logger import logger
+
+
+def _load_payload(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError("worker payload must be a JSON object")
+    return payload
+
+
+def _build_output_archive(job_id: str | None) -> Path | None:
+    output_dir = resolve_job_paths(job_id).output_dir
+    if not output_dir.exists():
+        return None
+
+    archive_path = resolve_job_paths(job_id).root_dir / "state" / "output.zip"
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_archive_path = archive_path.with_suffix(".tmp.zip")
+    if temp_archive_path.exists():
+        try:
+            temp_archive_path.unlink()
+        except OSError:
+            pass
+
+    with zipfile.ZipFile(temp_archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in output_dir.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(output_dir))
+    temp_archive_path.replace(archive_path)
+    return archive_path
+
+
+def _documents_pipeline_stop_requested(job_id: str | None) -> bool:
+    from src.generator.generation.generator_agent import _load_generator_state
+    from src.generator.philologist.philologist_agent import _load_philologist_state
+
+    generator_state = _load_generator_state(job_id)
+    philologist_state = _load_philologist_state(job_id)
+    return bool(generator_state.get("stop_requested")) or bool(philologist_state.get("stop_requested"))
+
+
+def _mark_documents_waiting_review_stopped(job_id: str | None) -> None:
+    from src.generator.philologist.philologist_agent import _load_philologist_state, _save_philologist_state
+
+    philologist_state = _load_philologist_state(job_id)
+    if str(philologist_state.get("status") or "") == "completed":
+        return
+    philologist_state["status"] = "stopped"
+    philologist_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+    philologist_state["summary_text"] = (
+        "Подготовка остановлена после создания документов. "
+        "Проверку текста можно запустить позже."
+    )
+    _save_philologist_state(philologist_state, job_id)
+
+
+def _run_documents_pipeline(kwargs: dict[str, Any]) -> None:
+    from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, DOCUMENT_RENDERER_VERSION, normalize_document_mode
+    from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
+    from src.generator.generation.generator_agent import (
+        _load_generator_state,
+        _save_generator_state,
+        clear_generator_stop_request,
+        finalize_output_pdfs_for_job,
+        get_generator_status,
+        run_generator_agent,
+    )
+    from src.generator.philologist.philologist_agent import (
+        _load_philologist_state,
+        _save_philologist_state,
+        clear_philologist_stop_request,
+        get_philologist_status,
+        run_philologist,
+    )
+
+    xlsx_path = Path(str(kwargs.get("xlsx_path") or ""))
+    job_id = str(kwargs.get("job_id") or "").strip() or None
+    mode = str(kwargs.get("mode") or "fast").strip() or "fast"
+    document_mode = normalize_document_mode(str(kwargs.get("document_mode") or DOCUMENT_MODE_BOTH))
+    work_type = normalize_work_type(str(kwargs.get("work_type") or DEFAULT_WORK_TYPE))
+
+    try:
+        generator_state = get_generator_status(job_id)
+        generator_document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
+        generator_work_type = normalize_work_type(generator_state.get("work_type") or DEFAULT_WORK_TYPE)
+        generator_renderer_version = str(generator_state.get("renderer_version") or "")
+        generator_reran = False
+        if (
+            str(generator_state.get("status") or "") != "completed"
+            or generator_document_mode != document_mode
+            or generator_work_type != work_type
+            or generator_renderer_version != DOCUMENT_RENDERER_VERSION
+        ):
+            clear_generator_stop_request(job_id)
+            generator_state = run_generator_agent(
+                xlsx_path=xlsx_path,
+                job_id=job_id,
+                create_pdf=False,
+                auto_run_philologist=False,
+                document_mode=document_mode,
+                work_type=work_type,
+            )
+            generator_reran = True
+
+        if str(generator_state.get("status") or "") != "completed":
+            return
+
+        if _documents_pipeline_stop_requested(job_id):
+            _mark_documents_waiting_review_stopped(job_id)
+            return
+
+        philologist_state = get_philologist_status(job_id, include_details=False)
+        philologist_document_mode = normalize_document_mode(philologist_state.get("document_mode") or DOCUMENT_MODE_BOTH)
+        philologist_work_type = normalize_work_type(philologist_state.get("work_type") or DEFAULT_WORK_TYPE)
+        if (
+            generator_reran
+            or str(philologist_state.get("status") or "") != "completed"
+            or philologist_document_mode != document_mode
+            or philologist_work_type != work_type
+        ):
+            if _documents_pipeline_stop_requested(job_id):
+                _mark_documents_waiting_review_stopped(job_id)
+                return
+            clear_philologist_stop_request(job_id)
+            philologist_state = run_philologist(ai_enabled=True, job_id=job_id, mode=mode)
+            if isinstance(philologist_state, dict):
+                philologist_state["document_mode"] = document_mode
+                philologist_state["work_type"] = work_type
+                _save_philologist_state(philologist_state, job_id)
+
+        if isinstance(philologist_state, dict) and philologist_state.get("status") == "completed":
+            generator_state = finalize_output_pdfs_for_job(job_id=job_id)
+            if isinstance(generator_state, dict) and generator_state.get("status") == "completed":
+                _build_output_archive(job_id)
+    except Exception as exc:
+        logger.exception("documents_worker_failed", job_id=job_id)
+        generator_state = _load_generator_state(job_id)
+        philologist_state = _load_philologist_state(job_id)
+        if str(generator_state.get("status") or "") == "running":
+            generator_state["status"] = "error"
+            generator_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+            generator_state["summary_text"] = f"Подготовка документов остановилась с ошибкой: {type(exc).__name__}: {exc}"
+            _save_generator_state(generator_state, job_id)
+        elif str(philologist_state.get("status") or "") in {"running", "finalizing"}:
+            philologist_state["status"] = "error"
+            philologist_state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+            philologist_state["summary_text"] = f"Проверка документов остановилась с ошибкой: {type(exc).__name__}: {exc}"
+            _save_philologist_state(philologist_state, job_id)
+        raise
+
+
+def _run_sender(kwargs: dict[str, Any]) -> None:
+    from src.generator.delivery.sender_agent import _load_sender_state, _save_sender_state, run_sender
+
+    job_id = str(kwargs.get("job_id") or "").strip() or None
+    transport = kwargs.get("transport")
+    try:
+        run_sender(
+            dry_run=bool(kwargs.get("dry_run", False)),
+            limit=kwargs.get("limit"),
+            transport=transport,
+            send_mode=kwargs.get("send_mode"),
+            attachment_mode=kwargs.get("attachment_mode"),
+            subject_template=kwargs.get("subject_template"),
+            require_confirmed_consent=bool(kwargs.get("require_confirmed_consent", False)),
+            work_type=kwargs.get("work_type"),
+            auto_recover=False,
+            job_id=job_id,
+        )
+    except Exception as exc:
+        logger.exception("sender_worker_failed", job_id=job_id, transport=transport)
+        state = _load_sender_state(job_id)
+        state["status"] = "error"
+        state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        state["summary_text"] = f"Агент-отправщик остановился с ошибкой: {type(exc).__name__}: {exc}"
+        _save_sender_state(state, job_id)
+        raise
+
+
+def run_payload(payload: dict[str, Any]) -> None:
+    task = str(payload.get("task") or "").strip()
+    kwargs = payload.get("kwargs") or {}
+    if not isinstance(kwargs, dict):
+        raise ValueError("worker kwargs must be a JSON object")
+    if task == "documents":
+        _run_documents_pipeline(kwargs)
+        return
+    if task == "sender":
+        _run_sender(kwargs)
+        return
+    raise ValueError(f"unknown worker task: {task}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--payload", required=True)
+    args = parser.parse_args()
+    run_payload(_load_payload(Path(args.payload)))
+
+
+if __name__ == "__main__":
+    main()

@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from src.generator.delivery.sender_report import (
-    build_unisender_delivery_report_xlsx,
-    unisender_delivery_report_has_data,
+    build_sender_delivery_report_xlsx,
+    sender_delivery_report_has_data,
 )
 from src.generator.inflection.inflection_report import load_inflection_log, save_inflection_csv
 from src.generator.knowledge.agent_memory import (
@@ -161,24 +161,30 @@ def create_download_router(
 
     @router.get("/api/download/sender-delivery-report")
     async def download_sender_delivery_report(job_id: str | None = None, username: str = Depends(check_auth)):
-        if not unisender_delivery_report_has_data(job_id):
+        if not sender_delivery_report_has_data(job_id):
             raise HTTPException(
                 status_code=404,
-                detail="Журнал отправки UniSender пока пуст. Сначала запустите отправщик через UniSender.",
+                detail="Журнал отправки пока пуст. Сначала запустите реальную отправку через UniSender или RuSender.",
             )
         job_paths = resolve_job_paths(job_id)
-        report_path = job_state_dir(job_id) / "unisender_delivery_report.xlsx"
+        report_path = job_state_dir(job_id) / "sender_delivery_report.xlsx"
         sent_log_path = (
             job_paths.sent_mail_log_path
             if not job_paths.uses_legacy_layout
             else Path("data/sent_mail_log.jsonl")
         )
-        if not is_cache_fresh(report_path, [sent_log_path], max_age_seconds=180):
-            report_path = build_unisender_delivery_report_xlsx(job_id, refresh=True)
+        state_dir = job_state_dir(job_id)
+        report_sources = [
+            sent_log_path,
+            state_dir / "rusender_events.jsonl",
+            state_dir / "unisender_go_events.jsonl",
+        ]
+        if not is_cache_fresh(report_path, report_sources, max_age_seconds=180):
+            report_path = build_sender_delivery_report_xlsx(job_id, refresh=True)
         return FileResponse(
             report_path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename="unisender_delivery_report.xlsx",
+            filename="sender_delivery_report.xlsx",
         )
 
     @router.get("/api/download/inflection-log")

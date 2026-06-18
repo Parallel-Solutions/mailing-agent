@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     sender_delay_seconds: float = 60.0
     sender_transport: str = "smtp"
     sender_unisender_concurrency: int = 1
+    documents_worker_max_processes: int = 1
+    sender_worker_max_processes: int = 1
+    documents_worker_timeout_seconds: int = 21600
+    sender_worker_timeout_seconds: int = 7200
     unisender_api_key: str = ""
     unisender_api_base_url: str = "https://goapi.unisender.ru/ru/transactional/api/v1"
     unisender_sender_name: str = "ООО «ПР»"
@@ -70,6 +74,8 @@ class Settings(BaseSettings):
     rusender_api_base_url: str = "https://api.rusender.ru/api/v1"
     rusender_sender_name: str = "ООО «ПР»"
     rusender_sender_email: str = ""
+    rusender_webhook_secret: str = ""
+    rusender_webhook_token: str = ""
     mail_signature_image_url: str = ""
 
     municipality_oktmo_lookup_enabled: bool = True

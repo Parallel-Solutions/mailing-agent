@@ -6,7 +6,8 @@ from typing import Any
 
 from src.web.documents_agent_chat import choose_documents_agent_reply
 from src.web.documents_presenter import build_documents_ui_payload
-from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, document_mode_kinds, normalize_document_mode
+from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, DOCUMENT_RENDERER_VERSION, document_mode_kinds, normalize_document_mode
+from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 
 _deps: dict[str, Any] = {}
 
@@ -199,6 +200,7 @@ def compact_documents_status(job_id: str | None, document_mode: str | None = Non
     generator_status = str(generator_state.get("status") or "idle")
     philologist_status = str(philologist_state.get("status") or "idle")
     document_mode = normalize_document_mode(document_mode or generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
+    work_type = normalize_work_type(generator_state.get("work_type") or DEFAULT_WORK_TYPE)
     generator_done = generator_status == "completed"
     reviewed_documents = int(philologist_state.get("processed_documents") or 0)
     total_documents = int(philologist_state.get("total_documents") or 0)
@@ -300,6 +302,7 @@ def compact_documents_status(job_id: str | None, document_mode: str | None = Non
         "output_file_count": int(generator_state.get("output_file_count") or 0),
         "summary_text": stage_text,
         "document_mode": document_mode,
+        "work_type": work_type,
     }
     readiness = _require("build_job_readiness_result")(job_id, document_mode=document_mode)
     result["ui"] = build_documents_ui_payload(result, readiness=readiness)
@@ -334,9 +337,17 @@ def documents_agent_choose_reply(message: str, job_id: str | None = None) -> dic
     )
 
 
-def run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mode: str | None, document_mode: str | None = None) -> None:
+def run_documents_pipeline_background(
+    *,
+    xlsx_path: Path,
+    job_id: str | None,
+    mode: str | None,
+    document_mode: str | None = None,
+    work_type: str | None = None,
+) -> None:
     try:
         effective_document_mode = normalize_document_mode(document_mode or DOCUMENT_MODE_BOTH)
+        effective_work_type = normalize_work_type(work_type or DEFAULT_WORK_TYPE)
         get_generator_status = _require("get_generator_status")
         clear_generator_stop_request = _require("clear_generator_stop_request")
         run_generator_agent = _require("run_generator_agent")
@@ -348,7 +359,15 @@ def run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mo
 
         generator_state = get_generator_status(job_id)
         generator_document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
-        if str(generator_state.get("status") or "") != "completed" or generator_document_mode != effective_document_mode:
+        generator_work_type = normalize_work_type(generator_state.get("work_type") or DEFAULT_WORK_TYPE)
+        generator_renderer_version = str(generator_state.get("renderer_version") or "")
+        generator_reran = False
+        if (
+            str(generator_state.get("status") or "") != "completed"
+            or generator_document_mode != effective_document_mode
+            or generator_work_type != effective_work_type
+            or generator_renderer_version != DOCUMENT_RENDERER_VERSION
+        ):
             clear_generator_stop_request(job_id)
             generator_state = run_generator_agent(
                 xlsx_path=xlsx_path,
@@ -356,7 +375,9 @@ def run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mo
                 create_pdf=False,
                 auto_run_philologist=False,
                 document_mode=effective_document_mode,
+                work_type=effective_work_type,
             )
+            generator_reran = True
 
         if str(generator_state.get("status") or "") != "completed":
             return
@@ -367,7 +388,13 @@ def run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mo
 
         philologist_state = get_philologist_status(job_id, include_details=False)
         philologist_document_mode = normalize_document_mode(philologist_state.get("document_mode") or DOCUMENT_MODE_BOTH)
-        if str(philologist_state.get("status") or "") != "completed" or philologist_document_mode != effective_document_mode:
+        philologist_work_type = normalize_work_type(philologist_state.get("work_type") or DEFAULT_WORK_TYPE)
+        if (
+            generator_reran
+            or str(philologist_state.get("status") or "") != "completed"
+            or philologist_document_mode != effective_document_mode
+            or philologist_work_type != effective_work_type
+        ):
             if _documents_pipeline_stop_requested(job_id):
                 _mark_documents_waiting_review_stopped(job_id)
                 return
@@ -375,6 +402,7 @@ def run_documents_pipeline_background(*, xlsx_path: Path, job_id: str | None, mo
             philologist_state = run_philologist(ai_enabled=True, job_id=job_id, mode=mode or "fast")
             if isinstance(philologist_state, dict):
                 philologist_state["document_mode"] = effective_document_mode
+                philologist_state["work_type"] = effective_work_type
                 _require("save_philologist_state")(philologist_state, job_id)
 
         if isinstance(philologist_state, dict) and philologist_state.get("status") == "completed":

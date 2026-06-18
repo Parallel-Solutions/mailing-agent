@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+from datetime import datetime
+import json
+from pathlib import Path
+from typing import Any
+
+from src.jobs import resolve_job_paths
+from src.jobs.storage import JOBS_DIR
+
+
+EVENTS_FILENAME = "rusender_events.jsonl"
+UNMATCHED_EVENTS_FILENAME = "rusender_events_unmatched.jsonl"
+
+TRIGGER_STATUS_MAP = {
+    "external_mail.delivered": "delivered",
+    "external_mail.hard_bounced": "hard_bounced",
+    "external_mail.soft_bounced": "soft_bounced",
+    "external_mail.error": "err_delivery_failed",
+    "external_mail.open": "opened",
+    "external_mail.click": "clicked",
+    "external_mail.unsubscribe": "unsubscribed",
+    "external_mail.complaint": "spam",
+}
+
+
+def append_rusender_events(payload: Any) -> dict[str, Any]:
+    events = _extract_events(payload)
+    task_to_job = _load_task_job_index()
+    saved = 0
+    skipped = 0
+    unmatched = 0
+    jobs: set[str] = set()
+
+    for event in events:
+        task_id = _extract_task_id(event)
+        if not task_id:
+            skipped += 1
+            continue
+
+        job_id = task_to_job.get(task_id, {}).get("job_id", "")
+        record = {
+            "received_at": datetime.now().isoformat(timespec="seconds"),
+            "event_id": _extract_first_text(event, ("eventId", "event_id", "id")),
+            "event_type": _extract_trigger(event),
+            "provider_status": _status_from_trigger(_extract_trigger(event)),
+            "occurred_at": _extract_first_text(event, ("occurredAt", "occurred_at", "createdAt", "created_at")),
+            "task_id": task_id,
+            "recipient": _extract_email(event),
+            "event": event,
+        }
+
+        if job_id:
+            path = rusender_events_path(job_id)
+            jobs.add(job_id)
+            saved += 1
+        else:
+            path = _unmatched_events_path()
+            unmatched += 1
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    return {"saved": saved, "skipped": skipped, "unmatched": unmatched, "jobs": sorted(jobs)}
+
+
+def load_rusender_events(job_id: str | None) -> list[dict[str, Any]]:
+    path = rusender_events_path(job_id)
+    if not path.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            events.append(item)
+    return events
+
+
+def rusender_events_path(job_id: str | None) -> Path:
+    return resolve_job_paths(job_id).root_dir / "state" / EVENTS_FILENAME
+
+
+def _unmatched_events_path() -> Path:
+    return JOBS_DIR.parent / UNMATCHED_EVENTS_FILENAME
+
+
+def _extract_events(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    events = payload.get("events")
+    if isinstance(events, list):
+        return [item for item in events if isinstance(item, dict)]
+    if isinstance(events, dict):
+        return [events]
+    return [payload]
+
+
+def _extract_trigger(event: dict[str, Any]) -> str:
+    return _extract_first_text(event, ("trigger", "event", "type", "name"))
+
+
+def _status_from_trigger(trigger: str) -> str:
+    return TRIGGER_STATUS_MAP.get(str(trigger or "").strip(), str(trigger or "").strip())
+
+
+def _extract_task_id(event: dict[str, Any]) -> str:
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        task_id = _extract_first_text(
+            payload,
+            ("taskId", "task_id", "uuid", "message_id", "idempotencyKey", "idempotency_key"),
+        )
+        if task_id:
+            return task_id
+    return _extract_first_text(
+        event,
+        ("taskId", "task_id", "uuid", "message_id", "idempotencyKey", "idempotency_key"),
+    )
+
+
+def _extract_email(event: dict[str, Any]) -> str:
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        email = _extract_first_text(payload, ("email", "recipient", "to"))
+        if email:
+            return email
+    return _extract_first_text(event, ("email", "recipient", "to"))
+
+
+def _extract_first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _load_task_job_index() -> dict[str, dict[str, str]]:
+    index: dict[str, dict[str, str]] = {}
+    if JOBS_DIR.exists():
+        for log_path in JOBS_DIR.glob("*/sent_mail_log.jsonl"):
+            job_id = log_path.parent.name
+            _index_sent_log(log_path, job_id, index)
+    legacy_path = resolve_job_paths(None).sent_mail_log_path
+    if legacy_path.exists():
+        _index_sent_log(legacy_path, "", index)
+    return index
+
+
+def _index_sent_log(path: Path, job_id: str, index: dict[str, dict[str, str]]) -> None:
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
+        task_ids = {
+            str(value).strip()
+            for value in (
+                item.get("provider_message_id"),
+                item.get("message_id"),
+                item.get("provider_job_id"),
+                provider.get("message_id"),
+                provider.get("uuid"),
+                provider.get("idempotency_key"),
+                provider.get("idempotencyKey"),
+                item.get("idempotency_key"),
+                item.get("idempotencyKey"),
+            )
+            if value not in (None, "")
+        }
+        for task_id in task_ids:
+            index[task_id] = {
+                "job_id": job_id,
+                "row_id": str(item.get("row_id") or "").strip(),
+                "recipient": str(item.get("recipient") or "").strip(),
+            }

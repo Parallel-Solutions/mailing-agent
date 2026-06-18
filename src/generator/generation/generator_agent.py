@@ -37,12 +37,14 @@ from src.generator.generation.config_generator import (
 from src.generator.generation.document_builder import (
     CONTRACT_TEMPLATE_FILENAME,
     DOCUMENT_MODE_BOTH,
+    DOCUMENT_RENDERER_VERSION,
     KP_TEMPLATE_FILENAME,
     cleanup_batch_docx_dir,
     document_mode_kinds,
     generate_documents_for_row,
     normalize_document_mode,
 )
+from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.pdf_converter import convert_docx_batch
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
@@ -80,6 +82,8 @@ GENERATOR_STATE: dict[str, Any] = {
     "tasks": [],
     "recent_events": [],
     "document_mode": DOCUMENT_MODE_BOTH,
+    "work_type": DEFAULT_WORK_TYPE,
+    "renderer_version": DOCUMENT_RENDERER_VERSION,
 }
 _STATUS_FILE_COUNT_CACHE_LOCK = threading.Lock()
 _STATUS_FILE_COUNT_CACHE: dict[str, dict[str, float | int]] = {}
@@ -292,9 +296,10 @@ def process_generator_row(
     batch_docx_dir: Path | None = None,
     templates_dir: Path | None = None,
     document_mode: str | None = None,
+    work_type: str | None = None,
 ) -> dict:
     result_index, outgoing_number, row = payload
-    context = build_document_context(row, outgoing_number)
+    context = build_document_context(row, outgoing_number, work_type=work_type)
     agent_result = run_case_validation_agent(row, context)
     context = apply_case_agent_result(context, agent_result)
     generated_files = generate_documents_for_row(
@@ -670,6 +675,7 @@ def prime_generator_state(
     row_ids: list[str] | None = None,
     job_id: str | None = None,
     document_mode: str | None = None,
+    work_type: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
     source_path = xlsx_path or (job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH)
@@ -697,6 +703,7 @@ def prime_generator_state(
     if limit:
         rows = rows[:limit]
     effective_document_mode = normalize_document_mode(document_mode or state.get("document_mode") or DOCUMENT_MODE_BOTH)
+    effective_work_type = normalize_work_type(work_type or state.get("work_type") or DEFAULT_WORK_TYPE)
 
     if not rows:
         state["status"] = "completed"
@@ -719,6 +726,8 @@ def prime_generator_state(
             "stage": "review_templates",
             "stage_text": "Проверяю шаблоны перед подготовкой документов.",
             "document_mode": effective_document_mode,
+            "work_type": effective_work_type,
+            "renderer_version": DOCUMENT_RENDERER_VERSION,
             "staged_docx_count": 0,
             "staged_pdf_count": 0,
             "pdf_total": 0,
@@ -749,6 +758,7 @@ def run_generator_agent(
     create_pdf: bool = True,
     auto_run_philologist: bool | None = None,
     document_mode: str | None = None,
+    work_type: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
     source_path = xlsx_path or (job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH)
@@ -778,6 +788,7 @@ def run_generator_agent(
     if limit:
         rows = rows[:limit]
     effective_document_mode = normalize_document_mode(document_mode or state.get("document_mode") or DOCUMENT_MODE_BOTH)
+    effective_work_type = normalize_work_type(work_type or state.get("work_type") or DEFAULT_WORK_TYPE)
 
     if not rows:
         state["status"] = "completed"
@@ -811,6 +822,8 @@ def run_generator_agent(
             "error_rows": state.get("error_rows", 0) if was_stopped else 0,
             "stage": resume_stage,
             "document_mode": effective_document_mode,
+            "work_type": effective_work_type,
+            "renderer_version": DOCUMENT_RENDERER_VERSION,
             "stage_text": (
                 "Проверяю шаблоны перед подготовкой документов."
                 if resume_stage == "review_templates"
@@ -861,7 +874,7 @@ def run_generator_agent(
             for index, _, row in payloads
         ]
 
-    logger.info("generator_agent_start", row_count=len(payloads), document_mode=effective_document_mode)
+    logger.info("generator_agent_start", row_count=len(payloads), document_mode=effective_document_mode, work_type=effective_work_type)
     state["total_rows"] = len(payloads)
     _save_generator_state(state, job_id)
 
@@ -903,6 +916,7 @@ def run_generator_agent(
                         batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
                         templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
                         document_mode=effective_document_mode,
+                        work_type=effective_work_type,
                     )
                 except Exception as exc:
                     results[result_index] = {
@@ -938,6 +952,7 @@ def run_generator_agent(
                         batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
                         templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
                         document_mode=effective_document_mode,
+                        work_type=effective_work_type,
                     )
                     future_map[future] = payload
                     return True

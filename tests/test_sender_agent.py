@@ -10,6 +10,7 @@ from urllib.request import Request
 
 from src.generator.delivery import sender_agent
 from src.generator.delivery import sender_report
+from src.web import sender_service
 
 
 class SenderAgentScalabilityTests(unittest.TestCase):
@@ -108,6 +109,42 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             scoped = sender_report._filter_items_by_current_sender_state("job-current", items)
 
         self.assertEqual(scoped, items)
+
+    def test_sender_analytics_does_not_filter_by_scoped_consent_followup_state(self) -> None:
+        items = [
+            {"row_id": "1", "recipient": "one@example.com"},
+            {"row_id": "2", "recipient": "two@example.com"},
+        ]
+        state = {
+            "selection_scoped": True,
+            "total_rows": 1,
+            "rows": [{"id": "2", "recipient": "two@example.com"}],
+        }
+
+        with patch.object(sender_report, "_load_sender_state", return_value=state):
+            scoped = sender_report._filter_items_by_current_sender_state("job-current", items)
+
+        self.assertEqual(scoped, items)
+
+    def test_compact_sender_status_shows_table_totals_after_scoped_material_send(self) -> None:
+        state = {
+            "status": "completed",
+            "mode": "send",
+            "send_mode": "materials",
+            "selection_scoped": True,
+            "processed_rows": 1,
+            "sent_rows": 1,
+            "error_rows": 0,
+            "total_rows": 1,
+            "remaining_rows": 0,
+            "stats": {"total": 2, "sent": 2, "error": 0, "pending": 0},
+        }
+
+        compact = sender_service.compact_sender_status(state)
+
+        self.assertEqual(compact["total_rows"], 2)
+        self.assertEqual(compact["sent_rows"], 2)
+        self.assertEqual(compact["stats"], {"total": 2, "sent": 2, "error": 0, "pending": 0})
 
     def test_unisender_analytics_filters_items_outside_current_data(self) -> None:
         items = [
@@ -219,10 +256,39 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 "",
             ),
         ):
-            analytics = sender_report.build_unisender_delivery_analytics("job-current", refresh=False)
+            analytics = sender_report.build_sender_delivery_analytics("job-current", refresh=False)
 
         self.assertEqual(analytics["summary"]["hard_bounced"], 0)
         self.assertEqual(analytics["summary"]["errors"], 1)
+
+    def test_sender_analytics_uses_rusender_provider_label_and_events(self) -> None:
+        with patch.object(
+            sender_report,
+            "_build_delivery_rows",
+            return_value=(
+                [
+                    {
+                        "provider": "rusender",
+                        "provider_status": "delivered",
+                        "checked_at": "2026-06-18T12:10:00",
+                    },
+                    {
+                        "provider": "rusender",
+                        "provider_status": "clicked",
+                        "checked_at": "2026-06-18T12:11:00",
+                    },
+                ],
+                "",
+            ),
+        ):
+            analytics = sender_report.build_sender_delivery_analytics("job-current", refresh=False)
+
+        self.assertEqual(analytics["provider"], "rusender")
+        self.assertEqual(analytics["provider_label"], "RuSender")
+        self.assertEqual(analytics["summary"]["delivered"], 2)
+        self.assertEqual(analytics["summary"]["clicked"], 1)
+        self.assertEqual(analytics["provider_events_count"], 2)
+        self.assertEqual(analytics["cards"][0]["title"], "Передано в RuSender")
 
     def test_run_unisender_request_retries_temporary_network_error(self) -> None:
         attempts = {"count": 0}

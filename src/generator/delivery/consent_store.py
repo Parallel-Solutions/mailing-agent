@@ -12,6 +12,7 @@ from docx import Document
 
 from src.jobs import resolve_job_paths
 from src.utils.config import settings
+from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 
 
 CONSENT_FILENAME = "consents.json"
@@ -210,10 +211,12 @@ def prepare_consent_request(
     transport: str,
     attachment_mode: str = "kp",
     subject_template: str | None = None,
+    work_type: str | None = None,
 ) -> dict[str, Any]:
     records = _load_records(job_id)
     row_id = row.get("ID")
     now = datetime.now().isoformat(timespec="seconds")
+    effective_work_type = normalize_work_type(work_type or DEFAULT_WORK_TYPE)
     for record in records:
         if _record_matches(record, row_id=row_id, recipient=recipient):
             record.setdefault("token", secrets.token_urlsafe(24))
@@ -221,6 +224,7 @@ def prepare_consent_request(
             record["last_request_prepared_at"] = now
             record["transport"] = _safe_text(transport)
             record["attachment_mode"] = _normalize_attachment_mode(attachment_mode)
+            record["work_type"] = effective_work_type
             record["consent_text"] = _consent_text_for_attachment_mode(attachment_mode)
             record["subject_template"] = _safe_text(subject_template)
             _save_records(job_id, records)
@@ -239,6 +243,7 @@ def prepare_consent_request(
         "last_request_prepared_at": now,
         "transport": _safe_text(transport),
         "attachment_mode": _normalize_attachment_mode(attachment_mode),
+        "work_type": effective_work_type,
         "subject_template": _safe_text(subject_template),
     }
     records.append(record)
@@ -261,6 +266,40 @@ def mark_consent_request_sent(
             record["request_sent_at"] = now
             if provider:
                 record["provider"] = provider
+            _save_records(job_id, records)
+            return
+
+
+def mark_materials_dispatch_result(
+    *,
+    job_id: str | None,
+    row_id: Any,
+    recipient: str,
+    sent: bool,
+    error: str = "",
+    summary: str = "",
+) -> None:
+    records = _load_records(job_id)
+    now = datetime.now().isoformat(timespec="seconds")
+    for record in records:
+        if _record_matches(record, row_id=row_id, recipient=recipient):
+            record["materials_dispatch_completed_at"] = now
+            record["materials_dispatch_summary"] = _safe_text(summary)
+            if sent:
+                if not _safe_text(record.get("materials_sent_at")):
+                    record["materials_sent_at"] = now
+                record["materials_error"] = ""
+                record["materials_status"] = "sent"
+            else:
+                if _safe_text(record.get("materials_status")) == "sent" or _safe_text(record.get("materials_sent_at")):
+                    record["materials_status"] = "sent"
+                    record["materials_error"] = ""
+                    if not _safe_text(record.get("materials_dispatch_summary")):
+                        record["materials_dispatch_summary"] = "Материалы уже были отправлены ранее."
+                    _save_records(job_id, records)
+                    return
+                record["materials_error"] = _safe_text(error) or "Материалы не отправлены."
+                record["materials_status"] = "error"
             _save_records(job_id, records)
             return
 

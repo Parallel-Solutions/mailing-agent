@@ -246,6 +246,8 @@ def _update_municipality_verification_progress(
 ) -> None:
     state = _load_parser_state(job_id)
     verification_state = dict(state.get("municipality_name_verification_state") or {})
+    if verification_state.get("status") in {"completed", "error"}:
+        return
     processed_rows = int(progress.get("processed_rows") or 0)
     total_rows = int(progress.get("total_rows") or 0)
     verification_state.update(
@@ -457,6 +459,38 @@ def get_parser_status(job_id: str | None = None) -> dict[str, Any]:
     state["row_count"] = _row_count(job_id)
     verification_result = state.get("municipality_name_verification") or {}
     verification_state = dict(state.get("municipality_name_verification_state") or {})
+    processed_rows = int(verification_state.get("processed_rows") or 0)
+    total_rows = int(verification_state.get("total_rows") or 0)
+    if (
+        verification_state.get("status") == "running"
+        and total_rows > 0
+        and processed_rows >= total_rows
+    ):
+        completed_at = verification_state.get("completed_at") or datetime.now().isoformat(timespec="seconds")
+        verification_result = {
+            **verification_result,
+            "status": verification_result.get("status") or "ok",
+            "total_rows": int(verification_result.get("total_rows") or total_rows),
+            "updated_rows": int(verification_result.get("updated_rows") or verification_state.get("updated_rows") or 0),
+            "verified_rows": int(verification_result.get("verified_rows") or verification_state.get("verified_rows") or 0),
+            "missing_rows": int(verification_result.get("missing_rows") or verification_state.get("missing_rows") or 0),
+            "kept_rows": int(
+                verification_result.get("kept_rows")
+                if verification_result.get("kept_rows") is not None
+                else max(0, total_rows - int(verification_state.get("updated_rows") or 0))
+            ),
+        }
+        verification_summary = format_municipality_verification_for_chat(verification_result)
+        verification_state.update(
+            {
+                "status": "completed",
+                "summary_text": verification_summary or "Проверка официальных названий МО завершена.",
+                "completed_at": completed_at,
+                "updated_at": completed_at,
+            }
+        )
+        state["municipality_name_verification"] = verification_result
+        state["municipality_name_verification_state"] = verification_state
     if (
         verification_result.get("status") == "ok"
         and verification_state.get("status") not in {"running", "completed", "error"}

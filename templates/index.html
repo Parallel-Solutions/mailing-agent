@@ -2113,7 +2113,7 @@
 
       <div class="field">
         <label>Вид работ</label>
-        <select id="settings-work-type" onchange="updateSettingsChecklist()">
+        <select id="settings-work-type" onchange="handleSettingsWorkTypeChange(this.value)">
           <option value="mngp_settlements">МНГП (сельских и городских поселений)</option>
           <option value="mngp_districts">МНГП по муниципальным районам</option>
           <option value="territorial_zone_boundaries">Описание местоположения границ территориальных зон</option>
@@ -2665,6 +2665,11 @@
   const JOB_STORAGE_KEY = 'mailing-agent-current-job-id';
   const ACTIVE_SCREEN_STORAGE_KEY = 'mailing-agent-active-screen';
   const UI_STATE_STORAGE_KEY_PREFIX = 'mailing-agent-ui-state-v1:';
+  const WORK_TYPE_DEFAULT_SUBJECTS = {
+    mngp_settlements: 'Коммерческое предложение на разработку МНГП.',
+    mngp_districts: 'Коммерческое предложение на разработку МНГП.',
+    territorial_zone_boundaries: 'Коммерческое предложение на подготовку описания границ территориальных зон.',
+  };
   const INITIAL_CHAT_MESSAGES = {
     'p-chat': 'Загрузите готовый Excel-файл или напишите в чат, какие данные нужно найти. Здесь появятся сообщения о загрузке, поиске и проверке таблицы.',
     'g-chat': 'Здесь будут появляться сообщения о подготовке документов. Можно спросить, что сейчас происходит, что уже готово, были ли ошибки и что делать дальше.',
@@ -2956,6 +2961,22 @@
     scheduleUiStateSave();
   }
 
+  function syncDefaultSubjectForWorkType(value) {
+    const subject = document.getElementById('settings-mail-subject');
+    const currentSubject = String((subject && subject.value) || '').trim();
+    const defaultSubjects = Object.values(WORK_TYPE_DEFAULT_SUBJECTS);
+    const nextSubject = WORK_TYPE_DEFAULT_SUBJECTS[value] || WORK_TYPE_DEFAULT_SUBJECTS.mngp_settlements;
+    if (subject && (!currentSubject || defaultSubjects.includes(currentSubject))) {
+      subject.value = nextSubject;
+    }
+  }
+
+  function handleSettingsWorkTypeChange(value) {
+    syncDefaultSubjectForWorkType(value);
+    updateSettingsChecklist();
+    refreshDocumentsStatus({ silent: true });
+  }
+
   function saveSettingsAndValidate() {
     updateSettingsChecklist();
     const missing = getMissingSettingsFields();
@@ -2993,6 +3014,7 @@
     const mailSubject = document.getElementById('settings-mail-subject');
     if (workType && settings.workType) workType.value = settings.workType;
     if (mailSubject && typeof settings.mailSubject === 'string') mailSubject.value = settings.mailSubject;
+    if (workType && settings.workType) syncDefaultSubjectForWorkType(settings.workType);
     if (settings.documentMode) syncDocumentModeControls(settings.documentMode);
     syncSenderAttachmentModeFromDocuments();
 
@@ -3878,7 +3900,7 @@
     status.classList.toggle('error', state === 'error');
     statusText.textContent = message || (
       isLoading
-        ? 'Запрашиваем события UniSender...'
+        ? 'Запрашиваем события провайдера...'
         : state === 'error'
           ? 'Не удалось обновить аналитику'
           : 'Аналитика обновлена'
@@ -3907,9 +3929,10 @@
         : 'только что';
       const awaitingProviderEvents = !!analytics.awaiting_provider_events;
       const providerEventsCount = Number(analytics.provider_events_count || 0);
+      const providerLabel = analytics.provider_label || 'провайдер';
       sub.textContent = awaitingProviderEvents
-        ? `В UniSender передано ${total.toLocaleString('ru')} email-получателей. Ждём события доставки от провайдера. Обновлено: ${generatedAt}.`
-        : `Сводка по текущей отправке: ${total.toLocaleString('ru')} email-получателей. Событий провайдера: ${providerEventsCount.toLocaleString('ru')}. Обновлено: ${generatedAt}.`;
+        ? `${providerLabel}: передано ${total.toLocaleString('ru')} email-получателей. Ждём события доставки, если они доступны. Обновлено: ${generatedAt}.`
+        : `${providerLabel}: ${total.toLocaleString('ru')} email-получателей. Событий провайдера: ${providerEventsCount.toLocaleString('ru')}. Обновлено: ${generatedAt}.`;
     }
     grid.innerHTML = cards.map(card => {
       const value = Number(card.value || 0).toLocaleString('ru');
@@ -3942,7 +3965,7 @@
     }
     if (deliveryAnalyticsLoading && !silent) return null;
     if (refresh) {
-      setDeliveryRefreshState('loading', 'Запрашиваем события UniSender...');
+      setDeliveryRefreshState('loading', 'Запрашиваем события провайдера...');
     } else if (!silent) {
       setDeliveryRefreshState('loading', 'Обновляем показатели...');
     }
@@ -3955,7 +3978,7 @@
       renderDeliveryAnalytics(result);
       scheduleDeliveryAnalyticsFollowup(result);
       if (result.refresh_started || result.refresh_in_progress) {
-        setDeliveryRefreshState('loading', 'UniSender ещё готовит события. Проверим повторно...');
+        setDeliveryRefreshState('loading', 'Провайдер ещё готовит события. Проверим повторно...');
       } else if (!silent || refresh) {
         const total = Number(result.total || 0).toLocaleString('ru');
         setDeliveryRefreshState('done', `Готово: ${total} email-получателей`);
@@ -4495,7 +4518,7 @@
     const senderPassword = document.getElementById('settings-sender-password');
 
     if (workType) workType.selectedIndex = 0;
-    if (subject) subject.value = 'Коммерческое предложение на разработку МНГП.';
+    if (subject) subject.value = WORK_TYPE_DEFAULT_SUBJECTS.mngp_settlements;
     if (settingsDocumentMode) settingsDocumentMode.value = 'kp';
     if (senderEmail) senderEmail.value = '';
     if (senderPassword) senderPassword.value = '';
@@ -5648,6 +5671,8 @@ function clearAttachedFile() {
       const params = new URLSearchParams();
       if (requestedJobId) params.set('job_id', requestedJobId);
       params.set('document_mode', getDocumentMode());
+      const workType = document.getElementById('settings-work-type')?.value || '';
+      if (workType) params.set('work_type', workType);
       const url = `/api/documents/status?${params.toString()}`;
       const res = await fetchWithTimeout(url, {}, 12000);
       const data = await readJsonOrText(res);
@@ -5684,6 +5709,7 @@ function clearAttachedFile() {
     await ensureCurrentJobId();
     documentsStartClicked = true;
     const documentMode = getDocumentMode();
+    const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
     syncSenderAttachmentModeFromDocuments({ force: true });
     scheduleUiStateSave();
     const isResume = currentGeneratorStatus === 'stopped' || currentPhilologistStatus === 'stopped';
@@ -5711,7 +5737,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/documents/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ mode: 'fast', document_mode: documentMode })),
+        body: JSON.stringify(withJobPayload({ mode: 'fast', document_mode: documentMode, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) {
@@ -6947,6 +6973,7 @@ function clearAttachedFile() {
       const sendMode = getSenderSendMode();
       const attachmentMode = getSenderAttachmentMode();
       const mailSubject = getMailSubjectTemplate();
+      const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
       showToast('Проверяю перед отправкой');
       senderRunning = true;
       flowNotificationState.sender.terminalAnnounced = false;
@@ -6955,7 +6982,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, mail_subject: mailSubject })),
+        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, mail_subject: mailSubject, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
@@ -7011,6 +7038,7 @@ function clearAttachedFile() {
         const sendMode = getSenderSendMode();
         const attachmentMode = getSenderAttachmentMode();
         const mailSubject = getMailSubjectTemplate();
+        const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
         const hasPreviousSendProgress = Number((lastSenderUiState && lastSenderUiState.sent_rows) || 0) > 0
           || Number((((lastSenderUiState && lastSenderUiState.stats) || {}).sent) || 0) > 0;
@@ -7034,7 +7062,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, mail_subject: mailSubject })),
+        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, mail_subject: mailSubject, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');

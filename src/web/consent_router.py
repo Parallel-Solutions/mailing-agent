@@ -5,7 +5,7 @@ from html import escape
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 
-from src.generator.delivery.consent_store import confirm_consent
+from src.generator.delivery.consent_store import confirm_consent, mark_materials_dispatch_result
 from src.jobs import load_agent_state, save_agent_state
 
 
@@ -33,21 +33,57 @@ def _consent_page_message(record: dict) -> str:
     return f"Спасибо. Мы получили ваш запрос. {materials} отправим на указанный email отдельным письмом."
 
 
+def _materials_already_sent(record: dict) -> bool:
+    return (
+        _safe_text(record.get("materials_status")) == "sent"
+        or bool(_safe_text(record.get("materials_sent_at")))
+    )
+
+
+def _first_dispatch_row(result: dict) -> dict:
+    rows = result.get("rows") if isinstance(result, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    for row in rows:
+        if isinstance(row, dict):
+            return row
+    return {}
+
+
+def _dispatch_error_text(result: dict) -> str:
+    row = _first_dispatch_row(result)
+    for key in ("error", "warning", "next_action"):
+        text = _safe_text(row.get(key))
+        if text:
+            return text
+    return _safe_text(result.get("summary_text")) if isinstance(result, dict) else ""
+
+
+def _dispatch_was_sent(result: dict) -> bool:
+    row = _first_dispatch_row(result)
+    row_result = _safe_text(row.get("result"))
+    if row_result in {"sent", "skipped_logged_sent"}:
+        return True
+    if row.get("sent_recipients"):
+        return True
+    return int(result.get("sent_rows") or 0) > 0 and int(result.get("error_rows") or 0) <= 0
+
+
 def _format_materials_dispatch_summary(record: dict, result: dict) -> str:
     recipient = _safe_text(record.get("recipient"))
     mun_name = _safe_text(record.get("mun_name"))
     target = ", ".join(part for part in (mun_name, recipient) if part)
-    sent_rows = int(result.get("sent_rows") or 0)
-    error_rows = int(result.get("error_rows") or 0)
 
-    if sent_rows > 0 and error_rows <= 0:
+    if _dispatch_was_sent(result):
         return (
             f"Клиент дал согласие{f' ({target})' if target else ''}. "
             f"{_materials_sent_text(record)}"
         )
+    error_text = _dispatch_error_text(result)
+    suffix = f" Причина: {error_text}" if error_text else ""
     return (
         f"Клиент дал согласие{f' ({target})' if target else ''}, "
-        "но материалы пока не отправились. Проверьте журнал отправки."
+        f"но материалы пока не отправились. Проверьте журнал отправки.{suffix}"
     )
 
 
@@ -66,8 +102,34 @@ def _dispatch_materials_after_consent(record: dict) -> None:
     row_id = str(record.get("row_id") or "").strip()
     transport = str(record.get("transport") or "").strip() or "smtp"
     attachment_mode = str(record.get("attachment_mode") or "").strip() or "kp"
+    work_type = str(record.get("work_type") or "").strip() or None
     subject_template = str(record.get("subject_template") or "").strip() or None
     if not row_id:
+        return
+    if _materials_already_sent(record):
+        result = {
+            "summary_text": "Материалы уже были отправлены ранее.",
+            "sent_rows": 1,
+            "error_rows": 0,
+            "rows": [
+                {
+                    "id": row_id,
+                    "recipient": _safe_text(record.get("recipient")),
+                    "result": "skipped_logged_sent",
+                    "error": "",
+                    "warning": "",
+                }
+            ],
+        }
+        mark_materials_dispatch_result(
+            job_id=job_id,
+            row_id=row_id,
+            recipient=_safe_text(record.get("recipient")),
+            sent=True,
+            error="",
+            summary=_safe_text(result.get("summary_text")),
+        )
+        _save_materials_dispatch_summary(record, result)
         return
     result = run_sender(
         dry_run=False,
@@ -77,7 +139,16 @@ def _dispatch_materials_after_consent(record: dict) -> None:
         attachment_mode=attachment_mode,
         subject_template=subject_template,
         require_confirmed_consent=True,
+        work_type=work_type,
         job_id=job_id,
+    )
+    mark_materials_dispatch_result(
+        job_id=job_id,
+        row_id=row_id,
+        recipient=_safe_text(record.get("recipient")),
+        sent=_dispatch_was_sent(result),
+        error=_dispatch_error_text(result),
+        summary=_safe_text(result.get("summary_text")),
     )
     _save_materials_dispatch_summary(record, result)
 

@@ -26,6 +26,7 @@ from src.generator.delivery.sender_agent import (
     _safe_text,
     _unisender_status_label,
 )
+from src.generator.delivery.rusender_events import load_rusender_events
 from src.generator.delivery.unisender_go_events import load_unisender_go_events
 from src.generator.generation.excel_io import load_rows
 from src.jobs import resolve_job_paths
@@ -35,8 +36,9 @@ from src.utils.config import settings
 BLUE = "1F4E78"
 LIGHT_BLUE = "D9EAF7"
 BORDER = Side(style="thin", color="D9E2F3")
-REPORT_FILENAME = "unisender_delivery_report.xlsx"
-ANALYTICS_CACHE_FILENAME = "unisender_delivery_analytics.json"
+REPORT_FILENAME = "sender_delivery_report.xlsx"
+LEGACY_REPORT_FILENAME = "unisender_delivery_report.xlsx"
+ANALYTICS_CACHE_FILENAME = "sender_delivery_analytics.json"
 EVENT_DUMP_POLL_ATTEMPTS = 15
 EVENT_DUMP_POLL_SECONDS = 2.0
 _ANALYTICS_REFRESH_LOCK = threading.Lock()
@@ -59,10 +61,17 @@ UNISENDER_GO_TECHNICAL_ERROR_STATUSES = {
     "err_spam_skipped",
     "skip_dup_unreachable",
 }
+PROVIDER_LABELS = {
+    "rusender": "RuSender",
+    "unisender": "UniSender",
+    "unisender_go": "UniSender Go",
+    "unisender_classic": "UniSender",
+    "smtp": "SMTP",
+}
 
 
-def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: bool = True) -> Path:
-    """Build an Excel journal for UniSender delivery attempts."""
+def build_sender_delivery_report_xlsx(job_id: str | None = None, *, refresh: bool = True) -> Path:
+    """Build an Excel journal for delivery attempts."""
 
     job_paths = resolve_job_paths(job_id)
     output_path = job_paths.root_dir / "state" / REPORT_FILENAME
@@ -71,7 +80,7 @@ def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: 
     workbook = Workbook()
     stats_sheet = workbook.active
     stats_sheet.title = "Статистика"
-    journal_sheet = workbook.create_sheet("Журнал UniSender")
+    journal_sheet = workbook.create_sheet("Журнал отправки")
 
     _write_statistics_sheet(stats_sheet, rows, job_id=job_id, refresh_error=refresh_error)
     _write_journal_sheet(journal_sheet, rows)
@@ -104,23 +113,24 @@ def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: 
     return output_path
 
 
-def build_unisender_delivery_analytics(
+def build_sender_delivery_analytics(
     job_id: str | None = None,
     *,
     refresh: bool = False,
     refresh_wait: bool = False,
 ) -> dict[str, Any]:
-    """Return lightweight dashboard metrics for the current UniSender sending job."""
+    """Return lightweight dashboard metrics for the current sending job."""
 
     refresh_started = False
     if refresh and refresh_wait:
         rows, refresh_error = _build_delivery_rows(job_id, refresh=True)
     else:
         if refresh:
-            refresh_started = _start_unisender_delivery_refresh(job_id)
+            refresh_started = _start_sender_delivery_refresh(job_id)
         rows, refresh_error = _build_delivery_rows(job_id, refresh=False)
     statuses = Counter(_normalize_provider_status(row["provider_status"] or "unknown") for row in rows)
     providers = Counter(row.get("provider") or "unisender" for row in rows)
+    provider_key, provider_label = _primary_provider(providers)
 
     total = len(rows)
     accepted_statuses = {"accepted", "success", "ok_sent", "sent", "queued", "not_sent", "processing"}
@@ -182,10 +192,10 @@ def build_unisender_delivery_analytics(
     cards = [
         {
             "id": "accepted",
-            "title": "Получателей в UniSender",
+            "title": f"Передано в {provider_label}" if provider_label else "Передано провайдеру",
             "value": accepted,
             "percent": 100.0 if total else 0.0,
-            "hint": "Email-получатели, которых наш сервис успешно передал провайдеру.",
+            "hint": f"Email-получатели, которых наш сервис успешно передал в {provider_label}." if provider_label else "Email-получатели, которых наш сервис успешно передал провайдеру.",
             "tone": "good" if accepted and not errors else "neutral",
         },
         {
@@ -193,7 +203,7 @@ def build_unisender_delivery_analytics(
             "title": "Доставлено",
             "value": delivered,
             "percent": pct(delivered),
-            "hint": "Подтверждённая доставка по статусам UniSender.",
+            "hint": "Подтверждённая доставка по событиям провайдера, если они доступны.",
             "tone": "neutral" if awaiting_provider_events else "good",
         },
         {
@@ -201,7 +211,7 @@ def build_unisender_delivery_analytics(
             "title": "Открытия",
             "value": read,
             "percent": pct(read),
-            "hint": "Письма, где UniSender Go зафиксировал открытие или более позднее действие.",
+            "hint": "Письма, где провайдер зафиксировал открытие или более позднее действие.",
             "tone": "neutral" if awaiting_provider_events else "good",
         },
         {
@@ -209,7 +219,7 @@ def build_unisender_delivery_analytics(
             "title": "Переходы",
             "value": clicked,
             "percent": pct(clicked),
-            "hint": "Письма, где UniSender Go зафиксировал переход по ссылке.",
+            "hint": "Письма, где провайдер зафиксировал переход по ссылке.",
             "tone": "neutral" if awaiting_provider_events else "good",
         },
         {
@@ -225,7 +235,7 @@ def build_unisender_delivery_analytics(
             "title": "Временные ошибки",
             "value": soft_bounced,
             "percent": pct(soft_bounced),
-            "hint": "Временные недоставки: UniSender Go ещё может повторить попытку.",
+            "hint": "Временные недоставки: провайдер ещё может повторить попытку.",
             "tone": "warn" if soft_bounced else "neutral",
         },
         {
@@ -233,7 +243,7 @@ def build_unisender_delivery_analytics(
             "title": "Отписки/спам",
             "value": unsubscribed + spam,
             "percent": pct(unsubscribed + spam),
-            "hint": "Отписки и жалобы на спам по событиям UniSender Go.",
+            "hint": "Отписки и жалобы на спам по событиям провайдера.",
             "tone": "warn" if (unsubscribed + spam) else "neutral",
         },
         {
@@ -257,11 +267,18 @@ def build_unisender_delivery_analytics(
         "status": "ok",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "job_id": job_id or "",
+        "provider": provider_key,
+        "provider_label": provider_label,
+        "provider_labels": {
+            provider: _provider_label(provider)
+            for provider, count in providers.items()
+            if count
+        },
         "total": total,
         "checked": checked,
         "refresh_error": refresh_error,
         "refresh_started": refresh_started,
-        "refresh_in_progress": _is_unisender_delivery_refresh_running(job_id),
+        "refresh_in_progress": _is_sender_delivery_refresh_running(job_id),
         "awaiting_provider_events": awaiting_provider_events,
         "provider_events_count": provider_events_count,
         "summary": {
@@ -287,31 +304,44 @@ def build_unisender_delivery_analytics(
     }
 
 
-def _start_unisender_delivery_refresh(job_id: str | None) -> bool:
+def build_unisender_delivery_report_xlsx(job_id: str | None = None, *, refresh: bool = True) -> Path:
+    return build_sender_delivery_report_xlsx(job_id, refresh=refresh)
+
+
+def build_unisender_delivery_analytics(
+    job_id: str | None = None,
+    *,
+    refresh: bool = False,
+    refresh_wait: bool = False,
+) -> dict[str, Any]:
+    return build_sender_delivery_analytics(job_id, refresh=refresh, refresh_wait=refresh_wait)
+
+
+def _start_sender_delivery_refresh(job_id: str | None) -> bool:
     key = str(job_id or "__legacy__")
     with _ANALYTICS_REFRESH_LOCK:
         current = _ANALYTICS_REFRESH_THREADS.get(key)
         if current and current.is_alive():
             return False
         thread = threading.Thread(
-            target=_run_unisender_delivery_refresh_background,
+            target=_run_sender_delivery_refresh_background,
             kwargs={"job_id": job_id},
             daemon=True,
-            name=f"unisender-analytics-{key}",
+            name=f"sender-analytics-{key}",
         )
         _ANALYTICS_REFRESH_THREADS[key] = thread
         thread.start()
         return True
 
 
-def _is_unisender_delivery_refresh_running(job_id: str | None) -> bool:
+def _is_sender_delivery_refresh_running(job_id: str | None) -> bool:
     key = str(job_id or "__legacy__")
     with _ANALYTICS_REFRESH_LOCK:
         current = _ANALYTICS_REFRESH_THREADS.get(key)
         return bool(current and current.is_alive())
 
 
-def _run_unisender_delivery_refresh_background(job_id: str | None) -> None:
+def _run_sender_delivery_refresh_background(job_id: str | None) -> None:
     key = str(job_id or "__legacy__")
     try:
         _build_delivery_rows(job_id, refresh=True)
@@ -322,18 +352,23 @@ def _run_unisender_delivery_refresh_background(job_id: str | None) -> None:
                 _ANALYTICS_REFRESH_THREADS.pop(key, None)
 
 
+def sender_delivery_report_has_data(job_id: str | None = None) -> bool:
+    return bool(_load_delivery_log_items(job_id))
+
+
 def unisender_delivery_report_has_data(job_id: str | None = None) -> bool:
-    return bool(_load_unisender_log_items(job_id))
+    return sender_delivery_report_has_data(job_id)
 
 
 def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dict[str, Any]], str]:
-    items = _load_unisender_log_items(job_id)
+    items = _load_delivery_log_items(job_id)
     refresh_messages: list[str] = []
     if refresh:
         go_refresh_error = _refresh_unisender_go_event_dump(job_id, items)
         if go_refresh_error:
             refresh_messages.append(go_refresh_error)
     go_events = _latest_unisender_go_events(job_id)
+    rusender_events = _latest_rusender_events(job_id)
     cached_statuses = _load_delivery_status_cache(job_id)
     provider_statuses: dict[str, dict[str, Any]] = {}
     refresh_error = ""
@@ -368,6 +403,10 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
         if go_event:
             provider_status = _safe_text(go_event.get("provider_status")) or provider_status
             checked_at = _safe_text(go_event.get("checked_at")) or checked_at
+        rusender_event = _match_rusender_event(item, rusender_events)
+        if rusender_event:
+            provider_status = _safe_text(rusender_event.get("provider_status")) or provider_status
+            checked_at = _safe_text(rusender_event.get("checked_at")) or checked_at
 
         label = _report_status_label(provider_status)
         rows.append(
@@ -664,13 +703,13 @@ def _save_delivery_status_cache(job_id: str | None, statuses: dict[str, dict[str
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _load_unisender_log_items(job_id: str | None) -> list[dict[str, Any]]:
+def _load_delivery_log_items(job_id: str | None) -> list[dict[str, Any]]:
     job_paths = resolve_job_paths(job_id)
     sent_mail_log_path = None if job_paths.uses_legacy_layout else job_paths.sent_mail_log_path
     items = [
         item
         for item in _load_sent_mail_log_items(sent_mail_log_path)
-        if _safe_text(item.get("transport")) == "unisender"
+        if _safe_text(item.get("transport")) in {"unisender", "rusender", "smtp"}
     ]
     items = _filter_items_by_current_sender_state(job_id, items)
     items = _filter_items_by_current_data(job_id, items)
@@ -687,6 +726,8 @@ def _filter_items_by_current_sender_state(job_id: str | None, items: list[dict[s
     if not job_id or not items:
         return items
     state = _load_sender_state(job_id)
+    if bool(state.get("selection_scoped")):
+        return items
     state_rows = state.get("rows")
     if not isinstance(state_rows, list) or not state_rows:
         return items
@@ -878,6 +919,39 @@ def _latest_unisender_go_events(job_id: str | None) -> dict[str, dict[str, Any]]
     return latest
 
 
+def _latest_rusender_events(job_id: str | None) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    priority = {
+        "accepted": 10,
+        "delivered": 30,
+        "opened": 40,
+        "clicked": 50,
+        "unsubscribed": 60,
+        "soft_bounced": 70,
+        "spam": 80,
+        "hard_bounced": 90,
+        "err_delivery_failed": 95,
+    }
+    for event in load_rusender_events(job_id):
+        status = _normalize_provider_status(_safe_text(event.get("provider_status") or event.get("event_type")))
+        checked_at = _safe_text(event.get("occurred_at") or event.get("received_at"))
+        recipient = _safe_text(event.get("recipient")).lower()
+        task_id = _safe_text(event.get("task_id"))
+        keys = []
+        if task_id and recipient:
+            keys.append(f"task_email:{task_id}:{recipient}")
+        if task_id:
+            keys.append(f"task:{task_id}")
+        if recipient:
+            keys.append(f"email:{recipient}")
+        for key in keys:
+            previous = latest.get(key)
+            previous_rank = priority.get(_normalize_provider_status(_safe_text(previous.get("provider_status")) if previous else ""), 0)
+            if not previous or priority.get(status, 0) >= previous_rank:
+                latest[key] = {"provider_status": status, "checked_at": checked_at}
+    return latest
+
+
 def _unisender_go_status_priority(status: str, priority: dict[str, int]) -> int:
     normalized = _normalize_provider_status(status)
     if normalized in UNISENDER_GO_TECHNICAL_ERROR_STATUSES:
@@ -914,6 +988,31 @@ def _match_unisender_go_event(item: dict[str, Any], events: dict[str, dict[str, 
     return None
 
 
+def _match_rusender_event(item: dict[str, Any], events: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    if _provider_name(item) != "rusender":
+        return None
+    provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
+    task_id = _safe_text(
+        item.get("provider_message_id")
+        or item.get("message_id")
+        or item.get("provider_job_id")
+        or provider.get("message_id")
+        or provider.get("uuid")
+    )
+    recipient = _safe_text(item.get("recipient")).lower()
+    keys = []
+    if task_id and recipient:
+        keys.append(f"task_email:{task_id}:{recipient}")
+    if task_id:
+        keys.append(f"task:{task_id}")
+    if recipient:
+        keys.append(f"email:{recipient}")
+    for key in keys:
+        if key in events:
+            return events[key]
+    return None
+
+
 def _check_classic_statuses(email_ids: list[str]) -> dict[str, dict[str, Any]]:
     statuses: dict[str, dict[str, Any]] = {}
     unique_ids = [_safe_text(item) for item in dict.fromkeys(email_ids) if _safe_text(item)]
@@ -933,7 +1032,7 @@ def _write_statistics_sheet(sheet, rows: list[dict[str, Any]], *, job_id: str | 
     summary_rows = [
         ["Дата формирования", datetime.now().isoformat(timespec="seconds")],
         ["Job ID", job_id or "текущий/legacy"],
-        ["Всего писем UniSender", len(rows)],
+        ["Всего писем", len(rows)],
         ["Уникальных получателей", unique_recipients],
         ["Уникальных МО", unique_municipalities],
         ["Успешно", outcomes.get("Успешно", 0)],
@@ -953,7 +1052,7 @@ def _write_statistics_sheet(sheet, rows: list[dict[str, Any]], *, job_id: str | 
 
 
 def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
-    _add_title(sheet, "Журнал UniSender")
+    _add_title(sheet, "Журнал отправки")
     _write_table(
         sheet,
         3,
@@ -963,8 +1062,8 @@ def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
             "Получатель",
             "Время отправки",
             "Тема письма",
-            "Принято UniSender",
-            "Код статуса UniSender",
+            "Принято провайдером",
+            "Код статуса провайдера",
             "Расшифровка статуса",
             "Итог",
             "Email ID",
@@ -996,12 +1095,12 @@ def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
 
 def _provider_name(item: dict[str, Any]) -> str:
     provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
-    return _safe_text(provider.get("provider")) or "unisender"
+    return _safe_text(provider.get("provider")) or _safe_text(item.get("transport")) or "unknown"
 
 
 def _message_id(item: dict[str, Any]) -> str:
     provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
-    return _safe_text(item.get("provider_message_id") or provider.get("message_id"))
+    return _safe_text(item.get("provider_message_id") or provider.get("message_id") or provider.get("uuid"))
 
 
 def _comment_text(item: dict[str, Any], refresh_error: str) -> str:
@@ -1070,20 +1169,42 @@ def _normalize_provider_status(status: str) -> str:
     return normalized or "unknown"
 
 
+def _provider_label(provider: str) -> str:
+    normalized = _safe_text(provider).strip().lower()
+    return PROVIDER_LABELS.get(normalized) or (_safe_text(provider) or "провайдер")
+
+
+def _primary_provider(providers: Counter[str]) -> tuple[str, str]:
+    if not providers:
+        return "", ""
+    provider, _ = providers.most_common(1)[0]
+    return provider, _provider_label(provider)
+
+
 def _analytics_note(*, total: int, checked: int, providers: Counter[str], refresh_error: str) -> str:
     if total <= 0:
         return "Статистика появится после реальной отправки писем."
-    provider_names = ", ".join(name for name, count in providers.most_common() if count)
+    provider_names = ", ".join(_provider_label(name) for name, count in providers.most_common() if count)
+    has_unisender = any("unisender" in name for name in providers)
+    has_rusender = any("rusender" in name for name in providers)
     if refresh_error:
         return f"Показаны локальные данные отправки. Не удалось обновить часть статусов: {refresh_error}"
-    if any(name == "unisender_go" for name in providers):
+    if has_rusender and not has_unisender:
         return (
-            "Для UniSender Go доставка, открытия и клики появляются после событий провайдера. "
-            "Если письма уже переданы в UniSender, а здесь пока нули, значит сервис ещё ждёт webhook или добор из event-dump."
+            "Для RuSender доставка, открытия и клики приходят через webhook. "
+            "Если в кабинете RuSender события уже есть, а здесь пока нули, проверьте URL webhook и токен."
+        )
+    if has_unisender:
+        return (
+            "Доставка, открытия и клики появляются после событий провайдера. "
+            "Если письма уже переданы, а здесь пока нули, значит сервис ещё ждёт webhook или добор событий."
         )
     if checked:
-        return f"Статусы обновлены для {checked} писем. Провайдеры: {provider_names or 'UniSender'}."
-    return f"Письма переданы провайдеру. Провайдеры: {provider_names or 'UniSender'}."
+        return f"Статусы обновлены для {checked} писем. Провайдеры: {provider_names or 'неизвестно'}."
+    return (
+        "Показаны локальные данные отправки. Для этого провайдера пока нет подключённых событий "
+        f"доставки, открытий и переходов. Провайдеры: {provider_names or 'неизвестно'}."
+    )
 
 
 def _add_title(sheet, title: str) -> None:

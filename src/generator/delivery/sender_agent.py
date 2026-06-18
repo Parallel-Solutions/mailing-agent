@@ -35,6 +35,7 @@ from src.generator.orchestration.agent_handoff import (
 from src.generator.generation.config_generator import DATA_DIR, DATA_XLSX_PATH, OUTPUT_DIR, START_OUTGOING_NUMBER, TEMPLATES_DIR
 from src.generator.generation.excel_io import load_rows, save_workbook, update_status
 from src.generator.generation.generator_agent import run_generator_agent
+from src.generator.generation.work_types import DEFAULT_WORK_TYPE, get_work_type_profile, normalize_work_type
 from src.generator.delivery.consent_store import (
     CONSENT_TEXT,
     has_confirmed_consent,
@@ -589,14 +590,26 @@ def _resolve_pdf_attachments(
     if mode in {ATTACHMENT_MODE_CONTRACT, ATTACHMENT_MODE_BOTH}:
         requested_paths.append((contract_docx, "договор в Word"))
 
-    attachments = [str(path) for path, _ in requested_paths if path]
-    missing = []
+    attachments: list[str] = []
+    missing: list[str] = []
     for path, label in requested_paths:
         if not path:
             missing.append(label)
+            continue
+        try:
+            if not path.exists():
+                missing.append(f"{label} (файл исчез из папки)")
+                continue
+            if path.stat().st_size <= 0:
+                missing.append(f"{label} (файл пустой)")
+                continue
+        except OSError as exc:
+            missing.append(f"{label} (не удалось проверить файл: {_safe_text(exc)})")
+            continue
+        attachments.append(str(path))
     if not missing:
         return attachments, None
-    return attachments, f"В папке {folder.name} не найдено: {', '.join(missing)}."
+    return attachments, f"Перед отправкой не прошла проверка вложений. В папке {folder.name} проблема: {', '.join(missing)}."
 
 
 def _status_class(raw_status: Any) -> str:
@@ -700,6 +713,7 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
             "other": 0,
         }
         samples: dict[str, str] = {}
+        details: dict[str, str] = {}
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -721,7 +735,7 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
                 human = "для части строк не найдена папка с готовыми документами"
             elif result == "error_missing_attachments":
                 key = "attachments"
-                human = "для части строк не найдены PDF-вложения"
+                human = "для части строк не найдены нужные вложения"
             elif result == "blocked_by_philologist":
                 key = "text_review"
                 human = "часть документов требует ручной проверки текста"
@@ -733,11 +747,15 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
                 human = "часть строк требует ручной проверки"
             counters[key] += 1
             samples.setdefault(key, human)
+            if error and key not in details:
+                row_id = _safe_text(row.get("id")) or "без ID"
+                details[key] = f"пример: ID {row_id}: {error}"
 
         parts = []
         for key in ("email", "documents", "attachments", "text_review", "provider", "other"):
             if counters[key] > 0:
-                parts.append(f"{_plural_rows(counters[key])}: {samples[key]}.")
+                detail = f" ({details[key]})." if key in details else "."
+                parts.append(f"{_plural_rows(counters[key])}: {samples[key]}{detail}")
         return " ".join(parts)
 
     if state.get("status") == "stopped":
@@ -906,9 +924,18 @@ def _delegate_sender_problem(
     )
 
 
-def _run_autonomous_recovery_for_generator(*, row_id: Any, job_id: str | None = None) -> dict[str, Any]:
+def _run_autonomous_recovery_for_generator(
+    *,
+    row_id: Any,
+    work_type: str | None = None,
+    job_id: str | None = None,
+) -> dict[str, Any]:
     row_id_text = _safe_text(row_id)
-    generator_result = run_generator_agent(row_ids=[row_id_text] if row_id_text else None, job_id=job_id)
+    generator_result = run_generator_agent(
+        row_ids=[row_id_text] if row_id_text else None,
+        work_type=work_type,
+        job_id=job_id,
+    )
     result = {
         "generator_result": generator_result,
     }
@@ -1068,40 +1095,43 @@ def _build_mail_subject(subject_template: str, row: dict[str, Any]) -> str:
     return _render_mail_template(_safe_text(subject_template) or DEFAULT_MAIL_SUBJECT, row).strip()
 
 
-def _materials_subject(attachment_mode: str) -> str:
+def _materials_subject(attachment_mode: str, work_type: str | None = None) -> str:
+    profile = get_work_type_profile(work_type)
     mode = _normalize_attachment_mode(attachment_mode)
     if mode == ATTACHMENT_MODE_CONTRACT:
-        return "Проект договора на разработку МНГП."
-    return DEFAULT_MAIL_SUBJECT
+        return f"Проект договора: {profile.service_title_nominative}."
+    return profile.mail_subject
 
 
-def _consent_request_subject(attachment_mode: str) -> str:
+def _consent_request_subject(attachment_mode: str, work_type: str | None = None) -> str:
+    profile = get_work_type_profile(work_type)
     mode = _normalize_attachment_mode(attachment_mode)
     if mode == ATTACHMENT_MODE_CONTRACT:
-        return "МНГП для {MUN_R_NAME}: согласие на получение проекта договора"
+        return profile.consent_subject_contract
     if mode == ATTACHMENT_MODE_BOTH:
-        return CONSENT_REQUEST_SUBJECT
-    return "МНГП для {MUN_R_NAME}: согласие на получение КП"
+        return profile.consent_subject_both
+    return profile.consent_subject_kp
 
 
-def _consent_request_material_text(attachment_mode: str) -> tuple[str, str, str]:
+def _consent_request_material_text(attachment_mode: str, work_type: str | None = None) -> tuple[str, str, str]:
+    profile = get_work_type_profile(work_type)
     mode = _normalize_attachment_mode(attachment_mode)
     if mode == ATTACHMENT_MODE_CONTRACT:
         return (
             "проект договора",
             "проект договора",
-            "Получить проект договора по разработке МНГП.",
+            profile.consent_button_contract,
         )
     if mode == ATTACHMENT_MODE_BOTH:
         return (
             "коммерческое предложение и проект договора",
             "полный пакет документов: описание, условия, проект договора, техническое задание, календарный план",
-            "Получить КП и проект договора по разработке МНГП.",
+            profile.consent_button_both,
         )
     return (
         "коммерческое предложение",
         "коммерческое предложение с описанием состава работ и условий",
-        "Получить персонализированное коммерческое предложение по разработке МНГП.",
+        profile.consent_button_kp,
     )
 
 
@@ -1128,11 +1158,13 @@ def _build_consent_request_body(
     *,
     consent_url: str,
     attachment_mode: str = ATTACHMENT_MODE_KP,
+    work_type: str | None = None,
 ) -> str:
+    profile = get_work_type_profile(work_type)
     values = _mail_template_values(row)
     mun_name = _safe_text(values.get("MUN_R_NAME")) or _safe_text(values.get("MUN_NAME"))
     subject_name = _safe_text(values.get("SUB_RF_1")) or _safe_text(values.get("SUB_RF"))
-    prepared_materials, package_text, button_text = _consent_request_material_text(attachment_mode)
+    prepared_materials, package_text, button_text = _consent_request_material_text(attachment_mode, work_type)
     action_text, dispatch_text = _consent_request_action_text(attachment_mode)
     object_text = (
         f"для {mun_name} ({subject_name})"
@@ -1148,7 +1180,7 @@ def _build_consent_request_body(
             [
                 "Здравствуйте!",
                 "",
-                f"ООО «Параллельные Решения» уже подготовило {object_text} {prepared_materials} на разработку местных нормативов градостроительного проектирования (далее — МНГП).",
+                f"ООО «Параллельные Решения» уже подготовило {object_text} {prepared_materials} {profile.consent_prepared_phrase}.",
                 "",
                 f"Если это направление вам актуально, мы можем направить вам {package_text}.",
                 action_text,
@@ -1597,7 +1629,7 @@ def _htmlify_mail_body(
     parts: list[str] = []
     for line in body.splitlines():
         stripped = line.strip()
-        consent_match = re.match(r"^(Получить .+?МНГП\.?)\s*:?\s*(https?://\S+)\s*$", stripped)
+        consent_match = re.match(r"^(Получить .+?\.?)\s*:?\s*(https?://\S+)\s*$", stripped)
         if consent_match:
             button_text = escape(consent_match.group(1), quote=False)
             consent_url = escape(consent_match.group(2), quote=True)
@@ -2499,6 +2531,7 @@ def run_sender(
     attachment_mode: str | None = None,
     subject_template: str | None = None,
     require_confirmed_consent: bool = False,
+    work_type: str | None = None,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
@@ -2522,7 +2555,11 @@ def run_sender(
     effective_transport = _normalize_transport(transport)
     effective_send_mode = _normalize_send_mode(send_mode)
     effective_attachment_mode = _normalize_attachment_mode(attachment_mode)
+    effective_work_type = normalize_work_type(work_type or state.get("work_type") or DEFAULT_WORK_TYPE)
     effective_subject_template = _safe_text(subject_template)
+    if effective_work_type != DEFAULT_WORK_TYPE and effective_subject_template == DEFAULT_MAIL_SUBJECT:
+        effective_subject_template = ""
+    requested_row_ids = {str(item).strip() for item in (row_ids or []) if str(item).strip()}
     stats = _collect_excel_stats(data_xlsx_path)
     started_at = datetime.now().isoformat(timespec="seconds")
     send_run_id = ""
@@ -2546,7 +2583,11 @@ def run_sender(
             "completed_at": None,
             "processed_rows": 0,
             "ready_rows": 0,
-            "sent_rows": stats["sent"] if effective_send_mode == "materials" else 0,
+            "sent_rows": (
+                0
+                if effective_send_mode == "consent_request" or requested_row_ids or effective_limit
+                else stats["sent"]
+            ),
             "error_rows": 0,
             "skipped_rows": 0,
             "total_rows": 0,
@@ -2566,11 +2607,14 @@ def run_sender(
             "philology_blocked_rows": 0,
             "autonomous_recovery_rows": 0,
             "effective_limit": effective_limit,
+            "selection_scoped": bool(requested_row_ids or effective_limit),
+            "requested_row_ids": sorted(requested_row_ids),
             "remaining_rows": 0,
             "stop_requested": False,
             "stop_requested_at": None,
             "transport": effective_transport,
             "attachment_mode": effective_attachment_mode,
+            "work_type": effective_work_type,
             "subject_template": effective_subject_template,
         }
     )
@@ -2586,7 +2630,6 @@ def run_sender(
         return dict(state)
 
     workbook, worksheet, rows = load_rows(data_xlsx_path)
-    requested_row_ids = {str(item).strip() for item in (row_ids or []) if str(item).strip()}
     if requested_row_ids:
         rows = [row for row in rows if str(row.get("ID")).strip() in requested_row_ids]
     candidates = rows[:effective_limit] if effective_limit else rows
@@ -2607,9 +2650,9 @@ def run_sender(
     workbook_dirty = False
     started_at = perf_counter()
     subject = (
-        _consent_request_subject(effective_attachment_mode)
+        _consent_request_subject(effective_attachment_mode, effective_work_type)
         if effective_send_mode == "consent_request"
-        else (effective_subject_template or _materials_subject(effective_attachment_mode))
+        else (effective_subject_template or _materials_subject(effective_attachment_mode, effective_work_type))
     )
     sent_mail_recipients = (
         _load_sent_mail_recipients(
@@ -2758,7 +2801,11 @@ def run_sender(
                 entry["handoff_task_id"] = task.get("id")
                 state["generator_handoff_rows"] += 1
             if auto_recover:
-                recovery_info = _run_autonomous_recovery_for_generator(row_id=row_id, job_id=job_id)
+                recovery_info = _run_autonomous_recovery_for_generator(
+                    row_id=row_id,
+                    work_type=effective_work_type,
+                    job_id=job_id,
+                )
                 folder, folder_error, attachments, attachment_error = _retry_row_resources(
                     row_id,
                     output_dir=output_dir,
@@ -2798,7 +2845,11 @@ def run_sender(
                 entry["handoff_task_id"] = task.get("id")
                 state["generator_handoff_rows"] += 1
             if auto_recover:
-                recovery_info = _run_autonomous_recovery_for_generator(row_id=row_id, job_id=job_id)
+                recovery_info = _run_autonomous_recovery_for_generator(
+                    row_id=row_id,
+                    work_type=effective_work_type,
+                    job_id=job_id,
+                )
                 folder, folder_error, attachments, attachment_error = _retry_row_resources(
                     row_id,
                     output_dir=output_dir,
@@ -2942,12 +2993,14 @@ def run_sender(
                         transport=effective_transport,
                         attachment_mode=effective_attachment_mode,
                         subject_template=effective_subject_template,
+                        work_type=effective_work_type,
                     )
                     entry["consent_url"] = consent_record.get("consent_url")
                     row_body_override = _build_consent_request_body(
                         row,
                         consent_url=_safe_text(consent_record.get("consent_url")),
                         attachment_mode=effective_attachment_mode,
+                        work_type=effective_work_type,
                     )
                 attachments_to_send = [] if effective_send_mode == "consent_request" else attachments
                 if not recipients_to_send:
@@ -3203,7 +3256,7 @@ def run_sender(
         if callable(close):
             close()
         state["stats"] = _collect_excel_stats(data_xlsx_path)
-        if effective_send_mode == "consent_request":
+        if state.get("selection_scoped") or effective_send_mode == "consent_request":
             state["remaining_rows"] = max(0, int(state.get("total_rows") or 0) - int(state.get("processed_rows") or 0))
         else:
             state["remaining_rows"] = int(state["stats"].get("pending", 0)) + int(state["stats"].get("error", 0))
