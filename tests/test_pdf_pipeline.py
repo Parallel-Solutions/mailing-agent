@@ -37,6 +37,35 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(result[docx_path], existing_pdf)
         self.assertEqual(progress_calls, 1)
 
+    def test_gotenberg_backend_is_available(self) -> None:
+        docx_path = self.tmp_dir / "document.docx"
+        pdf_path = self.tmp_dir / "pdf" / "document.pdf"
+        docx_path.write_bytes(b"fake-docx")
+
+        with patch.object(pdf_converter, "_convert_with_gotenberg", return_value={docx_path: pdf_path}) as convert:
+            result = pdf_converter._run_backend(
+                "gotenberg",
+                [docx_path],
+                pdf_path.parent,
+                chunk_size=10,
+                worker_count=2,
+                profiles_root=None,
+            )
+
+        convert.assert_called_once()
+        self.assertEqual(result[docx_path], pdf_path)
+
+    def test_gotenberg_without_urls_returns_missing_pdf(self) -> None:
+        docx_path = self.tmp_dir / "document.docx"
+        output_dir = self.tmp_dir / "pdf"
+        output_dir.mkdir()
+        docx_path.write_bytes(b"fake-docx")
+
+        with patch.object(pdf_converter, "GOTENBERG_BASE_URLS", ()):
+            result = pdf_converter._convert_with_gotenberg([docx_path], output_dir, worker_count=1)
+
+        self.assertIsNone(result[docx_path])
+
     def test_finalize_generated_files_recovers_missing_pdf_from_final_docx(self) -> None:
         final_dir = self.tmp_dir / "output" / "1_Test"
         batch_pdf_dir = self.tmp_dir / "batch_pdf"

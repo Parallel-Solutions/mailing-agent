@@ -45,6 +45,7 @@ from src.generator.delivery.consent_store import (
 from src.generator.case_engine import build_inflected_fields_with_trace
 from src.generator.philologist.philologist_agent import run_philologist
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
+from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
 from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
 from src.utils.config import settings
 
@@ -3300,6 +3301,8 @@ def _fallback_sender_chat(message: str, state: dict[str, Any], *, job_id: str | 
     preview = preview_recipients(limit=10, job_id=job_id)
     tasks = state.get("tasks") or []
     recent_events = state.get("recent_events") or []
+    rag_docs = find_relevant_service_docs(message, limit=1)
+    rag_hint = f"\nСправка: {rag_docs[0].get('answer')}" if rag_docs else ""
     if not rows:
         data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
         stats = state.get("stats") or _collect_excel_stats(data_xlsx_path)
@@ -3327,6 +3330,7 @@ def _fallback_sender_chat(message: str, state: dict[str, Any], *, job_id: str | 
             f"{preview.get('summary_text')}\n"
             f"{_format_preview_rows(preview.get('rows') or [], limit=5)}"
             f"{extra}"
+            f"{rag_hint}"
         )
     return (
         (state.get("summary_text") or "Статус отправщика пока недоступен.")
@@ -3352,6 +3356,7 @@ def _fallback_sender_chat(message: str, state: dict[str, Any], *, job_id: str | 
             )
             if recent_events else ""
         )
+        + rag_hint
     )
 
 
@@ -3387,12 +3392,15 @@ def chat_with_sender(message: str, *, job_id: str | None = None) -> dict[str, An
                 "error": item.get("error"),
             }
         )
+    rag_context = format_service_rag_context(find_relevant_service_docs(message, limit=3))
 
     prompt = (
         "Ты агент-отправщик писем с выбранными вложениями: КП, договором или КП и договором. "
         "Отвечай кратко, по-русски, только на основе текущего состояния запуска и предпросмотра адресов из data.xlsx. "
         "Если пользователь спрашивает про адреса или почты до рассылки, опирайся на предпросмотр, а не проси запускать отправку. "
-        "Не выдумывай информацию, которой нет в данных.\n\n"
+        "Не выдумывай информацию, которой нет в данных. "
+        "Если справка RAG противоречит состоянию запуска, главным источником правды является состояние запуска.\n\n"
+        f"Справка RAG по сервису:\n{rag_context}\n\n"
         f"Состояние последнего запуска:\n{json.dumps({'summary_text': state.get('summary_text'), 'stats': state.get('stats'), 'rows': compact_rows, 'task_stats': state.get('task_stats'), 'tasks': (state.get('tasks') or [])[:10], 'recent_events': (state.get('recent_events') or [])[:10]}, ensure_ascii=False, indent=2)}\n\n"
         f"Предпросмотр адресов из data.xlsx:\n{json.dumps(preview, ensure_ascii=False, indent=2)}\n\n"
         f"Вопрос пользователя:\n{message}"

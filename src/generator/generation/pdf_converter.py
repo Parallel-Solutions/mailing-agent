@@ -11,14 +11,24 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 import httpx
 
 try:
+    from src.utils.logger import logger
+except ImportError:  # pragma: no cover
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+try:
     from src.generator.generation.config_generator import (
         BATCH_LIBREOFFICE_PROFILES_DIR,
+        GOTENBERG_BASE_URLS,
+        GOTENBERG_CONVERT_TIMEOUT_SECONDS,
         LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_BASE_URL,
         ONLYOFFICE_CONVERTER_MODE,
@@ -34,6 +44,8 @@ try:
 except ImportError:  # pragma: no cover
     from generator.generation.config_generator import (
         BATCH_LIBREOFFICE_PROFILES_DIR,
+        GOTENBERG_BASE_URLS,
+        GOTENBERG_CONVERT_TIMEOUT_SECONDS,
         LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_BASE_URL,
         ONLYOFFICE_CONVERTER_MODE,
@@ -150,6 +162,7 @@ def _kill_process_tree(process: subprocess.Popen) -> None:
 
 
 ProgressCallback = Callable[[], None]
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 def _convert_with_libreoffice(
@@ -361,6 +374,69 @@ def _convert_with_onlyoffice(
     return result
 
 
+def _resolve_gotenberg_endpoint(base_url: str) -> str:
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError("Gotenberg base URL is not configured.")
+    return f"{base}/forms/libreoffice/convert"
+
+
+def _convert_gotenberg_single(task: Tuple[int, Path, Path]) -> Tuple[Path, Optional[Path]]:
+    index, docx_path, output_dir = task
+    base_urls = list(GOTENBERG_BASE_URLS)
+    if not base_urls:
+        return docx_path, None
+
+    base_url = base_urls[index % len(base_urls)]
+    endpoint = _resolve_gotenberg_endpoint(base_url)
+    output_path = output_dir / f"{docx_path.stem}.pdf"
+    timeout = httpx.Timeout(GOTENBERG_CONVERT_TIMEOUT_SECONDS, connect=10.0)
+
+    try:
+        with docx_path.open("rb") as source_file, httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.post(
+                endpoint,
+                files={
+                    "files": (
+                        docx_path.name,
+                        source_file,
+                        DOCX_MIME,
+                    )
+                },
+            )
+            response.raise_for_status()
+            if not response.content.startswith(b"%PDF"):
+                raise RuntimeError(
+                    f"Gotenberg returned unexpected payload for {docx_path.name}: "
+                    f"{response.headers.get('content-type', 'unknown')}"
+                )
+            output_path.write_bytes(response.content)
+    except Exception:
+        return docx_path, None
+    return docx_path, output_path if output_path.exists() else None
+
+
+def _convert_with_gotenberg(
+    docx_paths: List[Path],
+    output_dir: Path,
+    *,
+    worker_count: int,
+    progress_callback: ProgressCallback | None = None,
+) -> Dict[Path, Optional[Path]]:
+    result: Dict[Path, Optional[Path]] = {path: None for path in docx_paths}
+    if not docx_paths or not GOTENBERG_BASE_URLS:
+        return result
+
+    tasks = [(index, path, output_dir) for index, path in enumerate(docx_paths)]
+    max_workers = max(1, min(worker_count, len(tasks)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for docx_path, pdf_path in executor.map(_convert_gotenberg_single, tasks):
+            result[docx_path] = pdf_path
+            if progress_callback:
+                progress_callback()
+    return result
+
+
 def _backend_sequence() -> list[str]:
     sequence: list[str] = []
     for backend in (PDF_CONVERTER, PDF_CONVERTER_FALLBACK):
@@ -383,8 +459,9 @@ def _run_backend(
     profiles_root: Optional[Path],
     progress_callback: ProgressCallback | None = None,
 ) -> Dict[Path, Optional[Path]]:
+    started = perf_counter()
     if backend == "libreoffice":
-        return _convert_with_libreoffice(
+        result = _convert_with_libreoffice(
             docx_paths,
             output_dir,
             chunk_size=chunk_size,
@@ -392,9 +469,24 @@ def _run_backend(
             profiles_root=profiles_root,
             progress_callback=progress_callback,
         )
-    if backend == "onlyoffice":
-        return _convert_with_onlyoffice(docx_paths, output_dir, worker_count=worker_count, progress_callback=progress_callback)
-    return {path: None for path in docx_paths}
+    elif backend == "onlyoffice":
+        result = _convert_with_onlyoffice(docx_paths, output_dir, worker_count=worker_count, progress_callback=progress_callback)
+    elif backend == "gotenberg":
+        result = _convert_with_gotenberg(docx_paths, output_dir, worker_count=worker_count, progress_callback=progress_callback)
+    else:
+        result = {path: None for path in docx_paths}
+    success_count = sum(1 for value in result.values() if value is not None)
+    logger.info(
+        "pdf_backend_completed",
+        backend=backend,
+        total=len(docx_paths),
+        success_count=success_count,
+        failed_count=max(0, len(docx_paths) - success_count),
+        seconds=round(perf_counter() - started, 3),
+        workers=worker_count,
+        chunk_size=chunk_size,
+    )
+    return result
 
 
 def _pending_paths(result: Dict[Path, Optional[Path]]) -> List[Path]:

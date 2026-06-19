@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
+from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
+
 StatusLoader = Callable[[str | None], dict[str, Any]]
 ChatWithOrchestrator = Callable[..., dict[str, Any] | None]
 
@@ -233,6 +235,39 @@ def _documents_agent_general_reply(message: str, documents_status: dict | None =
     return "Я на связи. Могу помочь со статусом подготовки, ошибками, скачиванием документов или следующим шагом."
 
 
+def _documents_agent_rag_reply(message: str, documents_status: dict | None = None) -> str | None:
+    lowered = message.lower()
+    knowledge_intent = any(
+        token in lowered
+        for token in (
+            "как работает",
+            "как устро",
+            "что такое",
+            "зачем",
+            "почему",
+            "rag",
+            "чат",
+            "шаблон",
+            "gotenberg",
+            "профилиров",
+        )
+    )
+    if not knowledge_intent:
+        return None
+    docs = find_relevant_service_docs(message, limit=2)
+    if not docs:
+        return None
+
+    status = str((documents_status or {}).get("status") or "")
+    stage_text = str((documents_status or {}).get("stage_text") or "").strip()
+    answer = str(docs[0].get("answer") or "").strip()
+    if not answer:
+        return None
+    if status and stage_text:
+        answer += f" По текущей сессии сейчас: {stage_text}"
+    return answer
+
+
 def _documents_agent_tool_get_documents_status(job_id: str | None, status_loader: StatusLoader) -> dict:
     return status_loader(job_id)
 
@@ -389,6 +424,7 @@ def _documents_agent_ai_reply(
         "generator_stage": generator.get("stage"),
         "philologist_status": philologist.get("status"),
     }
+    rag_context = format_service_rag_context(find_relevant_service_docs(message, limit=3))
     agent_message = (
         "Ты отвечаешь в чате экрана «Документы» сервиса рассылки. "
         "Ты единый дружелюбный агент интерфейса, а не технический логгер. "
@@ -399,6 +435,7 @@ def _documents_agent_ai_reply(
         "Не говори пользователю, что он должен ничего не нажимать, если это не нужно для ответа. "
         "Не запускай тяжёлые действия и инструменты, если пользователь прямо не просит запуск. "
         "Если пользователь просто здоровается, ответь живо и предложи помочь со статусом документов.\n\n"
+        f"Справка RAG по сервису:\n{rag_context}\n\n"
         f"Контекст экрана документов:\n{context}\n\n"
         f"Сообщение пользователя: {message}"
     )
@@ -460,6 +497,12 @@ def choose_documents_agent_reply(
             _documents_agent_next_step_reply(documents_status),
             tools_used=["get_documents_status", "get_current_step"],
         )
+
+    documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
+    rag_reply = _documents_agent_rag_reply(message, documents_status)
+    if rag_reply:
+        return _documents_agent_reply_payload(rag_reply, source="service_rag", tools_used=["service_rag"])
+
     if any(token in lowered for token in ("скачать", "архив", "отч", "файл", "pdf", "docx")):
         reply, _ = _documents_agent_tool_get_downloads(job_id, status_loader)
         return _documents_agent_reply_payload(reply, tools_used=["get_downloads"])
