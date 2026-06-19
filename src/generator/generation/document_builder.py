@@ -28,7 +28,7 @@ KP_TEMPLATE_FILENAME = "kp_template_source.docx"
 CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
 KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
 CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
-DOCUMENT_RENDERER_VERSION = "2026-06-19-kp-pdf-spacer-v11"
+DOCUMENT_RENDERER_VERSION = "2026-06-19-kp-pdf-layout-v15"
 
 SVG_BLIP_PATTERN = re.compile(
     r'<a:blip r:embed="(?P<png>rId\d+)">'
@@ -762,7 +762,7 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
         replace_text_in_runs(paragraph, replacements)
 
     if template_path.name.startswith("kp_"):
-        materialize_kp_pdf_spacers(doc)
+        stabilize_kp_pdf_layout(doc, context)
 
     doc.save(output_path)
     if template_path.name.startswith("kp_"):
@@ -771,16 +771,28 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
     return output_path
 
 
-def materialize_kp_pdf_spacers(doc: DocumentObject) -> None:
+def stabilize_kp_pdf_layout(doc: DocumentObject, context: dict | None = None) -> None:
+    compact_kp_price_note_spacer(doc)
+
+
+def compact_kp_price_note_spacer(doc: DocumentObject) -> None:
     paragraphs = doc.paragraphs
     for index, paragraph in enumerate(paragraphs[:-1]):
         if "Стоимость выполнения работ" not in paragraph.text:
             continue
+        paragraph.paragraph_format.space_after = Pt(0)
         next_paragraph = paragraphs[index + 1]
         if next_paragraph.text.strip():
             continue
-        if not next_paragraph.runs:
-            next_paragraph.add_run(" ")
+        run = next_paragraph.runs[0] if next_paragraph.runs else next_paragraph.add_run(" ")
+        run.text = " "
+        run.font.size = Pt(1)
+        for extra_run in next_paragraph.runs[1:]:
+            extra_run.text = ""
+        next_paragraph.paragraph_format.space_before = Pt(0)
+        next_paragraph.paragraph_format.space_after = Pt(0)
+        next_paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+        next_paragraph.paragraph_format.line_spacing = Pt(4)
 
 
 def ensure_render_context(context: dict) -> dict:

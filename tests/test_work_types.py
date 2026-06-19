@@ -11,9 +11,9 @@ from src.generator.delivery import sender_agent
 from src.generator.generation.document_builder import (
     build_kp_filename,
     build_kp_replacements,
-    materialize_kp_pdf_spacers,
     normalize_kp_formatting,
     render_docx,
+    stabilize_kp_pdf_layout,
 )
 from src.generator.generation.transforms import build_document_context
 from src.generator.generation.work_types import WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES
@@ -143,16 +143,51 @@ class WorkTypeProfileTests(unittest.TestCase):
             template_path.unlink(missing_ok=True)
             output_path.unlink(missing_ok=True)
 
-    def test_kp_pdf_spacer_after_price_note_is_materialized(self) -> None:
+    def test_kp_pdf_layout_after_price_note_is_stabilized(self) -> None:
         doc = Document()
-        doc.add_paragraph("Стоимость выполнения работ составляет 99 000 рублей 00 копеек.")
+        paragraph = doc.add_paragraph("Стоимость выполнения работ составляет ")
+        amount_run = paragraph.add_run("99 000")
+        amount_run.bold = True
+        paragraph.add_run(" рублей 00 копеек, в том числе НДС 5% — 4 714,29 руб.")
         doc.add_paragraph("")
         doc.add_paragraph("ООО «Параллельные Решения» специализируется на комплексной разработке документов.")
 
-        materialize_kp_pdf_spacers(doc)
+        stabilize_kp_pdf_layout(doc, {})
 
+        self.assertEqual(
+            doc.paragraphs[0].text,
+            "Стоимость выполнения работ составляет 99 000 рублей 00 копеек, в том числе НДС 5% — 4 714,29 руб.",
+        )
+        self.assertTrue(doc.paragraphs[0].runs[1].bold)
+        self.assertEqual(doc.paragraphs[0].paragraph_format.space_after.pt, 0)
         self.assertEqual(doc.paragraphs[1].text, " ")
-        self.assertTrue(doc.paragraphs[1].runs)
+        self.assertEqual(doc.paragraphs[1].runs[0].font.size.pt, 1)
+        self.assertEqual(doc.paragraphs[1].paragraph_format.line_spacing.pt, 4)
+        self.assertEqual(
+            doc.paragraphs[2].text,
+            "ООО «Параллельные Решения» специализируется на комплексной разработке документов.",
+        )
+
+    def test_territorial_zone_kp_price_gap_is_compacted(self) -> None:
+        doc = Document()
+        doc.add_paragraph(
+            "Стоимость выполнения работ (за 1 территориальную зону) составляет "
+            "10 000 рублей 00 копеек, в том числе НДС 5% — 476,19 руб."
+        )
+        doc.add_paragraph("")
+        doc.add_paragraph("ООО «Параллельные Решения» специализируется на комплексной разработке документов.")
+
+        stabilize_kp_pdf_layout(doc, {"WORK_TYPE": WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES})
+
+        self.assertEqual(len(doc.paragraphs), 3)
+        self.assertEqual(doc.paragraphs[0].paragraph_format.space_after.pt, 0)
+        self.assertEqual(doc.paragraphs[1].text, " ")
+        self.assertEqual(doc.paragraphs[1].runs[0].font.size.pt, 1)
+        self.assertEqual(doc.paragraphs[1].paragraph_format.line_spacing.pt, 4)
+        self.assertEqual(
+            doc.paragraphs[2].text,
+            "ООО «Параллельные Решения» специализируется на комплексной разработке документов.",
+        )
 
 
 if __name__ == "__main__":
