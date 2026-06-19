@@ -28,7 +28,7 @@ KP_TEMPLATE_FILENAME = "kp_template_source.docx"
 CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
 KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
 CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
-DOCUMENT_RENDERER_VERSION = "2026-06-19-structured-kp-v10"
+DOCUMENT_RENDERER_VERSION = "2026-06-19-kp-pdf-spacer-v11"
 
 SVG_BLIP_PATTERN = re.compile(
     r'<a:blip r:embed="(?P<png>rId\d+)">'
@@ -761,11 +761,26 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
     for paragraph in iter_paragraphs(doc):
         replace_text_in_runs(paragraph, replacements)
 
+    if template_path.name.startswith("kp_"):
+        materialize_kp_pdf_spacers(doc)
+
     doc.save(output_path)
     if template_path.name.startswith("kp_"):
         restore_svg_assets_from_template(template_path, output_path)
         force_svg_blips_in_docx(output_path)
     return output_path
+
+
+def materialize_kp_pdf_spacers(doc: DocumentObject) -> None:
+    paragraphs = doc.paragraphs
+    for index, paragraph in enumerate(paragraphs[:-1]):
+        if "Стоимость выполнения работ" not in paragraph.text:
+            continue
+        next_paragraph = paragraphs[index + 1]
+        if next_paragraph.text.strip():
+            continue
+        if not next_paragraph.runs:
+            next_paragraph.add_run(" ")
 
 
 def ensure_render_context(context: dict) -> dict:

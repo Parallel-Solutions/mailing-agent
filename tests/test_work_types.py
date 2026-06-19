@@ -8,7 +8,13 @@ from docx.enum.text import WD_COLOR_INDEX
 from docx.shared import Cm, Pt
 
 from src.generator.delivery import sender_agent
-from src.generator.generation.document_builder import build_kp_filename, build_kp_replacements, normalize_kp_formatting, render_docx
+from src.generator.generation.document_builder import (
+    build_kp_filename,
+    build_kp_replacements,
+    materialize_kp_pdf_spacers,
+    normalize_kp_formatting,
+    render_docx,
+)
 from src.generator.generation.transforms import build_document_context
 from src.generator.generation.work_types import WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES
 
@@ -136,6 +142,17 @@ class WorkTypeProfileTests(unittest.TestCase):
         finally:
             template_path.unlink(missing_ok=True)
             output_path.unlink(missing_ok=True)
+
+    def test_kp_pdf_spacer_after_price_note_is_materialized(self) -> None:
+        doc = Document()
+        doc.add_paragraph("Стоимость выполнения работ составляет 99 000 рублей 00 копеек.")
+        doc.add_paragraph("")
+        doc.add_paragraph("ООО «Параллельные Решения» специализируется на комплексной разработке документов.")
+
+        materialize_kp_pdf_spacers(doc)
+
+        self.assertEqual(doc.paragraphs[1].text, " ")
+        self.assertTrue(doc.paragraphs[1].runs)
 
 
 if __name__ == "__main__":
