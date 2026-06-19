@@ -13,7 +13,8 @@ from docx.oxml import OxmlElement
 from docx.shared import Cm, Pt, RGBColor
 from docx.table import _Cell, Table
 
-from src.generator.generation.config_generator import BATCH_DOCX_DIR, OUTPUT_DIR, TEMPLATES_DIR
+from src.generator.generation.config_generator import BATCH_DOCX_DIR, KP_GENERATION_ENGINE, OUTPUT_DIR, TEMPLATES_DIR
+from src.generator.generation.structured_kp import render_structured_kp_docx
 from src.generator.generation.transforms import (
     build_district_admin_name,
     build_output_folder_name,
@@ -27,7 +28,7 @@ KP_TEMPLATE_FILENAME = "kp_template_source.docx"
 CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
 KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
 CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
-DOCUMENT_RENDERER_VERSION = "2026-06-18-docx-content-only-v9"
+DOCUMENT_RENDERER_VERSION = "2026-06-19-structured-kp-v10"
 
 SVG_BLIP_PATTERN = re.compile(
     r'<a:blip r:embed="(?P<png>rId\d+)">'
@@ -942,12 +943,20 @@ def generate_documents_for_row(
     kp_path = batch_docx_dir / build_staged_filename(row, "kp")
     contract_path = batch_docx_dir / build_staged_filename(row, "contract")
     requested_kinds = set(document_mode_kinds(document_mode))
+    use_structured_kp = KP_GENERATION_ENGINE == "structured"
 
     generated_files: dict[str, Path] = {}
 
-    if "kp" in requested_kinds and kp_template_path.exists():
+    if "kp" in requested_kinds and (kp_template_path.exists() or use_structured_kp):
         kp_filename = build_kp_filename(row, context)
-        generated_files["kp"] = render_docx(kp_template_path, build_kp_replacements(context), kp_path, context)
+        if use_structured_kp:
+            generated_files["kp"] = render_structured_kp_docx(
+                context,
+                kp_path,
+                style_template_path=kp_template_path if kp_template_path.exists() else None,
+            )
+        else:
+            generated_files["kp"] = render_docx(kp_template_path, build_kp_replacements(context), kp_path, context)
         generated_files["kp_final_docx"] = output_folder / kp_filename
         generated_files["kp_final_pdf"] = output_folder / kp_filename.replace(".docx", ".pdf")
 

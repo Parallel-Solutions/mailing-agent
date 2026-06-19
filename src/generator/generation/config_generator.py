@@ -66,6 +66,7 @@ PHILOLOGIST_CONTEXT_LLM_MIN_CONFIDENCE = float(_read_env_override("PHILOLOGIST_C
 WEB_CASE_AGENT_MAX_WORKERS = max(1, int(_read_env_override("WEB_CASE_AGENT_MAX_WORKERS", "1")))
 
 # PDF-конвертация
+KP_GENERATION_ENGINE = _read_env_override("KP_GENERATION_ENGINE", "template").strip().lower() or "template"
 PDF_CONVERTER = _read_env_override("PDF_CONVERTER", "libreoffice").strip().lower() or "libreoffice"
 PDF_CONVERTER_FALLBACK = _read_env_override("PDF_CONVERTER_FALLBACK", "").strip().lower()
 ONLYOFFICE_BASE_URL = _read_env_override("ONLYOFFICE_BASE_URL", "").strip().rstrip("/")
