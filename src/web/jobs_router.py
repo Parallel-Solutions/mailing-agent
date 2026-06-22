@@ -12,6 +12,11 @@ from typing import Any, Callable
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 
 from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, document_mode_kinds, normalize_document_mode
+from src.jobs.access import JobAccessDenied, assign_job_owner, authorize_job_access, job_is_visible
+from src.jobs.audit import append_audit_event
+from src.security.auth import coerce_principal
+from src.web.request_models import DataVerifyMunicipalityNamesRequest, DocumentsLoadTestRequest
+from src.web.responses import ok_response
 
 
 class JobsWebController:
@@ -67,6 +72,12 @@ class JobsWebController:
             return json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             return {}
+
+    def _authorize_job(self, job_id: str | None, principal: object, *, allow_missing: bool = False) -> str | None:
+        try:
+            return authorize_job_access(job_id, principal, allow_missing=allow_missing)
+        except JobAccessDenied as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     def _state_file_mtime(self, path: Path) -> float:
         try:
@@ -451,34 +462,41 @@ class JobsWebController:
         router = APIRouter()
 
         @router.post("/api/jobs")
-        async def create_job(username: str = Depends(self.check_auth)):
+        async def create_job(principal: object = Depends(self.check_auth)):
             job_id = self.create_job_id()
             paths = self.resolve_job_paths(job_id)
             paths.ensure_dirs()
-            return {"status": "ok", "job_id": job_id}
+            assign_job_owner(job_id, principal)
+            append_audit_event(action="job.create", principal=principal, job_id=job_id)
+            result = {"job_id": job_id}
+            return ok_response(result, **result)
 
         @router.post("/api/load-test/documents")
-        async def create_documents_load_test(payload: dict | None = Body(default=None), username: str = Depends(self.check_auth)):
-            payload = payload or {}
-            try:
-                row_count = int(payload.get("row_count") or 500)
-            except (TypeError, ValueError):
-                row_count = 500
-            source_job_id = str(payload.get("source_job_id") or "").strip() or None
-            raw_seed = payload.get("seed")
-            try:
-                seed = int(raw_seed) if raw_seed not in (None, "") else None
-            except (TypeError, ValueError):
-                seed = None
+        async def create_documents_load_test(payload: DocumentsLoadTestRequest | None = Body(default=None), principal: object = Depends(self.check_auth)):
+            payload = payload or DocumentsLoadTestRequest()
+            row_count = payload.row_count
+            source_job_id = payload.source_job_id
+            if source_job_id:
+                self._authorize_job(source_job_id, principal)
+            seed = payload.seed
             result = self.create_documents_load_test_job(
                 row_count=row_count,
                 source_job_id=source_job_id,
                 seed=seed,
             )
+            result_job_id = str(result.get("job_id") or "").strip() or None
+            if result_job_id:
+                assign_job_owner(result_job_id, principal)
+                append_audit_event(
+                    action="job.load_test.create",
+                    principal=principal,
+                    job_id=result_job_id,
+                    details={"source_job_id": source_job_id, "row_count": row_count},
+                )
             return {"status": "ok", "result": result}
 
         @router.get("/api/jobs/history")
-        async def jobs_history(limit: int = 40, username: str = Depends(self.check_auth)):
+        async def jobs_history(limit: int = 40, principal: object = Depends(self.check_auth)):
             safe_limit = max(1, min(int(limit or 40), 200))
             if not self.jobs_dir.exists():
                 return {"status": "ok", "result": {"jobs": []}}
@@ -486,6 +504,8 @@ class JobsWebController:
             candidates: list[tuple[float, Path]] = []
             for job_dir in self.jobs_dir.iterdir():
                 if not job_dir.is_dir() or not job_dir.name.startswith("job-"):
+                    continue
+                if not job_is_visible(job_dir.name, principal):
                     continue
                 updated_at, is_mailing_hint = self._job_history_candidate(job_dir)
                 if not is_mailing_hint:
@@ -511,13 +531,15 @@ class JobsWebController:
         async def latest_data_job(
             after: float = 0.0,
             upload_token: str | None = None,
-            username: str = Depends(self.check_auth),
+            principal: object = Depends(self.check_auth),
         ):
             clean_token = self._clean_upload_token(upload_token)
             latest: tuple[float, str, Path] | None = None
             if self.jobs_dir.exists():
                 for job_dir in self.jobs_dir.iterdir():
                     if not job_dir.is_dir() or not job_dir.name.startswith("job-"):
+                        continue
+                    if not job_is_visible(job_dir.name, principal):
                         continue
                     if clean_token and self._read_upload_meta(job_dir.name).get("upload_token") != clean_token:
                         continue
@@ -530,7 +552,7 @@ class JobsWebController:
                     if latest is None or updated_at > latest[0]:
                         latest = (updated_at, job_dir.name, data_path)
 
-            if not clean_token or self._read_upload_meta(None).get("upload_token") == clean_token:
+            if coerce_principal(principal).is_admin and (not clean_token or self._read_upload_meta(None).get("upload_token") == clean_token):
                 legacy_data_path = self.resolve_job_paths(None).data_xlsx
                 legacy_updated_at = self._state_file_mtime(legacy_data_path)
                 if legacy_updated_at > 0 and (after <= 0 or legacy_updated_at >= after):
@@ -556,7 +578,7 @@ class JobsWebController:
             file: UploadFile = File(...),
             job_id: str | None = Form(default=None),
             upload_token: str | None = Form(default=None),
-            username: str = Depends(self.check_auth),
+            principal: object = Depends(self.check_auth),
         ):
             request_started = perf_counter()
             safe_filename = self.validate_uploaded_file(
@@ -566,7 +588,16 @@ class JobsWebController:
                 human_name="таблицы",
             )
             self.logger.info("upload_data_request_started", filename=safe_filename, requested_job_id=job_id)
-            paths = self.resolve_job_paths(job_id)
+            if job_id:
+                self._authorize_job(job_id, principal, allow_missing=True)
+                paths = self.resolve_job_paths(job_id)
+            elif coerce_principal(principal).is_admin:
+                paths = self.resolve_job_paths(None)
+            else:
+                fresh_job_id = self.create_job_id()
+                paths = self.resolve_job_paths(fresh_job_id)
+                paths.ensure_dirs()
+                self._clone_job_templates_if_present(None, fresh_job_id)
             if not paths.uses_legacy_layout and paths.data_xlsx.exists():
                 fresh_job_id = self.create_job_id()
                 fresh_paths = self.resolve_job_paths(fresh_job_id)
@@ -574,6 +605,8 @@ class JobsWebController:
                 self._clone_job_templates_if_present(paths.job_id, fresh_job_id)
                 paths = fresh_paths
             paths.ensure_dirs()
+            if paths.job_id:
+                assign_job_owner(paths.job_id, principal)
             dest = paths.data_xlsx
             dest.parent.mkdir(parents=True, exist_ok=True)
             file_save_started = perf_counter()
@@ -582,6 +615,7 @@ class JobsWebController:
             file_save_seconds = round(perf_counter() - file_save_started, 3)
             clean_upload_token = self._clean_upload_token(upload_token)
             self._write_upload_meta(paths.job_id, clean_upload_token, safe_filename)
+            append_audit_event(action="job.data.upload", principal=principal, job_id=paths.job_id, details={"filename": safe_filename})
             self.logger.info(
                 "upload_data_file_saved",
                 filename=safe_filename,
@@ -597,8 +631,7 @@ class JobsWebController:
                 source="upload",
             )
 
-            return {
-                "status": "ok",
+            result = {
                 "filename": safe_filename,
                 "job_id": paths.job_id,
                 "data_download_url": f"/api/download/data-xlsx?job_id={paths.job_id}",
@@ -613,24 +646,30 @@ class JobsWebController:
                     "request_seconds": round(perf_counter() - request_started, 3),
                 },
             }
+            return ok_response(result, **result)
 
         @router.get("/api/data/info")
-        async def data_info(job_id: str | None = None, username: str = Depends(self.check_auth)):
+        async def data_info(job_id: str | None = None, principal: object = Depends(self.check_auth)):
+            self._authorize_job(job_id, principal, allow_missing=True)
             data_path = self.prefer_existing_file(self.resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
             if not data_path.exists():
-                return {"loaded": False, "total": 0}
-            return {"loaded": True, "total": self.cached_excel_row_count(data_path)}
+                result = {"loaded": False, "total": 0}
+                return ok_response(result, **result)
+            result = {"loaded": True, "total": self.cached_excel_row_count(data_path)}
+            return ok_response(result, **result)
 
         @router.get("/api/job/readiness")
-        async def job_readiness(job_id: str | None = None, username: str = Depends(self.check_auth)):
-            return await self.job_readiness(job_id=job_id, username=username)
+        async def job_readiness(job_id: str | None = None, principal: object = Depends(self.check_auth)):
+            self._authorize_job(job_id, principal, allow_missing=True)
+            return await self.job_readiness(job_id=job_id, username=principal)
 
         @router.post("/api/data/verify-municipality-names")
         async def data_verify_municipality_names(
-            payload: dict | None = Body(default=None),
-            username: str = Depends(self.check_auth),
+            payload: DataVerifyMunicipalityNamesRequest | None = Body(default=None),
+            principal: object = Depends(self.check_auth),
         ):
-            job_id = (payload or {}).get("job_id")
+            job_id = None if payload is None else payload.job_id
+            self._authorize_job(job_id, principal, allow_missing=True)
             data_path = self.prefer_existing_file(self.resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
             if not data_path.exists():
                 raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
@@ -644,10 +683,13 @@ class JobsWebController:
             file: UploadFile = File(...),
             job_id: str | None = Form(default=None),
             template_kind: str | None = Form(default=None),
-            username: str = Depends(self.check_auth),
+            principal: object = Depends(self.check_auth),
         ):
+            self._authorize_job(job_id, principal, allow_missing=True)
             paths = self.resolve_job_paths(job_id)
             paths.ensure_dirs()
+            if paths.job_id:
+                assign_job_owner(paths.job_id, principal)
             templates_dir = paths.templates_dir
             templates_dir.mkdir(exist_ok=True)
             kind = (template_kind or "").strip().lower()
@@ -681,11 +723,12 @@ class JobsWebController:
                 raise HTTPException(status_code=400, detail="Не указан тип шаблона.")
             with dest.open("wb") as f:
                 shutil.copyfileobj(file.file, f)
-            return {
-                "status": "ok",
+            append_audit_event(action="job.template.upload", principal=principal, job_id=paths.job_id, details={"template_kind": kind, "filename": original_name})
+            result = {
                 "filename": file.filename,
                 "stored_as": dest.name,
                 "job_id": paths.job_id,
             }
+            return ok_response(result, **result)
 
         return router

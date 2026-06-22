@@ -43,12 +43,14 @@ from src.generator.generation.document_builder import (
     document_mode_kinds,
     generate_documents_for_row,
     normalize_document_mode,
+    read_output_folder_manifest,
 )
 from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.pdf_converter import convert_docx_batch
+from src.generator.generation.pdf_safe import apply_pdf_safe_postprocess, prepare_docx_for_pdf_export
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
-from src.generator.generation.transforms import build_document_context
+from src.generator.generation.transforms import build_document_context, build_output_folder_name
 from src.generator.philologist.document_review_agent import review_docx
 from src.generator.philologist.philologist_agent import _auto_fix_docx
 from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
@@ -316,13 +318,14 @@ def cleanup_existing_output_dirs(rows: list[dict], output_dir: Path | None) -> N
     row_ids.discard("")
     if not row_ids:
         return
+    exact_folder_names = {build_output_folder_name(row) for row in rows}
     for path in output_dir.iterdir():
         if not path.is_dir():
             continue
-        prefix = path.name.split("_", 1)[0].strip()
-        if prefix in row_ids:
+        manifest = read_output_folder_manifest(path)
+        manifest_row_id = str(manifest.get("row_id") or "").strip()
+        if path.name in exact_folder_names or (manifest_row_id and manifest_row_id in row_ids):
             shutil.rmtree(path, ignore_errors=True)
-
 
 def process_generator_row(
     payload: tuple[int, int, dict],
@@ -547,17 +550,40 @@ def finalize_generated_files(
 
     if create_pdf:
         pdf_target_dir = batch_pdf_dir or BATCH_PDF_DIR
+        pdf_docx_dir = pdf_target_dir / "_pdf_safe_docx"
         batch_size = max(1, worker_count * max(1, chunk_size))
         for start in range(0, len(pending_pdf_jobs), batch_size):
             job_batch = pending_pdf_jobs[start : start + batch_size]
-            staged_docx_paths = [job["staged_docx"] for job in job_batch if job["staged_docx"].exists()]
-            pdf_map = convert_docx_batch(
-                staged_docx_paths,
+            if pdf_docx_dir.exists():
+                shutil.rmtree(pdf_docx_dir, ignore_errors=True)
+            pdf_docx_dir.mkdir(parents=True, exist_ok=True)
+            safe_docx_to_original: dict[Path, Path] = {}
+            safe_plans = {}
+            for index, job in enumerate(job_batch, start=1):
+                source_docx = job["staged_docx"]
+                if not source_docx.exists():
+                    continue
+                safe_docx = pdf_docx_dir / f"{index:06d}_{source_docx.name}"
+                plan = prepare_docx_for_pdf_export(
+                    source_docx,
+                    safe_docx,
+                    file_kind=str(job.get("file_kind") or ""),
+                    template_docx=None,
+                )
+                safe_docx_to_original[safe_docx] = source_docx
+                safe_plans[safe_docx] = plan
+            pdf_safe_map = convert_docx_batch(
+                list(safe_docx_to_original.keys()),
                 pdf_target_dir,
                 chunk_size=chunk_size,
                 worker_count=worker_count,
                 progress_callback=progress_callback,
             )
+            pdf_map = {}
+            for safe_docx, created_pdf in pdf_safe_map.items():
+                if created_pdf and created_pdf.exists():
+                    apply_pdf_safe_postprocess(created_pdf, safe_plans[safe_docx])
+                pdf_map[safe_docx_to_original[safe_docx]] = created_pdf
             _finalize_generated_jobs(
                 job_batch,
                 results,
@@ -565,6 +591,7 @@ def finalize_generated_files(
                 should_stop=should_stop,
                 create_pdf=True,
             )
+            shutil.rmtree(pdf_docx_dir, ignore_errors=True)
     elif pending_pdf_jobs:
         _finalize_generated_jobs(
             pending_pdf_jobs,
@@ -661,10 +688,17 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
     pdf_work_dir.mkdir(parents=True, exist_ok=True)
 
     staged_to_final: dict[Path, Path] = {}
+    pdf_safe_plans = {}
+    kp_template_path = job_paths.templates_dir / KP_TEMPLATE_FILENAME
     for index, source_docx in enumerate(pending, start=1):
         staged_docx = staging_dir / f"{index:06d}_{source_docx.stem}.docx"
-        shutil.copy2(str(source_docx), str(staged_docx))
+        plan = prepare_docx_for_pdf_export(
+            source_docx,
+            staged_docx,
+            template_docx=kp_template_path if kp_template_path.exists() else None,
+        )
         staged_to_final[staged_docx] = source_docx.with_suffix(".pdf")
+        pdf_safe_plans[staged_docx] = plan
 
     progress = {"processed": len(ready)}
 
@@ -686,6 +720,7 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
         for staged_docx, final_pdf in staged_to_final.items():
             created_pdf = pdf_map.get(staged_docx)
             if created_pdf and created_pdf.exists():
+                apply_pdf_safe_postprocess(created_pdf, pdf_safe_plans[staged_docx])
                 final_pdf.parent.mkdir(parents=True, exist_ok=True)
                 if final_pdf.exists():
                     final_pdf.unlink()

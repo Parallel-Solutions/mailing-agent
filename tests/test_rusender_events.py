@@ -76,5 +76,35 @@ class RuSenderEventsTests(unittest.TestCase):
         self.assertEqual(record["task_id"], "mailing-agent:job-webhook:42:recipient@example.com:abc")
 
 
+    def test_append_events_skips_duplicate_payload(self) -> None:
+        EVENT_LOG.unlink(missing_ok=True)
+        payload = {
+            "eventId": "event-1",
+            "trigger": "external_mail.open",
+            "payload": {
+                "taskId": "task-123",
+                "email": "recipient@example.com",
+            },
+        }
+
+        with patch.object(
+            rusender_events,
+            "_load_task_job_index",
+            return_value={"task-123": {"job_id": "job-webhook", "row_id": "42", "recipient": "recipient@example.com"}},
+        ), patch.object(
+            rusender_events,
+            "rusender_events_path",
+            return_value=EVENT_LOG,
+        ):
+            first = rusender_events.append_rusender_events(payload)
+            second = rusender_events.append_rusender_events(payload)
+
+        lines = EVENT_LOG.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(first["saved"], 1)
+        self.assertEqual(first["duplicates"], 0)
+        self.assertEqual(second["saved"], 0)
+        self.assertEqual(second["duplicates"], 1)
+        self.assertEqual(len(lines), 1)
+
 if __name__ == "__main__":
     unittest.main()

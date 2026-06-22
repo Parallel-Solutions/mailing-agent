@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import json
 import secrets
 import threading
 from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
+
+from src.jobs.access import JobAccessDenied, authorize_job_access
+from src.jobs.audit import append_audit_event
+from src.web.errors import internal_server_error
+from src.web.request_models import ChatRequest, JobScopedRequest, LimitRequest, SenderRunRequest
+from src.web.responses import ok_response
+
+
+WEBHOOK_DEFAULT_MAX_BODY_BYTES = 256 * 1024
 
 
 def create_sender_router(
@@ -32,6 +42,51 @@ def create_sender_router(
     is_load_test_job: Callable[[str | None], bool],
 ) -> APIRouter:
     router = APIRouter()
+
+    def ensure_job_access(job_id: str | None, principal: object, *, allow_missing: bool = False) -> None:
+        try:
+            authorize_job_access(job_id, principal, allow_missing=allow_missing)
+        except JobAccessDenied as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    def webhook_max_body_bytes() -> int:
+        try:
+            configured = int(getattr(settings, "webhook_max_body_bytes", WEBHOOK_DEFAULT_MAX_BODY_BYTES) or 0)
+        except (TypeError, ValueError):
+            configured = WEBHOOK_DEFAULT_MAX_BODY_BYTES
+        return configured if configured > 0 else WEBHOOK_DEFAULT_MAX_BODY_BYTES
+
+    async def read_webhook_json(request: Request, provider_name: str) -> Any:
+        max_body_bytes = webhook_max_body_bytes()
+        content_length = str(request.headers.get("content-length") or "").strip()
+        if content_length:
+            try:
+                if int(content_length) > max_body_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Тело webhook {provider_name} превышает лимит {max_body_bytes} байт.",
+                    )
+            except ValueError:
+                pass
+
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > max_body_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Тело webhook {provider_name} превышает лимит {max_body_bytes} байт.",
+                )
+            chunks.append(chunk)
+
+        raw_body = b"".join(chunks).strip()
+        if not raw_body:
+            return {}
+        try:
+            return json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail=f"Некорректный JSON webhook {provider_name}") from exc
 
     def resolve_webhook_token() -> str:
         return str(
@@ -80,19 +135,18 @@ def create_sender_router(
         return sender_mode if sender_mode in {"kp", "contract", "both"} else "kp"
 
     @router.post("/api/sender/run")
-    async def sender_run(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-        dry_run = True if payload is None else bool(payload.get("dry_run", True))
-        limit = parse_optional_limit(payload)
-        transport = None if payload is None else payload.get("transport")
-        send_mode = None if payload is None else payload.get("send_mode")
-        subject_template = None if payload is None else payload.get("mail_subject")
-        job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    async def sender_run(payload: SenderRunRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        payload = payload or SenderRunRequest()
+        dry_run = payload.dry_run
+        limit = payload.limit
+        transport = payload.transport
+        send_mode = payload.send_mode
+        subject_template = payload.mail_subject
+        job_id = payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
         generator_state = get_generator_status(job_id)
-        work_type = str((payload or {}).get("work_type") or generator_state.get("work_type") or "").strip() or None
-        attachment_mode = _attachment_mode_from_documents(
-            job_id,
-            None if payload is None else payload.get("attachment_mode"),
-        )
+        work_type = str(payload.work_type or generator_state.get("work_type") or "").strip() or None
+        attachment_mode = _attachment_mode_from_documents(job_id, payload.attachment_mode)
         if not dry_run and is_load_test_job(job_id):
             raise HTTPException(
                 status_code=409,
@@ -131,17 +185,21 @@ def create_sender_router(
             )
             if not started:
                 return {"status": "ok", "result": compact_sender_status(get_sender_status(job_id))}
+            append_audit_event(
+                action="sender.run",
+                principal=principal,
+                job_id=job_id,
+                details={"dry_run": dry_run, "transport": transport, "send_mode": send_mode, "attachment_mode": attachment_mode},
+            )
             primed_state = primed_state_box.get("state") or get_sender_status(job_id)
         except Exception as exc:
             logger.exception("sender_run_start_failed", job_id=job_id, transport=transport)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Не удалось запустить отправку: {type(exc).__name__}: {exc}",
-            ) from exc
+            raise internal_server_error("Не удалось запустить отправку.") from exc
         return {"status": "ok", "result": compact_sender_status(primed_state)}
 
     @router.get("/api/sender/status")
-    async def sender_status(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def sender_status(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         return {"status": "ok", "result": compact_sender_status(get_sender_status(job_id))}
 
     @router.get("/api/sender/unisender-history")
@@ -149,8 +207,9 @@ def create_sender_router(
         job_id: str | None = None,
         limit: int = 50,
         refresh: bool = False,
-        username: str = Depends(check_auth),
+        principal: object = Depends(check_auth),
     ):
+        ensure_job_access(job_id, principal, allow_missing=True)
         return {
             "status": "ok",
             "result": get_unisender_history(job_id=job_id, limit=limit, refresh=refresh),
@@ -161,8 +220,9 @@ def create_sender_router(
         job_id: str | None = None,
         refresh: bool = False,
         refresh_wait: bool = False,
-        username: str = Depends(check_auth),
+        principal: object = Depends(check_auth),
     ):
+        ensure_job_access(job_id, principal, allow_missing=True)
         return {
             "status": "ok",
             "result": build_sender_delivery_analytics(
@@ -175,12 +235,13 @@ def create_sender_router(
     @router.get("/api/webhooks/unisender-go")
     async def unisender_go_webhook_health():
         token_configured = bool(resolve_webhook_token())
-        return {
-            "status": "ok",
+        result = {
             "message": "UniSender Go webhook endpoint is ready",
             "token_required": token_configured,
             "url_format": "/api/webhooks/unisender-go/{token}",
+            "max_body_bytes": webhook_max_body_bytes(),
         }
+        return ok_response(result, **result)
 
     @router.post("/api/webhooks/unisender-go")
     async def unisender_go_webhook(request: Request):
@@ -197,30 +258,28 @@ def create_sender_router(
     @router.get("/api/webhooks/unisender-go/{token}")
     async def unisender_go_webhook_token_health(token: str):
         ensure_webhook_token(token)
-        return {"status": "ok", "message": "UniSender Go token webhook endpoint is ready"}
+        result = {"message": "UniSender Go token webhook endpoint is ready"}
+        return ok_response(result, **result)
 
     @router.post("/api/webhooks/unisender-go/{token}")
     async def unisender_go_webhook_tokenized(token: str, request: Request):
         ensure_webhook_token(token)
-        try:
-            payload = await request.json()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="Некорректный JSON webhook UniSender Go") from exc
+        payload = await read_webhook_json(request, "UniSender Go")
         try:
             result = append_unisender_go_events(payload)
         except Exception as exc:
             logger.exception("unisender_go_webhook_save_failed")
-            raise HTTPException(status_code=500, detail=f"Не удалось сохранить webhook UniSender Go: {exc}") from exc
+            raise internal_server_error("Не удалось сохранить webhook UniSender Go.") from exc
         return {"status": "ok", "result": result}
 
     @router.get("/api/webhooks/rusender")
     async def rusender_webhook_health():
         token_configured = bool(resolve_rusender_webhook_token())
-        return {
-            "status": "ok",
+        result = {
             "message": "RuSender webhook endpoint is ready",
             "token_required": token_configured,
             "url_format": "/api/webhooks/rusender/{token}",
+            "max_body_bytes": webhook_max_body_bytes(),
             "events": [
                 "external_mail.delivered",
                 "external_mail.hard_bounced",
@@ -232,6 +291,7 @@ def create_sender_router(
                 "external_mail.complaint",
             ],
         }
+        return ok_response(result, **result)
 
     @router.post("/api/webhooks/rusender")
     async def rusender_webhook(request: Request):
@@ -248,41 +308,44 @@ def create_sender_router(
     @router.get("/api/webhooks/rusender/{token}")
     async def rusender_webhook_token_health(token: str):
         ensure_rusender_webhook_token(token)
-        return {"status": "ok", "message": "RuSender token webhook endpoint is ready"}
+        result = {"message": "RuSender token webhook endpoint is ready"}
+        return ok_response(result, **result)
 
     @router.post("/api/webhooks/rusender/{token}")
     async def rusender_webhook_tokenized(token: str, request: Request):
         ensure_rusender_webhook_token(token)
-        try:
-            payload = await request.json()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="Некорректный JSON webhook RuSender") from exc
+        payload = await read_webhook_json(request, "RuSender")
         try:
             result = append_rusender_events(payload)
         except Exception as exc:
             logger.exception("rusender_webhook_save_failed")
-            raise HTTPException(status_code=500, detail=f"Не удалось сохранить webhook RuSender: {exc}") from exc
+            raise internal_server_error("Не удалось сохранить webhook RuSender.") from exc
         return {"status": "ok", "result": result}
 
     @router.post("/api/sender/stop")
-    async def sender_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-        job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    async def sender_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        job_id = None if payload is None else payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
         result = request_sender_stop(job_id=job_id)
+        append_audit_event(action="sender.stop", principal=principal, job_id=job_id)
         return {"status": "ok", "result": compact_sender_status(result)}
 
     @router.post("/api/sender/preview")
-    async def sender_preview(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-        limit = parse_optional_limit(payload)
-        job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
+    async def sender_preview(payload: LimitRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        limit = None if payload is None else payload.limit
+        job_id = None if payload is None else payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
         result = preview_recipients(limit=limit, job_id=job_id)
         return {"status": "ok", "result": result}
 
     @router.post("/api/sender/chat")
-    async def sender_chat(payload: dict = Body(...), username: str = Depends(check_auth)):
-        message = str(payload.get("message", "")).strip()
+    async def sender_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
+        message = payload.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="Пустое сообщение")
-        job_id = str(payload.get("job_id") or "").strip() or None
-        return {"status": "ok", **chat_with_sender(message, job_id=job_id)}
+        job_id = payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
+        result = chat_with_sender(message, job_id=job_id)
+        return ok_response(result, **result)
 
     return router

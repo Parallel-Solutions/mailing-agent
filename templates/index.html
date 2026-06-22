@@ -5333,24 +5333,25 @@ function clearAttachedFile() {
     await ensureCurrentJobId();
     parserRunning = true;
     setParserUiState({ force: true, status: 'running', row_count: 0, task_stats: {} });
-    appendChatMessage('p-chat', 'agent', 'Начинаю поиск данных. Если нужно, уточните в чате регион, тип организаций или список МО.');
+    appendChatMessage('p-chat', 'agent', 'Запускаю поиск данных в фоне. Статус будет обновляться здесь автоматически.');
     try {
         const res = await fetchWithTimeout('/api/parser/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(withJobPayload({})),
-        }, 120000);
+        }, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка запуска парсера');
       const result = data.result || {};
       setParserUiState(result);
-      showToast('Поиск данных завершён');
-      appendChatMessage('p-chat', 'agent', result.summary_text || 'Поиск завершён. Можно скачать результат или перейти к документам.');
+      showToast(data.started === false ? 'Парсер уже выполняется' : 'Поиск данных запущен');
+      appendChatMessage('p-chat', 'agent', result.summary_text || 'Поиск запущен. Можно оставаться на странице: я обновлю статус после завершения.');
+      followParserVerificationAfterUpload();
     } catch (err) {
+      parserRunning = false;
       appendChatMessage('p-chat', 'agent', 'Не удалось запустить парсер: ' + err.message);
       showToast('Ошибка парсера');
     } finally {
-      parserRunning = false;
       await refreshParserStatus({ silent: true });
     }
   }

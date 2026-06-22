@@ -5,8 +5,14 @@ from html import escape
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 
-from src.generator.delivery.consent_store import confirm_consent, mark_materials_dispatch_result
+from src.generator.delivery.consent_store import (
+    confirm_consent,
+    get_consent_by_token,
+    mark_materials_dispatch_result,
+)
 from src.jobs import load_agent_state, save_agent_state
+from src.jobs.audit import append_audit_event
+from src.security.auth import system_principal
 
 
 def _safe_text(value: object) -> str:
@@ -31,6 +37,33 @@ def _consent_page_message(record: dict) -> str:
     else:
         materials = "КП"
     return f"Спасибо. Мы получили ваш запрос. {materials} отправим на указанный email отдельным письмом."
+
+
+def _consent_preview_message(record: dict) -> str:
+    attachment_mode = _safe_text(record.get("attachment_mode")).lower()
+    if attachment_mode == "contract":
+        materials = "проект договора"
+    elif attachment_mode == "both":
+        materials = "КП и проект договора"
+    else:
+        materials = "КП"
+    recipient = _safe_text(record.get("recipient")) or "указанный email"
+    return f"Подтвердите согласие, чтобы мы отправили {materials} на {recipient}."
+
+
+def _confirmed_page_message(record: dict) -> str:
+    if _materials_already_sent(record):
+        return f"Согласие уже подтверждено. {_materials_sent_text(record)}"
+    if _safe_text(record.get("materials_dispatch_requested_at")):
+        return "Согласие уже подтверждено. Материалы уже поставлены в очередь на отправку."
+    return _consent_page_message(record)
+
+
+def _render_confirm_form(token: str) -> str:
+    action = escape(f"/consent/confirm/{_safe_text(token)}", quote=True)
+    return f"""<form class="actions" method="post" action="{action}">
+      <button type="submit">Подтвердить и получить материалы</button>
+    </form>"""
 
 
 def _materials_already_sent(record: dict) -> bool:
@@ -128,6 +161,7 @@ def _dispatch_materials_after_consent(record: dict) -> None:
             sent=True,
             error="",
             summary=_safe_text(result.get("summary_text")),
+            attachment_mode=attachment_mode,
         )
         _save_materials_dispatch_summary(record, result)
         return
@@ -149,6 +183,7 @@ def _dispatch_materials_after_consent(record: dict) -> None:
         sent=_dispatch_was_sent(result),
         error=_dispatch_error_text(result),
         summary=_safe_text(result.get("summary_text")),
+        attachment_mode=attachment_mode,
     )
     _save_materials_dispatch_summary(record, result)
 
@@ -157,18 +192,79 @@ def create_consent_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/consent/request/{token}", response_class=HTMLResponse)
-    async def consent_request(token: str, request: Request, background_tasks: BackgroundTasks):
-        return await _confirm_and_render(token, request, background_tasks)
+    async def consent_request(token: str):
+        return _preview_and_render(token)
 
     @router.get("/consent/confirm/{token}", response_class=HTMLResponse)
-    async def consent_confirm_get(token: str, request: Request, background_tasks: BackgroundTasks):
-        return await _confirm_and_render(token, request, background_tasks)
+    async def consent_confirm_get(token: str):
+        return _preview_and_render(token)
 
     @router.post("/consent/confirm/{token}", response_class=HTMLResponse)
     async def consent_confirm(token: str, request: Request, background_tasks: BackgroundTasks):
         return await _confirm_and_render(token, request, background_tasks)
 
     return router
+
+
+def _expired_response(record: dict | None = None) -> HTMLResponse:
+    return HTMLResponse(
+        _render_page(
+            "Ссылка устарела",
+            "Срок действия этой ссылки истёк. Пожалуйста, запросите материалы повторно.",
+            note="Окно можно закрыть.",
+        ),
+        status_code=410,
+    )
+
+
+def _audit_consent_confirmation(record: dict, *, status: str, dispatch_materials: bool = False) -> None:
+    tenant_id = _safe_text(record.get("tenant_id")) or "public"
+    append_audit_event(
+        action="consent.confirm",
+        principal=system_principal("public-consent", tenant_id=tenant_id),
+        job_id=_safe_text(record.get("job_id")) or None,
+        status=status,
+        details={
+            "row_id": _safe_text(record.get("row_id")),
+            "recipient": _safe_text(record.get("recipient")),
+            "attachment_mode": _safe_text(record.get("attachment_mode")),
+            "dispatch_materials": dispatch_materials,
+        },
+    )
+
+def _not_found_response() -> HTMLResponse:
+    return HTMLResponse(
+        _render_page(
+            "Ссылка не найдена",
+            "Не удалось найти запрос по этой ссылке. Возможно, ссылка устарела или была скопирована не полностью.",
+            note="Пожалуйста, вернитесь к письму и попробуйте открыть кнопку ещё раз.",
+        ),
+        status_code=404,
+    )
+
+
+def _preview_and_render(token: str) -> HTMLResponse:
+    record = get_consent_by_token(token)
+    if not record:
+        return _not_found_response()
+    if record.get("_expired") or _safe_text(record.get("status")) == "expired":
+        return _expired_response(record)
+    if _safe_text(record.get("status")) == "confirmed":
+        return HTMLResponse(
+            _render_page(
+                "Согласие уже подтверждено",
+                _confirmed_page_message(record),
+                note="Окно можно закрыть.",
+            )
+        )
+    return HTMLResponse(
+        _render_page(
+            "Подтвердите получение",
+            _consent_preview_message(record),
+            note="Нажмите кнопку, если вы действительно хотите получить материалы.",
+            form_html=_render_confirm_form(token),
+        )
+    )
 
 
 async def _confirm_and_render(token: str, request: Request, background_tasks: BackgroundTasks) -> HTMLResponse:
@@ -178,25 +274,28 @@ async def _confirm_and_render(token: str, request: Request, background_tasks: Ba
         user_agent=request.headers.get("user-agent", ""),
     )
     if not record:
-        return HTMLResponse(
-            _render_page(
-                "Ссылка не найдена",
-                "Не удалось найти запрос по этой ссылке. Возможно, ссылка устарела или была скопирована не полностью.",
-                note="Пожалуйста, вернитесь к письму и попробуйте открыть кнопку ещё раз.",
-            ),
-            status_code=404,
-        )
-    background_tasks.add_task(_dispatch_materials_after_consent, record)
+        return _not_found_response()
+    if record.get("_expired") or _safe_text(record.get("status")) == "expired":
+        _audit_consent_confirmation(record, status="expired", dispatch_materials=False)
+        return _expired_response(record)
+    dispatch_materials = bool(record.get("_dispatch_materials"))
+    _audit_consent_confirmation(
+        record,
+        status="confirmed" if dispatch_materials else "replayed",
+        dispatch_materials=dispatch_materials,
+    )
+    if dispatch_materials:
+        background_tasks.add_task(_dispatch_materials_after_consent, record)
     return HTMLResponse(
         _render_page(
-            "Запрос получен",
-            _consent_page_message(record),
+            "Запрос получен" if dispatch_materials else "Согласие уже подтверждено",
+            _consent_page_message(record) if dispatch_materials else _confirmed_page_message(record),
             note="Окно можно закрыть.",
         )
     )
 
 
-def _render_page(title: str, message: str, *, note: str = "") -> str:
+def _render_page(title: str, message: str, *, note: str = "", form_html: str = "") -> str:
     safe_title = escape(title)
     safe_message = escape(message)
     safe_note = escape(note)
@@ -252,6 +351,23 @@ def _render_page(title: str, message: str, *, note: str = "") -> str:
       color: #657260;
       font-size: 14px;
     }}
+    .actions {{
+      margin-top: 22px;
+    }}
+    button {{
+      border: 0;
+      border-radius: 6px;
+      padding: 12px 18px;
+      background: #2d720d;
+      color: white;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+    }}
+    button:focus-visible {{
+      outline: 3px solid #9fce86;
+      outline-offset: 2px;
+    }}
   </style>
 </head>
 <body>
@@ -259,6 +375,7 @@ def _render_page(title: str, message: str, *, note: str = "") -> str:
     <div class="status-mark">✓</div>
     <h1>{safe_title}</h1>
     <p>{safe_message}</p>
+    {form_html}
     {note_html}
   </main>
 </body>

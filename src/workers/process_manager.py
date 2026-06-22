@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import json
-import os
 import secrets
-import signal
 import subprocess
 import sys
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+
+from src.jobs.json_store import read_json, write_json_atomic
 
 
 StateDirFactory = Callable[[str | None], Path]
@@ -36,8 +35,7 @@ def _json_safe(value: Any) -> Any:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json_atomic(path, payload)
 
 
 def _write_worker_payload(job_id: str | None, task: str, kwargs: dict | None, state_dir_factory: StateDirFactory) -> Path:
@@ -291,12 +289,10 @@ def list_worker_statuses(jobs_dir: Path, *, limit: int = 100) -> list[dict[str, 
     if not jobs_dir.exists():
         return []
     for status_path in jobs_dir.glob("*/state/worker-*.status.json"):
-        try:
-            data = json.loads(status_path.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
+        result = read_json(status_path, default={})
+        if not result.ok or not isinstance(result.data, dict):
             continue
-        if not isinstance(data, dict):
-            continue
+        data = result.data
         data["status_path"] = str(status_path)
         data["alive"] = _is_worker_active(status_path)
         statuses.append(data)
@@ -305,28 +301,21 @@ def list_worker_statuses(jobs_dir: Path, *, limit: int = 100) -> list[dict[str, 
 
 
 def terminate_worker_process(*, status_path: str | None = None, pid: int | None = None) -> dict[str, Any]:
-    process: subprocess.Popen | None = None
     active_key = str(status_path or "")
+    if not active_key:
+        raise RuntimeError("Не указан status_path активного worker-процесса.")
+
     with _ACTIVE_WORKERS_LOCK:
-        if active_key:
-            process = _ACTIVE_WORKERS.get(active_key)
-        if process is None and pid:
-            for item in _ACTIVE_WORKERS.values():
-                if item.pid == pid:
-                    process = item
-                    break
+        process = _ACTIVE_WORKERS.get(active_key)
 
-    if process is not None:
-        process.terminate()
-        return {"terminated": True, "pid": process.pid, "method": "active_process"}
+    if process is None or process.poll() is not None:
+        raise RuntimeError("Активный worker не найден или уже завершён.")
 
-    if not pid:
-        raise RuntimeError("Не указан PID worker-процесса.")
-    try:
-        os.kill(int(pid), signal.SIGTERM)
-    except OSError as exc:
-        raise RuntimeError(f"Не удалось остановить worker PID {pid}: {exc}") from exc
-    return {"terminated": True, "pid": int(pid), "method": "os_signal"}
+    if pid is not None and process.pid != pid:
+        raise RuntimeError("PID не совпадает с активным worker-процессом.")
+
+    process.terminate()
+    return {"terminated": True, "pid": process.pid, "method": "active_process"}
 
 
 def _is_worker_active(status_path: Path) -> bool:

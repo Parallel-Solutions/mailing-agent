@@ -5,6 +5,7 @@ import smtplib
 import json
 import re
 import base64
+import hashlib
 import mimetypes
 import secrets
 import threading
@@ -1232,6 +1233,11 @@ def _append_sent_mail_log(
             record["provider_message_id"] = safe_provider["message_id"]
         if safe_provider.get("job_id"):
             record["provider_job_id"] = safe_provider["job_id"]
+        provider_idempotency_key = _safe_text(
+            safe_provider.get("idempotency_key") or safe_provider.get("idempotence_key")
+        )
+        if provider_idempotency_key:
+            record["provider_idempotency_key"] = provider_idempotency_key
     try:
         log_path = sent_mail_log_path or SENT_MAIL_LOG_PATH
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1247,6 +1253,30 @@ def _append_sent_mail_log(
 
 def _mail_key(value: Any) -> str:
     return _safe_text(value).lower()
+
+
+def _build_provider_idempotency_key(
+    *,
+    provider: str,
+    job_id: str | None,
+    send_run_id: str = "",
+    row_id: Any = "",
+    recipient: Any = "",
+    send_mode: str = "",
+    attachment_mode: str = "",
+) -> str:
+    payload = {
+        "provider": _safe_text(provider).lower(),
+        "job_id": _safe_text(job_id) or "__legacy__",
+        "send_run_id": _safe_text(send_run_id) or "__no_send_run__",
+        "row_id": _safe_text(row_id) or "__no_row__",
+        "recipient": _mail_key(recipient) or "__no_recipient__",
+        "send_mode": _safe_text(send_mode).lower() or "materials",
+        "attachment_mode": _safe_text(attachment_mode).lower() or ATTACHMENT_MODE_KP,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
+    return f"mailing-agent:{payload['provider']}:{digest}"
 
 
 def _load_sent_mail_recipients(
@@ -1764,6 +1794,9 @@ def _send_via_rusender(
     mail_template_path: Path | None = None,
     body_override: str | None = None,
     job_id: str | None = None,
+    send_run_id: str = "",
+    send_mode: str = "",
+    attachment_mode: str = "",
 ) -> dict[str, Any]:
     api_key = _safe_text(settings.rusender_api_key)
     sender_email = _safe_text(settings.rusender_sender_email or settings.smtp_sender_email)
@@ -1775,15 +1808,14 @@ def _send_via_rusender(
 
     plaintext_body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
     html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
-    idempotency_key = ":".join(
-        item for item in (
-            "mailing-agent",
-            _safe_text(job_id) or "default",
-            _safe_text(row.get("ID")) or secrets.token_urlsafe(8),
-            _mail_key(recipient),
-            secrets.token_urlsafe(12),
-        )
-        if item
+    idempotency_key = _build_provider_idempotency_key(
+        provider="rusender",
+        job_id=job_id,
+        send_run_id=send_run_id,
+        row_id=row.get("ID"),
+        recipient=recipient,
+        send_mode=send_mode,
+        attachment_mode=attachment_mode,
     )
     encoded_attachments: list[dict[str, str]] = []
     for attachment_path in attachments:
@@ -1964,6 +1996,9 @@ def _send_via_unisender(
     mail_template_path: Path | None = None,
     body_override: str | None = None,
     job_id: str | None = None,
+    send_run_id: str = "",
+    send_mode: str = "",
+    attachment_mode: str = "",
 ) -> dict[str, Any]:
     if not _uses_unisender_go_api():
         return _send_via_unisender_classic(
@@ -1985,7 +2020,15 @@ def _send_via_unisender(
 
     plaintext_body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
     html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
-    idempotence_key = secrets.token_urlsafe(24)
+    idempotence_key = _build_provider_idempotency_key(
+        provider="unisender_go",
+        job_id=job_id,
+        send_run_id=send_run_id,
+        row_id=row.get("ID"),
+        recipient=recipient,
+        send_mode=send_mode,
+        attachment_mode=attachment_mode,
+    )
     payload: dict[str, Any] = {
         "message": {
             "recipients": [{"email": recipient}],
@@ -2080,6 +2123,9 @@ def _send_via_unisender_go_bulk(
     mail_template_path: Path | None = None,
     body_override: str | None = None,
     job_id: str | None = None,
+    send_run_id: str = "",
+    send_mode: str = "",
+    attachment_mode: str = "",
 ) -> dict[str, Any]:
     api_key = _safe_text(settings.unisender_api_key)
     sender_email = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
@@ -2095,7 +2141,15 @@ def _send_via_unisender_go_bulk(
 
     plaintext_body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
     html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
-    idempotence_key = secrets.token_urlsafe(24)
+    idempotence_key = _build_provider_idempotency_key(
+        provider="unisender_go",
+        job_id=job_id,
+        send_run_id=send_run_id,
+        row_id=row.get("ID"),
+        recipient=",".join(sorted(_mail_key(recipient) for recipient in cleaned_recipients)),
+        send_mode=send_mode,
+        attachment_mode=attachment_mode,
+    )
     payload: dict[str, Any] = {
         "message": {
             "recipients": [{"email": recipient} for recipient in cleaned_recipients],
@@ -2208,6 +2262,9 @@ def _send_with_transport(
     mail_template_path: Path | None = None,
     body_override: str | None = None,
     job_id: str | None = None,
+    send_run_id: str = "",
+    send_mode: str = "",
+    attachment_mode: str = "",
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     sent_recipients: list[str] = []
@@ -2222,6 +2279,9 @@ def _send_with_transport(
                 mail_template_path=mail_template_path,
                 body_override=body_override,
                 job_id=job_id,
+                send_run_id=send_run_id,
+                send_mode=send_mode,
+                attachment_mode=attachment_mode,
             )
         except Exception as exc:
             return {
@@ -2286,6 +2346,9 @@ def _send_with_transport(
                     mail_template_path=mail_template_path,
                     body_override=body_override,
                     job_id=job_id,
+                    send_run_id=send_run_id,
+                    send_mode=send_mode,
+                    attachment_mode=attachment_mode,
                 )
             elif transport == "rusender":
                 provider = _send_via_rusender(
@@ -2296,6 +2359,9 @@ def _send_with_transport(
                     mail_template_path=mail_template_path,
                     body_override=body_override,
                     job_id=job_id,
+                    send_run_id=send_run_id,
+                    send_mode=send_mode,
+                    attachment_mode=attachment_mode,
                 )
             else:
                 warning = _send_via_smtp(
@@ -2370,6 +2436,9 @@ def _build_parallel_send_job(
     transport: str,
     mail_template_path: Path | None,
     job_id: str | None,
+    send_run_id: str = "",
+    send_mode: str = "",
+    attachment_mode: str = "",
     body_override: str | None = None,
     success_status_value: str = STATUS_SENT_VALUE,
 ) -> dict[str, Any]:
@@ -2385,6 +2454,9 @@ def _build_parallel_send_job(
         "body_override": body_override,
         "success_status_value": success_status_value,
         "job_id": job_id,
+        "send_run_id": send_run_id,
+        "send_mode": send_mode,
+        "attachment_mode": attachment_mode,
     }
 
 
@@ -2398,6 +2470,9 @@ def _run_parallel_send_job(job: dict[str, Any]) -> dict[str, Any]:
         mail_template_path=job["mail_template_path"],
         body_override=job.get("body_override"),
         job_id=job.get("job_id"),
+        send_run_id=job.get("send_run_id") or "",
+        send_mode=job.get("send_mode") or "",
+        attachment_mode=job.get("attachment_mode") or "",
     )
     return {"job": job, "send_result": send_result}
 
@@ -2555,6 +2630,8 @@ def run_sender(
     effective_limit = _normalize_limit(limit, dry_run=dry_run)
     effective_transport = _normalize_transport(transport)
     effective_send_mode = _normalize_send_mode(send_mode)
+    if effective_send_mode == "materials":
+        require_confirmed_consent = True
     effective_attachment_mode = _normalize_attachment_mode(attachment_mode)
     effective_work_type = normalize_work_type(work_type or state.get("work_type") or DEFAULT_WORK_TYPE)
     effective_subject_template = _safe_text(subject_template)
@@ -2728,6 +2805,7 @@ def run_sender(
                 job_id=job_id,
                 row_id=row_id,
                 recipient=entry["recipient"],
+                attachment_mode=effective_attachment_mode,
             )
         )
 
@@ -2979,6 +3057,7 @@ def run_sender(
                             job_id=job_id,
                             row_id=row_id,
                             recipient=recipient,
+                            attachment_mode=effective_attachment_mode,
                         )
                     ]
                 recipients_to_send = [
@@ -3031,6 +3110,9 @@ def run_sender(
                             body_override=row_body_override,
                             success_status_value=success_status_value,
                             job_id=job_id,
+                            send_run_id=send_run_id,
+                            send_mode=effective_send_mode,
+                            attachment_mode=effective_attachment_mode,
                         )
                     )
                     entry["result"] = "queued_parallel_send"
@@ -3045,6 +3127,9 @@ def run_sender(
                         mail_template_path=mail_template_path,
                         body_override=row_body_override,
                         job_id=job_id,
+                        send_run_id=send_run_id,
+                        send_mode=effective_send_mode,
+                        attachment_mode=effective_attachment_mode,
                     )
                     workbook_dirty = (
                         _apply_send_result_to_entry(
@@ -3073,6 +3158,7 @@ def run_sender(
                                 row_id=row_id,
                                 recipient=sent_recipient,
                                 provider=_provider_for_recipient(entry.get("attempts") or [], sent_recipient),
+                                attachment_mode=effective_attachment_mode,
                             )
                     state["sent_rows"] += 1
                 if entry["warning"]:
@@ -3189,6 +3275,7 @@ def run_sender(
                                     row_id=row.get("ID"),
                                     recipient=sent_recipient,
                                     provider=_provider_for_recipient(entry.get("attempts") or [], sent_recipient),
+                                    attachment_mode=effective_attachment_mode,
                                 )
                         if entry["warning"]:
                             state["warning_rows"] += 1

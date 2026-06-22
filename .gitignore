@@ -14,5 +14,13 @@ wheels/
 data/
 logs/
 storage/
+tmp/
+tmp*/
+pytest-cache-files-*/
 src/parser_new/output/
 *.xlsx
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
