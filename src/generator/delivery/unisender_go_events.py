@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 from src.jobs import resolve_job_paths
+from src.jobs.json_store import append_jsonl, path_lock, read_jsonl
 
 
 EVENTS_FILENAME = "unisender_go_events.jsonl"
@@ -17,7 +19,9 @@ def append_unisender_go_events(payload: Any) -> dict[str, Any]:
     events = _extract_events(payload)
     saved = 0
     skipped = 0
+    duplicates = 0
     jobs: set[str] = set()
+    existing_keys_by_path: dict[Path, set[str]] = {}
 
     for event in events:
         job_id = _extract_job_id(event)
@@ -34,39 +38,60 @@ def append_unisender_go_events(payload: Any) -> dict[str, Any]:
             "mun_name": _extract_metadata(event).get("app_mun_name") or _extract_metadata(event).get("mun_name") or "",
         }
         path = unisender_go_events_path(job_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        with path_lock(path):
+            existing_keys = existing_keys_by_path.setdefault(path, _load_event_replay_keys(path))
+            event_key = _event_replay_key(record)
+            if event_key in existing_keys:
+                duplicates += 1
+                jobs.add(job_id)
+                continue
+            record["event_key"] = event_key
+            append_jsonl(path, record)
+            existing_keys.add(event_key)
         saved += 1
         jobs.add(job_id)
-
     return {
         "saved": saved,
         "skipped": skipped,
+        "duplicates": duplicates,
         "jobs": sorted(jobs),
     }
 
 
-def load_unisender_go_events(job_id: str | None) -> list[dict[str, Any]]:
-    path = unisender_go_events_path(job_id)
-    if not path.exists():
-        return []
-    events: list[dict[str, Any]] = []
-    try:
-        lines = path.read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
-        return []
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            events.append(item)
-    return events
+def _load_event_replay_keys(path: Path) -> set[str]:
+    return {_event_replay_key(item) for item in read_jsonl(path)}
 
+def _event_replay_key(record: dict[str, Any]) -> str:
+    stored_key = _safe_text(record.get("event_key"))
+    if stored_key:
+        return stored_key
+    event = record.get("event") if isinstance(record.get("event"), dict) else {}
+    explicit_id = _extract_first_text(event, ("event_id", "eventId", "uuid"))
+    if explicit_id:
+        return ":".join(
+            (
+                "id",
+                _safe_text(record.get("event_type")),
+                _safe_text(record.get("recipient")).lower(),
+                _safe_text(explicit_id),
+            )
+        )
+    key_payload = {
+        "event_type": _safe_text(record.get("event_type")),
+        "recipient": _safe_text(record.get("recipient")).lower(),
+        "provider_job_id": _safe_text(record.get("provider_job_id")),
+        "row_id": _safe_text(record.get("row_id")),
+        "event": event,
+    }
+    raw = json.dumps(key_payload, ensure_ascii=False, sort_keys=True, default=str)
+    return "hash:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _safe_text(value: Any) -> str:
+    return str(value or "").strip()
+
+def load_unisender_go_events(job_id: str | None) -> list[dict[str, Any]]:
+    return read_jsonl(unisender_go_events_path(job_id))
 
 def unisender_go_events_path(job_id: str | None) -> Path:
     return resolve_job_paths(job_id).root_dir / "state" / EVENTS_FILENAME

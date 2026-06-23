@@ -3553,6 +3553,24 @@
     }
   }
 
+  function formatApiErrorDetail(detail, fallback = 'Ошибка запроса') {
+    if (!detail) return fallback;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+      const messages = detail.map(item => {
+        if (!item || typeof item !== 'object') return String(item || '').trim();
+        const loc = Array.isArray(item.loc) ? item.loc.join('.') : '';
+        const msg = item.msg || item.message || item.type || '';
+        return [loc, msg].filter(Boolean).join(': ');
+      }).filter(Boolean);
+      return messages.join('; ') || fallback;
+    }
+    if (typeof detail === 'object') {
+      return detail.message || detail.msg || JSON.stringify(detail);
+    }
+    return String(detail);
+  }
+
   async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -5333,24 +5351,25 @@ function clearAttachedFile() {
     await ensureCurrentJobId();
     parserRunning = true;
     setParserUiState({ force: true, status: 'running', row_count: 0, task_stats: {} });
-    appendChatMessage('p-chat', 'agent', 'Начинаю поиск данных. Если нужно, уточните в чате регион, тип организаций или список МО.');
+    appendChatMessage('p-chat', 'agent', 'Запускаю поиск данных в фоне. Статус будет обновляться здесь автоматически.');
     try {
         const res = await fetchWithTimeout('/api/parser/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(withJobPayload({})),
-        }, 120000);
+        }, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Ошибка запуска парсера');
       const result = data.result || {};
       setParserUiState(result);
-      showToast('Поиск данных завершён');
-      appendChatMessage('p-chat', 'agent', result.summary_text || 'Поиск завершён. Можно скачать результат или перейти к документам.');
+      showToast(data.started === false ? 'Парсер уже выполняется' : 'Поиск данных запущен');
+      appendChatMessage('p-chat', 'agent', result.summary_text || 'Поиск запущен. Можно оставаться на странице: я обновлю статус после завершения.');
+      followParserVerificationAfterUpload();
     } catch (err) {
+      parserRunning = false;
       appendChatMessage('p-chat', 'agent', 'Не удалось запустить парсер: ' + err.message);
       showToast('Ошибка парсера');
     } finally {
-      parserRunning = false;
       await refreshParserStatus({ silent: true });
     }
   }
@@ -5794,7 +5813,7 @@ function clearAttachedFile() {
   let senderPreviewState = null;
 
   function getSenderBatchLimit() {
-    return 0;
+    return null;
   }
 
   function getSenderTransport() {
@@ -6985,7 +7004,7 @@ function clearAttachedFile() {
         body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, mail_subject: mailSubject, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
-      if (!res.ok) throw new Error(data.detail || 'Ошибка проверки готовности отправщика');
+      if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Ошибка проверки готовности отправщика'));
         let result = data.result || {};
         safeSetSenderUiState(result);
         maybeAnnounceSenderFlow(result);
@@ -7065,7 +7084,7 @@ function clearAttachedFile() {
         body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, mail_subject: mailSubject, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
-      if (!res.ok) throw new Error(data.detail || 'Ошибка реальной отправки');
+      if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Ошибка реальной отправки'));
         const result = data.result || {};
         safeSetSenderUiState(result);
         maybeAnnounceSenderFlow(result);

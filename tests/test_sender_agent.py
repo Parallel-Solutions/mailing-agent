@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -145,6 +146,136 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(compact["total_rows"], 2)
         self.assertEqual(compact["sent_rows"], 2)
         self.assertEqual(compact["stats"], {"total": 2, "sent": 2, "error": 0, "pending": 0})
+
+    def test_materials_send_requires_confirmed_consent_even_when_caller_omits_flag(self) -> None:
+        row = {
+            "ID": "1",
+            "_row_index": 2,
+            "MUN_NAME": "Test municipality",
+            "EMAIL_OSN": "recipient@example.com",
+            "EMAIL_DOP": "",
+            "STATUS": "",
+        }
+
+        def load_state(job_id: str | None = None) -> dict:
+            state = dict(sender_agent.SENDER_STATE)
+            state["rows"] = []
+            state["stats"] = {}
+            return state
+
+        with patch.object(sender_agent, "_load_sender_state", side_effect=load_state), patch.object(
+            sender_agent, "_save_sender_state", side_effect=lambda state, job_id=None: state
+        ), patch.object(
+            sender_agent, "_resolve_sender_data_xlsx_path", return_value=Path(__file__)
+        ), patch.object(
+            sender_agent, "_collect_excel_stats", return_value={"total": 1, "sent": 0, "error": 0, "pending": 1}
+        ), patch.object(
+            sender_agent, "load_rows", return_value=(SimpleNamespace(close=lambda: None), SimpleNamespace(), [row])
+        ), patch.object(
+            sender_agent, "_build_output_folder_index", return_value=({}, {})
+        ), patch.object(
+            sender_agent, "has_confirmed_consent", return_value=False
+        ) as has_confirmed_consent, patch.object(
+            sender_agent, "_resolve_output_folder"
+        ) as resolve_output_folder, patch.object(
+            sender_agent, "count_tasks_for_agent", return_value={}
+        ), patch.object(
+            sender_agent, "get_tasks_for_agent", return_value=[]
+        ), patch.object(
+            sender_agent, "get_recent_events", return_value=[]
+        ):
+            result = sender_agent.run_sender(
+                dry_run=True,
+                send_mode="materials",
+                job_id="job-consent",
+            )
+
+        self.assertEqual(result["error_rows"], 1)
+        self.assertEqual(result["rows"][0]["result"], "blocked_no_consent")
+        self.assertIn("согласия", result["rows"][0]["error"])
+        has_confirmed_consent.assert_called_once_with(
+            job_id="job-consent",
+            row_id="1",
+            recipient="recipient@example.com",
+            attachment_mode="kp",
+        )
+        resolve_output_folder.assert_not_called()
+
+    def test_provider_idempotency_key_is_deterministic_for_same_context(self) -> None:
+        first = sender_agent._build_provider_idempotency_key(
+            provider="rusender",
+            job_id="job-1",
+            send_run_id="send-1",
+            row_id="42",
+            recipient="Recipient@Example.com",
+            send_mode="materials",
+            attachment_mode="kp",
+        )
+        second = sender_agent._build_provider_idempotency_key(
+            provider="rusender",
+            job_id="job-1",
+            send_run_id="send-1",
+            row_id="42",
+            recipient="recipient@example.com",
+            send_mode="materials",
+            attachment_mode="kp",
+        )
+
+        self.assertEqual(first, second)
+        self.assertRegex(first, r"^mailing-agent:rusender:[0-9a-f]{40}$")
+
+    def test_provider_idempotency_key_changes_for_recipient_or_mode(self) -> None:
+        base_kwargs = {
+            "provider": "unisender_go",
+            "job_id": "job-1",
+            "send_run_id": "send-1",
+            "row_id": "42",
+            "recipient": "one@example.com",
+            "send_mode": "materials",
+            "attachment_mode": "kp",
+        }
+
+        base = sender_agent._build_provider_idempotency_key(**base_kwargs)
+
+        self.assertNotEqual(
+            base,
+            sender_agent._build_provider_idempotency_key(**{**base_kwargs, "recipient": "two@example.com"}),
+        )
+        self.assertNotEqual(
+            base,
+            sender_agent._build_provider_idempotency_key(**{**base_kwargs, "send_mode": "consent_request"}),
+        )
+        self.assertNotEqual(
+            base,
+            sender_agent._build_provider_idempotency_key(**{**base_kwargs, "attachment_mode": "all"}),
+        )
+
+    def test_sent_mail_log_promotes_provider_idempotency_key(self) -> None:
+        log_path = Path("tmp") / "test_sender_agent_provider_idempotency.jsonl"
+        log_path.parent.mkdir(exist_ok=True)
+        log_path.unlink(missing_ok=True)
+        self.addCleanup(lambda: log_path.unlink(missing_ok=True))
+
+        warning = sender_agent._append_sent_mail_log(
+            row={"ID": "42", "MUN_NAME": "Test municipality"},
+            recipient="recipient@example.com",
+            attachments=[],
+            subject="Subject",
+            transport="rusender",
+            provider={
+                "provider": "rusender",
+                "message_id": "message-1",
+                "idempotency_key": "mailing-agent:rusender:stable",
+            },
+            sent_mail_log_path=log_path,
+            send_run_id="send-1",
+            send_run_started_at="2026-06-21T10:00:00",
+        )
+
+        self.assertIsNone(warning)
+        record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(record["provider_idempotency_key"], "mailing-agent:rusender:stable")
+        self.assertEqual(record["provider"]["idempotency_key"], "mailing-agent:rusender:stable")
 
     def test_unisender_analytics_filters_items_outside_current_data(self) -> None:
         items = [

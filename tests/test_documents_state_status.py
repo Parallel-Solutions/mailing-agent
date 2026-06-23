@@ -26,7 +26,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
             get_philologist_thread=lambda job_id: object() if str(philologist_state.get("status") or "") in {"running", "finalizing"} else None,
             save_generator_state=lambda state, job_id: state,
             save_philologist_state=lambda state, job_id: state,
-            build_job_readiness_result=lambda job_id: {"generator_ready": True, "generator_reason": ""},
+            build_job_readiness_result=lambda job_id, **kwargs: {"generator_ready": True, "generator_reason": ""},
         )
 
     def test_philologist_running_state_is_split_from_primary_file(self) -> None:
@@ -75,7 +75,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
             get_philologist_thread=lambda job_id: None,
             save_generator_state=lambda state, job_id: state,
             save_philologist_state=lambda state, job_id: saved_philologist_states.append(dict(state)),
-            build_job_readiness_result=lambda job_id: {"generator_ready": True, "generator_reason": ""},
+            build_job_readiness_result=lambda job_id, **kwargs: {"generator_ready": True, "generator_reason": ""},
         )
 
         result = documents_service.compact_documents_status("job-test")
@@ -113,7 +113,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
             get_philologist_thread=lambda job_id: None,
             save_generator_state=lambda state, job_id: state,
             save_philologist_state=lambda state, job_id: state,
-            build_job_readiness_result=lambda job_id: {"generator_ready": True, "generator_reason": ""},
+            build_job_readiness_result=lambda job_id, **kwargs: {"generator_ready": True, "generator_reason": ""},
         )
 
         result = documents_service.compact_documents_status("job-test")
@@ -128,6 +128,53 @@ class DocumentsStateStatusTests(unittest.TestCase):
         chat_events = result["ui"]["chat_events"]
         self.assertTrue(any(event["id"] == "documents:stage:finalize_output" for event in chat_events))
 
+    def test_completed_worker_recovers_stale_finalize_generator_state(self) -> None:
+        saved_generator_states: list[dict] = []
+        generator_state = {
+            "status": "running",
+            "stage": "finalize_output",
+            "total_rows": 2,
+            "processed_rows": 2,
+            "staged_docx_count": 2,
+            "pdf_total": 2,
+            "pdf_processed": 0,
+            "staged_pdf_count": 0,
+            "output_file_count": 4,
+            "document_mode": "kp",
+        }
+        philologist_state = {
+            "status": "completed",
+            "total_documents": 2,
+            "processed_documents": 2,
+        }
+
+        documents_service._deps.clear()
+        documents_service.configure_documents_service(
+            compact_generator_status=lambda state: state,
+            get_generator_status=lambda job_id: generator_state,
+            compact_philologist_status=lambda state: state,
+            get_philologist_status=lambda job_id, include_details=False: philologist_state,
+            get_documents_thread=lambda job_id: None,
+            get_generator_thread=lambda job_id: None,
+            get_philologist_thread=lambda job_id: None,
+            save_generator_state=lambda state, job_id: saved_generator_states.append(dict(state)),
+            save_philologist_state=lambda state, job_id: state,
+            build_job_readiness_result=lambda job_id, **kwargs: {
+                "generator_ready": True,
+                "generator_reason": "",
+                "output_docx_count": 2,
+                "output_pdf_count": 2,
+            },
+        )
+
+        result = documents_service.compact_documents_status("job-test", document_mode="kp")
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["stage"], "completed")
+        self.assertEqual(result["progress_percent"], 100)
+        self.assertEqual(saved_generator_states[-1]["status"], "completed")
+        self.assertEqual(saved_generator_states[-1]["pdf_processed"], 2)
+        self.assertEqual(saved_generator_states[-1]["staged_pdf_count"], 2)
     def test_running_documents_progress_never_reaches_100(self) -> None:
         generator_state = {
             "status": "running",
@@ -157,7 +204,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
             get_philologist_thread=lambda job_id: None,
             save_generator_state=lambda state, job_id: state,
             save_philologist_state=lambda state, job_id: state,
-            build_job_readiness_result=lambda job_id: {"generator_ready": True, "generator_reason": ""},
+            build_job_readiness_result=lambda job_id, **kwargs: {"generator_ready": True, "generator_reason": ""},
         )
 
         result = documents_service.compact_documents_status("job-test")
@@ -235,6 +282,8 @@ class DocumentsStateStatusTests(unittest.TestCase):
             get_philologist_status=get_philologist_status,
             clear_philologist_stop_request=lambda job_id: calls.append(("clear_philologist", job_id)),
             run_philologist=run_philologist,
+            save_philologist_state=lambda state, job_id: calls.append(("save_philologist", job_id)),
+            save_generator_state=lambda state, job_id: calls.append(("save_generator", job_id)),
             finalize_documents_output=finalize_documents_output,
             schedule_output_archive_build=lambda job_id: calls.append(("archive", job_id)),
             load_generator_state=lambda job_id: {"stop_requested": False},
@@ -256,6 +305,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
                 ("generator", False, False),
                 ("clear_philologist", "job-test"),
                 ("philologist", "fast"),
+                ("save_philologist", "job-test"),
                 ("finalize", "job-test"),
                 ("archive", "job-test"),
                 ("unregister", "job-test"),

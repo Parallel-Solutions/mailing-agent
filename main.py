@@ -1,10 +1,10 @@
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pathlib import Path
-import secrets
 import zipfile
+from src.security.auth import authenticate_basic_user
 from src.utils.logger import logger
-from src.utils.config import settings
+from src.utils.config import SecurityConfigurationError, require_configured_app_password, settings
 from src.workers.process_manager import list_worker_statuses, start_worker_process_thread, terminate_worker_process
 from src.web.agent_router import create_agent_router
 from src.web.consent_router import create_consent_router
@@ -19,6 +19,7 @@ from src.web.download_router import create_download_router
 from src.web.generator_router import create_generator_router
 from src.web.jobs_router import JobsWebController
 from src.web.load_test_service import create_documents_load_test_job, is_load_test_job
+from src.web.upload_validation import validate_uploaded_file
 from src.web.parser_router import create_parser_router
 from src.web.philologist_router import create_philologist_router
 from src.web.public_router import create_public_router
@@ -50,6 +51,8 @@ _generator_threads: dict[str, threading.Thread] = {}
 _generator_threads_lock = threading.Lock()
 _documents_threads: dict[str, threading.Thread] = {}
 _documents_threads_lock = threading.Lock()
+_parser_threads: dict[str, threading.Thread] = {}
+_parser_threads_lock = threading.Lock()
 _parser_verification_threads: dict[str, threading.Thread] = {}
 _parser_verification_threads_lock = threading.Lock()
 _output_archive_threads: dict[str, threading.Thread] = {}
@@ -59,6 +62,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 @app.on_event("startup")
 async def app_startup():
+    require_configured_app_password(settings)
     return None
 
 
@@ -68,15 +72,23 @@ async def app_shutdown():
 
 
 def check_auth(credentials: HTTPBasicCredentials = Depends(security)):
-    ok_user = secrets.compare_digest(credentials.username, settings.app_username)
-    ok_pass = secrets.compare_digest(credentials.password, settings.app_password)
-    if not (ok_user and ok_pass):
+    try:
+        require_configured_app_password(settings)
+    except SecurityConfigurationError as exc:
+        logger.error("app_auth_not_configured", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис не настроен: APP_PASSWORD не задан.",
+        ) from exc
+
+    principal = authenticate_basic_user(credentials.username, credentials.password, settings)
+    if principal is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный логин или пароль",
             headers={"WWW-Authenticate": "Basic"},
         )
-    return credentials.username
+    return principal
 
 
 def _parse_optional_limit(payload: dict | None) -> int | None:
@@ -95,28 +107,6 @@ def _prefer_existing_file(primary: Path, fallback: Path) -> Path:
     return primary if primary.exists() else fallback
 
 
-def _format_upload_size_limit(max_bytes: int) -> str:
-    if max_bytes >= 1024 * 1024:
-        return f"{max_bytes / (1024 * 1024):.0f} МБ"
-    if max_bytes >= 1024:
-        return f"{max_bytes / 1024:.0f} КБ"
-    return f"{max_bytes} Б"
-
-
-def _get_upload_size(upload: UploadFile) -> int | None:
-    stream = getattr(upload, "file", None)
-    if stream is None:
-        return None
-    try:
-        current_position = stream.tell()
-        stream.seek(0, 2)
-        size = int(stream.tell())
-        stream.seek(current_position)
-        return size
-    except Exception:
-        return None
-
-
 def _validate_uploaded_file(
     upload: UploadFile,
     *,
@@ -124,26 +114,12 @@ def _validate_uploaded_file(
     max_bytes: int,
     human_name: str,
 ) -> str:
-    filename = Path(upload.filename or "").name
-    if not filename:
-        raise HTTPException(status_code=400, detail=f"Не удалось определить имя файла для {human_name}.")
-    extension = Path(filename).suffix.lower()
-    if extension not in allowed_extensions:
-        allowed_text = ", ".join(allowed_extensions)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Для {human_name} подходит только файл формата {allowed_text}.",
-        )
-    size = _get_upload_size(upload)
-    if size is not None and size > max_bytes:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Файл слишком большой для {human_name}. "
-                f"Максимальный размер: {_format_upload_size_limit(max_bytes)}."
-            ),
-        )
-    return filename
+    return validate_uploaded_file(
+        upload,
+        allowed_extensions=allowed_extensions,
+        max_bytes=max_bytes,
+        human_name=human_name,
+    )
 
 
 _METADATA_CACHE_LOCK = threading.Lock()
@@ -381,6 +357,15 @@ def _get_documents_thread(job_id: str | None) -> threading.Thread | None:
             return None
         return thread
 
+def _get_parser_thread(job_id: str | None) -> threading.Thread | None:
+    key = _parser_job_key(job_id)
+    with _parser_threads_lock:
+        thread = _parser_threads.get(key)
+        if thread and not thread.is_alive():
+            _parser_threads.pop(key, None)
+            return None
+        return thread
+
 
 def _get_parser_verification_thread(job_id: str | None) -> threading.Thread | None:
     key = _parser_job_key(job_id)
@@ -437,6 +422,13 @@ def _mark_worker_process_failed(task: str, job_id: str | None, message: str) -> 
             philologist_state["summary_text"] = f"Проверка документов остановилась с ошибкой: {message}"
             _save_philologist_state(philologist_state, job_id)
 
+    if task in {"parser_start", "parser_agent"}:
+        state = _load_parser_state(job_id)
+        state["status"] = "error"
+        state["completed_at"] = completed_at
+        state["summary_text"] = f"Парсер остановился с ошибкой: {message}"
+        _save_parser_state(state, job_id)
+        return
 
 def _start_background_worker_process(
     job_id: str | None,
@@ -514,6 +506,42 @@ def _start_documents_thread_if_absent(
         timeout_seconds=max(0, int(settings.documents_worker_timeout_seconds or 0)),
     )
 
+def _prime_parser_running_state(job_id: str | None, task: str) -> dict:
+    state = _load_parser_state(job_id)
+    started_at = datetime.now().isoformat(timespec="seconds")
+    state["status"] = "running"
+    state["started_at"] = started_at
+    state["completed_at"] = None
+    state["summary_text"] = (
+        "Парсер запущен в фоне. Ищу и проверяю данные."
+        if task == "parser_start"
+        else "Агент-парсер запущен в фоне и обрабатывает очередь задач."
+    )
+    _save_parser_state(state, job_id)
+    return state
+
+
+def _start_parser_thread_if_absent(
+    job_id: str | None,
+    *,
+    task: str,
+    kwargs: dict | None = None,
+    name: str | None = None,
+) -> tuple[threading.Thread, bool]:
+    return _start_background_worker_process(
+        job_id,
+        task=task,
+        kwargs=kwargs,
+        name=name,
+        registry=_parser_threads,
+        registry_lock=_parser_threads_lock,
+        key_factory=_parser_job_key,
+        unregister=_unregister_parser_thread,
+        max_workers=1,
+        timeout_seconds=0,
+        before_start=lambda: _prime_parser_running_state(job_id, task),
+    )
+
 
 def _unregister_sender_thread(job_id: str | None) -> None:
     with _sender_threads_lock:
@@ -523,6 +551,11 @@ def _unregister_sender_thread(job_id: str | None) -> None:
 def _unregister_documents_thread(job_id: str | None) -> None:
     with _documents_threads_lock:
         _documents_threads.pop(_documents_job_key(job_id), None)
+
+
+def _unregister_parser_thread(job_id: str | None) -> None:
+    with _parser_threads_lock:
+        _parser_threads.pop(_parser_job_key(job_id), None)
 
 
 def _register_parser_verification_thread(job_id: str | None, process: threading.Thread) -> None:
@@ -775,7 +808,7 @@ async def app_status(username: str = Depends(check_auth)):
 
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.transforms import build_document_context
-from src.generator.generation.document_builder import cleanup_batch_docx_dir, generate_documents_for_row
+from src.generator.generation.document_builder import OUTPUT_FOLDER_MANIFEST_FILENAME, cleanup_batch_docx_dir, generate_documents_for_row
 from src.generator.generation.config_generator import (
     BATCH_PDF_DIR,
     DOCX_WORKERS,
@@ -815,6 +848,8 @@ from src.generator.delivery.sender_report import (
 from src.generator.delivery.rusender_events import append_rusender_events
 from src.generator.delivery.unisender_go_events import append_unisender_go_events
 from src.generator.orchestration.parser_agent import (
+    _load_parser_state,
+    _save_parser_state,
     format_municipality_verification_for_chat,
     get_parser_status,
     mark_municipality_verification_failed,
@@ -1052,6 +1087,9 @@ app.include_router(
     create_parser_router(
         check_auth=check_auth,
         parse_optional_limit=_parse_optional_limit,
+        start_parser_thread_if_absent=_start_parser_thread_if_absent,
+        parser_job_key=_parser_job_key,
+        get_parser_thread=_get_parser_thread,
         run_parser_agent=run_parser_agent,
         get_parser_status=get_parser_status,
         run_parser_municipality_verification=run_parser_municipality_verification,

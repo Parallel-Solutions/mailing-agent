@@ -121,6 +121,54 @@ def _documents_current_item_text(*, status: str, stage: str, generator: dict, ph
     return ""
 
 
+def _recover_completed_generator_after_worker_exit(
+    *,
+    job_id: str | None,
+    generator_state: dict,
+    philologist_state: dict,
+    readiness: dict,
+    pipeline_thread: Any,
+) -> dict:
+    if pipeline_thread is not None:
+        return generator_state
+    if str(generator_state.get("status") or "") != "running":
+        return generator_state
+    if str(generator_state.get("stage") or "") != "finalize_output":
+        return generator_state
+    if str(philologist_state.get("status") or "") != "completed":
+        return generator_state
+
+    document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
+    documents_per_row = _document_count_per_row(document_mode)
+    expected_documents = max(
+        _safe_int(generator_state.get("staged_docx_count")),
+        _safe_int(generator_state.get("total_rows")) * documents_per_row,
+        _safe_int(philologist_state.get("total_documents")),
+    )
+    output_docx_count = _safe_int(readiness.get("output_docx_count"))
+    output_pdf_count = _safe_int(readiness.get("output_pdf_count"))
+    if expected_documents <= 0 or output_docx_count < expected_documents or output_pdf_count < expected_documents:
+        return generator_state
+
+    recovered_state = dict(generator_state)
+    recovered_state["status"] = "completed"
+    recovered_state["stage"] = "completed"
+    recovered_state["stage_text"] = "Результат собран."
+    recovered_state["completed_at"] = recovered_state.get("completed_at") or datetime.now().isoformat(timespec="seconds")
+    recovered_state["stop_requested"] = False
+    recovered_state["stop_requested_at"] = None
+    recovered_state["pdf_total"] = max(_safe_int(recovered_state.get("pdf_total")), expected_documents)
+    recovered_state["pdf_processed"] = max(_safe_int(recovered_state.get("pdf_processed")), expected_documents)
+    recovered_state["staged_pdf_count"] = max(_safe_int(recovered_state.get("staged_pdf_count")), expected_documents)
+    recovered_state["output_file_count"] = max(
+        _safe_int(recovered_state.get("output_file_count")),
+        output_docx_count + output_pdf_count,
+    )
+    recovered_state["summary_text"] = "Документы проверены, результат собран."
+    _require("save_generator_state")(recovered_state, job_id)
+    return recovered_state
+
+
 def _stop_orphaned_documents_worker_state(
     *,
     job_id: str | None,
@@ -153,6 +201,8 @@ def _stop_orphaned_documents_worker_state(
             return completed_state
 
     if worker_thread is not None or pipeline_thread is not None:
+        return state
+    if agent_name == "generator" and str(state.get("stage") or "") == "finalize_output":
         return state
 
     recovered_state = dict(state)
@@ -195,6 +245,14 @@ def compact_documents_status(job_id: str | None, document_mode: str | None = Non
         agent_name="philologist",
         state=philologist_state,
         worker_thread=get_philologist_thread(job_id),
+        pipeline_thread=pipeline_thread,
+    )
+    readiness = _require("build_job_readiness_result")(job_id, document_mode=document_mode)
+    generator_state = _recover_completed_generator_after_worker_exit(
+        job_id=job_id,
+        generator_state=generator_state,
+        philologist_state=philologist_state,
+        readiness=readiness,
         pipeline_thread=pipeline_thread,
     )
     generator_status = str(generator_state.get("status") or "idle")
@@ -304,7 +362,6 @@ def compact_documents_status(job_id: str | None, document_mode: str | None = Non
         "document_mode": document_mode,
         "work_type": work_type,
     }
-    readiness = _require("build_job_readiness_result")(job_id, document_mode=document_mode)
     result["ui"] = build_documents_ui_payload(result, readiness=readiness)
     return result
 

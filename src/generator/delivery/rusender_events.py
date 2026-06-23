@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 from src.jobs import resolve_job_paths
+from src.jobs.json_store import append_jsonl, path_lock, read_jsonl
 from src.jobs.storage import JOBS_DIR
 
 
@@ -29,8 +31,10 @@ def append_rusender_events(payload: Any) -> dict[str, Any]:
     task_to_job = _load_task_job_index()
     saved = 0
     skipped = 0
+    duplicates = 0
     unmatched = 0
     jobs: set[str] = set()
+    existing_keys_by_path: dict[Path, set[str]] = {}
 
     for event in events:
         task_id = _extract_task_id(event)
@@ -50,41 +54,61 @@ def append_rusender_events(payload: Any) -> dict[str, Any]:
             "event": event,
         }
 
+        path = rusender_events_path(job_id) if job_id else _unmatched_events_path()
+        with path_lock(path):
+            existing_keys = existing_keys_by_path.setdefault(path, _load_event_replay_keys(path))
+            event_key = _event_replay_key(record)
+            if event_key in existing_keys:
+                duplicates += 1
+                if job_id:
+                    jobs.add(job_id)
+                continue
+            record["event_key"] = event_key
+            append_jsonl(path, record)
+            existing_keys.add(event_key)
         if job_id:
-            path = rusender_events_path(job_id)
             jobs.add(job_id)
             saved += 1
         else:
-            path = _unmatched_events_path()
             unmatched += 1
+    return {"saved": saved, "skipped": skipped, "duplicates": duplicates, "unmatched": unmatched, "jobs": sorted(jobs)}
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    return {"saved": saved, "skipped": skipped, "unmatched": unmatched, "jobs": sorted(jobs)}
+def _load_event_replay_keys(path: Path) -> set[str]:
+    return {_event_replay_key(item) for item in read_jsonl(path)}
 
+def _event_replay_key(record: dict[str, Any]) -> str:
+    stored_key = _safe_text(record.get("event_key"))
+    if stored_key:
+        return stored_key
+    event_id = _safe_text(record.get("event_id"))
+    if event_id:
+        return ":".join(
+            (
+                "id",
+                _safe_text(record.get("event_type")),
+                _safe_text(record.get("task_id")),
+                _safe_text(record.get("recipient")).lower(),
+                event_id,
+            )
+        )
+    event = record.get("event") if isinstance(record.get("event"), dict) else {}
+    key_payload = {
+        "event_type": _safe_text(record.get("event_type")),
+        "task_id": _safe_text(record.get("task_id")),
+        "recipient": _safe_text(record.get("recipient")).lower(),
+        "occurred_at": _safe_text(record.get("occurred_at")),
+        "event": event,
+    }
+    raw = json.dumps(key_payload, ensure_ascii=False, sort_keys=True, default=str)
+    return "hash:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _safe_text(value: Any) -> str:
+    return str(value or "").strip()
 
 def load_rusender_events(job_id: str | None) -> list[dict[str, Any]]:
-    path = rusender_events_path(job_id)
-    if not path.exists():
-        return []
-    events: list[dict[str, Any]] = []
-    try:
-        lines = path.read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
-        return []
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            events.append(item)
-    return events
-
+    return read_jsonl(rusender_events_path(job_id))
 
 def rusender_events_path(job_id: str | None) -> Path:
     return resolve_job_paths(job_id).root_dir / "state" / EVENTS_FILENAME

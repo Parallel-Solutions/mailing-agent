@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import json
+import re
+import secrets
+from dataclasses import dataclass
+from typing import Any
+
+
+_IDENTIFIER_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
+
+
+@dataclass(frozen=True)
+class Principal:
+    username: str
+    tenant_id: str
+    role: str = "user"
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role.lower() == "admin"
+
+    @property
+    def actor_id(self) -> str:
+        return f"{self.tenant_id}:{self.username}"
+
+
+def _safe_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _safe_identifier(value: Any, *, fallback: str) -> str:
+    text = _safe_text(value)
+    text = _IDENTIFIER_RE.sub("-", text).strip("-_.")
+    return (text or fallback)[:96]
+
+
+def coerce_principal(value: Any) -> Principal:
+    if isinstance(value, Principal):
+        return value
+    if isinstance(value, dict):
+        username = _safe_identifier(value.get("username"), fallback="unknown")
+        tenant_id = _safe_identifier(value.get("tenant_id") or username, fallback=username)
+        role = _safe_identifier(value.get("role") or "user", fallback="user").lower()
+        return Principal(username=username, tenant_id=tenant_id, role=role)
+
+    # Backward-compatible test/helper path: old check_auth stubs returned a plain
+    # username string. Treat it as admin so existing focused router tests keep
+    # testing their original behavior instead of ownership setup.
+    username = _safe_identifier(value, fallback="test-user")
+    return Principal(username=username, tenant_id=username, role="admin")
+
+
+def system_principal(actor: str = "system", *, tenant_id: str = "system") -> Principal:
+    return Principal(
+        username=_safe_identifier(actor, fallback="system"),
+        tenant_id=_safe_identifier(tenant_id, fallback="system"),
+        role="system",
+    )
+
+
+def _parse_app_users(value: Any) -> dict[str, dict[str, str]]:
+    raw = _safe_text(value)
+    if not raw:
+        return {}
+
+    parsed: Any
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+
+    users: dict[str, dict[str, str]] = {}
+    if isinstance(parsed, dict):
+        for raw_username, raw_config in parsed.items():
+            username = _safe_identifier(raw_username, fallback="")
+            if not username:
+                continue
+            if isinstance(raw_config, dict):
+                password = _safe_text(raw_config.get("password"))
+                tenant_id = _safe_identifier(raw_config.get("tenant_id") or username, fallback=username)
+                role = _safe_identifier(raw_config.get("role") or "user", fallback="user").lower()
+            else:
+                password = _safe_text(raw_config)
+                tenant_id = username
+                role = "user"
+            if password:
+                users[username] = {"password": password, "tenant_id": tenant_id, "role": role}
+        return users
+
+    # Lightweight fallback for local env files:
+    # APP_USERS=alice:password:tenant-a:user,bob:password:tenant-a:user
+    for item in raw.split(","):
+        parts = [part.strip() for part in item.split(":")]
+        if len(parts) < 2:
+            continue
+        username = _safe_identifier(parts[0], fallback="")
+        password = parts[1]
+        if not username or not password:
+            continue
+        tenant_id = _safe_identifier(parts[2] if len(parts) >= 3 else username, fallback=username)
+        role = _safe_identifier(parts[3] if len(parts) >= 4 else "user", fallback="user").lower()
+        users[username] = {"password": password, "tenant_id": tenant_id, "role": role}
+    return users
+
+
+def configured_auth_users(settings_obj: Any) -> dict[str, dict[str, str]]:
+    users = _parse_app_users(getattr(settings_obj, "app_users", ""))
+
+    admin_username = _safe_identifier(getattr(settings_obj, "app_username", "admin"), fallback="admin")
+    admin_password = _safe_text(getattr(settings_obj, "app_password", ""))
+    if admin_username and admin_password:
+        users[admin_username] = {
+            "password": admin_password,
+            "tenant_id": _safe_identifier(getattr(settings_obj, "app_admin_tenant_id", "admin"), fallback="admin"),
+            "role": "admin",
+        }
+    return users
+
+
+def authenticate_basic_user(username: str, password: str, settings_obj: Any) -> Principal | None:
+    safe_username = _safe_identifier(username, fallback="")
+    user_config = configured_auth_users(settings_obj).get(safe_username)
+    if not user_config:
+        return None
+    expected_password = _safe_text(user_config.get("password"))
+    if not expected_password or not secrets.compare_digest(str(password or ""), expected_password):
+        return None
+    return Principal(
+        username=safe_username,
+        tenant_id=_safe_identifier(user_config.get("tenant_id") or safe_username, fallback=safe_username),
+        role=_safe_identifier(user_config.get("role") or "user", fallback="user").lower(),
+    )

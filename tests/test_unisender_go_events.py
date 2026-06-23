@@ -107,5 +107,28 @@ class UnisenderGoEventsTests(unittest.TestCase):
         self.assertEqual(record["row_id"], "7")
 
 
+    def test_append_events_skips_duplicate_payload(self) -> None:
+        EVENT_LOG.unlink(missing_ok=True)
+        payload = {
+            "event_type": "delivered",
+            "email": "recipient@example.com",
+            "metadata": {"app_job_id": "job-webhook", "app_row_id": "42"},
+        }
+
+        with patch.object(
+            unisender_go_events,
+            "unisender_go_events_path",
+            return_value=EVENT_LOG,
+        ):
+            first = unisender_go_events.append_unisender_go_events(payload)
+            second = unisender_go_events.append_unisender_go_events(payload)
+
+        lines = EVENT_LOG.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(first["saved"], 1)
+        self.assertEqual(first["duplicates"], 0)
+        self.assertEqual(second["saved"], 0)
+        self.assertEqual(second["duplicates"], 1)
+        self.assertEqual(len(lines), 1)
+
 if __name__ == "__main__":
     unittest.main()

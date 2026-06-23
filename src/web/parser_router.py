@@ -7,17 +7,19 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
-from src.parser.agent import chat, clear_memory, get_memory, run_batch_parser, set_system_prompt
-
-
-def _job_id_from_payload(payload: dict | None) -> str | None:
-    return None if payload is None else str(payload.get("job_id") or "").strip() or None
+from src.jobs.access import JobAccessDenied, authorize_job_access
+from src.jobs.audit import append_audit_event
+from src.parser.agent import chat, clear_memory, get_memory, set_system_prompt
+from src.web.request_models import ChatRequest, JobScopedRequest, LimitRequest, PromptRequest
 
 
 def create_parser_router(
     *,
     check_auth: Callable[..., Any],
     parse_optional_limit: Callable[[dict | None], int | None],
+    start_parser_thread_if_absent: Callable[..., tuple[Any, bool]],
+    parser_job_key: Callable[[str | None], str],
+    get_parser_thread: Callable[[str | None], Any],
     run_parser_agent: Callable[..., dict],
     get_parser_status: Callable[..., dict],
     run_parser_municipality_verification: Callable[..., dict],
@@ -27,65 +29,99 @@ def create_parser_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    def ensure_job_access(job_id: str | None, principal: object, *, allow_missing: bool = False) -> None:
+        try:
+            authorize_job_access(job_id, principal, allow_missing=allow_missing)
+        except JobAccessDenied as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
     @router.post("/api/parser/chat-v2")
-    async def parser_chat_v2(payload: dict = Body(...), username: str = Depends(check_auth)):
-        message = str(payload.get("message", "")).strip()
+    async def parser_chat_v2(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
+        message = payload.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="Пустое сообщение")
-        job_id = str(payload.get("job_id") or "").strip() or None
+        job_id = payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
         return chat(message, job_id=job_id)
 
     @router.post("/api/parser/start")
-    async def parser_start(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-        job_id = _job_id_from_payload(payload)
-        parser_result = run_batch_parser(job_id=job_id)
-        verification_result = {}
-        if parser_result.get("status") != "error":
-            verification_result = run_parser_municipality_verification(job_id, source="parser")
-        verification_summary = format_municipality_verification_for_chat(verification_result, max_samples=20)
-        parser_reply = str(parser_result.get("reply") or "").strip()
-        summary_parts = [part for part in [verification_summary, parser_reply] if part]
-        result = {
-            **parser_result,
-            "summary_text": "\n\n".join(summary_parts).strip() or "Парсер завершил обработку.",
-            "municipality_name_verification": verification_result,
-        }
-        return {"status": "ok", "result": result}
+    async def parser_start(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        job_id = None if payload is None else payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
+        existing_thread = get_parser_thread(job_id)
+        if existing_thread is not None:
+            return {"status": "ok", "result": get_parser_status(job_id), "accepted": True, "started": False}
+        try:
+            _, started = start_parser_thread_if_absent(
+                job_id,
+                task="parser_start",
+                kwargs={"job_id": job_id},
+                name=f"parser-start-{parser_job_key(job_id)}",
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("parser_start_worker_failed", job_id=job_id)
+            raise HTTPException(status_code=500, detail="Не удалось запустить парсер в фоне.") from exc
+        append_audit_event(action="parser.start", principal=principal, job_id=job_id)
+        return {"status": "ok", "result": get_parser_status(job_id), "accepted": True, "started": started}
 
     @router.get("/api/parser/memory")
-    async def parser_memory(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def parser_memory(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         return get_memory(job_id=job_id)
 
     @router.post("/api/parser/memory/clear")
-    async def parser_memory_clear(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-        clear_memory(job_id=_job_id_from_payload(payload))
+    async def parser_memory_clear(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        job_id = None if payload is None else payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
+        clear_memory(job_id=job_id)
         return {"status": "ok"}
 
     @router.post("/api/parser/prompt")
-    async def parser_prompt(payload: dict = Body(...), username: str = Depends(check_auth)):
-        prompt = str(payload.get("prompt", "")).strip()
+    async def parser_prompt(payload: PromptRequest = Body(...), principal: object = Depends(check_auth)):
+        prompt = payload.prompt.strip()
         if not prompt:
             raise HTTPException(status_code=400, detail="Пустой промпт")
-        job_id = str(payload.get("job_id") or "").strip() or None
+        job_id = payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
         set_system_prompt(prompt, job_id=job_id)
         return {"status": "ok"}
 
     @router.post("/api/parser/run")
-    async def parser_run(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-        limit = parse_optional_limit(payload)
-        job_id = _job_id_from_payload(payload)
-        result = run_parser_agent(limit=limit, job_id=job_id)
-        return {"status": "ok", "result": result}
+    async def parser_run(payload: LimitRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        limit = None if payload is None else payload.limit
+        job_id = None if payload is None else payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
+        existing_thread = get_parser_thread(job_id)
+        if existing_thread is not None:
+            return {"status": "ok", "result": get_parser_status(job_id), "accepted": True, "started": False}
+        try:
+            _, started = start_parser_thread_if_absent(
+                job_id,
+                task="parser_agent",
+                kwargs={"job_id": job_id, "limit": limit},
+                name=f"parser-agent-{parser_job_key(job_id)}",
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("parser_run_worker_failed", job_id=job_id)
+            raise HTTPException(status_code=500, detail="Не удалось запустить агента-парсера в фоне.") from exc
+        append_audit_event(action="parser.run", principal=principal, job_id=job_id, details={"limit": limit})
+        return {"status": "ok", "result": get_parser_status(job_id), "accepted": True, "started": started}
 
     @router.get("/api/parser/status")
-    async def parser_status(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def parser_status(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         return {"status": "ok", "result": get_parser_status(job_id)}
 
     @router.post("/api/parser/merge-rmz")
-    async def merge_rmz(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
+    async def merge_rmz(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         from src.parser.rmz_merger import run_merge
 
-        job_id = _job_id_from_payload(payload)
+        job_id = None if payload is None else payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
         result = run_merge(job_id=job_id)
         if result.suspicious:
             suspicious_list = [
@@ -118,11 +154,12 @@ def create_parser_router(
         }
 
     @router.post("/api/parser/chat")
-    async def parser_chat(payload: dict = Body(...), username: str = Depends(check_auth)):
-        message = str(payload.get("message", "")).strip()
+    async def parser_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
+        message = payload.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="Пустое сообщение")
-        job_id = str(payload.get("job_id") or "").strip() or None
+        job_id = payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
 
         result = await run_in_threadpool(chat, message, job_id=job_id)
         result_file = result.get("result_file")
@@ -143,7 +180,8 @@ def create_parser_router(
         return {"status": "ok", **result}
 
     @router.get("/api/parser/progress")
-    async def parser_progress(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def parser_progress(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         job_key = str(job_id or "").strip()
         if not job_key:
             raise HTTPException(status_code=400, detail="Не указан job_id для потока прогресса")

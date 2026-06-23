@@ -1,6 +1,12 @@
+from typing import Any
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.utils.env import LOCAL_ENV_PATH
+
+
+class SecurityConfigurationError(RuntimeError):
+    """Raised when the service would start with an unsafe security config."""
 
 
 class Settings(BaseSettings):
@@ -27,6 +33,8 @@ class Settings(BaseSettings):
 
     app_username: str = "admin"
     app_password: str = ""
+    app_users: str = ""
+    app_admin_tenant_id: str = "admin"
 
     # Приложение
     app_host: str = "0.0.0.0"
@@ -76,7 +84,9 @@ class Settings(BaseSettings):
     rusender_sender_email: str = ""
     rusender_webhook_secret: str = ""
     rusender_webhook_token: str = ""
+    webhook_max_body_bytes: int = 256 * 1024
     mail_signature_image_url: str = ""
+    consent_token_ttl_hours: int = 720
 
     municipality_oktmo_lookup_enabled: bool = True
     municipality_oktmo_csv_path: str = ""
@@ -99,6 +109,14 @@ class Settings(BaseSettings):
     parser_openai_api_key: str = ""
     parser_openai_base_url: str = "https://api.vsellm.ru/v1"
     parser_model: str = "gpt-4o"
+
+
+def require_configured_app_password(settings_obj: Any) -> None:
+    password = str(getattr(settings_obj, "app_password", "") or "").strip()
+    if not password:
+        raise SecurityConfigurationError(
+            "APP_PASSWORD must be set to a non-empty value before starting the service."
+        )
 
 
 settings = Settings()

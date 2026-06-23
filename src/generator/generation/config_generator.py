@@ -69,6 +69,16 @@ WEB_CASE_AGENT_MAX_WORKERS = max(1, int(_read_env_override("WEB_CASE_AGENT_MAX_W
 KP_GENERATION_ENGINE = _read_env_override("KP_GENERATION_ENGINE", "template").strip().lower() or "template"
 PDF_CONVERTER = _read_env_override("PDF_CONVERTER", "libreoffice").strip().lower() or "libreoffice"
 PDF_CONVERTER_FALLBACK = _read_env_override("PDF_CONVERTER_FALLBACK", "").strip().lower()
+_GOTENBERG_BASE_URLS_RAW = _read_env_override(
+    "GOTENBERG_BASE_URLS",
+    _read_env_override("GOTENBERG_BASE_URL", ""),
+)
+GOTENBERG_BASE_URLS = tuple(
+    url.strip().rstrip("/")
+    for url in _GOTENBERG_BASE_URLS_RAW.split(",")
+    if url.strip()
+)
+GOTENBERG_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("GOTENBERG_CONVERT_TIMEOUT_SECONDS", "300"))
 ONLYOFFICE_BASE_URL = _read_env_override("ONLYOFFICE_BASE_URL", "").strip().rstrip("/")
 ONLYOFFICE_CONVERTER_MODE = _read_env_override("ONLYOFFICE_CONVERTER_MODE", "url").strip().lower() or "url"
 ONLYOFFICE_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("ONLYOFFICE_CONVERT_TIMEOUT_SECONDS", "120"))

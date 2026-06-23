@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import json
-import os
-import threading
-import time
-import uuid
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from .json_store import JsonReadResult, read_json, write_json_atomic
 from .storage import resolve_job_paths
 
 
@@ -19,18 +15,6 @@ DETAIL_KEYS_BY_AGENT: dict[str, tuple[str, ...]] = {
     "generator": ("results",),
     "philologist": ("documents", "tool_trace", "tasks", "recent_events", "plan", "agent_loop", "tool_manifest"),
 }
-_STATE_WRITE_LOCKS: dict[str, threading.Lock] = {}
-_STATE_WRITE_LOCKS_GUARD = threading.Lock()
-
-
-def _path_lock(path: Path) -> threading.Lock:
-    key = str(path.resolve())
-    with _STATE_WRITE_LOCKS_GUARD:
-        lock = _STATE_WRITE_LOCKS.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _STATE_WRITE_LOCKS[key] = lock
-        return lock
 
 
 def _state_dir(job_id: str | None = None) -> Path:
@@ -52,53 +36,48 @@ def default_state_copy(default_state: dict[str, Any]) -> dict[str, Any]:
     return deepcopy(default_state)
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        stored = json.loads(path.read_text(encoding="utf-8-sig"))
-    except Exception:
-        return {}
-    return stored if isinstance(stored, dict) else {}
+def _read_state_json(path: Path) -> JsonReadResult:
+    result = read_json(path, default={})
+    if result.ok and not isinstance(result.data, dict):
+        return JsonReadResult({}, error="state JSON root must be an object", error_type="invalid_json_shape")
+    return result
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock = _path_lock(path)
-    text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
-    with lock:
-        last_error: PermissionError | None = None
-        for attempt in range(8):
-            tmp_path = path.with_name(
-                f".{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
-            )
-            try:
-                tmp_path.write_text(text, encoding="utf-8")
-                os.replace(tmp_path, path)
-                return
-            except PermissionError as exc:
-                last_error = exc
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                time.sleep(0.05 * (attempt + 1))
-            except Exception:
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                raise
+    write_json_atomic(path, payload, trailing_newline=False)
 
-        # Windows can briefly lock files for indexing/antivirus or another worker.
-        # If atomic replace keeps failing, prefer a direct state write over aborting the job.
-        for attempt in range(3):
-            try:
-                path.write_text(text, encoding="utf-8")
-                return
-            except PermissionError as exc:
-                last_error = exc
-                time.sleep(0.1 * (attempt + 1))
-        if last_error is not None:
-            raise last_error
+
+def _diagnostic_state(default_state: dict[str, Any], path: Path, result: JsonReadResult) -> dict[str, Any]:
+    state = default_state_copy(default_state)
+    reason = "corrupt_json" if result.error_type in {"json_decode", "invalid_json_shape"} else "state_read_error"
+    state.update(
+        {
+            "status": "error",
+            "state_error": reason,
+            "state_error_type": result.error_type,
+            "state_error_path": str(path),
+            "state_error_message": result.error,
+            "summary_text": (
+                "Файл состояния поврежден или недоступен. "
+                f"Автоматический сброс не выполнен, чтобы не потерять данные: {path}"
+            ),
+        }
+    )
+    return state
+
+
+def _attach_details_read_error(state: dict[str, Any], path: Path, result: JsonReadResult) -> dict[str, Any]:
+    state["state_details_error"] = {
+        "reason": "corrupt_json" if result.error_type in {"json_decode", "invalid_json_shape"} else "state_read_error",
+        "type": result.error_type,
+        "path": str(path),
+        "message": result.error,
+    }
+    state["summary_text"] = (
+        str(state.get("summary_text") or "").strip()
+        + f"\n\nДетальный файл состояния поврежден или недоступен: {path}"
+    ).strip()
+    return state
 
 
 def _details_payload(agent_name: str, state: dict[str, Any]) -> dict[str, Any]:
@@ -145,9 +124,10 @@ def load_agent_state(
     if not path.exists():
         return state
     # Manual PowerShell edits can leave a UTF-8 BOM; keep state recovery tolerant.
-    stored = _read_json(path)
-    if isinstance(stored, dict):
-        state.update(stored)
+    stored_result = _read_state_json(path)
+    if not stored_result.ok:
+        return _diagnostic_state(default_state, path, stored_result)
+    state.update(stored_result.data)
 
     if not include_details and _should_split_state(agent_name, state):
         details = _details_payload(agent_name, state)
@@ -164,7 +144,10 @@ def load_agent_state(
         if compact_details_path:
             details_path = Path(str(compact_details_path))
         if details_path.exists():
-            state.update(_read_json(details_path))
+            details_result = _read_state_json(details_path)
+            if not details_result.ok:
+                return _attach_details_read_error(state, details_path, details_result)
+            state.update(details_result.data)
     return state
 
 
@@ -180,4 +163,3 @@ def save_agent_state(agent_name: str, state: dict[str, Any], job_id: str | None 
             stored_state = _compact_state_for_primary(agent_name, state, details_path)
     _write_json_atomic(path, stored_state)
     return state
-

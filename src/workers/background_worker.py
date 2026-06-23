@@ -1,23 +1,24 @@
 from __future__ import annotations
 
 import argparse
-import json
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from src.jobs import resolve_job_paths
+from src.jobs.json_store import read_json
+from src.generator.generation.document_builder import OUTPUT_FOLDER_MANIFEST_FILENAME
 from src.utils.logger import logger
 
 
 def _load_payload(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-    if not isinstance(payload, dict):
+    result = read_json(path, default={})
+    if not result.ok:
+        raise ValueError(f"worker payload is unreadable: {result.error_type}: {result.error}")
+    if not isinstance(result.data, dict):
         raise ValueError("worker payload must be a JSON object")
-    return payload
-
+    return result.data
 
 def _build_output_archive(job_id: str | None) -> Path | None:
     output_dir = resolve_job_paths(job_id).output_dir
@@ -35,7 +36,7 @@ def _build_output_archive(job_id: str | None) -> Path | None:
 
     with zipfile.ZipFile(temp_archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in output_dir.rglob("*"):
-            if path.is_file():
+            if path.is_file() and path.name != OUTPUT_FOLDER_MANIFEST_FILENAME:
                 archive.write(path, path.relative_to(output_dir))
     temp_archive_path.replace(archive_path)
     return archive_path
@@ -159,6 +160,42 @@ def _run_documents_pipeline(kwargs: dict[str, Any]) -> None:
             _save_philologist_state(philologist_state, job_id)
         raise
 
+def _run_parser_start(kwargs: dict[str, Any]) -> None:
+    from src.parser.agent import run_batch_parser
+    from src.generator.orchestration.parser_agent import (
+        _load_parser_state,
+        _save_parser_state,
+        format_municipality_verification_for_chat,
+        run_parser_municipality_verification,
+    )
+
+    job_id = str(kwargs.get("job_id") or "").strip() or None
+    parser_result = run_batch_parser(job_id=job_id)
+    verification_result: dict[str, Any] = {}
+    if parser_result.get("status") != "error":
+        verification_result = run_parser_municipality_verification(job_id, source="parser")
+
+    verification_summary = format_municipality_verification_for_chat(verification_result, max_samples=20)
+    parser_reply = str(parser_result.get("reply") or "").strip()
+    summary_parts = [part for part in [verification_summary, parser_reply] if part]
+    result = {
+        **parser_result,
+        "status": "completed" if parser_result.get("status") != "error" else "error",
+        "completed_at": datetime.now().isoformat(timespec="seconds"),
+        "summary_text": "\n\n".join(summary_parts).strip() or "Парсер завершил обработку.",
+        "municipality_name_verification": verification_result,
+    }
+    state = _load_parser_state(job_id)
+    state.update(result)
+    _save_parser_state(state, job_id)
+
+
+def _run_parser_agent(kwargs: dict[str, Any]) -> None:
+    from src.generator.orchestration.parser_agent import run_parser_agent
+
+    job_id = str(kwargs.get("job_id") or "").strip() or None
+    limit = kwargs.get("limit")
+    run_parser_agent(limit=limit if isinstance(limit, int) else None, job_id=job_id)
 
 def _run_sender(kwargs: dict[str, Any]) -> None:
     from src.generator.delivery.sender_agent import _load_sender_state, _save_sender_state, run_sender
@@ -198,6 +235,12 @@ def run_payload(payload: dict[str, Any]) -> None:
         return
     if task == "sender":
         _run_sender(kwargs)
+        return
+    if task == "parser_start":
+        _run_parser_start(kwargs)
+        return
+    if task == "parser_agent":
+        _run_parser_agent(kwargs)
         return
     raise ValueError(f"unknown worker task: {task}")
 

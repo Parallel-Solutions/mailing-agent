@@ -63,7 +63,9 @@ http://127.0.0.1:8011/
 
 Перед запуском нужно создать `.env.local` и заполнить реальные значения:
 
-- `APP_USERNAME`, `APP_PASSWORD` - логин и пароль для входа;
+- `APP_USERNAME`, `APP_PASSWORD` - admin fallback для входа; `APP_PASSWORD` обязателен, с пустым значением сервис не запустится;
+- `APP_USERS` - optional JSON map пользователей для multi-user режима, например `{"alice":{"password":"...","tenant_id":"tenant-a","role":"user"}}`; пользователи одного `tenant_id` видят общие jobs tenant-а, admin видит все;
+- `CONSENT_TOKEN_TTL_HOURS` - срок действия публичных consent-ссылок, по умолчанию 720 часов;
 - `OPENAI_API_KEY`, `OPENAI_BASE_URL` - доступ к LLM-провайдеру;
 - `UNISENDER_API_KEY`, `UNISENDER_API_BASE_URL` - доступ к UniSender/UniSender Go;
 - `UNISENDER_SENDER_EMAIL`, `UNISENDER_SENDER_NAME` - отправитель писем;
@@ -113,6 +115,10 @@ tests/                          регрессионные тесты
 - `.env.local`;
 - `storage/`;
 - `logs/`;
-- временные Excel-файлы;
+- `tmp/`, `tmp*/`, `pytest-cache-files-*/`;
+- временные Excel-файлы и выгрузки отчетов;
+- SQLite/runtime memory files (`*.db`, `*.sqlite`, `*.sqlite3`, `*.db-wal`, `*.db-shm`);
 - архивы с результатами отправок;
 - локальные скриншоты и промежуточные выгрузки.
+
+Если Excel-справочник нужен для работы сервиса или парсера, его нужно хранить как локальный operational asset или загружать из защищенного хранилища. Не добавляйте новые runtime-копии Excel/SQLite в репозиторий; перед коммитом проверяйте `git ls-files "*.xlsx" "*.db" "*.sqlite" "*.sqlite3"`.

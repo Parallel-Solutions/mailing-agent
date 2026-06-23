@@ -6,6 +6,11 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+from src.jobs.access import JobAccessDenied, authorize_job_access
+from src.jobs.audit import append_audit_event
+from src.web.request_models import JobScopedRequest
+from src.web.responses import ok_response
+
 
 def create_generator_router(
     *,
@@ -26,19 +31,28 @@ def create_generator_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    def ensure_job_access(job_id: str | None, principal: object, *, allow_missing: bool = False) -> None:
+        try:
+            authorize_job_access(job_id, principal, allow_missing=allow_missing)
+        except JobAccessDenied as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
     @router.get("/api/counts")
-    async def counts(job_id: str | None = None, username: str = Depends(check_auth)):
-        readiness = await job_readiness(job_id=job_id, username=username)
+    async def counts(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
+        readiness = await job_readiness(job_id=job_id, username=principal)
         counts_result = ((readiness or {}).get("result") or {}).get("counts") or {}
-        return {
+        result = {
             "parser_total": int(counts_result.get("parser_total", 0) or 0),
             "generator_total": int(counts_result.get("generator_total", 0) or 0),
             "sender_total": int(counts_result.get("sender_total", 0) or 0),
         }
+        return ok_response(result, **result)
 
     @router.post("/api/generate")
-    async def generate(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-        job_id = str((payload or {}).get("job_id") or "").strip() or None
+    async def generate(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        job_id = None if payload is None else payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
         xlsx_path = prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
         if not xlsx_path.exists():
             raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
@@ -72,15 +86,20 @@ def create_generator_router(
         )
         register_generator_thread(job_id, thread)
         thread.start()
+        append_audit_event(action="generator.start", principal=principal, job_id=job_id)
         return {"status": "ok", "result": compact_generator_status(primed_state)}
 
     @router.get("/api/generator/status")
-    async def generator_status(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def generator_status(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         return {"status": "ok", "result": compact_generator_status(get_generator_status(job_id))}
 
     @router.post("/api/generator/stop")
-    async def generator_stop(payload: dict | None = Body(default=None), username: str = Depends(check_auth)):
-        job_id = None if payload is None else str(payload.get("job_id") or "").strip() or None
-        return {"status": "ok", "result": compact_generator_status(request_generator_stop(job_id))}
+    async def generator_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        job_id = None if payload is None else payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
+        result = request_generator_stop(job_id)
+        append_audit_event(action="generator.stop", principal=principal, job_id=job_id)
+        return {"status": "ok", "result": compact_generator_status(result)}
 
     return router

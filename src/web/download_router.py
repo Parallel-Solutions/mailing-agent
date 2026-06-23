@@ -27,6 +27,11 @@ from src.generator.knowledge.correction_report import (
     correction_report_has_data,
 )
 from src.jobs import resolve_job_paths
+from src.jobs.access import JobAccessDenied, authorize_job_access
+
+
+def legacy_parser_output_dir() -> Path:
+    return Path(__file__).parents[2] / "src" / "parser_new" / "output" / "latest"
 
 
 def create_download_router(
@@ -43,6 +48,11 @@ def create_download_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    def ensure_job_access(job_id: str | None, principal: object, *, allow_missing: bool = False) -> None:
+        try:
+            authorize_job_access(job_id, principal, allow_missing=allow_missing)
+        except JobAccessDenied as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     def ensure_parser_table_verified(job_id: str | None) -> None:
         parser_state = get_parser_status(job_id)
         verification_state = parser_state.get("municipality_name_verification_state") or {}
@@ -58,7 +68,8 @@ def create_download_router(
             raise HTTPException(status_code=409, detail="Дождитесь завершения проверки таблицы.")
 
     @router.get("/api/download/output")
-    async def download_output(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_output(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         output_dir = resolve_job_paths(job_id).output_dir
         if not output_dir.exists():
             raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
@@ -76,7 +87,8 @@ def create_download_router(
         )
 
     @router.get("/api/download/data-xlsx")
-    async def download_data_xlsx(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_data_xlsx(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         data_path = prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
         if not data_path.exists():
             raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
@@ -87,24 +99,23 @@ def create_download_router(
         )
 
     @router.get("/api/parser/download-result")
-    async def download_parser_result(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_parser_result(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         ensure_parser_table_verified(job_id)
         if job_id:
-            try:
-                paths = resolve_job_paths(job_id)
-                latest = latest_matching_file(
-                    [paths.output_dir], pattern="batch_*.xlsx", exclude_substring="FAILED"
-                )
-                if latest is not None:
-                    return FileResponse(
-                        latest,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        filename=latest.name,
-                    )
-            except Exception:
-                pass
+            paths = resolve_job_paths(job_id)
+            latest = latest_matching_file(
+                [paths.output_dir], pattern="batch_*.xlsx", exclude_substring="FAILED"
+            )
+            if latest is None:
+                raise HTTPException(status_code=404, detail="Файл результата не найден")
+            return FileResponse(
+                latest,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                filename=latest.name,
+            )
 
-        parser_output = Path(__file__).parents[2] / "src" / "parser_new" / "output" / "latest"
+        parser_output = legacy_parser_output_dir()
         latest = latest_matching_file(
             [parser_output], pattern="batch_*.xlsx", exclude_substring="FAILED"
         )
@@ -118,20 +129,15 @@ def create_download_router(
         )
 
     @router.get("/api/parser/download-failed")
-    async def download_parser_failed(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_parser_failed(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         ensure_parser_table_verified(job_id)
-        search_dirs: list[Path] = []
-
-        try:
+        if job_id:
             paths = resolve_job_paths(job_id)
-            if paths.output_dir.exists():
-                search_dirs.append(paths.output_dir)
-        except Exception:
-            pass
-
-        parser_output = Path(__file__).parents[2] / "src" / "parser_new" / "output" / "latest"
-        if parser_output.exists():
-            search_dirs.append(parser_output)
+            search_dirs = [paths.output_dir] if paths.output_dir.exists() else []
+        else:
+            parser_output = legacy_parser_output_dir()
+            search_dirs = [parser_output] if parser_output.exists() else []
 
         latest = latest_matching_file(search_dirs, pattern="*FAILED*.xlsx")
         if latest is None:
@@ -144,7 +150,8 @@ def create_download_router(
         )
 
     @router.get("/api/download/sent-mail-log")
-    async def download_sent_mail_log(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_sent_mail_log(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         job_paths = resolve_job_paths(job_id)
         log_path = (
             job_paths.sent_mail_log_path
@@ -160,7 +167,8 @@ def create_download_router(
         )
 
     @router.get("/api/download/sender-delivery-report")
-    async def download_sender_delivery_report(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_sender_delivery_report(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         if not sender_delivery_report_has_data(job_id):
             raise HTTPException(
                 status_code=404,
@@ -188,7 +196,8 @@ def create_download_router(
         )
 
     @router.get("/api/download/inflection-log")
-    async def download_inflection_log(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_inflection_log(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         job_paths = resolve_job_paths(job_id)
         log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
         if not log_path.exists():
@@ -200,7 +209,8 @@ def create_download_router(
         )
 
     @router.get("/api/download/inflection-report")
-    async def download_inflection_report(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_inflection_report(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         rows = load_inflection_log(job_id)
         if not rows:
             raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
@@ -216,7 +226,8 @@ def create_download_router(
         )
 
     @router.get("/api/download/agent-memory")
-    async def download_agent_memory(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_agent_memory(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         candidates = build_learning_candidates(job_id)
         if not candidates:
             raise HTTPException(status_code=404, detail="Кандидаты для памяти агента пока не найдены.")
@@ -229,7 +240,8 @@ def create_download_router(
         )
 
     @router.get("/api/download/agent-quarantine")
-    async def download_agent_quarantine(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_agent_quarantine(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         items = build_quarantine_items(job_id)
         if not items:
             raise HTTPException(status_code=404, detail="Карантин агента пока пуст.")
@@ -242,7 +254,8 @@ def create_download_router(
         )
 
     @router.get("/api/download/agent-report")
-    async def download_agent_report(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_agent_report(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         report_text = build_agent_report(job_id)
         if not report_text.strip():
             raise HTTPException(status_code=404, detail="Отчет агента пока пуст.")
@@ -255,7 +268,8 @@ def create_download_router(
         )
 
     @router.get("/api/download/correction-report")
-    async def download_correction_report(job_id: str | None = None, username: str = Depends(check_auth)):
+    async def download_correction_report(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
         if not correction_report_has_data(job_id):
             raise HTTPException(status_code=404, detail="Журнал исправлений пока пуст. Сначала запустите генератор/филолога.")
         report_path = job_state_dir(job_id) / "journal_corrections_report.xlsx"
