@@ -4528,6 +4528,12 @@
     saveUiState();
   }
 
+  function resetDocumentsProcessLogForNewRun() {
+    resetChatMessages('g-chat');
+    lastAgentEventIds.documents = '';
+    flowNotificationState.documents = createFlowNotificationState().documents;
+  }
+
   function resetSettingsFormFields() {
     const workType = document.getElementById('settings-work-type');
     const subject = document.getElementById('settings-mail-subject');
@@ -5735,6 +5741,7 @@ function clearAttachedFile() {
     const resumeStage = currentGeneratorStatus === 'completed' && currentPhilologistStatus === 'stopped' ? 'review' : 'generate';
     try {
       syncGeneratorStartDescriptionVisibility('running');
+      if (!isResume) resetDocumentsProcessLogForNewRun();
       setDocumentsUiState({
         force: true,
         status: 'running',

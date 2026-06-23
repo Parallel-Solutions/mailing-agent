@@ -337,7 +337,7 @@ def build_documents_chat_events(documents_status: dict) -> list[dict]:
         events.append({
             "id": "documents:stage:finalize_output",
             "title": "Собираю результат",
-            "text": "Проверка текста завершена. Собираю итоговый результат.",
+            "text": "Проверка текста завершена. Собираю PDF и архив.",
         })
     elif stage == "review":
         events.append({
@@ -356,7 +356,7 @@ def build_documents_chat_events(documents_status: dict) -> list[dict]:
         events.append({
             "id": "documents:completed",
             "title": "Подготовка завершена",
-            "text": "Документы подготовлены. Можно скачать архив и перейти к проверке отправки.",
+            "text": "Результат собран. Можно скачать архив и перейти к проверке отправки.",
         })
     elif status == "stopped":
         events.append({

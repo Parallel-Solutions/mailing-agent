@@ -211,6 +211,33 @@ class DocumentsStateStatusTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "running")
         self.assertEqual(result["progress_percent"], 99)
+        event_texts = [event["text"] for event in result["ui"]["chat_events"]]
+        self.assertIn("Проверка текста завершена. Собираю PDF и архив.", event_texts)
+        self.assertFalse(any("Можно скачать архив" in text for text in event_texts))
+
+    def test_completed_documents_chat_event_is_final_only(self) -> None:
+        self._configure_documents_service(
+            generator_state={
+                "status": "completed",
+                "stage": "completed",
+                "total_rows": 2,
+                "processed_rows": 2,
+                "staged_docx_count": 2,
+                "pdf_total": 2,
+                "pdf_processed": 2,
+                "output_file_count": 4,
+            },
+            philologist_state={
+                "status": "completed",
+                "total_documents": 2,
+                "processed_documents": 2,
+            },
+        )
+
+        result = documents_service.compact_documents_status("job-test", document_mode="kp")
+
+        event_texts = [event["text"] for event in result["ui"]["chat_events"]]
+        self.assertIn("Результат собран. Можно скачать архив и перейти к проверке отправки.", event_texts)
 
     def test_documents_chat_greeting_does_not_dump_status_stats(self) -> None:
         documents_service._deps.clear()

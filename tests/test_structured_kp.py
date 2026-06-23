@@ -529,9 +529,9 @@ class StructuredKPTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertNotIn('>       </w:t>', adjusted)
-        self.assertEqual(adjusted.count('>   </w:t>'), 2)
+        self.assertEqual(adjusted.count('>     </w:t>'), 2)
 
-    def test_short_signature_contact_gap_is_preserved(self) -> None:
+    def test_mngp_signature_contact_gap_is_normalized_for_pdf(self) -> None:
         output_text = (
             '<w:document><w:body><w:tbl>'
             '<w:tr><w:tc><w:p><w:r><w:t>\u0421 \u0443\u0432\u0430\u0436\u0435\u043d\u0438\u0435\u043c,</w:t></w:r></w:p></w:tc>'
@@ -539,16 +539,17 @@ class StructuredKPTests(unittest.TestCase):
             '<w:tc><w:p><w:r><w:t>\u041a.\u0418. \u041a\u0440\u0430\u0448\u0435\u043d\u0438\u043d\u043d\u0438\u043a\u043e\u0432</w:t></w:r></w:p></w:tc></w:tr>'
             '<w:tr><w:tc><w:p>'
             '<w:r><w:t>\u0418\u0441\u043f. \u0427\u0435\u0440\u043a\u0430\u0448\u0438\u043d\u0430 \u041d\u0430\u0442\u0430\u043b\u044c\u044f</w:t></w:r>'
-            '<w:r><w:br/></w:r><w:r><w:t xml:space="preserve">     </w:t></w:r><w:r><w:t>\u0442\u0435\u043b. +7 993 079-45-61</w:t></w:r>'
-            '<w:r><w:br/></w:r><w:r><w:t xml:space="preserve">     </w:t></w:r><w:r><w:t>ks@parresh.ru</w:t></w:r>'
+            '<w:r><w:br/></w:r><w:r><w:t xml:space="preserve">   </w:t></w:r><w:r><w:t>\u0442\u0435\u043b. +7 993 079-45-61</w:t></w:r>'
+            '<w:r><w:br/></w:r><w:r><w:t xml:space="preserve">   </w:t></w:r><w:r><w:t>ks@parresh.ru</w:t></w:r>'
             '</w:p></w:tc><w:tc/><w:tc/></w:tr>'
             '</w:tbl></w:body></w:document>'
         )
 
         adjusted, changed = document_builder.normalize_signature_contact_spacing_for_pdf(output_text)
 
-        self.assertFalse(changed)
-        self.assertEqual(adjusted, output_text)
+        self.assertTrue(changed)
+        self.assertNotIn('>   </w:t>', adjusted)
+        self.assertEqual(adjusted.count('>     </w:t>'), 2)
 
 
     def test_signature_contact_icons_use_pdf_stable_vertical_offsets(self) -> None:
@@ -586,7 +587,7 @@ class StructuredKPTests(unittest.TestCase):
         self.assertIn('<wp:posOffset>150190</wp:posOffset>', adjusted)
         self.assertIn('<wp:posOffset>351165</wp:posOffset>', adjusted)
 
-    def test_left_aligned_signature_contact_icons_use_left_pdf_offsets(self) -> None:
+    def test_mngp_left_aligned_signature_contact_icons_use_stable_pdf_offsets(self) -> None:
         phone_anchor = (
             '<wp:anchor behindDoc="0"><wp:positionH relativeFrom="column"><wp:posOffset>12700</wp:posOffset></wp:positionH>'
             '<wp:positionV relativeFrom="paragraph"><wp:posOffset>294005</wp:posOffset></wp:positionV>'
@@ -618,11 +619,42 @@ class StructuredKPTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertFalse(changed_again)
         self.assertEqual(adjusted_again, adjusted)
+        self.assertIn('<wp:posOffset>150190</wp:posOffset>', adjusted)
+        self.assertIn('<wp:posOffset>351165</wp:posOffset>', adjusted)
+        self.assertNotIn('<wp:posOffset>190000</wp:posOffset>', adjusted)
+        self.assertNotIn('<wp:posOffset>380000</wp:posOffset>', adjusted)
+
+    def test_territorial_signature_contact_icons_keep_lower_left_pdf_offsets(self) -> None:
+        phone_anchor = (
+            '<wp:anchor behindDoc="0"><wp:positionH relativeFrom="column"><wp:posOffset>12700</wp:posOffset></wp:positionH>'
+            '<wp:positionV relativeFrom="paragraph"><wp:posOffset>294005</wp:posOffset></wp:positionV>'
+            '<wp:extent cx="113030" cy="121285"/></wp:anchor>'
+        )
+        mail_anchor = (
+            '<wp:anchor behindDoc="0"><wp:positionH relativeFrom="column"><wp:posOffset>19685</wp:posOffset></wp:positionH>'
+            '<wp:positionV relativeFrom="paragraph"><wp:posOffset>532130</wp:posOffset></wp:positionV>'
+            '<wp:extent cx="118745" cy="80645"/></wp:anchor>'
+        )
+        output_text = (
+            '<w:document><w:body><w:tbl>'
+            '<w:tr><w:tc><w:p><w:r><w:t>С уважением,</w:t></w:r></w:p></w:tc>'
+            '<w:tc><w:p/></w:tc>'
+            '<w:tc><w:p><w:r><w:t>К.И. Крашенинников</w:t></w:r></w:p></w:tc></w:tr>'
+            '<w:tr><w:tc><w:p>'
+            f'<w:r><w:drawing>{phone_anchor}</w:drawing></w:r>'
+            f'<w:r><w:drawing>{mail_anchor}</w:drawing></w:r>'
+            '<w:r><w:t>Исп. Черкашина Наталья</w:t></w:r>'
+            '<w:r><w:br/></w:r><w:r><w:t>тел. +7 963 912-74-25</w:t></w:r>'
+            '<w:r><w:br/></w:r><w:r><w:t>ks@parresh.ru</w:t></w:r>'
+            '</w:p></w:tc><w:tc/><w:tc/></w:tr>'
+            '</w:tbl></w:body></w:document>'
+        )
+
+        adjusted, changed = document_builder.adjust_signature_contact_icon_positions_for_pdf(output_text)
+
+        self.assertTrue(changed)
         self.assertIn('<wp:posOffset>190000</wp:posOffset>', adjusted)
         self.assertIn('<wp:posOffset>380000</wp:posOffset>', adjusted)
-        self.assertNotIn('<wp:posOffset>150190</wp:posOffset>', adjusted)
-        self.assertNotIn('<wp:posOffset>351165</wp:posOffset>', adjusted)
-
 
     def test_territorial_zone_signature_stamp_is_shifted_below_date_line(self) -> None:
         stamp_anchor = (

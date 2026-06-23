@@ -35,7 +35,7 @@ KP_TEMPLATE_FILENAME = "kp_template_source.docx"
 CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
 KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
 CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
-DOCUMENT_RENDERER_VERSION = "2026-06-22-kp-background-svg-fallback-v21"
+DOCUMENT_RENDERER_VERSION = "2026-06-23-signature-contact-template-gap-v23"
 OUTPUT_FOLDER_MANIFEST_FILENAME = ".mailing_agent_output.json"
 
 SVG_BLIP_PATTERN = re.compile(
@@ -68,9 +68,11 @@ SVG_PATH_TOKEN_PATTERN = re.compile(r'[MmLlHhVvCcSsQqTtZz]|[-+]?(?:\d+\.\d*|\.\d
 EMU_PER_INCH = 914400
 BACKGROUND_FALLBACK_PPI = 300
 TERRITORIAL_ZONE_SIGNATURE_STAMP_POS_V = "-350000"
-SIGNATURE_CONTACT_LEADING_SPACES = "   "
+SIGNATURE_CONTACT_LEADING_SPACES = "     "
 SIGNATURE_CONTACT_ICON_POS_V_TARGETS = ("150190", "351165")
+SIGNATURE_CONTACT_MNGP_LEFT_ICON_POS_V_TARGETS = SIGNATURE_CONTACT_ICON_POS_V_TARGETS
 SIGNATURE_CONTACT_LEFT_ICON_POS_V_TARGETS = ("190000", "380000")
+SIGNATURE_CONTACT_MNGP_MARKERS = ("+7 993", "+7\u00a0993", "993 079", "993\u00a0079")
 SIGNATURE_CONTACT_ICON_MIN_POS_H_FOR_PDF_SHIFT = 300000
 WORD_XML_NAMESPACES = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -1236,11 +1238,14 @@ def normalize_signature_contact_spacing_for_pdf(output_text: str) -> tuple[str, 
         row_text = word_node_text(row).casefold()
         if not any(marker in row_text for marker in contact_markers):
             continue
+        is_mngp_contact_row = any(marker in row_text for marker in SIGNATURE_CONTACT_MNGP_MARKERS)
         cells = row.xpath("./w:tc", namespaces=WORD_XML_NAMESPACES)
         if not cells:
             continue
         for text_node in cells[0].xpath(".//w:t", namespaces=WORD_XML_NAMESPACES):
-            if not text_node.text or text_node.text.strip() or len(text_node.text) < 7:
+            if not text_node.text or text_node.text.strip():
+                continue
+            if not is_mngp_contact_row and len(text_node.text) < 7:
                 continue
             if text_node.text != SIGNATURE_CONTACT_LEADING_SPACES:
                 text_node.text = SIGNATURE_CONTACT_LEADING_SPACES
@@ -1272,6 +1277,7 @@ def adjust_signature_contact_icon_positions_for_pdf(output_text: str) -> tuple[s
         row_text = word_node_text(row).casefold()
         if not any(marker in row_text for marker in contact_markers):
             continue
+        is_mngp_contact_row = any(marker in row_text for marker in SIGNATURE_CONTACT_MNGP_MARKERS)
         cells = row.xpath("./w:tc", namespaces=WORD_XML_NAMESPACES)
         if not cells:
             continue
@@ -1295,11 +1301,15 @@ def adjust_signature_contact_icon_positions_for_pdf(output_text: str) -> tuple[s
                 horizontal_offset = int(pos_h[0].text or "0") if pos_h else 0
             except ValueError:
                 continue
-            target_pos_v = (
-                SIGNATURE_CONTACT_LEFT_ICON_POS_V_TARGETS[anchor_index]
-                if horizontal_offset < SIGNATURE_CONTACT_ICON_MIN_POS_H_FOR_PDF_SHIFT
-                else SIGNATURE_CONTACT_ICON_POS_V_TARGETS[anchor_index]
-            )
+            if horizontal_offset < SIGNATURE_CONTACT_ICON_MIN_POS_H_FOR_PDF_SHIFT:
+                left_targets = (
+                    SIGNATURE_CONTACT_MNGP_LEFT_ICON_POS_V_TARGETS
+                    if is_mngp_contact_row
+                    else SIGNATURE_CONTACT_LEFT_ICON_POS_V_TARGETS
+                )
+                target_pos_v = left_targets[anchor_index]
+            else:
+                target_pos_v = SIGNATURE_CONTACT_ICON_POS_V_TARGETS[anchor_index]
             pos_v = anchor.xpath("./wp:positionV/wp:posOffset", namespaces=WORD_XML_NAMESPACES)
             if not pos_v:
                 continue
