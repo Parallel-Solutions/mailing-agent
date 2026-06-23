@@ -24,6 +24,7 @@ RUN python -m pip install --no-cache-dir uv
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 RUN .venv/bin/python -m playwright install --with-deps chromium
+RUN uv pip install --python .venv/bin/python "pypdf>=6.0.0"
 
 COPY . .
 RUN mkdir -p /app/storage /app/logs /app/data /app/tmp
