@@ -56,6 +56,51 @@ cd C:\Users\civ\Desktop\n8n\mailing-agent
 http://127.0.0.1:8011/
 ```
 
+## Запуск через Docker Compose
+
+Docker Compose описывает все контейнеры сервиса в одном файле. Для этого проекта compose поднимает:
+
+- `app` - FastAPI-приложение на Python;
+- `gotenberg` - внутренний сервис для DOCX -> PDF конвертации.
+
+Gotenberg не публикуется наружу и доступен только контейнеру приложения по адресу `http://gotenberg:3000`.
+
+Первый запуск на Linux-сервере:
+
+```bash
+cd /opt/mailing-agent
+cp .env.docker.example .env.docker
+nano .env.docker
+```
+
+В `.env.docker` обязательно задать реальные значения `APP_PASSWORD`, `PUBLIC_BASE_URL`, ключи LLM и настройки отправщика писем. `PUBLIC_BASE_URL` должен быть внешним адресом сервиса, потому что он используется в consent-ссылках из писем и webhook-сценариях.
+
+Запуск:
+
+```bash
+docker compose up -d --build
+```
+
+Проверка:
+
+```bash
+docker compose ps
+docker compose logs -f app
+```
+
+Остановка:
+
+```bash
+docker compose down
+```
+
+По умолчанию приложение публикуется на порту `9806` хоста. Если нужен другой порт, задайте в `.env.docker`, например:
+
+```env
+APP_PUBLIC_PORT=18080
+```
+
+Если на сервере уже заняты `80/tcp` и `443/tcp`, лучше оставить приложение на внутреннем порту `9806` и добавить отдельный поддомен через существующий nginx/reverse proxy.
 
 ## Переменные окружения
 

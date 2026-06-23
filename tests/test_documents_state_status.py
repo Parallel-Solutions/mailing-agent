@@ -92,7 +92,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
             "total_rows": 100,
             "processed_rows": 100,
             "staged_docx_count": 200,
-            "pdf_total": 200,
+            "pdf_total": 100,
             "pdf_processed": 100,
             "output_file_count": 0,
         }
@@ -122,9 +122,9 @@ class DocumentsStateStatusTests(unittest.TestCase):
         self.assertEqual(result["stage"], "ready")
         self.assertEqual([part["id"] for part in result["progress_units"]["parts"]], ["generate", "review", "finalize"])
         self.assertEqual(result["progress_units"]["parts"][2]["done"], 100)
-        self.assertEqual(result["progress_units"]["parts"][2]["total"], 200)
-        self.assertGreater(result["progress_percent"], 40)
-        self.assertLess(result["progress_percent"], 60)
+        self.assertEqual(result["progress_units"]["parts"][2]["total"], 100)
+        self.assertGreater(result["progress_percent"], 50)
+        self.assertLess(result["progress_percent"], 70)
         chat_events = result["ui"]["chat_events"]
         self.assertTrue(any(event["id"] == "documents:stage:finalize_output" for event in chat_events))
 
@@ -182,10 +182,10 @@ class DocumentsStateStatusTests(unittest.TestCase):
             "total_rows": 100,
             "processed_rows": 100,
             "staged_docx_count": 200,
-            "pdf_total": 200,
-            "pdf_processed": 200,
-            "staged_pdf_count": 200,
-            "output_file_count": 200,
+            "pdf_total": 100,
+            "pdf_processed": 100,
+            "staged_pdf_count": 100,
+            "output_file_count": 300,
         }
         philologist_state = {
             "status": "completed",
@@ -212,7 +212,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
         self.assertEqual(result["status"], "running")
         self.assertEqual(result["progress_percent"], 99)
         event_texts = [event["text"] for event in result["ui"]["chat_events"]]
-        self.assertIn("Проверка текста завершена. Собираю PDF и архив.", event_texts)
+        self.assertIn("Проверка текста завершена. Собираю итоговый результат.", event_texts)
         self.assertFalse(any("Можно скачать архив" in text for text in event_texts))
 
     def test_completed_documents_chat_event_is_final_only(self) -> None:
@@ -259,7 +259,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
                 "total_rows": 100,
                 "processed_rows": 100,
                 "staged_docx_count": 200,
-                "pdf_total": 200,
+                "pdf_total": 100,
                 "pdf_processed": 60,
             },
             philologist_state={
@@ -272,7 +272,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
         payload = documents_service.documents_agent_choose_reply("что сейчас происходит?", job_id="job-test")
 
         self.assertIn("Сейчас идёт", payload["reply"])
-        self.assertIn("Собираю результат: 60 из 200", payload["reply"])
+        self.assertIn("Собираю результат: 60 из 100", payload["reply"])
         self.assertEqual(payload["tools_used"], ["get_current_step"])
 
     def test_documents_pipeline_generates_reviews_then_finalizes_output(self) -> None:

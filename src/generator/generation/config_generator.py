@@ -67,6 +67,7 @@ WEB_CASE_AGENT_MAX_WORKERS = max(1, int(_read_env_override("WEB_CASE_AGENT_MAX_W
 
 # PDF-конвертация
 KP_GENERATION_ENGINE = _read_env_override("KP_GENERATION_ENGINE", "template").strip().lower() or "template"
+KP_PDF_RENDERER = _read_env_override("KP_PDF_RENDERER", "custom").strip().lower() or "custom"
 PDF_CONVERTER = _read_env_override("PDF_CONVERTER", "libreoffice").strip().lower() or "libreoffice"
 PDF_CONVERTER_FALLBACK = _read_env_override("PDF_CONVERTER_FALLBACK", "").strip().lower()
 _GOTENBERG_BASE_URLS_RAW = _read_env_override(
@@ -89,3 +90,4 @@ ONLYOFFICE_PUBLIC_FILES_URL = _read_env_override(
     "ONLYOFFICE_PUBLIC_FILES_URL",
     "http://172.17.0.1:9806/public/onlyoffice",
 ).strip().rstrip("/")
+

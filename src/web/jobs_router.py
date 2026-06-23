@@ -348,6 +348,7 @@ class JobsWebController:
             document_mode or generator_state.get("document_mode") or DOCUMENT_MODE_BOTH
         )
         required_document_kinds = set(document_mode_kinds(effective_document_mode))
+        requires_kp_pdf = "kp" in required_document_kinds
 
         parser_verification_state = parser_state.get("municipality_name_verification_state") or {}
         parser_verification_result = parser_state.get("municipality_name_verification") or {}
@@ -404,8 +405,8 @@ class JobsWebController:
         if generator_running:
             philologist_reasons.append("Генератор ещё работает.")
 
-        if output_pdf_count <= 0 and not documents_completed:
-            sender_reasons.append("Нет готовых PDF-вложений.")
+        if requires_kp_pdf and output_pdf_count <= 0 and not documents_completed:
+            sender_reasons.append("Нет готового PDF КП.")
         if generator_running and not documents_completed:
             sender_reasons.append("Генератор ещё работает.")
         if philologist_running and not documents_completed:

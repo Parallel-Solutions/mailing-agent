@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
+from src.generator.generation.work_types import WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES
+
 from docx import Document
 from docx.document import Document as DocumentObject
 from docx.enum.section import WD_SECTION_START
@@ -374,7 +376,8 @@ def _clear_borders(table) -> None:
 
 def _price_from_context(context: dict) -> KPPrice:
     raw_amount = str(context.get("KP_PRICE_RUBLES") or context.get("PRICE_RUBLES") or "").strip()
-    amount = int("".join(ch for ch in raw_amount if ch.isdigit()) or "99000")
+    default_amount = "10000" if str(context.get("WORK_TYPE") or "") == WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES else "99000"
+    amount = int("".join(ch for ch in raw_amount if ch.isdigit()) or default_amount)
     words = str(context.get("KP_PRICE_WORDS") or context.get("PRICE_WORDS") or "").strip()
     if not words:
         words = number_to_russian_words(amount)
@@ -442,3 +445,4 @@ def _number_under_100(value: int) -> str:
     ten = value // 10 * 10
     one = value % 10
     return f"{tens.get(ten, str(ten))} {ones.get(one, str(one))}".strip()
+

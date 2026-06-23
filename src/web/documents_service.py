@@ -38,6 +38,10 @@ def _document_count_per_row(document_mode: str | None) -> int:
     return len(document_mode_kinds(document_mode))
 
 
+def _pdf_count_per_row(document_mode: str | None) -> int:
+    return 1 if "kp" in document_mode_kinds(document_mode) else 0
+
+
 def _documents_progress_units(
     *,
     status: str,
@@ -52,11 +56,17 @@ def _documents_progress_units(
     document_mode: str | None,
 ) -> dict[str, Any]:
     documents_per_row = _document_count_per_row(document_mode)
+    pdfs_per_row = _pdf_count_per_row(document_mode)
     expected_documents = total_rows * documents_per_row if total_rows > 0 else max(
         total_documents,
         _safe_int(generator.get("staged_docx_count")),
         _safe_int(generator.get("generated_docx_count")),
         _safe_int(generator.get("pdf_total")),
+    )
+    expected_pdf_documents = total_rows * pdfs_per_row if total_rows > 0 else max(
+        _safe_int(generator.get("pdf_total")),
+        _safe_int(generator.get("pdf_processed")),
+        _safe_int(generator.get("staged_pdf_count")),
     )
 
     generated_total = expected_documents
@@ -73,11 +83,11 @@ def _documents_progress_units(
     if str(philologist.get("status") or "") == "completed" or status == "completed":
         review_done = review_total
 
-    finalize_total = expected_documents
+    finalize_total = expected_pdf_documents
     finalize_done = 0
     if stage == "ready":
         finalize_done = max(_safe_int(generator.get("pdf_processed")), _safe_int(generator.get("staged_pdf_count")))
-    if status == "completed" or output_file_count >= expected_documents * 2:
+    if status == "completed" or output_file_count >= expected_documents + expected_pdf_documents:
         finalize_done = finalize_total
 
     parts = [
@@ -140,14 +150,16 @@ def _recover_completed_generator_after_worker_exit(
 
     document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
     documents_per_row = _document_count_per_row(document_mode)
+    pdfs_per_row = _pdf_count_per_row(document_mode)
     expected_documents = max(
         _safe_int(generator_state.get("staged_docx_count")),
         _safe_int(generator_state.get("total_rows")) * documents_per_row,
         _safe_int(philologist_state.get("total_documents")),
     )
+    expected_pdf_documents = _safe_int(generator_state.get("total_rows")) * pdfs_per_row
     output_docx_count = _safe_int(readiness.get("output_docx_count"))
     output_pdf_count = _safe_int(readiness.get("output_pdf_count"))
-    if expected_documents <= 0 or output_docx_count < expected_documents or output_pdf_count < expected_documents:
+    if expected_documents <= 0 or output_docx_count < expected_documents or output_pdf_count < expected_pdf_documents:
         return generator_state
 
     recovered_state = dict(generator_state)
@@ -157,9 +169,9 @@ def _recover_completed_generator_after_worker_exit(
     recovered_state["completed_at"] = recovered_state.get("completed_at") or datetime.now().isoformat(timespec="seconds")
     recovered_state["stop_requested"] = False
     recovered_state["stop_requested_at"] = None
-    recovered_state["pdf_total"] = max(_safe_int(recovered_state.get("pdf_total")), expected_documents)
-    recovered_state["pdf_processed"] = max(_safe_int(recovered_state.get("pdf_processed")), expected_documents)
-    recovered_state["staged_pdf_count"] = max(_safe_int(recovered_state.get("staged_pdf_count")), expected_documents)
+    recovered_state["pdf_total"] = max(_safe_int(recovered_state.get("pdf_total")), expected_pdf_documents)
+    recovered_state["pdf_processed"] = max(_safe_int(recovered_state.get("pdf_processed")), expected_pdf_documents)
+    recovered_state["staged_pdf_count"] = max(_safe_int(recovered_state.get("staged_pdf_count")), expected_pdf_documents)
     recovered_state["output_file_count"] = max(
         _safe_int(recovered_state.get("output_file_count")),
         output_docx_count + output_pdf_count,
@@ -358,6 +370,8 @@ def compact_documents_status(job_id: str | None, document_mode: str | None = Non
         "fixed_documents": int(philologist_state.get("fixed_documents") or 0),
         "documents_with_issues": int(philologist_state.get("documents_with_issues") or 0),
         "output_file_count": int(generator_state.get("output_file_count") or 0),
+        "output_docx_count": _safe_int(readiness.get("output_docx_count")),
+        "output_pdf_count": _safe_int(readiness.get("output_pdf_count")),
         "summary_text": stage_text,
         "document_mode": document_mode,
         "work_type": work_type,
