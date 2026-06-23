@@ -114,6 +114,11 @@ def compact_sender_status(state: dict) -> dict:
             remaining_rows = max(0, _safe_int(stats.get("pending")) + error_rows)
         elif remaining_rows <= 0:
             remaining_rows = max(0, total_rows - processed_rows)
+    if status == "completed" and mode == "send":
+        processed_rows = max(processed_rows, sent_rows + error_rows, total_rows - remaining_rows)
+        if total_rows > 0:
+            processed_rows = min(total_rows, processed_rows)
+        ready_rows = max(ready_rows, sent_rows)
     summary_text = state.get("summary_text", "")
     if send_mode == "consent_request" and status == "completed" and mode == "send":
         if error_rows <= 0 and remaining_rows <= 0:

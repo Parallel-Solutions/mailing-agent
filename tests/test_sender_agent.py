@@ -134,6 +134,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             "send_mode": "materials",
             "selection_scoped": True,
             "processed_rows": 1,
+            "ready_rows": 1,
             "sent_rows": 1,
             "error_rows": 0,
             "total_rows": 1,
@@ -145,6 +146,8 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
         self.assertEqual(compact["total_rows"], 2)
         self.assertEqual(compact["sent_rows"], 2)
+        self.assertEqual(compact["processed_rows"], 2)
+        self.assertEqual(compact["ready_rows"], 2)
         self.assertEqual(compact["stats"], {"total": 2, "sent": 2, "error": 0, "pending": 0})
 
     def test_materials_send_requires_confirmed_consent_even_when_caller_omits_flag(self) -> None:
