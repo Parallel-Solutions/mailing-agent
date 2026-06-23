@@ -70,6 +70,8 @@ BACKGROUND_FALLBACK_PPI = 300
 TERRITORIAL_ZONE_SIGNATURE_STAMP_POS_V = "-350000"
 SIGNATURE_CONTACT_LEADING_SPACES = "   "
 SIGNATURE_CONTACT_ICON_POS_V_TARGETS = ("150190", "351165")
+SIGNATURE_CONTACT_LEFT_ICON_POS_V_TARGETS = ("190000", "380000")
+SIGNATURE_CONTACT_ICON_MIN_POS_H_FOR_PDF_SHIFT = 300000
 WORD_XML_NAMESPACES = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
     "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
@@ -1238,7 +1240,7 @@ def normalize_signature_contact_spacing_for_pdf(output_text: str) -> tuple[str, 
         if not cells:
             continue
         for text_node in cells[0].xpath(".//w:t", namespaces=WORD_XML_NAMESPACES):
-            if not text_node.text or text_node.text.strip() or len(text_node.text) < 5:
+            if not text_node.text or text_node.text.strip() or len(text_node.text) < 7:
                 continue
             if text_node.text != SIGNATURE_CONTACT_LEADING_SPACES:
                 text_node.text = SIGNATURE_CONTACT_LEADING_SPACES
@@ -1277,7 +1279,7 @@ def adjust_signature_contact_icon_positions_for_pdf(output_text: str) -> tuple[s
             ".//wp:anchor[not(@behindDoc='1')]",
             namespaces=WORD_XML_NAMESPACES,
         )
-        for anchor, target_pos_v in zip(anchors[:2], SIGNATURE_CONTACT_ICON_POS_V_TARGETS):
+        for anchor_index, anchor in enumerate(anchors[:2]):
             extent = anchor.xpath("./wp:extent", namespaces=WORD_XML_NAMESPACES)
             if not extent:
                 continue
@@ -1288,6 +1290,16 @@ def adjust_signature_contact_icon_positions_for_pdf(output_text: str) -> tuple[s
                 continue
             if cx > 250000 or cy > 250000:
                 continue
+            pos_h = anchor.xpath("./wp:positionH/wp:posOffset", namespaces=WORD_XML_NAMESPACES)
+            try:
+                horizontal_offset = int(pos_h[0].text or "0") if pos_h else 0
+            except ValueError:
+                continue
+            target_pos_v = (
+                SIGNATURE_CONTACT_LEFT_ICON_POS_V_TARGETS[anchor_index]
+                if horizontal_offset < SIGNATURE_CONTACT_ICON_MIN_POS_H_FOR_PDF_SHIFT
+                else SIGNATURE_CONTACT_ICON_POS_V_TARGETS[anchor_index]
+            )
             pos_v = anchor.xpath("./wp:positionV/wp:posOffset", namespaces=WORD_XML_NAMESPACES)
             if not pos_v:
                 continue

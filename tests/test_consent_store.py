@@ -74,7 +74,7 @@ class ConsentStoreTests(unittest.TestCase):
                     )
                 )
 
-    def test_get_consent_routes_render_form_without_confirming(self) -> None:
+    def test_get_consent_confirm_confirms_and_dispatches_without_extra_button(self) -> None:
         with _workspace_temp_dir() as tmpdir:
             consent_path = Path(tmpdir) / "job-1" / "state" / "consents.json"
             job_dir = consent_path.parent.parent
@@ -82,13 +82,17 @@ class ConsentStoreTests(unittest.TestCase):
             app = FastAPI()
             app.include_router(create_consent_router())
             client = TestClient(app)
+            dispatched_records = []
 
             with (
                 patch.object(consent_store, "_consent_path", return_value=consent_path),
                 patch.object(consent_store, "_consent_documents_dir", return_value=consents_dir),
                 patch.object(consent_store, "_iter_job_dirs", return_value=[job_dir]),
                 patch.object(consent_store.settings, "public_base_url", "https://example.test"),
-                patch("src.web.consent_router._dispatch_materials_after_consent") as dispatch_materials,
+                patch(
+                    "src.web.consent_router._dispatch_materials_after_consent",
+                    side_effect=lambda record: dispatched_records.append(record),
+                ),
             ):
                 record = consent_store.prepare_consent_request(
                     job_id="job-1",
@@ -97,13 +101,9 @@ class ConsentStoreTests(unittest.TestCase):
                     transport="smtp",
                 )
 
-                for path in (f"/consent/confirm/{record['token']}", f"/consent/request/{record['token']}"):
-                    response = client.get(path)
-                    self.assertEqual(response.status_code, 200)
-                    self.assertIn('method="post"', response.text)
-                    self.assertIn(f'action="/consent/confirm/{record["token"]}"', response.text)
-
-                dispatch_materials.assert_not_called()
+                request_response = client.get(f"/consent/request/{record['token']}")
+                self.assertEqual(request_response.status_code, 200)
+                self.assertNotIn('method="post"', request_response.text)
                 self.assertFalse(
                     consent_store.has_confirmed_consent(
                         job_id="job-1",
@@ -111,7 +111,20 @@ class ConsentStoreTests(unittest.TestCase):
                         recipient="user@example.com",
                     )
                 )
-                self.assertEqual(list(consents_dir.rglob("*.docx")), [])
+
+                confirm_response = client.get(f"/consent/confirm/{record['token']}")
+                self.assertEqual(confirm_response.status_code, 200)
+                self.assertNotIn('method="post"', confirm_response.text)
+                self.assertNotIn("Подтвердить и получить материалы", confirm_response.text)
+                self.assertTrue(
+                    consent_store.has_confirmed_consent(
+                        job_id="job-1",
+                        row_id=42,
+                        recipient="user@example.com",
+                    )
+                )
+                self.assertEqual(len(dispatched_records), 1)
+                self.assertEqual(len(list(consents_dir.rglob("*.docx"))), 1)
 
     def test_post_consent_confirms_once_and_repeated_post_does_not_dispatch_again(self) -> None:
         with _workspace_temp_dir() as tmpdir:

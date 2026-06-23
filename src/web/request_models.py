@@ -65,6 +65,8 @@ class LimitRequest(JobScopedRequest):
     def _normalize_limit(cls, value: Any) -> Any:
         if isinstance(value, bool):
             raise ValueError("must be an integer")
+        if value == 0 or value == "0":
+            return None
         return _empty_to_none(value)
 
 

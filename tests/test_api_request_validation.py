@@ -74,6 +74,21 @@ class SenderRequestValidationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(calls, [])
 
+    def test_sender_run_treats_empty_or_zero_limit_as_unlimited_for_ui_payload(self) -> None:
+        for raw_limit in (None, 0, "0"):
+            with self.subTest(raw_limit=raw_limit):
+                client, calls = self._client()
+
+                with patch("src.web.sender_router.append_audit_event", lambda **kwargs: None):
+                    response = client.post(
+                        "/api/sender/run",
+                        json={"job_id": "job-api", "dry_run": True, "limit": raw_limit},
+                    )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(len(calls), 1)
+                self.assertIsNone(calls[0]["kwargs"]["limit"])
+
     def test_sender_run_accepts_existing_ui_payload_names(self) -> None:
         client, calls = self._client()
         payload = {

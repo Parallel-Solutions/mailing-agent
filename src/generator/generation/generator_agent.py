@@ -4,7 +4,7 @@ import shutil
 import json
 import threading
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -117,17 +117,16 @@ def _timing_safe(value: Any) -> Any:
     return str(value)
 
 
-def _record_generator_timing(
+def _record_generator_timing_item(
     state: dict[str, Any],
     job_id: str | None,
     stage: str,
-    started: float,
+    seconds: float,
     **details: Any,
 ) -> dict[str, Any]:
-    elapsed = round(perf_counter() - started, 3)
     item = {
         "stage": stage,
-        "seconds": elapsed,
+        "seconds": round(max(0.0, float(seconds)), 3),
         "completed_at": datetime.now().isoformat(timespec="seconds"),
         **{key: _timing_safe(value) for key, value in details.items()},
     }
@@ -137,6 +136,22 @@ def _record_generator_timing(
     logger.info("generator_stage_timing", job_id=job_id, **item)
     _save_generator_state(state, job_id)
     return item
+
+
+def _record_generator_timing(
+    state: dict[str, Any],
+    job_id: str | None,
+    stage: str,
+    started: float,
+    **details: Any,
+) -> dict[str, Any]:
+    return _record_generator_timing_item(
+        state,
+        job_id,
+        stage,
+        perf_counter() - started,
+        **details,
+    )
 
 
 def _cached_file_count(directory: Path, pattern: str, *, recursive: bool = False) -> int:
@@ -513,6 +528,7 @@ def finalize_generated_files(
     chunk_size: int | None = None,
     worker_count: int | None = None,
     create_pdf: bool = False,
+    timing_callback: Any | None = None,
 ) -> None:
     chunk_size = max(1, int(chunk_size or PDF_CHUNK_SIZE))
     worker_count = max(1, int(worker_count or PDF_WORKERS))
@@ -578,6 +594,7 @@ def finalize_generated_files(
                 chunk_size=chunk_size,
                 worker_count=worker_count,
                 progress_callback=progress_callback,
+                timing_callback=timing_callback,
             )
             pdf_map = {}
             for safe_docx, created_pdf in pdf_safe_map.items():
@@ -702,6 +719,17 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
 
     progress = {"processed": len(ready)}
 
+    def _report_pdf_backend_timing(timing: dict[str, Any]) -> None:
+        timing_details = dict(timing)
+        seconds = float(timing_details.pop("seconds", 0) or 0)
+        _record_generator_timing_item(
+            state,
+            job_id,
+            "pdf_backend",
+            seconds,
+            **timing_details,
+        )
+
     def _report_pdf_progress() -> None:
         progress["processed"] += 1
         state["pdf_processed"] = min(progress["processed"], total)
@@ -716,6 +744,7 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
             chunk_size=PDF_CHUNK_SIZE,
             worker_count=PDF_WORKERS,
             progress_callback=_report_pdf_progress,
+            timing_callback=_report_pdf_backend_timing,
         )
         for staged_docx, final_pdf in staged_to_final.items():
             created_pdf = pdf_map.get(staged_docx)
@@ -1007,39 +1036,103 @@ def run_generator_agent(
 
         remaining_payloads = [payload for payload in payloads if payload[0] not in completed_result_indices]
         render_started = perf_counter()
+        render_workers_used = 1
 
         if resume_stage == "render_docx" and ENABLE_CASE_AGENT:
-            for payload in remaining_payloads:
-                _refresh_generator_stop_flag(state, job_id)
-                if state.get("stop_requested"):
-                    raise GeneratorStopRequested("Генератор остановлен после завершения текущей строки.")
-                result_index, _, row = payload
-                state["current_client"] = _current_client_from_row(row, index=result_index + 1, total=len(payloads))
-                _save_generator_state(state, job_id)
-                try:
-                    results[result_index] = process_generator_row(
-                        payload,
-                        output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
-                        batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
-                        templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
-                        document_mode=effective_document_mode,
-                        work_type=effective_work_type,
-                    )
-                except Exception as exc:
-                    results[result_index] = {
-                        "result_index": result_index,
-                        "id": row.get("ID"),
-                        "status": "error",
-                        "error": str(exc),
-                        "files": {},
-                    }
-                state["processed_rows"] += 1
-                completed_result_indices.add(result_index)
-                state["completed_result_indices"] = sorted(completed_result_indices)
-                state["results"] = results
-                _save_generator_state(state, job_id)
+            max_workers = max(1, min(WEB_CASE_AGENT_MAX_WORKERS, len(remaining_payloads) or 1))
+            render_workers_used = max_workers
+            if max_workers == 1:
+                for payload in remaining_payloads:
+                    _refresh_generator_stop_flag(state, job_id)
+                    if state.get("stop_requested"):
+                        raise GeneratorStopRequested("Генератор остановлен после завершения текущей строки.")
+                    result_index, _, row = payload
+                    state["current_client"] = _current_client_from_row(row, index=result_index + 1, total=len(payloads))
+                    _save_generator_state(state, job_id)
+                    try:
+                        results[result_index] = process_generator_row(
+                            payload,
+                            output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
+                            batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
+                            templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
+                            document_mode=effective_document_mode,
+                            work_type=effective_work_type,
+                        )
+                    except Exception as exc:
+                        results[result_index] = {
+                            "result_index": result_index,
+                            "id": row.get("ID"),
+                            "status": "error",
+                            "error": str(exc),
+                            "files": {},
+                        }
+                    state["processed_rows"] += 1
+                    completed_result_indices.add(result_index)
+                    state["completed_result_indices"] = sorted(completed_result_indices)
+                    state["results"] = results
+                    _save_generator_state(state, job_id)
+            else:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    payload_iter = iter(remaining_payloads)
+                    future_map = {}
+
+                    def _submit_next() -> bool:
+                        _refresh_generator_stop_flag(state, job_id)
+                        if state.get("stop_requested"):
+                            return False
+                        try:
+                            payload = next(payload_iter)
+                        except StopIteration:
+                            return False
+                        result_index, _, row = payload
+                        state["current_client"] = _current_client_from_row(row, index=result_index + 1, total=len(payloads))
+                        _save_generator_state(state, job_id)
+                        future = executor.submit(
+                            process_generator_row,
+                            payload,
+                            output_dir=None if job_paths.uses_legacy_layout else job_paths.output_dir,
+                            batch_docx_dir=None if job_paths.uses_legacy_layout else job_paths.batch_docx_dir,
+                            templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
+                            document_mode=effective_document_mode,
+                            work_type=effective_work_type,
+                        )
+                        future_map[future] = payload
+                        return True
+
+                    for _ in range(min(max_workers, len(remaining_payloads))):
+                        if not _submit_next():
+                            break
+
+                    stop_submitting = False
+                    while future_map:
+                        future = next(as_completed(list(future_map.keys())))
+                        result_index, _, row = future_map[future]
+                        future_map.pop(future, None)
+                        try:
+                            results[result_index] = future.result()
+                        except Exception as exc:
+                            results[result_index] = {
+                                "result_index": result_index,
+                                "id": row.get("ID"),
+                                "status": "error",
+                                "error": str(exc),
+                                "files": {},
+                            }
+                        state["processed_rows"] += 1
+                        completed_result_indices.add(result_index)
+                        state["completed_result_indices"] = sorted(completed_result_indices)
+                        state["results"] = results
+                        _save_generator_state(state, job_id)
+                        _refresh_generator_stop_flag(state, job_id)
+                        if state.get("stop_requested"):
+                            stop_submitting = True
+                        while not stop_submitting and len(future_map) < max_workers and _submit_next():
+                            pass
+                    if stop_submitting:
+                        raise GeneratorStopRequested("Генератор остановлен после завершения текущего пакета строк.")
         elif resume_stage == "render_docx":
             max_workers = max(1, min(DOCX_WORKERS, len(payloads)))
+            render_workers_used = max_workers
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 payload_iter = iter(remaining_payloads)
                 future_map = {}
@@ -1104,8 +1197,9 @@ def run_generator_agent(
                 render_started,
                 total_rows=len(payloads),
                 processed_rows=state.get("processed_rows", 0),
-                workers=1 if ENABLE_CASE_AGENT else max(1, min(DOCX_WORKERS, len(payloads))),
+                workers=render_workers_used,
                 case_agent_enabled=ENABLE_CASE_AGENT,
+                web_case_agent_max_workers=WEB_CASE_AGENT_MAX_WORKERS if ENABLE_CASE_AGENT else None,
             )
 
         state["results"] = results
@@ -1135,6 +1229,17 @@ def run_generator_agent(
             state["pdf_processed"] = min(pdf_progress["processed"], staged_docx_total)
             _save_generator_state(state, job_id)
 
+        def _report_pdf_backend_timing(timing: dict[str, Any]) -> None:
+            timing_details = dict(timing)
+            seconds = float(timing_details.pop("seconds", 0) or 0)
+            _record_generator_timing_item(
+                state,
+                job_id,
+                "pdf_backend",
+                seconds,
+                **timing_details,
+            )
+
         finalize_started = perf_counter()
         finalize_generated_files(
             results,
@@ -1144,6 +1249,7 @@ def run_generator_agent(
             chunk_size=PDF_CHUNK_SIZE,
             worker_count=PDF_WORKERS,
             create_pdf=create_pdf,
+            timing_callback=_report_pdf_backend_timing,
         )
         _record_generator_timing(
             state,

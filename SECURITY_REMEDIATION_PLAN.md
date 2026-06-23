@@ -1,6 +1,5 @@
 # Security and Architecture Remediation Plan
 
-Документ ведется как живой трекер исправлений после архитектурного и security-аудита.
 
 Статусы:
 
@@ -11,8 +10,6 @@
 - `blocked` - нужен внешний ответ, доступ или продуктово-юридическое решение.
 
 ## Phase 0: Safety Gate
-
-Цель: закрыть риски, из-за которых сервис нельзя безопасно считать многопользовательским.
 
 | ID | Status | Severity | Issue | Target files | Verification |
 | --- | --- | --- | --- | --- | --- |
@@ -29,8 +26,6 @@
 
 ## Phase 1: Multi-User Access Model
 
-Цель: перейти от single-admin internal tool к модели с владельцами jobs и tenant/user scope.
-
 | ID | Status | Severity | Issue | Target files | Verification |
 | --- | --- | --- | --- | --- | --- |
 | MU-01 | verified | Critical | Ввести понятие current user/tenant в auth layer. | `src/security/auth.py`, `main.py`, `src/utils/config.py`, `.env.example`, `README.md`, `tests/test_multi_user_access.py` | `.\.venv\Scripts\python.exe -m unittest tests.test_multi_user_access -v` - OK, 6 tests. |
@@ -41,8 +36,6 @@
 
 ## Phase 2: API Contracts and Validation
 
-Цель: сделать API предсказуемым, валидируемым и тестируемым.
-
 | ID | Status | Severity | Issue | Target files | Verification |
 | --- | --- | --- | --- | --- | --- |
 | API-01 | verified | Medium | Заменить raw `dict` body на Pydantic request models. | `src/web/request_models.py`, `src/web/*_router.py`, `tests/test_api_request_validation.py`, `tests/test_reliability_state.py`, `tests/test_worker_process_manager.py` | `tests.test_api_request_validation` OK, 5 tests via normalized-env runner wrapper; static checks OK; parser internals untouched. |
@@ -51,8 +44,6 @@
 | API-04 | verified | Medium | Усилить upload validation. | `src/web/upload_validation.py`, `main.py`, `tests/test_upload_validation.py` | Invalid renamed XLSX/DOCX uploads are rejected before save/background work; valid OOXML signatures still upload. |
 
 ## Phase 3: Reliability and State
-
-Цель: снизить риск потери/повреждения состояния и гонок.
 
 | ID | Status | Severity | Issue | Target files | Verification |
 | --- | --- | --- | --- | --- | --- |
@@ -63,7 +54,6 @@
 
 ## Phase 4: Performance and Operations
 
-Цель: убрать самые заметные масштабные узкие места.
 
 | ID | Status | Severity | Issue | Target files | Verification |
 | --- | --- | --- | --- | --- | --- |
@@ -73,7 +63,6 @@
 
 ## Phase 5: Architecture Cleanup
 
-Цель: уменьшить связность и сделать код дешевле сопровождать.
 
 | ID | Status | Severity | Issue | Target files | Verification |
 | --- | --- | --- | --- | --- | --- |
@@ -103,11 +92,3 @@
 | 2026-06-22 | API-04 | verified | Added centralized upload validation for XLSX/DOCX OOXML signatures and wired `main.py` to use it. Data uploads now reject renamed non-zip files before save/parser verification, and template uploads reject DOCX-like zips missing `word/document.xml`. | `py_compile` OK for touched files; `tests.test_upload_validation` + adjacent API contract suites OK, 20 tests via normalized-env runner wrapper; `git diff --check` OK; `git diff --name-only -- src\parser src\parser_new` empty. |
 | 2026-06-22 | SG-10 | verified | Added `tests.test_api_security_suite` as a single minimal security suite for the API boundary and filled a unittest gap for worker-stop status paths outside `jobs_dir`. The suite aggregates existing behavioral coverage for auth, tenant isolation, audit, consent, webhooks, downloads, request validation, safe 500s, upload validation, and sender consent/idempotency. Parser internals were not modified. | `py_compile` OK; `tests.test_api_security_suite` OK, 58 tests via normalized-env runner wrapper; no remaining Python processes; `git diff --check` OK; `git diff --name-only -- src\parser src\parser_new` empty. |
 | 2026-06-22 | SG-09 | blocked | Non-parser runtime artifact cleanup done: `data (2).xlsx` and `service_docs/unisender_report_2026-05-29.xlsx` were removed from the git index with `git rm --cached` while preserving local files. `.gitignore` now covers temp pytest dirs and SQLite/runtime memory files, and README documents Excel/SQLite artifact hygiene. Full SG-09 verification is blocked because remaining tracked Excel/SQLite files are parser-owned or parser-dependent references. Parser internals were not modified. | `git ls-files "*.xlsx" "*.db" "*.sqlite" "*.sqlite3"` now lists only `service_docs/base.xlsx`, `service_docs/RMZ7KH.xlsx`, `src/parser_new/memory/agent.db`, and `src/parser_new/output/archive/*.xlsx`; `git diff --name-only -- src\parser src\parser_new` empty. |
-
-## Next Task
-
-Рекомендуемый следующий task: `PO-01` индексировать/кешировать job history вместо полного scan.
-
-Причина: Safety Gate теперь упирается только в parser-owned блокеры (`SG-07`, оставшаяся часть `SG-09`). Без разрешения на parser-код безопаснее перейти к performance/operations пунктам вне parser scope.
-
-Parser internals остаются вне scope: `src/parser` и `src/parser_new` не трогаем.

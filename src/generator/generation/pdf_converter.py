@@ -162,6 +162,7 @@ def _kill_process_tree(process: subprocess.Popen) -> None:
 
 
 ProgressCallback = Callable[[], None]
+BackendTimingCallback = Callable[[dict[str, Any]], None]
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
@@ -458,6 +459,7 @@ def _run_backend(
     worker_count: int,
     profiles_root: Optional[Path],
     progress_callback: ProgressCallback | None = None,
+    timing_callback: BackendTimingCallback | None = None,
 ) -> Dict[Path, Optional[Path]]:
     started = perf_counter()
     if backend == "libreoffice":
@@ -476,16 +478,18 @@ def _run_backend(
     else:
         result = {path: None for path in docx_paths}
     success_count = sum(1 for value in result.values() if value is not None)
-    logger.info(
-        "pdf_backend_completed",
-        backend=backend,
-        total=len(docx_paths),
-        success_count=success_count,
-        failed_count=max(0, len(docx_paths) - success_count),
-        seconds=round(perf_counter() - started, 3),
-        workers=worker_count,
-        chunk_size=chunk_size,
-    )
+    timing = {
+        "backend": backend,
+        "total": len(docx_paths),
+        "success_count": success_count,
+        "failed_count": max(0, len(docx_paths) - success_count),
+        "seconds": round(perf_counter() - started, 3),
+        "workers": worker_count,
+        "chunk_size": chunk_size,
+    }
+    logger.info("pdf_backend_completed", **timing)
+    if timing_callback:
+        timing_callback(timing)
     return result
 
 
@@ -513,6 +517,7 @@ def convert_docx_batch(
     worker_count: int = PDF_WORKERS,
     profiles_root: Optional[Path] = None,
     progress_callback: ProgressCallback | None = None,
+    timing_callback: BackendTimingCallback | None = None,
 ) -> Dict[Path, Optional[Path]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     result: Dict[Path, Optional[Path]] = {path: None for path in docx_paths}
@@ -537,6 +542,7 @@ def convert_docx_batch(
             worker_count=worker_count,
             profiles_root=profiles_root,
             progress_callback=progress_callback,
+            timing_callback=timing_callback,
         )
         for docx_path, pdf_path in backend_result.items():
             if pdf_path is not None:

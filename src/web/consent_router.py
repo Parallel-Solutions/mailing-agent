@@ -59,12 +59,6 @@ def _confirmed_page_message(record: dict) -> str:
     return _consent_page_message(record)
 
 
-def _render_confirm_form(token: str) -> str:
-    action = escape(f"/consent/confirm/{_safe_text(token)}", quote=True)
-    return f"""<form class="actions" method="post" action="{action}">
-      <button type="submit">Подтвердить и получить материалы</button>
-    </form>"""
-
 
 def _materials_already_sent(record: dict) -> bool:
     return (
@@ -196,8 +190,8 @@ def create_consent_router() -> APIRouter:
         return _preview_and_render(token)
 
     @router.get("/consent/confirm/{token}", response_class=HTMLResponse)
-    async def consent_confirm_get(token: str):
-        return _preview_and_render(token)
+    async def consent_confirm_get(token: str, request: Request, background_tasks: BackgroundTasks):
+        return await _confirm_and_render(token, request, background_tasks)
 
     @router.post("/consent/confirm/{token}", response_class=HTMLResponse)
     async def consent_confirm(token: str, request: Request, background_tasks: BackgroundTasks):
@@ -259,10 +253,9 @@ def _preview_and_render(token: str) -> HTMLResponse:
         )
     return HTMLResponse(
         _render_page(
-            "Подтвердите получение",
+            "Запрос ожидает подтверждения",
             _consent_preview_message(record),
-            note="Нажмите кнопку, если вы действительно хотите получить материалы.",
-            form_html=_render_confirm_form(token),
+            note="Для получения материалов откройте ссылку подтверждения из письма.",
         )
     )
 
@@ -295,7 +288,7 @@ async def _confirm_and_render(token: str, request: Request, background_tasks: Ba
     )
 
 
-def _render_page(title: str, message: str, *, note: str = "", form_html: str = "") -> str:
+def _render_page(title: str, message: str, *, note: str = "") -> str:
     safe_title = escape(title)
     safe_message = escape(message)
     safe_note = escape(note)
@@ -351,23 +344,6 @@ def _render_page(title: str, message: str, *, note: str = "", form_html: str = "
       color: #657260;
       font-size: 14px;
     }}
-    .actions {{
-      margin-top: 22px;
-    }}
-    button {{
-      border: 0;
-      border-radius: 6px;
-      padding: 12px 18px;
-      background: #2d720d;
-      color: white;
-      font-size: 16px;
-      font-weight: 700;
-      cursor: pointer;
-    }}
-    button:focus-visible {{
-      outline: 3px solid #9fce86;
-      outline-offset: 2px;
-    }}
   </style>
 </head>
 <body>
@@ -375,7 +351,6 @@ def _render_page(title: str, message: str, *, note: str = "", form_html: str = "
     <div class="status-mark">✓</div>
     <h1>{safe_title}</h1>
     <p>{safe_message}</p>
-    {form_html}
     {note_html}
   </main>
 </body>
