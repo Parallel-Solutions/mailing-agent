@@ -1848,7 +1848,7 @@ def _send_via_rusender(
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "X-Api-Key": api_key,
+            "Authorization": f"Bearer {api_key}",
         },
     )
     try:
