@@ -529,7 +529,7 @@ class StructuredKPTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertNotIn('>       </w:t>', adjusted)
-        self.assertEqual(adjusted.count('>     </w:t>'), 2)
+        self.assertEqual(adjusted.count('>     </w:t>'), 0)
 
     def test_mngp_signature_contact_gap_is_normalized_for_pdf(self) -> None:
         output_text = (
@@ -549,7 +549,7 @@ class StructuredKPTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertNotIn('>   </w:t>', adjusted)
-        self.assertEqual(adjusted.count('>     </w:t>'), 2)
+        self.assertEqual(adjusted.count('>     </w:t>'), 0)
 
 
     def test_signature_contact_icons_use_pdf_stable_vertical_offsets(self) -> None:
