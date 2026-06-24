@@ -1785,6 +1785,12 @@ def _safe_provider_payload(provider: dict[str, Any] | None) -> dict[str, Any]:
     return safe
 
 
+def _rusender_auth_headers(api_key: str) -> dict[str, str]:
+    if api_key.startswith("rs_ck_"):
+        return {"Authorization": f"Bearer {api_key}"}
+    return {"X-Api-Key": api_key}
+
+
 def _send_via_rusender(
     row: dict[str, Any],
     recipient: str,
@@ -1848,7 +1854,7 @@ def _send_via_rusender(
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "Authorization": f"Bearer {api_key}",
+            **_rusender_auth_headers(api_key),
         },
     )
     try:

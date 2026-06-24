@@ -204,14 +204,14 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         )
         resolve_output_folder.assert_not_called()
 
-    def test_rusender_uses_bearer_authorization_header(self) -> None:
+    def test_rusender_uses_bearer_authorization_for_current_keys(self) -> None:
         captured: dict[str, Request] = {}
 
         def fake_request(request: Request, *, timeout: float) -> str:
             captured["request"] = request
             return json.dumps({"uuid": "message-1"})
 
-        with patch.object(sender_agent.settings, "rusender_api_key", "secret-key"), patch.object(
+        with patch.object(sender_agent.settings, "rusender_api_key", "rs_ck_v1_secret"), patch.object(
             sender_agent.settings,
             "rusender_sender_email",
             "sender@example.com",
@@ -229,8 +229,38 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             )
 
         request = captured["request"]
-        self.assertEqual(request.get_header("Authorization"), "Bearer secret-key")
+        self.assertEqual(request.get_header("Authorization"), "Bearer rs_ck_v1_secret")
         self.assertIsNone(request.get_header("X-api-key"))
+        self.assertEqual(result["message_id"], "message-1")
+
+    def test_rusender_uses_x_api_key_for_legacy_jwt_keys(self) -> None:
+        captured: dict[str, Request] = {}
+
+        def fake_request(request: Request, *, timeout: float) -> str:
+            captured["request"] = request
+            return json.dumps({"uuid": "message-1"})
+
+        legacy_key = "eyJhbGciOiJIUzI1NiJ9.test"
+        with patch.object(sender_agent.settings, "rusender_api_key", legacy_key), patch.object(
+            sender_agent.settings,
+            "rusender_sender_email",
+            "sender@example.com",
+        ), patch.object(sender_agent, "_run_rusender_request", side_effect=fake_request):
+            result = sender_agent._send_via_rusender(
+                {"ID": "1", "MUN_NAME": "Тестовое МО"},
+                "recipient@example.com",
+                [],
+                "Тема",
+                body_override="Текст письма",
+                job_id="job-test",
+                send_run_id="send-test",
+                send_mode="consent_request",
+                attachment_mode="kp",
+            )
+
+        request = captured["request"]
+        self.assertIsNone(request.get_header("Authorization"))
+        self.assertEqual(request.get_header("X-api-key"), legacy_key)
         self.assertEqual(result["message_id"], "message-1")
 
     def test_provider_idempotency_key_is_deterministic_for_same_context(self) -> None:
