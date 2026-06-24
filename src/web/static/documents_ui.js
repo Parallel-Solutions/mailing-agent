@@ -14,6 +14,15 @@
     return `${safeDone.toLocaleString('ru')}/${safeTotal.toLocaleString('ru')}`;
   }
 
+  function normalizeDocumentMode(value) {
+    const mode = String(value || '').trim();
+    return ['kp', 'contract', 'both'].includes(mode) ? mode : 'kp';
+  }
+
+  function documentCountPerRow(documentMode) {
+    return normalizeDocumentMode(documentMode) === 'both' ? 2 : 1;
+  }
+
   function renderStepTrack(steps = []) {
     const elements = {
       generate: document.getElementById('g-step-generate'),
@@ -38,6 +47,12 @@
     const status = String(result.status || 'idle');
     const totalRows = Number(result.total_rows || 0);
     const processedRows = Number(result.processed_rows || 0);
+    const documentMode = normalizeDocumentMode(
+      result.document_mode
+      || (result.generator && result.generator.document_mode)
+      || (typeof helpers.getDocumentMode === 'function' ? helpers.getDocumentMode() : '')
+    );
+    const expectedDocuments = totalRows > 0 ? totalRows * documentCountPerRow(documentMode) : 0;
     const humanize = helpers.humanizeDocumentsMessage || ((value, fallback) => String(value || fallback || ''));
     const labelText = status === 'running'
       ? 'Запускаю подготовку документов.'
@@ -52,7 +67,7 @@
         clients_done: processedRows,
         clients_total: totalRows,
         documents_done: 0,
-        documents_total: totalRows > 0 ? totalRows * 2 : 0,
+        documents_total: expectedDocuments,
         review_done: 0,
         review_total: 0,
         show_review: false,

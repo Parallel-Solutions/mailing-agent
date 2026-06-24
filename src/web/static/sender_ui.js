@@ -20,6 +20,7 @@
     mode = 'dry_run',
     canConfirm = false,
     hasPendingRows = false,
+    errorRows = 0,
     total = 0,
     ready = 0,
   } = {}, helpers = {}) {
@@ -27,6 +28,7 @@
     const transportSelect = document.getElementById('sender-transport');
     const sendModeSelect = document.getElementById('sender-send-mode');
     const disabledReason = helpers.senderDisabledReason || 'Сначала подготовьте документы.';
+    const hasFailedRows = Number(errorRows || 0) > 0;
     if (transportSelect) transportSelect.disabled = status === 'running';
     if (sendModeSelect) sendModeSelect.disabled = status === 'running';
     if (!runButton) return;
@@ -44,7 +46,7 @@
     }
 
     if (status === 'completed' && mode === 'dry_run' && canConfirm) {
-      const isReady = senderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows }, helpers);
+      const isReady = senderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows, errorRows }, helpers);
       runButton.dataset.action = 'send';
       runButton.textContent = 'Отправить письма';
       runButton.className = 'btn-primary';
@@ -54,7 +56,7 @@
     }
 
     if (status === 'stopped') {
-      const isReady = senderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows }, helpers);
+      const isReady = senderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows, errorRows }, helpers);
       runButton.dataset.action = mode === 'send' ? 'send' : 'preview';
       runButton.textContent = mode === 'send' ? 'Продолжить отправку' : 'Проверить ещё раз';
       runButton.className = 'btn-primary';
@@ -64,14 +66,16 @@
     }
 
     if (status === 'completed' && mode === 'send') {
-      if (hasPendingRows) {
-        const isReady = senderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows }, helpers);
+      if (hasPendingRows || hasFailedRows) {
+        const isReady = senderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows, errorRows }, helpers);
         runButton.dataset.action = 'send';
-        runButton.textContent = 'Отправить неотправленные';
+        runButton.textContent = hasPendingRows ? 'Отправить неотправленные' : 'Повторить отправку';
         runButton.className = 'btn-primary';
         runButton.disabled = !isReady;
         runButton.title = isReady
-          ? 'Есть письма, которые ещё не отправлены. Нажмите, чтобы продолжить.'
+          ? (hasPendingRows
+            ? 'Есть письма, которые ещё не отправлены. Нажмите, чтобы продолжить.'
+            : 'Есть письма с ошибкой. Нажмите, чтобы попробовать отправить снова.')
           : disabledReason;
         return;
       }
@@ -84,7 +88,7 @@
     }
 
     if (status === 'error') {
-      const isReady = senderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows }, helpers);
+      const isReady = senderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows, errorRows }, helpers);
       runButton.dataset.action = mode === 'send' ? 'send' : 'preview';
       runButton.textContent = mode === 'send' ? 'Продолжить отправку' : 'Проверить ещё раз';
       runButton.className = 'btn-primary';
@@ -93,7 +97,7 @@
       return;
     }
 
-    const isReady = senderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows }, helpers);
+    const isReady = senderActionReady({ status, mode, total, ready, canConfirm, hasPendingRows, errorRows }, helpers);
     runButton.dataset.action = 'preview';
     runButton.textContent = 'Проверить перед отправкой';
     runButton.className = 'btn-primary';
@@ -296,7 +300,7 @@
       if (actionsHint) actionsHint.textContent = mode === 'send'
         ? 'Идёт отправка. Просто дождитесь завершения.'
         : 'Идёт проверка. Реальная отправка ещё не началась.';
-      setSenderButtonsState({ status: 'running', mode, total, ready, canConfirm: false, hasPendingRows }, helpers);
+      setSenderButtonsState({ status: 'running', mode, total, ready, canConfirm: false, hasPendingRows, errorRows: errors }, helpers);
       return { senderRunning, canConfirm, hasPendingRows };
     }
 
@@ -307,11 +311,11 @@
       }
       if (label) label.textContent = humanize(nextState.summary_text, 'Отправка остановлена. Можно продолжить позже.');
       if (actionsHint) actionsHint.textContent = 'Прогресс сохранён. Можно продолжить с этого места.';
-      setSenderButtonsState({ status: 'stopped', mode, total, ready, canConfirm, hasPendingRows }, helpers);
+      setSenderButtonsState({ status: 'stopped', mode, total, ready, canConfirm, hasPendingRows, errorRows: errors }, helpers);
       return { senderRunning, canConfirm, hasPendingRows };
     }
 
-    setSenderButtonsState({ status, mode, total, ready, canConfirm, hasPendingRows }, helpers);
+    setSenderButtonsState({ status, mode, total, ready, canConfirm, hasPendingRows, errorRows: errors }, helpers);
 
     if (status === 'completed') {
       const isFailedSend = mode === 'send' && sent === 0 && errors > 0;
@@ -338,7 +342,7 @@
           : 'Обработка завершена';
       }
       if (actionsHint) actionsHint.textContent = mode === 'send'
-        ? 'Отправка завершена. Можно перейти к статистике или скачать отчёт.'
+        ? (errors > 0 ? 'Отправка завершена с ошибками. Можно повторить отправку после исправления проблемы.' : 'Отправка завершена. Можно перейти к статистике или скачать отчёт.')
         : 'Проверка завершена. Отправка начнётся только после нажатия «Отправить письма».';
       return { senderRunning, canConfirm, hasPendingRows };
     }

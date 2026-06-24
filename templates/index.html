@@ -5746,10 +5746,11 @@ function clearAttachedFile() {
         force: true,
         status: 'running',
         stage: isResume ? resumeStage : 'generate',
+        document_mode: documentMode,
         progress_percent: isResume && lastGeneratorUiState.status === 'completed' ? 70 : 0,
         total_rows: Number(lastGeneratorUiState.total_rows || 0),
         processed_rows: Number(lastGeneratorUiState.processed_rows || 0),
-        generator: lastGeneratorUiState,
+        generator: { ...lastGeneratorUiState, document_mode: documentMode },
         philologist: lastPhilologistUiState,
       });
       appendChatMessage('g-chat', 'agent', getDocumentModeStartMessage(documentMode, isResume));
@@ -6741,6 +6742,7 @@ function clearAttachedFile() {
       setProgressVisual,
       updateDocumentsNextButton,
       syncGeneratorStartDescriptionVisibility,
+      getDocumentMode,
     });
   }
 
@@ -6814,7 +6816,7 @@ function clearAttachedFile() {
     }
   }
 
-  function isSenderActionReady({ status = 'idle', mode = 'dry_run', total = 0, ready = 0, canConfirm = false, hasPendingRows = false } = {}) {
+  function isSenderActionReady({ status = 'idle', mode = 'dry_run', total = 0, ready = 0, canConfirm = false, hasPendingRows = false, errorRows = 0 } = {}) {
     const documentsNextButton = document.getElementById('documents-next-sender');
     const documentsReady = !!(documentsNextButton && !documentsNextButton.disabled);
     if (moduleReadiness.sender_ready || documentsReady) {
@@ -6823,7 +6825,7 @@ function clearAttachedFile() {
     if (status === 'completed' && mode === 'dry_run' && (canConfirm || ready > 0)) {
       return true;
     }
-    if (status === 'completed' && mode === 'send' && hasPendingRows) {
+    if (status === 'completed' && mode === 'send' && (hasPendingRows || Number(errorRows || 0) > 0)) {
       return true;
     }
     if (status === 'stopped' && (canConfirm || hasPendingRows || total > 0)) {
