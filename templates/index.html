@@ -1105,6 +1105,53 @@
     font: inherit;
   }
 
+  .jobs-history-type-filter {
+    display: grid;
+    gap: 5px;
+  }
+
+  .jobs-history-filter-title {
+    color: #5f6d50;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .jobs-history-segmented {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 36px;
+    padding: 3px;
+    border: 1px solid #ccd6c2;
+    border-radius: 9px;
+    background: #f8faf5;
+  }
+
+  .jobs-history-filter-button {
+    min-height: 28px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: #56634c;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 0 9px;
+    white-space: nowrap;
+  }
+
+  .jobs-history-filter-button.active {
+    background: #2f7a10;
+    color: #fff;
+    box-shadow: 0 1px 2px rgba(47, 122, 16, 0.18);
+  }
+
+  .jobs-history-filter-count {
+    opacity: 0.72;
+    margin-left: 3px;
+  }
+
   .jobs-history-day-summary {
     color: #4d5d42;
     font-size: 13px;
@@ -2007,6 +2054,14 @@
       text-align: left;
     }
 
+    .jobs-history-segmented {
+      width: 100%;
+    }
+
+    .jobs-history-filter-button {
+      flex: 1 1 auto;
+    }
+
     .document-step-track {
       grid-template-columns: 1fr;
     }
@@ -2612,6 +2667,14 @@
             Дата отправки
             <select id="jobs-history-date" onchange="selectJobsHistoryDate(this.value)"></select>
           </label>
+          <div class="jobs-history-type-filter" aria-label="Фильтр отправок">
+            <div class="jobs-history-filter-title">Показывать</div>
+            <div class="jobs-history-segmented" role="group" aria-label="Фильтр отправок">
+              <button class="jobs-history-filter-button" id="jobs-history-filter-sent" type="button" onclick="setJobsHistoryOutcomeFilter('sent')">Отправлено<span class="jobs-history-filter-count" id="jobs-history-filter-sent-count">0</span></button>
+              <button class="jobs-history-filter-button" id="jobs-history-filter-errors" type="button" onclick="setJobsHistoryOutcomeFilter('errors')">Ошибки<span class="jobs-history-filter-count" id="jobs-history-filter-errors-count">0</span></button>
+              <button class="jobs-history-filter-button" id="jobs-history-filter-all" type="button" onclick="setJobsHistoryOutcomeFilter('all')">Все<span class="jobs-history-filter-count" id="jobs-history-filter-all-count">0</span></button>
+            </div>
+          </div>
           <div class="jobs-history-day-summary" id="jobs-history-day-summary"></div>
         </div>
         <div class="jobs-history-list" id="jobs-history-list">
@@ -2680,6 +2743,7 @@
   let activeScreenId = localStorage.getItem(ACTIVE_SCREEN_STORAGE_KEY) || 'settings';
   let jobsHistoryAll = [];
   let jobsHistorySelectedDate = '';
+  let jobsHistoryOutcomeFilter = 'sent';
   let uiPersistenceEnabled = false;
   let moduleReadiness = {
     generator_ready: false,
@@ -4113,13 +4177,54 @@
       });
   }
 
-  function renderJobsHistoryDateFilter(groups) {
+  function normalizeJobsHistoryOutcomeFilter(value) {
+    return ['sent', 'errors', 'all'].includes(value) ? value : 'sent';
+  }
+
+  function jobsHistoryOutcomeCounts(jobs = []) {
+    return jobs.reduce((counts, job) => {
+      counts.all += 1;
+      if (Number(job.sent_rows || 0) > 0) counts.sent += 1;
+      if (Number(job.error_rows || 0) > 0) counts.errors += 1;
+      return counts;
+    }, { sent: 0, errors: 0, all: 0 });
+  }
+
+  function jobMatchesHistoryOutcomeFilter(job) {
+    const filter = normalizeJobsHistoryOutcomeFilter(jobsHistoryOutcomeFilter);
+    if (filter === 'all') return true;
+    if (filter === 'errors') return Number(job.error_rows || 0) > 0;
+    return Number(job.sent_rows || 0) > 0;
+  }
+
+  function jobsHistoryEmptyTextForFilter() {
+    const filter = normalizeJobsHistoryOutcomeFilter(jobsHistoryOutcomeFilter);
+    if (filter === 'errors') return "Ошибок отправки за выбранный период нет.";
+    if (filter === 'all') return "За выбранную дату отправок нет.";
+    return "Отправленных рассылок за выбранный период нет.";
+  }
+
+  function updateJobsHistoryOutcomeButtons(jobs = []) {
+    const counts = jobsHistoryOutcomeCounts(jobs);
+    for (const key of ['sent', 'errors', 'all']) {
+      const button = document.getElementById(`jobs-history-filter-${key}`);
+      const count = document.getElementById(`jobs-history-filter-${key}-count`);
+      const active = normalizeJobsHistoryOutcomeFilter(jobsHistoryOutcomeFilter) === key;
+      if (button) button.classList.toggle('active', active);
+      if (button) button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      if (count) count.textContent = counts[key].toLocaleString('ru');
+    }
+  }
+
+  function renderJobsHistoryDateFilter(groups, allJobs = []) {
     const filter = document.getElementById('jobs-history-filter');
     const select = document.getElementById('jobs-history-date');
     const summary = document.getElementById('jobs-history-day-summary');
     if (!filter || !select || !summary) return;
 
-    if (!groups.length) {
+    updateJobsHistoryOutcomeButtons(allJobs);
+
+    if (!allJobs.length) {
       filter.hidden = true;
       select.innerHTML = '';
       summary.textContent = '';
@@ -4127,6 +4232,17 @@
       return;
     }
 
+    filter.hidden = false;
+
+    if (!groups.length) {
+      select.innerHTML = '<option value="">Нет отправок</option>';
+      select.disabled = true;
+      summary.textContent = jobsHistoryEmptyTextForFilter();
+      jobsHistorySelectedDate = '';
+      return;
+    }
+
+    select.disabled = false;
     const availableKeys = groups.map(([key]) => key);
     if (!jobsHistorySelectedDate || !availableKeys.includes(jobsHistorySelectedDate)) {
       jobsHistorySelectedDate = availableKeys[0];
@@ -4142,7 +4258,12 @@
     const sentRows = selectedItems.reduce((sum, job) => sum + Number(job.sent_rows || 0), 0);
     const errorRows = selectedItems.reduce((sum, job) => sum + Number(job.error_rows || 0), 0);
     summary.textContent = `${selectedItems.length.toLocaleString('ru')} отправок за день · ${totalRows.toLocaleString('ru')} строк · ${sentRows.toLocaleString('ru')} отправлено · ${errorRows.toLocaleString('ru')} ошибок`;
-    filter.hidden = false;
+  }
+
+  function setJobsHistoryOutcomeFilter(value) {
+    jobsHistoryOutcomeFilter = normalizeJobsHistoryOutcomeFilter(value);
+    jobsHistorySelectedDate = '';
+    renderJobsHistory(jobsHistoryAll);
   }
 
   function selectJobsHistoryDate(dayKey) {
@@ -4154,39 +4275,39 @@
     const list = document.getElementById('jobs-history-list');
     if (!list) return;
     if (!Array.isArray(jobs) || !jobs.length) {
-      renderJobsHistoryDateFilter([]);
+      renderJobsHistoryDateFilter([], []);
       list.innerHTML = '<div class="jobs-history-empty">На сервере пока нет сохранённых отправок.</div>';
       return;
     }
-    const groups = groupJobsHistoryByDate(jobs);
-    renderJobsHistoryDateFilter(groups);
+    const filteredJobs = jobs.filter(jobMatchesHistoryOutcomeFilter);
+    const groups = groupJobsHistoryByDate(filteredJobs);
+    renderJobsHistoryDateFilter(groups, jobs);
     const selectedJobs = groups.find(([key]) => key === jobsHistorySelectedDate)?.[1] || [];
     if (!selectedJobs.length) {
-      list.innerHTML = '<div class="jobs-history-empty">За выбранную дату отправок нет.</div>';
+      list.innerHTML = `<div class="jobs-history-empty">${escapeHtml(jobsHistoryEmptyTextForFilter())}</div>`;
       return;
     }
     list.innerHTML = selectedJobs.map(job => {
       const jobId = escapeHtml(job.job_id || '');
       const isCurrent = job.job_id === currentJobId;
       const statusTone = escapeHtml(job.status_tone || 'idle');
-      const statusLabel = escapeHtml(job.status_label || 'Статус неизвестен');
+      const statusLabel = escapeHtml(job.status_label || "Статус неизвестен");
       const totalRows = Number(job.total_rows || 0).toLocaleString('ru');
       const sentRows = Number(job.sent_rows || 0).toLocaleString('ru');
       const errorRows = Number(job.error_rows || 0).toLocaleString('ru');
-      const readyRows = Number(job.ready_rows || 0).toLocaleString('ru');
       const updatedAt = escapeHtml(formatJobHistoryDate(job.updated_at));
       const safeTitle = escapeHtml(`Рассылка ${formatJobHistoryTime(job.updated_at)}`);
       return `
         <div class="job-history-row ${isCurrent ? 'current' : ''}">
           <div class="job-history-main">
             <div class="job-history-id" title="ID: ${jobId}">${safeTitle}</div>
-            <div class="job-history-updated">${updatedAt}${isCurrent ? ' · открыта сейчас' : ''}</div>
+            <div class="job-history-updated">${updatedAt}${isCurrent ? " · открыта сейчас" : ''}</div>
           </div>
           <div><span class="job-history-status ${statusTone}">${statusLabel}</span></div>
           <div class="job-history-metric"><strong>${totalRows}</strong>строк</div>
           <div class="job-history-metric"><strong>${sentRows}</strong>отправлено</div>
           <div class="job-history-metric"><strong>${errorRows}</strong>ошибок</div>
-          <button class="btn-outline" type="button" data-process-lock="true" onclick="openJobFromHistory('${jobId}')">${isCurrent ? 'Обновить' : 'Открыть'}</button>
+          <button class="btn-outline" type="button" data-process-lock="true" onclick="openJobFromHistory('${jobId}')">${isCurrent ? "Обновить" : "Открыть"}</button>
         </div>
       `;
     }).join('');

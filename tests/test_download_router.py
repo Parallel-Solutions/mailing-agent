@@ -116,6 +116,12 @@ class DownloadRouterIsolationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"global")
+        self.assertIn("attachment", response.headers["content-disposition"])
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertEqual(response.headers["cache-control"], "private, no-store, max-age=0")
+        self.assertEqual(response.headers["pragma"], "no-cache")
+        self.assertEqual(response.headers["expires"], "0")
+        self.assertEqual(response.headers["referrer-policy"], "no-referrer")
         self.assertEqual(searched_dirs, [(parser_output,)])
 
 

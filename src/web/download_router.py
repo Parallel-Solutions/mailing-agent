@@ -30,8 +30,26 @@ from src.jobs import resolve_job_paths
 from src.jobs.access import JobAccessDenied, authorize_job_access
 
 
+DOWNLOAD_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "private, no-store, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Referrer-Policy": "no-referrer",
+}
+
+
 def legacy_parser_output_dir() -> Path:
     return Path(__file__).parents[2] / "src" / "parser_new" / "output" / "latest"
+
+
+def download_response(path: Path, *, media_type: str, filename: str) -> FileResponse:
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=filename,
+        headers=DOWNLOAD_HEADERS,
+    )
 
 
 def create_download_router(
@@ -80,7 +98,7 @@ def create_download_router(
                 raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
             archive_path = build_output_archive(job_id)
 
-        return FileResponse(
+        return download_response(
             archive_path,
             media_type="application/zip",
             filename="output.zip",
@@ -92,7 +110,7 @@ def create_download_router(
         data_path = prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
         if not data_path.exists():
             raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
-        return FileResponse(
+        return download_response(
             data_path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename="data.xlsx",
@@ -109,7 +127,7 @@ def create_download_router(
             )
             if latest is None:
                 raise HTTPException(status_code=404, detail="Файл результата не найден")
-            return FileResponse(
+            return download_response(
                 latest,
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 filename=latest.name,
@@ -122,7 +140,7 @@ def create_download_router(
         if latest is None:
             raise HTTPException(status_code=404, detail="Файл результата не найден")
 
-        return FileResponse(
+        return download_response(
             latest,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=latest.name,
@@ -143,7 +161,7 @@ def create_download_router(
         if latest is None:
             raise HTTPException(status_code=404, detail="Файл непроверенных не найден")
 
-        return FileResponse(
+        return download_response(
             latest,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=latest.name,
@@ -160,7 +178,7 @@ def create_download_router(
         )
         if not log_path.exists():
             raise HTTPException(status_code=404, detail="Журнал отправленных писем пока не создан.")
-        return FileResponse(
+        return download_response(
             log_path,
             media_type="application/x-ndjson",
             filename="sent_mail_log.jsonl",
@@ -189,7 +207,7 @@ def create_download_router(
         ]
         if not is_cache_fresh(report_path, report_sources, max_age_seconds=180):
             report_path = build_sender_delivery_report_xlsx(job_id, refresh=True)
-        return FileResponse(
+        return download_response(
             report_path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename="sender_delivery_report.xlsx",
@@ -202,7 +220,7 @@ def create_download_router(
         log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
         if not log_path.exists():
             raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
-        return FileResponse(
+        return download_response(
             log_path,
             media_type="application/x-ndjson",
             filename="inflection_log.jsonl",
@@ -219,7 +237,7 @@ def create_download_router(
         log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
         if not is_cache_fresh(report_path, [log_path]):
             save_inflection_csv(rows, report_path)
-        return FileResponse(
+        return download_response(
             report_path,
             media_type="text/csv",
             filename="inflection_report.csv",
@@ -233,7 +251,7 @@ def create_download_router(
             raise HTTPException(status_code=404, detail="Кандидаты для памяти агента пока не найдены.")
         report_path = get_agent_memory_csv_path(job_id)
         save_learning_memory_csv(candidates, report_path)
-        return FileResponse(
+        return download_response(
             report_path,
             media_type="text/csv",
             filename="agent_memory_candidates.csv",
@@ -247,7 +265,7 @@ def create_download_router(
             raise HTTPException(status_code=404, detail="Карантин агента пока пуст.")
         report_path = get_agent_quarantine_csv_path(job_id)
         save_quarantine_csv(items, report_path)
-        return FileResponse(
+        return download_response(
             report_path,
             media_type="text/csv",
             filename="agent_quarantine.csv",
@@ -261,7 +279,7 @@ def create_download_router(
             raise HTTPException(status_code=404, detail="Отчет агента пока пуст.")
         report_path = get_agent_report_path(job_id)
         save_agent_report(job_id)
-        return FileResponse(
+        return download_response(
             report_path,
             media_type="text/plain; charset=utf-8",
             filename="agent_report.txt",
@@ -279,10 +297,12 @@ def create_download_router(
         ]
         if not is_cache_fresh(report_path, source_paths):
             report_path = build_correction_report_xlsx(job_id)
-        return FileResponse(
+        return download_response(
             report_path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename="journal_corrections_report.xlsx",
         )
 
     return router
+
+
