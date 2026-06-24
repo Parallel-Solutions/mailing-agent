@@ -37,8 +37,6 @@ try:
         ONLYOFFICE_PUBLIC_FILES_DIR,
         ONLYOFFICE_PUBLIC_FILES_URL,
         PDF_CHUNK_SIZE,
-        PDF_CONVERTER,
-        PDF_CONVERTER_FALLBACK,
         PDF_WORKERS,
     )
 except ImportError:  # pragma: no cover
@@ -54,8 +52,6 @@ except ImportError:  # pragma: no cover
         ONLYOFFICE_PUBLIC_FILES_DIR,
         ONLYOFFICE_PUBLIC_FILES_URL,
         PDF_CHUNK_SIZE,
-        PDF_CONVERTER,
-        PDF_CONVERTER_FALLBACK,
         PDF_WORKERS,
     )
 
@@ -439,15 +435,7 @@ def _convert_with_gotenberg(
 
 
 def _backend_sequence() -> list[str]:
-    sequence: list[str] = []
-    for backend in (PDF_CONVERTER, PDF_CONVERTER_FALLBACK):
-        normalized = (backend or "").strip().lower()
-        if not normalized or normalized in sequence:
-            continue
-        sequence.append(normalized)
-    if not sequence:
-        sequence.append("libreoffice")
-    return sequence
+    return ["gotenberg"]
 
 
 def _run_backend(

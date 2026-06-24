@@ -16,7 +16,6 @@ RUN apt-get update \
         fonts-dejavu-extra \
         fonts-liberation \
         fontconfig \
-        libreoffice \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m pip install --no-cache-dir uv

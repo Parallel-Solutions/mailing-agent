@@ -22,7 +22,7 @@ SERVICE_KNOWLEDGE: list[dict[str, Any]] = [
         "answer": (
             "После создания DOCX сервис конвертирует документы в PDF отдельным backend-ом. PDF может отличаться "
             "от DOCX из-за поведения конвертера, скрытых стилей шаблона, таблиц и межстрочных интервалов. "
-            "Сейчас поддерживаются LibreOffice, OnlyOffice и Gotenberg с fallback на другой backend."
+            "Сейчас штатный backend для PDF — Gotenberg; fallback-конвертер по умолчанию отключён."
         ),
     },
     {

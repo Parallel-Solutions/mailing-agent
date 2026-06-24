@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import zipfile
 from dataclasses import dataclass
@@ -7,14 +8,13 @@ from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
 from pypdf._page import PageObject
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+from pypdf.generic import DecodedStreamObject, DictionaryObject, FloatObject, NameObject
 
 from src.generator.generation.document_builder import (
     BACKGROUND_ANCHOR_PATTERN,
     ANCHOR_EXTENT_PATTERN,
     SVG_EMBED_PATTERN,
     SVG_RELATION_PATTERN,
-    cubic_bezier_point,
     flatten_svg_path,
     parse_svg_view_box,
     resolve_svg_fill_rule,
@@ -29,6 +29,16 @@ KP_PDF_BACKGROUND_POSITIONS_PT = (
     (405.0, -90.0),
     (205.0, -245.0),
 )
+KP_CONTACT_ICON_MAX_SIZE_PT = 20.0
+KP_CONTACT_ICON_AUTHOR_LEFT_OFFSET_PT = 11.0
+KP_CONTACT_ICON_TEXT_GAP_PT = 4.0
+KP_CONTACT_ICON_PHONE_BASELINE_OFFSET_PT = 4.0
+KP_CONTACT_ICON_EMAIL_BASELINE_OFFSET_PT = 1.0
+KP_CONTACT_FALLBACK_ROW_GAP_PT = 12.2
+KP_CONTACT_TEXT_LEADING_SPACES = ""
+KP_CONTACT_PHONE_PARAGRAPH_AFTER_TWIPS = "60"
+WORD_ANCHOR_PATTERN = re.compile(r"<wp:anchor\b[\s\S]*?</wp:anchor>", re.S)
+WORD_DRAWING_PATTERN = re.compile(r"<w:drawing>[\s\S]*?</w:drawing>", re.S)
 
 
 @dataclass(frozen=True)
@@ -52,7 +62,7 @@ def prepare_docx_for_pdf_export(
         shutil.copy2(str(source_docx), str(staged_docx))
         return PdfSafePlan(source_docx=source_docx, staged_docx=staged_docx)
 
-    copy_docx_without_background_runs(source_docx, staged_docx)
+    copy_docx_without_pdf_unsafe_runs(source_docx, staged_docx)
     return PdfSafePlan(
         source_docx=source_docx,
         staged_docx=staged_docx,
@@ -64,10 +74,10 @@ def prepare_docx_for_pdf_export(
 def is_kp_docx(path: Path, *, file_kind: str | None = None) -> bool:
     if str(file_kind or "").strip().lower() == "kp":
         return True
-    return path.name.casefold().startswith("кп_") or "_kp_" in path.name.casefold()
+    return path.name.casefold().startswith("\u043a\u043f_") or "_kp_" in path.name.casefold()
 
 
-def copy_docx_without_background_runs(source_docx: Path, target_docx: Path) -> None:
+def copy_docx_without_pdf_unsafe_runs(source_docx: Path, target_docx: Path) -> None:
     with zipfile.ZipFile(source_docx, "r") as source_zip:
         items = source_zip.infolist()
         payloads = {item.filename: source_zip.read(item.filename) for item in items}
@@ -75,8 +85,10 @@ def copy_docx_without_background_runs(source_docx: Path, target_docx: Path) -> N
     document_name = "word/document.xml"
     if document_name in payloads:
         document_text = payloads[document_name].decode("utf-8", errors="ignore")
-        document_text, changed = remove_background_runs(document_text)
-        if changed:
+        document_text, icons_changed = remove_contact_icon_runs(document_text)
+        document_text, background_changed = remove_background_runs(document_text)
+        document_text, contact_text_changed = normalize_contact_text_for_pdf(document_text)
+        if background_changed or icons_changed or contact_text_changed:
             payloads[document_name] = document_text.encode("utf-8")
 
     with zipfile.ZipFile(target_docx, "w", compression=zipfile.ZIP_DEFLATED) as target_zip:
@@ -84,14 +96,112 @@ def copy_docx_without_background_runs(source_docx: Path, target_docx: Path) -> N
             target_zip.writestr(item, payloads[item.filename])
 
 
+def remove_contact_icon_runs(document_text: str) -> tuple[str, bool]:
+    changed = False
+
+    def replace_drawing(match: re.Match[str]) -> str:
+        nonlocal changed
+        drawing = match.group(0)
+        if not _is_small_contact_drawing(drawing):
+            return drawing
+        changed = True
+        return ""
+
+    return WORD_DRAWING_PATTERN.sub(replace_drawing, document_text), changed
+
+
+def normalize_contact_text_for_pdf(document_text: str) -> tuple[str, bool]:
+    try:
+        from lxml import etree
+    except ImportError:
+        return document_text, False
+
+    try:
+        root = etree.fromstring(document_text.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return document_text, False
+
+    ns = {
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+        "xml": "http://www.w3.org/XML/1998/namespace",
+    }
+    changed = False
+    for paragraph in root.xpath(".//w:p", namespaces=ns):
+        text = "".join(paragraph.xpath(".//w:t/text()", namespaces=ns))
+        normalized = text.casefold()
+        is_phone = "\u0442\u0435\u043b." in normalized
+        is_email = "ks" in normalized or "@parresh" in normalized or "parresh" in normalized
+        if not is_phone and not is_email:
+            continue
+
+        for bold_node in paragraph.xpath(".//w:rPr/w:b", namespaces=ns):
+            parent = bold_node.getparent()
+            if parent is not None:
+                parent.remove(bold_node)
+                changed = True
+
+        text_nodes = paragraph.xpath(".//w:t", namespaces=ns)
+        for text_node in text_nodes:
+            value = text_node.text or ""
+            if not value.strip():
+                if value:
+                    text_node.text = ""
+                    changed = True
+                continue
+            stripped = value.lstrip()
+            desired = KP_CONTACT_TEXT_LEADING_SPACES + stripped
+            if value != desired:
+                text_node.text = desired
+                text_node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+                changed = True
+            break
+
+        if is_phone:
+            ppr = paragraph.find("w:pPr", namespaces=ns)
+            if ppr is None:
+                ppr = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr")
+                paragraph.insert(0, ppr)
+                changed = True
+            spacing = ppr.find("w:spacing", namespaces=ns)
+            if spacing is None:
+                spacing = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}spacing")
+                ppr.append(spacing)
+                changed = True
+            if spacing.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}after") != KP_CONTACT_PHONE_PARAGRAPH_AFTER_TWIPS:
+                spacing.set("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}after", KP_CONTACT_PHONE_PARAGRAPH_AFTER_TWIPS)
+                changed = True
+
+    if not changed:
+        return document_text, False
+    return etree.tostring(root, encoding="unicode"), True
+
+
+def _is_small_contact_anchor(anchor: str) -> bool:
+    return _is_small_contact_drawing(anchor)
+
+
+def _is_small_contact_drawing(drawing: str) -> bool:
+    extent_match = ANCHOR_EXTENT_PATTERN.search(drawing)
+    if not extent_match:
+        return False
+    width_pt = int(extent_match.group("cx")) / EMU_PER_POINT
+    height_pt = int(extent_match.group("cy")) / EMU_PER_POINT
+    return width_pt <= KP_CONTACT_ICON_MAX_SIZE_PT and height_pt <= KP_CONTACT_ICON_MAX_SIZE_PT
+
+
 def apply_pdf_safe_postprocess(pdf_path: Path, plan: PdfSafePlan) -> None:
     if not plan.should_overlay_kp_background:
         return
     source = plan.template_docx if plan.template_docx and plan.template_docx.exists() else plan.source_docx
     backgrounds = extract_kp_backgrounds(source)
-    if not backgrounds:
+    icons = extract_kp_contact_icons(plan.source_docx)
+    if len(icons) < 2 and source != plan.source_docx:
+        template_icons = extract_kp_contact_icons(source)
+        if len(template_icons) > len(icons):
+            icons = template_icons
+    if not backgrounds and not icons:
         return
-    overlay_kp_backgrounds(pdf_path, backgrounds)
+    overlay_kp_decorations(pdf_path, backgrounds, icons)
 
 
 @dataclass(frozen=True)
@@ -99,6 +209,21 @@ class KpBackground:
     svg_payload: bytes
     width_pt: float
     height_pt: float
+
+
+@dataclass(frozen=True)
+class KpContactIcon:
+    svg_payload: bytes
+    width_pt: float
+    height_pt: float
+
+
+@dataclass(frozen=True)
+class KpContactTextPositions:
+    author_x: float | None = None
+    phone_x: float | None = None
+    phone_y: float | None = None
+    email_y: float | None = None
 
 
 def extract_kp_backgrounds(docx_path: Path) -> list[KpBackground]:
@@ -115,6 +240,8 @@ def extract_kp_backgrounds(docx_path: Path) -> list[KpBackground]:
             result: list[KpBackground] = []
             for anchor_match in BACKGROUND_ANCHOR_PATTERN.finditer(document_text):
                 anchor = anchor_match.group(0)
+                if _is_small_contact_anchor(anchor):
+                    continue
                 extent_match = ANCHOR_EXTENT_PATTERN.search(anchor)
                 svg_match = SVG_EMBED_PATTERN.search(anchor)
                 if not extent_match or not svg_match:
@@ -137,7 +264,46 @@ def extract_kp_backgrounds(docx_path: Path) -> list[KpBackground]:
         return []
 
 
-def overlay_kp_backgrounds(pdf_path: Path, backgrounds: list[KpBackground]) -> None:
+def extract_kp_contact_icons(docx_path: Path) -> list[KpContactIcon]:
+    if not docx_path.exists():
+        return []
+    try:
+        with zipfile.ZipFile(docx_path, "r") as archive:
+            names = set(archive.namelist())
+            if "word/document.xml" not in names or "word/_rels/document.xml.rels" not in names:
+                return []
+            document_text = archive.read("word/document.xml").decode("utf-8", errors="ignore")
+            rels_text = archive.read("word/_rels/document.xml.rels").decode("utf-8", errors="ignore")
+            targets = {match.group("id"): match.group("target") for match in SVG_RELATION_PATTERN.finditer(rels_text)}
+            result: list[KpContactIcon] = []
+            for drawing in WORD_DRAWING_PATTERN.findall(document_text):
+                if not _is_small_contact_drawing(drawing):
+                    continue
+                extent_match = ANCHOR_EXTENT_PATTERN.search(drawing)
+                svg_match = SVG_EMBED_PATTERN.search(drawing)
+                if not extent_match or not svg_match:
+                    continue
+                width_pt = int(extent_match.group("cx")) / EMU_PER_POINT
+                height_pt = int(extent_match.group("cy")) / EMU_PER_POINT
+                target = targets.get(svg_match.group("id"), "")
+                if not target.lower().endswith(".svg"):
+                    continue
+                media_part = str((Path("word/document.xml").parent / target).as_posix())
+                if media_part not in names:
+                    continue
+                result.append(
+                    KpContactIcon(
+                        svg_payload=archive.read(media_part),
+                        width_pt=width_pt,
+                        height_pt=height_pt,
+                    )
+                )
+            return result[:2]
+    except (OSError, zipfile.BadZipFile):
+        return []
+
+
+def overlay_kp_decorations(pdf_path: Path, backgrounds: list[KpBackground], icons: list[KpContactIcon]) -> None:
     reader = PdfReader(str(pdf_path))
     if not reader.pages:
         return
@@ -146,8 +312,13 @@ def overlay_kp_backgrounds(pdf_path: Path, backgrounds: list[KpBackground]) -> N
     page = writer.pages[target_page_index]
     width = float(page.mediabox.width)
     height = float(page.mediabox.height)
-    overlay = build_background_overlay_page(width, height, backgrounds)
-    page.merge_page(overlay, over=False)
+    contact_positions = find_contact_text_positions(page)
+    if backgrounds:
+        background_overlay = build_kp_decorations_overlay_page(width, height, backgrounds, [], contact_positions)
+        page.merge_page(background_overlay, over=False)
+    if icons:
+        icon_overlay = build_kp_decorations_overlay_page(width, height, [], icons, contact_positions)
+        page.merge_page(icon_overlay, over=True)
 
     tmp_path = pdf_path.with_suffix(pdf_path.suffix + ".tmp")
     with tmp_path.open("wb") as handle:
@@ -155,27 +326,139 @@ def overlay_kp_backgrounds(pdf_path: Path, backgrounds: list[KpBackground]) -> N
     tmp_path.replace(pdf_path)
 
 
-def build_background_overlay_page(page_width: float, page_height: float, backgrounds: list[KpBackground]) -> PageObject:
+def build_kp_decorations_overlay_page(
+    page_width: float,
+    page_height: float,
+    backgrounds: list[KpBackground],
+    icons: list[KpContactIcon],
+    contact_positions: KpContactTextPositions,
+) -> PageObject:
     overlay = PageObject.create_blank_page(width=page_width, height=page_height)
     content_parts = ["q"]
-    for index, background in enumerate(backgrounds):
-        x, y = KP_PDF_BACKGROUND_POSITIONS_PT[min(index, len(KP_PDF_BACKGROUND_POSITIONS_PT) - 1)]
-        content = svg_to_pdf_path_content(
-            background.svg_payload,
-            x=x,
-            y=y,
-            width=background.width_pt,
-            height=background.height_pt,
-        )
-        if content:
-            content_parts.append(content)
+    if backgrounds:
+        content_parts.append("/GSbg gs")
+        for index, background in enumerate(backgrounds):
+            x, y = KP_PDF_BACKGROUND_POSITIONS_PT[min(index, len(KP_PDF_BACKGROUND_POSITIONS_PT) - 1)]
+            content = svg_to_pdf_path_content(
+                background.svg_payload,
+                x=x,
+                y=y,
+                width=background.width_pt,
+                height=background.height_pt,
+            )
+            if content:
+                content_parts.append(content)
+    icon_positions = resolve_contact_icon_positions(icons, contact_positions)
+    if icon_positions:
+        content_parts.append("/GSicon gs")
+        for icon, (x, y) in zip(icons, icon_positions):
+            content = svg_to_pdf_path_content(
+                icon.svg_payload,
+                x=x,
+                y=y,
+                width=icon.width_pt,
+                height=icon.height_pt,
+            )
+            if content:
+                content_parts.append(content)
     content_parts.append("Q")
 
     stream = DecodedStreamObject()
     stream.set_data(("\n".join(content_parts) + "\n").encode("ascii"))
     overlay[NameObject("/Contents")] = stream
-    overlay[NameObject("/Resources")] = DictionaryObject()
+    overlay[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/ExtGState"): DictionaryObject(
+                {
+                    NameObject("/GSbg"): DictionaryObject(
+                        {
+                            NameObject("/Type"): NameObject("/ExtGState"),
+                            NameObject("/ca"): FloatObject(0.78),
+                            NameObject("/CA"): FloatObject(0.78),
+                        }
+                    ),
+                    NameObject("/GSicon"): DictionaryObject(
+                        {
+                            NameObject("/Type"): NameObject("/ExtGState"),
+                            NameObject("/ca"): FloatObject(1.0),
+                            NameObject("/CA"): FloatObject(1.0),
+                        }
+                    ),
+                }
+            )
+        }
+    )
     return overlay
+
+
+def resolve_contact_icon_positions(
+    icons: list[KpContactIcon],
+    positions: KpContactTextPositions,
+) -> list[tuple[float, float]]:
+    if len(icons) < 2:
+        return []
+    phone_y = positions.phone_y
+    email_y = positions.email_y
+    if phone_y is None and email_y is not None:
+        phone_y = email_y + KP_CONTACT_FALLBACK_ROW_GAP_PT
+    if email_y is None and phone_y is not None:
+        email_y = phone_y - KP_CONTACT_FALLBACK_ROW_GAP_PT
+    if phone_y is None or email_y is None:
+        return []
+    widest_icon = max((icon.width_pt for icon in icons[:2]), default=9.0)
+    icon_x = max(24.0, (positions.phone_x or 66.0) - widest_icon - KP_CONTACT_ICON_TEXT_GAP_PT)
+    return [
+        (icon_x, phone_y - KP_CONTACT_ICON_PHONE_BASELINE_OFFSET_PT),
+        (icon_x, email_y - KP_CONTACT_ICON_EMAIL_BASELINE_OFFSET_PT),
+    ]
+
+
+def find_contact_text_positions(page: PageObject) -> KpContactTextPositions:
+    author_candidates: list[tuple[float, float]] = []
+    phone_candidates: list[tuple[float, float]] = []
+    email_candidates: list[tuple[float, float]] = []
+
+    def visitor(text: str, _cm, tm, _font_dict, _font_size) -> None:
+        stripped = text.strip()
+        if not stripped:
+            return
+        x = float(tm[4])
+        y = float(tm[5])
+        lower = stripped.casefold()
+        if "\u0438\u0441\u043f." in lower and "\u0447\u0435\u0440\u043a\u0430\u0448\u0438\u043d\u0430" in lower:
+            author_candidates.append((x, y))
+        if "\u0442\u0435\u043b." in lower:
+            phone_candidates.append((x, y))
+        if "ks" in lower or "@parresh" in lower or "parresh" in lower:
+            email_candidates.append((x, y))
+
+    try:
+        page.extract_text(visitor_text=visitor)
+    except Exception:
+        return KpContactTextPositions()
+
+    author_x = min(author_candidates, key=lambda item: item[1])[0] if author_candidates else None
+    phone_x = None
+    phone_y = None
+    if phone_candidates:
+        phone_x, phone_y = min(phone_candidates, key=lambda item: item[1])
+    email_y = None
+    if email_candidates:
+        if phone_y is not None:
+            below_phone = [item for item in email_candidates if item[1] < phone_y]
+            if below_phone:
+                email_y = max(below_phone, key=lambda item: item[1])[1]
+            else:
+                email_y = min(email_candidates, key=lambda item: abs(item[1] - phone_y))[1]
+        else:
+            email_y = min(email_candidates, key=lambda item: item[1])[1]
+
+    return KpContactTextPositions(
+        author_x=author_x,
+        phone_x=phone_x,
+        phone_y=phone_y,
+        email_y=email_y,
+    )
 
 
 def svg_to_pdf_path_content(svg_payload: bytes, *, x: float, y: float, width: float, height: float) -> str:

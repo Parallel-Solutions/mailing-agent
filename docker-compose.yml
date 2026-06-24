@@ -10,9 +10,6 @@ services:
     environment:
       APP_HOST: 0.0.0.0
       APP_PORT: 9806
-      KP_PDF_RENDERER: custom
-      PDF_CONVERTER: gotenberg
-      PDF_CONVERTER_FALLBACK: libreoffice
       GOTENBERG_BASE_URL: http://gotenberg:3000
       GOTENBERG_BASE_URLS: http://gotenberg:3000
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright

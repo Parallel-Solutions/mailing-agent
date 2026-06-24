@@ -31,7 +31,6 @@ from src.generator.generation.config_generator import (
     OUTPUT_DIR,
     PDF_CHUNK_SIZE,
     PDF_WORKERS,
-    KP_PDF_RENDERER,
     START_OUTGOING_NUMBER,
     WEB_CASE_AGENT_MAX_WORKERS,
 )
@@ -49,7 +48,6 @@ from src.generator.generation.document_builder import (
 from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.pdf_converter import convert_docx_batch
-from src.generator.generation.kp_pdf_renderer import render_kp_pdf
 from src.generator.generation.pdf_safe import apply_pdf_safe_postprocess, is_kp_docx, prepare_docx_for_pdf_export
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
 from src.generator.generation.transforms import build_document_context, build_output_folder_name
@@ -468,43 +466,6 @@ def _kp_output_docx_paths(output_dir: Path) -> list[Path]:
     return sorted(path for path in output_dir.rglob("*.docx") if path.is_file() and is_kp_docx(path))
 
 
-def _use_custom_kp_pdf_renderer() -> bool:
-    return str(KP_PDF_RENDERER or "").strip().lower() == "custom"
-
-
-def _render_custom_kp_pdf_jobs(
-    jobs: list[dict[str, Any]],
-    output_dir: Path,
-    *,
-    progress_callback: Any | None = None,
-    timing_callback: Any | None = None,
-    template_docx: Path | None = None,
-) -> dict[Path, Path | None]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    pdf_map: dict[Path, Path | None] = {}
-    for job in jobs:
-        source_docx = Path(job["staged_docx"])
-        target_pdf = output_dir / f"{source_docx.stem}.pdf"
-        try:
-            if not source_docx.exists():
-                pdf_map[source_docx] = None
-                continue
-            render_kp_pdf(
-                source_docx,
-                target_pdf,
-                template_docx=template_docx if template_docx and template_docx.exists() else source_docx,
-                context=job.get("pdf_context") if isinstance(job.get("pdf_context"), dict) else None,
-                timing_callback=timing_callback,
-            )
-            pdf_map[source_docx] = target_pdf if _is_valid_pdf(target_pdf) else None
-        except Exception as exc:
-            logger.warning("custom_kp_pdf_render_failed", source_docx=str(source_docx), error=str(exc))
-            pdf_map[source_docx] = None
-        finally:
-            if progress_callback is not None:
-                progress_callback()
-    return pdf_map
-
 def _finalize_generated_jobs(
     jobs: list[dict[str, Any]],
     results: list[dict],
@@ -582,6 +543,7 @@ def finalize_generated_files(
     results: list[dict],
     *,
     batch_pdf_dir: Path | None = None,
+    templates_dir: Path | None = None,
     progress_callback: Any | None = None,
     should_stop: Any | None = None,
     chunk_size: int | None = None,
@@ -630,65 +592,49 @@ def finalize_generated_files(
     if create_pdf and pending_pdf_jobs:
         pdf_target_dir = batch_pdf_dir or BATCH_PDF_DIR
         batch_size = max(1, worker_count * max(1, chunk_size))
-        if _use_custom_kp_pdf_renderer():
-            for start in range(0, len(pending_pdf_jobs), batch_size):
-                job_batch = pending_pdf_jobs[start : start + batch_size]
-                pdf_map = _render_custom_kp_pdf_jobs(
-                    job_batch,
-                    pdf_target_dir,
-                    progress_callback=progress_callback,
-                    timing_callback=timing_callback,
-                )
-                _finalize_generated_jobs(
-                    job_batch,
-                    results,
-                    pdf_map=pdf_map,
-                    should_stop=should_stop,
-                    create_pdf=True,
-                )
-        else:
-            pdf_docx_dir = pdf_target_dir / "_pdf_safe_docx"
-            for start in range(0, len(pending_pdf_jobs), batch_size):
-                job_batch = pending_pdf_jobs[start : start + batch_size]
-                if pdf_docx_dir.exists():
-                    shutil.rmtree(pdf_docx_dir, ignore_errors=True)
-                pdf_docx_dir.mkdir(parents=True, exist_ok=True)
-                safe_docx_to_original: dict[Path, Path] = {}
-                safe_plans = {}
-                for index, job in enumerate(job_batch, start=1):
-                    source_docx = job["staged_docx"]
-                    if not source_docx.exists():
-                        continue
-                    safe_docx = pdf_docx_dir / f"{index:06d}_{source_docx.name}"
-                    plan = prepare_docx_for_pdf_export(
-                        source_docx,
-                        safe_docx,
-                        file_kind=str(job.get("file_kind") or ""),
-                        template_docx=None,
-                    )
-                    safe_docx_to_original[safe_docx] = source_docx
-                    safe_plans[safe_docx] = plan
-                pdf_safe_map = convert_docx_batch(
-                    list(safe_docx_to_original.keys()),
-                    pdf_target_dir,
-                    chunk_size=chunk_size,
-                    worker_count=worker_count,
-                    progress_callback=progress_callback,
-                    timing_callback=timing_callback,
-                )
-                pdf_map = {}
-                for safe_docx, created_pdf in pdf_safe_map.items():
-                    if created_pdf and created_pdf.exists():
-                        apply_pdf_safe_postprocess(created_pdf, safe_plans[safe_docx])
-                    pdf_map[safe_docx_to_original[safe_docx]] = created_pdf
-                _finalize_generated_jobs(
-                    job_batch,
-                    results,
-                    pdf_map=pdf_map,
-                    should_stop=should_stop,
-                    create_pdf=True,
-                )
+        pdf_docx_dir = pdf_target_dir / "_pdf_safe_docx"
+        for start in range(0, len(pending_pdf_jobs), batch_size):
+            job_batch = pending_pdf_jobs[start : start + batch_size]
+            if pdf_docx_dir.exists():
                 shutil.rmtree(pdf_docx_dir, ignore_errors=True)
+            pdf_docx_dir.mkdir(parents=True, exist_ok=True)
+            safe_docx_to_original: dict[Path, Path] = {}
+            safe_plans = {}
+            for index, job in enumerate(job_batch, start=1):
+                source_docx = job["staged_docx"]
+                if not source_docx.exists():
+                    continue
+                safe_docx = pdf_docx_dir / f"{index:06d}_{source_docx.name}"
+                kp_template_path = (templates_dir / KP_TEMPLATE_FILENAME) if templates_dir else None
+                plan = prepare_docx_for_pdf_export(
+                    source_docx,
+                    safe_docx,
+                    file_kind=str(job.get("file_kind") or ""),
+                    template_docx=kp_template_path if kp_template_path and kp_template_path.exists() else None,
+                )
+                safe_docx_to_original[safe_docx] = source_docx
+                safe_plans[safe_docx] = plan
+            pdf_safe_map = convert_docx_batch(
+                list(safe_docx_to_original.keys()),
+                pdf_target_dir,
+                chunk_size=chunk_size,
+                worker_count=worker_count,
+                progress_callback=progress_callback,
+                timing_callback=timing_callback,
+            )
+            pdf_map = {}
+            for safe_docx, created_pdf in pdf_safe_map.items():
+                if created_pdf and created_pdf.exists():
+                    apply_pdf_safe_postprocess(created_pdf, safe_plans[safe_docx])
+                pdf_map[safe_docx_to_original[safe_docx]] = created_pdf
+            _finalize_generated_jobs(
+                job_batch,
+                results,
+                pdf_map=pdf_map,
+                should_stop=should_stop,
+                create_pdf=True,
+            )
+            shutil.rmtree(pdf_docx_dir, ignore_errors=True)
     elif pending_pdf_jobs:
         _finalize_generated_jobs(
             pending_pdf_jobs,
@@ -800,68 +746,47 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
     failed: list[str] = []
     kp_template_path = job_paths.templates_dir / KP_TEMPLATE_FILENAME
 
-    if _use_custom_kp_pdf_renderer():
+    if staging_dir.exists():
         shutil.rmtree(staging_dir, ignore_errors=True)
+    if pdf_work_dir.exists():
         shutil.rmtree(pdf_work_dir, ignore_errors=True)
-        for source_docx in pending:
-            final_pdf = source_docx.with_suffix(".pdf")
-            try:
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    pdf_work_dir.mkdir(parents=True, exist_ok=True)
+
+    staged_to_final: dict[Path, Path] = {}
+    pdf_safe_plans = {}
+    for index, source_docx in enumerate(pending, start=1):
+        staged_docx = staging_dir / f"{index:06d}_{source_docx.stem}.docx"
+        plan = prepare_docx_for_pdf_export(
+            source_docx,
+            staged_docx,
+            template_docx=kp_template_path if kp_template_path.exists() else None,
+        )
+        staged_to_final[staged_docx] = source_docx.with_suffix(".pdf")
+        pdf_safe_plans[staged_docx] = plan
+
+    try:
+        pdf_map = convert_docx_batch(
+            list(staged_to_final.keys()),
+            pdf_work_dir,
+            chunk_size=PDF_CHUNK_SIZE,
+            worker_count=PDF_WORKERS,
+            progress_callback=_report_pdf_progress,
+            timing_callback=_report_pdf_backend_timing,
+        )
+        for staged_docx, final_pdf in staged_to_final.items():
+            created_pdf = pdf_map.get(staged_docx)
+            if created_pdf and created_pdf.exists():
+                apply_pdf_safe_postprocess(created_pdf, pdf_safe_plans[staged_docx])
+                final_pdf.parent.mkdir(parents=True, exist_ok=True)
                 if final_pdf.exists():
                     final_pdf.unlink()
-                render_kp_pdf(
-                    source_docx,
-                    final_pdf,
-                    template_docx=kp_template_path if kp_template_path.exists() else source_docx,
-                    timing_callback=_report_pdf_backend_timing,
-                )
-            except Exception as exc:
-                logger.warning("custom_kp_pdf_finalize_failed", source_docx=str(source_docx), error=str(exc))
-            finally:
-                _report_pdf_progress()
+                shutil.move(str(created_pdf), str(final_pdf))
             if not _is_valid_pdf(final_pdf):
                 failed.append(str(final_pdf))
-    else:
-        if staging_dir.exists():
-            shutil.rmtree(staging_dir, ignore_errors=True)
-        if pdf_work_dir.exists():
-            shutil.rmtree(pdf_work_dir, ignore_errors=True)
-        staging_dir.mkdir(parents=True, exist_ok=True)
-        pdf_work_dir.mkdir(parents=True, exist_ok=True)
-
-        staged_to_final: dict[Path, Path] = {}
-        pdf_safe_plans = {}
-        for index, source_docx in enumerate(pending, start=1):
-            staged_docx = staging_dir / f"{index:06d}_{source_docx.stem}.docx"
-            plan = prepare_docx_for_pdf_export(
-                source_docx,
-                staged_docx,
-                template_docx=kp_template_path if kp_template_path.exists() else None,
-            )
-            staged_to_final[staged_docx] = source_docx.with_suffix(".pdf")
-            pdf_safe_plans[staged_docx] = plan
-
-        try:
-            pdf_map = convert_docx_batch(
-                list(staged_to_final.keys()),
-                pdf_work_dir,
-                chunk_size=PDF_CHUNK_SIZE,
-                worker_count=PDF_WORKERS,
-                progress_callback=_report_pdf_progress,
-                timing_callback=_report_pdf_backend_timing,
-            )
-            for staged_docx, final_pdf in staged_to_final.items():
-                created_pdf = pdf_map.get(staged_docx)
-                if created_pdf and created_pdf.exists():
-                    apply_pdf_safe_postprocess(created_pdf, pdf_safe_plans[staged_docx])
-                    final_pdf.parent.mkdir(parents=True, exist_ok=True)
-                    if final_pdf.exists():
-                        final_pdf.unlink()
-                    shutil.move(str(created_pdf), str(final_pdf))
-                if not _is_valid_pdf(final_pdf):
-                    failed.append(str(final_pdf))
-        finally:
-            shutil.rmtree(staging_dir, ignore_errors=True)
-            shutil.rmtree(pdf_work_dir, ignore_errors=True)
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        shutil.rmtree(pdf_work_dir, ignore_errors=True)
     state["pdf_processed"] = total - len(failed)
     state["staged_pdf_count"] = state["pdf_processed"]
     state["output_file_count"] = _count_output_files_now(output_dir)
@@ -1349,6 +1274,7 @@ def run_generator_agent(
         finalize_generated_files(
             results,
             batch_pdf_dir=pdf_target_dir,
+            templates_dir=None if job_paths.uses_legacy_layout else job_paths.templates_dir,
             progress_callback=_report_pdf_progress,
             should_stop=lambda: bool(_refresh_generator_stop_flag(state, job_id).get("stop_requested")),
             chunk_size=PDF_CHUNK_SIZE,
