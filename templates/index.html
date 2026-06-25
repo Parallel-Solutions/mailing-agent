@@ -2767,10 +2767,17 @@
   let lastDocumentsUiState = {};
   let lastSenderUiState = {};
   let documentsStartClicked = false;
+  let documentsStatusRequestSeq = 0;
+  let documentsStatusEpoch = 0;
   let deliveryAnalyticsFollowupTimer = null;
   let deliveryAnalyticsLoading = false;
   let isRestoringUiState = false;
   let moduleReadinessServerLoaded = false;
+
+  function invalidateDocumentsStatusResponses() {
+    documentsStatusEpoch += 1;
+    documentsStatusRequestSeq = 0;
+  }
 
   function escapeHtml(value) {
     return String(value || '')
@@ -3097,6 +3104,7 @@
   }
 
   function resetModuleRuntimeState() {
+    invalidateDocumentsStatusResponses();
     senderPreviewState = null;
     parserRunning = false;
     phRunning = false;
@@ -5798,6 +5806,8 @@ function clearAttachedFile() {
 
   async function refreshDocumentsStatus({ silent = false } = {}) {
     const requestedJobId = currentJobId;
+    const requestEpoch = documentsStatusEpoch;
+    const requestSeq = ++documentsStatusRequestSeq;
     try {
       const params = new URLSearchParams();
       if (requestedJobId) params.set('job_id', requestedJobId);
@@ -5808,7 +5818,13 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout(url, {}, 12000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(data.detail || 'Не удалось получить статус подготовки документов');
-      if (requestedJobId !== currentJobId) return null;
+      if (
+        requestedJobId !== currentJobId
+        || requestEpoch !== documentsStatusEpoch
+        || requestSeq !== documentsStatusRequestSeq
+      ) {
+        return null;
+      }
       const result = data.result || {};
       setDocumentsUiState(result);
       maybeAnnounceDocumentsFlow(result);
@@ -5838,6 +5854,7 @@ function clearAttachedFile() {
   // GENERATOR
   async function startDocumentsPipeline() {
     await ensureCurrentJobId();
+    invalidateDocumentsStatusResponses();
     documentsStartClicked = true;
     const documentMode = getDocumentMode();
     const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
