@@ -45,6 +45,20 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             self.assertEqual(sender_agent._unisender_parallel_workers(dry_run=True, transport="unisender"), 1)
             self.assertEqual(sender_agent._unisender_parallel_workers(dry_run=False, transport="smtp"), 1)
 
+    def test_mail_footer_html_uses_versioned_image(self) -> None:
+        with patch.object(
+            sender_agent.settings,
+            "mail_signature_image_url",
+            "https://offer.parresh.ru/public/mail-signature.png?v=konstantin",
+        ):
+            body = sender_agent._append_mail_footer_text("Здравствуйте!")
+            html = sender_agent._htmlify_mail_body(body, include_unsubscribe=False)
+
+        self.assertIn("<img ", html)
+        self.assertIn("&sig=", html)
+        self.assertNotIn("Черкашина", html)
+        self.assertNotIn("Крашенинников", html)
+
     def test_sent_mail_recipients_are_scoped_to_current_send_run(self) -> None:
         item = {"send_run_id": "send-new", "sent_at": "2026-06-02T12:00:00"}
 

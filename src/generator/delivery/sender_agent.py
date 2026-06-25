@@ -76,8 +76,8 @@ DEFAULT_MAIL_BODY = (
 )
 DEFAULT_MAIL_FOOTER_TEXT = (
     "С уважением,\n"
-    "Черкашина Наталья Александровна\n"
-    "+7 (812) 242-93-12\n"
+    "Крашенинников Константин Иванович\n"
+    "+7 (921) 409-4561\n"
     "ООО «Параллельные Решения»\n"
     "https://www.parresh.ru/"
 )
@@ -411,16 +411,32 @@ def _build_mail_footer_html(*, inline_image: bool = False) -> str:
     return MAIL_FOOTER_HTML_TEMPLATE.format(image_src=_mail_footer_image_src(inline=inline_image))
 
 
+def _mail_footer_html_markers() -> list[str]:
+    lines = [line.strip() for line in DEFAULT_MAIL_FOOTER_TEXT.splitlines() if line.strip()]
+    markers: list[str] = []
+    if len(lines) >= 2:
+        markers.append(f"{escape(lines[0], quote=False)}<br>{escape(lines[1], quote=False)}")
+    markers.append("С уважением,<br>Черкашина Наталья Александровна")
+    return markers
+
 def _mail_footer_image_src(*, inline: bool = False) -> str:
     if inline:
         return f"cid:{MAIL_FOOTER_LOGO_CID}"
     signature_image_url = _safe_text(settings.mail_signature_image_url).rstrip("/")
     if signature_image_url:
-        return signature_image_url
+        return _append_mail_footer_image_version(signature_image_url)
     public_base_url = _safe_text(settings.public_base_url).rstrip("/")
     if public_base_url:
-        return f"{public_base_url}/public/mail-signature.png"
+        return _append_mail_footer_image_version(f"{public_base_url}/public/mail-signature.png")
     return ""
+
+
+def _append_mail_footer_image_version(url: str) -> str:
+    signature = _file_signature(MAIL_FOOTER_LOGO_PATH)
+    if not signature:
+        return url
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}sig={signature[0]}-{signature[1]}"
 
 
 def _append_mail_footer_text(body: str) -> str:
@@ -1680,11 +1696,11 @@ def _htmlify_mail_body(
         parts.append(escape(stripped))
     non_empty = [line for line in parts if line]
     html = "<br>".join(non_empty)
-    if "Черкашина Наталья Александровна" in body:
-        marker = "С уважением,<br>Черкашина Наталья Александровна"
+    for marker in _mail_footer_html_markers():
         marker_index = html.find(marker)
         if marker_index >= 0:
             html = html[:marker_index] + _build_mail_footer_html(inline_image=inline_footer_image)
+            break
     if include_unsubscribe and "{{UnsubscribeUrl}}" not in html:
         html += "<br><br><a href='{{UnsubscribeUrl}}'>Отписаться от писем</a>"
     return html
