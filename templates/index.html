@@ -2220,21 +2220,23 @@
         </div>
       </div>
 
-      <div class="divider"></div>
+      <div id="settings-sender-credentials-section" hidden>
+        <div class="divider"></div>
 
-      <div class="field">
-        <label>Email отправителя</label>
-        <input id="settings-sender-email" type="email" placeholder="info@company.ru">
-      </div>
+        <div class="field">
+          <label>Email отправителя</label>
+          <input id="settings-sender-email" type="email" placeholder="info@company.ru">
+        </div>
 
-      <div class="field">
-        <label>Пароль почтового ящика</label>
-        <input id="settings-sender-password" type="password" placeholder="••••••••••">
-      </div>
+        <div class="field">
+          <label>Пароль почтового ящика</label>
+          <input id="settings-sender-password" type="password" placeholder="••••••••••">
+        </div>
 
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn-primary" id="settings-save-button" data-process-lock="true" onclick="saveSettingsAndValidate()">Сохранить настройки</button>
-        <button class="btn-outline" id="settings-reset-button" data-process-lock="true" type="button" onclick="resetAllMailingState()">Очистить все поля</button>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn-primary" id="settings-save-button" data-process-lock="true" onclick="saveSettingsAndValidate()">Сохранить настройки</button>
+          <button class="btn-outline" id="settings-reset-button" data-process-lock="true" type="button" onclick="resetAllMailingState()">Очистить все поля</button>
+        </div>
       </div>
 
       <div class="step-nav">
@@ -2300,12 +2302,6 @@
           <input type="text" id="p-chat-input" placeholder="Напишите, что нужно найти или уточнить..." onkeydown="if(event.key==='Enter') sendChat('p-chat')">
           <button onclick="sendChat('p-chat')">Отправить</button>
         </div>
-      </div>
-
-      <!-- Кнопка скачать результат (показывается после batch обработки) -->
-      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn-primary" id="p-download-result" data-process-lock="true" type="button" onclick="downloadWithJob('/api/parser/download-result')" disabled>Скачать результат</button>
-        <button class="btn-outline" id="p-download-failed" data-process-lock="true" type="button" onclick="downloadWithJob('/api/parser/download-failed')" disabled>Скачать непроверенные строки</button>
       </div>
 
       <div class="step-nav">
@@ -3555,7 +3551,13 @@
       upsertParserVerificationNotice(summaryText, { loading: false });
       announceProcessStep('p-chat', 'Таблица проверена', '');
       const downloadUrl = currentJobId ? `/api/download/data-xlsx?job_id=${encodeURIComponent(currentJobId)}` : '/api/download/data-xlsx';
-      appendDownloadMessage('p-chat', [{ url: downloadUrl, label: 'Скачать результат' }]);
+      const hasFailedRows = Number(verificationResult.missing_rows || 0) > 0 || Number(verificationResult.error_rows || 0) > 0;
+      const downloads = [{ url: downloadUrl, label: 'Скачать результат' }];
+      if (hasFailedRows) {
+        const failedUrl = currentJobId ? `/api/parser/download-failed?job_id=${encodeURIComponent(currentJobId)}` : '/api/parser/download-failed';
+        downloads.push({ url: failedUrl, label: 'Скачать непроверенные строки' });
+      }
+      appendDownloadMessage('p-chat', downloads);
       state.announcedStart = false;
       state.completedAnnounced = true;
     } else if (verificationStatus === 'error' && !state.completedAnnounced) {
@@ -4598,7 +4600,6 @@
   function resetModuleUiForNewDataUpload() {
     resetModuleRuntimeState();
     setParserUiState({ force: true, status: 'idle', row_count: 0, task_stats: {} });
-    setParserDownloadButtonsState({ hasResult: false, hasFailed: false });
     setGeneratorUiState({ force: true, status: 'idle', total_rows: 0, processed_rows: 0, ok_rows: 0, error_rows: 0 });
     setPhilologistUiState({ force: true, status: 'idle', total_documents: 0, processed_documents: 0, fixed_documents: 0, documents_with_issues: 0 });
     setSenderUiState({ force: true, status: 'idle', total_rows: 0, processed_rows: 0, ready_rows: 0, error_rows: 0, stats: { total: 0, sent: 0, error: 0, pending: 0 } });
@@ -5305,19 +5306,6 @@ function clearAttachedFile() {
     }
   }
 
-  function setParserDownloadButtonsState({ hasResult = false, hasFailed = false } = {}) {
-    const resultButton = document.getElementById('p-download-result');
-    const failedButton = document.getElementById('p-download-failed');
-    if (resultButton) {
-      resultButton.disabled = !hasResult;
-      resultButton.title = hasResult ? '' : 'Дождитесь завершения проверки таблицы.';
-    }
-    if (failedButton) {
-      failedButton.disabled = !hasFailed;
-      failedButton.title = hasFailed ? '' : (hasResult ? 'Непроверенных строк пока нет.' : 'Дождитесь завершения проверки таблицы.');
-    }
-  }
-
   function setParserUiState(result = {}) {
     const force = !!result.force;
     const nextState = stripUiStateMeta(result);
@@ -5360,9 +5348,6 @@ function clearAttachedFile() {
     currentParserStatus = status;
     const verificationState = nextState.municipality_name_verification_state || {};
     const verificationStatus = verificationState.status || 'idle';
-    const tableVerified = isParserTableVerified(nextState);
-    const hasFailedRows = Number(verificationResult.missing_rows || 0) > 0 || Number(verificationResult.error_rows || 0) > 0;
-    setParserDownloadButtonsState({ hasResult: tableVerified, hasFailed: tableVerified && hasFailedRows });
     parserRunning = status === 'running' || verificationStatus === 'running';
     updateSidebarStatusIndicators();
 
@@ -6206,13 +6191,6 @@ function clearAttachedFile() {
 
     const senderTotalEl = document.getElementById('s-total');
     if (senderTotalEl) senderTotalEl.textContent = senderTotal.toLocaleString('ru');
-
-    const failedButton = document.getElementById('p-download-failed');
-    const tableVerified = isParserTableVerified();
-    setParserDownloadButtonsState({
-      hasResult: tableVerified,
-      hasFailed: tableVerified && !!(failedButton && !failedButton.disabled),
-    });
   }
 
   function safeAppendChatMessage(chatId, role, text) {
@@ -7332,12 +7310,6 @@ function clearAttachedFile() {
       document.getElementById('p-total').textContent = parserTotal.toLocaleString('ru');
       document.getElementById('g-total').textContent = data.generator_total.toLocaleString('ru');
       document.getElementById('g-total-label').textContent = data.generator_total.toLocaleString('ru');
-      const failedButton = document.getElementById('p-download-failed');
-      const tableVerified = isParserTableVerified();
-      setParserDownloadButtonsState({
-        hasResult: tableVerified,
-        hasFailed: tableVerified && !!(failedButton && !failedButton.disabled),
-      });
       saveUiState();
     } catch(e) {}
   }
