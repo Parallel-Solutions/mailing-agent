@@ -1,0 +1,107 @@
+From d6a7587486c6cc85afb378b606021b130d835480 Mon Sep 17 00:00:00 2001
+From: civ <ffff06@yandex.ru>
+Date: Wed, 24 Jun 2026 20:00:43 +0300
+Subject: [PATCH] =?UTF-8?q?=D0=BF=D0=BE=D0=B4=D0=B4=D0=B5=D1=80=D0=B6?=
+ =?UTF-8?q?=D0=B0=D1=82=D1=8C=20=D1=81=D1=82=D0=B0=D1=80=D1=8B=D0=B5=20?=
+ =?UTF-8?q?=D0=BA=D0=BB=D1=8E=D1=87=D0=B8=20rusender?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ src/generator/delivery/sender_agent.py |  8 +++++-
+ tests/test_sender_agent.py             | 36 +++++++++++++++++++++++---
+ 2 files changed, 40 insertions(+), 4 deletions(-)
+
+diff --git a/src/generator/delivery/sender_agent.py b/src/generator/delivery/sender_agent.py
+index 6b23415..acadd18 100644
+--- a/src/generator/delivery/sender_agent.py
++++ b/src/generator/delivery/sender_agent.py
+@@ -1785,6 +1785,12 @@ def _safe_provider_payload(provider: dict[str, Any] | None) -> dict[str, Any]:
+     return safe
+ 
+ 
++def _rusender_auth_headers(api_key: str) -> dict[str, str]:
++    if api_key.startswith("rs_ck_"):
++        return {"Authorization": f"Bearer {api_key}"}
++    return {"X-Api-Key": api_key}
++
++
+ def _send_via_rusender(
+     row: dict[str, Any],
+     recipient: str,
+@@ -1848,7 +1854,7 @@ def _send_via_rusender(
+         headers={
+             "Content-Type": "application/json",
+             "Accept": "application/json",
+-            "Authorization": f"Bearer {api_key}",
++            **_rusender_auth_headers(api_key),
+         },
+     )
+     try:
+diff --git a/tests/test_sender_agent.py b/tests/test_sender_agent.py
+index 65e1d99..dc33f99 100644
+--- a/tests/test_sender_agent.py
++++ b/tests/test_sender_agent.py
+@@ -204,14 +204,14 @@ class SenderAgentScalabilityTests(unittest.TestCase):
+         )
+         resolve_output_folder.assert_not_called()
+ 
+-    def test_rusender_uses_bearer_authorization_header(self) -> None:
++    def test_rusender_uses_bearer_authorization_for_current_keys(self) -> None:
+         captured: dict[str, Request] = {}
+ 
+         def fake_request(request: Request, *, timeout: float) -> str:
+             captured["request"] = request
+             return json.dumps({"uuid": "message-1"})
+ 
+-        with patch.object(sender_agent.settings, "rusender_api_key", "secret-key"), patch.object(
++        with patch.object(sender_agent.settings, "rusender_api_key", "rs_ck_v1_secret"), patch.object(
+             sender_agent.settings,
+             "rusender_sender_email",
+             "sender@example.com",
+@@ -229,10 +229,40 @@ class SenderAgentScalabilityTests(unittest.TestCase):
+             )
+ 
+         request = captured["request"]
+-        self.assertEqual(request.get_header("Authorization"), "Bearer secret-key")
++        self.assertEqual(request.get_header("Authorization"), "Bearer rs_ck_v1_secret")
+         self.assertIsNone(request.get_header("X-api-key"))
+         self.assertEqual(result["message_id"], "message-1")
+ 
++    def test_rusender_uses_x_api_key_for_legacy_jwt_keys(self) -> None:
++        captured: dict[str, Request] = {}
++
++        def fake_request(request: Request, *, timeout: float) -> str:
++            captured["request"] = request
++            return json.dumps({"uuid": "message-1"})
++
++        legacy_key = "eyJhbGciOiJIUzI1NiJ9.test"
++        with patch.object(sender_agent.settings, "rusender_api_key", legacy_key), patch.object(
++            sender_agent.settings,
++            "rusender_sender_email",
++            "sender@example.com",
++        ), patch.object(sender_agent, "_run_rusender_request", side_effect=fake_request):
++            result = sender_agent._send_via_rusender(
++                {"ID": "1", "MUN_NAME": "Тестовое МО"},
++                "recipient@example.com",
++                [],
++                "Тема",
++                body_override="Текст письма",
++                job_id="job-test",
++                send_run_id="send-test",
++                send_mode="consent_request",
++                attachment_mode="kp",
++            )
++
++        request = captured["request"]
++        self.assertIsNone(request.get_header("Authorization"))
++        self.assertEqual(request.get_header("X-api-key"), legacy_key)
++        self.assertEqual(result["message_id"], "message-1")
++
+     def test_provider_idempotency_key_is_deterministic_for_same_context(self) -> None:
+         first = sender_agent._build_provider_idempotency_key(
+             provider="rusender",
+-- 
+2.51.0.windows.1
+

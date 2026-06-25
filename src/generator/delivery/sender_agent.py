@@ -81,7 +81,7 @@ DEFAULT_MAIL_FOOTER_TEXT = (
     "ООО «Параллельные Решения»\n"
     "https://www.parresh.ru/"
 )
-MAIL_FOOTER_LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "parresh-signature-logo.png"
+MAIL_FOOTER_LOGO_PATH = Path(__file__).resolve().parents[1] / "assets" / "parresh-signature-logo-KI.png"
 MAIL_FOOTER_LOGO_CID = "parresh-signature-logo"
 MAIL_FOOTER_HTML_TEMPLATE = """
 <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:16px;border-collapse:collapse">
@@ -442,7 +442,13 @@ def _append_mail_footer_image_version(url: str) -> str:
 def _append_mail_footer_text(body: str) -> str:
     body_text = body.rstrip()
     footer_text = DEFAULT_MAIL_FOOTER_TEXT.strip()
-    if footer_text in body_text or "Черкашина Наталья Александровна" in body_text:
+    body_text = re.sub(
+        r"(?:\n{2,}|^)С уважением,\s*\nЧеркашина\s+Наталья\s+Александровна[\s\S]*?(?:https?://www\.parresh\.ru/?\s*)?$",
+        "",
+        body_text,
+        flags=re.IGNORECASE,
+    ).rstrip()
+    if footer_text in body_text:
         return body_text
     body_text = re.sub(
         r"\n{2,}С уважением,\s*\nООО\s+«ПР»\s*$",

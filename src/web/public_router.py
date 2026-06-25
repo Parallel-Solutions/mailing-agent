@@ -18,7 +18,7 @@ def create_public_router() -> APIRouter:
 
     @router.get("/public/mail-signature.png")
     async def public_mail_signature():
-        signature_path = PUBLIC_ASSETS_DIR / "parresh-signature-logo.png"
+        signature_path = PUBLIC_ASSETS_DIR / "parresh-signature-logo-KI.png"
         if not signature_path.exists():
             raise HTTPException(status_code=404, detail="Mail signature image not found.")
         return FileResponse(
