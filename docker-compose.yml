@@ -10,8 +10,6 @@ services:
     environment:
       APP_HOST: 0.0.0.0
       APP_PORT: 9806
-      GOTENBERG_BASE_URL: http://gotenberg:3000
-      GOTENBERG_BASE_URLS: http://gotenberg:3000
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     ports:
       - "${APP_PUBLIC_PORT:-9806}:9806"
@@ -22,6 +20,8 @@ services:
     depends_on:
       gotenberg:
         condition: service_started
+      gotenberg-2:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1', 9806), 5); s.close()\""]
       interval: 30s
@@ -30,6 +30,16 @@ services:
       start_period: 60s
 
   gotenberg:
+    image: gotenberg/gotenberg:8-libreoffice
+    restart: unless-stopped
+    command:
+      - gotenberg
+      - --api-timeout=300s
+      - --libreoffice-restart-after=10
+    expose:
+      - "3000"
+
+  gotenberg-2:
     image: gotenberg/gotenberg:8-libreoffice
     restart: unless-stopped
     command:
