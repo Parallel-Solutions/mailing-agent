@@ -77,7 +77,9 @@ SIGNATURE_CONTACT_ICON_MIN_POS_H_FOR_PDF_SHIFT = 300000
 WORD_XML_NAMESPACES = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
     "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    "wp14": "http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing",
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "a14": "http://schemas.microsoft.com/office/drawing/2010/main",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
     "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture",
     "asvg": "http://schemas.microsoft.com/office/drawing/2016/SVG/main",
@@ -1437,7 +1439,7 @@ def insert_background_runs_into_signature_table_cell(output_text: str, run_fragm
     for table_match in re.finditer(r"<w:tbl\b[\s\S]*?</w:tbl>", output_text):
         table_fragment = table_match.group(0)
         table_text = xml_fragment_text(table_fragment)
-        if "с уважением" not in table_text.casefold() or "крашенинников" not in table_text.casefold():
+        if not is_signature_table_text(table_text):
             continue
         updated_table = insert_runs_into_signature_table_fragment(table_fragment, payload)
         if updated_table != table_fragment:
@@ -1486,15 +1488,14 @@ def parse_word_run_fragment(run_fragment: str) -> list:
 
 def find_signature_table(root) -> object | None:
     for table in root.xpath(".//w:tbl", namespaces=WORD_XML_NAMESPACES):
-        table_text = word_node_text(table).casefold()
-        if "с уважением" in table_text and "крашенинников" in table_text:
+        if is_signature_table_text(word_node_text(table)):
             return table
     return None
 
 
 def find_signature_background_cell(table) -> object | None:
     rows = table.xpath("./w:tr", namespaces=WORD_XML_NAMESPACES)
-    contact_rows = [row for row in rows if "черкашина" in word_node_text(row).casefold() or "исп." in word_node_text(row).casefold()]
+    contact_rows = [row for row in rows if is_signature_contact_text(word_node_text(row))]
     for row in reversed(contact_rows or rows):
         cells = row.xpath("./w:tc", namespaces=WORD_XML_NAMESPACES)
         for cell in reversed(cells):
@@ -1503,9 +1504,22 @@ def find_signature_background_cell(table) -> object | None:
     return None
 
 
+def is_signature_table_text(text: str) -> bool:
+    normalized = text.casefold()
+    if "с уважением" not in normalized:
+        return False
+    return any(marker in normalized for marker in ("исполнитель", "директор", "исп.")) or is_signature_contact_text(text)
+
+
+def is_signature_contact_text(text: str) -> bool:
+    normalized = text.casefold()
+    if any(marker in normalized for marker in ("исп.", "тел", "@")):
+        return True
+    return bool(re.search(r"(?:\+7|8)\s*[\d\s()\-]{7,}", text))
+
+
 def word_node_text(node) -> str:
     return " ".join("".join(node.xpath(".//w:t/text()", namespaces=WORD_XML_NAMESPACES)).split())
-
 
 def insert_runs_into_signature_table_fragment(table_fragment: str, payload: str) -> str:
     rows = list(re.finditer(r"<w:tr\b[\s\S]*?</w:tr>", table_fragment))
@@ -1741,7 +1755,7 @@ def compact_kp_signature_table(doc: DocumentObject, *, compact_spacing: bool = T
 def find_kp_signature_table_object(doc: DocumentObject) -> Table | None:
     for table in reversed(doc.tables):
         signature_text = "\n".join(cell.text for row in table.rows for cell in row.cells).casefold()
-        if "с уважением" in signature_text and "крашенинников" in signature_text:
+        if is_signature_table_text(signature_text):
             return table
     return None
 
@@ -1901,7 +1915,7 @@ def build_kp_replacements(context: dict) -> list[tuple[str, str]]:
         ("WORK_TITLE", str(context.get("WORK_TITLE", ""))),
         ("WORK_RESULT_NAME", str(context.get("WORK_RESULT_NAME", ""))),
         ("ADM_NAME_1", format_kp_recipient(context.get("ADM_NAME_1", ""))),
-        ("ADM_NAME", str(context.get("ADM_NAME", ""))),
+        ("ADM_NAME", format_kp_recipient(context.get("ADM_NAME_1") or context.get("ADM_NAME", ""))),
         ("MUN_NAME_2", str(context.get("MUN_NAME_2", ""))),
         ("MUN_NAME_1", str(context.get("MUN_NAME_1", ""))),
         ("MUN_NAME", str(context.get("MUN_NAME", ""))),

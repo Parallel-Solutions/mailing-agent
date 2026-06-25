@@ -353,6 +353,38 @@ class StructuredKPTests(unittest.TestCase):
         self.assertIn('Id="rId9"', restored_rels)
         self.assertIn("word/media/stamp.jpeg", names)
         self.assertIn("word/media/phone.svg", names)
+
+    def test_signature_detection_accepts_any_executor_contact(self) -> None:
+        document_xml = (
+            '<w:document><w:body><w:tbl>'
+            '<w:tr><w:tc><w:p><w:r><w:t>С уважением, исполнительный директор</w:t></w:r></w:p></w:tc>'
+            '<w:tc><w:p/></w:tc><w:tc><w:p><w:r><w:t>И.И. Иванов</w:t></w:r></w:p></w:tc></w:tr>'
+            '<w:tr><w:tc><w:p><w:r><w:t>Исп. Петрова Мария</w:t></w:r></w:p></w:tc>'
+            '<w:tc><w:p><w:r><w:t>тел. +7 921 409-45-61</w:t></w:r></w:p></w:tc>'
+            '<w:tc><w:p/></w:tc></w:tr>'
+            '</w:tbl></w:body></w:document>'
+        )
+        root = document_builder.LxmlElementTree.fromstring(
+            document_builder.ensure_word_xml_namespaces(document_xml).encode("utf-8")
+        )
+
+        table = document_builder.find_signature_table(root)
+        self.assertIsNotNone(table)
+        target_cell = document_builder.find_signature_background_cell(table)
+        self.assertIsNotNone(target_cell)
+
+    def test_parse_word_run_fragment_accepts_wp14_anchor_attributes(self) -> None:
+        run_fragment = (
+            '<w:r><w:drawing><wp:anchor wp14:anchorId="1A2B3C4D" wp14:editId="5E6F7A8B" behindDoc="1">'
+            '<wp:extent cx="914400" cy="457200"/>'
+            '</wp:anchor></w:drawing></w:r>'
+        )
+
+        runs = document_builder.parse_word_run_fragment(run_fragment)
+
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(runs[0].tag.endswith("}r"))
+
     def test_restore_svg_assets_resets_existing_signature_background_to_template_position(self) -> None:
         template_path = self.tmp_dir / "existing-background-template.docx"
         output_path = self.tmp_dir / "existing-background-output.docx"

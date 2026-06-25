@@ -65,6 +65,8 @@ class WorkTypeProfileTests(unittest.TestCase):
         self.assertIn("описание местоположения границ территориальных зон", replacements["WORK_RESULT_NAME"])
         self.assertIn("Нийского сельского поселения", replacements["MUN_R_NAME SUB_RF"])
         self.assertIn("Усть-Кутского муниципального района", replacements["MUN_R_NAME SUB_RF"])
+        self.assertEqual(replacements["ADM_NAME"], replacements["ADM_NAME_1"])
+        self.assertTrue(replacements["ADM_NAME"].startswith("Администрации"))
         self.assertNotIn("местных нормативов", replacements["WORK_TITLE"])
 
     def test_territorial_zone_consent_body_does_not_use_mngp_text(self) -> None:
