@@ -257,8 +257,21 @@ def _resolve_cached_output_archive(job_id: str | None) -> tuple[Path, bool]:
     return archive_path, archive_mtime >= _latest_tree_mtime(output_dir)
 
 
+def _iter_output_archive_files(output_dir: Path) -> list[Path]:
+    if not output_dir.exists():
+        return []
+    return [
+        path
+        for path in output_dir.rglob("*")
+        if path.is_file() and path.name != OUTPUT_FOLDER_MANIFEST_FILENAME
+    ]
+
+
 def _build_output_archive(job_id: str | None) -> Path:
     output_dir = resolve_job_paths(job_id).output_dir
+    output_files = _iter_output_archive_files(output_dir)
+    if not output_files:
+        raise FileNotFoundError("No generated output files found for archive")
     archive_path, _ = _resolve_cached_output_archive(job_id)
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     temp_archive_path = archive_path.with_suffix(".tmp.zip")
@@ -268,9 +281,8 @@ def _build_output_archive(job_id: str | None) -> Path:
         except OSError:
             pass
     with zipfile.ZipFile(temp_archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in output_dir.rglob("*"):
-            if f.is_file():
-                zf.write(f, f.relative_to(output_dir))
+        for f in output_files:
+            zf.write(f, f.relative_to(output_dir))
     temp_archive_path.replace(archive_path)
     return archive_path
 
@@ -285,7 +297,7 @@ def _schedule_output_archive_build(job_id: str | None) -> None:
         def _run() -> None:
             try:
                 output_dir = resolve_job_paths(job_id).output_dir
-                if output_dir.exists() and any(output_dir.rglob("*.*")):
+                if _iter_output_archive_files(output_dir):
                     _build_output_archive(job_id)
             except Exception:
                 logger.exception("output_archive_build_failed", job_id=job_id)

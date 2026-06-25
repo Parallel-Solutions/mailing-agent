@@ -6,6 +6,7 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
+from src.generator.generation.document_builder import OUTPUT_FOLDER_MANIFEST_FILENAME
 from src.generator.delivery.sender_report import (
     build_sender_delivery_report_xlsx,
     sender_delivery_report_has_data,
@@ -52,6 +53,16 @@ def download_response(path: Path, *, media_type: str, filename: str) -> FileResp
     )
 
 
+def _downloadable_output_files(output_dir: Path) -> list[Path]:
+    if not output_dir.exists():
+        return []
+    return [
+        path
+        for path in output_dir.rglob("*")
+        if path.is_file() and path.name != OUTPUT_FOLDER_MANIFEST_FILENAME
+    ]
+
+
 def create_download_router(
     *,
     check_auth: Callable,
@@ -92,11 +103,17 @@ def create_download_router(
         if not output_dir.exists():
             raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
 
+        if not _downloadable_output_files(output_dir):
+            raise HTTPException(status_code=404, detail="Готовые документы не найдены. Повторите подготовку документов.")
+
         archive_path, cache_is_fresh = resolve_cached_output_archive(job_id)
+        if cache_is_fresh and (not archive_path.exists() or archive_path.stat().st_size <= 22):
+            cache_is_fresh = False
         if not cache_is_fresh:
-            if not any(output_dir.rglob("*.*")):
-                raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
-            archive_path = build_output_archive(job_id)
+            try:
+                archive_path = build_output_archive(job_id)
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="Готовые документы не найдены. Повторите подготовку документов.") from exc
 
         return download_response(
             archive_path,

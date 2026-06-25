@@ -254,7 +254,25 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
     }
 
 
-def _documents_recent_events_payload(events: list[dict] | None, *, prefix: str, title: str, limit: int = 3) -> list[dict]:
+def _is_documents_failure_event_text(text: str) -> bool:
+    lowered = text.casefold()
+    return any(fragment in lowered for fragment in (
+        "результат не собран",
+        "не найдены ожидаемые документы",
+        "документы не созданы",
+        "завершились ошибкой",
+        "пустой архив",
+    ))
+
+
+def _documents_recent_events_payload(
+    events: list[dict] | None,
+    *,
+    prefix: str,
+    title: str,
+    limit: int = 3,
+    suppress_failure_events: bool = False,
+) -> list[dict]:
     payload: list[dict] = []
     for event in (events or [])[:limit]:
         if not isinstance(event, dict):
@@ -264,6 +282,8 @@ def _documents_recent_events_payload(events: list[dict] | None, *, prefix: str, 
         if not event_id or not text:
             continue
         lowered = text.lower()
+        if suppress_failure_events and _is_documents_failure_event_text(text):
+            continue
         if any(fragment in lowered for fragment in (
             "принято документов",
             "фильтр строк",
@@ -379,7 +399,12 @@ def build_documents_chat_events(documents_status: dict) -> list[dict]:
             "text": str(documents_status.get("summary_text") or "Не удалось завершить подготовку документов.").strip(),
         })
 
-    recent_generator_events = _documents_recent_events_payload(generator.get("recent_events"), prefix="generator", title="Дополнительно")
+    recent_generator_events = _documents_recent_events_payload(
+        generator.get("recent_events"),
+        prefix="generator",
+        title="Дополнительно",
+        suppress_failure_events=status == "completed",
+    )
     recent_philologist_events = _documents_recent_events_payload(philologist.get("recent_events"), prefix="philologist", title="Проверка текста")
 
     if status == "running" and generator_stage in {"review_templates", "render_docx", "convert_pdf", "finalize_output"}:

@@ -12,6 +12,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.generator.generation.document_builder import OUTPUT_FOLDER_MANIFEST_FILENAME
 from src.web.download_router import create_download_router, legacy_parser_output_dir
 
 
@@ -124,6 +125,20 @@ class DownloadRouterIsolationTests(unittest.TestCase):
         self.assertEqual(response.headers["referrer-policy"], "no-referrer")
         self.assertEqual(searched_dirs, [(parser_output,)])
 
+
+    def test_output_download_rejects_manifest_only_output(self) -> None:
+        with _workspace_temp_dir() as tmpdir:
+            job_output = tmpdir / "jobs" / "job-a" / "output"
+            job_output.mkdir(parents=True)
+            (job_output / OUTPUT_FOLDER_MANIFEST_FILENAME).write_text("{}", encoding="utf-8")
+
+            client = self._client(latest_matching_file=lambda *args, **kwargs: None)
+            paths = SimpleNamespace(output_dir=job_output)
+            with patch("src.web.download_router.resolve_job_paths", return_value=paths):
+                response = client.get("/api/download/output?job_id=job-a")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("Готовые документы не найдены", response.json()["detail"])
 
 if __name__ == "__main__":
     unittest.main()

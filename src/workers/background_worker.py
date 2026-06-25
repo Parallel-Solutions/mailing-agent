@@ -20,9 +20,24 @@ def _load_payload(path: Path) -> dict[str, Any]:
         raise ValueError("worker payload must be a JSON object")
     return result.data
 
+
+def _iter_output_archive_files(output_dir: Path) -> list[Path]:
+    if not output_dir.exists():
+        return []
+    return [
+        path
+        for path in output_dir.rglob("*")
+        if path.is_file() and path.name != OUTPUT_FOLDER_MANIFEST_FILENAME
+    ]
+
+
 def _build_output_archive(job_id: str | None) -> Path | None:
     output_dir = resolve_job_paths(job_id).output_dir
     if not output_dir.exists():
+        return None
+
+    output_files = _iter_output_archive_files(output_dir)
+    if not output_files:
         return None
 
     archive_path = resolve_job_paths(job_id).root_dir / "state" / "output.zip"
@@ -35,9 +50,8 @@ def _build_output_archive(job_id: str | None) -> Path | None:
             pass
 
     with zipfile.ZipFile(temp_archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for path in output_dir.rglob("*"):
-            if path.is_file() and path.name != OUTPUT_FOLDER_MANIFEST_FILENAME:
-                archive.write(path, path.relative_to(output_dir))
+        for path in output_files:
+            archive.write(path, path.relative_to(output_dir))
     temp_archive_path.replace(archive_path)
     return archive_path
 
