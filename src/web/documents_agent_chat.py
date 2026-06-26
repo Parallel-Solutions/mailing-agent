@@ -34,6 +34,37 @@ def _documents_agent_is_ack_or_greeting(text: str) -> bool:
     ) or _documents_agent_has_word(text, "ок")
 
 
+def _documents_agent_is_capabilities_question(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "что ты умеешь",
+            "что умеешь",
+            "чем можешь",
+            "что можешь",
+            "как ты можешь",
+            "какие вопросы",
+            "возможност",
+        )
+    )
+
+
+def _documents_agent_capabilities_reply(documents_status: dict | None = None) -> str:
+    status = str((documents_status or {}).get("status") or "idle")
+    status_hint = {
+        "completed": "Сейчас подготовка уже завершена, поэтому могу сразу подсказать, что скачивать и что проверять перед отправкой.",
+        "running": "Сейчас подготовка идёт, поэтому могу коротко объяснять текущий этап и последние безопасные события.",
+        "error": "Сейчас есть ошибка, поэтому могу перевести её на нормальный язык и подсказать следующий шаг.",
+        "stopped": "Сейчас процесс остановлен, поэтому могу объяснить, где остановились и как продолжить.",
+    }.get(status, "Сейчас подготовка не активна, поэтому могу помочь с запуском и проверкой исходных данных.")
+    return (
+        "Я могу ответить по этому экрану: что сейчас с документами, есть ли ошибки, какие файлы готовы, "
+        "что делать дальше, что можно скачать и что текстовая проверка исправила или оставила на ручную проверку. "
+        "Я ничего сам не запускаю и не отправляю, только объясняю состояние по данным текущей сессии. "
+        + status_hint
+    )
+
+
 def _documents_agent_recent_event_lines(state: dict, *, limit: int = 3) -> list[str]:
     lines: list[str] = []
     for event in (state.get("recent_events") or [])[:limit]:
@@ -202,7 +233,87 @@ def _documents_agent_next_step_reply(documents_status: dict) -> str:
     return "Сначала запустите подготовку документов."
 
 
-def _documents_agent_text_reply(documents_status: dict) -> str:
+def _documents_agent_load_philologist_state(job_id: str | None, documents_status: dict | None = None) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    inline = (documents_status or {}).get("philologist")
+    if isinstance(inline, dict):
+        state.update(inline)
+    if not job_id:
+        return state
+    state_dir = resolve_state_path("generator", job_id).parent
+    primary = _documents_agent_read_json(state_dir / "philologist.json")
+    if primary and not primary.get("_read_error") and not primary.get("_invalid_shape"):
+        state.update(primary)
+    details_path_raw = state.get("details_path")
+    details_path = Path(str(details_path_raw)) if details_path_raw else state_dir / "philologist.details.json"
+    details = _documents_agent_read_json(details_path)
+    if details and not details.get("_read_error") and not details.get("_invalid_shape"):
+        state.update(details)
+    return state
+
+
+def _documents_agent_document_name(item: dict[str, Any]) -> str:
+    value = item.get("name") or item.get("path") or item.get("document") or "документ"
+    name = Path(str(value)).name
+    return _documents_agent_sanitize_text(name, limit=90) or "документ"
+
+
+def _documents_agent_fix_examples(philologist_state: dict[str, Any], *, limit: int = 3) -> list[str]:
+    examples: list[str] = []
+    for item in philologist_state.get("documents") or []:
+        if not isinstance(item, dict):
+            continue
+        document_name = _documents_agent_document_name(item)
+        for fix in item.get("applied_fixes") or []:
+            if not isinstance(fix, dict):
+                continue
+            issue = _documents_agent_sanitize_text(fix.get("issue") or fix.get("fragment") or "языковая правка", limit=120)
+            suggestion = _documents_agent_sanitize_text(fix.get("suggestion"), limit=120)
+            examples.append(f"{document_name}: {issue} -> {suggestion}" if suggestion else f"{document_name}: {issue}")
+            if len(examples) >= limit:
+                return examples
+
+    corrections = (philologist_state.get("inflection_context_corrections") or {}).get("corrections") or []
+    for item in corrections:
+        if not isinstance(item, dict):
+            continue
+        document_name = _documents_agent_sanitize_text(item.get("document") or item.get("field") or "подстановка", limit=90)
+        before = _documents_agent_sanitize_text(item.get("generated_value") or item.get("fragment"), limit=90)
+        after = _documents_agent_sanitize_text(item.get("corrected_value") or item.get("suggestion"), limit=90)
+        if before and after:
+            examples.append(f"{document_name}: {before} -> {after}")
+        elif after:
+            examples.append(f"{document_name}: исправлено на «{after}»")
+        if len(examples) >= limit:
+            return examples
+    return examples
+
+
+def _documents_agent_issue_examples(philologist_state: dict[str, Any], *, limit: int = 2) -> list[str]:
+    examples: list[str] = []
+    for item in philologist_state.get("documents") or []:
+        if not isinstance(item, dict):
+            continue
+        document_name = _documents_agent_document_name(item)
+        for fix in item.get("skipped_fixes") or []:
+            if not isinstance(fix, dict):
+                continue
+            issue = _documents_agent_sanitize_text(fix.get("issue") or "нужна ручная проверка", limit=120)
+            reason = _documents_agent_sanitize_text(fix.get("reason"), limit=100)
+            examples.append(f"{document_name}: {issue}" + (f" ({reason})" if reason else ""))
+            if len(examples) >= limit:
+                return examples
+        for issue in item.get("issues") or []:
+            if not isinstance(issue, dict):
+                continue
+            issue_text = _documents_agent_sanitize_text(issue.get("issue") or issue.get("message") or "есть замечание", limit=120)
+            examples.append(f"{document_name}: {issue_text}")
+            if len(examples) >= limit:
+                return examples
+    return examples
+
+
+def _documents_agent_text_reply(documents_status: dict, job_id: str | None = None) -> str:
     status = str(documents_status.get("status") or "idle")
     total_documents = int(documents_status.get("total_documents") or 0)
     reviewed_documents = int(documents_status.get("reviewed_documents") or 0)
@@ -216,13 +327,23 @@ def _documents_agent_text_reply(documents_status: dict) -> str:
             "Подробный журнал не показываю в чате, чтобы не засорять экран; итоговый отчёт будет доступен после завершения."
         )
     if status == "completed":
+        philologist_state = _documents_agent_load_philologist_state(job_id, documents_status)
+        fix_examples = _documents_agent_fix_examples(philologist_state, limit=3)
+        issue_examples = _documents_agent_issue_examples(philologist_state, limit=2)
         if fixed_documents > 0 or documents_with_issues > 0:
-            return (
+            parts = [
                 "Тексты уже проверены. "
                 f"Автоправки внесены в {fixed_documents} документах, "
-                f"документов с замечаниями: {documents_with_issues}. "
-                "Детали можно посмотреть в отчёте по исправлениям."
-            )
+                f"документов с замечаниями: {documents_with_issues}."
+            ]
+            if fix_examples:
+                parts.append("Примеры исправлений: " + "; ".join(fix_examples) + ".")
+            else:
+                parts.append("Точных примеров в компактном статусе нет, но полный список есть в отчёте по исправлениям.")
+            if issue_examples:
+                parts.append("Что осталось проверить вручную: " + "; ".join(issue_examples) + ".")
+            parts.append("Для полного списка скачайте отчёт по исправлениям.")
+            return " ".join(parts)
         return "Тексты уже проверены, существенных автоматических правок не потребовалось."
     return _documents_agent_process_reply(documents_status)
 
@@ -259,6 +380,13 @@ def _documents_agent_general_reply(message: str, documents_status: dict | None =
         return "Я на связи. Если нужно, коротко разберу ошибку и следующий безопасный шаг."
     return "Я на связи. Могу помочь со статусом подготовки, ошибками, скачиванием документов или следующим шагом."
 
+
+def _documents_agent_ai_unavailable_reply() -> str:
+    return (
+        "Я не смог получить ответ от AI-помощника. "
+        "Могу отвечать только на встроенные вопросы по статусу: что сейчас происходит, есть ли ошибки, "
+        "что скачать, какие файлы готовы, какие исправления найдены и какой следующий шаг."
+    )
 
 def _documents_agent_rag_reply(message: str, documents_status: dict | None = None) -> str | None:
     lowered = message.lower()
@@ -331,7 +459,7 @@ def _documents_agent_tool_get_downloads(job_id: str | None, status_loader: Statu
 
 def _documents_agent_tool_get_text_review_summary(job_id: str | None, status_loader: StatusLoader) -> tuple[str, dict]:
     documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-    return _documents_agent_text_reply(documents_status), documents_status
+    return _documents_agent_text_reply(documents_status, job_id), documents_status
 
 
 def _documents_agent_tool_get_technical_log(job_id: str | None, status_loader: StatusLoader) -> tuple[str, dict]:
@@ -768,8 +896,8 @@ def _documents_agent_should_use_readonly_ai(message: str) -> bool:
     return any(token in lowered for token in diagnostic_tokens)
 
 
-def _documents_agent_readonly_ai_reply(message: str, documents_status: dict, job_id: str | None) -> dict[str, Any] | None:
-    if not _documents_agent_should_use_readonly_ai(message):
+def _documents_agent_readonly_ai_reply(message: str, documents_status: dict, job_id: str | None, *, force: bool = False) -> dict[str, Any] | None:
+    if not force and not _documents_agent_should_use_readonly_ai(message):
         return None
     client = _documents_agent_build_llm_client()
     if client is None:
@@ -885,6 +1013,13 @@ def choose_documents_agent_reply(
             tools_used=[],
         )
 
+    if _documents_agent_is_capabilities_question(lowered):
+        documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
+        return _documents_agent_reply_payload(
+            _documents_agent_capabilities_reply(documents_status),
+            tools_used=["get_documents_status"],
+        )
+
     if _documents_agent_is_ack_or_greeting(lowered):
         return _documents_agent_reply_payload(_documents_agent_general_reply(message), tools_used=[])
     if any(token in lowered for token in ("ты агент", "ты вообще агент", "ты завис", "завис", "отвечаешь")):
@@ -950,4 +1085,12 @@ def choose_documents_agent_reply(
         reply, _ = _documents_agent_tool_get_text_review_summary(job_id, status_loader)
         return _documents_agent_reply_payload(reply, tools_used=["get_text_review_summary"])
 
-    return _documents_agent_reply_payload(_documents_agent_general_reply(message), tools_used=[])
+    readonly_agent_reply = _documents_agent_readonly_ai_reply(message, documents_status, job_id, force=True)
+    if readonly_agent_reply:
+        return readonly_agent_reply
+
+    return _documents_agent_reply_payload(
+        _documents_agent_ai_unavailable_reply(),
+        source="documents_ai_unavailable",
+        tools_used=["get_documents_status"],
+    )
