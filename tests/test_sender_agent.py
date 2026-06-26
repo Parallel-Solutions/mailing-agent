@@ -218,6 +218,65 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         )
         resolve_output_folder.assert_not_called()
 
+    def test_allowed_send_recipients_includes_primary_and_extra_emails(self) -> None:
+        decision = sender_agent._choose_recipient(
+            {
+                "EMAIL_OSN": "one@example.com",
+                "EMAIL_DOP": "two@example.com; one@example.com, bad-email, three@example.com",
+            }
+        )
+
+        self.assertEqual(decision["recipient"], "one@example.com")
+        self.assertEqual(
+            sender_agent._allowed_send_recipients(decision),
+            ["one@example.com", "two@example.com", "three@example.com"],
+        )
+        self.assertEqual(decision["fallback_candidates"], ["two@example.com", "three@example.com"])
+        self.assertEqual(decision["invalid_emails"], ["bad-email"])
+        self.assertIn("дополнительные", decision["decision_reason"])
+
+    def test_consent_requests_are_sent_separately_to_extra_emails(self) -> None:
+        prepared: list[str] = []
+        sent_bodies: dict[str, str] = {}
+
+        def fake_prepare(**kwargs):
+            recipient = kwargs["recipient"]
+            prepared.append(recipient)
+            return {"consent_url": f"https://example.test/consent/{recipient}"}
+
+        def fake_send(row, recipients, attachments, subject, **kwargs):
+            self.assertEqual(len(recipients), 1)
+            recipient = recipients[0]
+            self.assertEqual(attachments, [])
+            sent_bodies[recipient] = kwargs.get("body_override") or ""
+            return {
+                "recipient": recipient,
+                "recipients": [recipient],
+                "attempts": [{"recipient": recipient, "status": "sent", "error": ""}],
+                "error": "",
+                "warning": "",
+            }
+
+        recipients = ["one@example.com", "two@example.com"]
+        with patch.object(sender_agent, "prepare_consent_request", side_effect=fake_prepare), patch.object(
+            sender_agent, "_send_with_transport", side_effect=fake_send
+        ):
+            result = sender_agent._send_consent_requests_with_transport(
+                {"ID": "1", "MUN_NAME": "Test municipality"},
+                recipients,
+                "Subject",
+                transport="rusender",
+                job_id="job-test",
+                send_run_id="send-test",
+                attachment_mode="kp",
+                work_type="mngp_settlements",
+            )
+
+        self.assertEqual(prepared, recipients)
+        self.assertEqual(result["recipients"], recipients)
+        self.assertEqual(set(result["consent_urls"]), set(recipients))
+        self.assertIn("/consent/one@example.com", sent_bodies["one@example.com"])
+        self.assertIn("/consent/two@example.com", sent_bodies["two@example.com"])
     def test_rusender_uses_bearer_authorization_for_current_keys(self) -> None:
         captured: dict[str, Request] = {}
 

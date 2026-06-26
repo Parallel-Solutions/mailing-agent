@@ -495,7 +495,10 @@ def _choose_recipient(row: dict[str, Any]) -> dict[str, Any]:
         recipient = valid_primary[0]
         fallback_candidates = [item for item in valid_emails if item != recipient]
         strategy = "primary"
-        decision_reason = "Использую основной email из EMAIL_OSN."
+        if fallback_candidates:
+            decision_reason = "Использую основной и дополнительные email из EMAIL_OSN/EMAIL_DOP."
+        else:
+            decision_reason = "Использую основной email из EMAIL_OSN."
     elif valid_extra:
         recipient = valid_extra[0]
         fallback_candidates = [item for item in valid_emails if item != recipient]
@@ -518,6 +521,93 @@ def _choose_recipient(row: dict[str, Any]) -> dict[str, Any]:
 
 def _allowed_send_recipients(email_decision: dict[str, Any]) -> list[str]:
     return list(email_decision.get("valid_emails") or [])
+
+
+def _send_consent_requests_with_transport(
+    row: dict[str, Any],
+    recipients: list[str],
+    subject: str,
+    *,
+    transport: str,
+    mail_template_path: Path | None = None,
+    job_id: str | None = None,
+    send_run_id: str = "",
+    attachment_mode: str = ATTACHMENT_MODE_KP,
+    subject_template: str | None = None,
+    work_type: str | None = None,
+) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    sent_recipients: list[str] = []
+    warnings: list[str] = []
+    consent_urls: dict[str, str] = {}
+
+    for recipient in recipients:
+        try:
+            consent_record = prepare_consent_request(
+                job_id=job_id,
+                row=row,
+                recipient=recipient,
+                transport=transport,
+                attachment_mode=attachment_mode,
+                subject_template=subject_template,
+                work_type=work_type,
+            )
+            consent_url = _safe_text(consent_record.get("consent_url"))
+            consent_urls[recipient] = consent_url
+            body_override = _build_consent_request_body(
+                row,
+                consent_url=consent_url,
+                attachment_mode=attachment_mode,
+                work_type=work_type,
+            )
+            result = _send_with_transport(
+                row,
+                [recipient],
+                [],
+                subject,
+                transport=transport,
+                mail_template_path=mail_template_path,
+                body_override=body_override,
+                job_id=job_id,
+                send_run_id=send_run_id,
+                send_mode="consent_request",
+                attachment_mode=attachment_mode,
+            )
+        except Exception as exc:
+            attempts.append(
+                {
+                    "recipient": recipient,
+                    "status": "error",
+                    "error": _safe_text(exc) or f"{transport} error",
+                }
+            )
+            continue
+
+        attempts.extend(result.get("attempts") or [])
+        if _safe_text(result.get("warning")):
+            warnings.append(_safe_text(result.get("warning")))
+        if result.get("recipient"):
+            sent_recipients.extend(result.get("recipients") or [result["recipient"]])
+
+    if sent_recipients and len(sent_recipients) == len(recipients):
+        return {
+            "recipient": sent_recipients[0],
+            "recipients": sent_recipients,
+            "attempts": attempts,
+            "error": "",
+            "warning": " ".join(warnings).strip(),
+            "consent_urls": consent_urls,
+        }
+
+    failed_errors = [attempt["error"] for attempt in attempts if attempt.get("status") == "error" and attempt.get("error")]
+    return {
+        "recipient": None,
+        "recipients": sent_recipients,
+        "attempts": attempts,
+        "error": "; ".join(failed_errors) or "Не удалось отправить запрос согласия.",
+        "warning": " ".join(warnings).strip(),
+        "consent_urls": consent_urls,
+    }
 
 
 def _build_output_folder_index(
@@ -2513,6 +2603,7 @@ def _restore_sent_from_local_log(
     workbook: Any,
     worksheet: Any,
     data_xlsx_path: Path,
+    success_status_value: str = STATUS_SENT_VALUE,
 ) -> bool:
     entry["result"] = "skipped_logged_sent"
     entry["attempts"] = [
@@ -2531,7 +2622,7 @@ def _restore_sent_from_local_log(
         worksheet,
         data_xlsx_path,
         row,
-        STATUS_SENT_VALUE,
+        success_status_value,
         flush=False,
     )
     if status_warning:
@@ -2796,6 +2887,7 @@ def run_sender(
             "warning": "",
             "next_action": "",
             "attempts": [],
+            "consent_urls": {},
         }
 
         status_class = _status_class(row_status)
@@ -2808,16 +2900,6 @@ def run_sender(
             state["rows"] = _state_rows_snapshot(processed_entries)
             _save_sender_state(state, job_id)
             continue
-        if status_class == "consent_requested" and effective_send_mode == "consent_request":
-            entry["result"] = "skipped_consent_request_duplicate"
-            entry["decision_reason"] = "Запрос согласия уже отправлялся по этой строке."
-            processed_entries.append(entry)
-            state["skipped_rows"] += 1
-            state["processed_rows"] += 1
-            state["rows"] = _state_rows_snapshot(processed_entries)
-            _save_sender_state(state, job_id)
-            continue
-
         email_decision = _choose_recipient(row)
         entry["recipient"] = email_decision["recipient"]
         entry["emails"] = email_decision["valid_emails"]
@@ -2825,18 +2907,25 @@ def run_sender(
         entry["email_strategy"] = email_decision["strategy"]
         entry["decision_reason"] = email_decision["decision_reason"]
         entry["fallback_candidates"] = email_decision["fallback_candidates"]
+        allowed_recipients = _allowed_send_recipients(email_decision)
+        confirmed_material_recipients: list[str] = []
+        if effective_send_mode == "materials" and require_confirmed_consent and allowed_recipients:
+            confirmed_material_recipients = [
+                recipient
+                for recipient in allowed_recipients
+                if has_confirmed_consent(
+                    job_id=job_id,
+                    row_id=row_id,
+                    recipient=recipient,
+                    attachment_mode=effective_attachment_mode,
+                )
+            ]
         missing_confirmed_consent = (
             effective_send_mode == "materials"
             and require_confirmed_consent
-            and bool(entry["recipient"])
-            and not has_confirmed_consent(
-                job_id=job_id,
-                row_id=row_id,
-                recipient=entry["recipient"],
-                attachment_mode=effective_attachment_mode,
-            )
+            and bool(allowed_recipients)
+            and not confirmed_material_recipients
         )
-
         folder: Path | None = None
         folder_error: str | None = None
         attachments: list[str] = []
@@ -3072,44 +3161,14 @@ def run_sender(
             try:
                 row_id_text = _safe_text(row_id)
                 already_logged = sent_mail_recipients.get(row_id_text, set())
-                intended_recipients = (
-                    [entry["recipient"]]
-                    if effective_send_mode == "consent_request" and entry.get("recipient")
-                    else _allowed_send_recipients(email_decision)
-                )
+                intended_recipients = list(allowed_recipients)
                 if effective_send_mode == "materials" and require_confirmed_consent:
-                    intended_recipients = [
-                        recipient
-                        for recipient in intended_recipients
-                        if has_confirmed_consent(
-                            job_id=job_id,
-                            row_id=row_id,
-                            recipient=recipient,
-                            attachment_mode=effective_attachment_mode,
-                        )
-                    ]
+                    intended_recipients = list(confirmed_material_recipients)
                 recipients_to_send = [
                     recipient
                     for recipient in intended_recipients
                     if _mail_key(recipient) not in already_logged
                 ]
-                if effective_send_mode == "consent_request" and recipients_to_send:
-                    consent_record = prepare_consent_request(
-                        job_id=job_id,
-                        row=row,
-                        recipient=recipients_to_send[0],
-                        transport=effective_transport,
-                        attachment_mode=effective_attachment_mode,
-                        subject_template=effective_subject_template,
-                        work_type=effective_work_type,
-                    )
-                    entry["consent_url"] = consent_record.get("consent_url")
-                    row_body_override = _build_consent_request_body(
-                        row,
-                        consent_url=_safe_text(consent_record.get("consent_url")),
-                        attachment_mode=effective_attachment_mode,
-                        work_type=effective_work_type,
-                    )
                 attachments_to_send = [] if effective_send_mode == "consent_request" else attachments
                 if not recipients_to_send:
                     workbook_dirty = (
@@ -3120,11 +3179,12 @@ def run_sender(
                             workbook=workbook,
                             worksheet=worksheet,
                             data_xlsx_path=data_xlsx_path,
+                            success_status_value=success_status_value,
                         )
                         or workbook_dirty
                     )
                     state["sent_rows"] += 1
-                elif parallel_workers > 1:
+                elif parallel_workers > 1 and effective_send_mode != "consent_request":
                     parallel_send_jobs.append(
                         _build_parallel_send_job(
                             row=row,
@@ -3146,19 +3206,36 @@ def run_sender(
                     entry["result"] = "queued_parallel_send"
                     entry["next_action"] = "Письмо поставлено в очередь на параллельную отправку через UniSender."
                 else:
-                    send_result = _send_with_transport(
-                        row,
-                        recipients_to_send,
-                        attachments_to_send,
-                        row_subject,
-                        transport=effective_transport,
-                        mail_template_path=mail_template_path,
-                        body_override=row_body_override,
-                        job_id=job_id,
-                        send_run_id=send_run_id,
-                        send_mode=effective_send_mode,
-                        attachment_mode=effective_attachment_mode,
-                    )
+                    if effective_send_mode == "consent_request":
+                        send_result = _send_consent_requests_with_transport(
+                            row,
+                            recipients_to_send,
+                            row_subject,
+                            transport=effective_transport,
+                            mail_template_path=mail_template_path,
+                            job_id=job_id,
+                            send_run_id=send_run_id,
+                            attachment_mode=effective_attachment_mode,
+                            subject_template=effective_subject_template,
+                            work_type=effective_work_type,
+                        )
+                        entry["consent_urls"] = send_result.get("consent_urls") or {}
+                        if len(entry["consent_urls"]) == 1:
+                            entry["consent_url"] = next(iter(entry["consent_urls"].values()))
+                    else:
+                        send_result = _send_with_transport(
+                            row,
+                            recipients_to_send,
+                            attachments_to_send,
+                            row_subject,
+                            transport=effective_transport,
+                            mail_template_path=mail_template_path,
+                            body_override=row_body_override,
+                            job_id=job_id,
+                            send_run_id=send_run_id,
+                            send_mode=effective_send_mode,
+                            attachment_mode=effective_attachment_mode,
+                        )
                     workbook_dirty = (
                         _apply_send_result_to_entry(
                             entry=entry,
@@ -3211,14 +3288,17 @@ def run_sender(
                     entry["warning"] = f"{entry['warning']} {status_warning}".strip()
                     entry["next_action"] = f"{entry['next_action']} {status_warning}".strip()
         else:
+            preview_recipients = list(allowed_recipients)
+            if effective_send_mode == "materials" and require_confirmed_consent:
+                preview_recipients = list(confirmed_material_recipients)
             entry["attempts"] = [
                 {
-                    "recipient": entry["recipient"],
+                    "recipient": recipient,
                     "status": "consent_request_ready" if effective_send_mode == "consent_request" else "ready",
                     "error": "",
                 }
+                for recipient in preview_recipients
             ]
-
         if entry.get("result") == "queued_parallel_send":
             state["rows"] = _state_rows_snapshot(processed_entries)
             _save_sender_state(state, job_id)
