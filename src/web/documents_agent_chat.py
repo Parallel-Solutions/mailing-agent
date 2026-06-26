@@ -1,12 +1,37 @@
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
+from src.generator.inflection.ai_case_agent import (
+    OpenAI,
+    _build_openai_http_client,
+    _resolve_openai_api_key,
+    _resolve_openai_base_url,
+)
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
+from src.jobs import resolve_job_paths, resolve_state_path
+from src.utils.config import settings
 
 StatusLoader = Callable[[str | None], dict[str, Any]]
 ChatWithOrchestrator = Callable[..., dict[str, Any] | None]
+
+
+_WORD_CHARS_RE = r"A-Za-zА-Яа-яЁё0-9_"
+
+
+def _documents_agent_has_word(text: str, word: str) -> bool:
+    return bool(re.search(rf"(?<![{_WORD_CHARS_RE}]){re.escape(word)}(?![{_WORD_CHARS_RE}])", text, flags=re.IGNORECASE))
+
+
+def _documents_agent_is_ack_or_greeting(text: str) -> bool:
+    return any(
+        token in text
+        for token in ("привет", "здравств", "добрый", "хай", "hello", "спасибо", "поняла", "понял", "окей", "хорошо")
+    ) or _documents_agent_has_word(text, "ок")
 
 
 def _documents_agent_recent_event_lines(state: dict, *, limit: int = 3) -> list[str]:
@@ -211,7 +236,7 @@ def _documents_agent_general_reply(message: str, documents_status: dict | None =
             return "Привет. Я на связи и слежу за подготовкой документов. Статистику не буду сыпать без запроса."
         return "Привет. Я здесь, помогу с документами: могу подсказать статус, ошибки или следующий шаг."
 
-    if any(token in lowered for token in ("спасибо", "поняла", "понял", "окей", "ок", "хорошо")):
+    if any(token in lowered for token in ("спасибо", "поняла", "понял", "окей", "хорошо")) or _documents_agent_has_word(lowered, "ок"):
         return "Окей, я рядом. Если нужен статус или ошибки, спросите прямо, и я отвечу коротко."
 
     if any(token in lowered for token in ("ты агент", "ты вообще агент", "ты завис", "завис", "отвечаешь")):
@@ -244,7 +269,6 @@ def _documents_agent_rag_reply(message: str, documents_status: dict | None = Non
             "как устро",
             "что такое",
             "зачем",
-            "почему",
             "rag",
             "чат",
             "шаблон",
@@ -394,6 +418,395 @@ def _documents_agent_reply_payload(
     return payload
 
 
+
+_MAX_DIAGNOSTIC_TEXT = 16000
+_MAX_LOG_LINE_LENGTH = 500
+_SECRET_PATTERNS = (
+    (re.compile(r"sk-[A-Za-z0-9_\-]{12,}"), "sk-***"),
+    (re.compile(r"rs_ck_v1_[A-Za-z0-9_\-=]{12,}"), "rs_ck_v1_***"),
+    (re.compile(r"eyJ[A-Za-z0-9_\-.]{40,}"), "jwt-***"),
+    (re.compile(r"(?i)(Bearer\s+)[^\s\"']+"), r"\1***"),
+    (re.compile(r"(?i)((?:api[_-]?key|token|password|secret)[\w\-]*[\s:=]+)[^,\s\"'}]+"), r"\1***"),
+)
+
+
+def _documents_agent_sanitize_text(value: Any, *, limit: int | None = None) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    if limit is not None and len(text) > limit:
+        return text[: max(0, limit - 1)].rstrip() + "…"
+    return text
+
+
+def _documents_agent_safe_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _documents_agent_read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        return {"_read_error": f"{type(exc).__name__}: {exc}"}
+    return payload if isinstance(payload, dict) else {"_invalid_shape": type(payload).__name__}
+
+
+def _documents_agent_read_jsonl_tail(path: Path, *, limit: int = 8) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except Exception:
+        return []
+    items: list[dict[str, Any]] = []
+    for line in lines[-max(limit * 4, limit):]:
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            items.append(item)
+    return items[-limit:]
+
+
+def _documents_agent_mtime(path: Path) -> str:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+    except Exception:
+        return ""
+
+
+def _documents_agent_file_info(path: Path) -> dict[str, Any]:
+    exists = path.exists()
+    info: dict[str, Any] = {"exists": exists}
+    if exists:
+        try:
+            stat = path.stat()
+            info.update({"size_bytes": stat.st_size, "updated_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")})
+        except Exception:
+            pass
+    return info
+
+
+def _documents_agent_list_files(root: Path, *, limit: int = 20) -> dict[str, Any]:
+    if not root.exists():
+        return {"exists": False, "file_count": 0, "total_bytes": 0, "sample": []}
+    files: list[tuple[float, Path, int]] = []
+    total_bytes = 0
+    try:
+        for item in root.rglob("*"):
+            if not item.is_file():
+                continue
+            try:
+                stat = item.stat()
+            except OSError:
+                continue
+            total_bytes += stat.st_size
+            files.append((stat.st_mtime, item, stat.st_size))
+    except Exception as exc:
+        return {"exists": True, "error": f"{type(exc).__name__}: {exc}", "file_count": 0, "total_bytes": 0, "sample": []}
+    files.sort(reverse=True)
+    sample = []
+    for _, item, size in files[:limit]:
+        try:
+            name = str(item.relative_to(root))
+        except ValueError:
+            name = item.name
+        sample.append({"name": _documents_agent_sanitize_text(name, limit=180), "size_bytes": size})
+    return {"exists": True, "file_count": len(files), "total_bytes": total_bytes, "sample": sample}
+
+
+def _documents_agent_tail_log(path: Path, *, limit: int = 10) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return []
+    clean = [_documents_agent_sanitize_text(line, limit=_MAX_LOG_LINE_LENGTH) for line in lines if line.strip()]
+    return clean[-limit:]
+
+
+def _documents_agent_worker_diagnostics(state_dir: Path) -> dict[str, Any]:
+    if not state_dir.exists():
+        return {"state_dir_exists": False, "statuses": [], "logs": []}
+    status_paths = sorted(state_dir.glob("worker-*.status.json"), key=lambda item: item.stat().st_mtime if item.exists() else 0)[-5:]
+    statuses = []
+    for path in status_paths:
+        payload = _documents_agent_read_json(path)
+        statuses.append({
+            "file": path.name,
+            "task": payload.get("task"),
+            "status": payload.get("status"),
+            "return_code": payload.get("return_code"),
+            "message": _documents_agent_sanitize_text(payload.get("message"), limit=300),
+            "started_at": payload.get("started_at"),
+            "updated_at": payload.get("updated_at"),
+            "completed_at": payload.get("completed_at"),
+        })
+    log_paths = sorted(
+        list(state_dir.glob("worker-*.err.log")) + list(state_dir.glob("worker-*.out.log")),
+        key=lambda item: item.stat().st_mtime if item.exists() else 0,
+    )[-4:]
+    logs = []
+    for path in log_paths:
+        tail = _documents_agent_tail_log(path, limit=8)
+        if tail:
+            logs.append({"file": path.name, "tail": tail})
+    return {"state_dir_exists": True, "statuses": statuses, "logs": logs}
+
+
+def _documents_agent_generator_details(details: dict[str, Any]) -> dict[str, Any]:
+    results = details.get("results") if isinstance(details, dict) else None
+    compact_results = []
+    if isinstance(results, list):
+        for item in results[:5]:
+            if not isinstance(item, dict):
+                continue
+            files = item.get("files") if isinstance(item.get("files"), dict) else {}
+            generated_files = item.get("generated_files") if isinstance(item.get("generated_files"), dict) else {}
+            compact_results.append({
+                "id": item.get("id"),
+                "row_index": item.get("row_index"),
+                "status": item.get("status"),
+                "error": _documents_agent_sanitize_text(item.get("error"), limit=350),
+                "warning": _documents_agent_sanitize_text(item.get("warning"), limit=250),
+                "files": sorted(str(key) for key in files.keys()),
+                "generated_files": sorted(str(key) for key in generated_files.keys()),
+            })
+    return {
+        "results_count": len(results) if isinstance(results, list) else 0,
+        "results_sample": compact_results,
+        "tasks_count": len(details.get("tasks") or []) if isinstance(details, dict) else 0,
+        "recent_events_count": len(details.get("recent_events") or []) if isinstance(details, dict) else 0,
+    }
+
+
+def _documents_agent_sender_context(state_dir: Path, sent_log_path: Path) -> dict[str, Any]:
+    sender = _documents_agent_read_json(state_dir / "sender.json")
+    rows = sender.get("rows") if isinstance(sender, dict) else None
+    row_sample = []
+    if isinstance(rows, list):
+        for item in rows[:5]:
+            if not isinstance(item, dict):
+                continue
+            attempts = item.get("attempts") if isinstance(item.get("attempts"), list) else []
+            row_sample.append({
+                "id": item.get("id"),
+                "mun_name": _documents_agent_sanitize_text(item.get("mun_name"), limit=120),
+                "recipient": _documents_agent_sanitize_text(item.get("recipient"), limit=120),
+                "result": item.get("result"),
+                "error": _documents_agent_sanitize_text(item.get("error"), limit=300),
+                "attempts": [
+                    {
+                        "recipient": _documents_agent_sanitize_text(attempt.get("recipient"), limit=120),
+                        "status": attempt.get("status"),
+                        "error": _documents_agent_sanitize_text(attempt.get("error"), limit=200),
+                    }
+                    for attempt in attempts[:4]
+                    if isinstance(attempt, dict)
+                ],
+            })
+    sent_log_count = 0
+    if sent_log_path.exists():
+        try:
+            sent_log_count = sum(1 for line in sent_log_path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
+        except Exception:
+            sent_log_count = 0
+    return {
+        "status": sender.get("status") if isinstance(sender, dict) else None,
+        "mode": sender.get("mode") if isinstance(sender, dict) else None,
+        "send_mode": sender.get("send_mode") if isinstance(sender, dict) else None,
+        "summary_text": _documents_agent_sanitize_text(sender.get("summary_text") if isinstance(sender, dict) else "", limit=350),
+        "sent_rows": sender.get("sent_rows") if isinstance(sender, dict) else None,
+        "error_rows": sender.get("error_rows") if isinstance(sender, dict) else None,
+        "rows_count": len(rows) if isinstance(rows, list) else 0,
+        "rows_sample": row_sample,
+        "sent_log": {"exists": sent_log_path.exists(), "line_count": sent_log_count, "updated_at": _documents_agent_mtime(sent_log_path)},
+    }
+
+
+def _documents_agent_rusender_context(state_dir: Path) -> dict[str, Any]:
+    events = _documents_agent_read_jsonl_tail(state_dir / "rusender_events.jsonl", limit=50)
+    counts: dict[str, int] = {}
+    for event in events:
+        code = str(event.get("event") or event.get("type") or event.get("status") or event.get("event_type") or "unknown")
+        counts[code] = counts.get(code, 0) + 1
+    tail = []
+    for event in events[-5:]:
+        tail.append({
+            "event": event.get("event") or event.get("type") or event.get("event_type"),
+            "status": event.get("status"),
+            "email": _documents_agent_sanitize_text(event.get("email") or event.get("recipient") or event.get("to"), limit=120),
+            "occurred_at": event.get("occurred_at") or event.get("created_at") or event.get("date"),
+        })
+    return {"recent_count": len(events), "recent_counts": counts, "recent_tail": tail}
+
+
+def _documents_agent_audit_context(state_dir: Path) -> list[dict[str, Any]]:
+    payload = []
+    for item in _documents_agent_read_jsonl_tail(state_dir / "audit.jsonl", limit=8):
+        details = item.get("details") if isinstance(item.get("details"), dict) else {}
+        payload.append({
+            "occurred_at": item.get("occurred_at"),
+            "action": item.get("action"),
+            "status": item.get("status"),
+            "details": {str(key): _documents_agent_sanitize_text(value, limit=160) for key, value in list(details.items())[:6]},
+        })
+    return payload
+
+
+def _documents_agent_build_readonly_context(message: str, job_id: str | None, documents_status: dict[str, Any]) -> dict[str, Any]:
+    paths = resolve_job_paths(job_id)
+    state_dir = resolve_state_path("generator", job_id).parent
+    generator = documents_status.get("generator") or {}
+    philologist = documents_status.get("philologist") or {}
+    generator_details = _documents_agent_read_json(state_dir / "generator.details.json")
+    philologist_details = _documents_agent_read_json(state_dir / "philologist.details.json")
+    service_docs = format_service_rag_context(find_relevant_service_docs(message, limit=3))
+    context = {
+        "screen": "documents",
+        "job_id": job_id or "",
+        "read_only": True,
+        "user_question": _documents_agent_sanitize_text(message, limit=600),
+        "service_knowledge": _documents_agent_sanitize_text(service_docs, limit=2500),
+        "status": {
+            "status": documents_status.get("status"),
+            "stage": documents_status.get("stage"),
+            "stage_text": documents_status.get("stage_text"),
+            "progress_percent": documents_status.get("progress_percent"),
+            "total_rows": documents_status.get("total_rows"),
+            "processed_rows": documents_status.get("processed_rows"),
+            "total_documents": documents_status.get("total_documents"),
+            "reviewed_documents": documents_status.get("reviewed_documents"),
+            "error_rows": documents_status.get("error_rows"),
+            "fixed_documents": documents_status.get("fixed_documents"),
+            "documents_with_issues": documents_status.get("documents_with_issues"),
+            "output_file_count": documents_status.get("output_file_count"),
+            "output_docx_count": documents_status.get("output_docx_count"),
+            "output_pdf_count": documents_status.get("output_pdf_count"),
+            "document_mode": documents_status.get("document_mode"),
+            "work_type": documents_status.get("work_type"),
+        },
+        "generator": {
+            "status": generator.get("status"),
+            "stage": generator.get("stage"),
+            "stage_text": generator.get("stage_text"),
+            "summary_text": _documents_agent_sanitize_text(generator.get("summary_text"), limit=400),
+            "total_rows": generator.get("total_rows"),
+            "processed_rows": generator.get("processed_rows"),
+            "error_rows": generator.get("error_rows"),
+            "staged_docx_count": generator.get("staged_docx_count"),
+            "staged_pdf_count": generator.get("staged_pdf_count"),
+            "pdf_total": generator.get("pdf_total"),
+            "pdf_processed": generator.get("pdf_processed"),
+            "output_file_count": generator.get("output_file_count"),
+            "renderer_version": generator.get("renderer_version"),
+            "details": _documents_agent_generator_details(generator_details),
+        },
+        "philologist": {
+            "status": philologist.get("status"),
+            "summary_text": _documents_agent_sanitize_text(philologist.get("summary_text"), limit=400),
+            "total_documents": philologist.get("total_documents"),
+            "processed_documents": philologist.get("processed_documents"),
+            "fixed_documents": philologist.get("fixed_documents"),
+            "documents_with_issues": philologist.get("documents_with_issues"),
+            "details_keys": sorted(str(key) for key in philologist_details.keys())[:12],
+        },
+        "files": {
+            "input_data": _documents_agent_file_info(paths.data_xlsx),
+            "templates": _documents_agent_list_files(paths.templates_dir, limit=8),
+            "output": _documents_agent_list_files(paths.output_dir, limit=20),
+            "batch_docx": _documents_agent_list_files(paths.batch_docx_dir, limit=10),
+            "batch_pdf": _documents_agent_list_files(paths.batch_pdf_dir, limit=10),
+            "output_zip": _documents_agent_file_info(state_dir / "output.zip"),
+        },
+        "workers": _documents_agent_worker_diagnostics(state_dir),
+        "audit_tail": _documents_agent_audit_context(state_dir),
+        "sender": _documents_agent_sender_context(state_dir, paths.sent_mail_log_path),
+        "rusender_events": _documents_agent_rusender_context(state_dir),
+    }
+    return context
+
+
+def _documents_agent_build_llm_client():
+    if OpenAI is None:
+        return None
+    api_key = _resolve_openai_api_key()
+    if not api_key:
+        return None
+    kwargs: dict[str, Any] = {"api_key": api_key}
+    base_url = _resolve_openai_base_url()
+    if base_url:
+        kwargs["base_url"] = base_url
+    http_client = _build_openai_http_client()
+    if http_client is not None:
+        kwargs["http_client"] = http_client
+    try:
+        return OpenAI(**kwargs)
+    except Exception:
+        return None
+
+
+def _documents_agent_should_use_readonly_ai(message: str) -> bool:
+    lowered = message.lower()
+    if any(token in lowered for token in ("/test-scroll", "тест бегунка", "тест скролла")):
+        return False
+    if any(token in lowered for token in ("привет", "здравств", "спасибо", "поняла", "понял", "окей")) or _documents_agent_has_word(lowered, "ок"):
+        return False
+    diagnostic_tokens = (
+        "почему", "разбер", "объясн", "не понимаю", "странно", "что случ", "что произошло",
+        "пуст", "не собрал", "не создал", "не сформ", "упал", "сломал", "не работает",
+        "все прошло", "всё прошло", "нормально", "успешно", "документы собран", "документы готовы",
+        "все готово", "всё готово", "готово", "собран", "сформиров",
+    )
+    return any(token in lowered for token in diagnostic_tokens)
+
+
+def _documents_agent_readonly_ai_reply(message: str, documents_status: dict, job_id: str | None) -> dict[str, Any] | None:
+    if not _documents_agent_should_use_readonly_ai(message):
+        return None
+    client = _documents_agent_build_llm_client()
+    if client is None:
+        return None
+    context = _documents_agent_build_readonly_context(message, job_id, documents_status)
+    context_text = json.dumps(context, ensure_ascii=False, indent=2, default=str)
+    if len(context_text) > _MAX_DIAGNOSTIC_TEXT:
+        context_text = context_text[: _MAX_DIAGNOSTIC_TEXT - 1].rstrip() + "…"
+    system_prompt = (
+        "Ты read-only агент-консультант внутри экрана «Документы» сервиса подготовки КП и рассылки. "
+        "Ты НЕ запускаешь генерацию, НЕ отправляешь письма, НЕ меняешь файлы и НЕ просишь пользователя выполнить опасные команды. "
+        "Твоя задача — объяснить простым русским языком, что сейчас происходит, почему могла быть ошибка и какой безопасный следующий шаг. "
+        "Используй только факты из диагностического контекста. Если фактов недостаточно, прямо скажи, чего не хватает. "
+        "Не показывай JSON, stack trace, пути файлов, токены, ключи, внутренние имена функций и сырые логи. "
+        "Техническую причину переводи на человеческий язык. Ответ должен быть коротким: 1-4 предложения."
+    )
+    try:
+        response = client.chat.completions.create(
+            model=settings.case_agent_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Диагностический контекст:\n{context_text}\n\nВопрос пользователя: {message}"},
+            ],
+            temperature=0.2,
+            max_tokens=420,
+        )
+    except Exception:
+        return None
+    reply = str(response.choices[0].message.content if response.choices else "").strip()
+    if not reply:
+        return None
+    return _documents_agent_reply_payload(
+        reply,
+        source="documents_readonly_agent",
+        tools_used=["get_documents_status", "inspect_job_state", "inspect_output_files", "inspect_worker_logs"],
+    )
+
 def _documents_agent_ai_reply(
     message: str,
     documents_status: dict,
@@ -472,9 +885,9 @@ def choose_documents_agent_reply(
             tools_used=[],
         )
 
-    if any(token in lowered for token in ("привет", "здравств", "добрый", "хай", "hello", "спасибо", "поняла", "понял", "окей", "ок", "хорошо")):
+    if _documents_agent_is_ack_or_greeting(lowered):
         return _documents_agent_reply_payload(_documents_agent_general_reply(message), tools_used=[])
-    if any(token in lowered for token in ("ты агент", "ты вообще агент", "ты завис", "завис", "отвечаешь", "непонят", "что за", "почему так", "странно", "жесть")):
+    if any(token in lowered for token in ("ты агент", "ты вообще агент", "ты завис", "завис", "отвечаешь")):
         if not any(token in lowered for token in ("почему долго", "так долго", "статус", "что происходит", "ошиб", "сколько")):
             return _documents_agent_reply_payload(_documents_agent_general_reply(message), tools_used=[])
 
@@ -502,6 +915,22 @@ def choose_documents_agent_reply(
     rag_reply = _documents_agent_rag_reply(message, documents_status)
     if rag_reply:
         return _documents_agent_reply_payload(rag_reply, source="service_rag", tools_used=["service_rag"])
+
+    readonly_agent_reply = _documents_agent_readonly_ai_reply(message, documents_status, job_id)
+    if readonly_agent_reply:
+        return readonly_agent_reply
+
+    if any(
+        token in lowered
+        for token in (
+            "все прошло", "всё прошло", "нормально", "успешно", "документы собран", "документы готовы",
+            "все готово", "всё готово", "готово", "собран", "сформиров",
+        )
+    ):
+        return _documents_agent_reply_payload(
+            _documents_agent_process_reply(documents_status),
+            tools_used=["get_documents_status"],
+        )
 
     if any(token in lowered for token in ("скачать", "архив", "отч", "файл", "pdf", "docx")):
         reply, _ = _documents_agent_tool_get_downloads(job_id, status_loader)

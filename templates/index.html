@@ -2541,7 +2541,7 @@
               <option value="smtp">Почта SMTP</option>
               <option value="unisender">UniSender</option>
               <option value="rusender">RuSender API</option>
-              <option value="mailopost" disabled>MailoPost API — скоро</option>
+              <option value="mailopost">MailoPost API</option>
             </select>
           </div>
           <div class="sender-transport-field">
@@ -4645,9 +4645,63 @@
     return controller;
   }
 
-  function resetChatMessages(chatId) {
+  function isInitialChatMessage(chatId, text) {
+    const initialText = INITIAL_CHAT_MESSAGES[chatId] || '';
+    return String(text || '').replace(/\s+/g, ' ').trim() === String(initialText).replace(/\s+/g, ' ').trim();
+  }
+
+  function isDocumentsProcessLogMessage(text) {
+    const normalized = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!normalized) return true;
+    return [
+      'начинаю подготовку документов',
+      'запускаю подготовку документов',
+      'проверяю шаблоны',
+      'создаю документы',
+      'проверяю текст',
+      'проверка текста завершена',
+      'собираю итоговый результат',
+      'результат собран',
+      'результат не собран',
+      'документы подготовлены',
+      'документы не созданы',
+      'готовые комплекты',
+      'готово. можно скачать',
+      'не удалось начать подготовку',
+    ].some(fragment => normalized.includes(fragment));
+  }
+
+  function collectDocumentsConversationNodesForNewRun() {
+    const wrap = document.getElementById('g-chat-messages');
+    if (!wrap) return [];
+    const nodes = Array.from(wrap.querySelectorAll('.chat-msg:not(.typing)'));
+    const preserved = [];
+    let agentRepliesToKeep = 0;
+    nodes.forEach(node => {
+      const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text || isInitialChatMessage('g-chat', text)) return;
+      if (node.classList.contains('user')) {
+        preserved.push(node.cloneNode(true));
+        agentRepliesToKeep = 2;
+        return;
+      }
+      if (
+        node.classList.contains('agent')
+        && agentRepliesToKeep > 0
+        && !isNoisyDocumentsChatMessage(text)
+        && !isDocumentsProcessLogMessage(text)
+      ) {
+        preserved.push(node.cloneNode(true));
+        agentRepliesToKeep -= 1;
+      }
+    });
+    return preserved;
+  }
+
+  function resetChatMessages(chatId, options = {}) {
     const wrap = document.getElementById(`${chatId}-messages`);
     if (!wrap) return;
+    const preservedNodes = Array.isArray(options.preserveNodes) ? options.preserveNodes : [];
     wrap.innerHTML = '';
     const input = document.getElementById(`${chatId}-input`);
     if (input) input.value = '';
@@ -4655,11 +4709,16 @@
     if (initialText) {
       appendChatMessage(chatId, 'agent', initialText);
     }
+    preservedNodes.forEach(node => {
+      if (node && node.nodeType === Node.ELEMENT_NODE) wrap.appendChild(node);
+    });
+    wrap.scrollTop = wrap.scrollHeight;
     saveUiState();
   }
 
   function resetDocumentsProcessLogForNewRun() {
-    resetChatMessages('g-chat');
+    const preservedNodes = collectDocumentsConversationNodesForNewRun();
+    resetChatMessages('g-chat', { preserveNodes: preservedNodes });
     lastAgentEventIds.documents = '';
     flowNotificationState.documents = createFlowNotificationState().documents;
   }

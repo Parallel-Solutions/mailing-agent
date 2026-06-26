@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     rusender_sender_email: str = ""
     rusender_webhook_secret: str = ""
     rusender_webhook_token: str = ""
+    mailopost_api_token: str = ""
+    mailopost_api_base_url: str = "https://api.mailopost.ru/v1"
+    mailopost_sender_name: str = "ООО «ПР»"
+    mailopost_sender_email: str = ""
+    mailopost_webhook_secret: str = ""
+    mailopost_webhook_token: str = ""
     webhook_max_body_bytes: int = 256 * 1024
     mail_signature_image_url: str = ""
     consent_token_ttl_hours: int = 720

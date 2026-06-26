@@ -102,6 +102,7 @@ UNISENDER_GO_SEND_PATH = "email/send.json"
 UNISENDER_CLASSIC_SEND_PATH = "sendEmail"
 UNISENDER_CLASSIC_CHECK_PATH = "checkEmail"
 RUSENDER_SEND_PATH = "external-mails/send"
+MAILOPOST_SEND_PATH = "email/messages"
 
 
 SENDER_STATE: dict[str, Any] = {
@@ -151,6 +152,14 @@ RUSENDER_REQUESTS_PER_SECOND = 10
 RUSENDER_MIN_REQUEST_INTERVAL_SECONDS = 1.0 / RUSENDER_REQUESTS_PER_SECOND
 _RUSENDER_RATE_LIMIT_LOCK = threading.Lock()
 _last_rusender_request_at = 0.0
+MAILOPOST_RETRY_ATTEMPTS = 3
+MAILOPOST_RETRY_BASE_SECONDS = 2.0
+MAILOPOST_RETRYABLE_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+MAILOPOST_REQUESTS_PER_SECOND = 2
+MAILOPOST_MIN_REQUEST_INTERVAL_SECONDS = 1.0 / MAILOPOST_REQUESTS_PER_SECOND
+MAILOPOST_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+_MAILOPOST_RATE_LIMIT_LOCK = threading.Lock()
+_last_mailopost_request_at = 0.0
 _EXCEL_STATS_CACHE_LOCK = threading.Lock()
 _EXCEL_STATS_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -945,10 +954,10 @@ def _normalize_limit(limit: int | None, *, dry_run: bool) -> int | None:
 
 def _normalize_transport(transport: str | None) -> str:
     value = _safe_text(transport).lower()
-    if value in {"unisender", "smtp", "rusender"}:
+    if value in {"unisender", "smtp", "rusender", "mailopost"}:
         return value
     configured = _safe_text(settings.sender_transport).lower()
-    return configured if configured in {"unisender", "smtp", "rusender"} else "smtp"
+    return configured if configured in {"unisender", "smtp", "rusender", "mailopost"} else "smtp"
 
 
 def _normalize_send_mode(send_mode: str | None) -> str:
@@ -1828,6 +1837,12 @@ def _build_rusender_url(path: str) -> str:
     return f"{base_url}/{path.lstrip('/')}"
 
 
+def _build_mailopost_url(path: str) -> str:
+    base_url = _safe_text(settings.mailopost_api_base_url).rstrip("/")
+    if not base_url:
+        base_url = "https://api.mailopost.ru/v1"
+    return f"{base_url}/{path.lstrip('/')}"
+
 def _is_retryable_rusender_exception(exc: Exception) -> bool:
     if isinstance(exc, HTTPError):
         return int(exc.code) in RUSENDER_RETRYABLE_HTTP_CODES
@@ -1869,6 +1884,47 @@ def _run_rusender_request(request: Request, *, timeout: float) -> str:
         raise last_error
     raise RuntimeError("RuSender не ответил после повторных попыток.")
 
+
+def _is_retryable_mailopost_exception(exc: Exception) -> bool:
+    if isinstance(exc, HTTPError):
+        return int(exc.code) in MAILOPOST_RETRYABLE_HTTP_CODES
+    return isinstance(exc, (TimeoutError, URLError, OSError))
+
+
+def _wait_mailopost_api_slot() -> None:
+    global _last_mailopost_request_at
+    with _MAILOPOST_RATE_LIMIT_LOCK:
+        now = perf_counter()
+        wait_seconds = MAILOPOST_MIN_REQUEST_INTERVAL_SECONDS - (now - _last_mailopost_request_at)
+        if wait_seconds > 0:
+            sleep(wait_seconds)
+        _last_mailopost_request_at = perf_counter()
+
+
+def _run_mailopost_request(request: Request, *, timeout: float) -> str:
+    last_error: Exception | None = None
+    for attempt in range(1, MAILOPOST_RETRY_ATTEMPTS + 1):
+        try:
+            _wait_mailopost_api_slot()
+            with urlopen(request, timeout=timeout) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            exc.raw_body = raw  # type: ignore[attr-defined]
+            if attempt < MAILOPOST_RETRY_ATTEMPTS and _is_retryable_mailopost_exception(exc):
+                _sleep_sender_retry(MAILOPOST_RETRY_BASE_SECONDS * attempt)
+                last_error = exc
+                continue
+            raise
+        except Exception as exc:
+            if attempt < MAILOPOST_RETRY_ATTEMPTS and _is_retryable_mailopost_exception(exc):
+                _sleep_sender_retry(MAILOPOST_RETRY_BASE_SECONDS * attempt)
+                last_error = exc
+                continue
+            raise
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("MailoPost не ответил после повторных попыток.")
 
 def _safe_provider_payload(provider: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(provider, dict):
@@ -2009,6 +2065,185 @@ def _send_via_rusender(
         "idempotency_key": idempotency_key,
     }
 
+
+def _mailopost_error_message(raw: str, *, fallback: str = "MailoPost отклонил письмо.") -> str:
+    try:
+        data = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return raw[:300] or fallback
+    errors = data.get("errors")
+    if isinstance(errors, list) and errors:
+        messages: list[str] = []
+        for item in errors:
+            if not isinstance(item, dict):
+                continue
+            detail = _safe_text(item.get("detail") or item.get("message") or item.get("title"))
+            code = item.get("code") or item.get("status")
+            if detail:
+                messages.append(f"{detail} (code {code})" if code else detail)
+        if messages:
+            return "; ".join(messages)
+    return _safe_text(data.get("message") or data.get("error") or data.get("detail")) or fallback
+
+
+def _mailopost_smtp_headers(
+    row: dict[str, Any],
+    *,
+    idempotency_key: str,
+    recipient: str,
+    job_id: str | None,
+) -> dict[str, str]:
+    return {
+        "Client-Id": idempotency_key,
+        "X-Mailing-Agent-Job": _safe_text(job_id),
+        "X-Mailing-Agent-Row": _safe_text(row.get("ID")),
+        "X-Mailing-Agent-Recipient": _safe_text(recipient),
+    }
+
+
+def _build_mailopost_json_request(*, api_token: str, payload: dict[str, Any]) -> Request:
+    return Request(
+        _build_mailopost_url(MAILOPOST_SEND_PATH),
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_token}",
+        },
+    )
+
+
+def _build_mailopost_multipart_request(
+    *,
+    api_token: str,
+    fields: dict[str, Any],
+    attachments: list[str],
+) -> Request:
+    boundary = f"----mailing-agent-{secrets.token_hex(16)}"
+    parts: list[bytes] = []
+
+    def add_field(name: str, value: Any) -> None:
+        if value in (None, ""):
+            return
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+                f"{_safe_text(value)}\r\n"
+            ).encode("utf-8")
+        )
+
+    for name, value in fields.items():
+        if isinstance(value, dict):
+            for nested_name, nested_value in value.items():
+                add_field(f"{name}[{nested_name}]", nested_value)
+        else:
+            add_field(name, value)
+
+    total_attachment_bytes = 0
+    for attachment_path in attachments:
+        path = Path(attachment_path)
+        file_bytes = path.read_bytes()
+        total_attachment_bytes += len(file_bytes)
+        if total_attachment_bytes > MAILOPOST_MAX_ATTACHMENT_BYTES:
+            raise RuntimeError("MailoPost принимает вложения суммарно до 5 МБ.")
+        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"attachments[]\"; filename=\"{path.name}\"\r\n"
+                f"Content-Type: {mime_type}\r\n\r\n"
+            ).encode("utf-8")
+        )
+        parts.append(file_bytes)
+        parts.append(b"\r\n")
+
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return Request(
+        _build_mailopost_url(MAILOPOST_SEND_PATH),
+        data=b"".join(parts),
+        method="POST",
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_token}",
+        },
+    )
+
+
+def _send_via_mailopost(
+    row: dict[str, Any],
+    recipient: str,
+    attachments: list[str],
+    subject: str,
+    *,
+    mail_template_path: Path | None = None,
+    body_override: str | None = None,
+    job_id: str | None = None,
+    send_run_id: str = "",
+    send_mode: str = "",
+    attachment_mode: str = "",
+) -> dict[str, Any]:
+    api_token = _safe_text(settings.mailopost_api_token)
+    sender_email = _safe_text(settings.mailopost_sender_email or settings.smtp_sender_email)
+    sender_name = _safe_text(settings.mailopost_sender_name) or "ООО «ПР»"
+    if not api_token:
+        raise RuntimeError("Не указан API-токен MailoPost.")
+    if not sender_email:
+        raise RuntimeError("Не указан подтверждённый email отправителя MailoPost.")
+
+    plaintext_body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
+    html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
+    idempotency_key = _build_provider_idempotency_key(
+        provider="mailopost",
+        job_id=job_id,
+        send_run_id=send_run_id,
+        row_id=row.get("ID"),
+        recipient=recipient,
+        send_mode=send_mode,
+        attachment_mode=attachment_mode,
+    )
+    common_payload: dict[str, Any] = {
+        "from_email": sender_email,
+        "from_name": sender_name,
+        "to": recipient,
+        "subject": subject,
+        "text": plaintext_body,
+        "html": html_body,
+        "payment": "credit",
+        "smtp_headers": _mailopost_smtp_headers(row, idempotency_key=idempotency_key, recipient=recipient, job_id=job_id),
+    }
+    request = (
+        _build_mailopost_multipart_request(api_token=api_token, fields=common_payload, attachments=attachments)
+        if attachments
+        else _build_mailopost_json_request(api_token=api_token, payload=common_payload)
+    )
+    try:
+        raw = _run_mailopost_request(request, timeout=60)
+    except HTTPError as exc:
+        raw = getattr(exc, "raw_body", "")
+        message = _mailopost_error_message(raw, fallback=f"MailoPost вернул HTTP {exc.code}")
+        raise RuntimeError(f"{message} (HTTP {exc.code})") from exc
+
+    try:
+        data = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"MailoPost вернул непонятный ответ: {raw[:300]}") from exc
+
+    message_id = _safe_text(data.get("id") or data.get("message_id") or data.get("uuid"))
+    provider_status = _safe_text(data.get("status")) or "queued"
+    if data.get("errors"):
+        raise RuntimeError(_mailopost_error_message(raw))
+    if not message_id and provider_status.lower() not in {"queued", "sent", "accepted"}:
+        raise RuntimeError(_mailopost_error_message(raw, fallback="MailoPost не подтвердил отправку письма."))
+    return {
+        "provider": "mailopost",
+        "status": provider_status,
+        "message_id": message_id or idempotency_key,
+        "recipient": recipient,
+        "idempotency_key": idempotency_key,
+    }
 
 def _send_via_unisender_classic(
     row: dict[str, Any],
@@ -2470,6 +2705,19 @@ def _send_with_transport(
                 )
             elif transport == "rusender":
                 provider = _send_via_rusender(
+                    row,
+                    recipient,
+                    attachments,
+                    subject,
+                    mail_template_path=mail_template_path,
+                    body_override=body_override,
+                    job_id=job_id,
+                    send_run_id=send_run_id,
+                    send_mode=send_mode,
+                    attachment_mode=attachment_mode,
+                )
+            elif transport == "mailopost":
+                provider = _send_via_mailopost(
                     row,
                     recipient,
                     attachments,

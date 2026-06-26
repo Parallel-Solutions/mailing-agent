@@ -1476,10 +1476,21 @@ def insert_background_runs_with_lxml(output_text: str, run_fragments: list[str])
 
 
 def ensure_word_xml_namespaces(output_text: str) -> str:
-    if "xmlns:w=" in output_text:
+    document_match = re.search(r"<w:document\b[^>]*>", output_text)
+    if not document_match:
         return output_text
-    return re.sub(r"<w:document\b", f"<w:document {WORD_XML_NAMESPACE_DECLS}", output_text, count=1)
 
+    document_tag = document_match.group(0)
+    missing_declarations = [
+        f'xmlns:{prefix}="{uri}"'
+        for prefix, uri in WORD_XML_NAMESPACES.items()
+        if f"xmlns:{prefix}=" not in document_tag
+    ]
+    if not missing_declarations:
+        return output_text
+
+    updated_tag = document_tag[:-1] + " " + " ".join(missing_declarations) + document_tag[-1]
+    return output_text[: document_match.start()] + updated_tag + output_text[document_match.end() :]
 
 def parse_word_run_fragment(run_fragment: str) -> list:
     wrapper = LxmlElementTree.fromstring(f"<root {WORD_XML_NAMESPACE_DECLS}>{run_fragment}</root>".encode("utf-8"))

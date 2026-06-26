@@ -26,6 +26,7 @@ from src.generator.delivery.sender_agent import (
     _safe_text,
     _unisender_status_label,
 )
+from src.generator.delivery.mailopost_events import load_mailopost_events
 from src.generator.delivery.rusender_events import load_rusender_events
 from src.generator.delivery.unisender_go_events import load_unisender_go_events
 from src.generator.generation.excel_io import load_rows
@@ -67,6 +68,7 @@ PROVIDER_LABELS = {
     "unisender_go": "UniSender Go",
     "unisender_classic": "UniSender",
     "smtp": "SMTP",
+    "mailopost": "MailoPost",
 }
 
 
@@ -369,6 +371,7 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
             refresh_messages.append(go_refresh_error)
     go_events = _latest_unisender_go_events(job_id)
     rusender_events = _latest_rusender_events(job_id)
+    mailopost_events = _latest_mailopost_events(job_id)
     cached_statuses = _load_delivery_status_cache(job_id)
     provider_statuses: dict[str, dict[str, Any]] = {}
     refresh_error = ""
@@ -407,6 +410,10 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
         if rusender_event:
             provider_status = _safe_text(rusender_event.get("provider_status")) or provider_status
             checked_at = _safe_text(rusender_event.get("checked_at")) or checked_at
+        mailopost_event = _match_mailopost_event(item, mailopost_events)
+        if mailopost_event:
+            provider_status = _safe_text(mailopost_event.get("provider_status")) or provider_status
+            checked_at = _safe_text(mailopost_event.get("checked_at")) or checked_at
 
         label = _report_status_label(provider_status)
         rows.append(
@@ -919,6 +926,43 @@ def _latest_unisender_go_events(job_id: str | None) -> dict[str, dict[str, Any]]
     return latest
 
 
+def _latest_mailopost_events(job_id: str | None) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    priority = {
+        "queued": 10,
+        "sent": 20,
+        "delivered": 30,
+        "opened": 40,
+        "clicked": 50,
+        "unsubscribed": 60,
+        "soft_bounced": 70,
+        "skipped": 75,
+        "spam": 80,
+        "complained": 80,
+        "hard_bounced": 90,
+    }
+    for event in load_mailopost_events(job_id):
+        status = _normalize_provider_status(_safe_text(event.get("provider_status") or event.get("event_type")))
+        checked_at = _safe_text(event.get("occurred_at") or event.get("received_at"))
+        recipient = _safe_text(event.get("recipient")).lower()
+        message_id = _safe_text(event.get("message_id"))
+        row_id = _safe_text(event.get("row_id"))
+        keys = []
+        if message_id and recipient:
+            keys.append(f"message_email:{message_id}:{recipient}")
+        if message_id:
+            keys.append(f"message:{message_id}")
+        if row_id and recipient:
+            keys.append(f"row_email:{row_id}:{recipient}")
+        if recipient:
+            keys.append(f"email:{recipient}")
+        for key in keys:
+            previous = latest.get(key)
+            previous_rank = priority.get(_normalize_provider_status(_safe_text(previous.get("provider_status")) if previous else ""), 0)
+            if not previous or priority.get(status, 0) >= previous_rank:
+                latest[key] = {"provider_status": status, "checked_at": checked_at}
+    return latest
+
 def _latest_rusender_events(job_id: str | None) -> dict[str, dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     priority = {
@@ -987,6 +1031,32 @@ def _match_unisender_go_event(item: dict[str, Any], events: dict[str, dict[str, 
             return events[key]
     return None
 
+
+def _match_mailopost_event(item: dict[str, Any], events: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    if _provider_name(item) != "mailopost":
+        return None
+    provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
+    message_id = _safe_text(
+        item.get("provider_message_id")
+        or item.get("message_id")
+        or provider.get("message_id")
+        or provider.get("id")
+    )
+    recipient = _safe_text(item.get("recipient")).lower()
+    row_id = _safe_text(item.get("row_id"))
+    keys = []
+    if message_id and recipient:
+        keys.append(f"message_email:{message_id}:{recipient}")
+    if message_id:
+        keys.append(f"message:{message_id}")
+    if row_id and recipient:
+        keys.append(f"row_email:{row_id}:{recipient}")
+    if recipient:
+        keys.append(f"email:{recipient}")
+    for key in keys:
+        if key in events:
+            return events[key]
+    return None
 
 def _match_rusender_event(item: dict[str, Any], events: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     if _provider_name(item) != "rusender":
@@ -1187,6 +1257,7 @@ def _analytics_note(*, total: int, checked: int, providers: Counter[str], refres
     provider_names = ", ".join(_provider_label(name) for name, count in providers.most_common() if count)
     has_unisender = any("unisender" in name for name in providers)
     has_rusender = any("rusender" in name for name in providers)
+    has_mailopost = any("mailopost" in name for name in providers)
     if refresh_error:
         return f"Показаны локальные данные отправки. Не удалось обновить часть статусов: {refresh_error}"
     if has_rusender and not has_unisender:
@@ -1194,7 +1265,7 @@ def _analytics_note(*, total: int, checked: int, providers: Counter[str], refres
             "Для RuSender доставка, открытия и клики приходят через webhook. "
             "Если в кабинете RuSender события уже есть, а здесь пока нули, проверьте URL webhook и токен."
         )
-    if has_unisender:
+    if has_unisender or has_mailopost:
         return (
             "Доставка, открытия и клики появляются после событий провайдера. "
             "Если письма уже переданы, а здесь пока нули, значит сервис ещё ждёт webhook или добор событий."

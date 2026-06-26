@@ -55,6 +55,7 @@ class ApiErrorContractTests(unittest.TestCase):
                 ),
                 append_unisender_go_events=lambda payload: (_ for _ in ()).throw(failure),
                 append_rusender_events=lambda payload: (_ for _ in ()).throw(failure),
+                append_mailopost_events=lambda payload: (_ for _ in ()).throw(failure),
                 logger=SimpleNamespace(exception=lambda *args, **kwargs: logs.append((args, kwargs))),
                 request_sender_stop=lambda **kwargs: {},
                 preview_recipients=lambda **kwargs: {},

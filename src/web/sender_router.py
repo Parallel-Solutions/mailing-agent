@@ -35,6 +35,7 @@ def create_sender_router(
     settings: Any,
     append_unisender_go_events: Callable[[dict], dict],
     append_rusender_events: Callable[[dict], dict],
+    append_mailopost_events: Callable[[dict], dict],
     logger: Any,
     request_sender_stop: Callable[..., dict],
     preview_recipients: Callable[..., dict],
@@ -122,6 +123,22 @@ def create_sender_router(
         if not secrets.compare_digest(str(token or "").strip(), expected_token):
             raise HTTPException(status_code=401, detail="Некорректный токен webhook RuSender")
 
+    def resolve_mailopost_webhook_token() -> str:
+        return str(
+            getattr(settings, "mailopost_webhook_token", "")
+            or getattr(settings, "mailopost_webhook_secret", "")
+            or ""
+        ).strip()
+
+    def ensure_mailopost_webhook_token(token: str) -> None:
+        expected_token = resolve_mailopost_webhook_token()
+        if not expected_token:
+            raise HTTPException(
+                status_code=503,
+                detail="Webhook MailoPost отключён: не настроен токен webhook.",
+            )
+        if not secrets.compare_digest(str(token or "").strip(), expected_token):
+            raise HTTPException(status_code=401, detail="Некорректный токен webhook MailoPost")
     def _attachment_mode_from_documents(job_id: str | None, fallback: object = None) -> str:
         generator_state = get_generator_status(job_id)
         document_mode = str(generator_state.get("document_mode") or "").strip().lower()
@@ -322,6 +339,56 @@ def create_sender_router(
             raise internal_server_error("Не удалось сохранить webhook RuSender.") from exc
         return {"status": "ok", "result": result}
 
+    @router.get("/api/webhooks/mailopost")
+    async def mailopost_webhook_health():
+        token_configured = bool(resolve_mailopost_webhook_token())
+        result = {
+            "message": "MailoPost webhook endpoint is ready",
+            "token_required": token_configured,
+            "url_format": "/api/webhooks/mailopost/{token}",
+            "max_body_bytes": webhook_max_body_bytes(),
+            "kinds": ["api"],
+            "events": [
+                "delivered",
+                "hard_bounced",
+                "soft_bounced",
+                "skipped",
+                "opened",
+                "clicked",
+                "unsubscribed",
+                "complained",
+            ],
+        }
+        return ok_response(result, **result)
+
+    @router.post("/api/webhooks/mailopost")
+    async def mailopost_webhook(request: Request):
+        if not resolve_mailopost_webhook_token():
+            raise HTTPException(
+                status_code=503,
+                detail="Webhook MailoPost отключён: не настроен токен webhook.",
+            )
+        raise HTTPException(
+            status_code=401,
+            detail="Используйте токенизированный URL webhook MailoPost.",
+        )
+
+    @router.get("/api/webhooks/mailopost/{token}")
+    async def mailopost_webhook_token_health(token: str):
+        ensure_mailopost_webhook_token(token)
+        result = {"message": "MailoPost token webhook endpoint is ready"}
+        return ok_response(result, **result)
+
+    @router.post("/api/webhooks/mailopost/{token}")
+    async def mailopost_webhook_tokenized(token: str, request: Request):
+        ensure_mailopost_webhook_token(token)
+        payload = await read_webhook_json(request, "MailoPost")
+        try:
+            result = append_mailopost_events(payload)
+        except Exception as exc:
+            logger.exception("mailopost_webhook_save_failed")
+            raise internal_server_error("Не удалось сохранить webhook MailoPost.") from exc
+        return {"status": "ok", "result": result}
     @router.post("/api/sender/stop")
     async def sender_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         job_id = None if payload is None else payload.job_id

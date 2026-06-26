@@ -857,6 +857,7 @@ from src.generator.delivery.sender_agent import (
 from src.generator.delivery.sender_report import (
     build_sender_delivery_analytics,
 )
+from src.generator.delivery.mailopost_events import append_mailopost_events
 from src.generator.delivery.rusender_events import append_rusender_events
 from src.generator.delivery.unisender_go_events import append_unisender_go_events
 from src.generator.orchestration.parser_agent import (
@@ -1052,6 +1053,7 @@ app.include_router(
         settings=settings,
         append_unisender_go_events=append_unisender_go_events,
         append_rusender_events=append_rusender_events,
+        append_mailopost_events=append_mailopost_events,
         logger=logger,
         request_sender_stop=request_sender_stop,
         preview_recipients=preview_recipients,

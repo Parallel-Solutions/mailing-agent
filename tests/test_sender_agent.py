@@ -336,6 +336,44 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(request.get_header("X-api-key"), legacy_key)
         self.assertEqual(result["message_id"], "message-1")
 
+    def test_mailopost_builds_json_send_request(self) -> None:
+        captured: dict[str, Request] = {}
+
+        def fake_request(request: Request, *, timeout: float) -> str:
+            captured["request"] = request
+            return json.dumps({"id": 123, "status": "queued"})
+
+        with patch.object(sender_agent.settings, "mailopost_api_token", "mailopost-token"), patch.object(
+            sender_agent.settings,
+            "mailopost_sender_email",
+            "sender@example.com",
+        ), patch.object(sender_agent.settings, "mailopost_sender_name", "ООО «ПР»"), patch.object(
+            sender_agent.settings,
+            "mailopost_api_base_url",
+            "https://api.mailopost.ru/v1",
+        ), patch.object(sender_agent, "_run_mailopost_request", side_effect=fake_request):
+            result = sender_agent._send_via_mailopost(
+                {"ID": "1", "MUN_NAME": "Тестовое МО"},
+                "recipient@example.com",
+                [],
+                "Тема",
+                body_override="Текст письма",
+                job_id="job-test",
+                send_run_id="send-test",
+                send_mode="consent_request",
+                attachment_mode="kp",
+            )
+
+        request = captured["request"]
+        self.assertEqual(request.full_url, "https://api.mailopost.ru/v1/email/messages")
+        self.assertEqual(request.get_header("Authorization"), "Bearer mailopost-token")
+        payload = json.loads((request.data or b"").decode("utf-8"))
+        self.assertEqual(payload["from_email"], "sender@example.com")
+        self.assertEqual(payload["from_name"], "ООО «ПР»")
+        self.assertEqual(payload["to"], "recipient@example.com")
+        self.assertEqual(payload["smtp_headers"]["X-Mailing-Agent-Job"], "job-test")
+        self.assertEqual(result["provider"], "mailopost")
+        self.assertEqual(result["message_id"], "123")
     def test_provider_idempotency_key_is_deterministic_for_same_context(self) -> None:
         first = sender_agent._build_provider_idempotency_key(
             provider="rusender",

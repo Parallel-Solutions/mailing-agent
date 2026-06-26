@@ -207,7 +207,7 @@ def create_download_router(
         if not sender_delivery_report_has_data(job_id):
             raise HTTPException(
                 status_code=404,
-                detail="Журнал отправки пока пуст. Сначала запустите реальную отправку через UniSender или RuSender.",
+                detail="Журнал отправки пока пуст. Сначала запустите реальную отправку через UniSender, RuSender или MailoPost.",
             )
         job_paths = resolve_job_paths(job_id)
         report_path = job_state_dir(job_id) / "sender_delivery_report.xlsx"
@@ -221,6 +221,7 @@ def create_download_router(
             sent_log_path,
             state_dir / "rusender_events.jsonl",
             state_dir / "unisender_go_events.jsonl",
+            state_dir / "mailopost_events.jsonl",
         ]
         if not is_cache_fresh(report_path, report_sources, max_age_seconds=180):
             report_path = build_sender_delivery_report_xlsx(job_id, refresh=True)
