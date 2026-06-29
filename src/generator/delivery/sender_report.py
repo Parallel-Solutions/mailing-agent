@@ -26,6 +26,7 @@ from src.generator.delivery.sender_agent import (
     _safe_text,
     _unisender_status_label,
 )
+from src.generator.delivery.consent_store import load_consent_records
 from src.generator.delivery.mailopost_events import load_mailopost_events
 from src.generator.delivery.rusender_events import load_rusender_events
 from src.generator.delivery.unisender_go_events import load_unisender_go_events
@@ -78,14 +79,17 @@ def build_sender_delivery_report_xlsx(job_id: str | None = None, *, refresh: boo
     job_paths = resolve_job_paths(job_id)
     output_path = job_paths.root_dir / "state" / REPORT_FILENAME
     rows, refresh_error = _build_delivery_rows(job_id, refresh=refresh)
+    consent_rows = _build_consent_rows(job_id)
 
     workbook = Workbook()
     stats_sheet = workbook.active
     stats_sheet.title = "Статистика"
     journal_sheet = workbook.create_sheet("Журнал отправки")
+    consent_sheet = workbook.create_sheet("Согласия")
 
-    _write_statistics_sheet(stats_sheet, rows, job_id=job_id, refresh_error=refresh_error)
+    _write_statistics_sheet(stats_sheet, rows, job_id=job_id, refresh_error=refresh_error, consent_rows=consent_rows)
     _write_journal_sheet(journal_sheet, rows)
+    _write_consent_sheet(consent_sheet, consent_rows)
     _style_workbook(workbook)
     _autosize(
         stats_sheet,
@@ -109,6 +113,25 @@ def build_sender_delivery_report_xlsx(job_id: str | None = None, *, refresh: boo
             "M": 46,
         },
     )
+    _autosize(
+        consent_sheet,
+        {
+            "A": 10,
+            "B": 34,
+            "C": 32,
+            "D": 18,
+            "E": 22,
+            "F": 22,
+            "G": 24,
+            "H": 22,
+            "I": 22,
+            "J": 28,
+            "K": 18,
+            "L": 18,
+            "M": 38,
+            "N": 48,
+        },
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
@@ -130,6 +153,8 @@ def build_sender_delivery_analytics(
         if refresh:
             refresh_started = _start_sender_delivery_refresh(job_id)
         rows, refresh_error = _build_delivery_rows(job_id, refresh=False)
+    consent_rows = _build_consent_rows(job_id)
+    consent_summary = _consent_summary(consent_rows)
     statuses = Counter(_normalize_provider_status(row["provider_status"] or "unknown") for row in rows)
     providers = Counter(row.get("provider") or "unisender" for row in rows)
     provider_key, provider_label = _primary_provider(providers)
@@ -191,6 +216,12 @@ def build_sender_delivery_analytics(
             return 0.0
         return round((value / denominator) * 100, 1)
 
+    def consent_pct(value: int) -> float:
+        denominator = consent_summary["total"]
+        if denominator <= 0:
+            return 0.0
+        return round((value / denominator) * 100, 1)
+
     cards = [
         {
             "id": "accepted",
@@ -199,6 +230,22 @@ def build_sender_delivery_analytics(
             "percent": 100.0 if total else 0.0,
             "hint": f"Email-получатели, которых наш сервис успешно передал в {provider_label}." if provider_label else "Email-получатели, которых наш сервис успешно передал провайдеру.",
             "tone": "good" if accepted and not errors else "neutral",
+        },
+        {
+            "id": "confirmed_consents",
+            "title": "Дали согласие",
+            "value": consent_summary["confirmed"],
+            "percent": consent_pct(consent_summary["confirmed"]),
+            "hint": "Получатели, которые перешли по consent-ссылке и подтвердили получение материалов.",
+            "tone": "good" if consent_summary["confirmed"] else "neutral",
+        },
+        {
+            "id": "materials_sent",
+            "title": "Материалы отправлены",
+            "value": consent_summary["materials_sent"],
+            "percent": consent_pct(consent_summary["materials_sent"]),
+            "hint": "Сколько подтверждённых получателей уже получили КП/договор после согласия.",
+            "tone": "good" if consent_summary["materials_sent"] else "neutral",
         },
         {
             "id": "delivered",
@@ -296,7 +343,9 @@ def build_sender_delivery_analytics(
             "pending": pending,
             "providers": dict(providers),
             "rates": rates,
+            "consents": consent_summary,
         },
+        "consents": consent_summary,
         "cards": cards,
         "statuses": [
             {"status": status, "label": _report_status_label(status), "count": count}
@@ -355,7 +404,7 @@ def _run_sender_delivery_refresh_background(job_id: str | None) -> None:
 
 
 def sender_delivery_report_has_data(job_id: str | None = None) -> bool:
-    return bool(_load_delivery_log_items(job_id))
+    return bool(_load_delivery_log_items(job_id) or load_consent_records(job_id))
 
 
 def unisender_delivery_report_has_data(job_id: str | None = None) -> bool:
@@ -716,7 +765,7 @@ def _load_delivery_log_items(job_id: str | None) -> list[dict[str, Any]]:
     items = [
         item
         for item in _load_sent_mail_log_items(sent_mail_log_path)
-        if _safe_text(item.get("transport")) in {"unisender", "rusender", "smtp"}
+        if _safe_text(item.get("transport")) in {"unisender", "rusender", "smtp", "mailopost"}
     ]
     items = _filter_items_by_current_sender_state(job_id, items)
     items = _filter_items_by_current_data(job_id, items)
@@ -1091,7 +1140,109 @@ def _check_classic_statuses(email_ids: list[str]) -> dict[str, dict[str, Any]]:
     return statuses
 
 
-def _write_statistics_sheet(sheet, rows: list[dict[str, Any]], *, job_id: str | None, refresh_error: str) -> None:
+def _build_consent_rows(job_id: str | None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in load_consent_records(job_id):
+        status = _safe_text(record.get("status")) or "pending"
+        materials_status = _safe_text(record.get("materials_status"))
+        materials_error = _safe_text(record.get("materials_error"))
+        rows.append(
+            {
+                "row_id": _safe_text(record.get("row_id")),
+                "mun_name": _safe_text(record.get("mun_name")),
+                "recipient": _safe_text(record.get("recipient")),
+                "status": status,
+                "status_label": _consent_status_label(status),
+                "request_sent_at": _safe_text(record.get("request_sent_at")),
+                "created_at": _safe_text(record.get("created_at")),
+                "confirmed_at": _safe_text(record.get("confirmed_at")),
+                "expires_at": _safe_text(record.get("expires_at")),
+                "materials_status": materials_status,
+                "materials_status_label": _materials_status_label(
+                    materials_status,
+                    sent_at=_safe_text(record.get("materials_sent_at")),
+                    error=materials_error,
+                ),
+                "materials_sent_at": _safe_text(record.get("materials_sent_at")),
+                "materials_error": materials_error,
+                "materials_dispatch_summary": _safe_text(record.get("materials_dispatch_summary")),
+                "transport": _safe_text(record.get("transport")),
+                "attachment_mode": _safe_text(record.get("attachment_mode")),
+                "work_type": _safe_text(record.get("work_type")),
+                "confirmed_ip": _safe_text(record.get("confirmed_ip")),
+                "confirmed_user_agent": _safe_text(record.get("confirmed_user_agent")),
+                "consent_document_path": _safe_text(record.get("consent_document_path")),
+            }
+        )
+    return sorted(rows, key=lambda row: (_sort_key(row.get("row_id")), row.get("recipient") or ""))
+
+
+def _sort_key(value: Any) -> tuple[int, str]:
+    text = _safe_text(value)
+    try:
+        return (0, f"{int(text):012d}")
+    except ValueError:
+        return (1, text)
+
+
+def _consent_summary(consent_rows: list[dict[str, Any]]) -> dict[str, int]:
+    total = len(consent_rows)
+    requested = sum(
+        1
+        for row in consent_rows
+        if row.get("request_sent_at") or row.get("status") in {"request_sent", "confirmed"}
+    )
+    confirmed = sum(1 for row in consent_rows if row.get("status") == "confirmed")
+    expired = sum(1 for row in consent_rows if row.get("status") == "expired")
+    materials_sent = sum(
+        1
+        for row in consent_rows
+        if row.get("materials_status") == "sent" or row.get("materials_sent_at")
+    )
+    materials_error = sum(
+        1
+        for row in consent_rows
+        if row.get("materials_status") == "error" or row.get("materials_error")
+    )
+    pending = max(0, total - confirmed - expired)
+    return {
+        "total": total,
+        "requested": requested,
+        "confirmed": confirmed,
+        "pending": pending,
+        "expired": expired,
+        "materials_sent": materials_sent,
+        "materials_error": materials_error,
+    }
+
+
+def _consent_status_label(status: str) -> str:
+    labels = {
+        "pending": "Ожидает отправки запроса",
+        "request_sent": "Запрос согласия отправлен",
+        "confirmed": "Согласие получено",
+        "expired": "Ссылка истекла",
+    }
+    return labels.get(_safe_text(status), _safe_text(status) or "Статус неизвестен")
+
+
+def _materials_status_label(status: str, *, sent_at: str, error: str) -> str:
+    normalized = _safe_text(status)
+    if normalized == "sent" or sent_at:
+        return "Материалы отправлены"
+    if normalized == "error" or error:
+        return "Ошибка отправки материалов"
+    return "Материалы ещё не отправлялись"
+
+
+def _write_statistics_sheet(
+    sheet,
+    rows: list[dict[str, Any]],
+    *,
+    job_id: str | None,
+    refresh_error: str,
+    consent_rows: list[dict[str, Any]] | None = None,
+) -> None:
     _add_title(sheet, "Статистика отправки")
     outcomes = Counter(row["outcome"] for row in rows)
     statuses = Counter(row["provider_status"] or "статус неизвестен" for row in rows)
@@ -1119,6 +1270,18 @@ def _write_statistics_sheet(sheet, rows: list[dict[str, Any]], *, job_id: str | 
         for status, count in sorted(statuses.items(), key=lambda item: (-item[1], item[0]))
     ]
     _write_table(sheet, 3, ["Код статуса", "Расшифровка", "Количество"], status_rows, name="DeliveryStatusStats", start_column=4)
+
+    consent_summary = _consent_summary(consent_rows or [])
+    consent_stats_rows = [
+        ["Запросов согласия всего", consent_summary["total"]],
+        ["Запросов согласия отправлено", consent_summary["requested"]],
+        ["Согласие дали", consent_summary["confirmed"]],
+        ["Ожидаем согласие", consent_summary["pending"]],
+        ["Ссылок истекло", consent_summary["expired"]],
+        ["Материалы отправлены после согласия", consent_summary["materials_sent"]],
+        ["Ошибки отправки материалов", consent_summary["materials_error"]],
+    ]
+    _write_table(sheet, 17, ["Показатель", "Значение"], consent_stats_rows, name="ConsentStats")
 
 
 def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
@@ -1160,6 +1323,50 @@ def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
             for row in rows
         ],
         name="UnisenderDeliveryLog",
+    )
+
+
+def _write_consent_sheet(sheet, rows: list[dict[str, Any]]) -> None:
+    _add_title(sheet, "Согласия")
+    _write_table(
+        sheet,
+        3,
+        [
+            "№ строки",
+            "Муниципальное образование",
+            "Получатель",
+            "Статус согласия",
+            "Запрос отправлен",
+            "Согласие получено",
+            "Истекает",
+            "Статус материалов",
+            "Материалы отправлены",
+            "Ошибка материалов",
+            "Транспорт",
+            "Что отправляем",
+            "IP подтверждения",
+            "User-Agent подтверждения",
+        ],
+        [
+            [
+                row["row_id"],
+                row["mun_name"],
+                row["recipient"],
+                row["status_label"],
+                row["request_sent_at"],
+                row["confirmed_at"],
+                row["expires_at"],
+                row["materials_status_label"],
+                row["materials_sent_at"],
+                row["materials_error"],
+                row["transport"],
+                row["attachment_mode"],
+                row["confirmed_ip"],
+                row["confirmed_user_agent"],
+            ]
+            for row in rows
+        ],
+        name="ConsentLog",
     )
 
 

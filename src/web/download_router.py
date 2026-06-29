@@ -222,6 +222,7 @@ def create_download_router(
             state_dir / "rusender_events.jsonl",
             state_dir / "unisender_go_events.jsonl",
             state_dir / "mailopost_events.jsonl",
+            state_dir / "consents.json",
         ]
         if not is_cache_fresh(report_path, report_sources, max_age_seconds=180):
             report_path = build_sender_delivery_report_xlsx(job_id, refresh=True)

@@ -31,6 +31,7 @@ class SenderWebhookSecurityTests(unittest.TestCase):
                 settings=settings,
                 append_unisender_go_events=append_unisender or Mock(return_value={"saved": 1}),
                 append_rusender_events=append_rusender or Mock(return_value={"saved": 1}),
+                append_mailopost_events=Mock(return_value={"saved": 1}),
                 logger=SimpleNamespace(exception=lambda *args, **kwargs: None),
                 request_sender_stop=lambda **kwargs: {},
                 preview_recipients=lambda **kwargs: {},

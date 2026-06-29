@@ -244,6 +244,10 @@ def _load_records(job_id: str | None) -> list[dict[str, Any]]:
     return [item for item in records if isinstance(item, dict)] if isinstance(records, list) else []
 
 
+def load_consent_records(job_id: str | None) -> list[dict[str, Any]]:
+    return [dict(record) for record in _load_records(job_id)]
+
+
 def _save_records(job_id: str | None, records: list[dict[str, Any]]) -> None:
     write_json_atomic(_consent_path(job_id), {"records": records})
 

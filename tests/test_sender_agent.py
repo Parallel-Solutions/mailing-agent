@@ -9,6 +9,8 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
+from openpyxl import load_workbook
+
 from src.generator.delivery import sender_agent
 from src.generator.delivery import sender_report
 from src.web import sender_service
@@ -140,6 +142,67 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             scoped = sender_report._filter_items_by_current_sender_state("job-current", items)
 
         self.assertEqual(scoped, items)
+
+    def test_sender_analytics_and_report_include_consents(self) -> None:
+        delivery_rows = [
+            {
+                "row_id": "1",
+                "mun_name": "МО",
+                "recipient": "one@example.com",
+                "sent_at": "2026-06-29T10:00:00",
+                "subject": "Тема",
+                "accepted_status": "sent",
+                "provider": "mailopost",
+                "provider_status": "delivered",
+                "provider_status_label": "Доставлено",
+                "outcome": "Успешно",
+                "email_id": "message-1",
+                "message_id": "message-1",
+                "checked_at": "2026-06-29T10:01:00",
+                "comment": "",
+            }
+        ]
+        consent_records = [
+            {
+                "row_id": "1",
+                "mun_name": "МО",
+                "recipient": "one@example.com",
+                "status": "confirmed",
+                "request_sent_at": "2026-06-29T10:00:00",
+                "confirmed_at": "2026-06-29T10:02:00",
+                "materials_status": "sent",
+                "materials_sent_at": "2026-06-29T10:03:00",
+                "transport": "mailopost",
+                "attachment_mode": "kp",
+            }
+        ]
+
+        with patch.object(sender_report, "_build_delivery_rows", return_value=(delivery_rows, "")), patch.object(
+            sender_report, "load_consent_records", return_value=consent_records
+        ):
+            analytics = sender_report.build_sender_delivery_analytics("job-consent")
+
+        self.assertEqual(analytics["summary"]["consents"]["confirmed"], 1)
+        self.assertIn("confirmed_consents", {card["id"] for card in analytics["cards"]})
+
+        tmp_dir = Path("tmp") / "sender-report-consents-test"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        with patch.object(
+            sender_report,
+            "resolve_job_paths",
+            return_value=SimpleNamespace(root_dir=tmp_dir),
+        ), patch.object(sender_report, "_build_delivery_rows", return_value=(delivery_rows, "")), patch.object(
+            sender_report, "load_consent_records", return_value=consent_records
+        ):
+            report_path = sender_report.build_sender_delivery_report_xlsx("job-consent", refresh=False)
+            workbook = load_workbook(report_path, read_only=True)
+            try:
+                self.assertIn("Согласия", workbook.sheetnames)
+                consent_sheet = workbook["Согласия"]
+                self.assertEqual(consent_sheet[3][3].value, "Статус согласия")
+                self.assertEqual(consent_sheet[4][3].value, "Согласие получено")
+            finally:
+                workbook.close()
 
     def test_compact_sender_status_shows_table_totals_after_scoped_material_send(self) -> None:
         state = {

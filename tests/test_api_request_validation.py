@@ -35,13 +35,13 @@ class SenderRequestValidationTests(unittest.TestCase):
                 parse_optional_limit=lambda payload: None,
                 compact_sender_status=lambda state: dict(state),
                 clear_sender_stop_request=lambda job_id: None,
-                prime_sender_checking_state=lambda job_id, transport, attachment_mode: {
+                prime_sender_checking_state=lambda job_id, transport, attachment_mode, recipient_strategy=None: {
                     "status": "running",
                     "mode": "dry_run",
                     "transport": transport,
                     "attachment_mode": attachment_mode,
                 },
-                prime_sender_running_state=lambda job_id, transport, attachment_mode: {
+                prime_sender_running_state=lambda job_id, transport, attachment_mode, recipient_strategy=None: {
                     "status": "running",
                     "mode": "send",
                     "transport": transport,
@@ -57,6 +57,7 @@ class SenderRequestValidationTests(unittest.TestCase):
                 settings=SimpleNamespace(webhook_max_body_bytes=1024),
                 append_unisender_go_events=lambda payload: {},
                 append_rusender_events=lambda payload: {},
+                append_mailopost_events=lambda payload: {},
                 logger=logger,
                 request_sender_stop=lambda **kwargs: {"status": "stopped"},
                 preview_recipients=lambda **kwargs: {"items": []},
