@@ -238,6 +238,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
     def test_consent_requests_are_sent_separately_to_extra_emails(self) -> None:
         prepared: list[str] = []
         sent_bodies: dict[str, str] = {}
+        wait_calls: list[str] = []
 
         def fake_prepare(**kwargs):
             recipient = kwargs["recipient"]
@@ -257,6 +258,10 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 "warning": "",
             }
 
+        def fake_wait() -> bool:
+            wait_calls.append("wait")
+            return True
+
         recipients = ["one@example.com", "two@example.com"]
         with patch.object(sender_agent, "prepare_consent_request", side_effect=fake_prepare), patch.object(
             sender_agent, "_send_with_transport", side_effect=fake_send
@@ -270,13 +275,66 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 send_run_id="send-test",
                 attachment_mode="kp",
                 work_type="mngp_settlements",
+                wait_between_recipients=fake_wait,
             )
 
         self.assertEqual(prepared, recipients)
         self.assertEqual(result["recipients"], recipients)
         self.assertEqual(set(result["consent_urls"]), set(recipients))
+        self.assertEqual(wait_calls, ["wait"])
         self.assertIn("/consent/one@example.com", sent_bodies["one@example.com"])
         self.assertIn("/consent/two@example.com", sent_bodies["two@example.com"])
+
+    def test_smtp_transport_waits_between_each_recipient(self) -> None:
+        sent: list[str] = []
+        wait_calls: list[str] = []
+
+        def fake_smtp(row, recipient, attachments, subject, **kwargs) -> str:
+            sent.append(recipient)
+            return ""
+
+        def fake_wait() -> bool:
+            wait_calls.append("wait")
+            return True
+
+        recipients = ["one@example.com", "two@example.com", "three@example.com"]
+        with patch.object(sender_agent, "_send_via_smtp", side_effect=fake_smtp):
+            result = sender_agent._send_with_transport(
+                {"ID": "1", "MUN_NAME": "Test municipality"},
+                recipients,
+                [],
+                "Subject",
+                transport="smtp",
+                wait_between_recipients=fake_wait,
+            )
+
+        self.assertEqual(sent, recipients)
+        self.assertEqual(wait_calls, ["wait", "wait"])
+        self.assertEqual(result["recipients"], recipients)
+        self.assertEqual([attempt["status"] for attempt in result["attempts"]], ["sent", "sent", "sent"])
+
+    def test_smtp_transport_stops_before_next_recipient_when_delay_is_stopped(self) -> None:
+        sent: list[str] = []
+
+        def fake_smtp(row, recipient, attachments, subject, **kwargs) -> str:
+            sent.append(recipient)
+            return ""
+
+        with patch.object(sender_agent, "_send_via_smtp", side_effect=fake_smtp):
+            result = sender_agent._send_with_transport(
+                {"ID": "1", "MUN_NAME": "Test municipality"},
+                ["one@example.com", "two@example.com"],
+                [],
+                "Subject",
+                transport="smtp",
+                wait_between_recipients=lambda: False,
+            )
+
+        self.assertEqual(sent, ["one@example.com"])
+        self.assertEqual(result["recipients"], ["one@example.com"])
+        self.assertEqual(result["attempts"][-1]["recipient"], "two@example.com")
+        self.assertIn("паузы", result["error"])
+
     def test_rusender_uses_bearer_authorization_for_current_keys(self) -> None:
         captured: dict[str, Request] = {}
 

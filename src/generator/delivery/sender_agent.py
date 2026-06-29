@@ -15,7 +15,7 @@ from email.message import EmailMessage
 from html import escape
 from pathlib import Path
 from time import perf_counter, sleep
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -544,13 +544,26 @@ def _send_consent_requests_with_transport(
     attachment_mode: str = ATTACHMENT_MODE_KP,
     subject_template: str | None = None,
     work_type: str | None = None,
+    wait_between_recipients: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     sent_recipients: list[str] = []
     warnings: list[str] = []
     consent_urls: dict[str, str] = {}
 
+    attempted_recipients = 0
     for recipient in recipients:
+        if attempted_recipients > 0 and wait_between_recipients is not None:
+            if not wait_between_recipients():
+                attempts.append(
+                    {
+                        "recipient": recipient,
+                        "status": "error",
+                        "error": "Отправка остановлена во время паузы между письмами.",
+                    }
+                )
+                break
+        attempted_recipients += 1
         try:
             consent_record = prepare_consent_request(
                 job_id=job_id,
@@ -2618,6 +2631,7 @@ def _send_with_transport(
     send_run_id: str = "",
     send_mode: str = "",
     attachment_mode: str = "",
+    wait_between_recipients: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     sent_recipients: list[str] = []
@@ -2686,7 +2700,19 @@ def _send_with_transport(
             "warning": "",
         }
 
+    attempted_recipients = 0
     for recipient in recipients:
+        if attempted_recipients > 0 and wait_between_recipients is not None:
+            if not wait_between_recipients():
+                attempts.append(
+                    {
+                        "recipient": recipient,
+                        "status": "error",
+                        "error": "Отправка остановлена во время паузы между письмами.",
+                    }
+                )
+                break
+        attempted_recipients += 1
         try:
             warning = None
             provider: dict[str, Any] = {}
@@ -3389,6 +3415,11 @@ def run_sender(
         state["ready_rows"] += 1
         row_subject = _build_mail_subject(subject, row)
         row_body_override: str | None = None
+        smtp_recipient_delay: Callable[[], bool] | None = None
+        if not dry_run and effective_transport == "smtp":
+            delay_seconds = max(0.0, float(settings.sender_delay_seconds or 0))
+            if delay_seconds > 0:
+                smtp_recipient_delay = lambda: _wait_sender_delay(delay_seconds, state, job_id)
         success_status_value = (
             STATUS_CONSENT_REQUEST_SENT_VALUE
             if effective_send_mode == "consent_request"
@@ -3466,6 +3497,7 @@ def run_sender(
                             attachment_mode=effective_attachment_mode,
                             subject_template=effective_subject_template,
                             work_type=effective_work_type,
+                            wait_between_recipients=smtp_recipient_delay,
                         )
                         entry["consent_urls"] = send_result.get("consent_urls") or {}
                         if len(entry["consent_urls"]) == 1:
@@ -3483,6 +3515,7 @@ def run_sender(
                             send_run_id=send_run_id,
                             send_mode=effective_send_mode,
                             attachment_mode=effective_attachment_mode,
+                            wait_between_recipients=smtp_recipient_delay,
                         )
                     workbook_dirty = (
                         _apply_send_result_to_entry(
