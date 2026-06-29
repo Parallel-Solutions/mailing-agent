@@ -158,6 +158,7 @@ def create_sender_router(
         limit = payload.limit
         transport = payload.transport
         send_mode = payload.send_mode
+        recipient_strategy = payload.recipient_strategy
         subject_template = payload.mail_subject
         job_id = payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
@@ -179,9 +180,9 @@ def create_sender_router(
 
             def _prime_state() -> None:
                 primed_state_box["state"] = (
-                    prime_sender_checking_state(job_id, transport, attachment_mode)
+                    prime_sender_checking_state(job_id, transport, attachment_mode, recipient_strategy)
                     if dry_run
-                    else prime_sender_running_state(job_id, transport, attachment_mode)
+                    else prime_sender_running_state(job_id, transport, attachment_mode, recipient_strategy)
                 )
 
             _, started = start_sender_thread_if_absent(
@@ -193,6 +194,7 @@ def create_sender_router(
                     "transport": transport,
                     "send_mode": send_mode,
                     "attachment_mode": attachment_mode,
+                    "recipient_strategy": recipient_strategy,
                     "subject_template": subject_template,
                     "work_type": work_type,
                     "job_id": job_id,
@@ -206,7 +208,13 @@ def create_sender_router(
                 action="sender.run",
                 principal=principal,
                 job_id=job_id,
-                details={"dry_run": dry_run, "transport": transport, "send_mode": send_mode, "attachment_mode": attachment_mode},
+                details={
+                    "dry_run": dry_run,
+                    "transport": transport,
+                    "send_mode": send_mode,
+                    "attachment_mode": attachment_mode,
+                    "recipient_strategy": recipient_strategy,
+                },
             )
             primed_state = primed_state_box.get("state") or get_sender_status(job_id)
         except Exception as exc:

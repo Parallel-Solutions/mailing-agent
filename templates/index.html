@@ -439,7 +439,7 @@
 
   .sender-transport-row {
     display: grid;
-    grid-template-columns: minmax(170px, 230px) minmax(220px, 300px) minmax(170px, 220px) minmax(0, 1fr);
+    grid-template-columns: minmax(150px, 210px) minmax(220px, 300px) minmax(220px, 290px) minmax(150px, 190px) minmax(0, 1fr);
     gap: 12px;
     align-items: end;
     margin-top: 14px;
@@ -2549,6 +2549,13 @@
             <select id="sender-send-mode">
               <option value="consent_request">Запрос согласия с последующей автоотправкой</option>
               <option value="materials">Отправить сразу подготовленные материалы</option>
+            </select>
+          </div>
+          <div class="sender-transport-field">
+            <label for="sender-recipient-strategy">Кому отправляем</label>
+            <select id="sender-recipient-strategy">
+              <option value="all">На все email</option>
+              <option value="primary_then_fallback">Основной, резерв при ошибке</option>
             </select>
           </div>
           <div class="sender-transport-field">
@@ -6018,6 +6025,12 @@ function clearAttachedFile() {
     return value || 'consent_request';
   }
 
+  function getSenderRecipientStrategy() {
+    const select = document.getElementById('sender-recipient-strategy');
+    const value = String((select && select.value) || '').trim();
+    return value || 'all';
+  }
+
   function getMailSubjectTemplate() {
     const input = document.getElementById('settings-mail-subject');
     return String((input && input.value) || '').trim();
@@ -7175,6 +7188,7 @@ function clearAttachedFile() {
       const transport = getSenderTransport();
       const sendMode = getSenderSendMode();
       const attachmentMode = getSenderAttachmentMode();
+      const recipientStrategy = getSenderRecipientStrategy();
       const mailSubject = getMailSubjectTemplate();
       const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
       showToast('Проверяю перед отправкой');
@@ -7185,7 +7199,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, mail_subject: mailSubject, work_type: workType })),
+        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Ошибка проверки готовности отправщика'));
@@ -7240,6 +7254,7 @@ function clearAttachedFile() {
         const transport = getSenderTransport();
         const sendMode = getSenderSendMode();
         const attachmentMode = getSenderAttachmentMode();
+        const recipientStrategy = getSenderRecipientStrategy();
         const mailSubject = getMailSubjectTemplate();
         const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
@@ -7265,7 +7280,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, mail_subject: mailSubject, work_type: workType })),
+        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Ошибка реальной отправки'));

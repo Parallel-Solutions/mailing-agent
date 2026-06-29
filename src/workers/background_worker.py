@@ -223,6 +223,7 @@ def _run_sender(kwargs: dict[str, Any]) -> None:
             transport=transport,
             send_mode=kwargs.get("send_mode"),
             attachment_mode=kwargs.get("attachment_mode"),
+            recipient_strategy=kwargs.get("recipient_strategy"),
             subject_template=kwargs.get("subject_template"),
             require_confirmed_consent=bool(kwargs.get("require_confirmed_consent", False)),
             work_type=kwargs.get("work_type"),

@@ -92,10 +92,11 @@ class SenderRunRequest(LimitRequest):
     transport: str | None = None
     send_mode: str | None = None
     attachment_mode: str | None = None
+    recipient_strategy: str | None = None
     mail_subject: str | None = None
     work_type: str | None = None
 
-    @field_validator("transport", "send_mode", "attachment_mode", "mail_subject", "work_type", mode="before")
+    @field_validator("transport", "send_mode", "attachment_mode", "recipient_strategy", "mail_subject", "work_type", mode="before")
     @classmethod
     def _normalize_optional_text(cls, value: Any) -> str | None:
         return _clean_optional_text(value)

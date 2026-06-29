@@ -231,9 +231,63 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             sender_agent._allowed_send_recipients(decision),
             ["one@example.com", "two@example.com", "three@example.com"],
         )
+        self.assertEqual(
+            sender_agent._allowed_send_recipients(
+                decision,
+                recipient_strategy=sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+            ),
+            ["one@example.com"],
+        )
+        self.assertEqual(
+            sender_agent._fallback_send_recipients(
+                decision,
+                recipient_strategy=sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+            ),
+            ["two@example.com", "three@example.com"],
+        )
+        self.assertEqual(
+            sender_agent._consent_candidate_recipients(
+                decision,
+                recipient_strategy=sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+            ),
+            ["one@example.com", "two@example.com", "three@example.com"],
+        )
         self.assertEqual(decision["fallback_candidates"], ["two@example.com", "three@example.com"])
         self.assertEqual(decision["invalid_emails"], ["bad-email"])
         self.assertIn("дополнительные", decision["decision_reason"])
+
+    def test_primary_then_fallback_sequence_stops_after_first_success(self) -> None:
+        sent: list[str] = []
+        waits: list[str] = []
+
+        def fake_send_one(recipient: str) -> dict:
+            sent.append(recipient)
+            if recipient == "one@example.com":
+                return {
+                    "recipient": None,
+                    "recipients": [],
+                    "attempts": [{"recipient": recipient, "status": "error", "error": "bounce"}],
+                    "error": "bounce",
+                    "warning": "",
+                }
+            return {
+                "recipient": recipient,
+                "recipients": [recipient],
+                "attempts": [{"recipient": recipient, "status": "sent", "error": ""}],
+                "error": "",
+                "warning": "",
+            }
+
+        result = sender_agent._send_recipient_sequence_until_success(
+            ["one@example.com", "two@example.com", "three@example.com"],
+            fake_send_one,
+            wait_between_recipients=lambda: waits.append("wait") or True,
+        )
+
+        self.assertEqual(sent, ["one@example.com", "two@example.com"])
+        self.assertEqual(waits, ["wait"])
+        self.assertEqual(result["recipient"], "two@example.com")
+        self.assertEqual([attempt["status"] for attempt in result["attempts"]], ["error", "sent"])
 
     def test_consent_requests_are_sent_separately_to_extra_emails(self) -> None:
         prepared: list[str] = []
@@ -432,6 +486,81 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(payload["smtp_headers"]["X-Mailing-Agent-Job"], "job-test")
         self.assertEqual(result["provider"], "mailopost")
         self.assertEqual(result["message_id"], "123")
+
+    def test_mailopost_retry_after_uses_header_and_message(self) -> None:
+        header_error = HTTPError("https://api.mailopost.ru/v1/email/messages", 429, "Too Many", {"Retry-After": "12"}, None)
+        self.assertEqual(
+            sender_agent._mailopost_retry_after_seconds(header_error, "", "Too many messages."),
+            17.0,
+        )
+
+        message_error = HTTPError("https://api.mailopost.ru/v1/email/messages", 429, "Too Many", {}, None)
+        self.assertEqual(
+            sender_agent._mailopost_retry_after_seconds(
+                message_error,
+                "{\"message\":\"Too many messages. Try again in 7 seconds.\"}",
+                "Too many messages. Try again in 7 seconds.",
+            ),
+            12.0,
+        )
+
+    def test_mailopost_transport_waits_after_rate_limit_and_retries_same_recipient(self) -> None:
+        calls: list[str] = []
+        waits: list[tuple[float, str]] = []
+
+        def fake_mailopost(row, recipient, attachments, subject, **kwargs) -> dict[str, str]:
+            calls.append(recipient)
+            if len(calls) == 1:
+                raise sender_agent.MailoPostRateLimitError(
+                    "Too many messages. Try again in 7 seconds.",
+                    7,
+                )
+            return {"provider": "mailopost", "message_id": "message-1", "recipient": recipient}
+
+        def wait_after_rate_limit(seconds: float, message: str) -> bool:
+            waits.append((seconds, message))
+            return True
+
+        with patch.object(sender_agent, "_send_via_mailopost", side_effect=fake_mailopost):
+            result = sender_agent._send_with_transport(
+                {"ID": "1", "MUN_NAME": "Test municipality"},
+                ["recipient@example.com"],
+                [],
+                "Subject",
+                transport="mailopost",
+                wait_after_rate_limit=wait_after_rate_limit,
+            )
+
+        self.assertEqual(calls, ["recipient@example.com", "recipient@example.com"])
+        self.assertEqual(waits, [(7.0, "Too many messages. Try again in 7 seconds.")])
+        self.assertEqual(result["recipient"], "recipient@example.com")
+        self.assertEqual(result["attempts"][0]["status"], "sent")
+
+    def test_mailopost_transport_stops_when_rate_limit_wait_is_stopped(self) -> None:
+        calls: list[str] = []
+
+        def fake_mailopost(row, recipient, attachments, subject, **kwargs) -> dict[str, str]:
+            calls.append(recipient)
+            raise sender_agent.MailoPostRateLimitError(
+                "Too many messages. Try again in 30 seconds.",
+                30,
+            )
+
+        with patch.object(sender_agent, "_send_via_mailopost", side_effect=fake_mailopost):
+            result = sender_agent._send_with_transport(
+                {"ID": "1", "MUN_NAME": "Test municipality"},
+                ["recipient@example.com"],
+                [],
+                "Subject",
+                transport="mailopost",
+                wait_after_rate_limit=lambda seconds, message: False,
+            )
+
+        self.assertEqual(calls, ["recipient@example.com"])
+        self.assertIsNone(result["recipient"])
+        self.assertEqual(result["attempts"][0]["status"], "error")
+        self.assertIn("ожидания лимита MailoPost", result["error"])
+
     def test_provider_idempotency_key_is_deterministic_for_same_context(self) -> None:
         first = sender_agent._build_provider_idempotency_key(
             provider="rusender",

@@ -104,6 +104,10 @@ UNISENDER_CLASSIC_CHECK_PATH = "checkEmail"
 RUSENDER_SEND_PATH = "external-mails/send"
 MAILOPOST_SEND_PATH = "email/messages"
 
+RECIPIENT_STRATEGY_ALL = "all"
+RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK = "primary_then_fallback"
+DEFAULT_RECIPIENT_STRATEGY = RECIPIENT_STRATEGY_ALL
+
 
 SENDER_STATE: dict[str, Any] = {
     "status": "idle",
@@ -133,6 +137,7 @@ SENDER_STATE: dict[str, Any] = {
     "stop_requested_at": None,
     "transport": "smtp",
     "attachment_mode": ATTACHMENT_MODE_KP,
+    "recipient_strategy": DEFAULT_RECIPIENT_STRATEGY,
 }
 
 SENDER_STATE_ROWS_LIMIT = 200
@@ -157,11 +162,19 @@ MAILOPOST_RETRY_BASE_SECONDS = 2.0
 MAILOPOST_RETRYABLE_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 MAILOPOST_REQUESTS_PER_SECOND = 2
 MAILOPOST_MIN_REQUEST_INTERVAL_SECONDS = 1.0 / MAILOPOST_REQUESTS_PER_SECOND
+MAILOPOST_RATE_LIMIT_EXTRA_SECONDS = 5.0
+MAILOPOST_RATE_LIMIT_FALLBACK_SECONDS = 60.0
 MAILOPOST_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 _MAILOPOST_RATE_LIMIT_LOCK = threading.Lock()
 _last_mailopost_request_at = 0.0
 _EXCEL_STATS_CACHE_LOCK = threading.Lock()
 _EXCEL_STATS_CACHE: dict[str, dict[str, Any]] = {}
+
+
+class MailoPostRateLimitError(RuntimeError):
+    def __init__(self, message: str, retry_after_seconds: float):
+        super().__init__(message)
+        self.retry_after_seconds = max(0.0, float(retry_after_seconds))
 
 
 def _load_sender_state(job_id: str | None = None) -> dict[str, Any]:
@@ -528,8 +541,133 @@ def _choose_recipient(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _allowed_send_recipients(email_decision: dict[str, Any]) -> list[str]:
+def _normalize_recipient_strategy(value: str | None) -> str:
+    cleaned = _safe_text(value).lower().replace("-", "_")
+    if cleaned in {"primary", "primary_then_fallback", "main_then_backup", "main_then_fallback"}:
+        return RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK
+    if cleaned in {"all", "all_recipients", "all_emails"}:
+        return RECIPIENT_STRATEGY_ALL
+    return DEFAULT_RECIPIENT_STRATEGY
+
+
+def _allowed_send_recipients(
+    email_decision: dict[str, Any],
+    *,
+    recipient_strategy: str | None = None,
+) -> list[str]:
+    strategy = _normalize_recipient_strategy(recipient_strategy)
+    if strategy == RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK:
+        recipient = _safe_text(email_decision.get("recipient"))
+        return [recipient] if recipient else []
     return list(email_decision.get("valid_emails") or [])
+
+
+def _fallback_send_recipients(
+    email_decision: dict[str, Any],
+    *,
+    recipient_strategy: str | None = None,
+) -> list[str]:
+    if _normalize_recipient_strategy(recipient_strategy) != RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK:
+        return []
+    primary_key = _mail_key(email_decision.get("recipient"))
+    return [
+        recipient
+        for recipient in list(email_decision.get("fallback_candidates") or [])
+        if _mail_key(recipient) and _mail_key(recipient) != primary_key
+    ]
+
+
+def _unique_send_recipients(recipients: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for recipient in recipients:
+        key = _mail_key(recipient)
+        if not key or key in seen:
+            continue
+        result.append(_safe_text(recipient))
+        seen.add(key)
+    return result
+
+
+def _consent_candidate_recipients(
+    email_decision: dict[str, Any],
+    *,
+    recipient_strategy: str | None = None,
+) -> list[str]:
+    return _unique_send_recipients(
+        [
+            *_allowed_send_recipients(email_decision, recipient_strategy=recipient_strategy),
+            *_fallback_send_recipients(email_decision, recipient_strategy=recipient_strategy),
+        ]
+    )
+
+
+def _combine_send_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    sent_recipients: list[str] = []
+    warnings: list[str] = []
+    errors: list[str] = []
+    consent_urls: dict[str, str] = {}
+    first_success = ""
+
+    for result in results:
+        attempts.extend(result.get("attempts") or [])
+        for recipient in result.get("recipients") or []:
+            if recipient not in sent_recipients:
+                sent_recipients.append(recipient)
+        if result.get("recipient") and not first_success:
+            first_success = _safe_text(result.get("recipient"))
+        if _safe_text(result.get("warning")):
+            warnings.append(_safe_text(result.get("warning")))
+        if _safe_text(result.get("error")):
+            errors.append(_safe_text(result.get("error")))
+        urls = result.get("consent_urls")
+        if isinstance(urls, dict):
+            consent_urls.update({str(key): str(value) for key, value in urls.items()})
+
+    return {
+        "recipient": first_success or None,
+        "recipients": sent_recipients,
+        "attempts": attempts,
+        "error": "" if first_success else ("; ".join(errors) or "Не удалось отправить письмо."),
+        "warning": " ".join(warnings).strip(),
+        "consent_urls": consent_urls,
+    }
+
+
+def _send_recipient_sequence_until_success(
+    recipients: list[str],
+    send_one: Callable[[str], dict[str, Any]],
+    *,
+    wait_between_recipients: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    attempted_recipients = 0
+    for recipient in recipients:
+        if attempted_recipients > 0 and wait_between_recipients is not None:
+            if not wait_between_recipients():
+                results.append(
+                    {
+                        "recipient": None,
+                        "recipients": [],
+                        "attempts": [
+                            {
+                                "recipient": recipient,
+                                "status": "error",
+                                "error": "Отправка остановлена во время паузы между письмами.",
+                            }
+                        ],
+                        "error": "Отправка остановлена во время паузы между письмами.",
+                        "warning": "",
+                    }
+                )
+                break
+        attempted_recipients += 1
+        result = send_one(recipient)
+        results.append(result)
+        if result.get("recipient"):
+            break
+    return _combine_send_results(results)
 
 
 def _send_consent_requests_with_transport(
@@ -544,7 +682,9 @@ def _send_consent_requests_with_transport(
     attachment_mode: str = ATTACHMENT_MODE_KP,
     subject_template: str | None = None,
     work_type: str | None = None,
+    recipient_strategy: str | None = None,
     wait_between_recipients: Callable[[], bool] | None = None,
+    wait_after_rate_limit: Callable[[float, str], bool] | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     sent_recipients: list[str] = []
@@ -573,6 +713,7 @@ def _send_consent_requests_with_transport(
                 attachment_mode=attachment_mode,
                 subject_template=subject_template,
                 work_type=work_type,
+                recipient_strategy=recipient_strategy,
             )
             consent_url = _safe_text(consent_record.get("consent_url"))
             consent_urls[recipient] = consent_url
@@ -594,6 +735,7 @@ def _send_consent_requests_with_transport(
                 send_run_id=send_run_id,
                 send_mode="consent_request",
                 attachment_mode=attachment_mode,
+                wait_after_rate_limit=wait_after_rate_limit,
             )
         except Exception as exc:
             attempts.append(
@@ -1898,6 +2040,32 @@ def _run_rusender_request(request: Request, *, timeout: float) -> str:
     raise RuntimeError("RuSender не ответил после повторных попыток.")
 
 
+def _parse_retry_after_seconds(value: Any) -> float | None:
+    text = _safe_text(value)
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+    except ValueError:
+        match = re.search(r"try\s+again\s+in\s+(\d+(?:\.\d+)?)\s+seconds?", text, flags=re.IGNORECASE)
+        if not match:
+            match = re.search(r"(?:retry|повтор)\D{0,20}(\d+(?:\.\d+)?)", text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        seconds = float(match.group(1))
+    if seconds < 0:
+        return None
+    return seconds
+
+
+def _mailopost_retry_after_seconds(exc: HTTPError, raw: str, message: str) -> float:
+    header_value = exc.headers.get("Retry-After") if exc.headers else None
+    for candidate in (header_value, message, raw):
+        seconds = _parse_retry_after_seconds(candidate)
+        if seconds is not None:
+            return seconds + MAILOPOST_RATE_LIMIT_EXTRA_SECONDS
+    return MAILOPOST_RATE_LIMIT_FALLBACK_SECONDS
+
 def _is_retryable_mailopost_exception(exc: Exception) -> bool:
     if isinstance(exc, HTTPError):
         return int(exc.code) in MAILOPOST_RETRYABLE_HTTP_CODES
@@ -1924,6 +2092,8 @@ def _run_mailopost_request(request: Request, *, timeout: float) -> str:
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             exc.raw_body = raw  # type: ignore[attr-defined]
+            if int(exc.code) == 429:
+                raise
             if attempt < MAILOPOST_RETRY_ATTEMPTS and _is_retryable_mailopost_exception(exc):
                 _sleep_sender_retry(MAILOPOST_RETRY_BASE_SECONDS * attempt)
                 last_error = exc
@@ -2237,6 +2407,12 @@ def _send_via_mailopost(
     except HTTPError as exc:
         raw = getattr(exc, "raw_body", "")
         message = _mailopost_error_message(raw, fallback=f"MailoPost вернул HTTP {exc.code}")
+        if int(exc.code) == 429:
+            retry_after_seconds = _mailopost_retry_after_seconds(exc, raw, message)
+            raise MailoPostRateLimitError(
+                f"{message} (HTTP {exc.code}). Повтор через {int(retry_after_seconds)} сек.",
+                retry_after_seconds,
+            ) from exc
         raise RuntimeError(f"{message} (HTTP {exc.code})") from exc
 
     try:
@@ -2632,6 +2808,7 @@ def _send_with_transport(
     send_mode: str = "",
     attachment_mode: str = "",
     wait_between_recipients: Callable[[], bool] | None = None,
+    wait_after_rate_limit: Callable[[float, str], bool] | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     sent_recipients: list[str] = []
@@ -2743,18 +2920,42 @@ def _send_with_transport(
                     attachment_mode=attachment_mode,
                 )
             elif transport == "mailopost":
-                provider = _send_via_mailopost(
-                    row,
-                    recipient,
-                    attachments,
-                    subject,
-                    mail_template_path=mail_template_path,
-                    body_override=body_override,
-                    job_id=job_id,
-                    send_run_id=send_run_id,
-                    send_mode=send_mode,
-                    attachment_mode=attachment_mode,
-                )
+                while True:
+                    try:
+                        provider = _send_via_mailopost(
+                            row,
+                            recipient,
+                            attachments,
+                            subject,
+                            mail_template_path=mail_template_path,
+                            body_override=body_override,
+                            job_id=job_id,
+                            send_run_id=send_run_id,
+                            send_mode=send_mode,
+                            attachment_mode=attachment_mode,
+                        )
+                        break
+                    except MailoPostRateLimitError as exc:
+                        retry_after_seconds = max(1.0, float(exc.retry_after_seconds))
+                        if wait_after_rate_limit is None:
+                            raise
+                        warnings.append(f"MailoPost ограничил скорость отправки. Ждали {int(retry_after_seconds)} сек.")
+                        if wait_after_rate_limit(retry_after_seconds, _safe_text(exc)):
+                            continue
+                        attempts.append(
+                            {
+                                "recipient": recipient,
+                                "status": "error",
+                                "error": "Отправка остановлена во время ожидания лимита MailoPost.",
+                            }
+                        )
+                        return {
+                            "recipient": None,
+                            "recipients": sent_recipients,
+                            "attempts": attempts,
+                            "error": "Отправка остановлена во время ожидания лимита MailoPost.",
+                            "warning": " ".join(warnings).strip(),
+                        }
             else:
                 warning = _send_via_smtp(
                     row,
@@ -3001,6 +3202,7 @@ def run_sender(
     subject_template: str | None = None,
     require_confirmed_consent: bool = False,
     work_type: str | None = None,
+    recipient_strategy: str | None = None,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
@@ -3026,6 +3228,7 @@ def run_sender(
     if effective_send_mode == "materials":
         require_confirmed_consent = True
     effective_attachment_mode = _normalize_attachment_mode(attachment_mode)
+    effective_recipient_strategy = _normalize_recipient_strategy(recipient_strategy or state.get("recipient_strategy"))
     effective_work_type = normalize_work_type(work_type or state.get("work_type") or DEFAULT_WORK_TYPE)
     effective_subject_template = _safe_text(subject_template)
     if effective_work_type != DEFAULT_WORK_TYPE and effective_subject_template == DEFAULT_MAIL_SUBJECT:
@@ -3085,6 +3288,7 @@ def run_sender(
             "stop_requested_at": None,
             "transport": effective_transport,
             "attachment_mode": effective_attachment_mode,
+            "recipient_strategy": effective_recipient_strategy,
             "work_type": effective_work_type,
             "subject_template": effective_subject_template,
         }
@@ -3155,6 +3359,7 @@ def run_sender(
             "email_strategy": "",
             "decision_reason": "",
             "fallback_candidates": [],
+            "recipient_strategy": effective_recipient_strategy,
             "folder": None,
             "attachments": [],
             "error": "",
@@ -3181,12 +3386,23 @@ def run_sender(
         entry["email_strategy"] = email_decision["strategy"]
         entry["decision_reason"] = email_decision["decision_reason"]
         entry["fallback_candidates"] = email_decision["fallback_candidates"]
-        allowed_recipients = _allowed_send_recipients(email_decision)
+        allowed_recipients = _allowed_send_recipients(
+            email_decision,
+            recipient_strategy=effective_recipient_strategy,
+        )
+        fallback_recipients = _fallback_send_recipients(
+            email_decision,
+            recipient_strategy=effective_recipient_strategy,
+        )
         confirmed_material_recipients: list[str] = []
-        if effective_send_mode == "materials" and require_confirmed_consent and allowed_recipients:
+        if effective_send_mode == "materials" and require_confirmed_consent:
+            consent_candidates = _consent_candidate_recipients(
+                email_decision,
+                recipient_strategy=effective_recipient_strategy,
+            )
             confirmed_material_recipients = [
                 recipient
-                for recipient in allowed_recipients
+                for recipient in consent_candidates
                 if has_confirmed_consent(
                     job_id=job_id,
                     row_id=row_id,
@@ -3420,6 +3636,19 @@ def run_sender(
             delay_seconds = max(0.0, float(settings.sender_delay_seconds or 0))
             if delay_seconds > 0:
                 smtp_recipient_delay = lambda: _wait_sender_delay(delay_seconds, state, job_id)
+        mailopost_rate_limit_delay: Callable[[float, str], bool] | None = None
+        if not dry_run and effective_transport == "mailopost":
+            def mailopost_rate_limit_delay(wait_seconds: float, message: str) -> bool:
+                delay_seconds = max(1.0, float(wait_seconds))
+                state["summary_text"] = (
+                    "MailoPost ограничил скорость отправки. "
+                    f"Жду {int(delay_seconds)} сек. Потом продолжу с того же письма."
+                )
+                state["mailopost_rate_limited_at"] = datetime.now().isoformat(timespec="seconds")
+                state["mailopost_retry_after_seconds"] = int(delay_seconds)
+                state["mailopost_rate_limit_message"] = _safe_text(message)
+                _save_sender_state(state, job_id)
+                return _wait_sender_delay(delay_seconds, state, job_id)
         success_status_value = (
             STATUS_CONSENT_REQUEST_SENT_VALUE
             if effective_send_mode == "consent_request"
@@ -3448,6 +3677,11 @@ def run_sender(
                     for recipient in intended_recipients
                     if _mail_key(recipient) not in already_logged
                 ]
+                fallback_recipients_to_send = [
+                    recipient
+                    for recipient in fallback_recipients
+                    if _mail_key(recipient) not in already_logged
+                ]
                 attachments_to_send = [] if effective_send_mode == "consent_request" else attachments
                 if not recipients_to_send:
                     workbook_dirty = (
@@ -3463,7 +3697,11 @@ def run_sender(
                         or workbook_dirty
                     )
                     state["sent_rows"] += 1
-                elif parallel_workers > 1 and effective_send_mode != "consent_request":
+                elif (
+                    parallel_workers > 1
+                    and effective_send_mode != "consent_request"
+                    and effective_recipient_strategy != RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK
+                ):
                     parallel_send_jobs.append(
                         _build_parallel_send_job(
                             row=row,
@@ -3485,7 +3723,47 @@ def run_sender(
                     entry["result"] = "queued_parallel_send"
                     entry["next_action"] = "Письмо поставлено в очередь на параллельную отправку через UniSender."
                 else:
-                    if effective_send_mode == "consent_request":
+                    def send_one_recipient(recipient: str) -> dict[str, Any]:
+                        if effective_send_mode == "consent_request":
+                            return _send_consent_requests_with_transport(
+                                row,
+                                [recipient],
+                                row_subject,
+                                transport=effective_transport,
+                                mail_template_path=mail_template_path,
+                                job_id=job_id,
+                                send_run_id=send_run_id,
+                                attachment_mode=effective_attachment_mode,
+                                subject_template=effective_subject_template,
+                                work_type=effective_work_type,
+                                recipient_strategy=effective_recipient_strategy,
+                                wait_after_rate_limit=mailopost_rate_limit_delay,
+                            )
+                        return _send_with_transport(
+                            row,
+                            [recipient],
+                            attachments_to_send,
+                            row_subject,
+                            transport=effective_transport,
+                            mail_template_path=mail_template_path,
+                            body_override=row_body_override,
+                            job_id=job_id,
+                            send_run_id=send_run_id,
+                            send_mode=effective_send_mode,
+                            attachment_mode=effective_attachment_mode,
+                            wait_after_rate_limit=mailopost_rate_limit_delay,
+                        )
+
+                    if (
+                        effective_recipient_strategy == RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK
+                        and fallback_recipients_to_send
+                    ):
+                        send_result = _send_recipient_sequence_until_success(
+                            _unique_send_recipients([*recipients_to_send, *fallback_recipients_to_send]),
+                            send_one_recipient,
+                            wait_between_recipients=smtp_recipient_delay,
+                        )
+                    elif effective_send_mode == "consent_request":
                         send_result = _send_consent_requests_with_transport(
                             row,
                             recipients_to_send,
@@ -3497,11 +3775,10 @@ def run_sender(
                             attachment_mode=effective_attachment_mode,
                             subject_template=effective_subject_template,
                             work_type=effective_work_type,
+                            recipient_strategy=effective_recipient_strategy,
+                            wait_after_rate_limit=mailopost_rate_limit_delay,
                             wait_between_recipients=smtp_recipient_delay,
                         )
-                        entry["consent_urls"] = send_result.get("consent_urls") or {}
-                        if len(entry["consent_urls"]) == 1:
-                            entry["consent_url"] = next(iter(entry["consent_urls"].values()))
                     else:
                         send_result = _send_with_transport(
                             row,
@@ -3516,7 +3793,12 @@ def run_sender(
                             send_mode=effective_send_mode,
                             attachment_mode=effective_attachment_mode,
                             wait_between_recipients=smtp_recipient_delay,
+                            wait_after_rate_limit=mailopost_rate_limit_delay,
                         )
+                    if effective_send_mode == "consent_request":
+                        entry["consent_urls"] = send_result.get("consent_urls") or {}
+                        if len(entry["consent_urls"]) == 1:
+                            entry["consent_url"] = next(iter(entry["consent_urls"].values()))
                     workbook_dirty = (
                         _apply_send_result_to_entry(
                             entry=entry,

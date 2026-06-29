@@ -335,6 +335,7 @@ def prepare_consent_request(
     attachment_mode: str = "kp",
     subject_template: str | None = None,
     work_type: str | None = None,
+    recipient_strategy: str | None = None,
 ) -> dict[str, Any]:
     with _locked_records(job_id):
         records = _load_records(job_id)
@@ -342,6 +343,7 @@ def prepare_consent_request(
         now = datetime.now().isoformat(timespec="seconds")
         effective_attachment_mode = _normalize_attachment_mode(attachment_mode)
         effective_work_type = normalize_work_type(work_type or DEFAULT_WORK_TYPE)
+        effective_recipient_strategy = _safe_text(recipient_strategy)
         owner_metadata = _job_owner_metadata(job_id)
         expires_at = _consent_expires_at(now)
         for record in records:
@@ -367,6 +369,7 @@ def prepare_consent_request(
                 record["transport"] = _safe_text(transport)
                 record["attachment_mode"] = effective_attachment_mode
                 record["work_type"] = effective_work_type
+                record["recipient_strategy"] = effective_recipient_strategy
                 record["consent_text"] = _consent_text_for_attachment_mode(effective_attachment_mode)
                 record["subject_template"] = _safe_text(subject_template)
                 record["expires_at"] = expires_at
@@ -391,6 +394,7 @@ def prepare_consent_request(
             "transport": _safe_text(transport),
             "attachment_mode": effective_attachment_mode,
             "work_type": effective_work_type,
+            "recipient_strategy": effective_recipient_strategy,
             "subject_template": _safe_text(subject_template),
         }
         records.append(record)
