@@ -782,6 +782,8 @@ def _filter_items_by_current_sender_state(job_id: str | None, items: list[dict[s
     if not job_id or not items:
         return items
     state = _load_sender_state(job_id)
+    if _sender_state_is_materials_followup(job_id, state):
+        return items
     if bool(state.get("selection_scoped")):
         return items
     state_rows = state.get("rows")
@@ -904,8 +906,18 @@ def _sent_log_dedupe_key(item: dict[str, Any]) -> str:
     return ""
 
 
+def _sender_state_is_materials_followup(job_id: str | None, state: dict[str, Any]) -> bool:
+    if not job_id or _safe_text(state.get("send_mode")) != "materials":
+        return False
+    state_rows = state.get("rows")
+    state_row_count = len(state_rows) if isinstance(state_rows, list) else 0
+    return len(load_consent_records(job_id)) > state_row_count
+
+
 def _current_send_scope(job_id: str | None) -> tuple[str, str]:
     state = _load_sender_state(job_id)
+    if _sender_state_is_materials_followup(job_id, state):
+        return "", ""
     send_run_id = _safe_text(state.get("send_run_id"))
     send_run_started_at = _safe_text(state.get("send_run_started_at"))
     if not send_run_started_at and _safe_text(state.get("mode")) == "send":

@@ -143,6 +143,29 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
         self.assertEqual(scoped, items)
 
+    def test_sender_analytics_keeps_campaign_after_materials_followup_state(self) -> None:
+        items = [
+            {"row_id": "1", "recipient": "one@example.com"},
+            {"row_id": "77", "recipient": "terbuny@example.com"},
+        ]
+        state = {
+            "send_mode": "materials",
+            "total_rows": 1,
+            "rows": [{"id": "77", "sent_recipients": ["terbuny@example.com"]}],
+            "send_run_id": "send-materials",
+            "send_run_started_at": "2026-06-29T11:57:00",
+        }
+        consent_records = [{"row_id": str(index), "recipient": f"person{index}@example.com"} for index in range(1, 4)]
+
+        with patch.object(sender_report, "_load_sender_state", return_value=state), patch.object(
+            sender_report, "load_consent_records", return_value=consent_records
+        ):
+            scoped = sender_report._filter_items_by_current_sender_state("job-current", items)
+            send_run_id, send_run_started_at = sender_report._current_send_scope("job-current")
+
+        self.assertEqual(scoped, items)
+        self.assertEqual((send_run_id, send_run_started_at), ("", ""))
+
     def test_sender_analytics_and_report_include_consents(self) -> None:
         delivery_rows = [
             {
