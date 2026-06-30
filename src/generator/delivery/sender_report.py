@@ -465,6 +465,7 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
             checked_at = _safe_text(mailopost_event.get("checked_at")) or checked_at
 
         label = _report_status_label(provider_status)
+        delivery_response = _delivery_response_text(go_event, rusender_event, mailopost_event)
         rows.append(
             {
                 "row_id": _safe_text(item.get("row_id")),
@@ -476,6 +477,7 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
                 "provider": _provider_name(item),
                 "provider_status": _normalize_provider_status(provider_status),
                 "provider_status_label": label,
+                "delivery_response": delivery_response,
                 "outcome": _delivery_outcome(provider_status),
                 "email_id": message_id,
                 "message_id": _safe_text(item.get("provider_job_id") or provider.get("job_id")),
@@ -983,7 +985,10 @@ def _latest_unisender_go_events(job_id: str | None) -> dict[str, dict[str, Any]]
                 priority,
             )
             if not previous or _unisender_go_status_priority(status, priority) >= previous_rank:
-                latest[key] = {"provider_status": status, "checked_at": checked_at}
+                latest_event = dict(event)
+                latest_event["provider_status"] = status
+                latest_event["checked_at"] = checked_at
+                latest[key] = latest_event
     return latest
 
 
@@ -1021,8 +1026,12 @@ def _latest_mailopost_events(job_id: str | None) -> dict[str, dict[str, Any]]:
             previous = latest.get(key)
             previous_rank = priority.get(_normalize_provider_status(_safe_text(previous.get("provider_status")) if previous else ""), 0)
             if not previous or priority.get(status, 0) >= previous_rank:
-                latest[key] = {"provider_status": status, "checked_at": checked_at}
+                latest_event = dict(event)
+                latest_event["provider_status"] = status
+                latest_event["checked_at"] = checked_at
+                latest[key] = latest_event
     return latest
+
 
 def _latest_rusender_events(job_id: str | None) -> dict[str, dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
@@ -1053,7 +1062,10 @@ def _latest_rusender_events(job_id: str | None) -> dict[str, dict[str, Any]]:
             previous = latest.get(key)
             previous_rank = priority.get(_normalize_provider_status(_safe_text(previous.get("provider_status")) if previous else ""), 0)
             if not previous or priority.get(status, 0) >= previous_rank:
-                latest[key] = {"provider_status": status, "checked_at": checked_at}
+                latest_event = dict(event)
+                latest_event["provider_status"] = status
+                latest_event["checked_at"] = checked_at
+                latest[key] = latest_event
     return latest
 
 
@@ -1142,6 +1154,46 @@ def _match_rusender_event(item: dict[str, Any], events: dict[str, dict[str, Any]
         if key in events:
             return events[key]
     return None
+
+
+def _delivery_response_text(*events: dict[str, Any] | None) -> str:
+    for event in events:
+        response = _extract_delivery_response(event)
+        if response:
+            return response
+    return ""
+
+
+def _extract_delivery_response(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+
+    direct_keys = (
+        "delivery_response",
+        "deliveryResponse",
+        "smtp_response",
+        "smtpResponse",
+        "diagnostic_code",
+        "diagnosticCode",
+        "diagnostic",
+        "reason",
+        "error_message",
+        "errorMessage",
+        "error",
+    )
+    for key in direct_keys:
+        text = _safe_text(value.get(key))
+        if text:
+            return text
+
+    for key in ("event", "payload", "message", "data", "raw", "response"):
+        nested = value.get(key)
+        if isinstance(nested, dict):
+            text = _extract_delivery_response(nested)
+            if text:
+                return text
+
+    return ""
 
 
 def _check_classic_statuses(email_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -1310,6 +1362,7 @@ def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
             "Принято провайдером",
             "Код статуса провайдера",
             "Расшифровка статуса",
+            "Причина недоставки",
             "Итог",
             "Email ID",
             "Message ID",
@@ -1326,6 +1379,7 @@ def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
                 row["accepted_status"],
                 row["provider_status"],
                 row["provider_status_label"],
+                row.get("delivery_response", ""),
                 row["outcome"],
                 row["email_id"],
                 row["message_id"],

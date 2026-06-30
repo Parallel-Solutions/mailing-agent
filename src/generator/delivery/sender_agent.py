@@ -107,7 +107,19 @@ MAILOPOST_SEND_PATH = "email/messages"
 RECIPIENT_STRATEGY_ALL = "all"
 RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK = "primary_then_fallback"
 DEFAULT_RECIPIENT_STRATEGY = RECIPIENT_STRATEGY_ALL
-
+DELIVERY_FALLBACK_FAILURE_STATUSES = {
+    "hard_bounced",
+    "err_delivery_failed",
+    "err_user_unknown",
+    "err_user_inactive",
+    "err_mailbox_full",
+    "err_spam_rejected",
+    "err_lost",
+    "spam",
+    "skipped",
+}
+_DELIVERY_FALLBACK_LOCK = threading.Lock()
+_DELIVERY_FALLBACK_RUNNING: set[str] = set()
 
 SENDER_STATE: dict[str, Any] = {
     "status": "idle",
@@ -1486,6 +1498,11 @@ def _append_sent_mail_log(
     sent_mail_log_path: Path | None = None,
     send_run_id: str = "",
     send_run_started_at: str = "",
+    send_mode: str = "",
+    attachment_mode: str = "",
+    subject_template: str = "",
+    work_type: str = "",
+    recipient_strategy: str = "",
 ) -> str | None:
     safe_provider = _safe_provider_payload(provider)
     record = {
@@ -1498,6 +1515,11 @@ def _append_sent_mail_log(
         "attachments": [Path(path).name for path in attachments if _safe_text(path)],
         "attachment_paths": [str(Path(path)) for path in attachments if _safe_text(path)],
         "warning": _safe_text(warning),
+        "send_mode": _safe_text(send_mode),
+        "attachment_mode": _safe_text(attachment_mode),
+        "subject_template": _safe_text(subject_template),
+        "work_type": _safe_text(work_type),
+        "recipient_strategy": _safe_text(recipient_strategy) or DEFAULT_RECIPIENT_STRATEGY,
     }
     if _safe_text(send_run_id):
         record["send_run_id"] = _safe_text(send_run_id)
@@ -1629,6 +1651,346 @@ def _load_sent_mail_log_items(sent_mail_log_path: Path | None = None) -> list[di
     return items
 
 
+def schedule_delivery_fallback_check(job_ids: Any, *, provider: str = "") -> None:
+    if isinstance(job_ids, str):
+        normalized_job_ids = [job_ids]
+    else:
+        try:
+            normalized_job_ids = list(job_ids or [])
+        except TypeError:
+            normalized_job_ids = []
+    provider_key = _safe_text(provider).lower() or "provider"
+    for raw_job_id in normalized_job_ids:
+        job_id = _safe_text(raw_job_id)
+        if not job_id:
+            continue
+        key = f"{provider_key}:{job_id}"
+        with _DELIVERY_FALLBACK_LOCK:
+            if key in _DELIVERY_FALLBACK_RUNNING:
+                continue
+            _DELIVERY_FALLBACK_RUNNING.add(key)
+        thread = threading.Thread(
+            target=_run_scheduled_delivery_fallback_check,
+            args=(job_id, provider_key, key),
+            name=f"delivery-fallback-{job_id[:12]}",
+            daemon=True,
+        )
+        thread.start()
+
+
+def _run_scheduled_delivery_fallback_check(job_id: str, provider: str, running_key: str) -> None:
+    try:
+        for _ in range(30):
+            state = _load_sender_state(job_id)
+            if _safe_text(state.get("status")) != "running":
+                break
+            sleep(10)
+        process_delivery_fallbacks(job_id=job_id, provider=provider)
+    finally:
+        with _DELIVERY_FALLBACK_LOCK:
+            _DELIVERY_FALLBACK_RUNNING.discard(running_key)
+
+
+def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, Any]:
+    state = _load_sender_state(job_id)
+    if _safe_text(state.get("status")) == "running":
+        return {"status": "skipped_running", "job_id": job_id, "dispatched_rows": []}
+
+    job_paths = resolve_job_paths(job_id)
+    sent_mail_log_path = None if job_paths.uses_legacy_layout else job_paths.sent_mail_log_path
+    sent_items = _load_sent_mail_log_items(sent_mail_log_path)
+    if not sent_items:
+        return {"status": "no_sent_log", "job_id": job_id, "dispatched_rows": []}
+
+    rows_by_id = _load_sender_rows_by_id(job_id)
+    latest_events = _latest_delivery_events_by_row_recipient(job_id, sent_items, provider=provider)
+    sent_by_row = _sent_items_by_row(sent_items)
+    dispatch_groups: dict[tuple[str, str, str, str, str], set[str]] = {}
+    dispatch_rows: list[dict[str, str]] = []
+
+    for row_id, row_items in sent_by_row.items():
+        strategy_items = [
+            item
+            for item in row_items
+            if _normalize_recipient_strategy(item.get("recipient_strategy"))
+            == RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK
+        ]
+        if not strategy_items:
+            continue
+        last_item = max(strategy_items, key=_sent_item_order_key)
+        failed_recipient_key = _mail_key(last_item.get("recipient"))
+        if not failed_recipient_key:
+            continue
+        event = latest_events.get((row_id, failed_recipient_key))
+        if not event or not _is_delivery_failure_status(event.get("provider_status") or event.get("event_type")):
+            continue
+        row = rows_by_id.get(row_id)
+        if row is None:
+            continue
+        email_decision = _choose_recipient(row)
+        fallback_recipients = _fallback_send_recipients(
+            email_decision,
+            recipient_strategy=RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+        )
+        logged_recipients = {_mail_key(item.get("recipient")) for item in row_items if _mail_key(item.get("recipient"))}
+        next_fallbacks = [recipient for recipient in fallback_recipients if _mail_key(recipient) not in logged_recipients]
+        if not next_fallbacks:
+            continue
+        transport = _safe_text(last_item.get("transport")) or _safe_text(provider) or _safe_text(state.get("transport"))
+        send_mode = _safe_text(last_item.get("send_mode")) or _safe_text(state.get("send_mode")) or "consent_request"
+        attachment_mode = _safe_text(last_item.get("attachment_mode")) or _safe_text(state.get("attachment_mode")) or ATTACHMENT_MODE_KP
+        subject_template = _safe_text(last_item.get("subject_template")) or _safe_text(state.get("subject_template"))
+        work_type = _safe_text(last_item.get("work_type")) or _safe_text(state.get("work_type")) or DEFAULT_WORK_TYPE
+        group_key = (transport, send_mode, attachment_mode, subject_template, work_type)
+        dispatch_groups.setdefault(group_key, set()).add(row_id)
+        dispatch_rows.append(
+            {
+                "row_id": row_id,
+                "failed_recipient": _safe_text(last_item.get("recipient")),
+                "next_recipient": next_fallbacks[0],
+                "provider_status": _safe_text(event.get("provider_status") or event.get("event_type")),
+            }
+        )
+
+    if not dispatch_groups:
+        return {"status": "no_fallback_needed", "job_id": job_id, "dispatched_rows": []}
+
+    results: list[dict[str, Any]] = []
+    for (transport, send_mode, attachment_mode, subject_template, work_type), row_ids in dispatch_groups.items():
+        result = run_sender(
+            dry_run=False,
+            row_ids=sorted(row_ids, key=_sort_row_id_text),
+            transport=transport,
+            send_mode=send_mode,
+            attachment_mode=attachment_mode,
+            subject_template=subject_template,
+            require_confirmed_consent=send_mode == "materials",
+            work_type=work_type,
+            recipient_strategy=RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+            job_id=job_id,
+        )
+        results.append(
+            {
+                "transport": transport,
+                "send_mode": send_mode,
+                "attachment_mode": attachment_mode,
+                "row_ids": sorted(row_ids, key=_sort_row_id_text),
+                "status": result.get("status"),
+                "summary_text": result.get("summary_text"),
+            }
+        )
+    return {"status": "dispatched", "job_id": job_id, "dispatched_rows": dispatch_rows, "results": results}
+
+
+def _load_sender_rows_by_id(job_id: str) -> dict[str, dict[str, Any]]:
+    data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
+    if not data_xlsx_path.exists():
+        return {}
+    workbook = None
+    try:
+        workbook, _, rows = load_rows(data_xlsx_path)
+    except Exception:
+        return {}
+    finally:
+        close = getattr(workbook, "close", None)
+        if callable(close):
+            close()
+    return {_safe_text(row.get("ID")): row for row in rows if _safe_text(row.get("ID"))}
+
+
+def _sent_items_by_row(sent_items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in sent_items:
+        row_id = _safe_text(item.get("row_id"))
+        if row_id:
+            grouped.setdefault(row_id, []).append(item)
+    return grouped
+
+
+def _sent_item_order_key(item: dict[str, Any]) -> tuple[str, str]:
+    return (_safe_text(item.get("sent_at")), _safe_text(item.get("recipient")).lower())
+
+
+def _sort_row_id_text(value: Any) -> tuple[int, str]:
+    text = _safe_text(value)
+    try:
+        return (int(float(text)), text)
+    except ValueError:
+        return (10**9, text)
+
+
+def _is_delivery_failure_status(status: Any) -> bool:
+    normalized = _safe_text(status).lower()
+    if not normalized:
+        return False
+    if normalized in DELIVERY_FALLBACK_FAILURE_STATUSES:
+        return True
+    return normalized.startswith("err_") and normalized != "err_will_retry"
+
+
+def _latest_delivery_events_by_row_recipient(
+    job_id: str,
+    sent_items: list[dict[str, Any]],
+    *,
+    provider: str = "",
+) -> dict[tuple[str, str], dict[str, Any]]:
+    provider_filter = _safe_text(provider).lower()
+    events = _load_delivery_events(job_id, provider_filter)
+    provider_id_index, row_recipient_index, recipient_index = _sent_item_indexes(sent_items)
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for event in events:
+        matched_item = _match_delivery_event_to_sent_item(
+            event,
+            provider_id_index=provider_id_index,
+            row_recipient_index=row_recipient_index,
+            recipient_index=recipient_index,
+        )
+        row_id = _safe_text(event.get("row_id")) or _safe_text(matched_item.get("row_id") if matched_item else "")
+        recipient = _mail_key(event.get("recipient") or (matched_item.get("recipient") if matched_item else ""))
+        if not row_id or not recipient:
+            continue
+        normalized = dict(event)
+        normalized["row_id"] = row_id
+        normalized["recipient"] = recipient
+        normalized.setdefault("provider_status", _safe_text(event.get("event_type")))
+        key = (row_id, recipient)
+        current = latest.get(key)
+        if current is None or _delivery_event_order_key(normalized) >= _delivery_event_order_key(current):
+            latest[key] = normalized
+    return latest
+
+
+def _load_delivery_events(job_id: str, provider: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    providers = {provider} if provider and provider != "provider" else {"mailopost", "rusender", "unisender"}
+    if "mailopost" in providers:
+        try:
+            from src.generator.delivery.mailopost_events import load_mailopost_events
+
+            events.extend(load_mailopost_events(job_id))
+        except Exception:
+            pass
+    if "rusender" in providers:
+        try:
+            from src.generator.delivery.rusender_events import load_rusender_events
+
+            events.extend(load_rusender_events(job_id))
+        except Exception:
+            pass
+    if "unisender" in providers:
+        try:
+            from src.generator.delivery.unisender_go_events import load_unisender_go_events
+
+            for event in load_unisender_go_events(job_id):
+                normalized = dict(event)
+                normalized.setdefault("provider_status", _safe_text(event.get("event_type")))
+                events.append(normalized)
+        except Exception:
+            pass
+    return events
+
+
+def _sent_item_indexes(
+    sent_items: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[tuple[str, str], dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    provider_id_index: dict[str, dict[str, Any]] = {}
+    row_recipient_index: dict[tuple[str, str], dict[str, Any]] = {}
+    recipient_index: dict[str, list[dict[str, Any]]] = {}
+    for item in sent_items:
+        for provider_id in _provider_ids_from_sent_item(item):
+            provider_id_index[provider_id] = item
+        row_id = _safe_text(item.get("row_id"))
+        recipient = _mail_key(item.get("recipient"))
+        if row_id and recipient:
+            row_recipient_index[(row_id, recipient)] = item
+        if recipient:
+            recipient_index.setdefault(recipient, []).append(item)
+    return provider_id_index, row_recipient_index, recipient_index
+
+
+def _match_delivery_event_to_sent_item(
+    event: dict[str, Any],
+    *,
+    provider_id_index: dict[str, dict[str, Any]],
+    row_recipient_index: dict[tuple[str, str], dict[str, Any]],
+    recipient_index: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    for provider_id in _provider_ids_from_delivery_event(event):
+        item = provider_id_index.get(provider_id)
+        if item:
+            return item
+    row_id = _safe_text(event.get("row_id"))
+    recipient = _mail_key(event.get("recipient"))
+    if row_id and recipient:
+        item = row_recipient_index.get((row_id, recipient))
+        if item:
+            return item
+    if recipient:
+        candidates = recipient_index.get(recipient) or []
+        if candidates:
+            return max(candidates, key=_sent_item_order_key)
+    return None
+
+
+def _provider_ids_from_sent_item(item: dict[str, Any]) -> set[str]:
+    provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
+    values = (
+        item.get("provider_message_id"),
+        item.get("message_id"),
+        item.get("provider_job_id"),
+        item.get("provider_idempotency_key"),
+        item.get("idempotency_key"),
+        item.get("idempotencyKey"),
+        provider.get("message_id"),
+        provider.get("id"),
+        provider.get("uuid"),
+        provider.get("job_id"),
+        provider.get("idempotency_key"),
+        provider.get("idempotencyKey"),
+    )
+    return {_safe_text(value) for value in values if _safe_text(value)}
+
+
+def _provider_ids_from_delivery_event(event: dict[str, Any]) -> set[str]:
+    values = (
+        event.get("message_id"),
+        event.get("task_id"),
+        event.get("provider_job_id"),
+        event.get("email_id"),
+        event.get("id"),
+        event.get("uuid"),
+    )
+    raw_event = event.get("event") if isinstance(event.get("event"), dict) else {}
+    nested_values = [
+        raw_event.get("message_id"),
+        raw_event.get("messageId"),
+        raw_event.get("taskId"),
+        raw_event.get("task_id"),
+        raw_event.get("email_id"),
+        raw_event.get("id"),
+        raw_event.get("uuid"),
+    ]
+    payload = raw_event.get("payload")
+    if isinstance(payload, dict):
+        nested_values.extend(
+            [
+                payload.get("message_id"),
+                payload.get("messageId"),
+                payload.get("taskId"),
+                payload.get("task_id"),
+                payload.get("uuid"),
+                payload.get("id"),
+            ]
+        )
+    return {_safe_text(value) for value in (*values, *nested_values) if _safe_text(value)}
+
+
+def _delivery_event_order_key(event: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        _safe_text(event.get("occurred_at")),
+        _safe_text(event.get("received_at")),
+        _safe_text(event.get("event_key")),
+    )
 def _check_unisender_classic_messages(email_ids: list[str]) -> dict[str, dict[str, Any]]:
     api_key = _safe_text(settings.unisender_api_key)
     unique_ids = [_safe_text(item) for item in dict.fromkeys(email_ids) if _safe_text(item)]
@@ -3032,6 +3394,9 @@ def _build_parallel_send_job(
     send_run_id: str = "",
     send_mode: str = "",
     attachment_mode: str = "",
+    subject_template: str = "",
+    work_type: str = "",
+    recipient_strategy: str = "",
     body_override: str | None = None,
     success_status_value: str = STATUS_SENT_VALUE,
 ) -> dict[str, Any]:
@@ -3050,6 +3415,9 @@ def _build_parallel_send_job(
         "send_run_id": send_run_id,
         "send_mode": send_mode,
         "attachment_mode": attachment_mode,
+        "subject_template": subject_template,
+        "work_type": work_type,
+        "recipient_strategy": recipient_strategy,
     }
 
 
@@ -3116,6 +3484,11 @@ def _apply_send_result_to_entry(
     attachments: list[str],
     row_subject: str,
     effective_transport: str,
+    effective_send_mode: str,
+    effective_attachment_mode: str,
+    effective_subject_template: str,
+    effective_work_type: str,
+    effective_recipient_strategy: str,
     sent_mail_log_path: Path | None,
     sent_mail_recipients: dict[str, set[str]],
     send_run_id: str,
@@ -3143,6 +3516,11 @@ def _apply_send_result_to_entry(
                 sent_mail_log_path=sent_mail_log_path,
                 send_run_id=send_run_id,
                 send_run_started_at=send_run_started_at,
+                send_mode=effective_send_mode,
+                attachment_mode=effective_attachment_mode,
+                subject_template=effective_subject_template,
+                work_type=effective_work_type,
+                recipient_strategy=effective_recipient_strategy,
             )
             sent_mail_recipients.setdefault(row_id_text, set()).add(_mail_key(sent_recipient))
             if log_warning:
@@ -3170,6 +3548,11 @@ def _apply_send_result_to_entry(
             sent_mail_log_path=sent_mail_log_path,
             send_run_id=send_run_id,
             send_run_started_at=send_run_started_at,
+            send_mode=effective_send_mode,
+            attachment_mode=effective_attachment_mode,
+            subject_template=effective_subject_template,
+            work_type=effective_work_type,
+            recipient_strategy=effective_recipient_strategy,
         )
         if log_warning:
             entry["warning"] = f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
@@ -3683,7 +4066,11 @@ def run_sender(
                     if _mail_key(recipient) not in already_logged
                 ]
                 attachments_to_send = [] if effective_send_mode == "consent_request" else attachments
-                if not recipients_to_send:
+                has_deferred_fallback_recipients = (
+                    effective_recipient_strategy == RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK
+                    and bool(fallback_recipients_to_send)
+                )
+                if not recipients_to_send and not has_deferred_fallback_recipients:
                     workbook_dirty = (
                         _restore_sent_from_local_log(
                             entry=entry,
@@ -3718,6 +4105,9 @@ def run_sender(
                             send_run_id=send_run_id,
                             send_mode=effective_send_mode,
                             attachment_mode=effective_attachment_mode,
+                            subject_template=effective_subject_template,
+                            work_type=effective_work_type,
+                            recipient_strategy=effective_recipient_strategy,
                         )
                     )
                     entry["result"] = "queued_parallel_send"
@@ -3808,6 +4198,11 @@ def run_sender(
                             attachments=attachments_to_send,
                             row_subject=row_subject,
                             effective_transport=effective_transport,
+                            effective_send_mode=effective_send_mode,
+                            effective_attachment_mode=effective_attachment_mode,
+                            effective_subject_template=effective_subject_template,
+                            effective_work_type=effective_work_type,
+                            effective_recipient_strategy=effective_recipient_strategy,
                             sent_mail_log_path=sent_mail_log_path,
                             sent_mail_recipients=sent_mail_recipients,
                             send_run_id=send_run_id,
@@ -3927,6 +4322,11 @@ def run_sender(
                                 attachments=job["attachments"],
                                 row_subject=job["subject"],
                                 effective_transport=effective_transport,
+                                effective_send_mode=job.get("send_mode") or effective_send_mode,
+                                effective_attachment_mode=job.get("attachment_mode") or effective_attachment_mode,
+                                effective_subject_template=job.get("subject_template") or effective_subject_template,
+                                effective_work_type=job.get("work_type") or effective_work_type,
+                                effective_recipient_strategy=job.get("recipient_strategy") or effective_recipient_strategy,
                                 sent_mail_log_path=sent_mail_log_path,
                                 sent_mail_recipients=sent_mail_recipients,
                                 send_run_id=send_run_id,

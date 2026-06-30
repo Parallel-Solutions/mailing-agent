@@ -2171,6 +2171,7 @@
         <select id="settings-work-type" onchange="handleSettingsWorkTypeChange(this.value)">
           <option value="mngp_settlements">МНГП (сельских и городских поселений)</option>
           <option value="mngp_districts">МНГП по муниципальным районам</option>
+          <option value="stp_mo">СТП МО</option>
           <option value="territorial_zone_boundaries">Описание местоположения границ территориальных зон</option>
         </select>
       </div>
@@ -2554,8 +2555,8 @@
           <div class="sender-transport-field">
             <label for="sender-recipient-strategy">Кому отправляем</label>
             <select id="sender-recipient-strategy">
-              <option value="all">На все email</option>
-              <option value="primary_then_fallback">Основной, резерв при ошибке</option>
+              <option value="all">На все почты</option>
+              <option value="primary_then_fallback">Основной, резерв при недоставке</option>
             </select>
           </div>
           <div class="sender-transport-field">
@@ -2734,6 +2735,7 @@
   const WORK_TYPE_DEFAULT_SUBJECTS = {
     mngp_settlements: 'Коммерческое предложение на разработку МНГП.',
     mngp_districts: 'Коммерческое предложение на разработку МНГП.',
+    stp_mo: 'Коммерческое предложение на разработку СТП МО.',
     territorial_zone_boundaries: 'Коммерческое предложение на подготовку описания границ территориальных зон.',
   };
   const INITIAL_CHAT_MESSAGES = {
@@ -5926,6 +5928,12 @@ function clearAttachedFile() {
     const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
     syncSenderAttachmentModeFromDocuments({ force: true });
     scheduleUiStateSave();
+    const documentsRunLock = getDocumentsRunLock();
+    if (documentsRunLock.locked) {
+      showToast(documentsRunLock.reason);
+      appendChatMessage('g-chat', 'agent', documentsRunLock.reason);
+      return;
+    }
     const isResume = currentGeneratorStatus === 'stopped' || currentPhilologistStatus === 'stopped';
     const resumeStage = currentGeneratorStatus === 'completed' && currentPhilologistStatus === 'stopped' ? 'review' : 'generate';
     try {
@@ -6113,6 +6121,16 @@ function clearAttachedFile() {
     button.title = isEnabled ? '' : reason;
   }
 
+  function getDocumentsRunLock() {
+    const actions = ((lastDocumentsUiState.ui || {}).actions || {});
+    const reason = actions.run_disabled_reason || '';
+    const locked = typeof actions.can_run === 'boolean' && !actions.can_run && !!reason;
+    return {
+      locked,
+      reason: reason || 'Документы уже успешно подготовлены без ошибок. Повторный запуск для этой сессии заблокирован.',
+    };
+  }
+
   function syncGeneratorStartDescriptionVisibility(status = String((lastDocumentsUiState || {}).status || 'idle')) {
     const startDescription = document.getElementById('g-start-desc');
     if (!startDescription) return;
@@ -6214,10 +6232,12 @@ function clearAttachedFile() {
       updateSettingsChecklist();
     }
 
+    const documentsRunLock = getDocumentsRunLock();
+    const generatorCanRun = !generatorRunningNow && !documentsRunLock.locked;
     applyButtonReadiness(
       generatorRunButton,
-      !generatorRunningNow,
-      'Подготовка уже выполняется.'
+      generatorCanRun,
+      documentsRunLock.locked ? documentsRunLock.reason : 'Подготовка уже выполняется.'
     );
     applyButtonReadiness(
       philologistRunButton,
@@ -6654,8 +6674,19 @@ function clearAttachedFile() {
     const runButton = document.getElementById('g-run');
     const pauseButton = document.getElementById('g-pause');
     if (runButton) {
-      runButton.disabled = !!isBusy;
-      runButton.title = '';
+      if (!isBusy) {
+        const documentsRunLock = getDocumentsRunLock();
+        if (documentsRunLock.locked) {
+          runButton.disabled = true;
+          runButton.title = documentsRunLock.reason;
+        } else {
+          runButton.disabled = false;
+          runButton.title = '';
+        }
+      } else {
+        runButton.disabled = true;
+        runButton.title = '';
+      }
     }
     if (pauseButton) {
       pauseButton.textContent = 'Остановить';
@@ -6856,10 +6887,13 @@ function clearAttachedFile() {
     if (status === 'completed') {
       if (runButton) {
         const serverModule = ((lastDocumentsUiState.ui || {}).module || {});
-        runButton.textContent = 'Подготовить заново';
-        runButton.title = runButton.disabled
-          ? (serverModule.generator_hint || moduleReadiness.generator_reason || 'Сначала загрузите таблицу и шаблоны.')
-          : 'Запустить подготовку заново с текущими данными.';
+        const serverActions = ((lastDocumentsUiState.ui || {}).actions || {});
+        const canRunAgain = typeof serverActions.can_run === 'boolean' ? serverActions.can_run : true;
+        runButton.textContent = canRunAgain ? 'Подготовить заново' : (serverModule.run_text || 'Подготовка завершена');
+        runButton.disabled = !canRunAgain;
+        runButton.title = canRunAgain
+          ? 'Запустить подготовку заново с текущими данными.'
+          : (serverActions.run_disabled_reason || serverModule.generator_hint || 'Документы уже успешно подготовлены без ошибок.');
       }
       badge.textContent = 'Готово';
       badge.className = 'badge badge-done';

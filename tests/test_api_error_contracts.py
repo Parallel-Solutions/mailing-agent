@@ -10,6 +10,8 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.generator.generation.document_builder import DOCUMENT_RENDERER_VERSION
+
 from src.security.auth import Principal
 from src.web.documents_router import create_documents_router
 from src.web.sender_router import create_sender_router
@@ -107,6 +109,57 @@ class ApiErrorContractTests(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0][0][0], "rusender_webhook_save_failed")
 
+    def test_documents_start_409_when_successful_generation_is_locked(self) -> None:
+        root = _workspace_temp_root("api-error-documents-locked")
+        try:
+            xlsx_path = root / "data.xlsx"
+            xlsx_path.write_bytes(b"xlsx")
+            starts: list[tuple] = []
+            app = FastAPI()
+            app.include_router(
+                create_documents_router(
+                    check_auth=lambda: Principal("admin", "root", "admin"),
+                    prefer_existing_file=lambda primary, fallback: xlsx_path,
+                    compact_documents_status=lambda job_id, document_mode=None: {
+                        "status": "completed",
+                        "restart_locked": True,
+                    },
+                    get_generator_thread=lambda job_id: None,
+                    get_philologist_thread=lambda job_id: None,
+                    prime_philologist_running_state=lambda job_id, mode: {},
+                    start_documents_thread_if_absent=lambda *args, **kwargs: starts.append((args, kwargs)),
+                    run_documents_pipeline_background=lambda **kwargs: None,
+                    documents_job_key=lambda job_id: job_id or "default",
+                    clear_philologist_stop_request=lambda job_id: None,
+                    get_generator_status=lambda job_id: {
+                        "status": "completed",
+                        "document_mode": "kp",
+                        "work_type": "mngp_settlements",
+                        "renderer_version": DOCUMENT_RENDERER_VERSION,
+                        "error_rows": 0,
+                        "output_file_count": 2,
+                    },
+                    get_philologist_status=lambda job_id: {"status": "completed"},
+                    clear_generator_stop_request=lambda job_id: None,
+                    save_generator_state=lambda state, job_id: None,
+                    prime_generator_state=lambda **kwargs: {},
+                    request_generator_stop=lambda job_id: {},
+                    request_philologist_stop=lambda job_id: {},
+                    documents_agent_choose_reply=lambda message, job_id=None: {"reply": message},
+                )
+            )
+
+            response = TestClient(app).post(
+                "/api/documents/start",
+                json={"job_id": "job-test", "document_mode": "kp", "work_type": "mngp_settlements"},
+            )
+
+            payload = response.json()
+            self.assertEqual(response.status_code, 409)
+            self.assertIn("Повторный запуск", payload["detail"])
+            self.assertEqual(starts, [])
+        finally:
+            _cleanup(root)
     def test_documents_start_500_hides_internal_exception_detail(self) -> None:
         root = _workspace_temp_root("api-error-documents")
         try:

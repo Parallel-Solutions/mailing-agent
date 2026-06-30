@@ -54,6 +54,9 @@
     );
     const expectedDocuments = totalRows > 0 ? totalRows * documentCountPerRow(documentMode) : 0;
     const humanize = helpers.humanizeDocumentsMessage || ((value, fallback) => String(value || fallback || ''));
+    const fallbackRestartLocked = status === 'completed'
+      && Number(result.error_rows || 0) === 0
+      && Number(result.output_file_count || 0) > 0;
     const labelText = status === 'running'
       ? 'Запускаю подготовку документов.'
       : humanize(result.stage_text, 'Подготовка документов ещё не запускалась.');
@@ -95,13 +98,14 @@
         running: status === 'running',
       },
       actions: {
-        can_run: status !== 'running',
+        can_run: status !== 'running' && !fallbackRestartLocked,
         can_stop: status === 'running',
         can_download_output: false,
         can_download_report: false,
         can_go_next: status === 'completed',
         next_button_text: 'Дальше: проверить отправку',
         next_button_title: status === 'completed' ? 'Перейти к проверке отправки.' : 'Сначала завершите подготовку документов.',
+        run_disabled_reason: fallbackRestartLocked ? 'Документы уже успешно подготовлены без ошибок. Повторный запуск для этой сессии заблокирован.' : '',
       },
     };
   }
@@ -143,9 +147,11 @@
     if (runButton) {
       runButton.textContent = module.run_text || 'Подготовить документы';
       runButton.disabled = typeof actions.can_run === 'boolean' ? !actions.can_run : status === 'running';
-      runButton.title = status === 'completed' && !runButton.disabled
-        ? 'Запустить подготовку заново с текущими данными.'
-        : '';
+      runButton.title = runButton.disabled
+        ? (actions.run_disabled_reason || '')
+        : status === 'completed'
+          ? 'Запустить подготовку заново с текущими данными.'
+          : '';
     }
     const pauseButton = document.getElementById('g-pause');
     if (pauseButton) {

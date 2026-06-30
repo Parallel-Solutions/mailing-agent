@@ -239,6 +239,54 @@ class DocumentsStateStatusTests(unittest.TestCase):
         event_texts = [event["text"] for event in result["ui"]["chat_events"]]
         self.assertIn("Результат собран. Можно скачать архив и перейти к проверке отправки.", event_texts)
 
+    def test_completed_successful_documents_lock_restart_action(self) -> None:
+        self._configure_documents_service(
+            generator_state={
+                "status": "completed",
+                "stage": "completed",
+                "document_mode": "kp",
+                "total_rows": 2,
+                "processed_rows": 2,
+                "output_file_count": 4,
+                "error_rows": 0,
+            },
+            philologist_state={
+                "status": "completed",
+                "total_documents": 2,
+                "processed_documents": 2,
+            },
+        )
+
+        result = documents_service.compact_documents_status("job-test", document_mode="kp")
+
+        self.assertTrue(result["restart_locked"])
+        self.assertFalse(result["ui"]["actions"]["can_run"])
+        self.assertEqual(result["ui"]["module"]["run_text"], "Подготовка завершена")
+        self.assertIn("Повторный запуск", result["ui"]["actions"]["run_disabled_reason"])
+
+    def test_completed_documents_with_errors_can_be_restarted(self) -> None:
+        self._configure_documents_service(
+            generator_state={
+                "status": "completed",
+                "stage": "completed",
+                "document_mode": "kp",
+                "total_rows": 2,
+                "processed_rows": 2,
+                "output_file_count": 2,
+                "error_rows": 1,
+            },
+            philologist_state={
+                "status": "completed",
+                "total_documents": 2,
+                "processed_documents": 2,
+            },
+        )
+
+        result = documents_service.compact_documents_status("job-test", document_mode="kp")
+
+        self.assertFalse(result["restart_locked"])
+        self.assertTrue(result["ui"]["actions"]["can_run"])
+        self.assertEqual(result["ui"]["module"]["run_text"], "Подготовить заново")
     def test_documents_chat_greeting_does_not_dump_status_stats(self) -> None:
         documents_service._deps.clear()
 

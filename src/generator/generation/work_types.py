@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 WORK_TYPE_MNGP_SETTLEMENTS = "mngp_settlements"
 WORK_TYPE_MNGP_DISTRICTS = "mngp_districts"
 WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES = "territorial_zone_boundaries"
+WORK_TYPE_STP_MO = "stp_mo"
 DEFAULT_WORK_TYPE = WORK_TYPE_MNGP_SETTLEMENTS
 
 
@@ -52,6 +53,26 @@ _MNGP_PROFILE = WorkTypeProfile(
 WORK_TYPE_PROFILES: dict[str, WorkTypeProfile] = {
     WORK_TYPE_MNGP_SETTLEMENTS: _MNGP_PROFILE,
     WORK_TYPE_MNGP_DISTRICTS: replace(_MNGP_PROFILE, key=WORK_TYPE_MNGP_DISTRICTS),
+    WORK_TYPE_STP_MO: replace(
+        _MNGP_PROFILE,
+        key=WORK_TYPE_STP_MO,
+        label="СТП МО",
+        short_name="СТП МО",
+        filename_label="СТП_МО",
+        service_title_prepositional="разработке схемы территориального планирования муниципального образования",
+        service_title_nominative="разработка схемы территориального планирования муниципального образования",
+        result_name="схема территориального планирования муниципального образования",
+        mail_subject="Коммерческое предложение на разработку СТП МО.",
+        consent_subject_kp="СТП МО для {MUN_R_NAME}: согласие на получение КП",
+        consent_subject_contract="СТП МО для {MUN_R_NAME}: согласие на получение проекта договора",
+        consent_subject_both="СТП МО для {MUN_R_NAME}: согласие на получение КП и проекта договора",
+        consent_button_kp="Получить персонализированное коммерческое предложение по разработке СТП МО.",
+        consent_button_contract="Получить проект договора по разработке СТП МО.",
+        consent_button_both="Получить КП и проект договора по разработке СТП МО.",
+        consent_prepared_phrase=(
+            "на разработку схемы территориального планирования муниципального образования (далее - СТП МО)"
+        ),
+    ),
     WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES: WorkTypeProfile(
         key=WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES,
         label="Описание местоположения границ территориальных зон",

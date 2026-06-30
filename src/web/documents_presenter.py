@@ -112,6 +112,12 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
     elif status == "idle":
         progress_percent = 0
     progress_running = status == "running"
+    restart_locked = bool(documents_status.get("restart_locked"))
+    restart_disabled_reason = (
+        "Документы уже успешно подготовлены без ошибок. Повторный запуск для этой сессии заблокирован."
+        if restart_locked
+        else ""
+    )
     done_value = processed_rows
     done_label = "Клиентов"
 
@@ -160,10 +166,10 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
         process_next = "Теперь можно скачать результат или перейти к проверке отправки."
         badge_text = "Готово"
         badge_tone = "done"
-        run_text = "Подготовить заново"
+        run_text = "Подготовка завершена" if restart_locked else "Подготовить заново"
         label_text = "Документы подготовлены. Можно скачать результат и перейти к проверке отправки."
         generator_hint = "Документы готовы. Можно скачать результат."
-        actions_hint = "Готово. Можно скачать документы."
+        actions_hint = restart_disabled_reason if restart_locked else "Готово. Можно скачать документы."
         next_hint = "Теперь можно переходить к следующему шагу."
         next_button_title = "Перейти к проверке отправки."
         done_value = total_rows or total_documents // 2
@@ -242,13 +248,14 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
         "actions": {
             # The start endpoint still validates files/templates. Keep the UI button clickable
             # so stale readiness polling cannot trap the user on a disabled action.
-            "can_run": status in {"idle", "completed", "stopped", "error", "waiting_review"},
+            "can_run": status in {"idle", "completed", "stopped", "error", "waiting_review"} and not restart_locked,
             "can_stop": status == "running",
             "can_download_output": status == "completed" and output_file_count > 0,
             "can_download_report": status == "completed" and (fixed_documents > 0 or total_documents > 0),
             "can_go_next": status == "completed",
             "next_button_text": next_button_text,
             "next_button_title": next_button_title,
+            "run_disabled_reason": restart_disabled_reason,
         },
         "chat_events": build_documents_chat_events(documents_status),
     }

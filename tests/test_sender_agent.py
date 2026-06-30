@@ -178,6 +178,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 "provider": "mailopost",
                 "provider_status": "delivered",
                 "provider_status_label": "Доставлено",
+                "delivery_response": "250 2.0.0 queued as OK",
                 "outcome": "Успешно",
                 "email_id": "message-1",
                 "message_id": "message-1",
@@ -221,6 +222,9 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             workbook = load_workbook(report_path, read_only=True)
             try:
                 self.assertIn("Согласия", workbook.sheetnames)
+                journal_sheet = workbook["Журнал отправки"]
+                self.assertEqual(journal_sheet[3][8].value, "Причина недоставки")
+                self.assertEqual(journal_sheet[4][8].value, "250 2.0.0 queued as OK")
                 consent_sheet = workbook["Согласия"]
                 self.assertEqual(consent_sheet[3][3].value, "Статус согласия")
                 self.assertEqual(consent_sheet[4][3].value, "Согласие получено")
@@ -342,6 +346,104 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(decision["invalid_emails"], ["bad-email"])
         self.assertIn("дополнительные", decision["decision_reason"])
 
+    def test_delivery_failure_dispatches_next_fallback_recipient(self) -> None:
+        sent_items = [
+            {
+                "sent_at": "2026-06-29T10:00:00",
+                "row_id": "1",
+                "recipient": "one@example.com",
+                "transport": "mailopost",
+                "send_mode": "consent_request",
+                "attachment_mode": "kp",
+                "work_type": "territorial_zone_boundaries",
+                "recipient_strategy": sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+                "provider": {"message_id": "m1", "provider": "mailopost"},
+            }
+        ]
+        events = [
+            {
+                "message_id": "m1",
+                "row_id": "1",
+                "recipient": "one@example.com",
+                "provider_status": "hard_bounced",
+                "received_at": "2026-06-29T10:01:00",
+            }
+        ]
+        rows = {
+            "1": {
+                "ID": "1",
+                "EMAIL_OSN": "one@example.com",
+                "EMAIL_DOP": "two@example.com; three@example.com",
+            }
+        }
+        calls: list[dict] = []
+
+        def fake_run_sender(**kwargs):
+            calls.append(kwargs)
+            return {"status": "completed", "summary_text": "ok"}
+
+        with patch.object(sender_agent, "_load_sender_state", return_value={"status": "completed"}), patch.object(
+            sender_agent, "_load_sent_mail_log_items", return_value=sent_items
+        ), patch.object(sender_agent, "_load_sender_rows_by_id", return_value=rows), patch.object(
+            sender_agent, "_load_delivery_events", return_value=events
+        ), patch.object(sender_agent, "run_sender", side_effect=fake_run_sender):
+            result = sender_agent.process_delivery_fallbacks(job_id="job-1", provider="mailopost")
+
+        self.assertEqual(result["status"], "dispatched")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["row_ids"], ["1"])
+        self.assertEqual(calls[0]["recipient_strategy"], sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK)
+        self.assertEqual(calls[0]["transport"], "mailopost")
+
+    def test_delivery_failure_does_not_replay_old_primary_bounce_after_fallback_sent(self) -> None:
+        sent_items = [
+            {
+                "sent_at": "2026-06-29T10:00:00",
+                "row_id": "1",
+                "recipient": "one@example.com",
+                "transport": "mailopost",
+                "send_mode": "consent_request",
+                "attachment_mode": "kp",
+                "recipient_strategy": sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+                "provider": {"message_id": "m1", "provider": "mailopost"},
+            },
+            {
+                "sent_at": "2026-06-29T10:05:00",
+                "row_id": "1",
+                "recipient": "two@example.com",
+                "transport": "mailopost",
+                "send_mode": "consent_request",
+                "attachment_mode": "kp",
+                "recipient_strategy": sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+                "provider": {"message_id": "m2", "provider": "mailopost"},
+            },
+        ]
+        events = [
+            {
+                "message_id": "m1",
+                "row_id": "1",
+                "recipient": "one@example.com",
+                "provider_status": "hard_bounced",
+                "received_at": "2026-06-29T10:01:00",
+            }
+        ]
+        rows = {
+            "1": {
+                "ID": "1",
+                "EMAIL_OSN": "one@example.com",
+                "EMAIL_DOP": "two@example.com; three@example.com",
+            }
+        }
+
+        with patch.object(sender_agent, "_load_sender_state", return_value={"status": "completed"}), patch.object(
+            sender_agent, "_load_sent_mail_log_items", return_value=sent_items
+        ), patch.object(sender_agent, "_load_sender_rows_by_id", return_value=rows), patch.object(
+            sender_agent, "_load_delivery_events", return_value=events
+        ), patch.object(sender_agent, "run_sender") as run_sender_mock:
+            result = sender_agent.process_delivery_fallbacks(job_id="job-1", provider="mailopost")
+
+        self.assertEqual(result["status"], "no_fallback_needed")
+        run_sender_mock.assert_not_called()
     def test_primary_then_fallback_sequence_stops_after_first_success(self) -> None:
         sent: list[str] = []
         waits: list[str] = []

@@ -151,6 +151,19 @@ def create_sender_router(
         sender_mode = str(sender_state.get("attachment_mode") or "").strip().lower()
         return sender_mode if sender_mode in {"kp", "contract", "both"} else "kp"
 
+    def _schedule_delivery_fallbacks(result: Any, *, provider: str) -> None:
+        if not isinstance(result, dict):
+            return
+        jobs = result.get("jobs")
+        if not jobs:
+            return
+        try:
+            from src.generator.delivery.sender_agent import schedule_delivery_fallback_check
+
+            schedule_delivery_fallback_check(jobs, provider=provider)
+        except Exception:
+            logger.exception("delivery_fallback_schedule_failed", provider=provider, jobs=jobs)
+
     @router.post("/api/sender/run")
     async def sender_run(payload: SenderRunRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         payload = payload or SenderRunRequest()
@@ -292,6 +305,7 @@ def create_sender_router(
         payload = await read_webhook_json(request, "UniSender Go")
         try:
             result = append_unisender_go_events(payload)
+            _schedule_delivery_fallbacks(result, provider="unisender")
         except Exception as exc:
             logger.exception("unisender_go_webhook_save_failed")
             raise internal_server_error("Не удалось сохранить webhook UniSender Go.") from exc
@@ -342,6 +356,7 @@ def create_sender_router(
         payload = await read_webhook_json(request, "RuSender")
         try:
             result = append_rusender_events(payload)
+            _schedule_delivery_fallbacks(result, provider="rusender")
         except Exception as exc:
             logger.exception("rusender_webhook_save_failed")
             raise internal_server_error("Не удалось сохранить webhook RuSender.") from exc
@@ -393,6 +408,7 @@ def create_sender_router(
         payload = await read_webhook_json(request, "MailoPost")
         try:
             result = append_mailopost_events(payload)
+            _schedule_delivery_fallbacks(result, provider="mailopost")
         except Exception as exc:
             logger.exception("mailopost_webhook_save_failed")
             raise internal_server_error("Не удалось сохранить webhook MailoPost.") from exc

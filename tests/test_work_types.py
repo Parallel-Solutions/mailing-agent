@@ -16,7 +16,7 @@ from src.generator.generation.document_builder import (
     stabilize_kp_pdf_layout,
 )
 from src.generator.generation.transforms import build_document_context
-from src.generator.generation.work_types import WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES
+from src.generator.generation.work_types import WORK_TYPE_STP_MO, WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES
 
 
 class WorkTypeProfileTests(unittest.TestCase):
@@ -32,6 +32,17 @@ class WorkTypeProfileTests(unittest.TestCase):
             "EMAIL_OSN": "test@example.com",
             "TEL_OSN": "+70000000000",
         }
+
+    def test_stp_mo_context_adds_work_profile_fields(self) -> None:
+        context = build_document_context(self._row(), 101, work_type=WORK_TYPE_STP_MO)
+
+        self.assertEqual(context["WORK_TYPE"], WORK_TYPE_STP_MO)
+        self.assertEqual(context["WORK_TYPE_LABEL"], "СТП МО")
+        self.assertEqual(context["WORK_SHORT_NAME"], "СТП МО")
+        self.assertEqual(context["WORK_FILENAME_LABEL"], "СТП_МО")
+        self.assertIn("схемы территориального планирования", context["WORK_TITLE"])
+        self.assertIn("СТП МО", context["MAIL_SUBJECT_DEFAULT"])
+        self.assertNotIn("местных нормативов", context["WORK_TITLE"])
 
     def test_territorial_zone_context_adds_work_profile_fields(self) -> None:
         context = build_document_context(self._row(), 101, work_type=WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES)

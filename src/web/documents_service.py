@@ -41,6 +41,21 @@ def _document_count_per_row(document_mode: str | None) -> int:
 def _pdf_count_per_row(document_mode: str | None) -> int:
     return 1 if "kp" in document_mode_kinds(document_mode) else 0
 
+def is_successful_documents_generation_locked(
+    *,
+    status: str,
+    generator_state: dict,
+    document_mode: str | None,
+) -> bool:
+    generator_document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
+    requested_document_mode = normalize_document_mode(document_mode or DOCUMENT_MODE_BOTH)
+    return (
+        status == "completed"
+        and generator_document_mode == requested_document_mode
+        and _safe_int(generator_state.get("error_rows")) == 0
+        and _safe_int(generator_state.get("output_file_count")) > 0
+    )
+
 
 def _documents_progress_units(
     *,
@@ -351,7 +366,11 @@ def compact_documents_status(job_id: str | None, document_mode: str | None = Non
         generator=generator_state,
         philologist=philologist_state,
     )
-
+    restart_locked = is_successful_documents_generation_locked(
+        status=status,
+        generator_state=generator_state,
+        document_mode=document_mode,
+    )
     result = {
         "job_id": job_id or "",
         "status": status,
@@ -375,6 +394,7 @@ def compact_documents_status(job_id: str | None, document_mode: str | None = Non
         "summary_text": stage_text,
         "document_mode": document_mode,
         "work_type": work_type,
+        "restart_locked": restart_locked,
     }
     result["ui"] = build_documents_ui_payload(result, readiness=readiness)
     return result

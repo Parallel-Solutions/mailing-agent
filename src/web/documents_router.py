@@ -59,7 +59,7 @@ def create_documents_router(
             raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
 
         try:
-            compact_documents_status(job_id, document_mode)
+            initial_documents_status = compact_documents_status(job_id, document_mode)
             generator_state = get_generator_status(job_id)
             philologist_state = get_philologist_status(job_id)
             generator_thread = get_generator_thread(job_id)
@@ -83,6 +83,11 @@ def create_documents_router(
             and generator_work_type == work_type
             and generator_renderer_version == DOCUMENT_RENDERER_VERSION
         )
+        if generator_is_current and bool(initial_documents_status.get("restart_locked")):
+            raise HTTPException(
+                status_code=409,
+                detail="Документы уже успешно подготовлены без ошибок. Повторный запуск для этой сессии заблокирован.",
+            )
         if str(generator_state.get("status") or "") == "completed":
             if generator_is_current and str(philologist_state.get("status") or "") != "completed":
                 clear_philologist_stop_request(job_id)

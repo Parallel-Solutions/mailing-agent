@@ -27,10 +27,12 @@
     const runButton = document.getElementById('s-run');
     const transportSelect = document.getElementById('sender-transport');
     const sendModeSelect = document.getElementById('sender-send-mode');
+    const recipientStrategySelect = document.getElementById('sender-recipient-strategy');
     const disabledReason = helpers.senderDisabledReason || 'Сначала подготовьте документы.';
     const hasFailedRows = Number(errorRows || 0) > 0;
     if (transportSelect) transportSelect.disabled = status === 'running';
     if (sendModeSelect) sendModeSelect.disabled = status === 'running';
+    if (recipientStrategySelect) recipientStrategySelect.disabled = status === 'running';
     if (!runButton) return;
 
     runButton.dataset.action = 'preview';
