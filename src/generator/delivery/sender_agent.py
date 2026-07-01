@@ -117,6 +117,15 @@ DELIVERY_FALLBACK_FAILURE_STATUSES = {
     "err_lost",
     "spam",
     "skipped",
+    "failed",
+    "failure",
+    "error",
+    "delivery_failed",
+    "not_delivered",
+    "undelivered",
+    "rejected",
+    "bounced",
+    "bounce",
 }
 _DELIVERY_FALLBACK_LOCK = threading.Lock()
 _DELIVERY_FALLBACK_RUNNING: set[str] = set()

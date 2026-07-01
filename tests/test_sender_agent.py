@@ -11,6 +11,7 @@ from urllib.request import Request
 
 from openpyxl import load_workbook
 
+from src.generator.delivery import mailopost_events
 from src.generator.delivery import sender_agent
 from src.generator.delivery import sender_report
 from src.web import sender_service
@@ -674,6 +675,58 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(payload["smtp_headers"]["X-Mailing-Agent-Job"], "job-test")
         self.assertEqual(result["provider"], "mailopost")
         self.assertEqual(result["message_id"], "123")
+
+    def test_mailopost_delivery_failure_aliases_are_normalized(self) -> None:
+        self.assertEqual(mailopost_events._status_from_event("not_delivered"), "err_delivery_failed")
+        self.assertEqual(mailopost_events._status_from_event("failed"), "err_delivery_failed")
+        self.assertEqual(mailopost_events._status_from_event("bounce"), "hard_bounced")
+
+    def test_mailopost_not_delivered_dispatches_next_fallback_recipient(self) -> None:
+        sent_items = [
+            {
+                "sent_at": "2026-06-29T10:00:00",
+                "row_id": "1",
+                "recipient": "one@example.com",
+                "transport": "mailopost",
+                "send_mode": "consent_request",
+                "attachment_mode": "kp",
+                "recipient_strategy": sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+                "provider": {"message_id": "m1", "provider": "mailopost"},
+            }
+        ]
+        events = [
+            {
+                "message_id": "m1",
+                "row_id": "1",
+                "recipient": "one@example.com",
+                "provider_status": "not_delivered",
+                "received_at": "2026-06-29T10:01:00",
+            }
+        ]
+        rows = {
+            "1": {
+                "ID": "1",
+                "EMAIL_OSN": "one@example.com",
+                "EMAIL_DOP": "two@example.com",
+            }
+        }
+        calls: list[dict] = []
+
+        def fake_run_sender(**kwargs):
+            calls.append(kwargs)
+            return {"status": "completed", "summary_text": "ok"}
+
+        with patch.object(sender_agent, "_load_sender_state", return_value={"status": "completed"}), patch.object(
+            sender_agent, "_load_sent_mail_log_items", return_value=sent_items
+        ), patch.object(sender_agent, "_load_sender_rows_by_id", return_value=rows), patch.object(
+            sender_agent, "_load_delivery_events", return_value=events
+        ), patch.object(sender_agent, "run_sender", side_effect=fake_run_sender):
+            result = sender_agent.process_delivery_fallbacks(job_id="job-1", provider="mailopost")
+
+        self.assertEqual(result["status"], "dispatched")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["row_ids"], ["1"])
+        self.assertEqual(calls[0]["recipient_strategy"], sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK)
 
     def test_mailopost_retry_after_uses_header_and_message(self) -> None:
         header_error = HTTPError("https://api.mailopost.ru/v1/email/messages", 429, "Too Many", {"Retry-After": "12"}, None)

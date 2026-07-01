@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 import hashlib
@@ -17,7 +17,18 @@ UNMATCHED_EVENTS_FILENAME = "mailopost_events_unmatched.jsonl"
 EVENT_STATUS_MAP = {
     "delivered": "delivered",
     "hard_bounced": "hard_bounced",
+    "hard_bounce": "hard_bounced",
+    "bounced": "hard_bounced",
+    "bounce": "hard_bounced",
     "soft_bounced": "soft_bounced",
+    "soft_bounce": "soft_bounced",
+    "failed": "err_delivery_failed",
+    "failure": "err_delivery_failed",
+    "error": "err_delivery_failed",
+    "delivery_failed": "err_delivery_failed",
+    "not_delivered": "err_delivery_failed",
+    "undelivered": "err_delivery_failed",
+    "rejected": "err_delivery_failed",
     "skipped": "skipped",
     "opened": "opened",
     "open": "opened",
