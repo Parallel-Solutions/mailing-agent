@@ -326,7 +326,7 @@ def _record_matches_job_scope(record: dict[str, Any], *, job_id: str | None) -> 
 def public_consent_url(token: str) -> str:
     base_url = _safe_text(settings.public_base_url).rstrip("/")
     if not base_url:
-        base_url = "http://127.0.0.1:8000"
+        raise ValueError("PUBLIC_BASE_URL must be set to build consent links.")
     return f"{base_url}/consent/confirm/{token}"
 
 

@@ -1,11 +1,19 @@
-from fastapi.responses import HTMLResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pathlib import Path
 import zipfile
-from src.security.auth import authenticate_basic_user
+from src.security.auth import principal_from_user_record
+from src.security.auth_bootstrap import bootstrap_auth_store
+from src.security.session_store import SESSION_COOKIE_NAME, get_session_username
+from src.security.user_store import get_user_record
 from src.utils.logger import logger
 from src.utils.config import SecurityConfigurationError, require_configured_app_password, settings
-from src.workers.process_manager import list_worker_statuses, start_worker_process_thread, terminate_worker_process
+from src.jobs.access import read_job_owner
+from src.workers.process_manager import (
+    _count_user_active_workers,
+    list_worker_statuses,
+    start_worker_process_thread,
+    terminate_worker_process,
+)
 from src.web.agent_router import create_agent_router
 from src.web.consent_router import create_consent_router
 from src.web.documents_router import create_documents_router
@@ -24,6 +32,7 @@ from src.web.parser_router import create_parser_router
 from src.web.philologist_router import create_philologist_router
 from src.web.public_router import create_public_router
 from src.web.sender_router import create_sender_router
+from src.web.auth_router import create_auth_router
 from src.web.workers_router import create_workers_router
 from src.web.sender_service import (
     compact_sender_status,
@@ -32,7 +41,7 @@ from src.web.sender_service import (
     prime_sender_running_state,
     run_sender_background,
 )
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile
+from fastapi import Cookie, Depends, FastAPI, HTTPException, UploadFile, status
 import shutil
 import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -42,7 +51,8 @@ import time
 from src.parser_new.progress import subscribe as parser_progress_subscribe
 
 app = FastAPI(title="Mailing Agent")
-security = HTTPBasic()
+PROJECT_ROOT = Path(__file__).resolve().parent
+TEMPLATES_DIR = PROJECT_ROOT / "templates"
 _sender_threads: dict[str, threading.Thread] = {}
 _sender_threads_lock = threading.Lock()
 _philologist_threads: dict[str, threading.Thread] = {}
@@ -57,12 +67,12 @@ _parser_verification_threads: dict[str, threading.Thread] = {}
 _parser_verification_threads_lock = threading.Lock()
 _output_archive_threads: dict[str, threading.Thread] = {}
 _output_archive_threads_lock = threading.Lock()
-PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 @app.on_event("startup")
 async def app_startup():
     require_configured_app_password(settings)
+    bootstrap_auth_store(settings)
     return None
 
 
@@ -71,7 +81,7 @@ async def app_shutdown():
     return None
 
 
-def check_auth(credentials: HTTPBasicCredentials = Depends(security)):
+def check_auth(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
     try:
         require_configured_app_password(settings)
     except SecurityConfigurationError as exc:
@@ -81,14 +91,19 @@ def check_auth(credentials: HTTPBasicCredentials = Depends(security)):
             detail="Сервис не настроен: APP_PASSWORD не задан.",
         ) from exc
 
-    principal = authenticate_basic_user(credentials.username, credentials.password, settings)
-    if principal is None:
+    username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
+    if not username:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный логин или пароль",
-            headers={"WWW-Authenticate": "Basic"},
+            detail="Требуется вход в систему",
         )
-    return principal
+    record = get_user_record(username)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Сессия недействительна",
+        )
+    return principal_from_user_record(record)
 
 
 def _parse_optional_limit(payload: dict | None) -> int | None:
@@ -409,6 +424,22 @@ def _register_documents_thread(job_id: str | None, thread: threading.Thread) -> 
         _documents_threads[_documents_job_key(job_id)] = thread
 
 
+def _ensure_generator_user_limit(job_id: str | None) -> None:
+    _ensure_user_inprocess_limit(
+        job_id,
+        registry=_generator_threads,
+        registry_lock=_generator_threads_lock,
+    )
+
+
+def _ensure_philologist_user_limit(job_id: str | None) -> None:
+    _ensure_user_inprocess_limit(
+        job_id,
+        registry=_philologist_threads,
+        registry_lock=_philologist_threads_lock,
+    )
+
+
 def _mark_worker_process_failed(task: str, job_id: str | None, message: str) -> None:
     completed_at = datetime.now().isoformat(timespec="seconds")
     if task == "sender":
@@ -456,6 +487,8 @@ def _start_background_worker_process(
     timeout_seconds: int,
     before_start=None,
 ) -> tuple[threading.Thread, bool]:
+    owner = read_job_owner(job_id)
+    owner_username = str(owner.get("owner_username") or "")
     return start_worker_process_thread(
         job_id,
         task=task,
@@ -470,9 +503,30 @@ def _start_background_worker_process(
         mark_failed=_mark_worker_process_failed,
         logger=logger,
         max_workers=max_workers,
+        user_max_workers=max(1, int(settings.user_worker_max_processes_per_task or 1)),
+        owner_username=owner_username,
         timeout_seconds=timeout_seconds,
         before_start=before_start,
     )
+
+
+def _ensure_user_inprocess_limit(
+    job_id: str | None,
+    *,
+    registry: dict[str, threading.Thread],
+    registry_lock: threading.Lock,
+) -> None:
+    owner = read_job_owner(job_id)
+    owner_username = str(owner.get("owner_username") or "")
+    if not owner_username:
+        return
+    user_max = max(1, int(settings.user_inprocess_max_tasks or 1))
+    with registry_lock:
+        active_count = _count_user_active_workers(registry, owner_username)
+    if active_count >= user_max:
+        raise RuntimeError(
+            f"Достигнут лимит фоновых задач для пользователя {owner_username}: {active_count}/{user_max}."
+        )
 
 
 def _start_sender_thread_if_absent(
@@ -810,12 +864,15 @@ def _prime_philologist_running_state(job_id: str | None, mode: str | None) -> di
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(username: str = Depends(check_auth)):
-    return Path("templates/index.html").read_text(encoding="utf-8")
+async def index(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
+    username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
+    if not username or get_user_record(username) is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
 
 
 @app.get("/api/status")
-async def app_status(username: str = Depends(check_auth)):
+async def app_status(principal: object = Depends(check_auth)):
     return {"status": "ok", "message": "Сервер работает"}
 
 from src.generator.generation.excel_io import load_rows
@@ -1001,6 +1058,14 @@ configure_sender_service(
 )
 
 
+app.include_router(
+    create_auth_router(
+        settings_obj=settings,
+        check_auth=check_auth,
+        login_template_path=TEMPLATES_DIR / "login.html",
+        register_template_path=TEMPLATES_DIR / "register.html",
+    )
+)
 app.include_router(jobs_controller.router)
 app.include_router(create_consent_router())
 app.include_router(
@@ -1094,6 +1159,7 @@ app.include_router(
         generator_job_key=_generator_job_key,
         register_generator_thread=_register_generator_thread,
         request_generator_stop=request_generator_stop,
+        ensure_user_inprocess_limit=_ensure_generator_user_limit,
     )
 )
 
@@ -1127,6 +1193,7 @@ app.include_router(
         request_philologist_stop=request_philologist_stop,
         build_philologist_plan=build_philologist_plan,
         chat_with_philologist=chat_with_philologist,
+        ensure_user_inprocess_limit=_ensure_philologist_user_limit,
     )
 )
 

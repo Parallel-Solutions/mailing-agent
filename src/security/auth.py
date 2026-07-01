@@ -131,3 +131,24 @@ def authenticate_basic_user(username: str, password: str, settings_obj: Any) -> 
         tenant_id=_safe_identifier(user_config.get("tenant_id") or safe_username, fallback=safe_username),
         role=_safe_identifier(user_config.get("role") or "user", fallback="user").lower(),
     )
+
+
+def authenticate_user(username: str, password: str) -> Principal | None:
+    from src.security.user_store import verify_user_password
+
+    record = verify_user_password(username, password)
+    if record is None:
+        return None
+    return Principal(
+        username=record.username,
+        tenant_id=record.tenant_id,
+        role=record.role,
+    )
+
+
+def principal_from_user_record(record: Any) -> Principal:
+    return Principal(
+        username=str(getattr(record, "username", "") or ""),
+        tenant_id=str(getattr(record, "tenant_id", "") or ""),
+        role=str(getattr(record, "role", "user") or "user"),
+    )

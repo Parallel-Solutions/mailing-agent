@@ -56,9 +56,9 @@ def assign_job_owner(job_id: str | None, principal: Any, *, overwrite: bool = Fa
     return payload
 
 
-def _same_tenant(owner: dict[str, Any], principal: Principal) -> bool:
-    owner_tenant = str(owner.get("tenant_id") or "").strip()
-    return bool(owner_tenant and owner_tenant == principal.tenant_id)
+def _same_owner(owner: dict[str, Any], principal: Principal) -> bool:
+    owner_username = str(owner.get("owner_username") or "").strip()
+    return bool(owner_username and owner_username == principal.username)
 
 
 def authorize_job_access(job_id: str | None, principal: Any, *, allow_missing: bool = False) -> str | None:
@@ -72,7 +72,7 @@ def authorize_job_access(job_id: str | None, principal: Any, *, allow_missing: b
     paths = resolve_job_paths(normalized_job_id)
     owner = read_job_owner(normalized_job_id)
     if owner:
-        if actor.is_admin or _same_tenant(owner, actor):
+        if actor.is_admin or _same_owner(owner, actor):
             return normalized_job_id
         raise JobAccessDenied("Нет доступа к этому job.", status_code=403)
 

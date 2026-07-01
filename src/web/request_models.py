@@ -162,3 +162,40 @@ class InflectionApprovalRequest(ApiRequest):
     @classmethod
     def _normalize_required_text(cls, value: Any) -> str:
         return _clean_required_text(value)
+
+
+class AuthRegisterRequest(ApiRequest):
+    username: str
+    password: str
+    password_confirm: str | None = None
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def _normalize_username(cls, value: Any) -> str:
+        return _clean_required_text(value)
+
+    @field_validator("password", "password_confirm", mode="before")
+    @classmethod
+    def _normalize_password(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ValueError("must be a string")
+        return value
+
+
+class AuthLoginRequest(ApiRequest):
+    username: str
+    password: str
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def _normalize_username(cls, value: Any) -> str:
+        return _clean_required_text(value)
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def _normalize_password(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("must be a string")
+        return value
