@@ -2,8 +2,6 @@ from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from src.utils.env import LOCAL_ENV_PATH
-
 
 class SecurityConfigurationError(RuntimeError):
     """Raised when the service would start with an unsafe security config."""
@@ -11,9 +9,7 @@ class SecurityConfigurationError(RuntimeError):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(LOCAL_ENV_PATH,),
-        env_file_encoding="utf-8",
-        extra="ignore"
+        extra="ignore",
     )
 
     @classmethod
@@ -35,6 +31,8 @@ class Settings(BaseSettings):
     app_password: str = ""
     app_users: str = ""
     app_admin_tenant_id: str = "admin"
+    auth_db_path: str = "storage/auth/auth.sqlite"
+    app_session_ttl_days: int = 7
 
     # Приложение
     app_host: str = "0.0.0.0"
@@ -69,6 +67,8 @@ class Settings(BaseSettings):
     sender_unisender_concurrency: int = 1
     documents_worker_max_processes: int = 1
     sender_worker_max_processes: int = 1
+    user_worker_max_processes_per_task: int = 1
+    user_inprocess_max_tasks: int = 1
     documents_worker_timeout_seconds: int = 21600
     sender_worker_timeout_seconds: int = 7200
     unisender_api_key: str = ""

@@ -25,6 +25,7 @@ def create_philologist_router(
     request_philologist_stop: Callable[[str | None], dict],
     build_philologist_plan: Callable[[str | None], dict],
     chat_with_philologist: Callable[..., dict],
+    ensure_user_inprocess_limit: Callable[[str | None], None] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -52,6 +53,11 @@ def create_philologist_router(
 
         clear_philologist_stop_request(job_id)
         primed_state = prime_philologist_running_state(job_id, mode or "fast")
+        if ensure_user_inprocess_limit is not None:
+            try:
+                ensure_user_inprocess_limit(job_id)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         philologist_thread = threading.Thread(
             target=run_philologist_background,
             kwargs={"ai_enabled": ai_enabled, "job_id": job_id, "mode": mode},

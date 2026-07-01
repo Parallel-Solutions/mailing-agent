@@ -1,0 +1,15 @@
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mailing-agent:local
+    environment:
+      MAILING_AGENT_TEST_RUNTIME: /app/.test-runtime
+      APP_PASSWORD: test-only-password
+      APP_USERNAME: admin
+      PUBLIC_BASE_URL: https://example.com
+    volumes:
+      - ./.test-runtime:/app/.test-runtime
+    command:
+      [".venv/bin/python", "-m", "tests"]
