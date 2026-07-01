@@ -238,8 +238,7 @@ Runtime-данные (`storage/`, `logs/`, `data/`) монтируются с х
 
 - `APP_USERNAME`, `APP_PASSWORD` — admin fallback для входа; `APP_PASSWORD` обязателен, с пустым значением сервис не запустится;
 
-- `APP_USERS` - optional JSON map for multi-user mode, for example `{"alice":{"password":"...","tenant_id":"tenant-a","role":"user"}}`; jobs are owner-only: each user sees only own jobs, admin sees all;
-- `APP_ALLOW_REGISTRATION` - enables self-registration page and API; disabled by default (`false`) for production safety;
+- `APP_USERS` — optional JSON map пользователей для multi-user режима, например `{"alice":{"password":"...","tenant_id":"tenant-a","role":"user"}}`; пользователи одного `tenant_id` видят общие jobs tenant-а, admin видит все;
 
 - `PUBLIC_BASE_URL` — внешний URL сервиса для consent-ссылок и webhooks;
 
