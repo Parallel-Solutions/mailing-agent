@@ -199,6 +199,32 @@ def format_kp_recipient(value: object) -> str:
     return text
 
 
+def build_head_greeting_name(context: dict) -> str:
+    head_fio = str(context.get("HEAD_FIO") or "").strip()
+    parts = [part for part in head_fio.split() if part]
+    if len(parts) >= 3:
+        return f"{parts[1]} {parts[2]}"
+    if head_fio:
+        return head_fio
+    return str(context.get("HEAD_FIO_SHORT") or "").strip()
+
+
+def build_head_greeting(context: dict) -> str:
+    name = build_head_greeting_name(context)
+    if not name:
+        return ""
+
+    full_parts = [part for part in str(context.get("HEAD_FIO") or "").split() if part]
+    patronymic = full_parts[2].lower() if len(full_parts) >= 3 else name.split()[-1].lower()
+    if patronymic.endswith(("вна", "чна", "шна")):
+        prefix = "Уважаемая"
+    elif patronymic.endswith(("ич", "оглы")):
+        prefix = "Уважаемый"
+    else:
+        prefix = "Уважаемый(ая)"
+    return f"{prefix} {name}!"
+
+
 def clear_highlights(doc: DocumentObject) -> None:
     for paragraph in iter_paragraphs(doc):
         for run in paragraph.runs:
@@ -1908,6 +1934,9 @@ def ensure_render_context(context: dict) -> dict:
 
 def build_kp_replacements(context: dict) -> list[tuple[str, str]]:
     context = ensure_render_context(context)
+    head_greeting = build_head_greeting(context)
+    head_fio = str(context.get("HEAD_FIO") or "")
+    head_fio_short = str(context.get("HEAD_FIO_SHORT") or head_fio)
     district_scope_fragment = ensure_official_district_wording(
         f"{context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
     )
@@ -1925,6 +1954,11 @@ def build_kp_replacements(context: dict) -> list[tuple[str, str]]:
         ("WORK_TITLE_1", str(context.get("WORK_TITLE_1", context.get("WORK_TITLE", "")))),
         ("WORK_TITLE", str(context.get("WORK_TITLE", ""))),
         ("WORK_RESULT_NAME", str(context.get("WORK_RESULT_NAME", ""))),
+        ("HEAD_GREETING", head_greeting),
+        ("Уважаемый (ая) HEAD_FIO  !", head_greeting),
+        ("Уважаемый (ая) HEAD_FIO !", head_greeting),
+        ("HEAD_FIO_SHORT", head_fio_short),
+        ("HEAD_FIO", head_fio_short),
         ("ADM_NAME_1", format_kp_recipient(context.get("ADM_NAME_1", ""))),
         ("ADM_NAME", format_kp_recipient(context.get("ADM_NAME_1") or context.get("ADM_NAME", ""))),
         ("MUN_NAME_2", str(context.get("MUN_NAME_2", ""))),

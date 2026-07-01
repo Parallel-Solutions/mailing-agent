@@ -16,7 +16,12 @@ from src.generator.generation.document_builder import (
     stabilize_kp_pdf_layout,
 )
 from src.generator.generation.transforms import build_document_context
-from src.generator.generation.work_types import WORK_TYPE_STP_MO, WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES
+from src.generator.generation.work_types import (
+    WORK_TYPE_RANDOM_FOREST,
+    WORK_TYPE_STP_MO,
+    WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES,
+    normalize_work_type,
+)
 
 
 class WorkTypeProfileTests(unittest.TestCase):
@@ -43,6 +48,65 @@ class WorkTypeProfileTests(unittest.TestCase):
         self.assertIn("схемы территориального планирования", context["WORK_TITLE"])
         self.assertIn("СТП МО", context["MAIL_SUBJECT_DEFAULT"])
         self.assertNotIn("местных нормативов", context["WORK_TITLE"])
+
+    def test_random_forest_context_adds_work_profile_fields(self) -> None:
+        context = build_document_context(self._row(), 101, work_type=WORK_TYPE_RANDOM_FOREST)
+
+        self.assertEqual(normalize_work_type("random_forest"), WORK_TYPE_RANDOM_FOREST)
+        self.assertEqual(context["WORK_TYPE"], WORK_TYPE_RANDOM_FOREST)
+        self.assertEqual(context["WORK_TYPE_LABEL"], "Случайный лес")
+        self.assertEqual(context["WORK_SHORT_NAME"], "Случайный лес")
+        self.assertEqual(context["WORK_FILENAME_LABEL"], "Случайный_лес")
+        self.assertIn("интеллектуальной автоматизации", context["WORK_TITLE"])
+        self.assertIn("интеллектуальной автоматизации", context["MAIL_SUBJECT_DEFAULT"])
+        self.assertNotIn("местных нормативов", context["WORK_TITLE"])
+
+    def test_random_forest_kp_replacements_include_head_greeting(self) -> None:
+        context = build_document_context(self._row(), 101, work_type=WORK_TYPE_RANDOM_FOREST)
+        replacements = dict(build_kp_replacements(context))
+
+        self.assertEqual(replacements["Уважаемый (ая) HEAD_FIO  !"], "Уважаемый Иван Иванович!")
+        self.assertEqual(replacements["HEAD_GREETING"], "Уважаемый Иван Иванович!")
+        self.assertEqual(replacements["HEAD_FIO_SHORT"], "И.И. Иванов")
+        self.assertEqual(replacements["HEAD_FIO"], "И.И. Иванов")
+
+        row = {**self._row(), "HEAD_FIO": "Юнусова Лилия Римовна"}
+        female_context = build_document_context(row, 101, work_type=WORK_TYPE_RANDOM_FOREST)
+        female_replacements = dict(build_kp_replacements(female_context))
+        self.assertEqual(female_replacements["Уважаемый (ая) HEAD_FIO  !"], "Уважаемая Лилия Римовна!")
+
+    def test_random_forest_render_replaces_split_head_greeting(self) -> None:
+        Path("tmp").mkdir(exist_ok=True)
+        template_path = Path("tmp") / "random_forest_kp_template_source.docx"
+        output_path = Path("tmp") / "random_forest_kp_result.docx"
+        try:
+            template_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            doc = Document()
+            paragraph = doc.add_paragraph()
+            for chunk in ["Уважаемы", "й (", "ая", ")", " ", "HEAD_FIO", " ", " ", "!"]:
+                paragraph.add_run(chunk)
+            table = doc.add_table(rows=1, cols=1)
+            cell_paragraph = table.rows[0].cells[0].paragraphs[0]
+            cell_paragraph.add_run("ADM")
+            cell_paragraph.add_run("_NAME")
+            cell_paragraph.add_run(" ")
+            doc.save(template_path)
+
+            context = build_document_context(self._row(), 101, work_type=WORK_TYPE_RANDOM_FOREST)
+            render_docx(template_path, build_kp_replacements(context), output_path, context)
+
+            rendered = Document(output_path)
+            text = "\n".join(paragraph.text for paragraph in rendered.paragraphs)
+            cell_text = rendered.tables[0].rows[0].cells[0].text
+            self.assertIn("Уважаемый Иван Иванович!", text)
+            self.assertNotIn("HEAD_FIO", text)
+            self.assertIn("Администрации", cell_text)
+            self.assertIn("Нийское сельское поселение", cell_text)
+            self.assertNotIn("ADM_NAME", cell_text)
+        finally:
+            template_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
 
     def test_territorial_zone_context_adds_work_profile_fields(self) -> None:
         context = build_document_context(self._row(), 101, work_type=WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES)

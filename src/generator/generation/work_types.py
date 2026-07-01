@@ -7,6 +7,7 @@ WORK_TYPE_MNGP_SETTLEMENTS = "mngp_settlements"
 WORK_TYPE_MNGP_DISTRICTS = "mngp_districts"
 WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES = "territorial_zone_boundaries"
 WORK_TYPE_STP_MO = "stp_mo"
+WORK_TYPE_RANDOM_FOREST = "random_forest"
 DEFAULT_WORK_TYPE = WORK_TYPE_MNGP_SETTLEMENTS
 
 
@@ -89,6 +90,33 @@ WORK_TYPE_PROFILES: dict[str, WorkTypeProfile] = {
         consent_button_contract="Получить проект договора по описанию границ территориальных зон.",
         consent_button_both="Получить КП и проект договора по описанию границ территориальных зон.",
         consent_prepared_phrase="по подготовке описания местоположения границ территориальных зон",
+    ),
+    WORK_TYPE_RANDOM_FOREST: WorkTypeProfile(
+        key=WORK_TYPE_RANDOM_FOREST,
+        label="Случайный лес",
+        short_name="Случайный лес",
+        filename_label="Случайный_лес",
+        service_title_prepositional="интеллектуальной автоматизации государственного сектора",
+        service_title_nominative="интеллектуальная автоматизация государственного сектора",
+        result_name="интеллектуальная автоматизация государственного сектора",
+        mail_subject="Коммерческое предложение по интеллектуальной автоматизации государственного сектора.",
+        consent_subject_kp="Интеллектуальная автоматизация для {MUN_R_NAME}: согласие на получение КП",
+        consent_subject_contract=(
+            "Интеллектуальная автоматизация для {MUN_R_NAME}: согласие на получение проекта договора"
+        ),
+        consent_subject_both=(
+            "Интеллектуальная автоматизация для {MUN_R_NAME}: согласие на получение КП и проекта договора"
+        ),
+        consent_button_kp=(
+            "Получить коммерческое предложение по интеллектуальной автоматизации государственного сектора."
+        ),
+        consent_button_contract=(
+            "Получить проект договора по интеллектуальной автоматизации государственного сектора."
+        ),
+        consent_button_both=(
+            "Получить КП и проект договора по интеллектуальной автоматизации государственного сектора."
+        ),
+        consent_prepared_phrase="по интеллектуальной автоматизации государственного сектора",
     ),
 }
 
