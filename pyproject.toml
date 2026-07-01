@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "bcrypt>=4.2.0",
     "aiofiles>=25.1.0",
     "aiosqlite>=0.22.1",
     "anthropic>=0.98.0",

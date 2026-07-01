@@ -5,9 +5,16 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from src.security.auth import coerce_principal
+
 
 SESSION_TTL = timedelta(hours=2)
 SESSIONS: dict[str, dict[str, Any]] = {}
+
+
+class SessionAccessDenied(PermissionError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
 
 
 @dataclass
@@ -38,17 +45,32 @@ def cleanup_old_sessions() -> None:
         SESSIONS.pop(session_id, None)
 
 
-def get_session(session_id: str | None) -> tuple[str, dict[str, Any]]:
+def _assert_session_owner(session: dict[str, Any], principal: Any | None) -> None:
+    if principal is None:
+        return
+    actor = coerce_principal(principal)
+    if actor.is_admin:
+        return
+    owner_username = str(session.get("owner_username") or "").strip()
+    if owner_username and owner_username != actor.username:
+        raise SessionAccessDenied("Нет доступа к этой orchestrator-сессии.")
+
+
+def get_session(session_id: str | None, principal: Any | None = None) -> tuple[str, dict[str, Any]]:
     cleanup_old_sessions()
     resolved_session_id = session_id or generate_session_id()
     if resolved_session_id not in SESSIONS:
+        actor = coerce_principal(principal) if principal is not None else None
         SESSIONS[resolved_session_id] = {
             "history": [],
             "goal": UserGoalState(),
             "updated_at": datetime.now(),
+            "owner_username": actor.username if actor is not None else "",
         }
     else:
-        SESSIONS[resolved_session_id]["updated_at"] = datetime.now()
+        session = SESSIONS[resolved_session_id]
+        _assert_session_owner(session, principal)
+        session["updated_at"] = datetime.now()
     return resolved_session_id, SESSIONS[resolved_session_id]
 
 
@@ -70,4 +92,3 @@ def get_goal_state(session: dict[str, Any]) -> UserGoalState:
     restored = UserGoalState()
     session["goal"] = restored
     return restored
-

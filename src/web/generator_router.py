@@ -28,6 +28,7 @@ def create_generator_router(
     generator_job_key: Callable[[str | None], str],
     register_generator_thread: Callable[[str | None, threading.Thread], None],
     request_generator_stop: Callable[[str | None], dict],
+    ensure_user_inprocess_limit: Callable[[str | None], None] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -77,6 +78,12 @@ def create_generator_router(
         if primed_state.get("status") == "completed":
             schedule_output_archive_build(job_id)
             return {"status": "ok", "result": compact_generator_status(primed_state)}
+
+        if ensure_user_inprocess_limit is not None:
+            try:
+                ensure_user_inprocess_limit(job_id)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         thread = threading.Thread(
             target=run_generator_background,

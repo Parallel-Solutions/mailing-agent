@@ -22,7 +22,7 @@ from src.generator.inflection.inflect import (
     inflect_mun_name_project_form,
 )
 from src.generator.generation.transforms import ensure_official_district_wording
-from src.utils.env import read_env_file_value, resolve_env_value
+from src.utils.env import resolve_env_value
 
 try:
     from openai import OpenAI  # type: ignore
@@ -42,10 +42,6 @@ TARGET_FIELDS = (
     "MUN_NAME_2",
     "ADM_NAME_1",
 )
-
-
-def _read_env_value_from_file(env_path: Path, key_name: str) -> Optional[str]:
-    return read_env_file_value(key_name, env_path)
 
 
 def _resolve_openai_api_key() -> Optional[str]:

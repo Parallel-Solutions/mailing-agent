@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from src.jobs.access import read_job_owner
 from src.jobs.json_store import read_json, write_json_atomic
 
 
@@ -58,6 +59,7 @@ def _write_worker_status(
     started_at: str | None = None,
     stdout_path: Path | None = None,
     stderr_path: Path | None = None,
+    owner_username: str | None = None,
 ) -> None:
     payload: dict[str, Any] = {
         "task": task,
@@ -72,6 +74,7 @@ def _write_worker_status(
         "worker_id": payload_path.stem,
         "stdout_path": str(stdout_path) if stdout_path else "",
         "stderr_path": str(stderr_path) if stderr_path else "",
+        "owner_username": str(owner_username or ""),
     }
     if status in {"completed", "error"}:
         payload["completed_at"] = _now()
@@ -221,6 +224,26 @@ def _run_worker_process_monitor(
         unregister(job_id)
 
 
+def _job_id_from_registry_key(key: str) -> str | None:
+    if key == "__legacy__":
+        return None
+    return key
+
+
+def _count_user_active_workers(registry: dict[str, threading.Thread], owner_username: str) -> int:
+    safe_owner = str(owner_username or "").strip()
+    if not safe_owner:
+        return 0
+    count = 0
+    for key, thread in registry.items():
+        if not thread.is_alive():
+            continue
+        owner = read_job_owner(_job_id_from_registry_key(key))
+        if str(owner.get("owner_username") or "") == safe_owner:
+            count += 1
+    return count
+
+
 def start_worker_process_thread(
     job_id: str | None,
     *,
@@ -236,6 +259,8 @@ def start_worker_process_thread(
     mark_failed: FailureCallback,
     logger: Any,
     max_workers: int = 1,
+    user_max_workers: int = 1,
+    owner_username: str | None = None,
     timeout_seconds: int = 0,
     before_start: Callable[[], None] | None = None,
 ) -> tuple[threading.Thread, bool]:
@@ -247,6 +272,14 @@ def start_worker_process_thread(
         if existing and not existing.is_alive():
             registry.pop(key, None)
         active_count = sum(1 for item in registry.values() if item.is_alive())
+        safe_owner = str(owner_username or "").strip()
+        if user_max_workers > 0 and safe_owner:
+            user_active_count = _count_user_active_workers(registry, safe_owner)
+            if user_active_count >= user_max_workers:
+                raise RuntimeError(
+                    f"Достигнут лимит worker-процессов для пользователя {safe_owner}: "
+                    f"{user_active_count}/{user_max_workers}."
+                )
         if max_workers > 0 and active_count >= max_workers:
             raise RuntimeError(
                 f"Сервер уже выполняет максимум worker-процессов для задачи {task}: {active_count}/{max_workers}."
@@ -262,6 +295,7 @@ def start_worker_process_thread(
             job_id=job_id,
             status="queued",
             payload_path=payload_path,
+            owner_username=safe_owner,
         )
         thread = threading.Thread(
             target=_run_worker_process_monitor,

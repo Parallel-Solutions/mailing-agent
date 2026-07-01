@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -7,9 +8,10 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = BASE_DIR / "data"
+STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
+DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data")))
 SERVICE_DOCS_DIR = BASE_DIR / "service_docs"
-JOBS_DIR = BASE_DIR / "storage" / "jobs"
+JOBS_DIR = STORAGE_DIR / "jobs"
 
 _JOB_ID_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 

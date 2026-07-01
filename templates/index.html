@@ -147,6 +147,31 @@
     color: #2d5a0e;
   }
 
+  .sidebar-user-wrap {
+    padding: 0.35rem 1.25rem 0.5rem;
+    font-size: 12px;
+    color: #666;
+  }
+
+  .sidebar-logout-button {
+    width: calc(100% - 1.5rem);
+    margin: 0 0.75rem 0.75rem;
+    border: 1px solid #ead7d7;
+    border-radius: 8px;
+    background: #fff;
+    color: #8a3b3b;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 8px 10px;
+    text-align: left;
+  }
+
+  .sidebar-logout-button:hover {
+    background: #fff7f7;
+  }
+
   /* CONTENT */
   .content {
     padding: 1.75rem 2rem 2rem;
@@ -2107,9 +2132,11 @@
     </div>
 
     <div class="sidebar-bottom">
+      <div class="sidebar-user-wrap" id="sidebar-user"></div>
       <div class="sidebar-reset-wrap">
         <button class="sidebar-reset-button" type="button" onclick="resetAllMailingState()">Очистить поля</button>
       </div>
+      <button class="sidebar-logout-button" type="button" onclick="logoutCurrentUser()">Выйти</button>
       <div class="nav-item" data-nav-screen="status" onclick="show('status', this)">
         <div class="nav-dot dot-amber"></div> Статистика отправок
       </div>
@@ -2732,6 +2759,7 @@
   const JOB_STORAGE_KEY = 'mailing-agent-current-job-id';
   const ACTIVE_SCREEN_STORAGE_KEY = 'mailing-agent-active-screen';
   const UI_STATE_STORAGE_KEY_PREFIX = 'mailing-agent-ui-state-v1:';
+  let currentUser = null;
   const WORK_TYPE_DEFAULT_SUBJECTS = {
     mngp_settlements: 'Коммерческое предложение на разработку МНГП.',
     mngp_districts: 'Коммерческое предложение на разработку МНГП.',
@@ -2743,9 +2771,9 @@
     'g-chat': 'Здесь будут появляться сообщения о подготовке документов. Можно спросить, что сейчас происходит, что уже готово, были ли ошибки и что делать дальше.',
     's-chat': 'Здесь будет видно, какие письма готовы к отправке, что уже отправлено и где нужна проверка.',
   };
-  let currentJobId = localStorage.getItem(JOB_STORAGE_KEY) || '';
+  let currentJobId = '';
   let resetJobCreationToken = 0;
-  let activeScreenId = localStorage.getItem(ACTIVE_SCREEN_STORAGE_KEY) || 'settings';
+  let activeScreenId = 'settings';
   let jobsHistoryAll = [];
   let jobsHistorySelectedDate = '';
   let jobsHistoryOutcomeFilter = 'sent';
@@ -2797,9 +2825,47 @@
       .replace(/'/g, '&#039;');
   }
 
+  function jobStorageKey() {
+    return currentUser ? `${JOB_STORAGE_KEY}:${currentUser.username}` : JOB_STORAGE_KEY;
+  }
+
+  function activeScreenStorageKey() {
+    return currentUser ? `${ACTIVE_SCREEN_STORAGE_KEY}:${currentUser.username}` : ACTIVE_SCREEN_STORAGE_KEY;
+  }
+
   function getUiStateStorageKey(jobId = currentJobId) {
     const safeJobId = String(jobId || '').trim();
-    return safeJobId ? `${UI_STATE_STORAGE_KEY_PREFIX}${safeJobId}` : '';
+    if (!safeJobId || !currentUser) return '';
+    return `${UI_STATE_STORAGE_KEY_PREFIX}${currentUser.username}:${safeJobId}`;
+  }
+
+  async function bootstrapAuth() {
+    const res = await fetchWithTimeout('/api/auth/me', { credentials: 'same-origin' }, 10000);
+    if (res.status === 401) {
+      window.location.href = '/login';
+      return false;
+    }
+    if (!res.ok) {
+      throw new Error('Не удалось проверить сессию');
+    }
+    const payload = await res.json();
+    currentUser = (payload.result || {}).user || null;
+    if (!currentUser || !currentUser.username) {
+      window.location.href = '/login';
+      return false;
+    }
+    currentJobId = localStorage.getItem(jobStorageKey()) || '';
+    activeScreenId = localStorage.getItem(activeScreenStorageKey()) || 'settings';
+    const sidebarUser = document.getElementById('sidebar-user');
+    if (sidebarUser) {
+      sidebarUser.textContent = `Пользователь: ${currentUser.username}`;
+    }
+    return true;
+  }
+
+  async function logoutCurrentUser() {
+    await fetchWithTimeout('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }, 10000);
+    window.location.href = '/login';
   }
 
   function isNoisyDocumentsChatMessage(text) {
@@ -2913,7 +2979,7 @@
     if (!key) return;
     try {
       localStorage.setItem(key, JSON.stringify(collectUiStateSnapshot()));
-      localStorage.setItem(ACTIVE_SCREEN_STORAGE_KEY, activeScreenId);
+      localStorage.setItem(activeScreenStorageKey(), activeScreenId);
     } catch (e) {}
   }
 
@@ -3599,9 +3665,9 @@
     }
     currentJobId = nextJobId;
     if (currentJobId) {
-      localStorage.setItem(JOB_STORAGE_KEY, currentJobId);
+      localStorage.setItem(jobStorageKey(), currentJobId);
     } else {
-      localStorage.removeItem(JOB_STORAGE_KEY);
+      localStorage.removeItem(jobStorageKey());
     }
     updateSidebarStatusIndicators();
     saveUiState();
@@ -3658,7 +3724,7 @@
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await fetch(url, { ...options, signal: controller.signal });
+      return await fetch(url, { credentials: 'same-origin', ...options, signal: controller.signal });
     } finally {
       clearTimeout(timer);
     }
@@ -4359,7 +4425,7 @@
     setCurrentJobId(jobId);
     activeScreenId = 'status';
     try {
-      localStorage.setItem(ACTIVE_SCREEN_STORAGE_KEY, activeScreenId);
+      localStorage.setItem(activeScreenStorageKey(), activeScreenId);
     } catch (e) {}
     const list = document.getElementById('jobs-history-list');
     if (list) list.innerHTML = '<div class="jobs-history-empty">Открываю выбранную отправку...</div>';
@@ -4408,7 +4474,7 @@
     activeScreenId = id;
     if (persist) {
       try {
-        localStorage.setItem(ACTIVE_SCREEN_STORAGE_KEY, activeScreenId);
+        localStorage.setItem(activeScreenStorageKey(), activeScreenId);
       } catch (e) {}
       saveUiState();
     }
@@ -7498,11 +7564,6 @@ function clearAttachedFile() {
     }
   });
 
-  restoreInitialUiState();
-  updateSettingsChecklist();
-  uiPersistenceEnabled = true;
-  saveUiState();
-
   let statusAutoRefreshInFlight = false;
   let passiveStatusRefreshTick = 0;
   let globalStatusPoll = null;
@@ -7563,8 +7624,21 @@ function clearAttachedFile() {
     }
   }
 
-  refreshAllModuleStatuses({ silent: true, full: true });
-  startGlobalStatusPolling();
+  (async () => {
+    try {
+      const authenticated = await bootstrapAuth();
+      if (!authenticated) return;
+      restoreInitialUiState();
+      updateSettingsChecklist();
+      uiPersistenceEnabled = true;
+      saveUiState();
+      refreshAllModuleStatuses({ silent: true, full: true });
+      startGlobalStatusPolling();
+    } catch (error) {
+      console.error(error);
+      window.location.href = '/login';
+    }
+  })();
 
   const senderPreviewButton = document.getElementById('s-run');
   if (senderPreviewButton) {

@@ -9,11 +9,12 @@ wheels/
 # Virtual environments
 .venv
 .env
-.env.local
+.env.docker
 
 data/
 logs/
 storage/
+.test-runtime/
 tmp/
 tmp*/
 pytest-cache-files-*/
@@ -24,4 +25,3 @@ src/parser_new/output/
 *.sqlite3
 *.db-shm
 *.db-wal
-.env.docker

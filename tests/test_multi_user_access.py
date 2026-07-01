@@ -84,7 +84,7 @@ class MultiUserAccessTests(unittest.TestCase):
         self.assertEqual(admin, Principal(username="admin", tenant_id="root", role="admin"))
         self.assertIsNone(authenticate_basic_user("alice", "wrong", settings))
 
-    def test_job_access_allows_same_tenant_and_rejects_other_tenant(self) -> None:
+    def test_job_access_allows_owner_only_and_rejects_other_users(self) -> None:
         with _workspace_temp_dir() as tmpdir:
             resolver = lambda job_id=None: _job_paths(tmpdir, job_id)
             with patch("src.jobs.access.resolve_job_paths", side_effect=resolver):
@@ -92,16 +92,18 @@ class MultiUserAccessTests(unittest.TestCase):
                 paths.ensure_dirs()
                 assign_job_owner("job-a", Principal("alice", "tenant-a"))
 
-                self.assertEqual(authorize_job_access("job-a", Principal("bob", "tenant-a")), "job-a")
+                self.assertEqual(authorize_job_access("job-a", Principal("alice", "tenant-a")), "job-a")
+                with self.assertRaises(JobAccessDenied):
+                    authorize_job_access("job-a", Principal("bob", "tenant-a"))
                 with self.assertRaises(JobAccessDenied):
                     authorize_job_access("job-a", Principal("mallory", "tenant-b"))
                 self.assertEqual(authorize_job_access("job-a", Principal("admin", "root", "admin")), "job-a")
 
-    def test_jobs_history_filters_to_current_tenant(self) -> None:
+    def test_jobs_history_filters_to_current_owner(self) -> None:
         with _workspace_temp_dir() as tmpdir:
             jobs_dir = tmpdir / "jobs"
             resolver = lambda job_id=None: _job_paths(tmpdir, job_id)
-            for job_id, tenant_id in (("job-a", "tenant-a"), ("job-b", "tenant-b")):
+            for job_id, owner_username in (("job-a", "alice"), ("job-b", "bob")):
                 job_root = jobs_dir / job_id
                 (job_root / "state").mkdir(parents=True)
                 (job_root / "state" / "sender.json").write_text(
@@ -111,7 +113,7 @@ class MultiUserAccessTests(unittest.TestCase):
                 (job_root / "input").mkdir(parents=True)
                 (job_root / "input" / "data.xlsx").write_bytes(b"xlsx")
                 with patch("src.jobs.access.resolve_job_paths", side_effect=resolver):
-                    assign_job_owner(job_id, Principal(f"owner-{tenant_id}", tenant_id))
+                    assign_job_owner(job_id, Principal(owner_username, "tenant-a"))
 
             controller = JobsWebController(
                 check_auth=lambda: Principal("alice", "tenant-a"),
@@ -182,7 +184,7 @@ class MultiUserAccessTests(unittest.TestCase):
                     )
                 )
 
-    def test_workers_stop_rejects_cross_tenant_status_path(self) -> None:
+    def test_workers_stop_rejects_cross_owner_status_path(self) -> None:
         with _workspace_temp_dir() as tmpdir:
             jobs_dir = tmpdir / "jobs"
             status_path = jobs_dir / "job-a" / "state" / "worker-sender-abc.status.json"
@@ -196,7 +198,7 @@ class MultiUserAccessTests(unittest.TestCase):
                 app = FastAPI()
                 app.include_router(
                     create_workers_router(
-                        check_auth=lambda: Principal("mallory", "tenant-b"),
+                        check_auth=lambda: Principal("bob", "tenant-a"),
                         jobs_dir=jobs_dir,
                         list_worker_statuses=lambda *args, **kwargs: [],
                         terminate_worker_process=lambda **kwargs: calls.append(kwargs) or {"terminated": True},
@@ -209,6 +211,7 @@ class MultiUserAccessTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(calls, [])
+
     def test_append_audit_event_writes_actor_and_action(self) -> None:
         with _workspace_temp_dir() as tmpdir:
             audit_path = tmpdir / "audit.jsonl"
