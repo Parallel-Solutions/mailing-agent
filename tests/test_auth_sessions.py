@@ -51,7 +51,19 @@ class AuthSessionTests(unittest.TestCase):
         )
         self.client = TestClient(self.app)
 
-    def test_register_login_logout_and_me(self) -> None:
+    def test_register_is_disabled_by_default(self) -> None:
+        register_response = self.client.post(
+            "/api/auth/register",
+            json={
+                "username": "bob",
+                "password": "bob-pass-123",
+                "password_confirm": "bob-pass-123",
+            },
+        )
+        self.assertEqual(register_response.status_code, 404)
+
+    def test_register_login_logout_and_me_when_enabled(self) -> None:
+        self.settings.app_allow_registration = True
         register_response = self.client.post(
             "/api/auth/register",
             json={
@@ -87,6 +99,29 @@ class AuthSessionTests(unittest.TestCase):
             json={"username": "alice", "password": "wrong-password"},
         )
         self.assertEqual(response.status_code, 401)
+
+
+    def test_env_password_change_updates_existing_admin_user(self) -> None:
+        first_login = self.client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin-pass"},
+        )
+        self.assertEqual(first_login.status_code, 200)
+
+        self.settings.app_password = "new-admin-pass"
+        bootstrap_auth_store(self.settings)
+
+        old_password = self.client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin-pass"},
+        )
+        self.assertEqual(old_password.status_code, 401)
+
+        new_password = self.client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "new-admin-pass"},
+        )
+        self.assertEqual(new_password.status_code, 200)
 
 
 if __name__ == "__main__":

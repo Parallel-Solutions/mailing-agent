@@ -16,6 +16,13 @@ def _cookie_secure(settings_obj: Any) -> bool:
     return str(getattr(settings_obj, "public_base_url", "") or "").lower().startswith("https://")
 
 
+def _registration_enabled(settings_obj: Any) -> bool:
+    value = getattr(settings_obj, "app_allow_registration", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _set_session_cookie(response: Response, token: str, *, settings_obj: Any, ttl_days: int) -> None:
     max_age = max(1, int(ttl_days)) * 24 * 60 * 60
     response.set_cookie(
@@ -53,10 +60,14 @@ def create_auth_router(
 
     @router.get("/register", response_class=HTMLResponse)
     async def register_page():
+        if not _registration_enabled(settings_obj):
+            raise HTTPException(status_code=404, detail="Registration disabled.")
         return register_template_path.read_text(encoding="utf-8")
 
     @router.post("/api/auth/register")
     async def auth_register(payload: AuthRegisterRequest, response: Response):
+        if not _registration_enabled(settings_obj):
+            raise HTTPException(status_code=404, detail="Registration disabled.")
         if payload.password_confirm is not None and payload.password != payload.password_confirm:
             raise HTTPException(status_code=400, detail="Пароли не совпадают.")
         try:

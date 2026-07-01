@@ -14,6 +14,8 @@ from src.generator.generation.document_builder import DOCUMENT_RENDERER_VERSION
 
 from src.security.auth import Principal
 from src.web.documents_router import create_documents_router
+from src.web.generator_router import create_generator_router
+from src.web.philologist_router import create_philologist_router
 from src.web.sender_router import create_sender_router
 
 
@@ -204,6 +206,76 @@ class ApiErrorContractTests(unittest.TestCase):
             self.assertEqual(logs[0][0][0], "documents_start_state_read_failed")
         finally:
             _cleanup(root)
+
+
+class WorkerLimitContractTests(unittest.TestCase):
+    def test_generator_limit_is_checked_before_state_is_primed(self) -> None:
+        root = _workspace_temp_root("api-error-generator-limit")
+        try:
+            xlsx_path = root / "data.xlsx"
+            xlsx_path.write_bytes(b"xlsx")
+            prime_calls: list[dict] = []
+            started: list[str] = []
+
+            async def job_readiness(**kwargs) -> dict:
+                return {"status": "ok", "result": {"counts": {}}}
+
+            app = FastAPI()
+            app.include_router(
+                create_generator_router(
+                    check_auth=lambda: Principal("admin", "root", "admin"),
+                    job_readiness=job_readiness,
+                    prefer_existing_file=lambda primary, fallback: primary,
+                    resolve_job_paths=lambda job_id=None: SimpleNamespace(data_xlsx=xlsx_path),
+                    get_generator_thread=lambda job_id: None,
+                    compact_generator_status=lambda state: state,
+                    get_generator_status=lambda job_id: {},
+                    clear_generator_stop_request=lambda job_id: None,
+                    prime_generator_state=lambda **kwargs: prime_calls.append(kwargs) or {"status": "running"},
+                    schedule_output_archive_build=lambda job_id: None,
+                    run_generator_background=lambda **kwargs: started.append("run"),
+                    generator_job_key=lambda job_id: job_id or "default",
+                    register_generator_thread=lambda job_id, thread: started.append("register"),
+                    request_generator_stop=lambda job_id: {},
+                    ensure_user_inprocess_limit=lambda job_id: (_ for _ in ()).throw(RuntimeError("limit reached")),
+                )
+            )
+
+            response = TestClient(app).post("/api/generate", json={"job_id": "job-a"})
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(prime_calls, [])
+            self.assertEqual(started, [])
+        finally:
+            _cleanup(root)
+
+    def test_philologist_limit_is_checked_before_state_is_primed(self) -> None:
+        prime_calls: list[tuple] = []
+        started: list[str] = []
+        app = FastAPI()
+        app.include_router(
+            create_philologist_router(
+                check_auth=lambda: Principal("admin", "root", "admin"),
+                get_philologist_thread=lambda job_id: None,
+                compact_philologist_status=lambda state: state,
+                get_philologist_status=lambda job_id: {},
+                clear_philologist_stop_request=lambda job_id: started.append("clear"),
+                prime_philologist_running_state=lambda job_id, mode: prime_calls.append((job_id, mode)) or {"status": "running"},
+                run_philologist_background=lambda **kwargs: started.append("run"),
+                philologist_job_key=lambda job_id: job_id or "default",
+                register_philologist_thread=lambda job_id, thread: started.append("register"),
+                request_philologist_stop=lambda job_id: {},
+                build_philologist_plan=lambda job_id: {},
+                chat_with_philologist=lambda message, job_id=None: {"reply": message},
+                ensure_user_inprocess_limit=lambda job_id: (_ for _ in ()).throw(RuntimeError("limit reached")),
+            )
+        )
+
+        response = TestClient(app).post("/api/philologist/run", json={"job_id": "job-a"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(prime_calls, [])
+        self.assertEqual(started, [])
 
 
 if __name__ == "__main__":

@@ -51,13 +51,13 @@ def create_philologist_router(
         if str(existing_state.get("status") or "") in {"running", "finalizing"}:
             return {"status": "ok", "result": compact_philologist_status(existing_state)}
 
-        clear_philologist_stop_request(job_id)
-        primed_state = prime_philologist_running_state(job_id, mode or "fast")
         if ensure_user_inprocess_limit is not None:
             try:
                 ensure_user_inprocess_limit(job_id)
             except RuntimeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+        clear_philologist_stop_request(job_id)
+        primed_state = prime_philologist_running_state(job_id, mode or "fast")
         philologist_thread = threading.Thread(
             target=run_philologist_background,
             kwargs={"ai_enabled": ai_enabled, "job_id": job_id, "mode": mode},

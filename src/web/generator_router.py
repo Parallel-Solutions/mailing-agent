@@ -64,6 +64,11 @@ def create_generator_router(
         existing_state = get_generator_status(job_id)
         if str(existing_state.get("status") or "") == "running":
             return {"status": "ok", "result": compact_generator_status(existing_state)}
+        if ensure_user_inprocess_limit is not None:
+            try:
+                ensure_user_inprocess_limit(job_id)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         if str(existing_state.get("status") or "") == "stopped":
             clear_generator_stop_request(job_id)
             primed_state = existing_state
@@ -79,11 +84,6 @@ def create_generator_router(
             schedule_output_archive_build(job_id)
             return {"status": "ok", "result": compact_generator_status(primed_state)}
 
-        if ensure_user_inprocess_limit is not None:
-            try:
-                ensure_user_inprocess_limit(job_id)
-            except RuntimeError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         thread = threading.Thread(
             target=run_generator_background,

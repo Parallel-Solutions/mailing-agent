@@ -220,6 +220,54 @@ def import_user_if_missing(
     )
 
 
+def sync_imported_user(
+    username: str,
+    password: str,
+    *,
+    tenant_id: str,
+    role: str,
+) -> UserRecord | None:
+    safe_username = _safe_identifier(username, fallback="")
+    if not safe_username or not str(password or "").strip():
+        return None
+    safe_username = validate_username(safe_username)
+    safe_password = validate_password(password)
+    safe_tenant = _safe_identifier(tenant_id or safe_username, fallback=safe_username)
+    safe_role = _safe_identifier(role or "user", fallback="user").lower()
+    created_at = _now()
+
+    with _DB_LOCK:
+        with _connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM users WHERE username = ? LIMIT 1",
+                (safe_username,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO users (username, password_hash, tenant_id, role, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (safe_username, hash_password(safe_password), safe_tenant, safe_role, created_at),
+                )
+            else:
+                created_at = str(existing["created_at"])
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET password_hash = ?, tenant_id = ?, role = ?
+                    WHERE username = ?
+                    """,
+                    (hash_password(safe_password), safe_tenant, safe_role, safe_username),
+                )
+    return UserRecord(
+        username=safe_username,
+        tenant_id=safe_tenant,
+        role=safe_role,
+        created_at=created_at,
+    )
+
+
 def user_record_to_dict(record: UserRecord) -> dict[str, Any]:
     return {
         "username": record.username,

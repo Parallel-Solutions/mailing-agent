@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     app_admin_tenant_id: str = "admin"
     auth_db_path: str = "storage/auth/auth.sqlite"
     app_session_ttl_days: int = 7
+    app_allow_registration: bool = False
 
     # Приложение
     app_host: str = "0.0.0.0"
