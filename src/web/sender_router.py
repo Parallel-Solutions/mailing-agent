@@ -173,6 +173,7 @@ def create_sender_router(
         send_mode = payload.send_mode
         recipient_strategy = payload.recipient_strategy
         subject_template = payload.mail_subject
+        sender_email = payload.sender_email
         job_id = payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
         generator_state = get_generator_status(job_id)
@@ -193,9 +194,9 @@ def create_sender_router(
 
             def _prime_state() -> None:
                 primed_state_box["state"] = (
-                    prime_sender_checking_state(job_id, transport, attachment_mode, recipient_strategy)
+                    prime_sender_checking_state(job_id, transport, attachment_mode, recipient_strategy, sender_email)
                     if dry_run
-                    else prime_sender_running_state(job_id, transport, attachment_mode, recipient_strategy)
+                    else prime_sender_running_state(job_id, transport, attachment_mode, recipient_strategy, sender_email)
                 )
 
             _, started = start_sender_thread_if_absent(
@@ -209,6 +210,7 @@ def create_sender_router(
                     "attachment_mode": attachment_mode,
                     "recipient_strategy": recipient_strategy,
                     "subject_template": subject_template,
+                    "sender_email": sender_email,
                     "work_type": work_type,
                     "job_id": job_id,
                 },
@@ -227,6 +229,7 @@ def create_sender_router(
                     "send_mode": send_mode,
                     "attachment_mode": attachment_mode,
                     "recipient_strategy": recipient_strategy,
+                    "sender_email": sender_email,
                 },
             )
             primed_state = primed_state_box.get("state") or get_sender_status(job_id)

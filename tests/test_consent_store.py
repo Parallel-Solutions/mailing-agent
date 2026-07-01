@@ -45,9 +45,11 @@ class ConsentStoreTests(unittest.TestCase):
                     row={"ID": 42, "MUN_NAME": "Тестовый район"},
                     recipient="user@example.com",
                     transport="smtp",
+                    sender_email="sender@example.com",
                 )
 
                 self.assertIn("/consent/confirm/", record["consent_url"])
+                self.assertEqual(record["sender_email"], "sender@example.com")
                 self.assertFalse(
                     consent_store.has_confirmed_consent(
                         job_id="job-1",
@@ -99,6 +101,7 @@ class ConsentStoreTests(unittest.TestCase):
                     row={"ID": 42, "MUN_NAME": "Тестовый район"},
                     recipient="user@example.com",
                     transport="smtp",
+                    sender_email="sender@example.com",
                 )
 
                 request_response = client.get(f"/consent/request/{record['token']}")
@@ -151,6 +154,7 @@ class ConsentStoreTests(unittest.TestCase):
                     row={"ID": 42, "MUN_NAME": "Тестовый район"},
                     recipient="user@example.com",
                     transport="smtp",
+                    sender_email="sender@example.com",
                 )
 
                 first_response = client.post(f"/consent/confirm/{record['token']}")
@@ -191,6 +195,7 @@ class ConsentStoreTests(unittest.TestCase):
                     row={"ID": 42, "MUN_NAME": "Тестовый район"},
                     recipient="user@example.com",
                     transport="smtp",
+                    sender_email="sender@example.com",
                 )
 
                 original_save_document = consent_store._save_consent_document
@@ -328,6 +333,7 @@ class ConsentStoreTests(unittest.TestCase):
                     row={"ID": 42, "MUN_NAME": "Тестовый район"},
                     recipient="user@example.com",
                     transport="smtp",
+                    sender_email="sender@example.com",
                 )
                 consent_store.confirm_consent(record["token"], ip="127.0.0.1", user_agent="test")
                 consent_store.mark_consent_request_sent(

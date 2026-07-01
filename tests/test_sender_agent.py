@@ -358,6 +358,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 "attachment_mode": "kp",
                 "work_type": "territorial_zone_boundaries",
                 "recipient_strategy": sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+                "sender_email": "override@example.com",
                 "provider": {"message_id": "m1", "provider": "mailopost"},
             }
         ]
@@ -394,6 +395,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["row_ids"], ["1"])
         self.assertEqual(calls[0]["recipient_strategy"], sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK)
+        self.assertEqual(calls[0]["sender_email"], "override@example.com")
         self.assertEqual(calls[0]["transport"], "mailopost")
 
     def test_delivery_failure_does_not_replay_old_primary_bounce_after_fallback_sent(self) -> None:
@@ -406,6 +408,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 "send_mode": "consent_request",
                 "attachment_mode": "kp",
                 "recipient_strategy": sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+                "sender_email": "override@example.com",
                 "provider": {"message_id": "m1", "provider": "mailopost"},
             },
             {
@@ -676,6 +679,35 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(result["provider"], "mailopost")
         self.assertEqual(result["message_id"], "123")
 
+    def test_mailopost_uses_sender_email_override(self) -> None:
+        captured: dict[str, Request] = {}
+
+        def fake_request(request: Request, *, timeout: float) -> str:
+            captured["request"] = request
+            return json.dumps({"id": 123, "status": "queued"})
+
+        with patch.object(sender_agent.settings, "mailopost_api_token", "mailopost-token"), patch.object(
+            sender_agent.settings,
+            "mailopost_sender_email",
+            "env-sender@example.com",
+        ), patch.object(sender_agent.settings, "mailopost_api_base_url", "https://api.mailopost.ru/v1"), patch.object(
+            sender_agent, "_run_mailopost_request", side_effect=fake_request
+        ):
+            sender_agent._send_via_mailopost(
+                {"ID": "1", "MUN_NAME": "Тестовое МО"},
+                "recipient@example.com",
+                [],
+                "Тема",
+                body_override="Текст письма",
+                job_id="job-test",
+                send_run_id="send-test",
+                send_mode="consent_request",
+                attachment_mode="kp",
+                sender_email="override@example.com",
+            )
+
+        payload = json.loads((captured["request"].data or b"").decode("utf-8"))
+        self.assertEqual(payload["from_email"], "override@example.com")
     def test_mailopost_delivery_failure_aliases_are_normalized(self) -> None:
         self.assertEqual(mailopost_events._status_from_event("not_delivered"), "err_delivery_failed")
         self.assertEqual(mailopost_events._status_from_event("failed"), "err_delivery_failed")
@@ -691,6 +723,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 "send_mode": "consent_request",
                 "attachment_mode": "kp",
                 "recipient_strategy": sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+                "sender_email": "override@example.com",
                 "provider": {"message_id": "m1", "provider": "mailopost"},
             }
         ]
@@ -727,6 +760,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["row_ids"], ["1"])
         self.assertEqual(calls[0]["recipient_strategy"], sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK)
+        self.assertEqual(calls[0]["sender_email"], "override@example.com")
 
     def test_mailopost_retry_after_uses_header_and_message(self) -> None:
         header_error = HTTPError("https://api.mailopost.ru/v1/email/messages", 429, "Too Many", {"Retry-After": "12"}, None)

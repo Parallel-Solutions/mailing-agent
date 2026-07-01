@@ -2164,6 +2164,7 @@
         <div class="settings-check-item" id="settings-check-kp"><span class="settings-check-dot"></span>КП</div>
         <div class="settings-check-item" id="settings-check-contract"><span class="settings-check-dot"></span>Договор</div>
         <div class="settings-check-item" id="settings-check-subject"><span class="settings-check-dot"></span>Тема письма</div>
+        <div class="settings-check-item" id="settings-check-sender-email"><span class="settings-check-dot"></span>Отправитель</div>
       </div>
 
       <div class="field">
@@ -2196,6 +2197,12 @@
         <input id="settings-mail-subject" type="text" value="Коммерческое предложение на разработку МНГП." oninput="updateSettingsChecklist()">
       </div>
 
+      <div class="field">
+        <label>Подтверждённая почта отправителя</label>
+        <input id="settings-sender-email" type="email" placeholder="info@company.ru" oninput="updateSettingsChecklist()">
+        <div class="muted" style="margin-top:6px">Эта почта должна быть подтверждена в выбранном сервисе отправки.</div>
+      </div>
+
       <div class="divider"></div>
 
       <div class="grid2">
@@ -2225,10 +2232,6 @@
       <div id="settings-sender-credentials-section" hidden>
         <div class="divider"></div>
 
-        <div class="field">
-          <label>Email отправителя</label>
-          <input id="settings-sender-email" type="email" placeholder="info@company.ru">
-        </div>
 
         <div class="field">
           <label>Пароль почтового ящика</label>
@@ -2889,6 +2892,7 @@
         workType: document.getElementById('settings-work-type')?.value || '',
         mailSubject: document.getElementById('settings-mail-subject')?.value || '',
         documentMode: getDocumentMode(),
+        senderEmail: document.getElementById('settings-sender-email')?.value || '',
       },
       templates: {
         mail: collectTemplateButtonSnapshot('mail-btn'),
@@ -2989,7 +2993,9 @@
     if (documentMode !== 'contract' && !isTemplateUploaded('kp-btn')) missing.push('шаблон КП');
     if (documentMode !== 'kp' && !isTemplateUploaded('contract-btn')) missing.push('шаблон договора');
     const subject = document.getElementById('settings-mail-subject');
+    const senderEmail = document.getElementById('settings-sender-email');
     if (!subject || !subject.value.trim()) missing.push('тему письма');
+    if (!senderEmail || !senderEmail.value.trim()) missing.push('почту отправителя');
     return missing;
   }
 
@@ -3028,6 +3034,7 @@
 
   function updateSettingsChecklist() {
     const subject = document.getElementById('settings-mail-subject');
+    const senderEmail = document.getElementById('settings-sender-email');
     const documentMode = getDocumentMode();
     updateDocumentTemplateVisibility(documentMode);
     updateDocumentsDocumentModeLabel(documentMode);
@@ -3035,6 +3042,7 @@
     setSettingsCheckItem('settings-check-kp', isTemplateUploaded('kp-btn'), { notNeeded: documentMode === 'contract' });
     setSettingsCheckItem('settings-check-contract', isTemplateUploaded('contract-btn'), { notNeeded: documentMode === 'kp' });
     setSettingsCheckItem('settings-check-subject', !!(subject && subject.value.trim()));
+    setSettingsCheckItem('settings-check-sender-email', !!(senderEmail && senderEmail.value.trim()));
     updateFlowNavigationButtons();
     scheduleUiStateSave();
   }
@@ -3090,8 +3098,10 @@
     const settings = snapshot.settings || {};
     const workType = document.getElementById('settings-work-type');
     const mailSubject = document.getElementById('settings-mail-subject');
+    const senderEmail = document.getElementById('settings-sender-email');
     if (workType && settings.workType) workType.value = settings.workType;
     if (mailSubject && typeof settings.mailSubject === 'string') mailSubject.value = settings.mailSubject;
+    if (senderEmail && typeof settings.senderEmail === 'string') senderEmail.value = settings.senderEmail;
     if (workType && settings.workType) syncDefaultSubjectForWorkType(settings.workType);
     if (settings.documentMode) syncDocumentModeControls(settings.documentMode);
     syncSenderAttachmentModeFromDocuments();
@@ -6046,6 +6056,11 @@ function clearAttachedFile() {
     return String((input && input.value) || '').trim();
   }
 
+  function getSenderEmailOverride() {
+    const input = document.getElementById('settings-sender-email');
+    return String((input && input.value) || '').trim();
+  }
+
   function normalizeDocumentModeClient(value) {
     const mode = String(value || '').trim();
     return ['kp', 'contract', 'both'].includes(mode) ? mode : 'kp';
@@ -7226,6 +7241,7 @@ function clearAttachedFile() {
       const attachmentMode = getSenderAttachmentMode();
       const recipientStrategy = getSenderRecipientStrategy();
       const mailSubject = getMailSubjectTemplate();
+      const senderEmail = getSenderEmailOverride();
       const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
       showToast('Проверяю перед отправкой');
       senderRunning = true;
@@ -7235,7 +7251,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, work_type: workType })),
+        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, sender_email: senderEmail, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Ошибка проверки готовности отправщика'));
@@ -7292,6 +7308,7 @@ function clearAttachedFile() {
         const attachmentMode = getSenderAttachmentMode();
         const recipientStrategy = getSenderRecipientStrategy();
         const mailSubject = getMailSubjectTemplate();
+        const senderEmail = getSenderEmailOverride();
         const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
         const hasPreviousSendProgress = Number((lastSenderUiState && lastSenderUiState.sent_rows) || 0) > 0
@@ -7316,7 +7333,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, work_type: workType })),
+        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, sender_email: senderEmail, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Ошибка реальной отправки'));

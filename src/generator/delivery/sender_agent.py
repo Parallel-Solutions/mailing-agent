@@ -704,6 +704,7 @@ def _send_consent_requests_with_transport(
     subject_template: str | None = None,
     work_type: str | None = None,
     recipient_strategy: str | None = None,
+    sender_email: str | None = None,
     wait_between_recipients: Callable[[], bool] | None = None,
     wait_after_rate_limit: Callable[[float, str], bool] | None = None,
 ) -> dict[str, Any]:
@@ -735,6 +736,7 @@ def _send_consent_requests_with_transport(
                 subject_template=subject_template,
                 work_type=work_type,
                 recipient_strategy=recipient_strategy,
+                sender_email=sender_email,
             )
             consent_url = _safe_text(consent_record.get("consent_url"))
             consent_urls[recipient] = consent_url
@@ -756,6 +758,7 @@ def _send_consent_requests_with_transport(
                 send_run_id=send_run_id,
                 send_mode="consent_request",
                 attachment_mode=attachment_mode,
+                sender_email=sender_email,
                 wait_after_rate_limit=wait_after_rate_limit,
             )
         except Exception as exc:
@@ -1342,7 +1345,15 @@ def _format_preview_rows(rows: list[dict[str, Any]], *, limit: int = 5) -> str:
         )
     return "\n".join(lines)
 
-
+def _resolve_sender_email(sender_email: str | None, *fallbacks: Any) -> str:
+    override = _safe_text(sender_email)
+    if override:
+        return override
+    for fallback in fallbacks:
+        value = _safe_text(fallback)
+        if value:
+            return value
+    return ""
 def _build_message(
     row: dict[str, Any],
     recipient: str,
@@ -1351,10 +1362,11 @@ def _build_message(
     *,
     mail_template_path: Path | None = None,
     body_override: str | None = None,
+    sender_email: str | None = None,
 ) -> EmailMessage:
     body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
     message = EmailMessage()
-    message["From"] = settings.smtp_sender_email
+    message["From"] = _resolve_sender_email(sender_email, settings.smtp_sender_email)
     message["To"] = recipient
     message["Subject"] = subject
     message.set_content(body)
@@ -1512,6 +1524,7 @@ def _append_sent_mail_log(
     subject_template: str = "",
     work_type: str = "",
     recipient_strategy: str = "",
+    sender_email: str = "",
 ) -> str | None:
     safe_provider = _safe_provider_payload(provider)
     record = {
@@ -1529,6 +1542,7 @@ def _append_sent_mail_log(
         "subject_template": _safe_text(subject_template),
         "work_type": _safe_text(work_type),
         "recipient_strategy": _safe_text(recipient_strategy) or DEFAULT_RECIPIENT_STRATEGY,
+        "sender_email": _safe_text(sender_email),
     }
     if _safe_text(send_run_id):
         record["send_run_id"] = _safe_text(send_run_id)
@@ -1714,7 +1728,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
     rows_by_id = _load_sender_rows_by_id(job_id)
     latest_events = _latest_delivery_events_by_row_recipient(job_id, sent_items, provider=provider)
     sent_by_row = _sent_items_by_row(sent_items)
-    dispatch_groups: dict[tuple[str, str, str, str, str], set[str]] = {}
+    dispatch_groups: dict[tuple[str, str, str, str, str, str], set[str]] = {}
     dispatch_rows: list[dict[str, str]] = []
 
     for row_id, row_items in sent_by_row.items():
@@ -1750,7 +1764,8 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
         attachment_mode = _safe_text(last_item.get("attachment_mode")) or _safe_text(state.get("attachment_mode")) or ATTACHMENT_MODE_KP
         subject_template = _safe_text(last_item.get("subject_template")) or _safe_text(state.get("subject_template"))
         work_type = _safe_text(last_item.get("work_type")) or _safe_text(state.get("work_type")) or DEFAULT_WORK_TYPE
-        group_key = (transport, send_mode, attachment_mode, subject_template, work_type)
+        sender_email = _safe_text(last_item.get("sender_email")) or _safe_text(state.get("sender_email"))
+        group_key = (transport, send_mode, attachment_mode, subject_template, work_type, sender_email)
         dispatch_groups.setdefault(group_key, set()).add(row_id)
         dispatch_rows.append(
             {
@@ -1765,7 +1780,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
         return {"status": "no_fallback_needed", "job_id": job_id, "dispatched_rows": []}
 
     results: list[dict[str, Any]] = []
-    for (transport, send_mode, attachment_mode, subject_template, work_type), row_ids in dispatch_groups.items():
+    for (transport, send_mode, attachment_mode, subject_template, work_type, sender_email), row_ids in dispatch_groups.items():
         result = run_sender(
             dry_run=False,
             row_ids=sorted(row_ids, key=_sort_row_id_text),
@@ -1775,6 +1790,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
             subject_template=subject_template,
             require_confirmed_consent=send_mode == "materials",
             work_type=work_type,
+            sender_email=sender_email,
             recipient_strategy=RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
             job_id=job_id,
         )
@@ -1783,6 +1799,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
                 "transport": transport,
                 "send_mode": send_mode,
                 "attachment_mode": attachment_mode,
+                "sender_email": sender_email,
                 "row_ids": sorted(row_ids, key=_sort_row_id_text),
                 "status": result.get("status"),
                 "summary_text": result.get("summary_text"),
@@ -2262,6 +2279,7 @@ def _send_via_smtp(
     *,
     mail_template_path: Path | None = None,
     body_override: str | None = None,
+    sender_email: str | None = None,
 ) -> str | None:
     if not settings.smtp_allow_real_send:
         raise RuntimeError(
@@ -2280,6 +2298,7 @@ def _send_via_smtp(
         subject,
         mail_template_path=mail_template_path,
         body_override=body_override,
+        sender_email=sender_email,
     )
 
     if settings.smtp_use_ssl:
@@ -2525,9 +2544,10 @@ def _send_via_rusender(
     send_run_id: str = "",
     send_mode: str = "",
     attachment_mode: str = "",
+    sender_email: str | None = None,
 ) -> dict[str, Any]:
     api_key = _safe_text(settings.rusender_api_key)
-    sender_email = _safe_text(settings.rusender_sender_email or settings.smtp_sender_email)
+    sender_email = _resolve_sender_email(sender_email, settings.rusender_sender_email, settings.smtp_sender_email)
     sender_name = _safe_text(settings.rusender_sender_name) or "ООО «ПР»"
     if not api_key:
         raise RuntimeError("Не указан API-ключ RuSender.")
@@ -2738,9 +2758,10 @@ def _send_via_mailopost(
     send_run_id: str = "",
     send_mode: str = "",
     attachment_mode: str = "",
+    sender_email: str | None = None,
 ) -> dict[str, Any]:
     api_token = _safe_text(settings.mailopost_api_token)
-    sender_email = _safe_text(settings.mailopost_sender_email or settings.smtp_sender_email)
+    sender_email = _resolve_sender_email(sender_email, settings.mailopost_sender_email, settings.smtp_sender_email)
     sender_name = _safe_text(settings.mailopost_sender_name) or "ООО «ПР»"
     if not api_token:
         raise RuntimeError("Не указан API-токен MailoPost.")
@@ -2813,9 +2834,10 @@ def _send_via_unisender_classic(
     *,
     mail_template_path: Path | None = None,
     body_override: str | None = None,
+    sender_email: str | None = None,
 ) -> dict[str, Any]:
     api_key = _safe_text(settings.unisender_api_key)
-    sender_email = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
+    sender_email = _resolve_sender_email(sender_email, settings.unisender_sender_email, settings.smtp_sender_email)
     sender_name = _safe_text(settings.unisender_sender_name) or "ООО «ПР»"
     list_id = int(settings.unisender_list_id or 1)
     if not api_key:
@@ -2912,6 +2934,7 @@ def _send_via_unisender(
     send_run_id: str = "",
     send_mode: str = "",
     attachment_mode: str = "",
+    sender_email: str | None = None,
 ) -> dict[str, Any]:
     if not _uses_unisender_go_api():
         return _send_via_unisender_classic(
@@ -2921,10 +2944,11 @@ def _send_via_unisender(
             subject,
             mail_template_path=mail_template_path,
             body_override=body_override,
+            sender_email=sender_email,
         )
 
     api_key = _safe_text(settings.unisender_api_key)
-    sender_email = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
+    sender_email = _resolve_sender_email(sender_email, settings.unisender_sender_email, settings.smtp_sender_email)
     sender_name = _safe_text(settings.unisender_sender_name) or "ООО «ПР»"
     if not api_key:
         raise RuntimeError("Не указан API-ключ UniSender Go.")
@@ -3039,9 +3063,10 @@ def _send_via_unisender_go_bulk(
     send_run_id: str = "",
     send_mode: str = "",
     attachment_mode: str = "",
+    sender_email: str | None = None,
 ) -> dict[str, Any]:
     api_key = _safe_text(settings.unisender_api_key)
-    sender_email = _safe_text(settings.unisender_sender_email or settings.smtp_sender_email)
+    sender_email = _resolve_sender_email(sender_email, settings.unisender_sender_email, settings.smtp_sender_email)
     sender_name = _safe_text(settings.unisender_sender_name) or "ООО «ПР»"
     if not api_key:
         raise RuntimeError("Не указан API-ключ UniSender Go.")
@@ -3178,6 +3203,7 @@ def _send_with_transport(
     send_run_id: str = "",
     send_mode: str = "",
     attachment_mode: str = "",
+    sender_email: str | None = None,
     wait_between_recipients: Callable[[], bool] | None = None,
     wait_after_rate_limit: Callable[[float, str], bool] | None = None,
 ) -> dict[str, Any]:
@@ -3197,6 +3223,7 @@ def _send_with_transport(
                 send_run_id=send_run_id,
                 send_mode=send_mode,
                 attachment_mode=attachment_mode,
+                sender_email=sender_email,
             )
         except Exception as exc:
             return {
@@ -3276,6 +3303,7 @@ def _send_with_transport(
                     send_run_id=send_run_id,
                     send_mode=send_mode,
                     attachment_mode=attachment_mode,
+                    sender_email=sender_email,
                 )
             elif transport == "rusender":
                 provider = _send_via_rusender(
@@ -3289,6 +3317,7 @@ def _send_with_transport(
                     send_run_id=send_run_id,
                     send_mode=send_mode,
                     attachment_mode=attachment_mode,
+                    sender_email=sender_email,
                 )
             elif transport == "mailopost":
                 while True:
@@ -3304,6 +3333,7 @@ def _send_with_transport(
                             send_run_id=send_run_id,
                             send_mode=send_mode,
                             attachment_mode=attachment_mode,
+                            sender_email=sender_email,
                         )
                         break
                     except MailoPostRateLimitError as exc:
@@ -3335,6 +3365,7 @@ def _send_with_transport(
                     subject,
                     mail_template_path=mail_template_path,
                     body_override=body_override,
+                    sender_email=sender_email,
                 )
         except Exception as exc:
             attempts.append({"recipient": recipient, "status": "error", "error": _safe_text(exc) or f"{transport} error"})
@@ -3406,6 +3437,7 @@ def _build_parallel_send_job(
     subject_template: str = "",
     work_type: str = "",
     recipient_strategy: str = "",
+    sender_email: str = "",
     body_override: str | None = None,
     success_status_value: str = STATUS_SENT_VALUE,
 ) -> dict[str, Any]:
@@ -3427,6 +3459,7 @@ def _build_parallel_send_job(
         "subject_template": subject_template,
         "work_type": work_type,
         "recipient_strategy": recipient_strategy,
+        "sender_email": sender_email,
     }
 
 
@@ -3443,6 +3476,7 @@ def _run_parallel_send_job(job: dict[str, Any]) -> dict[str, Any]:
         send_run_id=job.get("send_run_id") or "",
         send_mode=job.get("send_mode") or "",
         attachment_mode=job.get("attachment_mode") or "",
+        sender_email=job.get("sender_email") or "",
     )
     return {"job": job, "send_result": send_result}
 
@@ -3498,6 +3532,7 @@ def _apply_send_result_to_entry(
     effective_subject_template: str,
     effective_work_type: str,
     effective_recipient_strategy: str,
+    effective_sender_email: str,
     sent_mail_log_path: Path | None,
     sent_mail_recipients: dict[str, set[str]],
     send_run_id: str,
@@ -3530,6 +3565,7 @@ def _apply_send_result_to_entry(
                 subject_template=effective_subject_template,
                 work_type=effective_work_type,
                 recipient_strategy=effective_recipient_strategy,
+                sender_email=effective_sender_email,
             )
             sent_mail_recipients.setdefault(row_id_text, set()).add(_mail_key(sent_recipient))
             if log_warning:
@@ -3562,6 +3598,7 @@ def _apply_send_result_to_entry(
             subject_template=effective_subject_template,
             work_type=effective_work_type,
             recipient_strategy=effective_recipient_strategy,
+            sender_email=effective_sender_email,
         )
         if log_warning:
             entry["warning"] = f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
@@ -3592,6 +3629,7 @@ def run_sender(
     send_mode: str | None = None,
     attachment_mode: str | None = None,
     subject_template: str | None = None,
+    sender_email: str | None = None,
     require_confirmed_consent: bool = False,
     work_type: str | None = None,
     recipient_strategy: str | None = None,
@@ -3623,6 +3661,7 @@ def run_sender(
     effective_recipient_strategy = _normalize_recipient_strategy(recipient_strategy or state.get("recipient_strategy"))
     effective_work_type = normalize_work_type(work_type or state.get("work_type") or DEFAULT_WORK_TYPE)
     effective_subject_template = _safe_text(subject_template)
+    effective_sender_email = _safe_text(sender_email or state.get("sender_email"))
     if effective_work_type != DEFAULT_WORK_TYPE and effective_subject_template == DEFAULT_MAIL_SUBJECT:
         effective_subject_template = ""
     requested_row_ids = {str(item).strip() for item in (row_ids or []) if str(item).strip()}
@@ -3683,6 +3722,7 @@ def run_sender(
             "recipient_strategy": effective_recipient_strategy,
             "work_type": effective_work_type,
             "subject_template": effective_subject_template,
+            "sender_email": effective_sender_email,
         }
     )
     if not dry_run:
@@ -4117,6 +4157,7 @@ def run_sender(
                             subject_template=effective_subject_template,
                             work_type=effective_work_type,
                             recipient_strategy=effective_recipient_strategy,
+                            sender_email=effective_sender_email,
                         )
                     )
                     entry["result"] = "queued_parallel_send"
@@ -4136,6 +4177,7 @@ def run_sender(
                                 subject_template=effective_subject_template,
                                 work_type=effective_work_type,
                                 recipient_strategy=effective_recipient_strategy,
+                                sender_email=effective_sender_email,
                                 wait_after_rate_limit=mailopost_rate_limit_delay,
                             )
                         return _send_with_transport(
@@ -4150,6 +4192,7 @@ def run_sender(
                             send_run_id=send_run_id,
                             send_mode=effective_send_mode,
                             attachment_mode=effective_attachment_mode,
+                            sender_email=effective_sender_email,
                             wait_after_rate_limit=mailopost_rate_limit_delay,
                         )
 
@@ -4175,6 +4218,7 @@ def run_sender(
                             subject_template=effective_subject_template,
                             work_type=effective_work_type,
                             recipient_strategy=effective_recipient_strategy,
+                            sender_email=effective_sender_email,
                             wait_after_rate_limit=mailopost_rate_limit_delay,
                             wait_between_recipients=smtp_recipient_delay,
                         )
@@ -4191,6 +4235,7 @@ def run_sender(
                             send_run_id=send_run_id,
                             send_mode=effective_send_mode,
                             attachment_mode=effective_attachment_mode,
+                            sender_email=effective_sender_email,
                             wait_between_recipients=smtp_recipient_delay,
                             wait_after_rate_limit=mailopost_rate_limit_delay,
                         )
@@ -4212,6 +4257,7 @@ def run_sender(
                             effective_subject_template=effective_subject_template,
                             effective_work_type=effective_work_type,
                             effective_recipient_strategy=effective_recipient_strategy,
+                            effective_sender_email=effective_sender_email,
                             sent_mail_log_path=sent_mail_log_path,
                             sent_mail_recipients=sent_mail_recipients,
                             send_run_id=send_run_id,
