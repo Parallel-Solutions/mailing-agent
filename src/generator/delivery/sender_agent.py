@@ -43,6 +43,11 @@ from src.generator.delivery.consent_store import (
     mark_consent_request_sent,
     prepare_consent_request,
 )
+from src.generator.delivery.email_validation import (
+    EmailValidationResult,
+    normalize_email_validation_mode,
+    validate_email_address,
+)
 from src.generator.case_engine import build_inflected_fields_with_trace
 from src.generator.philologist.philologist_agent import run_philologist
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
@@ -623,6 +628,101 @@ def _consent_candidate_recipients(
     )
 
 
+def _email_validation_mode() -> str:
+    return normalize_email_validation_mode(getattr(settings, "email_validation_mode", "domain"))
+
+
+def _email_validation_timeout_seconds() -> float:
+    try:
+        return max(1.0, float(getattr(settings, "email_validation_timeout_seconds", 3.0) or 3.0))
+    except (TypeError, ValueError):
+        return 3.0
+
+
+def _validate_recipient_for_send(
+    recipient: str,
+    validation_cache: dict[str, EmailValidationResult],
+) -> EmailValidationResult:
+    cache_key = _mail_key(recipient) or _safe_text(recipient)
+    if cache_key in validation_cache:
+        return validation_cache[cache_key]
+    result = validate_email_address(
+        recipient,
+        mode=_email_validation_mode(),
+        timeout_seconds=_email_validation_timeout_seconds(),
+    )
+    validation_cache[cache_key] = result
+    return result
+
+
+def _email_validation_attempt(result: EmailValidationResult) -> dict[str, Any]:
+    recipient = _safe_text(result.email) or _safe_text(result.normalized_email)
+    reason = _safe_text(result.reason) or "Email не прошёл проверку."
+    return {
+        "recipient": recipient,
+        "status": "error",
+        "error": reason,
+        "validation": result.to_dict(),
+    }
+
+
+def _filter_validated_recipients(
+    recipients: list[str],
+    validation_cache: dict[str, EmailValidationResult],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    valid_recipients: list[str] = []
+    validation_attempts: list[dict[str, Any]] = []
+    for recipient in _unique_send_recipients(recipients):
+        result = _validate_recipient_for_send(recipient, validation_cache)
+        if result.is_valid:
+            valid_recipients.append(_safe_text(recipient))
+        else:
+            validation_attempts.append(_email_validation_attempt(result))
+    return valid_recipients, validation_attempts
+
+
+def _validation_attempt_error(attempts: list[dict[str, Any]]) -> str:
+    errors = [_safe_text(attempt.get("error")) for attempt in attempts if _safe_text(attempt.get("error"))]
+    return "; ".join(errors) or "Нет email, прошедшего проверку."
+
+
+def _validation_attempt_warning(attempts: list[dict[str, Any]]) -> str:
+    items = []
+    for attempt in attempts[:3]:
+        recipient = _safe_text(attempt.get("recipient")) or "email"
+        error = _safe_text(attempt.get("error"))
+        items.append(f"{recipient} ({error})" if error else recipient)
+    if not items:
+        return ""
+    suffix = f" и ещё {len(attempts) - 3}" if len(attempts) > 3 else ""
+    return f"Пропущены email, которые не прошли проверку: {', '.join(items)}{suffix}."
+
+
+def _send_result_from_preflight_attempts(preflight_attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "recipient": None,
+        "recipients": [],
+        "attempts": list(preflight_attempts),
+        "error": _validation_attempt_error(preflight_attempts),
+        "warning": _validation_attempt_warning(preflight_attempts),
+    }
+
+
+def _merge_send_result_with_preflight_attempts(
+    send_result: dict[str, Any],
+    preflight_attempts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not preflight_attempts:
+        return send_result
+    merged = dict(send_result)
+    merged["attempts"] = [*preflight_attempts, *(send_result.get("attempts") or [])]
+    validation_warning = _validation_attempt_warning(preflight_attempts)
+    existing_warning = _safe_text(send_result.get("warning"))
+    merged["warning"] = " ".join(item for item in [validation_warning, existing_warning] if item).strip()
+    if not merged.get("recipient"):
+        merged["error"] = _validation_attempt_error(merged["attempts"])
+    return merged
+
 def _combine_send_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     sent_recipients: list[str] = []
@@ -1067,8 +1167,8 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
         )
         if state.get("warning_rows", 0) > 0:
             summary += (
-                f" У {state.get('warning_rows', 0)} писем отправка прошла, "
-                "но копию не удалось сохранить в папку «Отправленные»."
+                f" У {state.get('warning_rows', 0)} писем есть предупреждения, "
+                "подробности видны в журнале отправки."
             )
         if state.get("remaining_rows", 0) > 0:
             summary += f" Осталось отправить: {state.get('remaining_rows', 0)}."
@@ -1115,8 +1215,8 @@ def _format_sender_summary(state: dict[str, Any]) -> str:
         summary += f" Автоматически восстановлено комплектов: {state.get('autonomous_recovery_rows', 0)}."
     if state.get("warning_rows", 0) > 0:
         summary += (
-            f" У {state.get('warning_rows', 0)} писем отправка прошла, "
-            "но копию не удалось сохранить в папку «Отправленные»."
+            f" У {state.get('warning_rows', 0)} писем есть предупреждения, "
+            "подробности видны в журнале отправки."
         )
     if state.get("remaining_rows", 0) > 0:
         summary += f" Можно отправить оставшиеся письма: {state.get('remaining_rows', 0)}."
@@ -1525,6 +1625,7 @@ def _append_sent_mail_log(
     work_type: str = "",
     recipient_strategy: str = "",
     sender_email: str = "",
+    recipient_role: str = "",
 ) -> str | None:
     safe_provider = _safe_provider_payload(provider)
     record = {
@@ -1543,6 +1644,7 @@ def _append_sent_mail_log(
         "work_type": _safe_text(work_type),
         "recipient_strategy": _safe_text(recipient_strategy) or DEFAULT_RECIPIENT_STRATEGY,
         "sender_email": _safe_text(sender_email),
+        "recipient_role": _safe_text(recipient_role),
     }
     if _safe_text(send_run_id):
         record["send_run_id"] = _safe_text(send_run_id)
@@ -1574,6 +1676,23 @@ def _append_sent_mail_log(
 
 def _mail_key(value: Any) -> str:
     return _safe_text(value).lower()
+
+
+def _recipient_role_for_log(email_decision: dict[str, Any], recipient: str) -> str:
+    recipient_key = _mail_key(recipient)
+    if not recipient_key:
+        return "unknown"
+    primary_key = _mail_key(email_decision.get("recipient"))
+    if primary_key and recipient_key == primary_key:
+        return "primary"
+    fallback_keys = {
+        _mail_key(candidate)
+        for candidate in list(email_decision.get("fallback_candidates") or [])
+        if _mail_key(candidate)
+    }
+    if recipient_key in fallback_keys:
+        return "fallback"
+    return "unknown"
 
 
 def _build_provider_idempotency_key(
@@ -3439,6 +3558,7 @@ def _build_parallel_send_job(
     recipient_strategy: str = "",
     sender_email: str = "",
     body_override: str | None = None,
+    preflight_attempts: list[dict[str, Any]] | None = None,
     success_status_value: str = STATUS_SENT_VALUE,
 ) -> dict[str, Any]:
     return {
@@ -3460,10 +3580,14 @@ def _build_parallel_send_job(
         "work_type": work_type,
         "recipient_strategy": recipient_strategy,
         "sender_email": sender_email,
+        "preflight_attempts": list(preflight_attempts or []),
     }
 
 
 def _run_parallel_send_job(job: dict[str, Any]) -> dict[str, Any]:
+    preflight_attempts = list(job.get("preflight_attempts") or [])
+    if not job.get("recipients_to_send"):
+        return {"job": job, "send_result": _send_result_from_preflight_attempts(preflight_attempts)}
     send_result = _send_with_transport(
         job["row"],
         job["recipients_to_send"],
@@ -3478,8 +3602,7 @@ def _run_parallel_send_job(job: dict[str, Any]) -> dict[str, Any]:
         attachment_mode=job.get("attachment_mode") or "",
         sender_email=job.get("sender_email") or "",
     )
-    return {"job": job, "send_result": send_result}
-
+    return {"job": job, "send_result": _merge_send_result_with_preflight_attempts(send_result, preflight_attempts)}
 
 def _restore_sent_from_local_log(
     *,
@@ -3566,6 +3689,7 @@ def _apply_send_result_to_entry(
                 work_type=effective_work_type,
                 recipient_strategy=effective_recipient_strategy,
                 sender_email=effective_sender_email,
+                recipient_role=_recipient_role_for_log(email_decision, sent_recipient),
             )
             sent_mail_recipients.setdefault(row_id_text, set()).add(_mail_key(sent_recipient))
             if log_warning:
@@ -3599,6 +3723,7 @@ def _apply_send_result_to_entry(
             work_type=effective_work_type,
             recipient_strategy=effective_recipient_strategy,
             sender_email=effective_sender_email,
+            recipient_role=_recipient_role_for_log(email_decision, sent_recipient),
         )
         if log_warning:
             entry["warning"] = f"{entry['warning']} {log_warning}".strip() if entry["warning"] else log_warning
@@ -3772,6 +3897,7 @@ def run_sender(
     )
     parallel_workers = _unisender_parallel_workers(dry_run=dry_run, transport=effective_transport)
     parallel_send_jobs: list[dict[str, Any]] = []
+    email_validation_cache: dict[str, EmailValidationResult] = {}
 
     for row in candidates:
         _refresh_sender_stop_flag(state, job_id)
@@ -3826,12 +3952,50 @@ def run_sender(
             email_decision,
             recipient_strategy=effective_recipient_strategy,
         )
+        preflight_attempts: list[dict[str, Any]] = []
+        validation_candidates = _unique_send_recipients([*allowed_recipients, *fallback_recipients])
+        if validation_candidates:
+            _, preflight_attempts = _filter_validated_recipients(validation_candidates, email_validation_cache)
+            invalid_validation_keys = {
+                _mail_key(attempt.get("recipient"))
+                for attempt in preflight_attempts
+                if _mail_key(attempt.get("recipient"))
+            }
+            if invalid_validation_keys:
+                allowed_recipients = [
+                    recipient for recipient in allowed_recipients if _mail_key(recipient) not in invalid_validation_keys
+                ]
+                fallback_recipients = [
+                    recipient for recipient in fallback_recipients if _mail_key(recipient) not in invalid_validation_keys
+                ]
+                invalid_by_validation = [
+                    _safe_text(attempt.get("recipient")) for attempt in preflight_attempts if _safe_text(attempt.get("recipient"))
+                ]
+                entry["invalid_emails"] = _unique_send_recipients([
+                    *list(entry.get("invalid_emails") or []),
+                    *invalid_by_validation,
+                ])
+                entry["email_validation"] = [
+                    attempt.get("validation") for attempt in preflight_attempts if isinstance(attempt.get("validation"), dict)
+                ]
+                entry["validation_warning"] = _validation_attempt_warning(preflight_attempts)
+        sendable_recipients = _unique_send_recipients([*allowed_recipients, *fallback_recipients])
+        entry["emails"] = sendable_recipients
+        validation_error = ""
+        if sendable_recipients:
+            if allowed_recipients:
+                entry["recipient"] = allowed_recipients[0]
+            elif fallback_recipients:
+                entry["recipient"] = fallback_recipients[0]
+                entry["decision_reason"] = (
+                    "Основной email не прошёл проверку или уже недоступен, использую резервный email."
+                )
+        elif validation_candidates:
+            entry["recipient"] = None
+            validation_error = _validation_attempt_error(preflight_attempts)
         confirmed_material_recipients: list[str] = []
         if effective_send_mode == "materials" and require_confirmed_consent:
-            consent_candidates = _consent_candidate_recipients(
-                email_decision,
-                recipient_strategy=effective_recipient_strategy,
-            )
+            consent_candidates = sendable_recipients
             confirmed_material_recipients = [
                 recipient
                 for recipient in consent_candidates
@@ -3845,7 +4009,7 @@ def run_sender(
         missing_confirmed_consent = (
             effective_send_mode == "materials"
             and require_confirmed_consent
-            and bool(allowed_recipients)
+            and bool(sendable_recipients)
             and not confirmed_material_recipients
         )
         folder: Path | None = None
@@ -3874,9 +4038,10 @@ def run_sender(
 
         if not entry["recipient"]:
             entry["result"] = "needs_enrichment"
-            entry["error"] = "Не найден валидный email получателя."
+            entry["error"] = validation_error or "Не найден валидный email получателя."
             entry["next_action"] = (
-                "Нужно вручную проверить и заполнить email получателя."
+                "Исправьте email или добавьте резервный адрес."
+                if validation_error else "Нужно вручную проверить и заполнить email получателя."
                 if not settings.inter_agent_handoffs_enabled
                 else "Запросить у агента-парсера поиск или уточнение email."
             )
@@ -4158,6 +4323,7 @@ def run_sender(
                             work_type=effective_work_type,
                             recipient_strategy=effective_recipient_strategy,
                             sender_email=effective_sender_email,
+                            preflight_attempts=preflight_attempts,
                         )
                     )
                     entry["result"] = "queued_parallel_send"
@@ -4239,6 +4405,7 @@ def run_sender(
                             wait_between_recipients=smtp_recipient_delay,
                             wait_after_rate_limit=mailopost_rate_limit_delay,
                         )
+                    send_result = _merge_send_result_with_preflight_attempts(send_result, preflight_attempts)
                     if effective_send_mode == "consent_request":
                         entry["consent_urls"] = send_result.get("consent_urls") or {}
                         if len(entry["consent_urls"]) == 1:
@@ -4312,6 +4479,10 @@ def run_sender(
                 }
                 for recipient in preview_recipients
             ]
+            if preflight_attempts:
+                entry["attempts"] = [*preflight_attempts, *entry["attempts"]]
+                if preview_recipients:
+                    entry["warning"] = _validation_attempt_warning(preflight_attempts)
         if entry.get("result") == "queued_parallel_send":
             state["rows"] = _state_rows_snapshot(processed_entries)
             _save_sender_state(state, job_id)

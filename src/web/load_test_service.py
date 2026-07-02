@@ -118,7 +118,7 @@ def _copy_templates(source_job_id: str | None, target_job_id: str) -> list[str]:
 def _missing_generator_templates(job_id: str) -> list[str]:
     templates_dir = resolve_job_paths(job_id).templates_dir
     missing: list[str] = []
-    if not (templates_dir / "kp_template_source.docx").exists():
+    if not any((templates_dir / name).exists() for name in ("kp_template_source.docx", "kp_template_source.pdf")):
         missing.append("шаблон КП")
     if not (templates_dir / "contract_template_source.docx").exists():
         missing.append("шаблон договора")

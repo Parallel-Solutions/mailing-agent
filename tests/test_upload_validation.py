@@ -189,5 +189,29 @@ class UploadValidationTests(unittest.TestCase):
             _cleanup(root)
 
 
+    def test_upload_kp_template_accepts_pdf_and_replaces_docx(self) -> None:
+        root = _workspace_temp_root("upload-validation-kp-pdf")
+        try:
+            verification_calls: list[dict] = []
+            client = self._client(root, verification_calls)
+            stale_docx = _job_paths(root, None).templates_dir / "kp_template_source.docx"
+            stale_docx.parent.mkdir(parents=True, exist_ok=True)
+            stale_docx.write_bytes(_ooxml_bytes("word/document.xml"))
+
+            with patch("src.web.jobs_router.append_audit_event", lambda **kwargs: None):
+                response = client.post(
+                    "/api/upload/template",
+                    data={"template_kind": "kp"},
+                    files={"file": ("kp.pdf", b"%PDF-1.4\n% test", "application/pdf")},
+                )
+
+            dest = _job_paths(root, None).templates_dir / "kp_template_source.pdf"
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(dest.exists())
+            self.assertFalse(stale_docx.exists())
+            self.assertEqual(response.json()["result"]["stored_as"], "kp_template_source.pdf")
+        finally:
+            _cleanup(root)
+
 if __name__ == "__main__":
     unittest.main()

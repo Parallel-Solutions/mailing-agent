@@ -173,6 +173,8 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 "row_id": "1",
                 "mun_name": "МО",
                 "recipient": "one@example.com",
+                "recipient_role": "primary",
+                "recipient_role_label": "Основной",
                 "sent_at": "2026-06-29T10:00:00",
                 "subject": "Тема",
                 "accepted_status": "sent",
@@ -226,6 +228,8 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 journal_sheet = workbook["Журнал отправки"]
                 self.assertEqual(journal_sheet[3][8].value, "Причина недоставки")
                 self.assertEqual(journal_sheet[4][8].value, "250 2.0.0 queued as OK")
+                self.assertEqual(journal_sheet[3][14].value, "Тип адреса")
+                self.assertEqual(journal_sheet[4][14].value, "Основной")
                 consent_sheet = workbook["Согласия"]
                 self.assertEqual(consent_sheet[3][3].value, "Статус согласия")
                 self.assertEqual(consent_sheet[4][3].value, "Согласие получено")
@@ -291,6 +295,8 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             sender_agent, "get_tasks_for_agent", return_value=[]
         ), patch.object(
             sender_agent, "get_recent_events", return_value=[]
+        ), patch.object(
+            sender_agent.settings, "email_validation_mode", "syntax"
         ):
             result = sender_agent.run_sender(
                 dry_run=True,
@@ -346,6 +352,78 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(decision["fallback_candidates"], ["two@example.com", "three@example.com"])
         self.assertEqual(decision["invalid_emails"], ["bad-email"])
         self.assertIn("дополнительные", decision["decision_reason"])
+
+    def test_email_validation_filters_invalid_primary_and_keeps_fallback(self) -> None:
+        def fake_result(email: str, is_valid: bool) -> sender_agent.EmailValidationResult:
+            return sender_agent.EmailValidationResult(
+                email=email,
+                normalized_email=email.lower(),
+                domain=email.split("@", 1)[-1],
+                is_valid=is_valid,
+                reason_code="ok_domain" if is_valid else "domain_not_found",
+                reason="" if is_valid else "Email не прошёл проверку: домен bad.invalid не найден.",
+                checked_at="2026-07-02T12:00:00",
+                details={"mode": "domain"},
+            )
+
+        decision = sender_agent._choose_recipient(
+            {
+                "EMAIL_OSN": "person@bad.invalid",
+                "EMAIL_DOP": "backup@example.com",
+            }
+        )
+        candidates = [
+            *sender_agent._allowed_send_recipients(
+                decision,
+                recipient_strategy=sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+            ),
+            *sender_agent._fallback_send_recipients(
+                decision,
+                recipient_strategy=sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+            ),
+        ]
+
+        with patch.object(
+            sender_agent,
+            "validate_email_address",
+            side_effect=lambda email, **kwargs: fake_result(email, email == "backup@example.com"),
+        ):
+            valid_recipients, attempts = sender_agent._filter_validated_recipients(candidates, {})
+
+        self.assertEqual(valid_recipients, ["backup@example.com"])
+        self.assertEqual(attempts[0]["recipient"], "person@bad.invalid")
+        self.assertIn("не прошёл проверку", attempts[0]["error"])
+
+    def test_preflight_validation_warning_keeps_successful_fallback_send(self) -> None:
+        invalid_attempt = {
+            "recipient": "person@bad.invalid",
+            "status": "error",
+            "error": "Email не прошёл проверку: домен bad.invalid не найден.",
+        }
+        send_result = {
+            "recipient": "backup@example.com",
+            "recipients": ["backup@example.com"],
+            "attempts": [{"recipient": "backup@example.com", "status": "sent", "error": ""}],
+            "error": "",
+            "warning": "",
+        }
+
+        merged = sender_agent._merge_send_result_with_preflight_attempts(send_result, [invalid_attempt])
+
+        self.assertEqual(merged["recipient"], "backup@example.com")
+        self.assertEqual([attempt["recipient"] for attempt in merged["attempts"]], ["person@bad.invalid", "backup@example.com"])
+        self.assertIn("Пропущены email", merged["warning"])
+    def test_recipient_role_for_log_marks_primary_and_fallback(self) -> None:
+        decision = sender_agent._choose_recipient(
+            {
+                "EMAIL_OSN": "one@example.com",
+                "EMAIL_DOP": "two@example.com; three@example.com",
+            }
+        )
+
+        self.assertEqual(sender_agent._recipient_role_for_log(decision, "one@example.com"), "primary")
+        self.assertEqual(sender_agent._recipient_role_for_log(decision, "two@example.com"), "fallback")
+        self.assertEqual(sender_agent._recipient_role_for_log(decision, "unknown@example.com"), "unknown")
 
     def test_delivery_failure_dispatches_next_fallback_recipient(self) -> None:
         sent_items = [
@@ -904,6 +982,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             },
             sent_mail_log_path=log_path,
             send_run_id="send-1",
+            recipient_role="fallback",
             send_run_started_at="2026-06-21T10:00:00",
         )
 
@@ -911,6 +990,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
         self.assertEqual(record["provider_idempotency_key"], "mailing-agent:rusender:stable")
         self.assertEqual(record["provider"]["idempotency_key"], "mailing-agent:rusender:stable")
+        self.assertEqual(record["recipient_role"], "fallback")
 
     def test_unisender_analytics_filters_items_outside_current_data(self) -> None:
         items = [
@@ -940,6 +1020,32 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
         self.assertEqual([item["row_id"] for item in scoped], ["1", "2"])
         self.assertEqual([item["recipient"] for item in scoped], ["one@example.com", "two@example.com"])
+
+    def test_delivery_report_infers_recipient_role_from_current_data(self) -> None:
+        with patch.object(
+            sender_report,
+            "resolve_job_paths",
+            return_value=SimpleNamespace(data_xlsx=Path(__file__)),
+        ), patch.object(
+            sender_report,
+            "load_rows",
+            return_value=(
+                None,
+                None,
+                [
+                    {
+                        "ID": "1",
+                        "EMAIL_OSN": "one@example.com",
+                        "EMAIL_DOP": "two@example.com; three@example.com",
+                    }
+                ],
+            ),
+        ):
+            roles = sender_report._current_data_recipient_roles("job-current")
+
+        self.assertEqual(roles[("1", "one@example.com")], "primary")
+        self.assertEqual(roles[("1", "two@example.com")], "fallback")
+        self.assertEqual(roles[("1", "three@example.com")], "fallback")
 
     def test_unisender_analytics_deduplicates_latest_row_recipient_item(self) -> None:
         items = [
@@ -1055,6 +1161,45 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(analytics["summary"]["clicked"], 1)
         self.assertEqual(analytics["provider_events_count"], 2)
         self.assertEqual(analytics["cards"][0]["title"], "Передано в RuSender")
+
+    def test_sender_analytics_splits_delivered_by_recipient_role(self) -> None:
+        with patch.object(
+            sender_report,
+            "_build_delivery_rows",
+            return_value=(
+                [
+                    {
+                        "provider": "mailopost",
+                        "provider_status": "delivered",
+                        "recipient_role": "primary",
+                        "checked_at": "2026-06-29T10:00:00",
+                    },
+                    {
+                        "provider": "mailopost",
+                        "provider_status": "opened",
+                        "recipient_role": "fallback",
+                        "checked_at": "2026-06-29T10:01:00",
+                    },
+                    {
+                        "provider": "mailopost",
+                        "provider_status": "hard_bounced",
+                        "recipient_role": "fallback",
+                        "checked_at": "2026-06-29T10:02:00",
+                    },
+                ],
+                "",
+            ),
+        ):
+            analytics = sender_report.build_sender_delivery_analytics("job-current", refresh=False)
+
+        cards = {card["id"]: card for card in analytics["cards"]}
+        self.assertEqual(analytics["summary"]["recipient_roles"]["accepted"]["primary"], 1)
+        self.assertEqual(analytics["summary"]["recipient_roles"]["accepted"]["fallback"], 2)
+        self.assertEqual(analytics["summary"]["recipient_roles"]["delivered"]["primary"], 1)
+        self.assertEqual(analytics["summary"]["recipient_roles"]["delivered"]["fallback"], 1)
+        self.assertEqual(cards["delivered_primary"]["value"], 1)
+        self.assertEqual(cards["delivered_fallback"]["value"], 1)
+        self.assertEqual(cards["delivered_fallback"]["percent"], 50.0)
 
     def test_run_unisender_request_retries_temporary_network_error(self) -> None:
         attempts = {"count": 0}

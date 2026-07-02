@@ -262,9 +262,9 @@ def build_requisites(row: dict) -> str:
 WINDOWS_PATH_FORBIDDEN_PATTERN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
-def sanitize_path_component(value: object, *, fallback: str = "unknown") -> str:
+def sanitize_path_component(value: object, *, fallback: str = "unknown", preserve_case: bool = False) -> str:
     """Return a Windows-safe file/folder name without changing source data."""
-    text = normalize_display_text(value)
+    text = " ".join(str(value).split()) if preserve_case else normalize_display_text(value)
     text = WINDOWS_PATH_FORBIDDEN_PATTERN.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip(" .")
     return text or fallback

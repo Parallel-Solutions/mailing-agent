@@ -44,7 +44,7 @@ class WorkTypeProfileTests(unittest.TestCase):
         self.assertEqual(context["WORK_TYPE"], WORK_TYPE_STP_MO)
         self.assertEqual(context["WORK_TYPE_LABEL"], "СТП МО")
         self.assertEqual(context["WORK_SHORT_NAME"], "СТП МО")
-        self.assertEqual(context["WORK_FILENAME_LABEL"], "СТП_МО")
+        self.assertEqual(context["WORK_FILENAME_LABEL"], "СТП")
         self.assertIn("схемы территориального планирования", context["WORK_TITLE"])
         self.assertIn("СТП МО", context["MAIL_SUBJECT_DEFAULT"])
         self.assertNotIn("местных нормативов", context["WORK_TITLE"])
@@ -121,6 +121,18 @@ class WorkTypeProfileTests(unittest.TestCase):
 
         self.assertIn("территориальных зон", trace["MUN_NAME_2"]["context_sentence"])
         self.assertNotIn("местных нормативов", trace["MUN_NAME_2"]["context_sentence"])
+
+    def test_stp_mo_kp_filename_uses_short_uppercase_prefix(self) -> None:
+        row = self._row()
+        row["MUN_NAME"] = "Жигаловский муниципальный округ"
+        row["MUN_R_NAME"] = "Жигаловский муниципальный округ"
+        context = build_document_context(row, 101, work_type=WORK_TYPE_STP_MO)
+
+        filename = build_kp_filename(row, context)
+
+        self.assertEqual(filename, "КП_СТП_Жигаловский муниципальный округ.docx")
+        self.assertNotIn("СТП_МО", filename)
+        self.assertNotIn("Стп", filename)
 
     def test_territorial_zone_kp_filename_uses_profile_prefix(self) -> None:
         row = self._row()

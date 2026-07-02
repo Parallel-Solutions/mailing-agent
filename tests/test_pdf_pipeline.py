@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.generator.generation import generator_agent, pdf_converter
+from src.generator.generation import generator_agent, pdf_converter, pdf_template_renderer
 
 
 class PdfPipelineTests(unittest.TestCase):
@@ -26,6 +26,24 @@ class PdfPipelineTests(unittest.TestCase):
                 "word/document.xml",
                 '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>',
             )
+
+    def test_pdf_template_cmap_parser_does_not_invent_ranges_from_bfchar(self) -> None:
+        cmap = b"""
+        begincmap
+        3 beginbfchar
+        <0244> <041A>
+        <0245> <041B>
+        <0249> <041F>
+        endbfchar
+        endcmap
+        """
+
+        mapping = pdf_template_renderer._parse_to_unicode_cmap(cmap)
+
+        self.assertEqual(mapping["\u041a"], "0244")
+        self.assertEqual(mapping["\u041b"], "0245")
+        self.assertEqual(mapping["\u041f"], "0249")
+        self.assertNotIn("\u0444", mapping)
 
     def test_convert_docx_batch_reuses_existing_valid_pdf(self) -> None:
         docx_path = self.tmp_dir / "document.docx"
@@ -249,6 +267,42 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertIn("kp_final_pdf", results[0]["files"])
         self.assertNotIn("contract_final_pdf", results[0]["files"])
         self.assertEqual(results[0]["status"], "ok")
+
+    def test_finalize_generated_files_moves_direct_pdf_template_output(self) -> None:
+        staged_pdf = self.tmp_dir / "batch_docx" / "1_kp_Test.pdf"
+        final_pdf = self.tmp_dir / "output" / "1_Test" / "КП_Случайный_лес_Test.pdf"
+        staged_pdf.parent.mkdir(parents=True)
+        staged_pdf.write_bytes(b"%PDF direct")
+        results = [
+            {
+                "status": "ok",
+                "result_index": 0,
+                "generated_files": {
+                    "kp_pdf": staged_pdf,
+                    "kp_final_pdf": final_pdf,
+                },
+            }
+        ]
+        progress_calls = 0
+
+        def progress() -> None:
+            nonlocal progress_calls
+            progress_calls += 1
+
+        with patch.object(generator_agent, "convert_docx_batch") as convert_mock:
+            generator_agent.finalize_generated_files(
+                results,
+                batch_pdf_dir=self.tmp_dir / "batch_pdf",
+                create_pdf=True,
+                progress_callback=progress,
+            )
+
+        convert_mock.assert_not_called()
+        self.assertFalse(staged_pdf.exists())
+        self.assertTrue(final_pdf.exists())
+        self.assertEqual(results[0]["files"]["kp_final_pdf"], str(final_pdf))
+        self.assertEqual(results[0]["status"], "ok")
+        self.assertEqual(progress_calls, 1)
 
     def test_finalize_output_pdfs_for_job_converts_only_kp_docx(self) -> None:
         output_dir = self.tmp_dir / "output"

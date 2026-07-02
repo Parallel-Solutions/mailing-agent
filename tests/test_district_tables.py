@@ -2,15 +2,18 @@ import shutil
 import unittest
 from pathlib import Path
 
+from docx import Document
 from openpyxl import Workbook
 
 from src.generator.generation.document_builder import (
     build_contract_filename,
     build_contract_replacements,
     build_kp_replacements,
+    render_docx,
 )
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.transforms import build_document_context, build_output_folder_name
+from src.generator.generation.work_types import WORK_TYPE_STP_MO
 from src.generator.verification.municipality_name_verifier import verify_municipality_names_in_workbook
 
 
@@ -96,6 +99,33 @@ class DistrictTableTests(unittest.TestCase):
         self.assertEqual(contract_replacements["Глава MUN_NAME"], "Глава Новокубанского района")
         self.assertIn("Новокубанский", build_contract_filename(rows[0]))
         self.assertIn("Новокубанский", build_output_folder_name(rows[0]))
+
+    def test_kp_replacements_inflect_district_scope_with_extra_placeholder_space(self) -> None:
+        row = {
+            "ID": 1,
+            "SUB_RF": "Иркутская область",
+            "MUN_R_NAME": "Жигаловский муниципальный округ",
+            "MUN_NAME": None,
+            "ADM_NAME": "",
+            "HEAD_FIO": "Иванов Иван Иванович",
+        }
+        context = build_document_context(row, outgoing_number=101, work_type=WORK_TYPE_STP_MO)
+        template_path = self.tmp_dir / "kp-extra-space-template.docx"
+        output_path = self.tmp_dir / "kp-extra-space-output.docx"
+        document = Document()
+        table = document.add_table(rows=1, cols=1)
+        paragraph = table.cell(0, 0).paragraphs[0]
+        paragraph.add_run("Выполнение работ по схеме территориального планирования (СТП) ")
+        paragraph.add_run("MUN_R_NAME ")
+        paragraph.add_run(" ")
+        paragraph.add_run("SUB_RF")
+        document.save(template_path)
+
+        render_docx(template_path, build_kp_replacements(context), output_path, context)
+
+        rendered_text = Document(output_path).tables[0].cell(0, 0).text
+        self.assertIn("Жигаловского муниципального округа Иркутской области", rendered_text)
+        self.assertNotIn("Жигаловский муниципальный округ Иркутская область", rendered_text)
 
     def test_municipality_contract_replacements_inflect_district_scope(self) -> None:
         row = {

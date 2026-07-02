@@ -71,6 +71,12 @@ PROVIDER_LABELS = {
     "smtp": "SMTP",
     "mailopost": "MailoPost",
 }
+RECIPIENT_ROLE_LABELS = {
+    "primary": "Основной",
+    "fallback": "Резервный",
+    "unknown": "Неизвестно",
+}
+RECIPIENT_ROLE_ORDER = ("primary", "fallback", "unknown")
 
 
 def build_sender_delivery_report_xlsx(job_id: str | None = None, *, refresh: bool = True) -> Path:
@@ -110,7 +116,9 @@ def build_sender_delivery_report_xlsx(job_id: str | None = None, *, refresh: boo
             "J": 18,
             "K": 18,
             "L": 24,
-            "M": 46,
+            "M": 24,
+            "N": 46,
+            "O": 22,
         },
     )
     _autosize(
@@ -200,6 +208,17 @@ def build_sender_delivery_analytics(
     errors = hard_bounced + soft_bounced + generic_errors
     pending = sum(statuses.get(status, 0) for status in pending_statuses)
     accepted = total
+    recipient_roles = Counter(_normalize_recipient_role(row.get("recipient_role")) for row in rows)
+    delivered_by_role = Counter(
+        _normalize_recipient_role(row.get("recipient_role"))
+        for row in rows
+        if _normalize_provider_status(row.get("provider_status") or "unknown") in delivered_statuses
+    )
+    hard_bounced_by_role = Counter(
+        _normalize_recipient_role(row.get("recipient_role"))
+        for row in rows
+        if _normalize_provider_status(row.get("provider_status") or "unknown") in hard_bounce_statuses
+    )
     checked = sum(1 for row in rows if row.get("checked_at"))
     provider_events_count = sum(
         count
@@ -221,6 +240,9 @@ def build_sender_delivery_analytics(
         if denominator <= 0:
             return 0.0
         return round((value / denominator) * 100, 1)
+
+    def role_pct(value: int, role: str) -> float:
+        return pct(value, recipient_roles.get(role, 0))
 
     cards = [
         {
@@ -253,6 +275,22 @@ def build_sender_delivery_analytics(
             "value": delivered,
             "percent": pct(delivered),
             "hint": "Подтверждённая доставка по событиям провайдера, если они доступны.",
+            "tone": "neutral" if awaiting_provider_events else "good",
+        },
+        {
+            "id": "delivered_primary",
+            "title": "Доставлено на основной",
+            "value": delivered_by_role.get("primary", 0),
+            "percent": role_pct(delivered_by_role.get("primary", 0), "primary"),
+            "hint": "Сколько писем дошло из отправленных на основной email.",
+            "tone": "neutral" if awaiting_provider_events else "good",
+        },
+        {
+            "id": "delivered_fallback",
+            "title": "Доставлено на резерв",
+            "value": delivered_by_role.get("fallback", 0),
+            "percent": role_pct(delivered_by_role.get("fallback", 0), "fallback"),
+            "hint": "Сколько писем дошло из отправленных на резервный email.",
             "tone": "neutral" if awaiting_provider_events else "good",
         },
         {
@@ -342,6 +380,11 @@ def build_sender_delivery_analytics(
             "errors": errors,
             "pending": pending,
             "providers": dict(providers),
+            "recipient_roles": {
+                "accepted": _counter_by_recipient_role(recipient_roles),
+                "delivered": _counter_by_recipient_role(delivered_by_role),
+                "hard_bounced": _counter_by_recipient_role(hard_bounced_by_role),
+            },
             "rates": rates,
             "consents": consent_summary,
         },
@@ -413,6 +456,7 @@ def unisender_delivery_report_has_data(job_id: str | None = None) -> bool:
 
 def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dict[str, Any]], str]:
     items = _load_delivery_log_items(job_id)
+    current_data_roles = _current_data_recipient_roles(job_id)
     refresh_messages: list[str] = []
     if refresh:
         go_refresh_error = _refresh_unisender_go_event_dump(job_id, items)
@@ -466,11 +510,14 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
 
         label = _report_status_label(provider_status)
         delivery_response = _delivery_response_text(go_event, rusender_event, mailopost_event)
+        recipient_role = _recipient_role_from_item(item, current_data_roles=current_data_roles)
         rows.append(
             {
                 "row_id": _safe_text(item.get("row_id")),
                 "mun_name": _safe_text(item.get("mun_name")),
                 "recipient": _safe_text(item.get("recipient")),
+                "recipient_role": recipient_role,
+                "recipient_role_label": _recipient_role_label(recipient_role),
                 "sent_at": _safe_text(item.get("sent_at")),
                 "subject": _safe_text(item.get("subject")),
                 "accepted_status": accepted_status,
@@ -864,6 +911,50 @@ def _filter_items_by_current_data(job_id: str | None, items: list[dict[str, Any]
         )
     ]
 
+
+def _current_data_recipient_roles(job_id: str | None) -> dict[tuple[str, str], str]:
+    if not job_id:
+        return {}
+    data_path = resolve_job_paths(job_id).data_xlsx
+    if not data_path.exists():
+        return {}
+    try:
+        _, _, rows = load_rows(data_path)
+    except Exception:
+        return {}
+
+    roles: dict[tuple[str, str], str] = {}
+    for row in rows:
+        row_id = _safe_text(row.get("ID"))
+        if not row_id:
+            continue
+        primary_keys = {
+            _safe_text(email).lower()
+            for email in _parse_emails(row.get("EMAIL_OSN"))
+            if _safe_text(email)
+        }
+        for email_key in primary_keys:
+            roles[(row_id, email_key)] = "primary"
+        for email in _parse_emails(row.get("EMAIL_DOP")):
+            email_key = _safe_text(email).lower()
+            if email_key and (row_id, email_key) not in roles:
+                roles[(row_id, email_key)] = "fallback"
+    return roles
+
+
+def _recipient_role_from_item(
+    item: dict[str, Any],
+    *,
+    current_data_roles: dict[tuple[str, str], str],
+) -> str:
+    role = _normalize_recipient_role(item.get("recipient_role"))
+    if role != "unknown":
+        return role
+    row_id = _safe_text(item.get("row_id"))
+    recipient_key = _safe_text(item.get("recipient")).lower()
+    if row_id and recipient_key:
+        return _normalize_recipient_role(current_data_roles.get((row_id, recipient_key)))
+    return "unknown"
 
 def _sent_log_item_matches_current_data(
     item: dict[str, Any],
@@ -1310,6 +1401,25 @@ def _write_statistics_sheet(
     _add_title(sheet, "Статистика отправки")
     outcomes = Counter(row["outcome"] for row in rows)
     statuses = Counter(row["provider_status"] or "статус неизвестен" for row in rows)
+    delivered_statuses = {
+        "delivered",
+        "opened",
+        "clicked",
+        "subscribed",
+        "unsubscribed",
+        "spam",
+        "ok_delivered",
+        "ok_read",
+        "ok_link_visited",
+        "ok_unsubscribed",
+        "ok_spam_folder",
+    }
+    recipient_roles = Counter(_normalize_recipient_role(row.get("recipient_role")) for row in rows)
+    delivered_by_role = Counter(
+        _normalize_recipient_role(row.get("recipient_role"))
+        for row in rows
+        if _normalize_provider_status(row.get("provider_status") or "unknown") in delivered_statuses
+    )
     checked_count = sum(1 for row in rows if row.get("checked_at"))
     unique_recipients = len({row["recipient"].lower() for row in rows if row["recipient"]})
     unique_municipalities = len({row["mun_name"].lower() for row in rows if row["mun_name"]})
@@ -1347,6 +1457,15 @@ def _write_statistics_sheet(
     ]
     _write_table(sheet, 17, ["Показатель", "Значение"], consent_stats_rows, name="ConsentStats")
 
+    role_stats_rows = [
+        ["Передано провайдеру на основной email", recipient_roles.get("primary", 0)],
+        ["Доставлено на основной email", delivered_by_role.get("primary", 0)],
+        ["Передано провайдеру на резервный email", recipient_roles.get("fallback", 0)],
+        ["Доставлено на резервный email", delivered_by_role.get("fallback", 0)],
+        ["Тип адреса не определён", recipient_roles.get("unknown", 0)],
+    ]
+    _write_table(sheet, 27, ["Показатель", "Значение"], role_stats_rows, name="RecipientRoleStats")
+
 
 def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
     _add_title(sheet, "Журнал отправки")
@@ -1368,6 +1487,7 @@ def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
             "Message ID",
             "Время проверки статуса",
             "Комментарий",
+            "Тип адреса",
         ],
         [
             [
@@ -1385,6 +1505,7 @@ def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
                 row["message_id"],
                 row["checked_at"],
                 row["comment"],
+                row.get("recipient_role_label") or _recipient_role_label(row.get("recipient_role")),
             ]
             for row in rows
         ],
@@ -1510,6 +1631,24 @@ def _report_status_label(status: str) -> str:
 def _normalize_provider_status(status: str) -> str:
     normalized = _safe_text(status).strip().lower().replace("-", "_").replace(" ", "_")
     return normalized or "unknown"
+
+
+def _normalize_recipient_role(value: Any) -> str:
+    normalized = _safe_text(value).strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"primary", "main", "osn", "main_email"}:
+        return "primary"
+    if normalized in {"fallback", "reserve", "backup", "extra", "additional", "dop", "fallback_extra"}:
+        return "fallback"
+    return "unknown"
+
+
+def _recipient_role_label(value: Any) -> str:
+    role = _normalize_recipient_role(value)
+    return RECIPIENT_ROLE_LABELS.get(role, RECIPIENT_ROLE_LABELS["unknown"])
+
+
+def _counter_by_recipient_role(counter: Counter[str]) -> dict[str, int]:
+    return {role: int(counter.get(role, 0)) for role in RECIPIENT_ROLE_ORDER}
 
 
 def _provider_label(provider: str) -> str:

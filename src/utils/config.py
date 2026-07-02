@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     sender_delay_seconds: float = 60.0
     sender_transport: str = "smtp"
     sender_unisender_concurrency: int = 1
+    email_validation_mode: str = "domain"
+    email_validation_timeout_seconds: float = 3.0
     documents_worker_max_processes: int = 1
     sender_worker_max_processes: int = 1
     user_worker_max_processes_per_task: int = 1

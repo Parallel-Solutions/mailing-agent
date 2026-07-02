@@ -452,6 +452,25 @@ def build_docx_jobs(results: list[dict]) -> list[dict[str, Any]]:
     return jobs
 
 
+
+def build_direct_pdf_jobs(results: list[dict]) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    for result in results:
+        generated_files = result.get("generated_files") or {}
+        staged_pdf = generated_files.get("kp_pdf")
+        final_pdf = generated_files.get("kp_final_pdf")
+        if not staged_pdf or not final_pdf:
+            continue
+        jobs.append(
+            {
+                "staged_pdf": staged_pdf,
+                "final_pdf": final_pdf,
+                "result_index": result["result_index"],
+                "file_kind": "kp",
+            }
+        )
+    return jobs
+
 def _job_requires_pdf(job: dict[str, Any]) -> bool:
     return bool(job.get("requires_pdf", str(job.get("file_kind") or "").lower() == "kp"))
 
@@ -518,6 +537,36 @@ def _finalize_generated_jobs(
             staged_docx.unlink()
 
 
+
+def _finalize_direct_pdf_jobs(
+    jobs: list[dict[str, Any]],
+    results: list[dict],
+    *,
+    progress_callback: Any | None = None,
+    should_stop: Any | None = None,
+) -> None:
+    for job in jobs:
+        if should_stop and should_stop():
+            raise GeneratorStopRequested("Остановка запрошена во время сборки PDF.")
+        staged_pdf = Path(job["staged_pdf"])
+        final_pdf = Path(job["final_pdf"])
+        result_entry = results[job["result_index"]]
+        result_files = result_entry.setdefault("files", {})
+        if staged_pdf.exists():
+            final_pdf.parent.mkdir(parents=True, exist_ok=True)
+            if final_pdf.exists():
+                final_pdf.unlink()
+            shutil.move(str(staged_pdf), str(final_pdf))
+        if final_pdf.exists():
+            result_files[f"{job['file_kind']}_final_pdf"] = str(final_pdf)
+            if progress_callback:
+                progress_callback()
+        else:
+            result_entry["status"] = "error"
+            existing_error = str(result_entry.get("error") or "").strip()
+            pdf_error = f"Не удалось создать PDF: {job['file_kind']}.pdf."
+            result_entry["error"] = f"{existing_error} {pdf_error}".strip() if existing_error else pdf_error
+
 def _validate_generated_result(result: dict[str, Any]) -> None:
     result_files = result.get("files") or {}
     if not result_files:
@@ -554,6 +603,7 @@ def finalize_generated_files(
     chunk_size = max(1, int(chunk_size or PDF_CHUNK_SIZE))
     worker_count = max(1, int(worker_count or PDF_WORKERS))
     jobs = build_docx_jobs(results)
+    direct_pdf_jobs = build_direct_pdf_jobs(results)
     pending_pdf_jobs = []
     ready_jobs = []
     for job in jobs:
@@ -580,6 +630,14 @@ def finalize_generated_files(
             pending_pdf_jobs.append(recovery_job)
         elif final_docx.exists():
             ready_jobs.append(job)
+
+    if direct_pdf_jobs:
+        _finalize_direct_pdf_jobs(
+            direct_pdf_jobs,
+            results,
+            progress_callback=progress_callback if create_pdf else None,
+            should_stop=should_stop,
+        )
 
     if ready_jobs:
         _finalize_generated_jobs(
@@ -1238,8 +1296,9 @@ def run_generator_agent(
             if isinstance(value, Path) and value.suffix.lower() == ".docx" and value.exists()
         )
         docx_jobs = build_docx_jobs(results)
-        pdf_job_total = _count_pdf_jobs(docx_jobs) if create_pdf else 0
-        will_create_pdf = create_pdf and pdf_job_total > 0
+        direct_pdf_jobs = build_direct_pdf_jobs(results)
+        pdf_job_total = (_count_pdf_jobs(docx_jobs) if create_pdf else 0) + len(direct_pdf_jobs)
+        will_create_pdf = pdf_job_total > 0
         state["staged_docx_count"] = staged_docx_total
         state["pdf_total"] = pdf_job_total
         state["pdf_processed"] = 0
@@ -1317,6 +1376,8 @@ def run_generator_agent(
             row = row_lookup.get(result_id) or {}
             mun_name = str(row.get("MUN_NAME") or "")
             if result.get("status") == "ok":
+                result_files = result.get("files") or {}
+                has_reviewable_docx = any(str(value).lower().endswith(".docx") for key, value in result_files.items() if str(key).endswith("_final_docx"))
                 set_task_statuses(
                     "generator",
                     row_id=result.get("id"),
@@ -1325,7 +1386,7 @@ def run_generator_agent(
                     resolution_summary="Комплект документов готов.",
                     job_id=job_id,
                 )
-                if settings.inter_agent_handoffs_enabled:
+                if has_reviewable_docx and settings.inter_agent_handoffs_enabled:
                     diagnosis = diagnose_responsibility(
                         symptom="documents_ready_for_review",
                         context={"row_id": result.get("id")},
@@ -1350,7 +1411,7 @@ def run_generator_agent(
                         job_id=job_id,
                     )
                     review_handoffs += 1
-                if result_id:
+                if result_id and has_reviewable_docx:
                     review_row_ids.append(result_id)
             else:
                 set_task_statuses(

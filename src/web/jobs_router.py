@@ -11,7 +11,14 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 
-from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, document_mode_kinds, normalize_document_mode
+from src.generator.generation.document_builder import (
+    DOCUMENT_MODE_BOTH,
+    KP_TEMPLATE_FILENAME,
+    KP_TEMPLATE_PDF_FILENAME,
+    CONTRACT_TEMPLATE_FILENAME,
+    document_mode_kinds,
+    normalize_document_mode,
+)
 from src.jobs.access import JobAccessDenied, assign_job_owner, authorize_job_access, job_is_visible
 from src.jobs.audit import append_audit_event
 from src.security.auth import coerce_principal
@@ -336,8 +343,8 @@ class JobsWebController:
         row_count = self.cached_excel_row_count(data_path) if data_path.exists() else 0
 
         templates_dir = paths.templates_dir
-        kp_template_loaded = (templates_dir / "kp_template_source.docx").exists()
-        contract_template_loaded = (templates_dir / "contract_template_source.docx").exists()
+        kp_template_loaded = any((templates_dir / name).exists() for name in (KP_TEMPLATE_FILENAME, KP_TEMPLATE_PDF_FILENAME))
+        contract_template_loaded = (templates_dir / CONTRACT_TEMPLATE_FILENAME).exists()
         mail_template_loaded = any((templates_dir / name).exists() for name in ("mail_template.docx", "mail_template.txt"))
 
         output_dir = paths.output_dir
@@ -660,9 +667,13 @@ class JobsWebController:
             return ok_response(result, **result)
 
         @router.get("/api/job/readiness")
-        async def job_readiness(job_id: str | None = None, principal: object = Depends(self.check_auth)):
+        async def job_readiness(
+            job_id: str | None = None,
+            document_mode: str | None = None,
+            principal: object = Depends(self.check_auth),
+        ):
             self._authorize_job(job_id, principal, allow_missing=True)
-            return await self.job_readiness(job_id=job_id, username=principal)
+            return await self.job_readiness(job_id=job_id, document_mode=document_mode, username=principal)
 
         @router.post("/api/data/verify-municipality-names")
         async def data_verify_municipality_names(
@@ -694,7 +705,7 @@ class JobsWebController:
             templates_dir = paths.templates_dir
             templates_dir.mkdir(exist_ok=True)
             kind = (template_kind or "").strip().lower()
-            allowed_extensions = (".docx", ".txt") if kind == "mail" else (".docx",)
+            allowed_extensions = (".docx", ".txt") if kind == "mail" else ((".docx", ".pdf") if kind == "kp" else (".docx",))
             human_name = (
                 "почтового шаблона"
                 if kind == "mail"
@@ -717,9 +728,13 @@ class JobsWebController:
                         stale_path.unlink()
                 dest = templates_dir / ("mail_template.docx" if original_name.lower().endswith(".docx") else "mail_template.txt")
             elif kind == "kp":
-                dest = templates_dir / "kp_template_source.docx"
+                for stale_name in (KP_TEMPLATE_FILENAME, KP_TEMPLATE_PDF_FILENAME):
+                    stale_path = templates_dir / stale_name
+                    if stale_path.exists():
+                        stale_path.unlink()
+                dest = templates_dir / (KP_TEMPLATE_PDF_FILENAME if original_name.lower().endswith(".pdf") else KP_TEMPLATE_FILENAME)
             elif kind == "contract":
-                dest = templates_dir / "contract_template_source.docx"
+                dest = templates_dir / CONTRACT_TEMPLATE_FILENAME
             else:
                 raise HTTPException(status_code=400, detail="Не указан тип шаблона.")
             with dest.open("wb") as f:

@@ -32,8 +32,10 @@ from src.jobs.json_store import read_json, write_json_atomic
 
 
 KP_TEMPLATE_FILENAME = "kp_template_source.docx"
+KP_TEMPLATE_PDF_FILENAME = "kp_template_source.pdf"
 CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
 KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
+KP_TEMPLATE_PDF_PATH = TEMPLATES_DIR / KP_TEMPLATE_PDF_FILENAME
 CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
 DOCUMENT_RENDERER_VERSION = "2026-06-23-signature-contact-template-gap-v23"
 OUTPUT_FOLDER_MANIFEST_FILENAME = ".mailing_agent_output.json"
@@ -91,6 +93,14 @@ def resolve_template_paths(templates_dir: Path | None = None) -> tuple[Path, Pat
     if templates_dir is not None:
         return templates_dir / KP_TEMPLATE_FILENAME, templates_dir / CONTRACT_TEMPLATE_FILENAME
     return KP_TEMPLATE_PATH, CONTRACT_TEMPLATE_PATH
+
+
+def resolve_kp_template_path(templates_dir: Path | None = None) -> Path:
+    root_dir = templates_dir or TEMPLATES_DIR
+    pdf_path = root_dir / KP_TEMPLATE_PDF_FILENAME
+    if pdf_path.exists():
+        return pdf_path
+    return root_dir / KP_TEMPLATE_FILENAME
 
 
 def read_output_folder_manifest(folder: Path) -> dict:
@@ -1359,6 +1369,8 @@ def adjust_territorial_signature_stamp_position(output_text: str) -> tuple[str, 
         return output_text, False
     signature_table = find_signature_table(root)
     if signature_table is None:
+        signature_table = find_territorial_signature_stamp_table(root)
+    if signature_table is None:
         return output_text, False
 
     changed = False
@@ -1529,6 +1541,21 @@ def find_signature_table(root) -> object | None:
             return table
     return None
 
+
+
+def find_territorial_signature_stamp_table(root) -> object | None:
+    for table in root.xpath(".//w:tbl", namespaces=WORD_XML_NAMESPACES):
+        if "с уважением" not in word_node_text(table).casefold():
+            continue
+        for extent in table.xpath(".//wp:anchor[not(@behindDoc='1')]/wp:extent", namespaces=WORD_XML_NAMESPACES):
+            try:
+                width = int(extent.get("cx") or "0")
+                height = int(extent.get("cy") or "0")
+            except ValueError:
+                continue
+            if width >= 1_000_000 and height >= 1_000_000:
+                return table
+    return None
 
 def find_signature_background_cell(table) -> object | None:
     rows = table.xpath("./w:tr", namespaces=WORD_XML_NAMESPACES)
@@ -1965,6 +1992,8 @@ def build_kp_replacements(context: dict) -> list[tuple[str, str]]:
         ("MUN_NAME_1", str(context.get("MUN_NAME_1", ""))),
         ("MUN_NAME", str(context.get("MUN_NAME", ""))),
         ("MUN_R_NAME_1", str(context.get("MUN_R_NAME_1", ""))),
+        ("MUN_R_NAME  SUB_RF_1", placeholder_scope_fragment),
+        ("MUN_R_NAME  SUB_RF", placeholder_scope_fragment),
         ("MUN_R_NAME SUB_RF_1", placeholder_scope_fragment),
         ("MUN_R_NAME SUB_RF", placeholder_scope_fragment),
         ("MUN_R_NAME", str(context.get("MUN_R_NAME", ""))),
@@ -2014,6 +2043,8 @@ def build_contract_replacements(context: dict) -> list[tuple[str, str]]:
             "MUN_NAME MUN_R_NAME SUB_RF",
             work_scope_fragment,
         ),
+        ("MUN_R_NAME  SUB_RF_1", district_scope_fragment),
+        ("MUN_R_NAME  SUB_RF", district_scope_fragment),
         ("MUN_R_NAME SUB_RF_1", district_scope_fragment),
         ("MUN_R_NAME SUB_RF", district_scope_fragment),
         ("MUN_NAME", str(context.get("MUN_NAME", ""))),
@@ -2036,21 +2067,26 @@ def build_contract_replacements(context: dict) -> list[tuple[str, str]]:
 
 def build_kp_filename(row: dict, context: dict | None = None) -> str:
     mun_name = sanitize_path_component(row.get("MUN_NAME") or row.get("MUN_R_NAME") or "unknown")
-    filename_label = sanitize_path_component((context or {}).get("WORK_FILENAME_LABEL") or "МНГП")
+    filename_label = sanitize_path_component((context or {}).get("WORK_FILENAME_LABEL") or "МНГП", preserve_case=True)
     return f"КП_{filename_label}_{mun_name}.docx"
+
+
+def build_kp_pdf_filename(row: dict, context: dict | None = None) -> str:
+    return build_kp_filename(row, context).removesuffix(".docx") + ".pdf"
 
 
 def build_contract_filename(row: dict, context: dict | None = None) -> str:
     mun_name = sanitize_path_component(row.get("MUN_NAME") or row.get("MUN_R_NAME") or "unknown")
-    filename_label = sanitize_path_component((context or {}).get("WORK_FILENAME_LABEL") or "МНГП")
+    filename_label = sanitize_path_component((context or {}).get("WORK_FILENAME_LABEL") or "МНГП", preserve_case=True)
     return f"Договор_{filename_label}_{mun_name}.docx"
 
 
-def build_staged_filename(row: dict, kind: str) -> str:
+def build_staged_filename(row: dict, kind: str, extension: str = ".docx") -> str:
     row_id = sanitize_path_component(row.get("ID", "unknown"))
     safe_kind = sanitize_path_component(kind)
     mun_name = sanitize_path_component(row.get("MUN_NAME") or row.get("MUN_R_NAME") or "unknown")
-    return f"{row_id}_{safe_kind}_{mun_name}.docx"
+    safe_extension = extension if extension.startswith(".") else f".{extension}"
+    return f"{row_id}_{safe_kind}_{mun_name}{safe_extension}"
 
 
 DOCUMENT_MODE_KP = "kp"
@@ -2090,8 +2126,10 @@ def generate_documents_for_row(
 ) -> dict[str, Path]:
     output_folder = ensure_output_folder(row, output_dir=output_dir)
     batch_docx_dir = ensure_batch_docx_dir(batch_docx_dir=batch_docx_dir)
-    kp_template_path, contract_template_path = resolve_template_paths(templates_dir)
+    kp_docx_template_path, contract_template_path = resolve_template_paths(templates_dir)
+    kp_template_path = resolve_kp_template_path(templates_dir)
     kp_path = batch_docx_dir / build_staged_filename(row, "kp")
+    kp_pdf_path = batch_docx_dir / build_staged_filename(row, "kp", extension=".pdf")
     contract_path = batch_docx_dir / build_staged_filename(row, "contract")
     requested_kinds = set(document_mode_kinds(document_mode))
     use_structured_kp = KP_GENERATION_ENGINE == "structured"
@@ -2099,18 +2137,25 @@ def generate_documents_for_row(
     generated_files: dict[str, Path] = {}
 
     if "kp" in requested_kinds and (kp_template_path.exists() or use_structured_kp):
-        kp_filename = build_kp_filename(row, context)
-        if use_structured_kp:
-            generated_files["kp"] = render_structured_kp_docx(
-                context,
-                kp_path,
-                style_template_path=kp_template_path if kp_template_path.exists() else None,
-            )
-        else:
-            generated_files["kp"] = render_docx(kp_template_path, build_kp_replacements(context), kp_path, context)
-        generated_files["kp_final_docx"] = output_folder / kp_filename
-        generated_files["kp_final_pdf"] = output_folder / kp_filename.replace(".docx", ".pdf")
+        if kp_template_path.suffix.lower() == ".pdf":
+            from src.generator.generation.pdf_template_renderer import can_render_kp_pdf_template, render_kp_pdf_template
 
+            if not can_render_kp_pdf_template(work_type=context.get("WORK_TYPE"), template_path=kp_template_path):
+                raise ValueError("PDF-шаблон КП сейчас поддержан только для вида работ «Случайный лес».")
+            generated_files["kp_pdf"] = render_kp_pdf_template(kp_template_path, context, kp_pdf_path)
+            generated_files["kp_final_pdf"] = output_folder / build_kp_pdf_filename(row, context)
+        else:
+            kp_filename = build_kp_filename(row, context)
+            if use_structured_kp:
+                generated_files["kp"] = render_structured_kp_docx(
+                    context,
+                    kp_path,
+                    style_template_path=kp_docx_template_path if kp_docx_template_path.exists() else None,
+                )
+            else:
+                generated_files["kp"] = render_docx(kp_docx_template_path, build_kp_replacements(context), kp_path, context)
+            generated_files["kp_final_docx"] = output_folder / kp_filename
+            generated_files["kp_final_pdf"] = output_folder / kp_filename.replace(".docx", ".pdf")
     if "contract" in requested_kinds and contract_template_path.exists():
         contract_filename = build_contract_filename(row, context)
         generated_files["contract"] = render_docx(

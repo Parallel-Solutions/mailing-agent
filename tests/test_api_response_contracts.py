@@ -45,7 +45,7 @@ def _job_paths(root: Path, job_id: str | None) -> SimpleNamespace:
     )
 
 
-def _jobs_controller(root: Path, *, row_count: int = 0) -> JobsWebController:
+def _jobs_controller(root: Path, *, row_count: int = 0, parser_status: dict | None = None) -> JobsWebController:
     resolver = lambda job_id=None: _job_paths(root, job_id)
     return JobsWebController(
         check_auth=lambda: Principal("admin", "root", "admin"),
@@ -61,7 +61,7 @@ def _jobs_controller(root: Path, *, row_count: int = 0) -> JobsWebController:
         jobs_dir=root / "jobs",
         create_documents_load_test_job=lambda **kwargs: {},
         start_parser_verification_process=lambda **kwargs: None,
-        get_parser_status=lambda job_id: {},
+        get_parser_status=lambda job_id: parser_status or {},
         get_generator_status=lambda job_id: {},
         get_philologist_status=lambda job_id, include_details=False: {},
         get_sender_status=lambda job_id: {},
@@ -109,6 +109,34 @@ class JobsResponseContractTests(unittest.TestCase):
             self.assertEqual(payload["loaded"], True)
             self.assertEqual(payload["total"], 7)
             self.assertEqual(payload["result"], {"loaded": True, "total": 7})
+        finally:
+            _cleanup(root)
+
+    def test_job_readiness_honors_document_mode_query(self) -> None:
+        root = _workspace_temp_root("api-response-readiness-mode")
+        try:
+            job_id = "job-kp-mode"
+            paths = _job_paths(root, job_id)
+            paths.data_xlsx.parent.mkdir(parents=True)
+            paths.data_xlsx.write_bytes(b"xlsx")
+            paths.templates_dir.mkdir(parents=True)
+            (paths.templates_dir / "kp_template_source.docx").write_bytes(b"docx")
+            controller = _jobs_controller(
+                root,
+                row_count=1,
+                parser_status={"municipality_name_verification_state": {"status": "completed"}},
+            )
+            app = FastAPI()
+            app.include_router(controller.router)
+
+            with patch("src.jobs.access.resolve_job_paths", side_effect=lambda job_id=None: _job_paths(root, job_id)):
+                response = TestClient(app).get(f"/api/job/readiness?job_id={job_id}&document_mode=kp")
+
+            payload = response.json()
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(payload["result"]["document_mode"], "kp")
+            self.assertTrue(payload["result"]["generator_ready"])
+            self.assertNotIn("договора", payload["result"]["generator_reason"])
         finally:
             _cleanup(root)
 

@@ -76,6 +76,28 @@ def _validate_ooxml_signature(upload: UploadFile, *, extension: str, human_name:
             pass
 
 
+
+def _validate_pdf_signature(upload: UploadFile, *, human_name: str) -> None:
+    stream = getattr(upload, "file", None)
+    if stream is None:
+        _reject_format(human_name, ".pdf")
+    try:
+        stream.seek(0)
+        if stream.read(4) != b"%PDF":
+            _reject_format(human_name, ".pdf")
+    except HTTPException:
+        raise
+    except OSError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Файл для {human_name} повреждён или не соответствует формату .pdf.",
+        ) from exc
+    finally:
+        try:
+            stream.seek(0)
+        except Exception:
+            pass
+
 def validate_uploaded_file(
     upload: UploadFile,
     *,
@@ -103,5 +125,8 @@ def validate_uploaded_file(
                 f"Максимальный размер: {_format_upload_size_limit(max_bytes)}."
             ),
         )
-    _validate_ooxml_signature(upload, extension=extension, human_name=human_name)
+    if extension == ".pdf":
+        _validate_pdf_signature(upload, human_name=human_name)
+    else:
+        _validate_ooxml_signature(upload, extension=extension, human_name=human_name)
     return filename
