@@ -7,6 +7,7 @@ import re
 import base64
 import hashlib
 import mimetypes
+import random
 import secrets
 import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -62,23 +63,7 @@ MAIL_TEMPLATE_DOCX_PATH = TEMPLATES_DIR / "mail_template.docx"
 SENT_MAIL_LOG_PATH = DATA_DIR / "sent_mail_log.jsonl"
 DEFAULT_MAIL_SUBJECT = "Коммерческое предложение на разработку МНГП."
 CONSENT_REQUEST_SUBJECT = "МНГП для {MUN_R_NAME}: согласие на получение КП и проекта договора"
-DEFAULT_MAIL_BODY = (
-    "Добрый день!\n"
-    "Направляем для рассмотрения коммерческое предложение на выполнение работ по разработке проекта "
-    "местных нормативов градостроительного проектирования.\n"
-    "Во вложении:\n"
-    "— коммерческое предложение;\n"
-    "— проект договора;\n"
-    "— проект технического задания;\n"
-    "— календарный план выполнения работ.\n"
-    "\n"
-    "ООО «Параллельные Решения» специализируется на разработке документов территориального планирования "
-    "и градостроительного зонирования. В состав работ входят сбор и анализ исходных данных, подготовка "
-    "проектных материалов и сопровождение согласования проекта до его утверждения.\n"
-    "Просим передать материалы должностному лицу, курирующему вопросы архитектуры и градостроительства. "
-    "Готовы провести рабочую консультацию по составу работ, срокам, порядку взаимодействия и ответить "
-    "на вопросы в формате ВКС."
-)
+MAIL_TEMPLATE_REQUIRED_ERROR = "Не загружен шаблон письма. Загрузите шаблон письма в настройках."
 DEFAULT_MAIL_FOOTER_TEXT = (
     "С уважением,\n"
     "Крашенинников Константин Иванович\n"
@@ -353,21 +338,19 @@ def _read_docx_mail_template(template_path: Path) -> str:
 
 def _read_mail_template(mail_template_path: Path | None = None) -> str:
     if mail_template_path is None:
-        return DEFAULT_MAIL_BODY
-    template_paths = [mail_template_path]
-    for template_path in [path for path in template_paths if path is not None]:
-        if not template_path.exists():
-            continue
-        try:
-            if template_path.suffix.lower() == ".docx":
-                text = _read_docx_mail_template(template_path)
-            else:
-                text = template_path.read_text(encoding="utf-8-sig").strip()
-            if text:
-                return text
-        except OSError:
-            continue
-    return DEFAULT_MAIL_BODY
+        raise RuntimeError(MAIL_TEMPLATE_REQUIRED_ERROR)
+    if not mail_template_path.exists():
+        raise RuntimeError(MAIL_TEMPLATE_REQUIRED_ERROR)
+    try:
+        if mail_template_path.suffix.lower() == ".docx":
+            text = _read_docx_mail_template(mail_template_path)
+        else:
+            text = mail_template_path.read_text(encoding="utf-8-sig").strip()
+    except OSError as exc:
+        raise RuntimeError(f"Не удалось прочитать шаблон письма: {mail_template_path.name}.") from exc
+    if not text:
+        raise RuntimeError(f"Загруженный шаблон письма пустой: {mail_template_path.name}.")
+    return text
 
 
 def _mail_outgoing_number(row: dict[str, Any]) -> str:
@@ -1063,6 +1046,47 @@ def _wait_sender_delay(delay_seconds: float, state: dict[str, Any], job_id: str 
             return False
         sleep(min(1.0, max(0.0, deadline - perf_counter())))
     return True
+
+
+def _format_delay_seconds(delay_seconds: float) -> str:
+    total_seconds = max(0, int(round(delay_seconds)))
+    minutes, seconds = divmod(total_seconds, 60)
+    if minutes and seconds:
+        return f"{minutes} мин {seconds:02d} сек"
+    if minutes:
+        return f"{minutes} мин"
+    return f"{seconds} сек"
+
+
+def _sender_delay_seconds() -> float:
+    base_delay = max(0.0, float(settings.sender_delay_seconds or 0))
+    min_delay = max(0.0, float(getattr(settings, "sender_delay_min_seconds", 0) or 0))
+    max_delay = max(0.0, float(getattr(settings, "sender_delay_max_seconds", 0) or 0))
+    if min_delay > 0 and max_delay > 0:
+        lower, upper = sorted((min_delay, max_delay))
+        if lower == upper:
+            return lower
+        return random.uniform(lower, upper)
+    if min_delay > 0:
+        return min_delay
+    if max_delay > 0:
+        if base_delay > 0 and base_delay != max_delay:
+            lower, upper = sorted((base_delay, max_delay))
+            return random.uniform(lower, upper)
+        return max_delay
+    return base_delay
+
+
+def _wait_smtp_sender_delay(state: dict[str, Any], job_id: str | None = None) -> bool:
+    delay_seconds = _sender_delay_seconds()
+    if delay_seconds <= 0:
+        return True
+    delay_label = _format_delay_seconds(delay_seconds)
+    state["smtp_delay_seconds"] = int(round(delay_seconds))
+    state["smtp_delay_label"] = delay_label
+    state["summary_text"] = f"SMTP-пауза {delay_label}. Потом продолжу отправку."
+    _save_sender_state(state, job_id)
+    return _wait_sender_delay(delay_seconds, state, job_id)
 
 
 def _collect_excel_stats(data_xlsx_path: Path | None = None) -> dict[str, int]:
@@ -4230,9 +4254,7 @@ def run_sender(
         row_body_override: str | None = None
         smtp_recipient_delay: Callable[[], bool] | None = None
         if not dry_run and effective_transport == "smtp":
-            delay_seconds = max(0.0, float(settings.sender_delay_seconds or 0))
-            if delay_seconds > 0:
-                smtp_recipient_delay = lambda: _wait_sender_delay(delay_seconds, state, job_id)
+            smtp_recipient_delay = lambda: _wait_smtp_sender_delay(state, job_id)
         mailopost_rate_limit_delay: Callable[[float, str], bool] | None = None
         if not dry_run and effective_transport == "mailopost":
             def mailopost_rate_limit_delay(wait_seconds: float, message: str) -> bool:
@@ -4506,9 +4528,8 @@ def run_sender(
         _save_sender_state(state, job_id)
 
         if not dry_run and entry.get("result") == "sent" and effective_transport == "smtp":
-            delay_seconds = max(0.0, float(settings.sender_delay_seconds or 0))
-            if delay_seconds > 0 and state["processed_rows"] < state["total_rows"]:
-                if not _wait_sender_delay(delay_seconds, state, job_id):
+            if state["processed_rows"] < state["total_rows"]:
+                if not _wait_smtp_sender_delay(state, job_id):
                     state["summary_text"] = (
                         "Отправка остановлена пользователем во время паузы между письмами."
                     )

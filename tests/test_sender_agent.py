@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -18,6 +19,11 @@ from src.web import sender_service
 
 
 class SenderAgentScalabilityTests(unittest.TestCase):
+    def _tmp_dir(self, name: str) -> Path:
+        tmpdir = Path.cwd() / "tmp" / "test_sender_agent" / name
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        return tmpdir
+
     def test_state_rows_snapshot_keeps_recent_entries(self) -> None:
         rows = [{"id": index} for index in range(sender_agent.SENDER_STATE_ROWS_LIMIT + 25)]
 
@@ -61,6 +67,35 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertIn("&sig=", html)
         self.assertNotIn("Черкашина", html)
         self.assertNotIn("Крашенинников", html)
+
+    def test_mail_template_is_required_when_no_body_override(self) -> None:
+        self.assertFalse(hasattr(sender_agent, "DEFAULT_MAIL_BODY"))
+        with self.assertRaisesRegex(RuntimeError, "Не загружен шаблон письма"):
+            sender_agent._read_mail_template(None)
+        tmpdir = self._tmp_dir("missing_template")
+        missing_path = tmpdir / "mail_template.txt"
+        if missing_path.exists():
+            missing_path.unlink()
+        with self.assertRaisesRegex(RuntimeError, "Не загружен шаблон письма"):
+            sender_agent._read_mail_template(missing_path)
+
+    def test_empty_mail_template_is_rejected(self) -> None:
+        tmpdir = self._tmp_dir("empty_template")
+        template_path = tmpdir / "mail_template.txt"
+        template_path.write_text("   \n", encoding="utf-8")
+
+        with self.assertRaisesRegex(RuntimeError, "Загруженный шаблон письма пустой"):
+            sender_agent._read_mail_template(template_path)
+
+    def test_mail_body_uses_uploaded_template(self) -> None:
+        tmpdir = self._tmp_dir("uploaded_template")
+        template_path = tmpdir / "mail_template.txt"
+        template_path.write_text("Здравствуйте, [наименование муниципального образования]!", encoding="utf-8")
+
+        body = sender_agent._build_mail_body({"MUN_NAME": "Тестовое МО"}, mail_template_path=template_path)
+
+        self.assertIn("Здравствуйте, Тестовое МО!", body)
+        self.assertNotIn("Направляем для рассмотрения", body)
 
     def test_sent_mail_recipients_are_scoped_to_current_send_run(self) -> None:
         item = {"send_run_id": "send-new", "sent_at": "2026-06-02T12:00:00"}
@@ -167,6 +202,29 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(scoped, items)
         self.assertEqual((send_run_id, send_run_started_at), ("", ""))
 
+    def test_sender_analytics_uses_moscow_time_and_campaign_name(self) -> None:
+        delivery_rows = [
+            {
+                "provider": "rusender",
+                "provider_status": "delivered",
+                "work_type": "stp_mo",
+                "checked_at": "2026-07-02T10:48:00",
+            }
+        ]
+        now = datetime(2026, 7, 2, 13, 47, 32, tzinfo=sender_report.MOSCOW_TZ)
+
+        with patch.object(sender_report, "_build_delivery_rows", return_value=(delivery_rows, "")), patch.object(
+            sender_report, "load_consent_records", return_value=[]
+        ), patch.object(sender_report, "_load_sender_state", return_value={"work_type": "stp_mo"}), patch.object(
+            sender_report, "_now_moscow", return_value=now
+        ):
+            analytics = sender_report.build_sender_delivery_analytics("job-current", refresh=False)
+
+        self.assertEqual(analytics["generated_at"], "2026-07-02T13:47:32+03:00")
+        self.assertEqual(analytics["generated_at_label"], "2026-07-02 13:47:32")
+        self.assertEqual(analytics["campaign"]["title"], "Рассылка: СТП МО")
+        self.assertEqual(analytics["work_type_label"], "СТП МО")
+        self.assertEqual(sender_report._format_moscow_datetime("2026-07-02T10:47:32"), "2026-07-02 13:47:32")
     def test_sender_analytics_and_report_include_consents(self) -> None:
         delivery_rows = [
             {
@@ -658,6 +716,41 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(result["recipients"], ["one@example.com"])
         self.assertEqual(result["attempts"][-1]["recipient"], "two@example.com")
         self.assertIn("паузы", result["error"])
+
+    def test_sender_delay_uses_random_range_when_configured(self) -> None:
+        with (
+            patch.object(sender_agent.settings, "sender_delay_seconds", 180.0),
+            patch.object(sender_agent.settings, "sender_delay_min_seconds", 179.0),
+            patch.object(sender_agent.settings, "sender_delay_max_seconds", 247.0),
+            patch.object(sender_agent.random, "uniform", return_value=211.0) as uniform_mock,
+        ):
+            delay = sender_agent._sender_delay_seconds()
+
+        self.assertEqual(delay, 211.0)
+        uniform_mock.assert_called_once_with(179.0, 247.0)
+
+    def test_sender_delay_falls_back_to_fixed_delay_without_range(self) -> None:
+        with (
+            patch.object(sender_agent.settings, "sender_delay_seconds", 180.0),
+            patch.object(sender_agent.settings, "sender_delay_min_seconds", 0.0),
+            patch.object(sender_agent.settings, "sender_delay_max_seconds", 0.0),
+        ):
+            self.assertEqual(sender_agent._sender_delay_seconds(), 180.0)
+
+    def test_wait_smtp_sender_delay_persists_label(self) -> None:
+        state: dict[str, object] = {}
+        with (
+            patch.object(sender_agent, "_sender_delay_seconds", return_value=211.0),
+            patch.object(sender_agent, "_wait_sender_delay", return_value=True) as wait_mock,
+            patch.object(sender_agent, "_save_sender_state") as save_mock,
+        ):
+            self.assertTrue(sender_agent._wait_smtp_sender_delay(state, "job-test"))
+
+        self.assertEqual(state["smtp_delay_seconds"], 211)
+        self.assertEqual(state["smtp_delay_label"], "3 мин 31 сек")
+        self.assertIn("3 мин 31 сек", str(state["summary_text"]))
+        save_mock.assert_called_once_with(state, "job-test")
+        wait_mock.assert_called_once_with(211.0, state, "job-test")
 
     def test_rusender_uses_bearer_authorization_for_current_keys(self) -> None:
         captured: dict[str, Request] = {}

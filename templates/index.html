@@ -4103,15 +4103,18 @@
 
     dashboard.hidden = false;
     if (sub) {
-      const generatedAt = analytics.generated_at
-        ? String(analytics.generated_at).replace('T', ' ')
-        : 'только что';
+      const generatedAt = analytics.generated_at_label || (
+        analytics.generated_at ? String(analytics.generated_at).replace('T', ' ') : 'только что'
+      );
       const awaitingProviderEvents = !!analytics.awaiting_provider_events;
       const providerEventsCount = Number(analytics.provider_events_count || 0);
       const providerLabel = analytics.provider_label || 'провайдер';
+      const campaign = analytics.campaign || {};
+      const campaignTitle = campaign.title || analytics.campaign_title || '';
+      const campaignPrefix = campaignTitle ? `${campaignTitle}. ` : '';
       sub.textContent = awaitingProviderEvents
-        ? `${providerLabel}: передано ${total.toLocaleString('ru')} email-получателей. Ждём события доставки, если они доступны. Обновлено: ${generatedAt}.`
-        : `${providerLabel}: ${total.toLocaleString('ru')} email-получателей. Событий провайдера: ${providerEventsCount.toLocaleString('ru')}. Обновлено: ${generatedAt}.`;
+        ? `${campaignPrefix}${providerLabel}: передано ${total.toLocaleString('ru')} email-получателей. Ждём события доставки, если они доступны. Обновлено: ${generatedAt}.`
+        : `${campaignPrefix}${providerLabel}: ${total.toLocaleString('ru')} email-получателей. Событий провайдера: ${providerEventsCount.toLocaleString('ru')}. Обновлено: ${generatedAt}.`;
     }
     grid.innerHTML = cards.map(card => {
       const value = Number(card.value || 0).toLocaleString('ru');
@@ -4199,11 +4202,24 @@
     }, 5000);
   }
 
+  const MOSCOW_TIME_ZONE = 'Europe/Moscow';
+
+  function getMoscowDateParts(date) {
+    const parts = new Intl.DateTimeFormat('ru-RU', {
+      timeZone: MOSCOW_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date);
+    return Object.fromEntries(parts.map(part => [part.type, part.value]));
+  }
+
   function formatJobHistoryDate(value) {
     if (!value) return 'дата неизвестна';
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ');
     return date.toLocaleString('ru', {
+      timeZone: MOSCOW_TIME_ZONE,
       day: '2-digit',
       month: '2-digit',
       year: 'numeric',
@@ -4217,6 +4233,7 @@
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ');
     return date.toLocaleString('ru', {
+      timeZone: MOSCOW_TIME_ZONE,
       day: '2-digit',
       month: '2-digit',
       hour: '2-digit',
@@ -4232,9 +4249,10 @@
   function getJobHistoryDayKey(job = {}) {
     const date = getJobHistoryDate(job.updated_at);
     if (!date) return 'unknown';
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
+    const parts = getMoscowDateParts(date);
+    const year = parts.year;
+    const month = parts.month;
+    const day = parts.day;
     return `${year}-${month}-${day}`;
   }
 
@@ -4254,6 +4272,7 @@
     const date = getJobHistoryDate(value);
     if (!date) return 'время неизвестно';
     return date.toLocaleTimeString('ru', {
+      timeZone: MOSCOW_TIME_ZONE,
       hour: '2-digit',
       minute: '2-digit',
     });
@@ -4393,7 +4412,8 @@
       const sentRows = Number(job.sent_rows || 0).toLocaleString('ru');
       const errorRows = Number(job.error_rows || 0).toLocaleString('ru');
       const updatedAt = escapeHtml(formatJobHistoryDate(job.updated_at));
-      const safeTitle = escapeHtml(`Рассылка ${formatJobHistoryTime(job.updated_at)}`);
+      const campaignTitle = job.campaign_title || (job.work_type_label ? `Рассылка: ${job.work_type_label}` : 'Рассылка');
+      const safeTitle = escapeHtml(`${campaignTitle} ${formatJobHistoryTime(job.updated_at)}`);
       return `
         <div class="job-history-row ${isCurrent ? 'current' : ''}">
           <div class="job-history-main">

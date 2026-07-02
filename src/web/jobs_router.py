@@ -4,7 +4,7 @@ import json
 import re
 import shutil
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
@@ -19,11 +19,14 @@ from src.generator.generation.document_builder import (
     document_mode_kinds,
     normalize_document_mode,
 )
+from src.generator.generation.work_types import DEFAULT_WORK_TYPE, get_work_type_profile, normalize_work_type
 from src.jobs.access import JobAccessDenied, assign_job_owner, authorize_job_access, job_is_visible
 from src.jobs.audit import append_audit_event
 from src.security.auth import coerce_principal
 from src.web.request_models import DataVerifyMunicipalityNamesRequest, DocumentsLoadTestRequest
 from src.web.responses import ok_response
+
+MOSCOW_TZ = timezone(timedelta(hours=3), "MSK")
 
 
 class JobsWebController:
@@ -95,7 +98,7 @@ class JobsWebController:
     def _format_history_time(self, timestamp: float) -> str:
         if timestamp <= 0:
             return ""
-        return datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
+        return datetime.fromtimestamp(timestamp, MOSCOW_TZ).isoformat(timespec="seconds")
 
     def _clean_upload_token(self, value: str | None) -> str:
         return re.sub(r"[^a-zA-Z0-9_-]+", "", str(value or "").strip())[:96]
@@ -284,6 +287,11 @@ class JobsWebController:
             data_exists=paths.data_xlsx.exists(),
         )
 
+        work_type = normalize_work_type(
+            str(sender_state.get("work_type") or generator_state.get("work_type") or DEFAULT_WORK_TYPE)
+        )
+        work_type_profile = get_work_type_profile(work_type)
+
         item = {
             "job_id": job_id,
             "updated_at": self._format_history_time(updated_at_ts),
@@ -301,6 +309,9 @@ class JobsWebController:
             "has_output": paths.output_dir.exists(),
             "sender_status": sender_state.get("status", "idle"),
             "sender_mode": sender_state.get("mode", "dry_run"),
+            "work_type": work_type,
+            "work_type_label": work_type_profile.label,
+            "campaign_title": f"Рассылка: {work_type_profile.label}",
         }
         with self._history_lock:
             self._history_item_cache[cache_key] = {

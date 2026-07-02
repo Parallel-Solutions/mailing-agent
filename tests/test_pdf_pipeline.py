@@ -45,6 +45,32 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(mapping["\u041f"], "0249")
         self.assertNotIn("\u0444", mapping)
 
+    def test_pdf_overlay_wrapped_text_does_not_draw_yellow_highlight(self) -> None:
+        text = "hello world"
+        chars = sorted(set(text))
+        font = pdf_template_renderer.PdfTextFont(
+            resource_name="/F1",
+            cmap={char: f"{ord(char):02X}" for char in chars},
+            widths={ord(char): 500 for char in chars},
+            default_width=500,
+            base_font="Test-Regular",
+            subtype="/TrueType",
+        )
+
+        commands = pdf_template_renderer._draw_wrapped_text(
+            [font],
+            text,
+            x=10,
+            y=20,
+            max_width=200,
+            font_size=11,
+            line_height=12,
+            bold=False,
+        )
+
+        self.assertNotIn("1 1 0 rg", commands)
+        self.assertFalse(any(" re f" in command for command in commands))
+
     def test_convert_docx_batch_reuses_existing_valid_pdf(self) -> None:
         docx_path = self.tmp_dir / "document.docx"
         output_dir = self.tmp_dir / "pdf"

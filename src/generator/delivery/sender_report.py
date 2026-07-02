@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import io
 import json
 from pathlib import Path
@@ -31,6 +31,7 @@ from src.generator.delivery.mailopost_events import load_mailopost_events
 from src.generator.delivery.rusender_events import load_rusender_events
 from src.generator.delivery.unisender_go_events import load_unisender_go_events
 from src.generator.generation.excel_io import load_rows
+from src.generator.generation.work_types import DEFAULT_WORK_TYPE, get_work_type_profile, normalize_work_type
 from src.jobs import resolve_job_paths
 from src.utils.config import settings
 
@@ -77,6 +78,65 @@ RECIPIENT_ROLE_LABELS = {
     "unknown": "Неизвестно",
 }
 RECIPIENT_ROLE_ORDER = ("primary", "fallback", "unknown")
+MOSCOW_TZ = timezone(timedelta(hours=3), "MSK")
+
+
+def _to_moscow_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = _safe_text(value)
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(MOSCOW_TZ)
+
+
+def _format_moscow_datetime(value: Any) -> str:
+    dt = _to_moscow_datetime(value)
+    if dt is None:
+        return _safe_text(value)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+
+
+def _now_moscow() -> datetime:
+    return datetime.now(MOSCOW_TZ)
+
+
+def _campaign_metadata(
+    job_id: str | None,
+    *,
+    rows: list[dict[str, Any]] | None = None,
+    consent_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    state = _load_sender_state(job_id) if job_id else {}
+    work_type = _safe_text(state.get("work_type"))
+    if not work_type:
+        for row in rows or []:
+            work_type = _safe_text(row.get("work_type"))
+            if work_type:
+                break
+    if not work_type:
+        for row in consent_rows or []:
+            work_type = _safe_text(row.get("work_type"))
+            if work_type:
+                break
+    profile = get_work_type_profile(work_type or DEFAULT_WORK_TYPE)
+    return {
+        "work_type": normalize_work_type(profile.key),
+        "work_type_label": profile.label,
+        "work_type_short_name": profile.short_name,
+        "title": f"Рассылка: {profile.label}",
+    }
 
 
 def build_sender_delivery_report_xlsx(job_id: str | None = None, *, refresh: bool = True) -> Path:
@@ -163,6 +223,8 @@ def build_sender_delivery_analytics(
         rows, refresh_error = _build_delivery_rows(job_id, refresh=False)
     consent_rows = _build_consent_rows(job_id)
     consent_summary = _consent_summary(consent_rows)
+    campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows)
+    generated_at = _now_moscow()
     statuses = Counter(_normalize_provider_status(row["provider_status"] or "unknown") for row in rows)
     providers = Counter(row.get("provider") or "unisender" for row in rows)
     provider_key, provider_label = _primary_provider(providers)
@@ -352,8 +414,13 @@ def build_sender_delivery_analytics(
 
     return {
         "status": "ok",
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": generated_at.isoformat(timespec="seconds"),
+        "generated_at_label": _format_moscow_datetime(generated_at),
         "job_id": job_id or "",
+        "campaign": campaign,
+        "campaign_title": campaign["title"],
+        "work_type": campaign["work_type"],
+        "work_type_label": campaign["work_type_label"],
         "provider": provider_key,
         "provider_label": provider_label,
         "provider_labels": {
@@ -518,8 +585,9 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
                 "recipient": _safe_text(item.get("recipient")),
                 "recipient_role": recipient_role,
                 "recipient_role_label": _recipient_role_label(recipient_role),
-                "sent_at": _safe_text(item.get("sent_at")),
+                "sent_at": _format_moscow_datetime(item.get("sent_at")),
                 "subject": _safe_text(item.get("subject")),
+                "work_type": _safe_text(item.get("work_type")),
                 "accepted_status": accepted_status,
                 "provider": _provider_name(item),
                 "provider_status": _normalize_provider_status(provider_status),
@@ -528,7 +596,7 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
                 "outcome": _delivery_outcome(provider_status),
                 "email_id": message_id,
                 "message_id": _safe_text(item.get("provider_job_id") or provider.get("job_id")),
-                "checked_at": checked_at,
+                "checked_at": _format_moscow_datetime(checked_at),
                 "comment": _comment_text(item, refresh_error),
             }
         )
@@ -801,7 +869,7 @@ def _load_delivery_status_cache(job_id: str | None) -> dict[str, dict[str, Any]]
 def _save_delivery_status_cache(job_id: str | None, statuses: dict[str, dict[str, Any]]) -> None:
     path = _delivery_status_cache_path(job_id)
     payload = {
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": _now_moscow().isoformat(timespec="seconds"),
         "statuses": statuses,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1308,17 +1376,17 @@ def _build_consent_rows(job_id: str | None) -> list[dict[str, Any]]:
                 "recipient": _safe_text(record.get("recipient")),
                 "status": status,
                 "status_label": _consent_status_label(status),
-                "request_sent_at": _safe_text(record.get("request_sent_at")),
-                "created_at": _safe_text(record.get("created_at")),
-                "confirmed_at": _safe_text(record.get("confirmed_at")),
-                "expires_at": _safe_text(record.get("expires_at")),
+                "request_sent_at": _format_moscow_datetime(record.get("request_sent_at")),
+                "created_at": _format_moscow_datetime(record.get("created_at")),
+                "confirmed_at": _format_moscow_datetime(record.get("confirmed_at")),
+                "expires_at": _format_moscow_datetime(record.get("expires_at")),
                 "materials_status": materials_status,
                 "materials_status_label": _materials_status_label(
                     materials_status,
                     sent_at=_safe_text(record.get("materials_sent_at")),
                     error=materials_error,
                 ),
-                "materials_sent_at": _safe_text(record.get("materials_sent_at")),
+                "materials_sent_at": _format_moscow_datetime(record.get("materials_sent_at")),
                 "materials_error": materials_error,
                 "materials_dispatch_summary": _safe_text(record.get("materials_dispatch_summary")),
                 "transport": _safe_text(record.get("transport")),
@@ -1423,9 +1491,12 @@ def _write_statistics_sheet(
     checked_count = sum(1 for row in rows if row.get("checked_at"))
     unique_recipients = len({row["recipient"].lower() for row in rows if row["recipient"]})
     unique_municipalities = len({row["mun_name"].lower() for row in rows if row["mun_name"]})
+    campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows or [])
 
     summary_rows = [
-        ["Дата формирования", datetime.now().isoformat(timespec="seconds")],
+        ["Дата формирования", _format_moscow_datetime(_now_moscow())],
+        ["Название рассылки", campaign["title"]],
+        ["Вид работ", campaign["work_type_label"]],
         ["Job ID", job_id or "текущий/legacy"],
         ["Всего писем", len(rows)],
         ["Уникальных получателей", unique_recipients],
@@ -1455,7 +1526,7 @@ def _write_statistics_sheet(
         ["Материалы отправлены после согласия", consent_summary["materials_sent"]],
         ["Ошибки отправки материалов", consent_summary["materials_error"]],
     ]
-    _write_table(sheet, 17, ["Показатель", "Значение"], consent_stats_rows, name="ConsentStats")
+    _write_table(sheet, 20, ["Показатель", "Значение"], consent_stats_rows, name="ConsentStats")
 
     role_stats_rows = [
         ["Передано провайдеру на основной email", recipient_roles.get("primary", 0)],
@@ -1464,7 +1535,7 @@ def _write_statistics_sheet(
         ["Доставлено на резервный email", delivered_by_role.get("fallback", 0)],
         ["Тип адреса не определён", recipient_roles.get("unknown", 0)],
     ]
-    _write_table(sheet, 27, ["Показатель", "Значение"], role_stats_rows, name="RecipientRoleStats")
+    _write_table(sheet, 30, ["Показатель", "Значение"], role_stats_rows, name="RecipientRoleStats")
 
 
 def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:

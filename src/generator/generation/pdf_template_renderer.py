@@ -55,8 +55,7 @@ def render_kp_pdf_template(template_path: Path, context: dict, output_path: Path
         raise ValueError("PDF-шаблон КП не содержит пригодных шрифтов для подстановки текста.")
 
     operations: list[str] = []
-    operations.extend(_white_rect(69.0, 646.0, 49.0, 18.0))
-    operations.extend(_white_rect(124.0, 646.0, 76.0, 18.0))
+    operations.extend(_white_rect(42.0, 638.0, 190.0, 34.0))
     operations.extend(_white_rect(343.0, 612.0, 247.0, 92.0))
     operations.extend(_white_rect(70.0, 592.0, 455.0, 28.0))
 
@@ -65,30 +64,20 @@ def render_kp_pdf_template(template_path: Path, context: dict, output_path: Path
     recipient = format_kp_recipient(context.get("ADM_NAME_1") or context.get("ADM_NAME") or "")
     greeting = build_head_greeting(context)
 
+    number_line = f"№ {outgoing_number} от {date}".strip()
     operations.extend(
         _draw_text_line(
             fonts,
-            outgoing_number,
-            x=71.5,
+            number_line,
+            x=70.5,
             y=654.0,
             font_size=11.0,
             color=(0.03, 0.12, 0.26),
-            bold=True,
+            bold=False,
         )
     )
     operations.extend(
-        _draw_text_line(
-            fonts,
-            date,
-            x=126.6,
-            y=654.0,
-            font_size=11.0,
-            color=(0.03, 0.12, 0.26),
-            bold=True,
-        )
-    )
-    operations.extend(
-        _draw_wrapped_highlighted_text(
+        _draw_wrapped_text(
             fonts,
             recipient,
             x=348.0,
@@ -96,10 +85,10 @@ def render_kp_pdf_template(template_path: Path, context: dict, output_path: Path
             max_width=224.0,
             font_size=11.0,
             line_height=12.1,
-            bold=True,
+            bold=False,
         )
     )
-    greeting_width = _measure_text(fonts, greeting, font_size=11.0, bold=False)
+    greeting_width = _measure_text(fonts, greeting, font_size=11.0, bold=True)
     greeting_x = 70.0 + max(0.0, (455.0 - greeting_width) / 2.0)
     operations.extend(
         _draw_text_line(
@@ -109,7 +98,7 @@ def render_kp_pdf_template(template_path: Path, context: dict, output_path: Path
             y=604.0,
             font_size=11.0,
             color=(0.0, 0.0, 0.0),
-            bold=False,
+            bold=True,
         )
     )
 
@@ -316,7 +305,7 @@ def _draw_text_line(
     return commands
 
 
-def _draw_wrapped_highlighted_text(
+def _draw_wrapped_text(
     fonts: list[PdfTextFont],
     text: str,
     *,
@@ -330,8 +319,6 @@ def _draw_wrapped_highlighted_text(
     commands: list[str] = []
     for line_index, line in enumerate(_wrap_text(fonts, text, max_width=max_width, font_size=font_size, bold=bold)):
         baseline = y - (line_height * line_index)
-        line_width = _measure_text(fonts, line, font_size=font_size, bold=bold)
-        commands.extend(_yellow_rect(x - 1.0, baseline - 2.0, min(max_width, line_width + 3.0), font_size + 2.0))
         commands.extend(
             _draw_text_line(
                 fonts,
@@ -370,9 +357,6 @@ def _wrap_text(
 def _white_rect(x: float, y: float, width: float, height: float) -> list[str]:
     return ["q", "1 1 1 rg", f"{x:.3f} {y:.3f} {width:.3f} {height:.3f} re f", "Q"]
 
-
-def _yellow_rect(x: float, y: float, width: float, height: float) -> list[str]:
-    return ["q", "1 1 0 rg", f"{x:.3f} {y:.3f} {width:.3f} {height:.3f} re f", "Q"]
 
 
 def _append_content_stream(page, writer: PdfWriter, payload: bytes) -> None:

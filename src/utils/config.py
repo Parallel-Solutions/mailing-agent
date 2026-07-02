@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     sender_default_batch_size: int = 25
     sender_max_batch_size: int = 100
     sender_delay_seconds: float = 60.0
+    sender_delay_min_seconds: float = 0.0
+    sender_delay_max_seconds: float = 0.0
     sender_transport: str = "smtp"
     sender_unisender_concurrency: int = 1
     email_validation_mode: str = "domain"
