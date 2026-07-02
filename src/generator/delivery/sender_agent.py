@@ -788,6 +788,7 @@ def _send_consent_requests_with_transport(
     work_type: str | None = None,
     recipient_strategy: str | None = None,
     sender_email: str | None = None,
+    campaign_name: str | None = None,
     wait_between_recipients: Callable[[], bool] | None = None,
     wait_after_rate_limit: Callable[[float, str], bool] | None = None,
 ) -> dict[str, Any]:
@@ -820,6 +821,7 @@ def _send_consent_requests_with_transport(
                 work_type=work_type,
                 recipient_strategy=recipient_strategy,
                 sender_email=sender_email,
+                campaign_name=campaign_name,
             )
             consent_url = _safe_text(consent_record.get("consent_url"))
             consent_urls[recipient] = consent_url
@@ -1649,6 +1651,7 @@ def _append_sent_mail_log(
     work_type: str = "",
     recipient_strategy: str = "",
     sender_email: str = "",
+    campaign_name: str = "",
     recipient_role: str = "",
 ) -> str | None:
     safe_provider = _safe_provider_payload(provider)
@@ -1668,6 +1671,7 @@ def _append_sent_mail_log(
         "work_type": _safe_text(work_type),
         "recipient_strategy": _safe_text(recipient_strategy) or DEFAULT_RECIPIENT_STRATEGY,
         "sender_email": _safe_text(sender_email),
+        "campaign_name": _safe_text(campaign_name),
         "recipient_role": _safe_text(recipient_role),
     }
     if _safe_text(send_run_id):
@@ -1871,7 +1875,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
     rows_by_id = _load_sender_rows_by_id(job_id)
     latest_events = _latest_delivery_events_by_row_recipient(job_id, sent_items, provider=provider)
     sent_by_row = _sent_items_by_row(sent_items)
-    dispatch_groups: dict[tuple[str, str, str, str, str, str], set[str]] = {}
+    dispatch_groups: dict[tuple[str, str, str, str, str, str, str], set[str]] = {}
     dispatch_rows: list[dict[str, str]] = []
 
     for row_id, row_items in sent_by_row.items():
@@ -1908,7 +1912,8 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
         subject_template = _safe_text(last_item.get("subject_template")) or _safe_text(state.get("subject_template"))
         work_type = _safe_text(last_item.get("work_type")) or _safe_text(state.get("work_type")) or DEFAULT_WORK_TYPE
         sender_email = _safe_text(last_item.get("sender_email")) or _safe_text(state.get("sender_email"))
-        group_key = (transport, send_mode, attachment_mode, subject_template, work_type, sender_email)
+        campaign_name = _safe_text(last_item.get("campaign_name")) or _safe_text(state.get("campaign_name"))
+        group_key = (transport, send_mode, attachment_mode, subject_template, work_type, sender_email, campaign_name)
         dispatch_groups.setdefault(group_key, set()).add(row_id)
         dispatch_rows.append(
             {
@@ -1923,7 +1928,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
         return {"status": "no_fallback_needed", "job_id": job_id, "dispatched_rows": []}
 
     results: list[dict[str, Any]] = []
-    for (transport, send_mode, attachment_mode, subject_template, work_type, sender_email), row_ids in dispatch_groups.items():
+    for (transport, send_mode, attachment_mode, subject_template, work_type, sender_email, campaign_name), row_ids in dispatch_groups.items():
         result = run_sender(
             dry_run=False,
             row_ids=sorted(row_ids, key=_sort_row_id_text),
@@ -1934,6 +1939,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
             require_confirmed_consent=send_mode == "materials",
             work_type=work_type,
             sender_email=sender_email,
+            campaign_name=campaign_name,
             recipient_strategy=RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
             job_id=job_id,
         )
@@ -1943,6 +1949,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
                 "send_mode": send_mode,
                 "attachment_mode": attachment_mode,
                 "sender_email": sender_email,
+                "campaign_name": campaign_name,
                 "row_ids": sorted(row_ids, key=_sort_row_id_text),
                 "status": result.get("status"),
                 "summary_text": result.get("summary_text"),
@@ -3581,6 +3588,7 @@ def _build_parallel_send_job(
     work_type: str = "",
     recipient_strategy: str = "",
     sender_email: str = "",
+    campaign_name: str = "",
     body_override: str | None = None,
     preflight_attempts: list[dict[str, Any]] | None = None,
     success_status_value: str = STATUS_SENT_VALUE,
@@ -3604,6 +3612,7 @@ def _build_parallel_send_job(
         "work_type": work_type,
         "recipient_strategy": recipient_strategy,
         "sender_email": sender_email,
+        "campaign_name": campaign_name,
         "preflight_attempts": list(preflight_attempts or []),
     }
 
@@ -3680,6 +3689,7 @@ def _apply_send_result_to_entry(
     effective_work_type: str,
     effective_recipient_strategy: str,
     effective_sender_email: str,
+    effective_campaign_name: str,
     sent_mail_log_path: Path | None,
     sent_mail_recipients: dict[str, set[str]],
     send_run_id: str,
@@ -3713,6 +3723,7 @@ def _apply_send_result_to_entry(
                 work_type=effective_work_type,
                 recipient_strategy=effective_recipient_strategy,
                 sender_email=effective_sender_email,
+                campaign_name=effective_campaign_name,
                 recipient_role=_recipient_role_for_log(email_decision, sent_recipient),
             )
             sent_mail_recipients.setdefault(row_id_text, set()).add(_mail_key(sent_recipient))
@@ -3747,6 +3758,7 @@ def _apply_send_result_to_entry(
             work_type=effective_work_type,
             recipient_strategy=effective_recipient_strategy,
             sender_email=effective_sender_email,
+            campaign_name=effective_campaign_name,
             recipient_role=_recipient_role_for_log(email_decision, sent_recipient),
         )
         if log_warning:
@@ -3779,6 +3791,7 @@ def run_sender(
     attachment_mode: str | None = None,
     subject_template: str | None = None,
     sender_email: str | None = None,
+    campaign_name: str | None = None,
     require_confirmed_consent: bool = False,
     work_type: str | None = None,
     recipient_strategy: str | None = None,
@@ -3811,6 +3824,7 @@ def run_sender(
     effective_work_type = normalize_work_type(work_type or state.get("work_type") or DEFAULT_WORK_TYPE)
     effective_subject_template = _safe_text(subject_template)
     effective_sender_email = _safe_text(sender_email or state.get("sender_email"))
+    effective_campaign_name = _safe_text(campaign_name or state.get("campaign_name"))
     if effective_work_type != DEFAULT_WORK_TYPE and effective_subject_template == DEFAULT_MAIL_SUBJECT:
         effective_subject_template = ""
     requested_row_ids = {str(item).strip() for item in (row_ids or []) if str(item).strip()}
@@ -3872,6 +3886,7 @@ def run_sender(
             "work_type": effective_work_type,
             "subject_template": effective_subject_template,
             "sender_email": effective_sender_email,
+            "campaign_name": effective_campaign_name,
         }
     )
     if not dry_run:
@@ -4345,6 +4360,7 @@ def run_sender(
                             work_type=effective_work_type,
                             recipient_strategy=effective_recipient_strategy,
                             sender_email=effective_sender_email,
+                            campaign_name=effective_campaign_name,
                             preflight_attempts=preflight_attempts,
                         )
                     )
@@ -4366,6 +4382,7 @@ def run_sender(
                                 work_type=effective_work_type,
                                 recipient_strategy=effective_recipient_strategy,
                                 sender_email=effective_sender_email,
+                                campaign_name=effective_campaign_name,
                                 wait_after_rate_limit=mailopost_rate_limit_delay,
                             )
                         return _send_with_transport(
@@ -4407,6 +4424,7 @@ def run_sender(
                             work_type=effective_work_type,
                             recipient_strategy=effective_recipient_strategy,
                             sender_email=effective_sender_email,
+                            campaign_name=effective_campaign_name,
                             wait_after_rate_limit=mailopost_rate_limit_delay,
                             wait_between_recipients=smtp_recipient_delay,
                         )
@@ -4447,6 +4465,7 @@ def run_sender(
                             effective_work_type=effective_work_type,
                             effective_recipient_strategy=effective_recipient_strategy,
                             effective_sender_email=effective_sender_email,
+                            effective_campaign_name=effective_campaign_name,
                             sent_mail_log_path=sent_mail_log_path,
                             sent_mail_recipients=sent_mail_recipients,
                             send_run_id=send_run_id,
@@ -4574,6 +4593,8 @@ def run_sender(
                                 effective_subject_template=job.get("subject_template") or effective_subject_template,
                                 effective_work_type=job.get("work_type") or effective_work_type,
                                 effective_recipient_strategy=job.get("recipient_strategy") or effective_recipient_strategy,
+                                effective_sender_email=job.get("sender_email") or effective_sender_email,
+                                effective_campaign_name=job.get("campaign_name") or effective_campaign_name,
                                 sent_mail_log_path=sent_mail_log_path,
                                 sent_mail_recipients=sent_mail_recipients,
                                 send_run_id=send_run_id,

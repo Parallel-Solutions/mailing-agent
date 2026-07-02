@@ -341,6 +341,7 @@ def prepare_consent_request(
     work_type: str | None = None,
     recipient_strategy: str | None = None,
     sender_email: str | None = None,
+    campaign_name: str | None = None,
 ) -> dict[str, Any]:
     with _locked_records(job_id):
         records = _load_records(job_id)
@@ -350,6 +351,7 @@ def prepare_consent_request(
         effective_work_type = normalize_work_type(work_type or DEFAULT_WORK_TYPE)
         effective_recipient_strategy = _safe_text(recipient_strategy)
         effective_sender_email = _safe_text(sender_email)
+        effective_campaign_name = _safe_text(campaign_name)
         owner_metadata = _job_owner_metadata(job_id)
         expires_at = _consent_expires_at(now)
         for record in records:
@@ -379,6 +381,7 @@ def prepare_consent_request(
                 record["consent_text"] = _consent_text_for_attachment_mode(effective_attachment_mode)
                 record["subject_template"] = _safe_text(subject_template)
                 record["sender_email"] = effective_sender_email
+                record["campaign_name"] = effective_campaign_name
                 record["expires_at"] = expires_at
             _save_records(job_id, records)
             return dict(record, consent_url=public_consent_url(record["token"]))
@@ -404,6 +407,7 @@ def prepare_consent_request(
             "recipient_strategy": effective_recipient_strategy,
             "subject_template": _safe_text(subject_template),
             "sender_email": effective_sender_email,
+            "campaign_name": effective_campaign_name,
         }
         records.append(record)
         _save_records(job_id, records)

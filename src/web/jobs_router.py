@@ -291,6 +291,7 @@ class JobsWebController:
             str(sender_state.get("work_type") or generator_state.get("work_type") or DEFAULT_WORK_TYPE)
         )
         work_type_profile = get_work_type_profile(work_type)
+        campaign_title = str(sender_state.get("campaign_name") or "").strip() or f"Рассылка: {work_type_profile.label}"
 
         item = {
             "job_id": job_id,
@@ -311,7 +312,7 @@ class JobsWebController:
             "sender_mode": sender_state.get("mode", "dry_run"),
             "work_type": work_type,
             "work_type_label": work_type_profile.label,
-            "campaign_title": f"Рассылка: {work_type_profile.label}",
+            "campaign_title": campaign_title,
         }
         with self._history_lock:
             self._history_item_cache[cache_key] = {

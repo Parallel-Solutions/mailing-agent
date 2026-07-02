@@ -2205,6 +2205,11 @@
         </select>
       </div>
 
+      <div class="field">
+        <label>Название рассылки</label>
+        <input id="settings-campaign-name" type="text" placeholder="Например: СТП июль 2026" oninput="saveUiState()">
+      </div>
+
       <div class="document-mode-row settings-document-mode-row">
         <div class="sender-transport-field">
           <label for="settings-document-mode">Что формируем</label>
@@ -2957,6 +2962,7 @@
       settings: {
         workType: document.getElementById('settings-work-type')?.value || '',
         mailSubject: document.getElementById('settings-mail-subject')?.value || '',
+        campaignName: document.getElementById('settings-campaign-name')?.value || '',
         documentMode: getDocumentMode(),
         senderEmail: document.getElementById('settings-sender-email')?.value || '',
       },
@@ -3164,9 +3170,11 @@
     const settings = snapshot.settings || {};
     const workType = document.getElementById('settings-work-type');
     const mailSubject = document.getElementById('settings-mail-subject');
+    const campaignName = document.getElementById('settings-campaign-name');
     const senderEmail = document.getElementById('settings-sender-email');
     if (workType && settings.workType) workType.value = settings.workType;
     if (mailSubject && typeof settings.mailSubject === 'string') mailSubject.value = settings.mailSubject;
+    if (campaignName && typeof settings.campaignName === 'string') campaignName.value = settings.campaignName;
     if (senderEmail && typeof settings.senderEmail === 'string') senderEmail.value = settings.senderEmail;
     if (workType && settings.workType) syncDefaultSubjectForWorkType(settings.workType);
     if (settings.documentMode) syncDocumentModeControls(settings.documentMode);
@@ -4834,12 +4842,14 @@
   function resetSettingsFormFields() {
     const workType = document.getElementById('settings-work-type');
     const subject = document.getElementById('settings-mail-subject');
+    const campaignName = document.getElementById('settings-campaign-name');
     const settingsDocumentMode = document.getElementById('settings-document-mode');
     const senderEmail = document.getElementById('settings-sender-email');
     const senderPassword = document.getElementById('settings-sender-password');
 
     if (workType) workType.selectedIndex = 0;
     if (subject) subject.value = WORK_TYPE_DEFAULT_SUBJECTS.mngp_settlements;
+    if (campaignName) campaignName.value = '';
     if (settingsDocumentMode) settingsDocumentMode.value = 'kp';
     if (senderEmail) senderEmail.value = '';
     if (senderPassword) senderPassword.value = '';
@@ -6143,6 +6153,11 @@ function clearAttachedFile() {
     return String((input && input.value) || '').trim();
   }
 
+  function getCampaignName() {
+    const input = document.getElementById('settings-campaign-name');
+    return String((input && input.value) || '').trim();
+  }
+
   function getSenderEmailOverride() {
     const input = document.getElementById('settings-sender-email');
     return String((input && input.value) || '').trim();
@@ -7328,6 +7343,7 @@ function clearAttachedFile() {
       const attachmentMode = getSenderAttachmentMode();
       const recipientStrategy = getSenderRecipientStrategy();
       const mailSubject = getMailSubjectTemplate();
+      const campaignName = getCampaignName();
       const senderEmail = getSenderEmailOverride();
       const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
       showToast('Проверяю перед отправкой');
@@ -7338,7 +7354,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, sender_email: senderEmail, work_type: workType })),
+        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, sender_email: senderEmail, campaign_name: campaignName, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Ошибка проверки готовности отправщика'));
@@ -7395,6 +7411,7 @@ function clearAttachedFile() {
         const attachmentMode = getSenderAttachmentMode();
         const recipientStrategy = getSenderRecipientStrategy();
         const mailSubject = getMailSubjectTemplate();
+        const campaignName = getCampaignName();
         const senderEmail = getSenderEmailOverride();
         const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
         const hasPreviewRows = !!(senderPreviewState && Array.isArray(senderPreviewState.rows) && senderPreviewState.rows.length);
@@ -7420,7 +7437,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, sender_email: senderEmail, work_type: workType })),
+        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, sender_email: senderEmail, campaign_name: campaignName, work_type: workType })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Ошибка реальной отправки'));

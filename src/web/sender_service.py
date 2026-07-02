@@ -170,6 +170,7 @@ def compact_sender_status(state: dict) -> dict:
         "stop_requested_at": state.get("stop_requested_at"),
         "transport": state.get("transport", "unisender"),
         "sender_email": state.get("sender_email", ""),
+        "campaign_name": state.get("campaign_name", ""),
         "row_count": len(rows),
         "rows": [_compact_sender_row(row) for row in visible_rows[:20] if isinstance(row, dict)],
         "task_stats": state.get("task_stats", {}),
@@ -187,6 +188,7 @@ def run_sender_background(
     recipient_strategy: str | None = None,
     subject_template: str | None = None,
     sender_email: str | None = None,
+    campaign_name: str | None = None,
     require_confirmed_consent: bool = False,
     work_type: str | None = None,
     job_id: str | None,
@@ -201,6 +203,7 @@ def run_sender_background(
             recipient_strategy=recipient_strategy,
             subject_template=subject_template,
             sender_email=sender_email,
+            campaign_name=campaign_name,
             require_confirmed_consent=require_confirmed_consent,
             work_type=work_type,
             auto_recover=False,
@@ -223,6 +226,7 @@ def prime_sender_running_state(
     attachment_mode: str | None = None,
     recipient_strategy: str | None = None,
     sender_email: str | None = None,
+    campaign_name: str | None = None,
 ) -> dict:
     state = _require("load_sender_state")(job_id)
     stats = _require("collect_excel_stats")(resolve_job_paths(job_id).data_xlsx)
@@ -234,6 +238,7 @@ def prime_sender_running_state(
     state["attachment_mode"] = attachment_mode or state.get("attachment_mode") or "kp"
     state["recipient_strategy"] = recipient_strategy or state.get("recipient_strategy") or "all"
     state["sender_email"] = sender_email or state.get("sender_email") or ""
+    state["campaign_name"] = campaign_name or state.get("campaign_name") or ""
     state["started_at"] = started_at
     state["send_run_id"] = f"send-{started_at.replace(':', '').replace('-', '')}-{secrets.token_hex(4)}"
     state["send_run_started_at"] = started_at
@@ -265,6 +270,7 @@ def prime_sender_checking_state(
     attachment_mode: str | None = None,
     recipient_strategy: str | None = None,
     sender_email: str | None = None,
+    campaign_name: str | None = None,
 ) -> dict:
     state = _require("load_sender_state")(job_id)
     stats = _require("collect_excel_stats")(resolve_job_paths(job_id).data_xlsx)
@@ -275,6 +281,7 @@ def prime_sender_checking_state(
     state["attachment_mode"] = attachment_mode or state.get("attachment_mode") or "kp"
     state["recipient_strategy"] = recipient_strategy or state.get("recipient_strategy") or "all"
     state["sender_email"] = sender_email or state.get("sender_email") or ""
+    state["campaign_name"] = campaign_name or state.get("campaign_name") or ""
     state["started_at"] = datetime.now().isoformat(timespec="seconds")
     state["completed_at"] = None
     state["processed_rows"] = 0

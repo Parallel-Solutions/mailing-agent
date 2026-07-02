@@ -223,7 +223,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
         with patch.object(sender_report, "_build_delivery_rows", return_value=(delivery_rows, "")), patch.object(
             sender_report, "load_consent_records", return_value=[]
-        ), patch.object(sender_report, "_load_sender_state", return_value={"work_type": "stp_mo"}), patch.object(
+        ), patch.object(sender_report, "_load_sender_state", return_value={"work_type": "stp_mo", "campaign_name": "июльская рассылка"}), patch.object(
             sender_report, "_now_moscow", return_value=now
         ):
             analytics = sender_report.build_sender_delivery_analytics("job-current", refresh=False)
@@ -233,7 +233,8 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(analytics["campaign_started_at"], "2026-07-02T13:47:32+03:00")
         self.assertEqual(analytics["campaign_started_at_label"], "2026-07-02 13:47:32")
         self.assertEqual(analytics["stats_time_label"], "2026-07-02 13:47:32")
-        self.assertEqual(analytics["campaign"]["title"], "Рассылка: СТП МО")
+        self.assertEqual(analytics["campaign"]["title"], "июльская рассылка")
+        self.assertEqual(analytics["campaign"]["custom_name"], "июльская рассылка")
         self.assertEqual(analytics["work_type_label"], "СТП МО")
         self.assertEqual(sender_report._format_moscow_datetime("2026-07-02T10:47:32"), "2026-07-02 13:47:32")
 
@@ -1089,6 +1090,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             send_run_id="send-1",
             recipient_role="fallback",
             send_run_started_at="2026-06-21T10:00:00",
+            campaign_name="июльская рассылка",
         )
 
         self.assertIsNone(warning)
@@ -1096,6 +1098,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(record["provider_idempotency_key"], "mailing-agent:rusender:stable")
         self.assertEqual(record["provider"]["idempotency_key"], "mailing-agent:rusender:stable")
         self.assertEqual(record["recipient_role"], "fallback")
+        self.assertEqual(record["campaign_name"], "июльская рассылка")
 
     def test_unisender_analytics_filters_items_outside_current_data(self) -> None:
         items = [

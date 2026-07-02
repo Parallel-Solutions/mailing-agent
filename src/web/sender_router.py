@@ -23,8 +23,8 @@ def create_sender_router(
     parse_optional_limit: Callable[[dict | None], int | None],
     compact_sender_status: Callable[[dict], dict],
     clear_sender_stop_request: Callable[[str | None], Any],
-    prime_sender_checking_state: Callable[[str | None, str | None, str | None], dict],
-    prime_sender_running_state: Callable[[str | None, str | None, str | None], dict],
+    prime_sender_checking_state: Callable[..., dict],
+    prime_sender_running_state: Callable[..., dict],
     start_sender_thread_if_absent: Callable[..., tuple[threading.Thread, bool]],
     run_sender_background: Callable[..., None],
     sender_job_key: Callable[[str | None], str],
@@ -174,6 +174,7 @@ def create_sender_router(
         recipient_strategy = payload.recipient_strategy
         subject_template = payload.mail_subject
         sender_email = payload.sender_email
+        campaign_name = payload.campaign_name
         job_id = payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
         generator_state = get_generator_status(job_id)
@@ -194,9 +195,9 @@ def create_sender_router(
 
             def _prime_state() -> None:
                 primed_state_box["state"] = (
-                    prime_sender_checking_state(job_id, transport, attachment_mode, recipient_strategy, sender_email)
+                    prime_sender_checking_state(job_id, transport, attachment_mode, recipient_strategy, sender_email, campaign_name)
                     if dry_run
-                    else prime_sender_running_state(job_id, transport, attachment_mode, recipient_strategy, sender_email)
+                    else prime_sender_running_state(job_id, transport, attachment_mode, recipient_strategy, sender_email, campaign_name)
                 )
 
             _, started = start_sender_thread_if_absent(
@@ -211,6 +212,7 @@ def create_sender_router(
                     "recipient_strategy": recipient_strategy,
                     "subject_template": subject_template,
                     "sender_email": sender_email,
+                    "campaign_name": campaign_name,
                     "work_type": work_type,
                     "job_id": job_id,
                 },
@@ -230,6 +232,7 @@ def create_sender_router(
                     "attachment_mode": attachment_mode,
                     "recipient_strategy": recipient_strategy,
                     "sender_email": sender_email,
+                    "campaign_name": campaign_name,
                 },
             )
             primed_state = primed_state_box.get("state") or get_sender_status(job_id)

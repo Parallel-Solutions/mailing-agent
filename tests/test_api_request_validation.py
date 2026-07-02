@@ -35,13 +35,13 @@ class SenderRequestValidationTests(unittest.TestCase):
                 parse_optional_limit=lambda payload: None,
                 compact_sender_status=lambda state: dict(state),
                 clear_sender_stop_request=lambda job_id: None,
-                prime_sender_checking_state=lambda job_id, transport, attachment_mode, recipient_strategy=None, sender_email=None: {
+                prime_sender_checking_state=lambda job_id, transport, attachment_mode, recipient_strategy=None, sender_email=None, campaign_name=None: {
                     "status": "running",
                     "mode": "dry_run",
                     "transport": transport,
                     "attachment_mode": attachment_mode,
                 },
-                prime_sender_running_state=lambda job_id, transport, attachment_mode, recipient_strategy=None, sender_email=None: {
+                prime_sender_running_state=lambda job_id, transport, attachment_mode, recipient_strategy=None, sender_email=None, campaign_name=None: {
                     "status": "running",
                     "mode": "send",
                     "transport": transport,
@@ -101,6 +101,7 @@ class SenderRequestValidationTests(unittest.TestCase):
             "attachment_mode": "contract",
             "mail_subject": "  Subject  ",
             "sender_email": "  sender@example.com  ",
+            "campaign_name": "  июльская рассылка  ",
             "work_type": "  custom-work  ",
         }
 
@@ -116,6 +117,7 @@ class SenderRequestValidationTests(unittest.TestCase):
         self.assertEqual(worker_kwargs["attachment_mode"], "contract")
         self.assertEqual(worker_kwargs["subject_template"], "Subject")
         self.assertEqual(worker_kwargs["sender_email"], "sender@example.com")
+        self.assertEqual(worker_kwargs["campaign_name"], "июльская рассылка")
         self.assertEqual(worker_kwargs["work_type"], "custom-work")
 
 

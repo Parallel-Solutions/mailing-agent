@@ -135,22 +135,31 @@ def _campaign_metadata(
 ) -> dict[str, str]:
     state = _load_sender_state(job_id) if job_id else {}
     work_type = _safe_text(state.get("work_type"))
-    if not work_type:
+    campaign_name = _safe_text(state.get("campaign_name"))
+    if not work_type or not campaign_name:
         for row in rows or []:
-            work_type = _safe_text(row.get("work_type"))
-            if work_type:
+            if not work_type:
+                work_type = _safe_text(row.get("work_type"))
+            if not campaign_name:
+                campaign_name = _safe_text(row.get("campaign_name"))
+            if work_type and campaign_name:
                 break
-    if not work_type:
+    if not work_type or not campaign_name:
         for row in consent_rows or []:
-            work_type = _safe_text(row.get("work_type"))
-            if work_type:
+            if not work_type:
+                work_type = _safe_text(row.get("work_type"))
+            if not campaign_name:
+                campaign_name = _safe_text(row.get("campaign_name"))
+            if work_type and campaign_name:
                 break
     profile = get_work_type_profile(work_type or DEFAULT_WORK_TYPE)
+    title = campaign_name or f"Рассылка: {profile.label}"
     return {
         "work_type": normalize_work_type(profile.key),
         "work_type_label": profile.label,
         "work_type_short_name": profile.short_name,
-        "title": f"Рассылка: {profile.label}",
+        "custom_name": campaign_name,
+        "title": title,
     }
 
 
@@ -611,6 +620,7 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
                 "sent_at_timestamp": _datetime_iso(sent_at),
                 "subject": _safe_text(item.get("subject")),
                 "work_type": _safe_text(item.get("work_type")),
+                "campaign_name": _safe_text(item.get("campaign_name")),
                 "accepted_status": accepted_status,
                 "provider": _provider_name(item),
                 "provider_status": _normalize_provider_status(provider_status),
