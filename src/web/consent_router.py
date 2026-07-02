@@ -133,6 +133,7 @@ def _dispatch_materials_after_consent(record: dict) -> None:
     subject_template = str(record.get("subject_template") or "").strip() or None
     sender_email = str(record.get("sender_email") or "").strip() or None
     campaign_name = str(record.get("campaign_name") or "").strip() or None
+    target_recipient = str(record.get("recipient") or "").strip() or None
     recipient_strategy = str(record.get("recipient_strategy") or "").strip() or None
     if not row_id:
         return
@@ -172,6 +173,7 @@ def _dispatch_materials_after_consent(record: dict) -> None:
         subject_template=subject_template,
         sender_email=sender_email,
         campaign_name=campaign_name,
+        target_recipient=target_recipient,
         require_confirmed_consent=True,
         work_type=work_type,
         job_id=job_id,

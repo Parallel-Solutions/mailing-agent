@@ -386,6 +386,91 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         )
         resolve_output_folder.assert_not_called()
 
+    def test_materials_after_consent_sends_to_confirmed_recipient(self) -> None:
+        row = {
+            "ID": "37",
+            "_row_index": 2,
+            "MUN_NAME": "Test municipality",
+            "EMAIL_OSN": "primary@example.com",
+            "EMAIL_DOP": "",
+            "STATUS": "",
+        }
+        sent_recipients: list[str] = []
+
+        def load_state(job_id: str | None = None) -> dict:
+            state = dict(sender_agent.SENDER_STATE)
+            state["rows"] = []
+            state["stats"] = {}
+            return state
+
+        def fake_send(row, recipients, attachments, subject, **kwargs):
+            sent_recipients.extend(recipients)
+            return {
+                "recipient": recipients[0],
+                "recipients": list(recipients),
+                "attempts": [{"recipient": recipients[0], "status": "sent", "error": ""}],
+                "error": "",
+                "warning": "",
+            }
+
+        def fake_has_consent(**kwargs):
+            return kwargs.get("recipient") == "consent@example.com"
+
+        with patch.object(sender_agent, "_load_sender_state", side_effect=load_state), patch.object(
+            sender_agent, "_save_sender_state", side_effect=lambda state, job_id=None: state
+        ), patch.object(
+            sender_agent, "clear_sender_stop_request", return_value=None
+        ), patch.object(
+            sender_agent, "_resolve_sender_data_xlsx_path", return_value=Path(__file__)
+        ), patch.object(
+            sender_agent, "_collect_excel_stats", return_value={"total": 1, "sent": 0, "error": 0, "pending": 1}
+        ), patch.object(
+            sender_agent, "load_rows", return_value=(SimpleNamespace(close=lambda: None), SimpleNamespace(), [row])
+        ), patch.object(
+            sender_agent, "_build_output_folder_index", return_value=({}, {})
+        ), patch.object(
+            sender_agent, "_resolve_output_folder", return_value=(Path("output/37"), None)
+        ), patch.object(
+            sender_agent, "_resolve_pdf_attachments", return_value=(["kp.pdf"], None)
+        ), patch.object(
+            sender_agent, "has_confirmed_consent", side_effect=fake_has_consent
+        ) as has_confirmed_consent, patch.object(
+            sender_agent, "_send_with_transport", side_effect=fake_send
+        ), patch.object(
+            sender_agent, "_append_sent_mail_log", return_value=None
+        ), patch.object(
+            sender_agent, "_persist_row_status", return_value=""
+        ), patch.object(
+            sender_agent, "_should_flush_sender_workbook", return_value=False
+        ), patch.object(
+            sender_agent, "_load_sent_mail_recipients", return_value={}
+        ), patch.object(
+            sender_agent, "count_tasks_for_agent", return_value={}
+        ), patch.object(
+            sender_agent, "get_tasks_for_agent", return_value=[]
+        ), patch.object(
+            sender_agent, "get_recent_events", return_value=[]
+        ), patch.object(
+            sender_agent.settings, "email_validation_mode", "syntax"
+        ):
+            result = sender_agent.run_sender(
+                dry_run=False,
+                send_mode="materials",
+                target_recipient="consent@example.com",
+                require_confirmed_consent=True,
+                job_id="job-consent",
+            )
+
+        self.assertEqual(sent_recipients, ["consent@example.com"])
+        self.assertEqual(result["rows"][0]["recipient"], "consent@example.com")
+        self.assertEqual(result["rows"][0]["email_strategy"], "consent_recipient")
+        has_confirmed_consent.assert_called_once_with(
+            job_id="job-consent",
+            row_id="37",
+            recipient="consent@example.com",
+            attachment_mode="kp",
+        )
+
     def test_allowed_send_recipients_includes_primary_and_extra_emails(self) -> None:
         decision = sender_agent._choose_recipient(
             {

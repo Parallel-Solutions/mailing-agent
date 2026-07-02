@@ -3792,6 +3792,7 @@ def run_sender(
     subject_template: str | None = None,
     sender_email: str | None = None,
     campaign_name: str | None = None,
+    target_recipient: str | None = None,
     require_confirmed_consent: bool = False,
     work_type: str | None = None,
     recipient_strategy: str | None = None,
@@ -3825,6 +3826,7 @@ def run_sender(
     effective_subject_template = _safe_text(subject_template)
     effective_sender_email = _safe_text(sender_email or state.get("sender_email"))
     effective_campaign_name = _safe_text(campaign_name or state.get("campaign_name"))
+    effective_target_recipient = _safe_text(target_recipient or state.get("target_recipient"))
     if effective_work_type != DEFAULT_WORK_TYPE and effective_subject_template == DEFAULT_MAIL_SUBJECT:
         effective_subject_template = ""
     requested_row_ids = {str(item).strip() for item in (row_ids or []) if str(item).strip()}
@@ -3887,6 +3889,7 @@ def run_sender(
             "subject_template": effective_subject_template,
             "sender_email": effective_sender_email,
             "campaign_name": effective_campaign_name,
+            "target_recipient": effective_target_recipient,
         }
     )
     if not dry_run:
@@ -3991,6 +3994,14 @@ def run_sender(
             email_decision,
             recipient_strategy=effective_recipient_strategy,
         )
+        if effective_send_mode == "materials" and require_confirmed_consent and effective_target_recipient:
+            allowed_recipients = [effective_target_recipient]
+            fallback_recipients = []
+            entry["recipient"] = effective_target_recipient
+            entry["emails"] = [effective_target_recipient]
+            entry["email_strategy"] = "consent_recipient"
+            entry["decision_reason"] = "Материалы отправляются на email, который подтвердил согласие."
+            entry["fallback_candidates"] = []
         preflight_attempts: list[dict[str, Any]] = []
         validation_candidates = _unique_send_recipients([*allowed_recipients, *fallback_recipients])
         if validation_candidates:
