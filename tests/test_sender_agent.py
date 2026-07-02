@@ -202,16 +202,24 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(scoped, items)
         self.assertEqual((send_run_id, send_run_started_at), ("", ""))
 
-    def test_sender_analytics_uses_moscow_time_and_campaign_name(self) -> None:
+    def test_sender_analytics_uses_first_sent_time_and_campaign_name(self) -> None:
         delivery_rows = [
             {
                 "provider": "rusender",
                 "provider_status": "delivered",
                 "work_type": "stp_mo",
+                "sent_at_timestamp": "2026-07-02T13:47:32+03:00",
                 "checked_at": "2026-07-02T10:48:00",
-            }
+            },
+            {
+                "provider": "rusender",
+                "provider_status": "delivered",
+                "work_type": "stp_mo",
+                "sent_at_timestamp": "2026-07-02T13:55:00+03:00",
+                "checked_at": "2026-07-02T10:56:00",
+            },
         ]
-        now = datetime(2026, 7, 2, 13, 47, 32, tzinfo=sender_report.MOSCOW_TZ)
+        now = datetime(2026, 7, 2, 14, 30, 0, tzinfo=sender_report.MOSCOW_TZ)
 
         with patch.object(sender_report, "_build_delivery_rows", return_value=(delivery_rows, "")), patch.object(
             sender_report, "load_consent_records", return_value=[]
@@ -220,11 +228,15 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         ):
             analytics = sender_report.build_sender_delivery_analytics("job-current", refresh=False)
 
-        self.assertEqual(analytics["generated_at"], "2026-07-02T13:47:32+03:00")
-        self.assertEqual(analytics["generated_at_label"], "2026-07-02 13:47:32")
+        self.assertEqual(analytics["generated_at"], "2026-07-02T14:30:00+03:00")
+        self.assertEqual(analytics["generated_at_label"], "2026-07-02 14:30:00")
+        self.assertEqual(analytics["campaign_started_at"], "2026-07-02T13:47:32+03:00")
+        self.assertEqual(analytics["campaign_started_at_label"], "2026-07-02 13:47:32")
+        self.assertEqual(analytics["stats_time_label"], "2026-07-02 13:47:32")
         self.assertEqual(analytics["campaign"]["title"], "Рассылка: СТП МО")
         self.assertEqual(analytics["work_type_label"], "СТП МО")
         self.assertEqual(sender_report._format_moscow_datetime("2026-07-02T10:47:32"), "2026-07-02 13:47:32")
+
     def test_sender_analytics_and_report_include_consents(self) -> None:
         delivery_rows = [
             {

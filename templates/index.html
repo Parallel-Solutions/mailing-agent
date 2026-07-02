@@ -4103,9 +4103,10 @@
 
     dashboard.hidden = false;
     if (sub) {
-      const generatedAt = analytics.generated_at_label || (
+      const statsTime = analytics.stats_time_label || analytics.campaign_started_at_label || (
         analytics.generated_at ? String(analytics.generated_at).replace('T', ' ') : 'только что'
       );
+      const statsTimeTitle = analytics.campaign_started_at_label ? 'Начало' : 'Время';
       const awaitingProviderEvents = !!analytics.awaiting_provider_events;
       const providerEventsCount = Number(analytics.provider_events_count || 0);
       const providerLabel = analytics.provider_label || 'провайдер';
@@ -4113,8 +4114,8 @@
       const campaignTitle = campaign.title || analytics.campaign_title || '';
       const campaignPrefix = campaignTitle ? `${campaignTitle}. ` : '';
       sub.textContent = awaitingProviderEvents
-        ? `${campaignPrefix}${providerLabel}: передано ${total.toLocaleString('ru')} email-получателей. Ждём события доставки, если они доступны. Обновлено: ${generatedAt}.`
-        : `${campaignPrefix}${providerLabel}: ${total.toLocaleString('ru')} email-получателей. Событий провайдера: ${providerEventsCount.toLocaleString('ru')}. Обновлено: ${generatedAt}.`;
+        ? `${campaignPrefix}${providerLabel}: передано ${total.toLocaleString('ru')} email-получателей. Ждём события доставки, если они доступны. ${statsTimeTitle}: ${statsTime}.`
+        : `${campaignPrefix}${providerLabel}: ${total.toLocaleString('ru')} email-получателей. Событий провайдера: ${providerEventsCount.toLocaleString('ru')}. ${statsTimeTitle}: ${statsTime}.`;
     }
     grid.innerHTML = cards.map(card => {
       const value = Number(card.value || 0).toLocaleString('ru');

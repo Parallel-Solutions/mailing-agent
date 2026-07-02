@@ -106,6 +106,21 @@ def _format_moscow_datetime(value: Any) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _first_sent_datetime(rows: list[dict[str, Any]]) -> datetime | None:
+    sent_times: list[datetime] = []
+    for row in rows:
+        dt = _to_moscow_datetime(row.get("sent_at_timestamp") or row.get("sent_at"))
+        if dt is not None:
+            sent_times.append(dt)
+    return min(sent_times) if sent_times else None
+
+
+def _datetime_iso(value: datetime | None) -> str:
+    return value.isoformat(timespec="seconds") if value is not None else ""
+
+
+def _datetime_label(value: datetime | None) -> str:
+    return _format_moscow_datetime(value) if value is not None else ""
 
 
 def _now_moscow() -> datetime:
@@ -225,6 +240,8 @@ def build_sender_delivery_analytics(
     consent_summary = _consent_summary(consent_rows)
     campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows)
     generated_at = _now_moscow()
+    campaign_started_at = _first_sent_datetime(rows)
+    stats_time = campaign_started_at or generated_at
     statuses = Counter(_normalize_provider_status(row["provider_status"] or "unknown") for row in rows)
     providers = Counter(row.get("provider") or "unisender" for row in rows)
     provider_key, provider_label = _primary_provider(providers)
@@ -416,6 +433,10 @@ def build_sender_delivery_analytics(
         "status": "ok",
         "generated_at": generated_at.isoformat(timespec="seconds"),
         "generated_at_label": _format_moscow_datetime(generated_at),
+        "campaign_started_at": _datetime_iso(campaign_started_at),
+        "campaign_started_at_label": _datetime_label(campaign_started_at),
+        "stats_time": _datetime_iso(stats_time),
+        "stats_time_label": _format_moscow_datetime(stats_time),
         "job_id": job_id or "",
         "campaign": campaign,
         "campaign_title": campaign["title"],
@@ -578,6 +599,7 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
         label = _report_status_label(provider_status)
         delivery_response = _delivery_response_text(go_event, rusender_event, mailopost_event)
         recipient_role = _recipient_role_from_item(item, current_data_roles=current_data_roles)
+        sent_at = _to_moscow_datetime(item.get("sent_at"))
         rows.append(
             {
                 "row_id": _safe_text(item.get("row_id")),
@@ -585,7 +607,8 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
                 "recipient": _safe_text(item.get("recipient")),
                 "recipient_role": recipient_role,
                 "recipient_role_label": _recipient_role_label(recipient_role),
-                "sent_at": _format_moscow_datetime(item.get("sent_at")),
+                "sent_at": _format_moscow_datetime(sent_at or item.get("sent_at")),
+                "sent_at_timestamp": _datetime_iso(sent_at),
                 "subject": _safe_text(item.get("subject")),
                 "work_type": _safe_text(item.get("work_type")),
                 "accepted_status": accepted_status,
@@ -1492,8 +1515,10 @@ def _write_statistics_sheet(
     unique_recipients = len({row["recipient"].lower() for row in rows if row["recipient"]})
     unique_municipalities = len({row["mun_name"].lower() for row in rows if row["mun_name"]})
     campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows or [])
+    first_sent_at = _first_sent_datetime(rows)
 
     summary_rows = [
+        ["Начало рассылки", _datetime_label(first_sent_at)],
         ["Дата формирования", _format_moscow_datetime(_now_moscow())],
         ["Название рассылки", campaign["title"]],
         ["Вид работ", campaign["work_type_label"]],
