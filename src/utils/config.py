@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     sender_unisender_concurrency: int = 1
     email_validation_mode: str = "domain"
     email_validation_timeout_seconds: float = 3.0
+    smtpbz_api_key: str = ""
+    smtpbz_api_base_url: str = "https://api.smtp.bz/v1"
     documents_worker_max_processes: int = 1
     sender_worker_max_processes: int = 1
     user_worker_max_processes_per_task: int = 1

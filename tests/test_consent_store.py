@@ -178,6 +178,46 @@ class ConsentStoreTests(unittest.TestCase):
                 self.assertEqual(second_stored["materials_dispatch_requested_at"], first_dispatch_requested_at)
                 self.assertEqual(len(list(consents_dir.rglob("*.docx"))), 1)
 
+    def test_confirmed_consent_retries_materials_after_error(self) -> None:
+        with _workspace_temp_dir() as tmpdir:
+            consent_path = Path(tmpdir) / "job-1" / "state" / "consents.json"
+            job_dir = consent_path.parent.parent
+            consents_dir = job_dir / "consents"
+
+            with (
+                patch.object(consent_store, "_consent_path", return_value=consent_path),
+                patch.object(consent_store, "_consent_documents_dir", return_value=consents_dir),
+                patch.object(consent_store, "_iter_job_dirs", return_value=[job_dir]),
+                patch.object(consent_store.settings, "public_base_url", "https://example.test"),
+            ):
+                record = consent_store.prepare_consent_request(
+                    job_id="job-1",
+                    row={"ID": 42, "MUN_NAME": "Тестовый район"},
+                    recipient="user@example.com",
+                    transport="smtp",
+                    sender_email="sender@example.com",
+                )
+
+                first = consent_store.confirm_consent(record["token"], ip="127.0.0.1", user_agent="test")
+                self.assertTrue(first["_dispatch_materials"])
+                consent_store.mark_materials_dispatch_result(
+                    job_id="job-1",
+                    row_id=42,
+                    recipient="user@example.com",
+                    sent=False,
+                    error="SMTP временно недоступен",
+                    summary="Материалы не отправлены.",
+                    attachment_mode="kp",
+                )
+
+                second = consent_store.confirm_consent(record["token"], ip="127.0.0.1", user_agent="test")
+                stored = consent_store.get_consent_by_token(record["token"])
+
+                self.assertTrue(second["_dispatch_materials"])
+                self.assertEqual(stored["materials_status"], "queued")
+                self.assertEqual(stored["materials_error"], "")
+                self.assertEqual(stored["materials_dispatch_attempts"], 2)
+
     def test_concurrent_consent_confirmation_dispatches_once(self) -> None:
         with _workspace_temp_dir() as tmpdir:
             consent_path = Path(tmpdir) / "job-1" / "state" / "consents.json"

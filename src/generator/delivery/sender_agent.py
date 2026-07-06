@@ -3,6 +3,7 @@ from __future__ import annotations
 import imaplib
 import smtplib
 import json
+import os
 import re
 import base64
 import hashlib
@@ -10,6 +11,7 @@ import mimetypes
 import random
 import secrets
 import threading
+from contextlib import contextmanager
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from email.message import EmailMessage
@@ -153,6 +155,7 @@ SENDER_STATE: dict[str, Any] = {
 
 SENDER_STATE_ROWS_LIMIT = 200
 SENDER_WORKBOOK_SAVE_EVERY = 25
+SENDER_RUN_LOCK_FILENAME = ".sender.run.lock"
 UNISENDER_RETRY_ATTEMPTS = 3
 UNISENDER_RETRY_BASE_SECONDS = 2.0
 UNISENDER_RETRYABLE_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -180,6 +183,8 @@ _MAILOPOST_RATE_LIMIT_LOCK = threading.Lock()
 _last_mailopost_request_at = 0.0
 _EXCEL_STATS_CACHE_LOCK = threading.Lock()
 _EXCEL_STATS_CACHE: dict[str, dict[str, Any]] = {}
+_SENDER_RUN_THREAD_LOCKS_LOCK = threading.Lock()
+_SENDER_RUN_THREAD_LOCKS: dict[str, threading.RLock] = {}
 
 
 class MailoPostRateLimitError(RuntimeError):
@@ -194,6 +199,91 @@ def _load_sender_state(job_id: str | None = None) -> dict[str, Any]:
 
 def _save_sender_state(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
     return save_agent_state("sender", state, job_id)
+
+
+def _sender_run_lock_path(job_id: str | None = None) -> Path:
+    state_dir = resolve_job_paths(job_id).root_dir / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir / SENDER_RUN_LOCK_FILENAME
+
+
+def _sender_run_thread_lock(lock_path: Path) -> threading.RLock:
+    key = str(lock_path.resolve())
+    with _SENDER_RUN_THREAD_LOCKS_LOCK:
+        lock = _SENDER_RUN_THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _SENDER_RUN_THREAD_LOCKS[key] = lock
+        return lock
+
+
+def _lock_sender_run_file(handle: Any) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        while True:
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                sleep(0.25)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_sender_run_file(handle: Any) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _sender_run_file_lock(lock_path: Path, job_id: str | None = None):
+    handle = lock_path.open("a+b")
+    locked = False
+    try:
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        _lock_sender_run_file(handle)
+        locked = True
+        handle.seek(0)
+        handle.truncate()
+        handle.write(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "job_id": str(job_id or ""),
+                    "locked_at": datetime.now().isoformat(timespec="seconds"),
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
+        handle.flush()
+        yield
+    finally:
+        if locked:
+            _unlock_sender_run_file(handle)
+        handle.close()
+
+
+@contextmanager
+def _sender_run_lock(job_id: str | None = None):
+    lock_path = _sender_run_lock_path(job_id)
+    thread_lock = _sender_run_thread_lock(lock_path)
+    with thread_lock:
+        with _sender_run_file_lock(lock_path, job_id):
+            yield
 
 
 def _state_rows_snapshot(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -578,12 +668,15 @@ def _fallback_send_recipients(
 ) -> list[str]:
     if _normalize_recipient_strategy(recipient_strategy) != RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK:
         return []
+    if email_decision.get("strategy") == "fallback_extra":
+        return []
     primary_key = _mail_key(email_decision.get("recipient"))
-    return [
+    fallback_recipients = [
         recipient
         for recipient in list(email_decision.get("fallback_candidates") or [])
         if _mail_key(recipient) and _mail_key(recipient) != primary_key
     ]
+    return fallback_recipients[:1]
 
 
 def _unique_send_recipients(recipients: list[str]) -> list[str]:
@@ -633,6 +726,8 @@ def _validate_recipient_for_send(
         recipient,
         mode=_email_validation_mode(),
         timeout_seconds=_email_validation_timeout_seconds(),
+        smtpbz_api_key=getattr(settings, "smtpbz_api_key", ""),
+        smtpbz_api_base_url=getattr(settings, "smtpbz_api_base_url", ""),
     )
     validation_cache[cache_key] = result
     return result
@@ -3797,7 +3892,29 @@ def run_sender(
     work_type: str | None = None,
     recipient_strategy: str | None = None,
     job_id: str | None = None,
+    _sender_lock_acquired: bool = False,
 ) -> dict[str, Any]:
+    if not _sender_lock_acquired:
+        with _sender_run_lock(job_id):
+            return run_sender(
+                dry_run=dry_run,
+                limit=limit,
+                auto_recover=auto_recover,
+                row_ids=row_ids,
+                transport=transport,
+                send_mode=send_mode,
+                attachment_mode=attachment_mode,
+                subject_template=subject_template,
+                sender_email=sender_email,
+                campaign_name=campaign_name,
+                target_recipient=target_recipient,
+                require_confirmed_consent=require_confirmed_consent,
+                work_type=work_type,
+                recipient_strategy=recipient_strategy,
+                job_id=job_id,
+                _sender_lock_acquired=True,
+            )
+
     job_paths = resolve_job_paths(job_id)
     data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
     output_dir = None if job_paths.uses_legacy_layout else job_paths.output_dir
@@ -4722,6 +4839,7 @@ def run_sender(
 
 def get_sender_status(job_id: str | None = None) -> dict[str, Any]:
     state = _load_sender_state(job_id)
+    state["job_id"] = job_id
     data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
     if state.get("status") == "running" and isinstance(state.get("stats"), dict):
         state["stats"] = dict(state.get("stats") or {})

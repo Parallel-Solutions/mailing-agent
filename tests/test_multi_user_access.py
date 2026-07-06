@@ -145,6 +145,93 @@ class MultiUserAccessTests(unittest.TestCase):
         jobs = response.json()["result"]["jobs"]
         self.assertEqual([item["job_id"] for item in jobs], ["job-a"])
 
+    def test_jobs_history_counts_main_campaign_from_sent_log_after_materials_followup(self) -> None:
+        with _workspace_temp_dir() as tmpdir:
+            jobs_dir = tmpdir / "jobs"
+            resolver = lambda job_id=None: _job_paths(tmpdir, job_id)
+            job_id = "job-a"
+            job_root = jobs_dir / job_id
+            (job_root / "state").mkdir(parents=True)
+            (job_root / "input").mkdir(parents=True)
+            (job_root / "input" / "data.xlsx").write_bytes(b"xlsx")
+            (job_root / "state" / "sender.json").write_text(
+                json.dumps(
+                    {
+                        "mode": "send",
+                        "status": "completed",
+                        "send_mode": "materials",
+                        "selection_scoped": True,
+                        "sent_rows": 1,
+                        "error_rows": 0,
+                        "total_rows": 1,
+                        "stats": {"total": 48, "sent": 1, "error": 0},
+                        "campaign_name": "техническая доотправка",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            sent_items = [
+                {
+                    "sent_at": f"2026-07-02T15:{index:02d}:00",
+                    "row_id": str(index),
+                    "recipient": f"person{index}@example.com",
+                    "send_mode": "consent_request",
+                    "campaign_name": "СТП_Регионы на буквы Е,З,И_48",
+                    "work_type": "stp_mo",
+                }
+                for index in range(1, 35)
+            ]
+            sent_items.append(
+                {
+                    "sent_at": "2026-07-03T06:42:30",
+                    "row_id": "2",
+                    "recipient": "37zavadm@ivreg.ru",
+                    "send_mode": "materials",
+                    "campaign_name": "СТП_Регионы на буквы Е,З,И_48",
+                    "work_type": "stp_mo",
+                }
+            )
+            (job_root / "sent_mail_log.jsonl").write_text(
+                "\n".join(json.dumps(item, ensure_ascii=False) for item in sent_items),
+                encoding="utf-8",
+            )
+            with patch("src.jobs.access.resolve_job_paths", side_effect=resolver):
+                assign_job_owner(job_id, Principal("alice", "tenant-a"))
+
+            controller = JobsWebController(
+                check_auth=lambda: Principal("alice", "tenant-a"),
+                settings=SimpleNamespace(upload_data_max_bytes=1024, upload_template_max_bytes=1024),
+                logger=SimpleNamespace(exception=lambda *args, **kwargs: None, info=lambda *args, **kwargs: None),
+                prefer_existing_file=lambda primary, fallback: primary if primary.exists() else fallback,
+                validate_uploaded_file=lambda *args, **kwargs: "file.xlsx",
+                cached_excel_row_count=lambda path: 48,
+                cached_tree_file_count=lambda path, pattern: 0,
+                safe_int=lambda value: int(value or 0),
+                create_job_id=lambda: "job-new",
+                resolve_job_paths=resolver,
+                jobs_dir=jobs_dir,
+                create_documents_load_test_job=lambda **kwargs: {},
+                start_parser_verification_process=lambda **kwargs: None,
+                get_parser_status=lambda job_id: {},
+                get_generator_status=lambda job_id: {},
+                get_philologist_status=lambda job_id, include_details=False: {},
+                get_sender_status=lambda job_id: {},
+                run_parser_municipality_verification=lambda *args, **kwargs: {},
+            )
+            app = FastAPI()
+            app.include_router(controller.router)
+
+            with patch("src.jobs.access.resolve_job_paths", side_effect=resolver):
+                response = TestClient(app).get("/api/jobs/history")
+
+        self.assertEqual(response.status_code, 200)
+        jobs = response.json()["result"]["jobs"]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["sent_rows"], 34)
+        self.assertEqual(jobs[0]["total_rows"], 48)
+        self.assertEqual(jobs[0]["campaign_title"], "СТП_Регионы на буквы Е,З,И_48")
+
     def test_consent_request_records_owner_scope_and_expired_token_cannot_confirm(self) -> None:
         with _workspace_temp_dir() as tmpdir:
             consent_path = tmpdir / "jobs" / "job-a" / "state" / "consents.json"

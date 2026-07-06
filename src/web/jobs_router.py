@@ -163,6 +163,62 @@ class JobsWebController:
             return True
         return False
 
+    def _read_sent_mail_log_items(self, job_dir: Path) -> list[dict]:
+        log_path = job_dir / "sent_mail_log.jsonl"
+        try:
+            if not log_path.exists() or not log_path.is_file():
+                return []
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+
+        items: list[dict] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                items.append(item)
+        return items
+
+    def _most_common_history_text(self, values: list[object]) -> str:
+        counts: dict[str, int] = {}
+        for value in values:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            counts[text] = counts.get(text, 0) + 1
+        if not counts:
+            return ""
+        return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+
+    def _job_history_sent_log_summary(self, job_dir: Path) -> dict:
+        items = self._read_sent_mail_log_items(job_dir)
+        if not items:
+            return {}
+
+        consent_items = [
+            item
+            for item in items
+            if str(item.get("send_mode") or "").strip().lower() == "consent_request"
+        ]
+        scoped_items = consent_items or items
+        row_ids = {
+            str(item.get("row_id") or "").strip()
+            for item in scoped_items
+            if str(item.get("row_id") or "").strip()
+        }
+        sent_rows = len(row_ids) if row_ids else len(scoped_items)
+        return {
+            "sent_rows": sent_rows,
+            "send_mode": "consent_request" if consent_items else str(scoped_items[-1].get("send_mode") or "materials"),
+            "campaign_name": self._most_common_history_text([item.get("campaign_name") for item in scoped_items]),
+            "work_type": self._most_common_history_text([item.get("work_type") for item in scoped_items]),
+        }
+
     def _job_history_candidate(self, job_dir: Path) -> tuple[float, bool]:
         state_dir = job_dir / "state"
         sender_path = state_dir / "sender.json"
@@ -264,6 +320,7 @@ class JobsWebController:
         generator_state = self._read_state_json(state_dir / "generator.json")
         philologist_state = self._read_state_json(state_dir / "philologist.json")
         sender_state = self._read_state_json(state_dir / "sender.json")
+        sent_log_summary = self._job_history_sent_log_summary(job_dir)
 
         sender_stats = sender_state.get("stats") if isinstance(sender_state.get("stats"), dict) else {}
         total_rows = max(
@@ -272,8 +329,12 @@ class JobsWebController:
             self.safe_int(generator_state.get("total_rows")),
             self.safe_int(parser_state.get("row_count")),
         )
-        sent_rows = max(self.safe_int(sender_stats.get("sent")), self.safe_int(sender_state.get("sent_rows")))
-        error_rows = max(self.safe_int(sender_stats.get("error")), self.safe_int(sender_state.get("error_rows")))
+        log_sent_rows = self.safe_int(sent_log_summary.get("sent_rows"))
+        state_selection_scoped = bool(sender_state.get("selection_scoped"))
+        state_sent_rows = max(self.safe_int(sender_stats.get("sent")), self.safe_int(sender_state.get("sent_rows")))
+        sent_rows = log_sent_rows if log_sent_rows > 0 and state_selection_scoped else max(state_sent_rows, log_sent_rows)
+        state_error_rows = max(self.safe_int(sender_stats.get("error")), self.safe_int(sender_state.get("error_rows")))
+        error_rows = self.safe_int(sender_stats.get("error")) if log_sent_rows > 0 and state_selection_scoped else state_error_rows
         pending_rows = max(0, total_rows - sent_rows - error_rows) if total_rows else 0
         ready_rows = self.safe_int(sender_state.get("ready_rows"))
         reviewed_documents = self.safe_int(philologist_state.get("processed_documents"))
@@ -288,10 +349,16 @@ class JobsWebController:
         )
 
         work_type = normalize_work_type(
-            str(sender_state.get("work_type") or generator_state.get("work_type") or DEFAULT_WORK_TYPE)
+            str(sent_log_summary.get("work_type") or sender_state.get("work_type") or generator_state.get("work_type") or DEFAULT_WORK_TYPE)
         )
         work_type_profile = get_work_type_profile(work_type)
-        campaign_title = str(sender_state.get("campaign_name") or "").strip() or f"Рассылка: {work_type_profile.label}"
+        log_campaign_name = str(sent_log_summary.get("campaign_name") or "").strip()
+        state_campaign_name = str(sender_state.get("campaign_name") or "").strip()
+        campaign_title = (
+            log_campaign_name
+            if log_campaign_name and state_selection_scoped
+            else state_campaign_name or log_campaign_name or f"Рассылка: {work_type_profile.label}"
+        )
 
         item = {
             "job_id": job_id,

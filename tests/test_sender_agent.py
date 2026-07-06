@@ -48,6 +48,46 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             sender_agent._should_flush_sender_workbook(dirty=True, processed_rows=100, total_rows=100)
         )
 
+    def test_run_sender_enters_job_lock_before_work(self) -> None:
+        events: list[tuple[str, str | None]] = []
+
+        class FakeLock:
+            def __init__(self, job_id: str | None) -> None:
+                self.job_id = job_id
+
+            def __enter__(self):
+                events.append(("enter", self.job_id))
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                events.append(("exit", self.job_id))
+
+        job_paths = SimpleNamespace(
+            uses_legacy_layout=True,
+            templates_dir=Path("missing-templates"),
+            output_dir=Path("missing-output"),
+            sent_mail_log_path=Path("missing-log.jsonl"),
+        )
+
+        with patch.object(sender_agent, "_sender_run_lock", side_effect=lambda job_id: FakeLock(job_id)), patch.object(
+            sender_agent, "resolve_job_paths", return_value=job_paths
+        ), patch.object(
+            sender_agent, "_resolve_sender_data_xlsx_path", return_value=Path("missing-data.xlsx")
+        ), patch.object(
+            sender_agent, "_load_sender_state", side_effect=lambda job_id=None: dict(sender_agent.SENDER_STATE)
+        ), patch.object(
+            sender_agent, "_save_sender_state", side_effect=lambda state, job_id=None: state
+        ), patch.object(
+            sender_agent, "clear_sender_stop_request", return_value=None
+        ), patch.object(
+            sender_agent, "_collect_excel_stats", return_value={"total": 0, "sent": 0, "error": 0, "pending": 0}
+        ):
+            result = sender_agent.run_sender(dry_run=True, job_id="job-lock")
+
+        self.assertEqual(events, [("enter", "job-lock"), ("exit", "job-lock")])
+        self.assertEqual(result["status"], "error")
+        self.assertIn("data.xlsx", result["summary_text"])
+
     def test_unisender_parallel_workers_only_for_real_unisender_send(self) -> None:
         with patch.object(sender_agent.settings, "sender_unisender_concurrency", 7):
             self.assertEqual(sender_agent._unisender_parallel_workers(dry_run=False, transport="unisender"), 7)
@@ -330,6 +370,92 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(compact["ready_rows"], 2)
         self.assertEqual(compact["stats"], {"total": 2, "sent": 2, "error": 0, "pending": 0})
 
+    def test_compact_sender_status_uses_campaign_log_after_scoped_consent_fallback(self) -> None:
+        tmpdir = self._tmp_dir("compact_campaign_consent")
+        log_path = tmpdir / "sent_mail_log.jsonl"
+        campaign_name = "СТП_Регионы на букву К_146"
+        items = [
+            {
+                "row_id": str(row_id),
+                "recipient": f"primary{row_id}@example.com",
+                "send_mode": "consent_request",
+                "recipient_role": "primary",
+                "campaign_name": campaign_name,
+            }
+            for row_id in range(1, 147)
+        ]
+        items.extend(
+            {
+                "row_id": str(row_id),
+                "recipient": f"fallback{row_id}@example.com",
+                "send_mode": "consent_request",
+                "recipient_role": "fallback",
+                "campaign_name": campaign_name,
+            }
+            for row_id in (3, 11, 13, 16, 29, 139, 140)
+        )
+        log_path.write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in items),
+            encoding="utf-8",
+        )
+        state = {
+            "job_id": "job-campaign",
+            "status": "completed",
+            "mode": "send",
+            "send_mode": "consent_request",
+            "campaign_name": campaign_name,
+            "selection_scoped": True,
+            "processed_rows": 7,
+            "ready_rows": 7,
+            "sent_rows": 7,
+            "error_rows": 0,
+            "total_rows": 7,
+            "remaining_rows": 0,
+            "stats": {"total": 146, "sent": 146, "error": 0, "pending": 0},
+        }
+
+        with patch.object(
+            sender_service,
+            "resolve_job_paths",
+            return_value=SimpleNamespace(sent_mail_log_path=log_path),
+        ):
+            compact = sender_service.compact_sender_status(state)
+
+        self.assertEqual(compact["total_rows"], 146)
+        self.assertEqual(compact["sent_rows"], 146)
+        self.assertEqual(compact["processed_rows"], 146)
+        self.assertEqual(compact["ready_rows"], 146)
+        self.assertEqual(compact["stats"], {"total": 146, "sent": 146, "error": 0, "pending": 0})
+        self.assertTrue(compact["campaign_scope_applied"])
+        self.assertEqual(compact["campaign_email_sends"], 153)
+        self.assertEqual(compact["summary_text"], "Запросы согласия отправлены. Отправлено: 146.")
+
+    def test_compact_sender_status_keeps_running_scoped_consent_progress(self) -> None:
+        state = {
+            "job_id": "job-campaign",
+            "status": "running",
+            "mode": "send",
+            "send_mode": "consent_request",
+            "campaign_name": "СТП_Регионы на букву К_146",
+            "selection_scoped": True,
+            "processed_rows": 13,
+            "ready_rows": 13,
+            "sent_rows": 13,
+            "error_rows": 0,
+            "total_rows": 15,
+            "remaining_rows": 2,
+            "stats": {"total": 48, "sent": 33, "error": 0, "pending": 15},
+        }
+
+        compact = sender_service.compact_sender_status(state)
+
+        self.assertEqual(compact["total_rows"], 15)
+        self.assertEqual(compact["sent_rows"], 13)
+        self.assertEqual(compact["processed_rows"], 13)
+        self.assertEqual(compact["stats"], {"total": 15, "sent": 13, "error": 0, "pending": 2})
+        self.assertFalse(compact["campaign_scope_applied"])
+
+
     def test_materials_send_requires_confirmed_consent_even_when_caller_omits_flag(self) -> None:
         row = {
             "ID": "1",
@@ -496,18 +622,50 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 decision,
                 recipient_strategy=sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
             ),
-            ["two@example.com", "three@example.com"],
+            ["two@example.com"],
         )
         self.assertEqual(
             sender_agent._consent_candidate_recipients(
                 decision,
                 recipient_strategy=sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
             ),
-            ["one@example.com", "two@example.com", "three@example.com"],
+            ["one@example.com", "two@example.com"],
         )
         self.assertEqual(decision["fallback_candidates"], ["two@example.com", "three@example.com"])
         self.assertEqual(decision["invalid_emails"], ["bad-email"])
         self.assertIn("дополнительные", decision["decision_reason"])
+
+    def test_primary_then_fallback_uses_only_one_extra_when_primary_missing(self) -> None:
+        decision = sender_agent._choose_recipient(
+            {
+                "EMAIL_OSN": "",
+                "EMAIL_DOP": "two@example.com; three@example.com",
+            }
+        )
+
+        self.assertEqual(decision["recipient"], "two@example.com")
+        self.assertEqual(
+            sender_agent._allowed_send_recipients(
+                decision,
+                recipient_strategy=sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+            ),
+            ["two@example.com"],
+        )
+        self.assertEqual(
+            sender_agent._fallback_send_recipients(
+                decision,
+                recipient_strategy=sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+            ),
+            [],
+        )
+        self.assertEqual(
+            sender_agent._consent_candidate_recipients(
+                decision,
+                recipient_strategy=sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+            ),
+            ["two@example.com"],
+        )
+
 
     def test_email_validation_filters_invalid_primary_and_keeps_fallback(self) -> None:
         def fake_result(email: str, is_valid: bool) -> sender_agent.EmailValidationResult:
@@ -682,6 +840,57 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "no_fallback_needed")
         run_sender_mock.assert_not_called()
+
+    def test_delivery_failure_does_not_dispatch_second_extra_fallback(self) -> None:
+        sent_items = [
+            {
+                "sent_at": "2026-06-29T10:00:00",
+                "row_id": "1",
+                "recipient": "one@example.com",
+                "transport": "mailopost",
+                "send_mode": "consent_request",
+                "attachment_mode": "kp",
+                "recipient_strategy": sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+                "provider": {"message_id": "m1", "provider": "mailopost"},
+            },
+            {
+                "sent_at": "2026-06-29T10:05:00",
+                "row_id": "1",
+                "recipient": "two@example.com",
+                "transport": "mailopost",
+                "send_mode": "consent_request",
+                "attachment_mode": "kp",
+                "recipient_strategy": sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+                "provider": {"message_id": "m2", "provider": "mailopost"},
+            },
+        ]
+        events = [
+            {
+                "message_id": "m2",
+                "row_id": "1",
+                "recipient": "two@example.com",
+                "provider_status": "hard_bounced",
+                "received_at": "2026-06-29T10:06:00",
+            }
+        ]
+        rows = {
+            "1": {
+                "ID": "1",
+                "EMAIL_OSN": "one@example.com",
+                "EMAIL_DOP": "two@example.com; three@example.com",
+            }
+        }
+
+        with patch.object(sender_agent, "_load_sender_state", return_value={"status": "completed"}), patch.object(
+            sender_agent, "_load_sent_mail_log_items", return_value=sent_items
+        ), patch.object(sender_agent, "_load_sender_rows_by_id", return_value=rows), patch.object(
+            sender_agent, "_load_delivery_events", return_value=events
+        ), patch.object(sender_agent, "run_sender") as run_sender_mock:
+            result = sender_agent.process_delivery_fallbacks(job_id="job-1", provider="mailopost")
+
+        self.assertEqual(result["status"], "no_fallback_needed")
+        run_sender_mock.assert_not_called()
+
     def test_primary_then_fallback_sequence_stops_after_first_success(self) -> None:
         sent: list[str] = []
         waits: list[str] = []

@@ -30,6 +30,7 @@ ATTACHMENT_MODE_BOTH = "both"
 CONSENT_FILE_LOCK_TIMEOUT_SECONDS = 10.0
 CONSENT_FILE_LOCK_STALE_SECONDS = 300.0
 DEFAULT_CONSENT_TOKEN_TTL_HOURS = 720
+MATERIALS_DISPATCH_STALE_RETRY_SECONDS = 10 * 60
 
 _CONSENT_THREAD_LOCKS: dict[str, threading.RLock] = {}
 _CONSENT_THREAD_LOCKS_GUARD = threading.Lock()
@@ -302,6 +303,40 @@ def _record_is_expired(record: dict[str, Any], *, now: datetime | None = None) -
     return (now or datetime.now()) > expires_at_dt
 
 
+def _parse_datetime(value: Any) -> datetime | None:
+    text = _safe_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _materials_dispatch_sent(record: dict[str, Any]) -> bool:
+    return _safe_text(record.get("materials_status")) == "sent" or bool(_safe_text(record.get("materials_sent_at")))
+
+
+def _materials_dispatch_should_start(record: dict[str, Any], *, now: datetime) -> bool:
+    if _materials_dispatch_sent(record):
+        return False
+
+    status = _safe_text(record.get("materials_status")).lower()
+    if status == "error" or _safe_text(record.get("materials_error")):
+        return True
+
+    if not _safe_text(record.get("materials_dispatch_requested_at")):
+        return True
+
+    if _safe_text(record.get("materials_dispatch_completed_at")):
+        return True
+
+    requested_at = _parse_datetime(record.get("materials_dispatch_requested_at"))
+    if requested_at is None:
+        return True
+    return (now - requested_at).total_seconds() >= MATERIALS_DISPATCH_STALE_RETRY_SECONDS
+
+
 def _job_owner_metadata(job_id: str | None) -> dict[str, str]:
     owner = read_job_owner(job_id)
     return {
@@ -531,8 +566,6 @@ def confirm_consent(token: str, *, ip: str = "", user_agent: str = "") -> dict[s
                     record["expired_at"] = now
                     _save_records(job_id, records)
                     return dict(record, _expired=True, _already_confirmed=False, _dispatch_materials=False)
-                dispatch_already_requested = bool(_safe_text(record.get("materials_dispatch_requested_at")))
-
                 if not already_confirmed:
                     record["status"] = "confirmed"
                     changed = True
@@ -546,9 +579,18 @@ def confirm_consent(token: str, *, ip: str = "", user_agent: str = "") -> dict[s
                     record["confirmed_user_agent"] = _safe_text(user_agent)
                     changed = True
 
-                dispatch_materials = not dispatch_already_requested
+                dispatch_materials = _materials_dispatch_should_start(record, now=datetime.fromisoformat(now))
                 if dispatch_materials:
-                    record["materials_dispatch_requested_at"] = _safe_text(record.get("confirmed_at")) or now
+                    record["materials_dispatch_requested_at"] = now
+                    try:
+                        record["materials_dispatch_attempts"] = int(record.get("materials_dispatch_attempts") or 0) + 1
+                    except (TypeError, ValueError):
+                        record["materials_dispatch_attempts"] = 1
+                    if _safe_text(record.get("materials_status")) != "sent":
+                        record["materials_status"] = "queued"
+                    record["materials_error"] = ""
+                    record["materials_dispatch_completed_at"] = ""
+                    record["materials_dispatch_summary"] = ""
                     changed = True
 
                 document_path = _save_consent_document(record, job_id=job_id)

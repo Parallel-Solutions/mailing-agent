@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 import secrets
 from typing import Any
@@ -26,6 +27,75 @@ def _safe_int(value: object, default: int = 0) -> int:
     except (TypeError, ValueError):
         return default
 
+
+def _read_sent_mail_log_items(job_id: object) -> list[dict]:
+    job_id_text = str(job_id or "").strip()
+    if not job_id_text:
+        return []
+    log_path = resolve_job_paths(job_id_text).sent_mail_log_path
+    try:
+        if not log_path.exists() or not log_path.is_file():
+            return []
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    items: list[dict] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            items.append(item)
+    return items
+
+
+def _campaign_consent_log_totals(state: dict, stats: dict) -> dict[str, int]:
+    if str(state.get("send_mode") or "").strip().lower() != "consent_request":
+        return {}
+
+    items = [
+        item
+        for item in _read_sent_mail_log_items(state.get("job_id"))
+        if str(item.get("send_mode") or "").strip().lower() == "consent_request"
+    ]
+    if not items:
+        return {}
+
+    campaign_name = str(state.get("campaign_name") or "").strip()
+    if campaign_name:
+        campaign_items = [
+            item
+            for item in items
+            if str(item.get("campaign_name") or "").strip() == campaign_name
+        ]
+        if campaign_items:
+            items = campaign_items
+
+    row_ids = {
+        str(item.get("row_id") or "").strip()
+        for item in items
+        if str(item.get("row_id") or "").strip()
+    }
+    sent_rows = len(row_ids) if row_ids else len(items)
+    if sent_rows <= 0:
+        return {}
+
+    error_rows = _safe_int(stats.get("error"))
+    total_rows = max(
+        _safe_int(stats.get("total")),
+        _safe_int(state.get("total_rows")),
+        sent_rows + error_rows,
+    )
+    return {
+        "sent_rows": sent_rows,
+        "error_rows": error_rows,
+        "total_rows": total_rows,
+        "email_sends": len(items),
+    }
 
 def _compact_sender_row(row: dict) -> dict:
     attempts = row.get("attempts") if isinstance(row, dict) else []
@@ -102,8 +172,23 @@ def compact_sender_status(state: dict) -> dict:
     )
     if show_table_totals:
         total_rows = max(_safe_int(stats.get("total")), total_rows)
+    campaign_log_totals = _campaign_consent_log_totals(state, stats)
+    campaign_scope_applied = (
+        bool(campaign_log_totals)
+        and selection_scoped
+        and status in {"completed", "stopped"}
+        and mode == "send"
+        and send_mode == "consent_request"
+        and _safe_int(campaign_log_totals.get("sent_rows")) > sent_rows
+    )
+    if campaign_scope_applied:
+        sent_rows = _safe_int(campaign_log_totals.get("sent_rows"))
+        error_rows = max(error_rows, _safe_int(campaign_log_totals.get("error_rows")))
+        total_rows = max(total_rows, _safe_int(campaign_log_totals.get("total_rows")))
     if status == "running":
         remaining_rows = max(0, total_rows - processed_rows)
+    elif campaign_scope_applied:
+        remaining_rows = max(0, total_rows - sent_rows - error_rows)
     elif selection_scoped and not show_table_totals:
         remaining_rows = max(0, total_rows - processed_rows)
     else:
@@ -171,6 +256,10 @@ def compact_sender_status(state: dict) -> dict:
         "transport": state.get("transport", "unisender"),
         "sender_email": state.get("sender_email", ""),
         "campaign_name": state.get("campaign_name", ""),
+        "campaign_scope_applied": campaign_scope_applied,
+        "campaign_email_sends": (
+            _safe_int(campaign_log_totals.get("email_sends")) if campaign_scope_applied else 0
+        ),
         "row_count": len(rows),
         "rows": [_compact_sender_row(row) for row in visible_rows[:20] if isinstance(row, dict)],
         "task_stats": state.get("task_stats", {}),
