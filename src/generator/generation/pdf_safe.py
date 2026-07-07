@@ -88,12 +88,91 @@ def copy_docx_without_pdf_unsafe_runs(source_docx: Path, target_docx: Path) -> N
         document_text, icons_changed = remove_contact_icon_runs(document_text)
         document_text, background_changed = remove_background_runs(document_text)
         document_text, contact_text_changed = normalize_contact_text_for_pdf(document_text)
-        if background_changed or icons_changed or contact_text_changed:
+        document_text, body_font_changed = shrink_mngp_kp_body_for_pdf(document_text)
+        if background_changed or icons_changed or contact_text_changed or body_font_changed:
             payloads[document_name] = document_text.encode("utf-8")
 
     with zipfile.ZipFile(target_docx, "w", compression=zipfile.ZIP_DEFLATED) as target_zip:
         for item in items:
             target_zip.writestr(item, payloads[item.filename])
+
+
+def shrink_mngp_kp_body_for_pdf(document_text: str) -> tuple[str, bool]:
+    """Make only the MNGP KP body compact for PDF export.
+
+    The signature/contact area uses anchored objects and provider-specific PDF
+    postprocessing, so changing that area tends to move the stamp/contact block.
+    """
+    try:
+        from lxml import etree
+    except ImportError:
+        return document_text, False
+
+    try:
+        root = etree.fromstring(document_text.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return document_text, False
+
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    paragraphs = root.xpath(".//w:p", namespaces=ns)
+    texts = ["".join(paragraph.xpath(".//w:t/text()", namespaces=ns)).strip() for paragraph in paragraphs]
+    full_text = "\n".join(texts).casefold()
+    if (
+        "\u043a\u043e\u043c\u043c\u0435\u0440\u0447\u0435\u0441\u043a\u043e\u0435 \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u0435".casefold()
+        not in full_text
+        or "\u043c\u0435\u0441\u0442\u043d\u044b\u0445 \u043d\u043e\u0440\u043c\u0430\u0442\u0438\u0432\u043e\u0432 \u0433\u0440\u0430\u0434\u043e\u0441\u0442\u0440\u043e\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0433\u043e \u043f\u0440\u043e\u0435\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f"
+        not in full_text
+    ):
+        return document_text, False
+
+    start_index = None
+    for index, text in enumerate(texts):
+        lowered = text.casefold()
+        if (
+            "\u043e\u043e\u043e \u00ab\u043f\u0430\u0440\u0430\u043b\u043b\u0435\u043b\u044c\u043d\u044b\u0435 \u0440\u0435\u0448\u0435\u043d\u0438\u044f\u00bb" in lowered
+            and "\u043f\u0440\u0435\u0434\u043b\u0430\u0433\u0430\u0435\u0442 \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u044c \u0440\u0430\u0431\u043e\u0442\u044b" in lowered
+        ):
+            start_index = index
+            break
+    if start_index is None:
+        return document_text, False
+
+    end_index = None
+    for index in range(start_index, len(texts)):
+        lowered = texts[index].casefold()
+        if lowered.startswith(
+            "\u0441\u0440\u043e\u043a \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044f \u043a\u043e\u043c\u043c\u0435\u0440\u0447\u0435\u0441\u043a\u043e\u0433\u043e \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u044f:"
+        ):
+            end_index = index
+            break
+        if lowered.startswith("\u0441 \u0443\u0432\u0430\u0436\u0435\u043d\u0438\u0435\u043c"):
+            end_index = index - 1
+            break
+    if end_index is None or end_index < start_index:
+        return document_text, False
+
+    changed = False
+    size_value = "20"  # Word stores font size in half-points: 20 = 10 pt.
+    for paragraph in paragraphs[start_index : end_index + 1]:
+        for run in paragraph.xpath(".//w:r[w:t]", namespaces=ns):
+            rpr = run.find("w:rPr", namespaces=ns)
+            if rpr is None:
+                rpr = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rPr")
+                run.insert(0, rpr)
+                changed = True
+            for tag in ("sz", "szCs"):
+                node = rpr.find(f"w:{tag}", namespaces=ns)
+                if node is None:
+                    node = etree.Element(f"{{http://schemas.openxmlformats.org/wordprocessingml/2006/main}}{tag}")
+                    rpr.append(node)
+                    changed = True
+                if node.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val") != size_value:
+                    node.set("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", size_value)
+                    changed = True
+
+    if not changed:
+        return document_text, False
+    return etree.tostring(root, encoding="unicode"), True
 
 
 def remove_contact_icon_runs(document_text: str) -> tuple[str, bool]:
