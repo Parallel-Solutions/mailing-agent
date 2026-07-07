@@ -1,23 +1,32 @@
 from __future__ import annotations
 
+from datetime import datetime
 from html import escape
+import threading
 
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 
 from src.generator.delivery.consent_store import (
+    MATERIALS_DISPATCH_STALE_RETRY_SECONDS,
     confirm_consent,
     get_consent_by_token,
+    load_consent_records,
     mark_materials_dispatch_result,
+    mark_materials_dispatch_started,
 )
-from src.jobs import load_agent_state, save_agent_state
+from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
 from src.jobs.audit import append_audit_event
 from src.security.auth import system_principal
+from src.utils.config import settings
 
 
 def _safe_text(value: object) -> str:
     return str(value or "").strip()
 
+
+_materials_dispatch_running_lock = threading.Lock()
+_materials_dispatch_running: set[str] = set()
 
 def _materials_sent_text(record: dict) -> str:
     attachment_mode = _safe_text(record.get("attachment_mode")).lower()
@@ -122,7 +131,120 @@ def _save_materials_dispatch_summary(record: dict, result: dict) -> None:
     save_agent_state("sender", state, job_id)
 
 
-def _dispatch_materials_after_consent(record: dict) -> None:
+def _materials_dispatch_key(record: dict) -> str:
+    return "|".join(
+        [
+            _safe_text(record.get("job_id")),
+            _safe_text(record.get("row_id")),
+            _safe_text(record.get("recipient")).lower(),
+            _safe_text(record.get("attachment_mode")).lower(),
+        ]
+    )
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    text = _safe_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _material_error_is_retryable(record: dict, *, now: datetime) -> bool:
+    if not (_safe_text(record.get("materials_error")) or _safe_text(record.get("materials_status")).lower() == "error"):
+        return False
+    try:
+        attempts = int(record.get("materials_dispatch_attempts") or 0)
+    except (TypeError, ValueError):
+        attempts = 0
+    max_attempts = max(1, int(settings.consent_materials_recovery_max_attempts or 3))
+    if attempts >= max_attempts:
+        return False
+    completed_at = _parse_datetime(record.get("materials_dispatch_completed_at"))
+    if completed_at is None:
+        return True
+    return (now - completed_at).total_seconds() >= MATERIALS_DISPATCH_STALE_RETRY_SECONDS
+
+
+def _material_dispatch_needs_recovery(record: dict, *, now: datetime) -> bool:
+    if _safe_text(record.get("status")) != "confirmed":
+        return False
+    if _materials_already_sent(record):
+        return False
+    key = _materials_dispatch_key(record)
+    if key:
+        with _materials_dispatch_running_lock:
+            if key in _materials_dispatch_running:
+                return False
+    material_status = _safe_text(record.get("materials_status")).lower()
+    if material_status == "queued":
+        return True
+    if _material_error_is_retryable(record, now=now):
+        return True
+    if _safe_text(record.get("materials_dispatch_requested_at")) and not _safe_text(record.get("materials_dispatch_completed_at")):
+        return True
+    return False
+
+
+def _iter_consent_job_ids() -> list[str | None]:
+    job_ids: list[str | None] = []
+    seen: set[str | None] = set()
+    jobs_root = resolve_job_paths("job-placeholder").root_dir.parent
+    if jobs_root.exists():
+        for job_dir in sorted(jobs_root.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True):
+            if not job_dir.is_dir() or not job_dir.name.startswith("job-"):
+                continue
+            if not (job_dir / "state" / "consents.json").exists():
+                continue
+            if job_dir.name in seen:
+                continue
+            seen.add(job_dir.name)
+            job_ids.append(job_dir.name)
+    legacy_root = resolve_job_paths(None).root_dir
+    if (legacy_root / "state" / "consents.json").exists() and None not in seen:
+        job_ids.append(None)
+    return job_ids
+
+
+def collect_pending_materials_dispatches(job_id: str | None = None, *, limit: int | None = None) -> list[dict]:
+    now = datetime.now()
+    job_ids = [job_id] if job_id is not None else _iter_consent_job_ids()
+    records: list[dict] = []
+    for current_job_id in job_ids:
+        for record in load_consent_records(current_job_id):
+            if not _material_dispatch_needs_recovery(record, now=now):
+                continue
+            pending_record = dict(record)
+            pending_record["job_id"] = _safe_text(pending_record.get("job_id")) or _safe_text(current_job_id)
+            records.append(pending_record)
+            if limit is not None and len(records) >= max(0, int(limit)):
+                return records
+    return records
+
+
+def recover_pending_materials_dispatches(job_id: str | None = None, *, limit: int | None = None) -> dict:
+    pending_records = collect_pending_materials_dispatches(job_id, limit=limit)
+    result = {
+        "checked": len(pending_records),
+        "sent": 0,
+        "failed": 0,
+        "skipped": 0,
+    }
+    for record in pending_records:
+        dispatch_result = _dispatch_materials_after_consent(record, mark_started=True)
+        status = _safe_text(dispatch_result.get("status") if isinstance(dispatch_result, dict) else "")
+        if status == "skipped_running":
+            result["skipped"] += 1
+        elif isinstance(dispatch_result, dict) and _dispatch_was_sent(dispatch_result):
+            result["sent"] += 1
+        else:
+            result["failed"] += 1
+    return result
+
+
+def _dispatch_materials_after_consent(record: dict, *, mark_started: bool = False) -> dict:
     from src.generator.delivery.sender_agent import run_sender
 
     job_id = str(record.get("job_id") or "").strip() or None
@@ -136,18 +258,86 @@ def _dispatch_materials_after_consent(record: dict) -> None:
     target_recipient = str(record.get("recipient") or "").strip() or None
     recipient_strategy = str(record.get("recipient_strategy") or "").strip() or None
     if not row_id:
-        return
-    if _materials_already_sent(record):
+        return {"status": "skipped", "summary_text": "row_id is empty", "sent_rows": 0, "error_rows": 1, "rows": []}
+
+    key = _materials_dispatch_key(record)
+    with _materials_dispatch_running_lock:
+        if key in _materials_dispatch_running:
+            return {"status": "skipped_running", "summary_text": "materials dispatch is already running", "sent_rows": 0, "error_rows": 0, "rows": []}
+        _materials_dispatch_running.add(key)
+
+    try:
+        if mark_started:
+            mark_materials_dispatch_started(
+                job_id=job_id,
+                row_id=row_id,
+                recipient=_safe_text(record.get("recipient")),
+                attachment_mode=attachment_mode,
+            )
+        if _materials_already_sent(record):
+            result = {
+                "status": "completed",
+                "summary_text": "Materials were already sent earlier.",
+                "sent_rows": 1,
+                "error_rows": 0,
+                "rows": [
+                    {
+                        "id": row_id,
+                        "recipient": _safe_text(record.get("recipient")),
+                        "result": "skipped_logged_sent",
+                        "error": "",
+                        "warning": "",
+                    }
+                ],
+            }
+            mark_materials_dispatch_result(
+                job_id=job_id,
+                row_id=row_id,
+                recipient=_safe_text(record.get("recipient")),
+                sent=True,
+                error="",
+                summary=_safe_text(result.get("summary_text")),
+                attachment_mode=attachment_mode,
+            )
+            return result
+        result = run_sender(
+            dry_run=False,
+            row_ids=[row_id],
+            transport=transport,
+            send_mode="materials",
+            attachment_mode=attachment_mode,
+            recipient_strategy=recipient_strategy,
+            subject_template=subject_template,
+            sender_email=sender_email,
+            campaign_name=campaign_name,
+            target_recipient=target_recipient,
+            require_confirmed_consent=True,
+            work_type=work_type,
+            job_id=job_id,
+            preserve_sender_state=True,
+        )
+        mark_materials_dispatch_result(
+            job_id=job_id,
+            row_id=row_id,
+            recipient=_safe_text(record.get("recipient")),
+            sent=_dispatch_was_sent(result),
+            error=_dispatch_error_text(result),
+            summary=_safe_text(result.get("summary_text")),
+            attachment_mode=attachment_mode,
+        )
+        return result
+    except Exception as exc:
         result = {
-            "summary_text": "Материалы уже были отправлены ранее.",
-            "sent_rows": 1,
-            "error_rows": 0,
+            "status": "error",
+            "summary_text": f"Materials dispatch failed: {exc}",
+            "sent_rows": 0,
+            "error_rows": 1,
             "rows": [
                 {
                     "id": row_id,
                     "recipient": _safe_text(record.get("recipient")),
-                    "result": "skipped_logged_sent",
-                    "error": "",
+                    "result": "error_send",
+                    "error": str(exc),
                     "warning": "",
                 }
             ],
@@ -156,38 +346,15 @@ def _dispatch_materials_after_consent(record: dict) -> None:
             job_id=job_id,
             row_id=row_id,
             recipient=_safe_text(record.get("recipient")),
-            sent=True,
-            error="",
+            sent=False,
+            error=str(exc),
             summary=_safe_text(result.get("summary_text")),
             attachment_mode=attachment_mode,
         )
-        _save_materials_dispatch_summary(record, result)
-        return
-    result = run_sender(
-        dry_run=False,
-        row_ids=[row_id],
-        transport=transport,
-        send_mode="materials",
-        attachment_mode=attachment_mode,
-        recipient_strategy=recipient_strategy,
-        subject_template=subject_template,
-        sender_email=sender_email,
-        campaign_name=campaign_name,
-        target_recipient=target_recipient,
-        require_confirmed_consent=True,
-        work_type=work_type,
-        job_id=job_id,
-    )
-    mark_materials_dispatch_result(
-        job_id=job_id,
-        row_id=row_id,
-        recipient=_safe_text(record.get("recipient")),
-        sent=_dispatch_was_sent(result),
-        error=_dispatch_error_text(result),
-        summary=_safe_text(result.get("summary_text")),
-        attachment_mode=attachment_mode,
-    )
-    _save_materials_dispatch_summary(record, result)
+        return result
+    finally:
+        with _materials_dispatch_running_lock:
+            _materials_dispatch_running.discard(key)
 
 
 def create_consent_router() -> APIRouter:
