@@ -48,8 +48,7 @@ YANDEX_API_KEY   = os.getenv("YANDEX_API_KEY", "")
 # ==============================
 # ПАМЯТЬ
 # ==============================
-REDIS_URL      = os.getenv("REDIS_URL", "redis://localhost:6379")
-SQLITE_PATH    = MEMORY_DIR / "agent.db"
+REDIS_URL      = os.getenv("REDIS_URL", "redis://redis:6379")
 VECTORS_PATH   = str(MEMORY_DIR / "vectors")
 
 

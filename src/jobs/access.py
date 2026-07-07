@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.jobs.json_store import read_json, write_json_atomic
+from src.jobs.job_docs import read_owner, write_owner
 from src.jobs.storage import normalize_job_id, resolve_job_paths
 from src.security.auth import Principal, coerce_principal
 
@@ -30,8 +30,7 @@ def job_owner_path(job_id: str | None) -> Path:
 def read_job_owner(job_id: str | None) -> dict[str, Any]:
     if not normalize_job_id(job_id):
         return {}
-    result = read_json(job_owner_path(job_id), default={})
-    return result.data if result.ok and isinstance(result.data, dict) else {}
+    return read_owner(job_id)
 
 
 def assign_job_owner(job_id: str | None, principal: Any, *, overwrite: bool = False) -> dict[str, Any]:
@@ -52,7 +51,7 @@ def assign_job_owner(job_id: str | None, principal: Any, *, overwrite: bool = Fa
         "created_at": existing.get("created_at") or now,
         "updated_at": now,
     }
-    write_json_atomic(job_owner_path(normalized_job_id), payload)
+    write_owner(normalized_job_id, payload)
     return payload
 
 

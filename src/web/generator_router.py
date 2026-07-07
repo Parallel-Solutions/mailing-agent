@@ -54,7 +54,10 @@ def create_generator_router(
     async def generate(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         job_id = None if payload is None else payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
-        xlsx_path = prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
+        job_paths = resolve_job_paths(job_id)
+        from src.jobs.clients_store import prepare_data_xlsx
+
+        xlsx_path = prepare_data_xlsx(job_id, job_paths.data_xlsx)
         if not xlsx_path.exists():
             raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
         existing_thread = get_generator_thread(job_id)

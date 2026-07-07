@@ -11,6 +11,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
 from src.jobs import create_job_id, resolve_job_paths, save_agent_state
+from src.jobs.job_docs import read_doc, write_doc
 
 
 LOAD_TEST_HEADERS = [
@@ -208,40 +209,25 @@ def _prime_parser_completed(job_id: str, *, row_count: int) -> None:
     )
 
 
-def _load_test_marker_path(job_id: str | None) -> Path:
-    return resolve_job_paths(job_id).root_dir / "state" / LOAD_TEST_MARKER_FILENAME
-
-
 def is_load_test_job(job_id: str | None) -> bool:
     if not job_id:
         return False
-    marker_path = _load_test_marker_path(job_id)
-    try:
-        if not marker_path.exists():
-            return False
-        payload = json.loads(marker_path.read_text(encoding="utf-8-sig"))
-    except Exception:
-        return False
+    payload = read_doc(job_id, "load_test")
     return bool(isinstance(payload, dict) and payload.get("load_test"))
 
 
 def _write_load_test_marker(job_id: str, *, row_count: int, seed: int) -> None:
-    marker_path = _load_test_marker_path(job_id)
-    marker_path.parent.mkdir(parents=True, exist_ok=True)
-    marker_path.write_text(
-        json.dumps(
-            {
-                "load_test": True,
-                "kind": "documents_generation",
-                "row_count": row_count,
-                "seed": seed,
-                "created_at": datetime.now().isoformat(timespec="seconds"),
-                "send_disabled": True,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_doc(
+        job_id,
+        "load_test",
+        {
+            "load_test": True,
+            "kind": "documents_generation",
+            "row_count": row_count,
+            "seed": seed,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "send_disabled": True,
+        },
     )
 
 

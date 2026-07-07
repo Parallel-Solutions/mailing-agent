@@ -67,6 +67,10 @@ BAD_UPPERCASE_WORDS = {
     "ДОГОВОР": "Договор",
     "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ": "Коммерческое предложение",
 }
+MID_SENTENCE_ROLE_CAP_FIXES = (
+    ("Работ", "работ"),
+    ("Исполнителя", "исполнителя"),
+)
 PROTECTED_UPPERCASE_HEADINGS = {
     "ДОГОВОР",
     "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ",
@@ -349,6 +353,18 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
                 fragment=source,
                 replacement=replacement,
                 issue="Есть неудачное использование капса в текстовом блоке.",
+                severity="warning",
+            )
+
+        for source, replacement in MID_SENTENCE_ROLE_CAP_FIXES:
+            if source not in text:
+                continue
+            _add_local_replacement_issue(
+                issues,
+                location=location,
+                fragment=source,
+                replacement=replacement,
+                issue="Служебное слово договора в середине предложения должно быть строчным.",
                 severity="warning",
             )
 

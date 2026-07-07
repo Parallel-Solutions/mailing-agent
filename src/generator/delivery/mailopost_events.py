@@ -211,28 +211,10 @@ def _extract_first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
 
 
 def _load_message_job_index() -> dict[str, dict[str, str]]:
+    from src.jobs.job_docs import iter_sent_mail_items
+
     index: dict[str, dict[str, str]] = {}
-    if JOBS_DIR.exists():
-        for log_path in JOBS_DIR.glob("*/sent_mail_log.jsonl"):
-            _index_sent_log(log_path, log_path.parent.name, index)
-    legacy_path = resolve_job_paths(None).sent_mail_log_path
-    if legacy_path.exists():
-        _index_sent_log(legacy_path, "", index)
-    return index
-
-
-def _index_sent_log(path: Path, job_id: str, index: dict[str, dict[str, str]]) -> None:
-    try:
-        lines = path.read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
-        return
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for storage_job_id, item in iter_sent_mail_items():
         if not isinstance(item, dict):
             continue
         provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
@@ -240,6 +222,7 @@ def _index_sent_log(path: Path, job_id: str, index: dict[str, dict[str, str]]) -
             provider_name = _safe_text(provider.get("provider")).lower()
             if provider_name != "mailopost":
                 continue
+        job_id = "" if storage_job_id == "__legacy__" else storage_job_id
         ids = {
             _safe_text(value)
             for value in (
@@ -256,6 +239,7 @@ def _index_sent_log(path: Path, job_id: str, index: dict[str, dict[str, str]]) -
                 "row_id": _safe_text(item.get("row_id")),
                 "recipient": _safe_text(item.get("recipient")),
             }
+    return index
 
 
 def _safe_text(value: Any) -> str:

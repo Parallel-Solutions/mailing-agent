@@ -16,9 +16,12 @@ from fastapi.testclient import TestClient
 from src.generator.delivery import consent_store
 from src.jobs.access import JobAccessDenied, assign_job_owner, authorize_job_access
 from src.jobs.audit import append_audit_event
+from src.jobs.job_docs import append_event, read_doc, read_events, write_doc
+from src.jobs.state import save_agent_state
 from src.security.auth import Principal, authenticate_basic_user
 from src.web.jobs_router import JobsWebController
 from src.web.workers_router import create_workers_router
+from tests.bootstrap import reset_test_database
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +67,9 @@ def _job_paths(root: Path, job_id: str | None) -> SimpleNamespace:
 
 
 class MultiUserAccessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        reset_test_database()
+
     def test_app_users_authenticate_to_tenant_principal_and_admin_fallback(self) -> None:
         settings = SimpleNamespace(
             app_username="admin",
@@ -106,12 +112,17 @@ class MultiUserAccessTests(unittest.TestCase):
             for job_id, owner_username in (("job-a", "alice"), ("job-b", "bob")):
                 job_root = jobs_dir / job_id
                 (job_root / "state").mkdir(parents=True)
+                (job_root / "input").mkdir(parents=True)
+                (job_root / "input" / "data.xlsx").write_bytes(b"xlsx")
+                save_agent_state(
+                    "sender",
+                    {"mode": "send", "status": "completed", "sent_rows": 1},
+                    job_id=job_id,
+                )
                 (job_root / "state" / "sender.json").write_text(
                     json.dumps({"mode": "send", "status": "completed", "sent_rows": 1}),
                     encoding="utf-8",
                 )
-                (job_root / "input").mkdir(parents=True)
-                (job_root / "input" / "data.xlsx").write_bytes(b"xlsx")
                 with patch("src.jobs.access.resolve_job_paths", side_effect=resolver):
                     assign_job_owner(job_id, Principal(owner_username, "tenant-a"))
 
@@ -154,6 +165,21 @@ class MultiUserAccessTests(unittest.TestCase):
             (job_root / "state").mkdir(parents=True)
             (job_root / "input").mkdir(parents=True)
             (job_root / "input" / "data.xlsx").write_bytes(b"xlsx")
+            save_agent_state(
+                "sender",
+                {
+                    "mode": "send",
+                    "status": "completed",
+                    "send_mode": "materials",
+                    "selection_scoped": True,
+                    "sent_rows": 1,
+                    "error_rows": 0,
+                    "total_rows": 1,
+                    "stats": {"total": 48, "sent": 1, "error": 0},
+                    "campaign_name": "техническая доотправка",
+                },
+                job_id=job_id,
+            )
             (job_root / "state" / "sender.json").write_text(
                 json.dumps(
                     {
@@ -192,10 +218,8 @@ class MultiUserAccessTests(unittest.TestCase):
                     "work_type": "stp_mo",
                 }
             )
-            (job_root / "sent_mail_log.jsonl").write_text(
-                "\n".join(json.dumps(item, ensure_ascii=False) for item in sent_items),
-                encoding="utf-8",
-            )
+            for item in sent_items:
+                append_event(job_id, "sent_mail_log", item)
             with patch("src.jobs.access.resolve_job_paths", side_effect=resolver):
                 assign_job_owner(job_id, Principal("alice", "tenant-a"))
 
@@ -255,9 +279,9 @@ class MultiUserAccessTests(unittest.TestCase):
                 self.assertEqual(record["recipient_key"], "user@example.com")
                 self.assertIn("expires_at", record)
 
-                payload = json.loads(consent_path.read_text(encoding="utf-8"))
+                payload = read_doc("job-a", "consents")
                 payload["records"][0]["expires_at"] = "2000-01-01T00:00:00"
-                consent_path.write_text(json.dumps(payload), encoding="utf-8")
+                write_doc("job-a", "consents", payload)
 
                 confirmed = consent_store.confirm_consent(record["token"], ip="127.0.0.1", user_agent="test")
 
@@ -300,21 +324,18 @@ class MultiUserAccessTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_append_audit_event_writes_actor_and_action(self) -> None:
-        with _workspace_temp_dir() as tmpdir:
-            audit_path = tmpdir / "audit.jsonl"
-            ok = append_audit_event(
-                action="sender.stop",
-                principal=Principal("alice", "tenant-a"),
-                job_id="job-a",
-                details={"reason": "test"},
-                audit_log_path=audit_path,
-            )
+        ok = append_audit_event(
+            action="sender.stop",
+            principal=Principal("alice", "tenant-a"),
+            job_id="job-a",
+            details={"reason": "test"},
+        )
 
-            self.assertTrue(ok)
-            record = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
-            self.assertEqual(record["action"], "sender.stop")
-            self.assertEqual(record["actor"]["tenant_id"], "tenant-a")
-            self.assertEqual(record["details"], {"reason": "test"})
+        self.assertTrue(ok)
+        record = read_events("job-a", "audit")[0]
+        self.assertEqual(record["action"], "sender.stop")
+        self.assertEqual(record["actor"]["tenant_id"], "tenant-a")
+        self.assertEqual(record["details"], {"reason": "test"})
 
 
 if __name__ == "__main__":

@@ -5,33 +5,22 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.jobs.storage import resolve_job_paths
-
-
-def get_inflection_log_path(job_id: str | None = None) -> Path:
-    job_paths = resolve_job_paths(job_id)
-    if job_paths.uses_legacy_layout:
-        return job_paths.root_dir / "state" / "inflection_log.jsonl"
-    return job_paths.root_dir / "state" / "inflection_log.jsonl"
+from src.jobs.job_docs import read_events
 
 
 def load_inflection_log(job_id: str | None = None) -> list[dict[str, Any]]:
-    log_path = get_inflection_log_path(job_id)
-    if not log_path.exists():
-        return []
+    return read_events(job_id, "inflection_log")
 
-    rows: list[dict[str, Any]] = []
-    for line in log_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            rows.append(item)
-    return rows
+
+def write_inflection_log_jsonl(job_id: str | None, path: Path) -> Path:
+    rows = load_inflection_log(job_id)
+    if not rows:
+        raise FileNotFoundError("inflection log is empty")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return path
 
 
 def summarize_inflection_log(rows: list[dict[str, Any]]) -> dict[str, Any]:

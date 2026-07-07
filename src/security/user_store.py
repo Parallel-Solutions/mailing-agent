@@ -1,22 +1,20 @@
 from __future__ import annotations
 
 import re
-import sqlite3
-import threading
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select
+
+from src.infra.db import session_scope
+from src.infra.models import User
 from src.security.auth import _safe_identifier
 from src.security.passwords import hash_password, verify_password
 
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,32}$")
 _MIN_PASSWORD_LENGTH = 8
-
-_DB_LOCK = threading.Lock()
-_DB_PATH: Path | None = None
 
 
 class UserStoreError(ValueError):
@@ -31,54 +29,12 @@ class UserRecord:
     created_at: str
 
 
-def configure_auth_db(path: Path) -> None:
-    global _DB_PATH
-    resolved = Path(path)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    _DB_PATH = resolved
-    _init_schema()
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-def auth_db_path() -> Path:
-    if _DB_PATH is None:
-        raise RuntimeError("Auth database is not configured.")
-    return _DB_PATH
-
-
-def _connect() -> sqlite3.Connection:
-    path = auth_db_path()
-    connection = sqlite3.connect(path, check_same_thread=False)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
-def _init_schema() -> None:
-    with _DB_LOCK:
-        with _connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    username TEXT PRIMARY KEY,
-                    password_hash TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL,
-                    role TEXT NOT NULL DEFAULT 'user',
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS sessions (
-                    token TEXT PRIMARY KEY,
-                    username TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(username) REFERENCES users(username) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);
-                CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
-                """
-            )
-
-
-def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+def _now_iso() -> str:
+    return _now().replace(microsecond=0).isoformat()
 
 
 def validate_username(username: str) -> str:
@@ -97,12 +53,8 @@ def validate_password(password: str) -> str:
 
 def username_exists(username: str) -> bool:
     safe_username = validate_username(username)
-    with _DB_LOCK:
-        with _connect() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM users WHERE username = ? LIMIT 1",
-                (safe_username,),
-            ).fetchone()
+    with session_scope() as session:
+        row = session.get(User, safe_username)
     return row is not None
 
 
@@ -110,19 +62,15 @@ def get_user_record(username: str) -> UserRecord | None:
     safe_username = _safe_identifier(username, fallback="")
     if not safe_username:
         return None
-    with _DB_LOCK:
-        with _connect() as connection:
-            row = connection.execute(
-                "SELECT username, tenant_id, role, created_at FROM users WHERE username = ?",
-                (safe_username,),
-            ).fetchone()
+    with session_scope() as session:
+        row = session.get(User, safe_username)
     if row is None:
         return None
     return UserRecord(
-        username=str(row["username"]),
-        tenant_id=str(row["tenant_id"]),
-        role=str(row["role"]),
-        created_at=str(row["created_at"]),
+        username=row.username,
+        tenant_id=row.tenant_id,
+        role=row.role,
+        created_at=row.created_at.isoformat(timespec="seconds"),
     )
 
 
@@ -139,26 +87,24 @@ def create_user(
     safe_role = _safe_identifier(role or "user", fallback="user").lower()
     created_at = _now()
 
-    with _DB_LOCK:
-        with _connect() as connection:
-            existing = connection.execute(
-                "SELECT 1 FROM users WHERE username = ? LIMIT 1",
-                (safe_username,),
-            ).fetchone()
-            if existing is not None:
-                raise UserStoreError("Пользователь с таким логином уже существует.")
-            connection.execute(
-                """
-                INSERT INTO users (username, password_hash, tenant_id, role, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (safe_username, hash_password(safe_password), safe_tenant, safe_role, created_at),
+    with session_scope() as session:
+        existing = session.get(User, safe_username)
+        if existing is not None:
+            raise UserStoreError("Пользователь с таким логином уже существует.")
+        session.add(
+            User(
+                username=safe_username,
+                password_hash=hash_password(safe_password),
+                tenant_id=safe_tenant,
+                role=safe_role,
+                created_at=created_at,
             )
+        )
     return UserRecord(
         username=safe_username,
         tenant_id=safe_tenant,
         role=safe_role,
-        created_at=created_at,
+        created_at=created_at.isoformat(timespec="seconds"),
     )
 
 
@@ -166,38 +112,30 @@ def verify_user_password(username: str, password: str) -> UserRecord | None:
     safe_username = _safe_identifier(username, fallback="")
     if not safe_username:
         return None
-    with _DB_LOCK:
-        with _connect() as connection:
-            row = connection.execute(
-                "SELECT username, tenant_id, role, created_at, password_hash FROM users WHERE username = ?",
-                (safe_username,),
-            ).fetchone()
+    with session_scope() as session:
+        row = session.get(User, safe_username)
     if row is None:
         return None
-    if not verify_password(password, str(row["password_hash"])):
+    if not verify_password(password, row.password_hash):
         return None
     return UserRecord(
-        username=str(row["username"]),
-        tenant_id=str(row["tenant_id"]),
-        role=str(row["role"]),
-        created_at=str(row["created_at"]),
+        username=row.username,
+        tenant_id=row.tenant_id,
+        role=row.role,
+        created_at=row.created_at.isoformat(timespec="seconds"),
     )
 
 
 def has_admin_user() -> bool:
-    with _DB_LOCK:
-        with _connect() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM users WHERE role = 'admin' LIMIT 1",
-            ).fetchone()
+    with session_scope() as session:
+        row = session.execute(select(User).where(User.role == "admin").limit(1)).scalar_one_or_none()
     return row is not None
 
 
 def list_usernames() -> set[str]:
-    with _DB_LOCK:
-        with _connect() as connection:
-            rows = connection.execute("SELECT username FROM users").fetchall()
-    return {str(row["username"]) for row in rows}
+    with session_scope() as session:
+        rows = session.execute(select(User.username)).scalars().all()
+    return set(rows)
 
 
 def import_user_if_missing(
@@ -236,35 +174,29 @@ def sync_imported_user(
     safe_role = _safe_identifier(role or "user", fallback="user").lower()
     created_at = _now()
 
-    with _DB_LOCK:
-        with _connect() as connection:
-            existing = connection.execute(
-                "SELECT created_at FROM users WHERE username = ? LIMIT 1",
-                (safe_username,),
-            ).fetchone()
-            if existing is None:
-                connection.execute(
-                    """
-                    INSERT INTO users (username, password_hash, tenant_id, role, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (safe_username, hash_password(safe_password), safe_tenant, safe_role, created_at),
+    with session_scope() as session:
+        existing = session.get(User, safe_username)
+        if existing is None:
+            session.add(
+                User(
+                    username=safe_username,
+                    password_hash=hash_password(safe_password),
+                    tenant_id=safe_tenant,
+                    role=safe_role,
+                    created_at=created_at,
                 )
-            else:
-                created_at = str(existing["created_at"])
-                connection.execute(
-                    """
-                    UPDATE users
-                    SET password_hash = ?, tenant_id = ?, role = ?
-                    WHERE username = ?
-                    """,
-                    (hash_password(safe_password), safe_tenant, safe_role, safe_username),
-                )
+            )
+            created_text = created_at.isoformat(timespec="seconds")
+        else:
+            created_text = existing.created_at.isoformat(timespec="seconds")
+            existing.password_hash = hash_password(safe_password)
+            existing.tenant_id = safe_tenant
+            existing.role = safe_role
     return UserRecord(
         username=safe_username,
         tenant_id=safe_tenant,
         role=safe_role,
-        created_at=created_at,
+        created_at=created_text,
     )
 
 

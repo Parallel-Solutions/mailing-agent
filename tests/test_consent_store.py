@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from src.generator.delivery import consent_store
 from src.web.consent_router import create_consent_router
+from tests.bootstrap import reset_test_database
 
 
 @contextmanager
@@ -28,6 +29,9 @@ def _workspace_temp_dir() -> Iterator[Path]:
 
 
 class ConsentStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        reset_test_database()
+
     def test_prepare_and_confirm_consent(self) -> None:
         with _workspace_temp_dir() as tmpdir:
             consent_path = Path(tmpdir) / "job-1" / "state" / "consents.json"

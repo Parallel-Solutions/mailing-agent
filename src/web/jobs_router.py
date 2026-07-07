@@ -107,19 +107,22 @@ class JobsWebController:
         return self.resolve_job_paths(job_id).data_xlsx.parent / "upload_meta.json"
 
     def _read_upload_meta(self, job_id: str | None) -> dict:
-        return self._read_state_json(self._upload_meta_path(job_id))
+        from src.jobs.json_store import read_json
+
+        result = read_json(self._upload_meta_path(job_id), default={})
+        return result.data if isinstance(result.data, dict) else {}
 
     def _write_upload_meta(self, job_id: str | None, token: str, filename: str) -> None:
         if not token:
             return
-        path = self._upload_meta_path(job_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from src.jobs.json_store import write_json_atomic
+
         payload = {
             "upload_token": token,
             "filename": filename,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_json_atomic(self._upload_meta_path(job_id), payload)
 
     def _job_history_mtime(self, job_dir: Path) -> float:
         state_dir = job_dir / "state"
@@ -136,12 +139,8 @@ class JobsWebController:
         return max((self._state_file_mtime(path) for path in candidates), default=0.0)
 
     def _job_history_sender_hint(self, job_dir: Path) -> bool:
-        sent_log_path = job_dir / "sent_mail_log.jsonl"
-        try:
-            if sent_log_path.exists() and sent_log_path.stat().st_size > 0:
-                return True
-        except OSError:
-            pass
+        if self._read_sent_mail_log_items(job_dir.name):
+            return True
 
         sender_state = self._read_state_json(job_dir / "state" / "sender.json")
         if not sender_state:
@@ -163,26 +162,10 @@ class JobsWebController:
             return True
         return False
 
-    def _read_sent_mail_log_items(self, job_dir: Path) -> list[dict]:
-        log_path = job_dir / "sent_mail_log.jsonl"
-        try:
-            if not log_path.exists() or not log_path.is_file():
-                return []
-            lines = log_path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return []
+    def _read_sent_mail_log_items(self, job_id: str | None) -> list[dict]:
+        from src.jobs.job_docs import read_sent_mail_log
 
-        items: list[dict] = []
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(item, dict):
-                items.append(item)
-        return items
+        return [item for item in read_sent_mail_log(job_id) if isinstance(item, dict)]
 
     def _most_common_history_text(self, values: list[object]) -> str:
         counts: dict[str, int] = {}
@@ -196,7 +179,7 @@ class JobsWebController:
         return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
 
     def _job_history_sent_log_summary(self, job_dir: Path) -> dict:
-        items = self._read_sent_mail_log_items(job_dir)
+        items = self._read_sent_mail_log_items(job_dir.name)
         if not items:
             return {}
 
@@ -315,11 +298,12 @@ class JobsWebController:
 
         job_id = job_dir.name
         paths = self.resolve_job_paths(job_id)
-        state_dir = job_dir / "state"
-        parser_state = self._read_state_json(state_dir / "parser.json")
-        generator_state = self._read_state_json(state_dir / "generator.json")
-        philologist_state = self._read_state_json(state_dir / "philologist.json")
-        sender_state = self._read_state_json(state_dir / "sender.json")
+        from src.jobs import load_agent_state
+
+        parser_state = load_agent_state("parser", {}, job_id=job_id)
+        generator_state = load_agent_state("generator", {}, job_id=job_id)
+        philologist_state = load_agent_state("philologist", {}, job_id=job_id)
+        sender_state = load_agent_state("sender", {}, job_id=job_id)
         sent_log_summary = self._job_history_sent_log_summary(job_dir)
 
         sender_stats = sender_state.get("stats") if isinstance(sender_state.get("stats"), dict) else {}
@@ -416,9 +400,15 @@ class JobsWebController:
                 continue
             shutil.copy2(source_path, target_dir / source_path.name)
 
+    def _data_xlsx_path(self, job_id: str | None) -> Path:
+        from src.jobs.clients_store import prepare_data_xlsx
+
+        paths = self.resolve_job_paths(job_id)
+        return prepare_data_xlsx(job_id, paths.data_xlsx)
+
     def build_job_readiness_result(self, job_id: str | None = None, document_mode: str | None = None) -> dict:
         paths = self.resolve_job_paths(job_id)
-        data_path = self.prefer_existing_file(paths.data_xlsx, Path("data/data.xlsx"))
+        data_path = self._data_xlsx_path(job_id)
         row_count = self.cached_excel_row_count(data_path) if data_path.exists() else 0
 
         templates_dir = paths.templates_dir
@@ -699,6 +689,12 @@ class JobsWebController:
             file_save_started = perf_counter()
             with dest.open("wb") as f:
                 shutil.copyfileobj(file.file, f)
+            if paths.job_id:
+                from src.jobs.clients_store import import_clients_from_xlsx
+                from src.jobs.workspace import put_upload
+
+                import_clients_from_xlsx(paths.job_id, dest)
+                put_upload(paths.job_id, "input/data.xlsx", dest)
             file_save_seconds = round(perf_counter() - file_save_started, 3)
             clean_upload_token = self._clean_upload_token(upload_token)
             self._write_upload_meta(paths.job_id, clean_upload_token, safe_filename)
@@ -738,7 +734,7 @@ class JobsWebController:
         @router.get("/api/data/info")
         async def data_info(job_id: str | None = None, principal: object = Depends(self.check_auth)):
             self._authorize_job(job_id, principal, allow_missing=True)
-            data_path = self.prefer_existing_file(self.resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
+            data_path = self._data_xlsx_path(job_id)
             if not data_path.exists():
                 result = {"loaded": False, "total": 0}
                 return ok_response(result, **result)
@@ -761,7 +757,7 @@ class JobsWebController:
         ):
             job_id = None if payload is None else payload.job_id
             self._authorize_job(job_id, principal, allow_missing=True)
-            data_path = self.prefer_existing_file(self.resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
+            data_path = self._data_xlsx_path(job_id)
             if not data_path.exists():
                 raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
             return {
@@ -818,6 +814,11 @@ class JobsWebController:
                 raise HTTPException(status_code=400, detail="Не указан тип шаблона.")
             with dest.open("wb") as f:
                 shutil.copyfileobj(file.file, f)
+            if paths.job_id:
+                from src.jobs.workspace import put_upload
+
+                relative = f"templates/{dest.name}"
+                put_upload(paths.job_id, relative, dest)
             append_audit_event(action="job.template.upload", principal=principal, job_id=paths.job_id, details={"template_kind": kind, "filename": original_name})
             result = {
                 "filename": file.filename,

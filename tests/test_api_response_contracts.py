@@ -150,6 +150,7 @@ class JobsResponseContractTests(unittest.TestCase):
             with (
                 patch("src.jobs.access.resolve_job_paths", side_effect=lambda job_id=None: _job_paths(root, job_id)),
                 patch("src.web.jobs_router.append_audit_event", lambda **kwargs: None),
+                patch("src.jobs.clients_store.import_clients_from_xlsx", return_value=1),
             ):
                 response = TestClient(app).post(
                     "/api/upload/data",

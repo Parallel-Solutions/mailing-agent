@@ -209,6 +209,13 @@ def _run_worker_process_monitor(
         )
         mark_failed(task, job_id, message)
     finally:
+        if job_id:
+            try:
+                from src.jobs.workspace import push_job
+
+                push_job(job_id, ["output", "reports", "consents"])
+            except ValueError:
+                pass
         with _ACTIVE_WORKERS_LOCK:
             _ACTIVE_WORKERS.pop(active_key, None)
         if stdout_handle is not None:
@@ -286,6 +293,13 @@ def start_worker_process_thread(
             )
         if before_start is not None:
             before_start()
+        if job_id:
+            try:
+                from src.jobs.workspace import pull_job
+
+                pull_job(job_id, ["input", "templates", "output"])
+            except ValueError:
+                pass
 
         payload_path = _write_worker_payload(job_id, task, kwargs, state_dir_factory)
         status_path = payload_path.with_suffix(".status.json")
@@ -319,18 +333,23 @@ def start_worker_process_thread(
 
 
 def list_worker_statuses(jobs_dir: Path, *, limit: int = 100) -> list[dict[str, Any]]:
+    from sqlalchemy import select
+
+    from src.infra.db import session_scope
+    from src.infra.models import JobDoc
+
     statuses: list[dict[str, Any]] = []
-    if not jobs_dir.exists():
-        return []
-    for status_path in jobs_dir.glob("*/state/worker-*.status.json"):
-        result = read_json(status_path, default={})
-        if not result.ok or not isinstance(result.data, dict):
+    with session_scope() as session:
+        rows = session.execute(
+            select(JobDoc).where(JobDoc.name.like("worker-%.status")).order_by(JobDoc.updated_at.desc())
+        ).scalars().all()
+    for row in rows:
+        if not isinstance(row.payload, dict):
             continue
-        data = result.data
-        data["status_path"] = str(status_path)
-        data["alive"] = _is_worker_active(status_path)
+        data = dict(row.payload)
+        data["job_id"] = row.job_id
+        data["alive"] = False
         statuses.append(data)
-    statuses.sort(key=lambda item: str(item.get("updated_at") or item.get("started_at") or ""), reverse=True)
     return statuses[: max(1, limit)]
 
 

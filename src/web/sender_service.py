@@ -29,28 +29,12 @@ def _safe_int(value: object, default: int = 0) -> int:
 
 
 def _read_sent_mail_log_items(job_id: object) -> list[dict]:
+    from src.jobs.job_docs import read_sent_mail_log
+
     job_id_text = str(job_id or "").strip()
     if not job_id_text:
         return []
-    log_path = resolve_job_paths(job_id_text).sent_mail_log_path
-    try:
-        if not log_path.exists() or not log_path.is_file():
-            return []
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-
-    items: list[dict] = []
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            items.append(item)
-    return items
+    return [item for item in read_sent_mail_log(job_id_text) if isinstance(item, dict)]
 
 
 def _campaign_consent_log_totals(state: dict, stats: dict) -> dict[str, int]:

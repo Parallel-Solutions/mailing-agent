@@ -54,7 +54,10 @@ def create_documents_router(
         mode = str(payload.mode or "fast").strip().lower() or "fast"
         document_mode = normalize_document_mode(payload.document_mode or DOCUMENT_MODE_BOTH)
         work_type = normalize_work_type(payload.work_type or DEFAULT_WORK_TYPE)
-        xlsx_path = prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
+        job_paths = resolve_job_paths(job_id)
+        from src.jobs.clients_store import prepare_data_xlsx
+
+        xlsx_path = prepare_data_xlsx(job_id, job_paths.data_xlsx)
         if not xlsx_path.exists():
             raise HTTPException(status_code=400, detail="Файл data.xlsx не найден")
 

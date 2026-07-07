@@ -28,7 +28,9 @@ def _workspace_temp_dir() -> Iterator[Path]:
 
 class DownloadRouterIsolationTests(unittest.TestCase):
     def test_legacy_parser_output_dir_resolves_without_recursion(self) -> None:
-        self.assertTrue(str(legacy_parser_output_dir()).endswith("src\\parser_new\\output\\latest"))
+        self.assertTrue(
+            legacy_parser_output_dir().as_posix().endswith("src/parser_new/output/latest")
+        )
     def _client(self, *, latest_matching_file, parser_verified: bool = True) -> TestClient:
         app = FastAPI()
         parser_status = (

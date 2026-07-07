@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.generator.generation.config_generator import DATA_DIR
+from src.jobs.job_docs import read_doc, write_doc
 from src.jobs.storage import resolve_job_paths
 from src.utils.config import settings
 
@@ -34,47 +35,27 @@ def _build_retry_key(*, target_agent: str, task_type: str, row_id: Any) -> str:
 
 
 def load_tasks(job_id: str | None = None) -> list[dict[str, Any]]:
-    tasks_path, _ = _resolve_handoff_paths(job_id)
-    if not tasks_path.exists():
+    payload = read_doc(job_id, "agent_tasks")
+    items = payload.get("items") if isinstance(payload, dict) else []
+    if not isinstance(items, list):
         return []
-    try:
-        payload = json.loads(tasks_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(payload, list):
-        return []
-    return [item for item in payload if isinstance(item, dict)]
+    return [item for item in items if isinstance(item, dict)]
 
 
 def load_events(job_id: str | None = None) -> list[dict[str, Any]]:
-    _, events_path = _resolve_handoff_paths(job_id)
-    if not events_path.exists():
+    payload = read_doc(job_id, "agent_events")
+    items = payload.get("items") if isinstance(payload, dict) else []
+    if not isinstance(items, list):
         return []
-    try:
-        payload = json.loads(events_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(payload, list):
-        return []
-    return [item for item in payload if isinstance(item, dict)]
+    return [item for item in items if isinstance(item, dict)]
 
 
 def save_tasks(tasks: list[dict[str, Any]], job_id: str | None = None) -> None:
-    tasks_path, _ = _resolve_handoff_paths(job_id)
-    tasks_path.parent.mkdir(parents=True, exist_ok=True)
-    tasks_path.write_text(
-        json.dumps(tasks, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_doc(job_id, "agent_tasks", {"items": tasks})
 
 
 def save_events(events: list[dict[str, Any]], job_id: str | None = None) -> None:
-    _, events_path = _resolve_handoff_paths(job_id)
-    events_path.parent.mkdir(parents=True, exist_ok=True)
-    events_path.write_text(
-        json.dumps(events[-1000:], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_doc(job_id, "agent_events", {"items": events[-1000:]})
 
 
 def append_agent_event(

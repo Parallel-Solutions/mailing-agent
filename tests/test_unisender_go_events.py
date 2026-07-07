@@ -2,28 +2,20 @@ from __future__ import annotations
 
 import json
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from src.generator.delivery import unisender_go_events
-
-
-EVENT_LOG = Path(__file__).with_name("_unisender_go_events_test.jsonl")
+from src.generator.delivery.unisender_go_events import load_unisender_go_events
+from tests.bootstrap import reset_test_database
 
 
 class UnisenderGoEventsTests(unittest.TestCase):
-    def tearDown(self) -> None:
-        EVENT_LOG.unlink(missing_ok=True)
+    def setUp(self) -> None:
+        reset_test_database()
 
     def _append_and_read_record(self, payload: dict) -> tuple[dict, dict]:
-        EVENT_LOG.unlink(missing_ok=True)
-        with patch.object(
-            unisender_go_events,
-            "unisender_go_events_path",
-            return_value=EVENT_LOG,
-        ):
-            result = unisender_go_events.append_unisender_go_events(payload)
-        record = json.loads(EVENT_LOG.read_text(encoding="utf-8").splitlines()[0])
+        result = unisender_go_events.append_unisender_go_events(payload)
+        record = load_unisender_go_events("job-webhook")[0]
         return result, record
 
     def test_append_events_accepts_json_string_metadata(self) -> None:
@@ -106,29 +98,23 @@ class UnisenderGoEventsTests(unittest.TestCase):
         self.assertEqual(record["provider_job_id"], "provider-job-1")
         self.assertEqual(record["row_id"], "7")
 
-
     def test_append_events_skips_duplicate_payload(self) -> None:
-        EVENT_LOG.unlink(missing_ok=True)
         payload = {
             "event_type": "delivered",
             "email": "recipient@example.com",
             "metadata": {"app_job_id": "job-webhook", "app_row_id": "42"},
         }
 
-        with patch.object(
-            unisender_go_events,
-            "unisender_go_events_path",
-            return_value=EVENT_LOG,
-        ):
-            first = unisender_go_events.append_unisender_go_events(payload)
-            second = unisender_go_events.append_unisender_go_events(payload)
+        first = unisender_go_events.append_unisender_go_events(payload)
+        second = unisender_go_events.append_unisender_go_events(payload)
 
-        lines = EVENT_LOG.read_text(encoding="utf-8").splitlines()
+        records = load_unisender_go_events("job-webhook")
         self.assertEqual(first["saved"], 1)
         self.assertEqual(first["duplicates"], 0)
         self.assertEqual(second["saved"], 0)
         self.assertEqual(second["duplicates"], 1)
-        self.assertEqual(len(lines), 1)
+        self.assertEqual(len(records), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

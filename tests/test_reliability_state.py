@@ -12,27 +12,37 @@ from fastapi.testclient import TestClient
 
 from src.generator.generation.document_builder import build_output_folder_name, write_output_folder_manifest
 from src.generator.generation.generator_agent import cleanup_existing_output_dirs
-from src.jobs import load_agent_state, resolve_job_paths, resolve_state_path
+from sqlalchemy import text
+
+from src.infra.db import engine
+from src.jobs import load_agent_state, resolve_job_paths
 from src.security.auth import Principal
 from src.web.parser_router import create_parser_router
+from tests.bootstrap import reset_test_database
 
 
 class ReliabilityStateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        reset_test_database()
+
     def test_corrupt_state_returns_explicit_diagnostic(self) -> None:
         job_id = f"job-rs-corrupt-{uuid4().hex}"
         paths = resolve_job_paths(job_id)
-        state_path = resolve_state_path("parser", job_id=job_id)
         try:
-            state_path.parent.mkdir(parents=True, exist_ok=True)
-            state_path.write_text('{"status": "running", ', encoding="utf-8")
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO agent_states (job_id, agent_name, state, updated_at) "
+                        "VALUES (:job_id, 'parser', '\"broken\"'::jsonb, NOW())"
+                    ),
+                    {"job_id": job_id},
+                )
 
             state = load_agent_state("parser", {"status": "idle", "summary_text": "idle"}, job_id=job_id)
 
             self.assertEqual(state["status"], "error")
-            self.assertEqual(state["state_error"], "corrupt_json")
-            self.assertEqual(state["state_error_path"], str(state_path))
+            self.assertEqual(state["state_error"], "invalid_json_shape")
             self.assertIn("поврежден", state["summary_text"])
-            self.assertEqual(state_path.read_text(encoding="utf-8"), '{"status": "running", ')
         finally:
             shutil.rmtree(paths.root_dir, ignore_errors=True)
 

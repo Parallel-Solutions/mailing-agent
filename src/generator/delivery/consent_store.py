@@ -13,7 +13,7 @@ from typing import Any
 
 from docx import Document
 
-from src.jobs import resolve_job_paths
+from src.jobs import normalize_job_id, resolve_job_paths
 from src.jobs.json_store import read_json, write_json_atomic
 from src.jobs.access import read_job_owner
 from src.utils.config import settings
@@ -231,6 +231,13 @@ def _save_consent_document(record: dict[str, Any], *, job_id: str | None) -> Pat
     _add_consent_paragraph(document, f"User-Agent: {_safe_text(record.get('confirmed_user_agent'))}")
 
     document.save(path)
+    if normalize_job_id(job_id):
+        try:
+            from src.jobs.workspace import put_upload
+
+            put_upload(job_id, _relative_to_job_root(path, job_id=job_id), path)
+        except ValueError:
+            pass
     return path
 
 

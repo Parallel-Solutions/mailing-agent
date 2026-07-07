@@ -72,6 +72,11 @@ _output_archive_threads_lock = threading.Lock()
 @app.on_event("startup")
 async def app_startup():
     require_configured_app_password(settings)
+    from src.infra.db import init_db
+    from src.infra.object_store import ensure_bucket
+
+    init_db()
+    ensure_bucket()
     bootstrap_auth_store(settings)
     return None
 
@@ -257,10 +262,17 @@ def _job_state_dir(job_id: str | None) -> Path:
     return state_dir
 
 
+def _output_archive_path(job_id: str | None) -> Path:
+    paths = resolve_job_paths(job_id)
+    archive_path = paths.root_dir / "archives" / "output.zip"
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    return archive_path
+
+
 def _resolve_cached_output_archive(job_id: str | None) -> tuple[Path, bool]:
     job_paths = resolve_job_paths(job_id)
     output_dir = job_paths.output_dir
-    archive_path = _job_state_dir(job_id) / "output.zip"
+    archive_path = _output_archive_path(job_id)
     if not output_dir.exists():
         return archive_path, False
     if not archive_path.exists():
@@ -283,6 +295,7 @@ def _iter_output_archive_files(output_dir: Path) -> list[Path]:
 
 
 def _build_output_archive(job_id: str | None) -> Path:
+    _sync_job_pull(job_id, subdirs=["output", "archives"])
     output_dir = resolve_job_paths(job_id).output_dir
     output_files = _iter_output_archive_files(output_dir)
     if not output_files:
@@ -299,6 +312,13 @@ def _build_output_archive(job_id: str | None) -> Path:
         for f in output_files:
             zf.write(f, f.relative_to(output_dir))
     temp_archive_path.replace(archive_path)
+    if normalize_job_id(job_id):
+        try:
+            from src.jobs.workspace import push_job
+
+            push_job(job_id, ["archives"])
+        except ValueError:
+            pass
     return archive_path
 
 
@@ -737,7 +757,19 @@ def _safe_int(value: object, default: int = 0) -> int:
         return default
 
 
+def _sync_job_pull(job_id: str | None, *, subdirs: list[str] | None = None) -> None:
+    if not normalize_job_id(job_id):
+        return
+    try:
+        from src.jobs.workspace import pull_job
+
+        pull_job(job_id, subdirs or ["input", "templates", "output", "consents", "reports", "archives"])
+    except ValueError:
+        pass
+
+
 def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: str | None) -> None:
+    _sync_job_pull(job_id)
     try:
         result = run_philologist(ai_enabled=ai_enabled, job_id=job_id, mode=mode)
         if isinstance(result, dict) and result.get("status") == "completed":
@@ -755,6 +787,7 @@ def _run_philologist_background(*, ai_enabled: bool, job_id: str | None, mode: s
 
 
 def _run_generator_background(*, xlsx_path: Path, job_id: str | None) -> None:
+    _sync_job_pull(job_id)
     try:
         result = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
         if isinstance(result, dict) and result.get("status") == "completed":
@@ -945,7 +978,7 @@ from src.generator.generation.generator_agent import (
     run_generator_agent,
 )
 from src.generator.philologist.philologist_planner import build_philologist_plan
-from src.jobs import create_job_id, resolve_job_paths
+from src.jobs import create_job_id, normalize_job_id, resolve_job_paths
 from src.jobs.storage import JOBS_DIR
 
 

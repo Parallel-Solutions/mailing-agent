@@ -38,7 +38,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
             "tool_trace": [{"action": "review_docx"}],
         }
 
-        primary = _compact_state_for_primary("philologist", state, Path("philologist.details.json"))
+        primary = _compact_state_for_primary("philologist", state)
 
         self.assertTrue(_should_split_state("philologist", state))
         self.assertEqual(primary["status"], "running")
