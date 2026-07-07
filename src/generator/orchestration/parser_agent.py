@@ -300,6 +300,39 @@ def mark_municipality_verification_failed(
     return result
 
 
+def mark_municipality_verification_skipped(
+    job_id: str | None,
+    *,
+    source: str,
+    reason: str,
+    file_size_bytes: int | None = None,
+    limit_bytes: int | None = None,
+) -> dict[str, Any]:
+    completed_at = datetime.now().isoformat(timespec="seconds")
+    result = {
+        "status": "skipped",
+        "updated_rows": 0,
+        "verified_rows": 0,
+        "kept_rows": 0,
+        "missing_rows": 0,
+        "replacements": [],
+        "replacement_samples": [],
+        "decision_samples": [],
+        "reason": reason,
+        "file_size_bytes": file_size_bytes,
+        "limit_bytes": limit_bytes,
+    }
+    _update_municipality_verification_state(
+        job_id,
+        status="completed",
+        source=source,
+        summary_text=f"Автопроверка официальных названий МО пропущена: {reason}",
+        started_at=completed_at,
+        completed_at=completed_at,
+        result=result,
+    )
+    return result
+
 def _municipality_verification_source_label(source: str) -> str:
     if source == "upload":
         return "после загрузки таблицы"

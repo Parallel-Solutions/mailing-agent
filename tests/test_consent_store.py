@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.generator.delivery import consent_store
+from src.web import consent_router
 from src.web.consent_router import create_consent_router
 
 
@@ -128,6 +129,39 @@ class ConsentStoreTests(unittest.TestCase):
                 )
                 self.assertEqual(len(dispatched_records), 1)
                 self.assertEqual(len(list(consents_dir.rglob("*.docx"))), 1)
+
+    def test_materials_dispatch_after_consent_preserves_sender_state(self) -> None:
+        calls: list[dict] = []
+        record = {
+            "job_id": "job-1",
+            "row_id": "42",
+            "recipient": "user@example.com",
+            "transport": "rusender",
+            "attachment_mode": "kp",
+            "work_type": "stp_mo",
+            "recipient_strategy": "primary_then_fallback",
+            "sender_email": "sender@example.com",
+            "campaign_name": "main campaign",
+        }
+
+        def fake_run_sender(**kwargs):
+            calls.append(kwargs)
+            return {
+                "summary_text": "materials sent",
+                "sent_rows": 1,
+                "error_rows": 0,
+                "rows": [{"id": "42", "recipient": "user@example.com", "result": "sent"}],
+            }
+
+        with patch("src.generator.delivery.sender_agent.run_sender", side_effect=fake_run_sender), patch.object(
+            consent_router, "mark_materials_dispatch_result"
+        ) as mark_result:
+            consent_router._dispatch_materials_after_consent(record)
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["preserve_sender_state"])
+        self.assertEqual(calls[0]["target_recipient"], "user@example.com")
+        mark_result.assert_called_once()
 
     def test_post_consent_confirms_once_and_repeated_post_does_not_dispatch_again(self) -> None:
         with _workspace_temp_dir() as tmpdir:
@@ -387,6 +421,112 @@ class ConsentStoreTests(unittest.TestCase):
                 self.assertEqual(stored["status"], "confirmed")
                 self.assertEqual(stored["provider"], {"message_id": "request-message"})
 
+    def test_collect_pending_materials_dispatches_finds_queued_and_retryable_errors(self) -> None:
+        records = [
+            {
+                "status": "confirmed",
+                "materials_status": "queued",
+                "job_id": "job-1",
+                "row_id": "1",
+                "recipient": "one@example.com",
+                "attachment_mode": "kp",
+            },
+            {
+                "status": "confirmed",
+                "materials_status": "sent",
+                "job_id": "job-1",
+                "row_id": "2",
+                "recipient": "two@example.com",
+                "attachment_mode": "kp",
+            },
+            {
+                "status": "request_sent",
+                "materials_status": "queued",
+                "job_id": "job-1",
+                "row_id": "3",
+                "recipient": "three@example.com",
+                "attachment_mode": "kp",
+            },
+            {
+                "status": "confirmed",
+                "materials_status": "error",
+                "materials_error": "provider error",
+                "materials_dispatch_completed_at": "2000-01-01T00:00:00",
+                "job_id": "job-1",
+                "row_id": "4",
+                "recipient": "four@example.com",
+                "attachment_mode": "kp",
+            },
+        ]
+
+        with (
+            patch.object(consent_router, "_iter_consent_job_ids", return_value=["job-1"]),
+            patch.object(consent_router, "load_consent_records", return_value=records),
+        ):
+            pending = consent_router.collect_pending_materials_dispatches(limit=10)
+
+        self.assertEqual([record["row_id"] for record in pending], ["1", "4"])
+
+    def test_recover_pending_materials_dispatches_uses_recovery_dispatch(self) -> None:
+        records = [
+            {
+                "status": "confirmed",
+                "materials_status": "queued",
+                "job_id": "job-1",
+                "row_id": "1",
+                "recipient": "one@example.com",
+                "attachment_mode": "kp",
+            },
+            {
+                "status": "confirmed",
+                "materials_status": "sent",
+                "job_id": "job-1",
+                "row_id": "2",
+                "recipient": "two@example.com",
+                "attachment_mode": "kp",
+            },
+        ]
+        calls: list[str] = []
+
+        def fake_dispatch(record: dict, **_: object) -> dict:
+            calls.append(record["row_id"])
+            return {"status": "completed", "sent_rows": 1, "error_rows": 0, "rows": [{"result": "sent"}]}
+
+        with (
+            patch.object(consent_router, "_iter_consent_job_ids", return_value=["job-1"]),
+            patch.object(consent_router, "load_consent_records", return_value=records),
+            patch.object(consent_router, "_dispatch_materials_after_consent", side_effect=fake_dispatch),
+        ):
+            result = consent_router.recover_pending_materials_dispatches(limit=10)
+
+        self.assertEqual(calls, ["1"])
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["sent"], 1)
+        self.assertEqual(result["failed"], 0)
+
+    def test_materials_recovery_stops_after_max_attempts(self) -> None:
+        records = [
+            {
+                "status": "confirmed",
+                "materials_status": "error",
+                "materials_error": "receiver does not exist",
+                "materials_dispatch_attempts": 3,
+                "materials_dispatch_completed_at": "2000-01-01T00:00:00",
+                "job_id": "job-1",
+                "row_id": "1",
+                "recipient": "bad@example.com",
+                "attachment_mode": "kp",
+            }
+        ]
+
+        with (
+            patch.object(consent_router, "_iter_consent_job_ids", return_value=["job-1"]),
+            patch.object(consent_router, "load_consent_records", return_value=records),
+            patch.object(consent_router.settings, "consent_materials_recovery_max_attempts", 3),
+        ):
+            pending = consent_router.collect_pending_materials_dispatches(limit=10)
+
+        self.assertEqual(pending, [])
 
 if __name__ == "__main__":
     unittest.main()

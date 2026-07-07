@@ -201,8 +201,9 @@ def _documents_agent_result_reply(documents_status: dict) -> str:
 def _documents_agent_download_reply(documents_status: dict) -> str:
     status = str(documents_status.get("status") or "idle")
     output_file_count = int(documents_status.get("output_file_count") or 0)
+    output_ready = bool(documents_status.get("output_ready"))
     fixed_documents = int(documents_status.get("fixed_documents") or 0)
-    if status != "completed":
+    if status != "completed" or not output_ready:
         return (
             "Архив и итоговый отчёт лучше скачивать после завершения подготовки. "
             "Пока дождитесь статуса «Готово»."
@@ -222,8 +223,11 @@ def _documents_agent_download_reply(documents_status: dict) -> str:
 
 def _documents_agent_next_step_reply(documents_status: dict) -> str:
     status = str(documents_status.get("status") or "idle")
-    if status == "completed":
+    output_ready = bool(documents_status.get("output_ready"))
+    if status == "completed" and output_ready:
         return "Следующий шаг: скачать архив при необходимости и перейти к проверке отправки писем."
+    if status == "completed":
+        return "Архив ещё собирается. Дождитесь завершения подготовки, затем можно будет скачать документы."
     if status == "running":
         return "Сейчас ничего делать не нужно. Следующий шаг откроется автоматически после завершения подготовки."
     if status == "stopped":

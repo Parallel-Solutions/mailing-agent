@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -29,6 +29,7 @@ try:
         BATCH_LIBREOFFICE_PROFILES_DIR,
         GOTENBERG_BASE_URLS,
         GOTENBERG_CONVERT_TIMEOUT_SECONDS,
+        GOTENBERG_RETRY_ATTEMPTS,
         LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_BASE_URL,
         ONLYOFFICE_CONVERTER_MODE,
@@ -44,6 +45,7 @@ except ImportError:  # pragma: no cover
         BATCH_LIBREOFFICE_PROFILES_DIR,
         GOTENBERG_BASE_URLS,
         GOTENBERG_CONVERT_TIMEOUT_SECONDS,
+        GOTENBERG_RETRY_ATTEMPTS,
         LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_BASE_URL,
         ONLYOFFICE_CONVERTER_MODE,
@@ -384,33 +386,50 @@ def _convert_gotenberg_single(task: Tuple[int, Path, Path]) -> Tuple[Path, Optio
     if not base_urls:
         return docx_path, None
 
-    base_url = base_urls[index % len(base_urls)]
-    endpoint = _resolve_gotenberg_endpoint(base_url)
+    start_index = index % len(base_urls)
+    ordered_base_urls = base_urls[start_index:] + base_urls[:start_index]
     output_path = output_dir / f"{docx_path.stem}.pdf"
     timeout = httpx.Timeout(GOTENBERG_CONVERT_TIMEOUT_SECONDS, connect=10.0)
 
-    try:
-        with docx_path.open("rb") as source_file, httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            response = client.post(
-                endpoint,
-                files={
-                    "files": (
-                        docx_path.name,
-                        source_file,
-                        DOCX_MIME,
+    for attempt in range(1, max(1, GOTENBERG_RETRY_ATTEMPTS) + 1):
+        for base_url in ordered_base_urls:
+            endpoint = _resolve_gotenberg_endpoint(base_url)
+            try:
+                with docx_path.open("rb") as source_file, httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                    response = client.post(
+                        endpoint,
+                        files={
+                            "files": (
+                                docx_path.name,
+                                source_file,
+                                DOCX_MIME,
+                            )
+                        },
                     )
-                },
-            )
-            response.raise_for_status()
-            if not response.content.startswith(b"%PDF"):
-                raise RuntimeError(
-                    f"Gotenberg returned unexpected payload for {docx_path.name}: "
-                    f"{response.headers.get('content-type', 'unknown')}"
-                )
-            output_path.write_bytes(response.content)
-    except Exception:
-        return docx_path, None
-    return docx_path, output_path if output_path.exists() else None
+                    response.raise_for_status()
+                    if not response.content.startswith(b"%PDF"):
+                        raise RuntimeError(
+                            f"Gotenberg returned unexpected payload for {docx_path.name}: "
+                            f"{response.headers.get('content-type', 'unknown')}"
+                        )
+                    output_path.write_bytes(response.content)
+            except Exception as exc:
+                try:
+                    logger.warning(
+                        "gotenberg_convert_failed",
+                        docx_path=docx_path.name,
+                        endpoint=endpoint,
+                        attempt=attempt,
+                        attempts=GOTENBERG_RETRY_ATTEMPTS,
+                        error=str(exc),
+                    )
+                except TypeError:  # pragma: no cover - stdlib logger fallback
+                    logger.warning("gotenberg_convert_failed %s %s %s", docx_path.name, endpoint, exc)
+                continue
+            return docx_path, output_path if output_path.exists() else None
+        if attempt < GOTENBERG_RETRY_ATTEMPTS:
+            sleep(min(1.0, 0.25 * attempt))
+    return docx_path, None
 
 
 def _convert_with_gotenberg(

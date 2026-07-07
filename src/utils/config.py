@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     public_base_url: str = "https://31-130-150-209.sslip.io"
     upload_data_max_bytes: int = 25 * 1024 * 1024
     upload_template_max_bytes: int = 10 * 1024 * 1024
+    municipality_upload_auto_verify_max_bytes: int = 4 * 1024 * 1024
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.vsellm.ru/v1"
@@ -76,7 +77,7 @@ class Settings(BaseSettings):
     user_worker_max_processes_per_task: int = 1
     user_inprocess_max_tasks: int = 1
     documents_worker_timeout_seconds: int = 21600
-    sender_worker_timeout_seconds: int = 7200
+    sender_worker_timeout_seconds: int = 0
     unisender_api_key: str = ""
     unisender_api_base_url: str = "https://goapi.unisender.ru/ru/transactional/api/v1"
     unisender_sender_name: str = "ООО «ПР»"
@@ -99,6 +100,10 @@ class Settings(BaseSettings):
     webhook_max_body_bytes: int = 256 * 1024
     mail_signature_image_url: str = ""
     consent_token_ttl_hours: int = 720
+    consent_materials_recovery_enabled: bool = True
+    consent_materials_recovery_poll_seconds: int = 60
+    consent_materials_recovery_batch_size: int = 25
+    consent_materials_recovery_max_attempts: int = 3
 
     municipality_oktmo_lookup_enabled: bool = True
     municipality_oktmo_csv_path: str = ""

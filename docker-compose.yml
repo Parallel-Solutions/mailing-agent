@@ -72,7 +72,7 @@ services:
 
       - --api-timeout=300s
 
-      - --libreoffice-restart-after=10
+      - --libreoffice-restart-after=100
 
     expose:
 
@@ -92,7 +92,7 @@ services:
 
       - --api-timeout=300s
 
-      - --libreoffice-restart-after=10
+      - --libreoffice-restart-after=100
 
     expose:
 

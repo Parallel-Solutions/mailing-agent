@@ -128,6 +128,53 @@ class PdfPipelineTests(unittest.TestCase):
 
         self.assertIsNone(result[docx_path])
 
+    def test_gotenberg_retries_next_url_after_failed_endpoint(self) -> None:
+        docx_path = self.tmp_dir / "document.docx"
+        output_dir = self.tmp_dir / "pdf"
+        output_dir.mkdir()
+        docx_path.write_bytes(b"fake-docx")
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, status_code: int, content: bytes) -> None:
+                self.status_code = status_code
+                self.content = content
+                self.headers = {"content-type": "application/pdf"}
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError("bad endpoint")
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            def post(self, endpoint, files):
+                calls.append(endpoint)
+                if "bad" in endpoint:
+                    return FakeResponse(500, b"")
+                return FakeResponse(200, b"%PDF ok")
+
+        with (
+            patch.object(pdf_converter, "GOTENBERG_BASE_URLS", ("http://bad", "http://good")),
+            patch.object(pdf_converter.httpx, "Client", FakeClient),
+        ):
+            source, pdf_path = pdf_converter._convert_gotenberg_single((0, docx_path, output_dir))
+
+        self.assertEqual(source, docx_path)
+        self.assertEqual(pdf_path, output_dir / "document.pdf")
+        self.assertEqual(calls, [
+            "http://bad/forms/libreoffice/convert",
+            "http://good/forms/libreoffice/convert",
+        ])
+        self.assertEqual((output_dir / "document.pdf").read_bytes(), b"%PDF ok")
+
     def test_finalize_generated_files_recovers_missing_pdf_from_final_docx(self) -> None:
         final_dir = self.tmp_dir / "output" / "1_Test"
         batch_pdf_dir = self.tmp_dir / "batch_pdf"

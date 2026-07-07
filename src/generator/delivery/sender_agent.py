@@ -99,6 +99,8 @@ MAILOPOST_SEND_PATH = "email/messages"
 RECIPIENT_STRATEGY_ALL = "all"
 RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK = "primary_then_fallback"
 DEFAULT_RECIPIENT_STRATEGY = RECIPIENT_STRATEGY_ALL
+DELIVERY_FALLBACK_CHECK_INTERVAL_SECONDS = 10
+DELIVERY_FALLBACK_CHECK_MAX_WAIT_SECONDS = 24 * 60 * 60
 DELIVERY_FALLBACK_FAILURE_STATUSES = {
     "hard_bounced",
     "err_delivery_failed",
@@ -1945,11 +1947,12 @@ def schedule_delivery_fallback_check(job_ids: Any, *, provider: str = "") -> Non
 
 def _run_scheduled_delivery_fallback_check(job_id: str, provider: str, running_key: str) -> None:
     try:
-        for _ in range(30):
+        max_attempts = max(1, DELIVERY_FALLBACK_CHECK_MAX_WAIT_SECONDS // DELIVERY_FALLBACK_CHECK_INTERVAL_SECONDS)
+        for _ in range(max_attempts):
             state = _load_sender_state(job_id)
             if _safe_text(state.get("status")) != "running":
                 break
-            sleep(10)
+            sleep(DELIVERY_FALLBACK_CHECK_INTERVAL_SECONDS)
         process_delivery_fallbacks(job_id=job_id, provider=provider)
     finally:
         with _DELIVERY_FALLBACK_LOCK:
@@ -2037,6 +2040,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
             campaign_name=campaign_name,
             recipient_strategy=RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
             job_id=job_id,
+            preserve_sender_state=True,
         )
         results.append(
             {
@@ -3892,6 +3896,7 @@ def run_sender(
     work_type: str | None = None,
     recipient_strategy: str | None = None,
     job_id: str | None = None,
+    preserve_sender_state: bool = False,
     _sender_lock_acquired: bool = False,
 ) -> dict[str, Any]:
     if not _sender_lock_acquired:
@@ -3912,6 +3917,7 @@ def run_sender(
                 work_type=work_type,
                 recipient_strategy=recipient_strategy,
                 job_id=job_id,
+                preserve_sender_state=preserve_sender_state,
                 _sender_lock_acquired=True,
             )
 
@@ -3930,8 +3936,10 @@ def run_sender(
         mail_template_path = None
     sent_mail_log_path = None if job_paths.uses_legacy_layout else job_paths.sent_mail_log_path
     state = _load_sender_state(job_id)
-    clear_sender_stop_request(job_id)
-    state = _load_sender_state(job_id)
+    if not preserve_sender_state:
+        clear_sender_stop_request(job_id)
+        state = _load_sender_state(job_id)
+    preserved_sender_state = dict(state) if preserve_sender_state else None
     effective_limit = _normalize_limit(limit, dry_run=dry_run)
     effective_transport = _normalize_transport(transport)
     effective_send_mode = _normalize_send_mode(send_mode)
@@ -4018,6 +4026,8 @@ def run_sender(
         state["status"] = "error"
         state["summary_text"] = "Файл data.xlsx не найден."
         _save_sender_state(state, job_id)
+        if preserved_sender_state is not None:
+            _save_sender_state(preserved_sender_state, job_id)
         return dict(state)
 
     workbook, worksheet, rows = load_rows(data_xlsx_path)
@@ -4830,11 +4840,14 @@ def run_sender(
         unique_warnings = list(dict.fromkeys(item for item in runtime_warnings if item))
         if unique_warnings:
             state["summary_text"] = f"{state['summary_text']} {' '.join(unique_warnings)}".strip()
+    result_state = dict(state)
     _save_sender_state(state, job_id)
+    if preserved_sender_state is not None:
+        _save_sender_state(preserved_sender_state, job_id)
     close = getattr(workbook, "close", None)
     if callable(close):
         close()
-    return dict(state)
+    return result_state
 
 
 def get_sender_status(job_id: str | None = None) -> dict[str, Any]:

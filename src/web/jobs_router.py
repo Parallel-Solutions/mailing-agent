@@ -456,15 +456,15 @@ class JobsWebController:
             and philologist_status in {"running", "finalizing"}
         )
         documents_completed = generator_status == "completed" and philologist_completed
-        output_docx_count = max(
-            int(generator_state.get("staged_docx_count") or 0),
-            int(philologist_state.get("total_documents") or 0),
-        )
-        if output_docx_count <= 0:
-            output_docx_count = self.cached_tree_file_count(output_dir, "*.docx")
-        output_pdf_count = int(generator_state.get("staged_pdf_count") or 0)
-        if output_pdf_count <= 0:
-            output_pdf_count = self.cached_tree_file_count(output_dir, "*.pdf")
+        actual_docx_count = self.cached_tree_file_count(output_dir, "*.docx")
+        actual_pdf_count = self.cached_tree_file_count(output_dir, "*.pdf")
+        output_docx_count = actual_docx_count
+
+        state_pdf_count = int(generator_state.get("staged_pdf_count") or 0)
+        if state_pdf_count > 0 and actual_pdf_count > 0:
+            output_pdf_count = min(state_pdf_count, actual_pdf_count)
+        else:
+            output_pdf_count = actual_pdf_count
 
         generator_reasons: list[str] = []
         philologist_reasons: list[str] = []
