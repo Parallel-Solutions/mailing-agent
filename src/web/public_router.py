@@ -42,4 +42,25 @@ def create_public_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="Sender UI script not found.")
         return FileResponse(script_path, media_type="application/javascript")
 
+    @router.get("/public/statistics.css")
+    async def public_statistics_css():
+        css_path = WEB_STATIC_DIR / "statistics.css"
+        if not css_path.exists():
+            raise HTTPException(status_code=404, detail="Statistics CSS not found.")
+        return FileResponse(css_path, media_type="text/css")
+
+    @router.get("/public/statistics.js")
+    async def public_statistics_js():
+        script_path = WEB_STATIC_DIR / "statistics.js"
+        if not script_path.exists():
+            raise HTTPException(status_code=404, detail="Statistics UI script not found.")
+        return FileResponse(script_path, media_type="application/javascript")
+
+    @router.get("/public/chart.min.js")
+    async def public_chart_js():
+        script_path = WEB_STATIC_DIR / "chart.min.js"
+        if not script_path.exists():
+            raise HTTPException(status_code=404, detail="Chart.js not found.")
+        return FileResponse(script_path, media_type="application/javascript")
+
     return router

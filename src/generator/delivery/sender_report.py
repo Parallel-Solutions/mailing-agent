@@ -176,10 +176,14 @@ def build_sender_delivery_report_xlsx(job_id: str | None = None, *, refresh: boo
     stats_sheet.title = "Статистика"
     journal_sheet = workbook.create_sheet("Журнал отправки")
     consent_sheet = workbook.create_sheet("Согласия")
+    problems_sheet = workbook.create_sheet("Проблемные адреса")
+    actions_sheet = workbook.create_sheet("Действия менеджера")
 
     _write_statistics_sheet(stats_sheet, rows, job_id=job_id, refresh_error=refresh_error, consent_rows=consent_rows)
     _write_journal_sheet(journal_sheet, rows)
     _write_consent_sheet(consent_sheet, consent_rows)
+    _write_problem_addresses_sheet(problems_sheet, rows, job_id=job_id)
+    _write_manager_actions_sheet(actions_sheet, job_id=job_id)
     _style_workbook(workbook)
     _autosize(
         stats_sheet,
@@ -222,6 +226,31 @@ def build_sender_delivery_report_xlsx(job_id: str | None = None, *, refresh: boo
             "L": 18,
             "M": 38,
             "N": 48,
+        },
+    )
+    _autosize(
+        problems_sheet,
+        {
+            "A": 34,
+            "B": 42,
+            "C": 28,
+            "D": 18,
+            "E": 12,
+            "F": 24,
+            "G": 28,
+        },
+    )
+    _autosize(
+        actions_sheet,
+        {
+            "A": 24,
+            "B": 34,
+            "C": 32,
+            "D": 42,
+            "E": 24,
+            "F": 24,
+            "G": 12,
+            "H": 48,
         },
     )
 
@@ -338,6 +367,8 @@ def build_sender_delivery_analytics(
 
     def role_pct(value: int, role: str) -> float:
         return pct(value, recipient_roles.get(role, 0))
+
+    manager_extensions = _manager_analytics_extensions(rows, consent_rows)
 
     cards = [
         {
@@ -498,6 +529,9 @@ def build_sender_delivery_analytics(
             {"status": status, "label": _report_status_label(status), "count": count}
             for status, count in sorted(statuses.items(), key=lambda item: (-item[1], item[0]))
         ],
+        "funnels": manager_extensions.get("funnels", []),
+        "work_lists": manager_extensions.get("work_lists", {}),
+        "insights": manager_extensions.get("insights", []),
         "note": _analytics_note(total=total, checked=checked, providers=providers, refresh_error=refresh_error),
     }
 
@@ -1629,6 +1663,138 @@ def _write_journal_sheet(sheet, rows: list[dict[str, Any]]) -> None:
         ],
         name="UnisenderDeliveryLog",
     )
+
+
+def _write_problem_addresses_sheet(sheet, rows: list[dict[str, Any]], *, job_id: str | None) -> None:
+    from src.generator.delivery.manager_stats import normalize_manager_status, recommended_action_for
+
+    _add_title(sheet, "Проблемные адреса")
+    problem_rows = []
+    for row in rows:
+        manager_status = normalize_manager_status(row.get("provider_status") or "unknown")
+        if manager_status.get("category") != "problem":
+            continue
+        recommended = recommended_action_for(manager_status["key"])
+        problem_rows.append(
+            [
+                row.get("mun_name"),
+                row.get("recipient"),
+                manager_status.get("label"),
+                _provider_label(_safe_text(row.get("provider"))),
+                1,
+                row.get("checked_at") or row.get("sent_at"),
+                recommended.get("label"),
+            ]
+        )
+    _write_table(
+        sheet,
+        3,
+        [
+            "Организация",
+            "Email",
+            "Причина",
+            "Провайдер",
+            "Попыток",
+            "Последнее событие",
+            "Рекомендованное действие",
+        ],
+        problem_rows,
+        name="ProblemAddresses",
+    )
+
+
+def _write_manager_actions_sheet(sheet, *, job_id: str | None) -> None:
+    from src.generator.delivery.manager_actions import load_manager_actions
+
+    _add_title(sheet, "Действия менеджера")
+    action_rows = [
+        [
+            record.get("created_at"),
+            record.get("organization"),
+            record.get("recipient_name") or record.get("recipient_email"),
+            record.get("recipient_email"),
+            record.get("action_label"),
+            record.get("responsible_manager"),
+            "Да" if record.get("priority") else "Нет",
+            record.get("comment"),
+        ]
+        for record in load_manager_actions(job_id)
+    ]
+    _write_table(
+        sheet,
+        3,
+        [
+            "Создано",
+            "Организация",
+            "Получатель",
+            "Email",
+            "Действие",
+            "Ответственный",
+            "Приоритет",
+            "Комментарий",
+        ],
+        action_rows,
+        name="ManagerActions",
+    )
+
+
+def _manager_analytics_extensions(
+    rows: list[dict[str, Any]],
+    consent_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    from src.generator.delivery.manager_stats import (
+        build_funnels,
+        build_insights,
+        build_work_lists,
+        normalize_manager_status,
+        recommended_action_for,
+    )
+
+    manager_rows = []
+    for row in rows:
+        manager_status = normalize_manager_status(row.get("provider_status") or "unknown")
+        manager_rows.append(
+            {
+                **row,
+                "organization": _safe_text(row.get("mun_name")),
+                "manager_status": manager_status,
+                "next_action": recommended_action_for(manager_status["key"]),
+            }
+        )
+    consent_summary_rows = [
+        {
+            "consent_status_key": _safe_text(row.get("status")) or "pending",
+            "materials_status": _safe_text(row.get("materials_status")),
+            "materials_sent_at": _safe_text(row.get("materials_sent_at")),
+        }
+        for row in consent_rows
+    ]
+    manager_keys = Counter(item.get("manager_status", {}).get("key") for item in manager_rows)
+    confirmed = sum(1 for row in consent_summary_rows if row.get("consent_status_key") == "confirmed")
+    materials_sent = sum(
+        1
+        for row in consent_summary_rows
+        if row.get("materials_status") == "sent" or row.get("materials_sent_at")
+    )
+    delivered = manager_keys.get("delivered", 0) + manager_keys.get("opened", 0) + manager_keys.get("clicked", 0)
+    counts = {
+        "sent": len(manager_rows),
+        "delivered": delivered,
+        "opened": manager_keys.get("opened", 0) + manager_keys.get("clicked", 0),
+        "clicked": manager_keys.get("clicked", 0),
+        "errors": sum(
+            manager_keys.get(key, 0)
+            for key in ("email_broken", "soft_bounce", "delivery_error", "spam")
+        ),
+        "pending": manager_keys.get("pending", 0) + manager_keys.get("no_data", 0),
+        "consents": confirmed,
+        "materials_sent": materials_sent,
+    }
+    return {
+        "funnels": build_funnels(counts=counts),
+        "work_lists": build_work_lists(manager_rows),
+        "insights": build_insights(rows=manager_rows, counts=counts),
+    }
 
 
 def _write_consent_sheet(sheet, rows: list[dict[str, Any]]) -> None:

@@ -1,0 +1,1119 @@
+from __future__ import annotations
+
+import base64
+import csv
+import io
+import json
+import re
+import uuid
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from src.generator.delivery.manager_actions import (
+    ACTION_TYPES,
+    append_report_history,
+    latest_action_by_recipient,
+    load_manager_actions,
+    load_report_history,
+)
+from src.generator.delivery.sender_report import (
+    PROVIDER_LABELS,
+    RECIPIENT_ROLE_LABELS,
+    _build_consent_rows,
+    _build_delivery_rows,
+    _campaign_metadata,
+    _format_moscow_datetime,
+    _load_sender_state,
+    _normalize_provider_status,
+    _normalize_recipient_role,
+    _now_moscow,
+    _provider_label,
+    _safe_text,
+    build_sender_delivery_report_xlsx,
+)
+from src.jobs import load_agent_state, resolve_job_paths
+from src.jobs.storage import normalize_job_id
+
+MANAGER_STATUS_DEFINITIONS: dict[str, dict[str, str]] = {
+    "delivered": {"label": "Доставлено", "tone": "good", "category": "success"},
+    "opened": {"label": "Открыто", "tone": "good", "category": "success"},
+    "clicked": {"label": "Клик", "tone": "good", "category": "success"},
+    "email_broken": {"label": "Email не работает", "tone": "bad", "category": "problem"},
+    "soft_bounce": {"label": "Временная ошибка", "tone": "warn", "category": "problem"},
+    "delivery_error": {"label": "Ошибка доставки", "tone": "bad", "category": "problem"},
+    "unsubscribed": {"label": "Отписался", "tone": "warn", "category": "warning"},
+    "spam": {"label": "Жалоба / спам", "tone": "bad", "category": "warning"},
+    "pending": {"label": "Ожидаем статус", "tone": "neutral", "category": "pending"},
+    "no_data": {"label": "Нет данных от сервиса", "tone": "neutral", "category": "pending"},
+}
+
+TECHNICAL_TO_MANAGER_STATUS: dict[str, str] = {
+    "delivered": "delivered",
+    "ok_delivered": "delivered",
+    "opened": "opened",
+    "ok_read": "opened",
+    "clicked": "clicked",
+    "ok_link_visited": "clicked",
+    "hard_bounced": "email_broken",
+    "err_user_unknown": "email_broken",
+    "err_user_inactive": "email_broken",
+    "err_mailbox_full": "email_broken",
+    "soft_bounced": "soft_bounce",
+    "err_will_retry": "soft_bounce",
+    "skip_dup_temp_unreachable": "soft_bounce",
+    "err_delivery_failed": "delivery_error",
+    "failed": "delivery_error",
+    "rejected": "delivery_error",
+    "not_delivered": "delivery_error",
+    "unsubscribed": "unsubscribed",
+    "ok_unsubscribed": "unsubscribed",
+    "spam": "spam",
+    "complaint": "spam",
+    "ok_spam_folder": "spam",
+    "err_spam_rejected": "spam",
+    "err_spam_skipped": "spam",
+    "pending": "pending",
+    "queued": "pending",
+    "sent": "pending",
+    "accepted": "pending",
+    "ok_sent": "pending",
+    "processing": "pending",
+    "success": "pending",
+    "not_sent": "pending",
+    "unknown": "no_data",
+}
+
+INTEREST_BY_STATUS: dict[str, str] = {
+    "clicked": "high",
+    "opened": "high",
+    "delivered": "medium",
+    "pending": "low",
+    "no_data": "low",
+    "soft_bounce": "low",
+    "email_broken": "low",
+    "delivery_error": "low",
+    "unsubscribed": "low",
+    "spam": "low",
+}
+
+RECOMMENDED_BY_STATUS: dict[str, str] = {
+    "clicked": "call",
+    "opened": "call",
+    "delivered": "ready_contact",
+    "email_broken": "find_another_email",
+    "soft_bounce": "retry_later",
+    "delivery_error": "manual_check",
+    "pending": "wait",
+    "no_data": "wait",
+    "unsubscribed": "do_not_contact",
+    "spam": "do_not_contact",
+}
+
+RECOMMENDED_LABELS = {
+    "call": "Перезвонить",
+    "ready_contact": "Готов к контакту",
+    "find_another_email": "Найти другой email",
+    "retry_later": "Повторить позже",
+    "manual_check": "Проверить вручную",
+    "wait": "Ожидать статус",
+    "do_not_contact": "Не трогать",
+}
+
+INTEREST_LABELS = {"high": "Высокий", "medium": "Средний", "low": "Низкий"}
+INTEREST_TONES = {"high": "good", "medium": "warn", "low": "neutral"}
+
+BOUNCE_REASON_LABELS = {
+    "email_not_exists": "Email не существует",
+    "mailbox_full": "Переполнен ящик",
+    "temporary_error": "Временная ошибка сервера",
+    "spam_block": "Блокировка как спам",
+    "other": "Прочее",
+}
+
+EMAIL_DOMAIN_PROVIDERS = {
+    "mail.ru": "Mail.ru",
+    "inbox.ru": "Mail.ru",
+    "list.ru": "Mail.ru",
+    "bk.ru": "Mail.ru",
+    "gmail.com": "Gmail",
+    "googlemail.com": "Gmail",
+    "yandex.ru": "Yandex",
+    "ya.ru": "Yandex",
+    "outlook.com": "Outlook",
+    "hotmail.com": "Outlook",
+    "live.com": "Outlook",
+}
+
+
+@dataclass(frozen=True)
+class StatsFilters:
+    job_ids: tuple[str, ...]
+    period_from: str = ""
+    period_to: str = ""
+    providers: tuple[str, ...] = ()
+    manager_statuses: tuple[str, ...] = ()
+    recipient_roles: tuple[str, ...] = ()
+    consent_status: str = ""
+    manager_action: str = ""
+    organization: str = ""
+    problems_only: bool = False
+    q: str = ""
+    quick_filter: str = ""
+
+
+def normalize_manager_status(provider_status: str) -> dict[str, str]:
+    normalized = _normalize_provider_status(provider_status)
+    key = TECHNICAL_TO_MANAGER_STATUS.get(normalized, "no_data")
+    definition = MANAGER_STATUS_DEFINITIONS[key]
+    return {
+        "key": key,
+        "label": definition["label"],
+        "tone": definition["tone"],
+        "category": definition["category"],
+    }
+
+
+def interest_for(manager_status_key: str) -> dict[str, str]:
+    level = INTEREST_BY_STATUS.get(manager_status_key, "low")
+    return {
+        "key": level,
+        "label": INTEREST_LABELS[level],
+        "tone": INTEREST_TONES[level],
+    }
+
+
+def recommended_action_for(manager_status_key: str) -> dict[str, str]:
+    key = RECOMMENDED_BY_STATUS.get(manager_status_key, "wait")
+    return {"key": key, "label": RECOMMENDED_LABELS[key]}
+
+
+def make_row_key(job_id: str, row_id: str, recipient_email: str) -> str:
+    raw = f"{normalize_job_id(job_id)}|{_safe_text(row_id)}|{_safe_text(recipient_email).lower()}"
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def parse_row_key(row_key: str) -> tuple[str, str, str]:
+    padding = "=" * (-len(row_key) % 4)
+    decoded = base64.urlsafe_b64decode(f"{row_key}{padding}").decode("utf-8")
+    job_id, row_id, recipient = decoded.split("|", 2)
+    return job_id, row_id, recipient
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    text = _safe_text(value)
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _within_period(value: Any, *, period_from: str, period_to: str) -> bool:
+    dt = _parse_datetime(value)
+    if dt is None:
+        return not period_from and not period_to
+    start = _parse_datetime(period_from)
+    end = _parse_datetime(period_to)
+    if start and dt < start:
+        return False
+    if end and dt > end.replace(hour=23, minute=59, second=59):
+        return False
+    return True
+
+
+def _pct(value: int, base: int) -> float:
+    if base <= 0:
+        return 0.0
+    return round((value / base) * 100, 1)
+
+
+def _manager_action_view(record: dict[str, Any] | None) -> dict[str, str]:
+    if not record:
+        return {"key": "", "label": ""}
+    action_type = _safe_text(record.get("action_type"))
+    return {
+        "key": action_type,
+        "label": _safe_text(record.get("action_label")) or ACTION_TYPES.get(action_type, action_type),
+    }
+
+
+def _bounce_reason(provider_status: str, delivery_response: str = "") -> str:
+    normalized = _normalize_provider_status(provider_status)
+    response = _safe_text(delivery_response).lower()
+    if normalized in {"err_user_unknown", "err_user_inactive", "hard_bounced"} or "user unknown" in response:
+        return "email_not_exists"
+    if normalized == "err_mailbox_full" or "mailbox full" in response:
+        return "mailbox_full"
+    if normalized in {"soft_bounced", "err_will_retry", "skip_dup_temp_unreachable"}:
+        return "temporary_error"
+    if normalized in {"spam", "complaint", "err_spam_rejected", "err_spam_skipped", "ok_spam_folder"}:
+        return "spam_block"
+    return "other"
+
+
+def _email_domain_provider(email: str) -> str:
+    domain = _safe_text(email).split("@")[-1].lower()
+    if not domain:
+        return "Другие"
+    return EMAIL_DOMAIN_PROVIDERS.get(domain, "Другие")
+
+
+def _load_delivery_for_jobs(job_ids: tuple[str, ...], *, refresh: bool = False) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for job_id in job_ids:
+        delivery_rows, _ = _build_delivery_rows(job_id, refresh=refresh)
+        latest_actions = latest_action_by_recipient(job_id)
+        for row in delivery_rows:
+            manager_status = normalize_manager_status(row.get("provider_status") or "unknown")
+            interest = interest_for(manager_status["key"])
+            recommended = recommended_action_for(manager_status["key"])
+            action = latest_actions.get((_safe_text(row.get("row_id")), _safe_text(row.get("recipient")).lower()))
+            next_action = _manager_action_view(action) if action else recommended
+            rows.append(
+                {
+                    **row,
+                    "job_id": job_id,
+                    "row_key": make_row_key(job_id, row.get("row_id"), row.get("recipient")),
+                    "organization": _safe_text(row.get("mun_name")),
+                    "recipient_name": _safe_text(row.get("recipient")),
+                    "email": _safe_text(row.get("recipient")).lower(),
+                    "role": _normalize_recipient_role(row.get("recipient_role")),
+                    "role_label": RECIPIENT_ROLE_LABELS.get(
+                        _normalize_recipient_role(row.get("recipient_role")),
+                        RECIPIENT_ROLE_LABELS["unknown"],
+                    ),
+                    "manager_status": manager_status,
+                    "interest": interest,
+                    "recommended_action": recommended,
+                    "next_action": next_action,
+                    "last_event_at": _safe_text(row.get("checked_at") or row.get("sent_at")),
+                    "last_event_label": manager_status["label"],
+                    "attempts": 1,
+                    "bounce_reason": _bounce_reason(row.get("provider_status"), row.get("delivery_response")),
+                    "bounce_reason_label": BOUNCE_REASON_LABELS.get(
+                        _bounce_reason(row.get("provider_status"), row.get("delivery_response")),
+                        "Прочее",
+                    ),
+                    "email_domain_provider": _email_domain_provider(_safe_text(row.get("recipient"))),
+                }
+            )
+    return rows
+
+
+def _load_consents_for_jobs(job_ids: tuple[str, ...]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for job_id in job_ids:
+        for row in _build_consent_rows(job_id):
+            status_key = _safe_text(row.get("status")) or "pending"
+            materials_status = _safe_text(row.get("materials_status"))
+            interest_key = "high" if status_key == "confirmed" and materials_status == "sent" else "medium"
+            if status_key != "confirmed":
+                interest_key = "low"
+            rows.append(
+                {
+                    **row,
+                    "job_id": job_id,
+                    "organization": _safe_text(row.get("mun_name")),
+                    "contact": _safe_text(row.get("recipient")),
+                    "email": _safe_text(row.get("recipient")).lower(),
+                    "consent_status_key": status_key,
+                    "consent_status_label": _safe_text(row.get("status_label")),
+                    "materials_label": _safe_text(row.get("materials_status_label")),
+                    "last_action_label": _safe_text(row.get("materials_status_label") or row.get("status_label")),
+                    "last_action_at": _safe_text(row.get("materials_sent_at") or row.get("confirmed_at") or row.get("request_sent_at")),
+                    "interest": {
+                        "key": interest_key,
+                        "label": INTEREST_LABELS[interest_key],
+                        "tone": INTEREST_TONES[interest_key],
+                    },
+                    "next_action": recommended_action_for("opened" if status_key == "confirmed" else "pending"),
+                }
+            )
+    return rows
+
+
+def _apply_recipient_filters(rows: list[dict[str, Any]], filters: StatsFilters) -> list[dict[str, Any]]:
+    result = rows
+    if filters.q:
+        query = filters.q.lower()
+        result = [
+            row
+            for row in result
+            if query in _safe_text(row.get("organization")).lower()
+            or query in _safe_text(row.get("recipient_name")).lower()
+            or query in _safe_text(row.get("email")).lower()
+        ]
+    if filters.period_from or filters.period_to:
+        result = [
+            row
+            for row in result
+            if _within_period(row.get("sent_at_timestamp") or row.get("sent_at"), period_from=filters.period_from, period_to=filters.period_to)
+        ]
+    if filters.providers:
+        allowed = {item.lower() for item in filters.providers}
+        result = [row for row in result if _safe_text(row.get("provider")).lower() in allowed]
+    if filters.manager_statuses:
+        allowed = set(filters.manager_statuses)
+        result = [row for row in result if row.get("manager_status", {}).get("key") in allowed]
+    if filters.recipient_roles:
+        allowed = set(filters.recipient_roles)
+        result = [row for row in result if row.get("role") in allowed]
+    if filters.organization:
+        query = filters.organization.lower()
+        result = [row for row in result if query in _safe_text(row.get("organization")).lower()]
+    if filters.problems_only:
+        result = [row for row in result if row.get("manager_status", {}).get("category") == "problem"]
+    if filters.quick_filter:
+        quick = filters.quick_filter
+        if quick == "delivered":
+            result = [row for row in result if row.get("manager_status", {}).get("key") == "delivered"]
+        elif quick == "opened":
+            result = [row for row in result if row.get("manager_status", {}).get("key") == "opened"]
+        elif quick == "clicked":
+            result = [row for row in result if row.get("manager_status", {}).get("key") == "clicked"]
+        elif quick == "problems":
+            result = [row for row in result if row.get("manager_status", {}).get("category") == "problem"]
+        elif quick == "pending":
+            result = [row for row in result if row.get("manager_status", {}).get("key") in {"pending", "no_data"}]
+        elif quick == "action":
+            result = [row for row in result if row.get("next_action", {}).get("key") in {"call", "find_another_email", "manual_check", "retry_later"}]
+    if filters.manager_action:
+        result = [row for row in result if row.get("next_action", {}).get("key") == filters.manager_action]
+    return result
+
+
+def _campaign_status(job_id: str) -> str:
+    sender_state = _load_sender_state(job_id)
+    status = _safe_text(sender_state.get("status")) or "idle"
+    mode = _safe_text(sender_state.get("mode")) or "dry_run"
+    if status == "running":
+        return "active"
+    if status in {"completed", "stopped", "error"} and mode == "send":
+        return "completed"
+    return "draft"
+
+
+def _campaign_period(job_id: str, rows: list[dict[str, Any]]) -> tuple[str, str]:
+    sent_times = [_parse_datetime(row.get("sent_at_timestamp") or row.get("sent_at")) for row in rows if row.get("job_id") == job_id]
+    sent_times = [item for item in sent_times if item is not None]
+    if not sent_times:
+        state = _load_sender_state(job_id)
+        started = _safe_text(state.get("started_at"))
+        completed = _safe_text(state.get("completed_at"))
+        return started[:10], completed[:10] if completed else started[:10]
+    start = min(sent_times).date().isoformat()
+    end = max(sent_times).date().isoformat()
+    return start, end
+
+
+def _aggregate_counts(rows: list[dict[str, Any]], consent_rows: list[dict[str, Any]]) -> dict[str, int]:
+    manager_keys = Counter(row.get("manager_status", {}).get("key") for row in rows)
+    confirmed = sum(1 for row in consent_rows if row.get("consent_status_key") == "confirmed")
+    materials_sent = sum(
+        1
+        for row in consent_rows
+        if row.get("materials_status") == "sent" or _safe_text(row.get("materials_sent_at"))
+    )
+    delivered = manager_keys.get("delivered", 0) + manager_keys.get("opened", 0) + manager_keys.get("clicked", 0)
+    opened = manager_keys.get("opened", 0) + manager_keys.get("clicked", 0)
+    clicked = manager_keys.get("clicked", 0)
+    errors = sum(
+        manager_keys.get(key, 0)
+        for key in ("email_broken", "soft_bounce", "delivery_error", "spam")
+    )
+    pending = manager_keys.get("pending", 0) + manager_keys.get("no_data", 0)
+    return {
+        "sent": len(rows),
+        "delivered": delivered,
+        "opened": opened,
+        "clicked": clicked,
+        "errors": errors,
+        "pending": pending,
+        "consents": confirmed,
+        "materials_sent": materials_sent,
+        "unsubscribed": manager_keys.get("unsubscribed", 0),
+        "spam": manager_keys.get("spam", 0),
+    }
+
+
+def build_funnels(*, counts: dict[str, int]) -> list[dict[str, Any]]:
+    consent = counts.get("consents", 0)
+    sent = counts.get("sent", 0)
+    delivered = counts.get("delivered", 0)
+    opened = counts.get("opened", 0)
+    clicked = counts.get("clicked", 0)
+    steps = [
+        ("consent", "Согласие", consent),
+        ("sent", "Отправлено", sent),
+        ("delivered", "Доставлено", delivered),
+        ("opened", "Открыто", opened),
+        ("clicked", "Клик", clicked),
+    ]
+    base = consent or sent or 1
+    return [
+        {"id": step_id, "label": label, "value": value, "percent": _pct(value, base)}
+        for step_id, label, value in steps
+    ]
+
+
+def build_work_lists(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    interested: dict[str, int] = Counter()
+    problems: dict[str, int] = Counter()
+    callbacks: dict[str, int] = Counter()
+    for row in rows:
+        org = _safe_text(row.get("organization")) or "Без названия"
+        status_key = row.get("manager_status", {}).get("key")
+        if status_key in {"opened", "clicked"}:
+            interested[org] += 1
+        if status_key in {"email_broken", "soft_bounce", "delivery_error"}:
+            problems[org] += 1
+        if row.get("next_action", {}).get("key") == "call":
+            callbacks[org] += 1
+
+    def _top(counter: Counter[str], limit: int = 5) -> list[dict[str, Any]]:
+        return [{"organization": org, "count": count} for org, count in counter.most_common(limit)]
+
+    return {
+        "interested": _top(interested),
+        "email_problems": _top(problems),
+        "need_call": _top(callbacks),
+    }
+
+
+def build_insights(*, rows: list[dict[str, Any]], counts: dict[str, int]) -> list[dict[str, str]]:
+    insights: list[dict[str, str]] = []
+    provider_delivered: Counter[str] = Counter()
+    provider_total: Counter[str] = Counter()
+    role_opened: Counter[str] = Counter()
+    role_total: Counter[str] = Counter()
+    for row in rows:
+        provider = _safe_text(row.get("provider")) or "unknown"
+        provider_total[provider] += 1
+        if row.get("manager_status", {}).get("key") in {"delivered", "opened", "clicked"}:
+            provider_delivered[provider] += 1
+        role = row.get("role") or "unknown"
+        role_total[role] += 1
+        if row.get("manager_status", {}).get("key") in {"opened", "clicked"}:
+            role_opened[role] += 1
+
+    if provider_total:
+        best_provider = max(
+            provider_total,
+            key=lambda name: _pct(provider_delivered.get(name, 0), provider_total.get(name, 0)),
+        )
+        insights.append(
+            {
+                "id": "best_provider",
+                "title": "Лучший провайдер",
+                "text": f"{_provider_label(best_provider)} показывает лучшую доставляемость.",
+            }
+        )
+    primary_open = _pct(role_opened.get("primary", 0), role_total.get("primary", 0))
+    fallback_open = _pct(role_opened.get("fallback", 0), role_total.get("fallback", 0))
+    if primary_open > fallback_open:
+        insights.append(
+            {
+                "id": "primary_email",
+                "title": "Основной email",
+                "text": "Чаще открывают на основной email.",
+            }
+        )
+    problem_count = sum(1 for row in rows if row.get("manager_status", {}).get("category") == "problem")
+    if problem_count:
+        insights.append(
+            {
+                "id": "problem_addresses",
+                "title": "Проблемные адреса",
+                "text": f"Требуется проверить {problem_count} адресов.",
+            }
+        )
+    if not insights:
+        insights.append(
+            {
+                "id": "empty",
+                "title": "Нет данных",
+                "text": "Статистика появится после реальной отправки писем.",
+            }
+        )
+    return insights
+
+
+def build_manager_dashboard(filters: StatsFilters, *, refresh: bool = False) -> dict[str, Any]:
+    rows = _load_delivery_for_jobs(filters.job_ids, refresh=refresh)
+    consent_rows = _load_consents_for_jobs(filters.job_ids)
+    rows = _apply_recipient_filters(rows, filters)
+    consent_rows = [
+        row
+        for row in consent_rows
+        if not filters.period_from and not filters.period_to
+        or _within_period(row.get("last_action_at"), period_from=filters.period_from, period_to=filters.period_to)
+    ]
+    counts = _aggregate_counts(rows, consent_rows)
+    total = counts["sent"]
+    rates = {
+        "delivery_rate": _pct(counts["delivered"], total),
+        "open_rate": _pct(counts["opened"], counts["delivered"] or total),
+        "ctr": _pct(counts["clicked"], total),
+        "error_rate": _pct(counts["errors"], total),
+        "pending_rate": _pct(counts["pending"], total),
+    }
+    cards = [
+        {"id": "sent", "title": "Отправлено", "value": counts["sent"], "tone": "neutral"},
+        {"id": "delivered", "title": "Доставлено", "value": counts["delivered"], "tone": "good"},
+        {"id": "opened", "title": "Открыто", "value": counts["opened"], "tone": "good"},
+        {"id": "clicked", "title": "Переходы", "value": counts["clicked"], "tone": "good"},
+        {"id": "errors", "title": "Ошибки", "value": counts["errors"], "tone": "bad" if counts["errors"] else "neutral"},
+        {"id": "pending", "title": "Ожидают статуса", "value": counts["pending"], "tone": "warn" if counts["pending"] else "neutral"},
+        {"id": "consents", "title": "Согласия", "value": counts["consents"], "tone": "good" if counts["consents"] else "neutral"},
+        {"id": "materials_sent", "title": "Материалы отправлены", "value": counts["materials_sent"], "tone": "good" if counts["materials_sent"] else "neutral"},
+    ]
+    statuses = Counter(row.get("manager_status", {}).get("key") for row in rows)
+    providers = Counter(_safe_text(row.get("provider")) or "unknown" for row in rows)
+    roles = Counter(row.get("role") or "unknown" for row in rows)
+    generated_at = _now_moscow()
+    return {
+        "generated_at": generated_at.isoformat(timespec="seconds"),
+        "generated_at_label": _format_moscow_datetime(generated_at),
+        "cards": cards,
+        "rates": rates,
+        "summary": counts,
+        "statuses": [
+            {
+                "status": key,
+                "label": MANAGER_STATUS_DEFINITIONS[key]["label"],
+                "count": statuses.get(key, 0),
+                "tone": MANAGER_STATUS_DEFINITIONS[key]["tone"],
+            }
+            for key in MANAGER_STATUS_DEFINITIONS
+            if statuses.get(key, 0)
+        ],
+        "providers": [
+            {"provider": provider, "label": _provider_label(provider), "count": count}
+            for provider, count in providers.most_common()
+        ],
+        "roles": [
+            {"role": role, "label": RECIPIENT_ROLE_LABELS.get(role, role), "count": count}
+            for role, count in roles.most_common()
+        ],
+        "funnels": build_funnels(counts=counts),
+        "work_lists": build_work_lists(rows),
+        "insights": build_insights(rows=rows, counts=counts),
+        "total": total,
+        "empty": total <= 0,
+    }
+
+
+def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
+    campaigns: list[dict[str, Any]] = []
+    totals = {"total": 0, "active": 0, "completed": 0, "draft": 0}
+    delivery_rates: list[float] = []
+    open_rates: list[float] = []
+    for job_id in filters.job_ids:
+        rows = [row for row in _load_delivery_for_jobs((job_id,)) if _apply_recipient_filters([row], filters)]
+        consent_rows = _load_consents_for_jobs((job_id,))
+        counts = _aggregate_counts(rows, consent_rows)
+        status = _campaign_status(job_id)
+        totals["total"] += 1
+        totals[status] += 1
+        delivery_rate = _pct(counts["delivered"], counts["sent"])
+        open_rate = _pct(counts["opened"], counts["delivered"] or counts["sent"])
+        if counts["sent"]:
+            delivery_rates.append(delivery_rate)
+            open_rates.append(open_rate)
+        campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows)
+        period_from, period_to = _campaign_period(job_id, rows)
+        provider_counter = Counter(_safe_text(row.get("provider")) or "unknown" for row in rows)
+        provider_key = provider_counter.most_common(1)[0][0] if provider_counter else ""
+        campaigns.append(
+            {
+                "job_id": job_id,
+                "title": campaign["title"],
+                "period_from": period_from,
+                "period_to": period_to,
+                "period_label": f"{period_from} — {period_to}" if period_from and period_to else "",
+                "provider": provider_key,
+                "provider_label": _provider_label(provider_key),
+                "sent": counts["sent"],
+                "delivered": counts["delivered"],
+                "opened": counts["opened"],
+                "clicked": counts["clicked"],
+                "consents": counts["consents"],
+                "delivery_rate": delivery_rate,
+                "open_rate": open_rate,
+                "ctr": _pct(counts["clicked"], counts["sent"]),
+                "status": status,
+                "status_label": {"active": "Активна", "completed": "Завершена", "draft": "Черновик"}[status],
+            }
+        )
+    campaigns.sort(key=lambda item: item.get("period_to") or "", reverse=True)
+    return {
+        "campaigns": campaigns,
+        "summary": {
+            **totals,
+            "avg_delivery_rate": round(sum(delivery_rates) / len(delivery_rates), 1) if delivery_rates else 0.0,
+            "avg_open_rate": round(sum(open_rates) / len(open_rates), 1) if open_rates else 0.0,
+        },
+    }
+
+
+def build_recipients(filters: StatsFilters, *, page: int = 1, per_page: int = 10) -> dict[str, Any]:
+    rows = _apply_recipient_filters(_load_delivery_for_jobs(filters.job_ids), filters)
+    total = len(rows)
+    start = max(0, (page - 1) * per_page)
+    end = start + per_page
+    page_rows = rows[start:end]
+    summary = {
+        "total": total,
+        "active": sum(1 for row in rows if row.get("manager_status", {}).get("key") in {"opened", "clicked"}),
+        "problematic": sum(1 for row in rows if row.get("manager_status", {}).get("category") == "problem"),
+        "need_call": sum(1 for row in rows if row.get("next_action", {}).get("key") == "call"),
+    }
+    return {
+        "items": [
+            {
+                "row_key": row["row_key"],
+                "job_id": row["job_id"],
+                "organization": row["organization"],
+                "recipient_name": row["recipient_name"],
+                "email": row["email"],
+                "role_label": row["role_label"],
+                "manager_status": row["manager_status"],
+                "last_event_at": row["last_event_at"],
+                "last_event_label": row["last_event_label"],
+                "interest": row["interest"],
+                "next_action": row["next_action"],
+            }
+            for row in page_rows
+        ],
+        "summary": summary,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": max(1, (total + per_page - 1) // per_page),
+        },
+    }
+
+
+def build_recipient_detail(row_key: str) -> dict[str, Any] | None:
+    job_id, row_id, email = parse_row_key(row_key)
+    rows = _load_delivery_for_jobs((job_id,))
+    matched = next((row for row in rows if row["row_key"] == row_key), None)
+    if matched is None:
+        return None
+    history = [
+        {
+            "label": matched["manager_status"]["label"],
+            "at": matched["last_event_at"],
+            "tone": matched["manager_status"]["tone"],
+        }
+    ]
+    action_history = [
+        record
+        for record in load_manager_actions(job_id)
+        if _safe_text(record.get("row_id")) == row_id and _safe_text(record.get("recipient_email")).lower() == email
+    ]
+    return {
+        "row_key": row_key,
+        "job_id": job_id,
+        "organization": matched["organization"],
+        "email": matched["email"],
+        "recipient_name": matched["recipient_name"],
+        "role_label": matched["role_label"],
+        "manager_status": matched["manager_status"],
+        "interest": matched["interest"],
+        "recommended_action": matched["recommended_action"],
+        "next_action": matched["next_action"],
+        "status_history": history,
+        "action_history": action_history,
+    }
+
+
+def build_consents_view(filters: StatsFilters, *, page: int = 1, per_page: int = 10) -> dict[str, Any]:
+    rows = _load_consents_for_jobs(filters.job_ids)
+    if filters.q:
+        query = filters.q.lower()
+        rows = [
+            row
+            for row in rows
+            if query in _safe_text(row.get("organization")).lower()
+            or query in _safe_text(row.get("contact")).lower()
+            or query in _safe_text(row.get("email")).lower()
+        ]
+    if filters.consent_status:
+        rows = [row for row in rows if row.get("consent_status_key") == filters.consent_status]
+    total = len(rows)
+    confirmed = sum(1 for row in rows if row.get("consent_status_key") == "confirmed")
+    materials_sent = sum(1 for row in rows if _safe_text(row.get("materials_status")) == "sent" or _safe_text(row.get("materials_sent_at")))
+    opened_after = sum(1 for row in rows if row.get("consent_status_key") == "confirmed" and _safe_text(row.get("materials_sent_at")))
+    need_call = sum(1 for row in rows if row.get("interest", {}).get("key") == "high")
+    start = max(0, (page - 1) * per_page)
+    page_rows = rows[start : start + per_page]
+    return {
+        "summary": {
+            "confirmed": confirmed,
+            "materials_sent": materials_sent,
+            "opened_after_consent": opened_after,
+            "clicked_after_consent": 0,
+            "need_call": need_call,
+        },
+        "funnel": build_funnels(
+            counts={
+                "consents": confirmed,
+                "sent": materials_sent,
+                "delivered": materials_sent,
+                "opened": opened_after,
+                "clicked": 0,
+            }
+        ),
+        "items": page_rows,
+        "priority_contacts": sorted(page_rows, key=lambda row: row.get("interest", {}).get("key") != "high")[:5],
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": max(1, (total + per_page - 1) // per_page),
+        },
+    }
+
+
+def build_email_problems(filters: StatsFilters, *, page: int = 1, per_page: int = 10) -> dict[str, Any]:
+    rows = _apply_recipient_filters(_load_delivery_for_jobs(filters.job_ids), filters)
+    rows = [row for row in rows if row.get("manager_status", {}).get("category") == "problem"]
+    total = len(rows)
+    hard = sum(1 for row in rows if row.get("manager_status", {}).get("key") == "email_broken")
+    soft = sum(1 for row in rows if row.get("manager_status", {}).get("key") == "soft_bounce")
+    reasons = Counter(row.get("bounce_reason") for row in rows)
+    domains = Counter(row.get("email_domain_provider") for row in rows)
+    start = max(0, (page - 1) * per_page)
+    page_rows = rows[start : start + per_page]
+    return {
+        "summary": {
+            "problem_addresses": total,
+            "hard_bounce": hard,
+            "soft_bounce": soft,
+            "need_check": hard,
+            "retry_later": soft,
+        },
+        "reasons": [
+            {"reason": key, "label": BOUNCE_REASON_LABELS.get(key, key), "count": count, "percent": _pct(count, total)}
+            for key, count in reasons.most_common()
+        ],
+        "domains": [{"provider": key, "count": count} for key, count in domains.most_common()],
+        "items": page_rows,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": max(1, (total + per_page - 1) // per_page),
+        },
+    }
+
+
+def build_campaign_analytics(job_id: str, *, refresh: bool = False) -> dict[str, Any]:
+    rows = _load_delivery_for_jobs((job_id,), refresh=refresh)
+    consent_rows = _load_consents_for_jobs((job_id,))
+    counts = _aggregate_counts(rows, consent_rows)
+    campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows)
+    period_from, period_to = _campaign_period(job_id, rows)
+    daily: dict[str, dict[str, int]] = defaultdict(lambda: {"sent": 0, "delivered": 0, "opened": 0})
+    for row in rows:
+        day = _safe_text(row.get("sent_at"))[:10]
+        if not day:
+            continue
+        daily[day]["sent"] += 1
+        if row.get("manager_status", {}).get("key") in {"delivered", "opened", "clicked"}:
+            daily[day]["delivered"] += 1
+        if row.get("manager_status", {}).get("key") in {"opened", "clicked"}:
+            daily[day]["opened"] += 1
+    reasons = Counter(row.get("bounce_reason") for row in rows if row.get("manager_status", {}).get("category") == "problem")
+    provider_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "delivered": 0, "opened": 0})
+    for row in rows:
+        provider = _provider_label(_safe_text(row.get("provider")) or "unknown")
+        provider_stats[provider]["total"] += 1
+        if row.get("manager_status", {}).get("key") in {"delivered", "opened", "clicked"}:
+            provider_stats[provider]["delivered"] += 1
+        if row.get("manager_status", {}).get("key") in {"opened", "clicked"}:
+            provider_stats[provider]["opened"] += 1
+    high_interest = [
+        {
+            "organization": row.get("organization"),
+            "sent": 1,
+            "open_rate": 100.0 if row.get("manager_status", {}).get("key") in {"opened", "clicked"} else 0.0,
+            "clicked": 1 if row.get("manager_status", {}).get("key") == "clicked" else 0,
+        }
+        for row in rows
+        if row.get("interest", {}).get("key") == "high"
+    ][:10]
+    problematic = [
+        {
+            "email": row.get("email"),
+            "reason_label": row.get("bounce_reason_label"),
+            "provider_label": _provider_label(row.get("provider")),
+            "attempts": row.get("attempts", 1),
+        }
+        for row in rows
+        if row.get("manager_status", {}).get("category") == "problem"
+    ][:10]
+    return {
+        "job_id": job_id,
+        "campaign": campaign,
+        "period_from": period_from,
+        "period_to": period_to,
+        "status": _campaign_status(job_id),
+        "summary": counts,
+        "rates": {
+            "delivery_rate": _pct(counts["delivered"], counts["sent"]),
+            "open_rate": _pct(counts["opened"], counts["delivered"] or counts["sent"]),
+            "ctr": _pct(counts["clicked"], counts["sent"]),
+            "error_rate": _pct(counts["errors"], counts["sent"]),
+        },
+        "daily": [{"date": day, **values} for day, values in sorted(daily.items())],
+        "undelivery_reasons": [
+            {"reason": key, "label": BOUNCE_REASON_LABELS.get(key, key), "count": count}
+            for key, count in reasons.most_common()
+        ],
+        "provider_effectiveness": [
+            {
+                "provider": provider,
+                "delivery_rate": _pct(values["delivered"], values["total"]),
+                "open_rate": _pct(values["opened"], values["delivered"] or values["total"]),
+            }
+            for provider, values in provider_stats.items()
+        ],
+        "funnel": build_funnels(counts=counts),
+        "insights": build_insights(rows=rows, counts=counts),
+        "high_interest_companies": high_interest,
+        "problem_addresses": problematic,
+        "recommendations": [item["text"] for item in build_insights(rows=rows, counts=counts)],
+    }
+
+
+def list_available_reports() -> list[dict[str, str]]:
+    return [
+        {
+            "id": "delivery_summary",
+            "title": "Сводка по доставке",
+            "description": "Общая статистика доставки, открытий, кликов, отписок и ошибок.",
+        },
+        {
+            "id": "sent_mail_log",
+            "title": "Журнал отправок",
+            "description": "Подробный журнал всех отправок по email, получателю и статусу.",
+        },
+        {
+            "id": "consents",
+            "title": "Отчёт по согласиям",
+            "description": "Аналитика по согласиям, статусам и отправке материалов.",
+        },
+        {
+            "id": "email_problems",
+            "title": "Проблемные адреса",
+            "description": "Список адресов с ошибками доставки, hard/soft bounce и жалобами.",
+        },
+    ]
+
+
+def _reports_dir(job_id: str | None) -> Path:
+    path = resolve_job_paths(job_id).root_dir / "state" / "reports"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def export_report(
+    job_id: str | None,
+    *,
+    report_type: str,
+    fmt: str,
+    period_from: str = "",
+    period_to: str = "",
+    author: str = "",
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    options = options or {}
+    report_id = uuid.uuid4().hex[:12]
+    normalized_fmt = _safe_text(fmt).lower() or "xlsx"
+    if normalized_fmt == "xlsx":
+        output_path = build_sender_delivery_report_xlsx(job_id, refresh=bool(options.get("refresh", True)))
+    else:
+        filters = StatsFilters(job_ids=(normalize_job_id(job_id),) if normalize_job_id(job_id) else ())
+        rows = _load_delivery_for_jobs(filters.job_ids)
+        consent_rows = _load_consents_for_jobs(filters.job_ids)
+        problems = [row for row in rows if row.get("manager_status", {}).get("category") == "problem"]
+        actions = load_manager_actions(job_id)
+        reports_dir = _reports_dir(job_id)
+        if normalized_fmt == "csv":
+            output_path = reports_dir / f"{report_type}_{report_id}.csv"
+            _write_csv_report(output_path, report_type, rows, consent_rows, problems, actions)
+        elif normalized_fmt == "ndjson":
+            output_path = reports_dir / f"{report_type}_{report_id}.ndjson"
+            _write_ndjson_report(output_path, report_type, rows, consent_rows, problems, actions)
+        else:
+            raise ValueError(f"Unsupported export format: {fmt}")
+
+    record = append_report_history(
+        job_id,
+        report_id=report_id,
+        report_type=report_type,
+        period_from=period_from,
+        period_to=period_to,
+        fmt=normalized_fmt,
+        author=author,
+        status="ready",
+        path=str(output_path),
+        options=options,
+    )
+    return {
+        "report_id": report_id,
+        "path": str(output_path),
+        "format": normalized_fmt,
+        "record": record,
+    }
+
+
+def _write_csv_report(
+    path: Path,
+    report_type: str,
+    rows: list[dict[str, Any]],
+    consent_rows: list[dict[str, Any]],
+    problems: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+) -> None:
+    if report_type == "consents":
+        fieldnames = ["organization", "contact", "email", "consent_status_label", "materials_label", "last_action_at"]
+        source = consent_rows
+    elif report_type == "email_problems":
+        fieldnames = ["organization", "email", "bounce_reason_label", "provider", "attempts", "last_event_at"]
+        source = problems
+    elif report_type == "sent_mail_log":
+        fieldnames = ["organization", "email", "provider", "manager_status", "sent_at", "last_event_at"]
+        source = rows
+    else:
+        fieldnames = ["organization", "email", "manager_status", "interest", "next_action", "last_event_at"]
+        source = rows
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in source:
+            if report_type == "consents":
+                writer.writerow(
+                    {
+                        "organization": row.get("organization"),
+                        "contact": row.get("contact"),
+                        "email": row.get("email"),
+                        "consent_status_label": row.get("consent_status_label"),
+                        "materials_label": row.get("materials_label"),
+                        "last_action_at": row.get("last_action_at"),
+                    }
+                )
+            elif report_type == "email_problems":
+                writer.writerow(
+                    {
+                        "organization": row.get("organization"),
+                        "email": row.get("email"),
+                        "bounce_reason_label": row.get("bounce_reason_label"),
+                        "provider": row.get("provider"),
+                        "attempts": row.get("attempts"),
+                        "last_event_at": row.get("last_event_at"),
+                    }
+                )
+            elif report_type == "sent_mail_log":
+                writer.writerow(
+                    {
+                        "organization": row.get("organization"),
+                        "email": row.get("email"),
+                        "provider": row.get("provider"),
+                        "manager_status": row.get("manager_status", {}).get("label"),
+                        "sent_at": row.get("sent_at"),
+                        "last_event_at": row.get("last_event_at"),
+                    }
+                )
+            else:
+                writer.writerow(
+                    {
+                        "organization": row.get("organization"),
+                        "email": row.get("email"),
+                        "manager_status": row.get("manager_status", {}).get("label"),
+                        "interest": row.get("interest", {}).get("label"),
+                        "next_action": row.get("next_action", {}).get("label"),
+                        "last_event_at": row.get("last_event_at"),
+                    }
+                )
+    if report_type == "delivery_summary" and actions:
+        with path.open("a", encoding="utf-8-sig", newline="") as handle:
+            handle.write("\n")
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=["created_at", "organization", "recipient_email", "action_label", "responsible_manager"],
+            )
+            writer.writeheader()
+            for action in actions:
+                writer.writerow(
+                    {
+                        "created_at": action.get("created_at"),
+                        "organization": action.get("organization"),
+                        "recipient_email": action.get("recipient_email"),
+                        "action_label": action.get("action_label"),
+                        "responsible_manager": action.get("responsible_manager"),
+                    }
+                )
+
+
+def _write_ndjson_report(
+    path: Path,
+    report_type: str,
+    rows: list[dict[str, Any]],
+    consent_rows: list[dict[str, Any]],
+    problems: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+) -> None:
+    if report_type == "consents":
+        source = consent_rows
+    elif report_type == "email_problems":
+        source = problems
+    elif report_type == "sent_mail_log":
+        source = rows
+    else:
+        source = rows
+    with path.open("w", encoding="utf-8") as handle:
+        for item in source:
+            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+        for action in actions:
+            handle.write(json.dumps({"manager_action": action}, ensure_ascii=False) + "\n")
+
+
+def build_reports_view(job_ids: tuple[str, ...]) -> dict[str, Any]:
+    history: list[dict[str, Any]] = []
+    for job_id in job_ids:
+        for record in load_report_history(job_id):
+            history.append({**record, "job_id": job_id})
+    history.sort(key=lambda item: _safe_text(item.get("created_at")), reverse=True)
+    formats = Counter(_safe_text(item.get("format")) for item in history if _safe_text(item.get("format")))
+    return {
+        "available": list_available_reports(),
+        "summary": {
+            "generated": len(history),
+            "xlsx": formats.get("xlsx", 0),
+            "ndjson": formats.get("ndjson", 0),
+            "csv": formats.get("csv", 0),
+            "scheduled": 0,
+        },
+        "history": history,
+        "scheduled": [],
+    }
+
+
+def find_report_file(job_ids: tuple[str, ...], report_id: str) -> Path | None:
+    for job_id in job_ids:
+        for record in load_report_history(job_id):
+            if _safe_text(record.get("report_id")) == report_id:
+                path = Path(_safe_text(record.get("path")))
+                if path.exists():
+                    return path
+    return None

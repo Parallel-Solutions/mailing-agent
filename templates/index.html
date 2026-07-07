@@ -2689,6 +2689,7 @@
       </div>
 
       <div style="display:flex; gap:8px; flex-wrap:wrap">
+        <a class="btn-primary" href="/statistics" style="display:inline-flex;align-items:center;text-decoration:none;">Открыть раздел статистики для менеджера</a>
         <button class="btn-outline" id="status-download-data" data-process-lock="true" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать таблицу текущей отправки</button>
         <button class="btn-outline" id="status-download-report" data-process-lock="true" onclick="downloadWithJob('/api/download/sender-delivery-report')" disabled>Скачать отчёт текущей отправки</button>
         <button class="btn-outline" id="status-refresh-button" data-process-lock="true" onclick="refreshCurrentJobStatusScreen()">Обновить статусы</button>

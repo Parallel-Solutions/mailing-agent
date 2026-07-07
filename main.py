@@ -32,6 +32,7 @@ from src.web.parser_router import create_parser_router
 from src.web.philologist_router import create_philologist_router
 from src.web.public_router import create_public_router
 from src.web.sender_router import create_sender_router
+from src.web.statistics_router import create_statistics_router
 from src.web.auth_router import create_auth_router
 from src.web.workers_router import create_workers_router
 from src.web.sender_service import (
@@ -904,6 +905,14 @@ async def index(session_token: str | None = Cookie(default=None, alias=SESSION_C
     return (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
 
 
+@app.get("/statistics", response_class=HTMLResponse)
+async def statistics_page(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
+    username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
+    if not username or get_user_record(username) is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return (TEMPLATES_DIR / "statistics.html").read_text(encoding="utf-8")
+
+
 @app.get("/api/status")
 async def app_status(principal: object = Depends(check_auth)):
     return {"status": "ok", "message": "Сервер работает"}
@@ -1157,6 +1166,15 @@ app.include_router(
         preview_recipients=preview_recipients,
         chat_with_sender=chat_with_sender,
         is_load_test_job=is_load_test_job,
+    )
+)
+
+app.include_router(
+    create_statistics_router(
+        check_auth=check_auth,
+        jobs_dir=JOBS_DIR,
+        resolve_job_paths=resolve_job_paths,
+        logger=logger,
     )
 )
 
