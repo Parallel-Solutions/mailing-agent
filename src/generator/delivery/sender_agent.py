@@ -350,6 +350,19 @@ def _sleep_sender_retry(delay_seconds: float) -> None:
     sleep(delay_seconds)
 
 
+def _read_rows_with_retry(data_xlsx_path: Path, *, attempts: int = 4, delay_seconds: float = 0.4):
+    from zipfile import BadZipFile
+
+    last_exc: Exception | None = None
+    for _attempt in range(attempts):
+        try:
+            return load_rows(data_xlsx_path)
+        except (EOFError, BadZipFile, OSError) as exc:
+            last_exc = exc
+            _sleep_sender_retry(delay_seconds)
+    raise last_exc  # type: ignore[misc]
+
+
 def _is_retryable_unisender_exception(exc: Exception) -> bool:
     if isinstance(exc, HTTPError):
         return int(exc.code) in UNISENDER_RETRYABLE_HTTP_CODES
@@ -414,6 +427,14 @@ def _resolve_sender_data_xlsx_path(job_id: str | None = None) -> Path:
     if normalize_job_id(job_id):
         return prepare_data_xlsx(job_id, job_paths.data_xlsx)
     return job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+
+
+def _existing_sender_data_xlsx_path(job_id: str | None = None) -> Path:
+    """Путь к data.xlsx без пересборки из БД (для опроса статуса во время отправки)."""
+    job_paths = resolve_job_paths(job_id)
+    if job_paths.data_xlsx.exists():
+        return job_paths.data_xlsx
+    return DATA_XLSX_PATH
 
 
 def _refresh_sender_stop_flag(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
@@ -1231,7 +1252,12 @@ def _collect_excel_stats(data_xlsx_path: Path | None = None) -> dict[str, int]:
             if cached and cached.get("signature") == signature:
                 return dict(cached.get("stats") or {"total": 0, "sent": 0, "error": 0, "pending": 0})
 
-    workbook, _, rows = load_rows(source_path)
+    from zipfile import BadZipFile
+
+    try:
+        workbook, _, rows = _read_rows_with_retry(source_path)
+    except (EOFError, BadZipFile, OSError):
+        return {"total": 0, "sent": 0, "error": 0, "pending": 0}
     stats = {"total": len(rows), "sent": 0, "error": 0, "pending": 0}
     for row in rows:
         status_class = _status_class(row.get("STATUS"))
@@ -4025,7 +4051,7 @@ def run_sender(
         _save_sender_state(state, job_id)
         return dict(state)
 
-    workbook, worksheet, rows = load_rows(data_xlsx_path)
+    workbook, worksheet, rows = _read_rows_with_retry(data_xlsx_path)
     if requested_row_ids:
         rows = [row for row in rows if str(row.get("ID")).strip() in requested_row_ids]
     candidates = rows[:effective_limit] if effective_limit else rows
@@ -4849,8 +4875,12 @@ def run_sender(
 def get_sender_status(job_id: str | None = None) -> dict[str, Any]:
     state = _load_sender_state(job_id)
     state["job_id"] = job_id
-    data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
-    if state.get("status") == "running" and isinstance(state.get("stats"), dict):
+    running = state.get("status") == "running"
+    if running:
+        data_xlsx_path = _existing_sender_data_xlsx_path(job_id)
+    else:
+        data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
+    if running and isinstance(state.get("stats"), dict):
         state["stats"] = dict(state.get("stats") or {})
     else:
         state["stats"] = _collect_excel_stats(data_xlsx_path)

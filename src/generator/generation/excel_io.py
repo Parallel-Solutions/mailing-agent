@@ -1,3 +1,5 @@
+import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -69,4 +71,13 @@ def update_status(worksheet, row_index: int, status_value: str) -> None:
 
 
 def save_workbook(workbook, xlsx_path: Path) -> None:
-    workbook.save(xlsx_path)
+    xlsx_path = Path(xlsx_path)
+    fd, tmp_name = tempfile.mkstemp(dir=str(xlsx_path.parent), suffix=".xlsxtmp")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        workbook.save(tmp_path)
+        os.replace(tmp_path, xlsx_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise

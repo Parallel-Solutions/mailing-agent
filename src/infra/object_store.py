@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import boto3
@@ -64,12 +66,20 @@ def put_file(key: str, local_path: Path) -> None:
 def get_file(key: str, local_path: Path) -> None:
     local_path = Path(local_path)
     local_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(local_path.parent), suffix=".s3tmp")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
     try:
-        _s3_client().download_file(settings.s3_bucket, key, str(local_path))
+        _s3_client().download_file(settings.s3_bucket, key, str(tmp_path))
+        os.replace(tmp_path, local_path)
     except ClientError as exc:
+        tmp_path.unlink(missing_ok=True)
         code = exc.response.get("Error", {}).get("Code", "")
         if code in {"404", "NoSuchKey", "NotFound"}:
             raise ObjectNotFoundError(key) from exc
+        raise
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
         raise
 
 

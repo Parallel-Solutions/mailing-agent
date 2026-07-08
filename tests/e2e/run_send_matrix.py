@@ -157,7 +157,8 @@ def _run_sender(
             return api.wait_sender(job_id, expect_dry_run=dry_run)
         except E2EApiError as exc:
             last_error = exc
-            if "BadZipFile" not in str(exc) or attempt >= 2:
+            transient = ("BadZipFile" in str(exc)) or ("EOFError" in str(exc)) or ("Truncated" in str(exc))
+            if not transient or attempt >= 2:
                 raise
     if last_error is not None:
         raise last_error

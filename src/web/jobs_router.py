@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -812,8 +814,16 @@ class JobsWebController:
                 dest = templates_dir / CONTRACT_TEMPLATE_FILENAME
             else:
                 raise HTTPException(status_code=400, detail="Не указан тип шаблона.")
-            with dest.open("wb") as f:
-                shutil.copyfileobj(file.file, f)
+            fd, tmp_name = tempfile.mkstemp(dir=str(templates_dir), suffix=".uptmp")
+            os.close(fd)
+            tmp_dest = Path(tmp_name)
+            try:
+                with tmp_dest.open("wb") as f:
+                    shutil.copyfileobj(file.file, f)
+                os.replace(tmp_dest, dest)
+            except BaseException:
+                tmp_dest.unlink(missing_ok=True)
+                raise
             if paths.job_id:
                 from src.jobs.workspace import put_upload
 

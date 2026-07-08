@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 import struct
+import time
 import zipfile
 import zlib
 from pathlib import Path
@@ -1758,7 +1759,17 @@ def restore_svg_assets_from_template(template_path: Path, output_path: Path) -> 
 
 
 def render_docx(template_path: Path, replacements: list[tuple[str, str]], output_path: Path, context: dict) -> Path:
-    doc = Document(template_path)
+    doc = None
+    last_exc: Exception | None = None
+    for _attempt in range(4):
+        try:
+            doc = Document(template_path)
+            break
+        except (zipfile.BadZipFile, EOFError, OSError) as exc:
+            last_exc = exc
+            time.sleep(0.3)
+    if doc is None:
+        raise last_exc  # type: ignore[misc]
 
     for paragraph in iter_paragraphs(doc):
         replace_text_in_runs(paragraph, replacements)
