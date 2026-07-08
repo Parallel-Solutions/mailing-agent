@@ -73,10 +73,10 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
     shown_pdf_total = expected_pdf_documents or pdf_total
     if shown_pdf_total <= 0:
         shown_pdf_done = 0
-    elif status == "completed" and output_pdf_count <= 0 and pdf_processed <= 0:
-        shown_pdf_done = shown_pdf_total
+    elif status in {"completed", "error"}:
+        shown_pdf_done = min(output_pdf_count, shown_pdf_total)
     else:
-        shown_pdf_done = max(pdf_processed, min(output_pdf_count, shown_pdf_total))
+        shown_pdf_done = min(max(pdf_processed, output_pdf_count), shown_pdf_total)
     clients_text = f"{processed_rows} из {total_rows} клиентов" if total_rows > 0 else "клиентов пока не найдено"
     documents_text = f"{shown_documents} из {expected_documents} документов"
     pdf_text = f"{shown_pdf_done} из {shown_pdf_total} файлов"

@@ -290,11 +290,26 @@ def _job_state_dir(job_id: str | None) -> Path:
     return state_dir
 
 
+def _archive_contains_output_files(archive_path: Path, output_dir: Path, output_files: list[Path]) -> bool:
+    if not output_files:
+        return False
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            archived_names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return False
+    expected_names = {path.relative_to(output_dir).as_posix() for path in output_files}
+    return expected_names.issubset(archived_names)
+
+
 def _resolve_cached_output_archive(job_id: str | None) -> tuple[Path, bool]:
     job_paths = resolve_job_paths(job_id)
     output_dir = job_paths.output_dir
     archive_path = _job_state_dir(job_id) / "output.zip"
     if not output_dir.exists():
+        return archive_path, False
+    output_files = _iter_output_archive_files(output_dir)
+    if not output_files:
         return archive_path, False
     if not archive_path.exists():
         return archive_path, False
@@ -302,7 +317,10 @@ def _resolve_cached_output_archive(job_id: str | None) -> tuple[Path, bool]:
         archive_mtime = archive_path.stat().st_mtime
     except OSError:
         return archive_path, False
-    return archive_path, archive_mtime >= _latest_tree_mtime(output_dir)
+    cache_is_fresh = archive_mtime >= _latest_tree_mtime(output_dir)
+    if cache_is_fresh:
+        cache_is_fresh = _archive_contains_output_files(archive_path, output_dir, output_files)
+    return archive_path, cache_is_fresh
 
 
 def _iter_output_archive_files(output_dir: Path) -> list[Path]:
@@ -344,6 +362,9 @@ def _schedule_output_archive_build(job_id: str | None) -> None:
 
         def _run() -> None:
             try:
+                if not bool(compact_documents_status(job_id).get("output_ready")):
+                    logger.info("output_archive_build_waiting_for_ready_documents", job_id=job_id)
+                    return
                 output_dir = resolve_job_paths(job_id).output_dir
                 if _iter_output_archive_files(output_dir):
                     _build_output_archive(job_id)

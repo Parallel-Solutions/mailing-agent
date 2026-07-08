@@ -175,6 +175,74 @@ class PdfPipelineTests(unittest.TestCase):
         ])
         self.assertEqual((output_dir / "document.pdf").read_bytes(), b"%PDF ok")
 
+    def test_gotenberg_health_filters_unhealthy_endpoints(self) -> None:
+        calls = []
+
+        class FakeHealthResponse:
+            def __init__(self, payload) -> None:
+                self._payload = payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return self._payload
+
+        def fake_get(endpoint, **kwargs):
+            calls.append(endpoint)
+            if "bad" in endpoint:
+                raise RuntimeError("down")
+            return FakeHealthResponse({"status": "up", "details": {"libreoffice": {"status": "up"}}})
+
+        with (
+            patch.object(pdf_converter, "GOTENBERG_BASE_URLS", ("http://bad", "http://good")),
+            patch.object(pdf_converter.httpx, "get", side_effect=fake_get),
+        ):
+            urls = pdf_converter._healthy_gotenberg_base_urls()
+
+        self.assertEqual(urls, ("http://good",))
+        self.assertEqual(calls, ["http://bad/health", "http://good/health"])
+
+    def test_gotenberg_failed_conversion_does_not_report_progress(self) -> None:
+        docx_path = self.tmp_dir / "document.docx"
+        output_dir = self.tmp_dir / "pdf"
+        output_dir.mkdir()
+        docx_path.write_bytes(b"fake-docx")
+        progress_calls = 0
+
+        class FakeResponse:
+            content = b""
+            headers = {"content-type": "text/plain"}
+
+            def raise_for_status(self) -> None:
+                raise RuntimeError("conversion failed")
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            def post(self, endpoint, files):
+                return FakeResponse()
+
+        def progress() -> None:
+            nonlocal progress_calls
+            progress_calls += 1
+
+        with (
+            patch.object(pdf_converter, "_healthy_gotenberg_base_urls", return_value=("http://bad",)),
+            patch.object(pdf_converter.httpx, "Client", FakeClient),
+        ):
+            result = pdf_converter._convert_with_gotenberg([docx_path], output_dir, worker_count=1, progress_callback=progress)
+
+        self.assertIsNone(result[docx_path])
+        self.assertEqual(progress_calls, 0)
+
     def test_finalize_generated_files_recovers_missing_pdf_from_final_docx(self) -> None:
         final_dir = self.tmp_dir / "output" / "1_Test"
         batch_pdf_dir = self.tmp_dir / "batch_pdf"
