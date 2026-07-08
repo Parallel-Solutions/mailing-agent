@@ -80,7 +80,7 @@ class DocumentsStartRequest(JobScopedRequest):
     mode: str = "fast"
     document_mode: str | None = None
     work_type: str | None = None
-    template_analysis_confirmed: bool = True
+    template_analysis_confirmed: bool = False
 
     @field_validator("mode", mode="before")
     @classmethod

@@ -13,6 +13,13 @@ from src.generator.inflection.ai_case_agent import (
     _resolve_openai_base_url,
 )
 from src.generator.generation.template_analysis import build_template_analysis_context
+from src.generator.generation.template_preview import (
+    PREVIEW_APPROVAL_APPROVED,
+    PREVIEW_APPROVAL_PENDING,
+    PREVIEW_APPROVAL_REJECTED,
+    load_template_preview_state,
+    mark_template_preview_approval,
+)
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
 from src.jobs import load_agent_state, resolve_job_paths, resolve_state_path
 from src.jobs.chat_memory import append_chat_turn, chat_history_for_prompt, get_chat_session
@@ -787,6 +794,180 @@ def _documents_agent_audit_context(job_id: str | None) -> list[dict[str, Any]]:
     return payload
 
 
+def _documents_agent_template_preview_context(job_id: str | None) -> dict[str, Any]:
+    state = load_template_preview_state(job_id)
+    if not state:
+        return {"exists": False, "awaiting_confirmation": False}
+    approval_status = str(state.get("approval_status") or PREVIEW_APPROVAL_PENDING)
+    return {
+        "exists": True,
+        "awaiting_confirmation": state.get("status") == "ready" and approval_status != PREVIEW_APPROVAL_APPROVED,
+        "status": state.get("status"),
+        "approval_status": approval_status,
+        "row_id": state.get("row_id"),
+        "row_label": _documents_agent_sanitize_text(state.get("row_label"), limit=180),
+        "row_number": state.get("row_number"),
+        "document_mode": state.get("document_mode"),
+        "work_type": state.get("work_type"),
+        "created_at": state.get("created_at"),
+        "has_pdf": bool(state.get("has_pdf")),
+        "has_docx": bool(state.get("has_docx")),
+    }
+
+
+def _documents_agent_extract_json_object(text: str) -> dict[str, Any] | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE).strip()
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        payload = json.loads(raw[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _documents_agent_preview_decision_reply(
+    message: str,
+    job_id: str | None,
+    context: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    preview = context.get("template_preview") if isinstance(context.get("template_preview"), dict) else {}
+    if not preview.get("awaiting_confirmation"):
+        return None
+
+    client = _documents_agent_build_llm_client()
+    if client is None:
+        reply = (
+            "Я собрала пример, но сейчас не могу распознать ответ через AI. "
+            "Массовую генерацию не запускаю; попробуйте подтвердить позже, когда AI снова будет доступен."
+        )
+        return _documents_agent_reply_payload(
+            reply,
+            source="documents_preview_ai_unavailable",
+            action="hold_documents_generation",
+            preview_approved=False,
+            tools_used=["template_preview", "ai_intent"],
+        )
+
+    decision_context = {
+        "screen": "documents",
+        "task": "decide whether the user approved the generated preview document",
+        "allowed_intents": [
+            "approve_preview",
+            "reject_preview",
+            "request_preview_regenerate",
+            "request_template_change",
+            "ask_question",
+            "unclear",
+        ],
+        "preview": preview,
+        "status": context.get("status"),
+        "recent_chat_history": history[-8:],
+        "new_user_message": _documents_agent_sanitize_text(message, limit=800),
+    }
+    system_prompt = (
+        "You classify the user's latest Russian message while the service is waiting for approval of a generated document preview. "
+        "Return only compact JSON with keys: intent, confidence, reply. "
+        "intent must be one of: approve_preview, reject_preview, request_preview_regenerate, request_template_change, ask_question, unclear. "
+        "approve_preview means the user clearly allows mass generation to start. "
+        "reject_preview or request_template_change means the user is unhappy with the preview or asks to change the template. "
+        "request_preview_regenerate means the user asks to rebuild the same preview. "
+        "If the message is ambiguous, use unclear. Never approve if there is doubt. reply must be short Russian text."
+    )
+    try:
+        response = client.chat.completions.create(
+            model=settings.case_agent_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(decision_context, ensure_ascii=False, indent=2, default=str)},
+            ],
+            temperature=0,
+            max_tokens=260,
+        )
+    except Exception:
+        reply = "AI сейчас не смог разобрать ответ по примеру. Массовую генерацию не запускаю; попробуйте ещё раз чуть позже."
+        return _documents_agent_reply_payload(
+            reply,
+            source="documents_preview_ai_error",
+            action="hold_documents_generation",
+            preview_approved=False,
+            tools_used=["template_preview", "ai_intent"],
+        )
+
+    raw_reply = str(response.choices[0].message.content if response.choices else "").strip()
+    decision = _documents_agent_extract_json_object(raw_reply) or {}
+    intent = str(decision.get("intent") or "unclear").strip()
+    try:
+        confidence = float(decision.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    model_reply = _documents_agent_sanitize_text(decision.get("reply"), limit=500)
+
+    if intent == "approve_preview" and confidence >= 0.7:
+        try:
+            mark_template_preview_approval(job_id, approved=True, reason=message, actor="documents_chat")
+        except FileNotFoundError:
+            return _documents_agent_reply_payload(
+                "Пример уже не найден. Сначала соберите preview заново, потом я запущу массовую генерацию.",
+                source="documents_preview_missing",
+                action="regenerate_template_preview",
+                preview_approved=False,
+                tools_used=["template_preview", "ai_intent"],
+            )
+        return _documents_agent_reply_payload(
+            model_reply or "Поняла, пример подтверждён. Запускаю массовую подготовку документов.",
+            source="documents_preview_ai",
+            action="start_documents_after_preview",
+            preview_approved=True,
+            preview_intent=intent,
+            preview_confidence=confidence,
+            tools_used=["template_preview", "ai_intent"],
+        )
+
+    if intent in {"reject_preview", "request_template_change"} and confidence >= 0.55:
+        try:
+            mark_template_preview_approval(job_id, approved=False, reason=message, actor="documents_chat")
+        except FileNotFoundError:
+            pass
+        return _documents_agent_reply_payload(
+            model_reply or "Поняла, массовую генерацию не запускаю. Напишите, что именно поправить в шаблоне.",
+            source="documents_preview_ai",
+            action="hold_documents_generation",
+            preview_approved=False,
+            preview_intent=intent,
+            preview_confidence=confidence,
+            tools_used=["template_preview", "ai_intent"],
+        )
+
+    if intent == "request_preview_regenerate" and confidence >= 0.55:
+        return _documents_agent_reply_payload(
+            model_reply or "Хорошо, пересобираю пример по первой строке. После этого снова попрошу подтверждение.",
+            source="documents_preview_ai",
+            action="regenerate_template_preview",
+            preview_approved=False,
+            preview_intent=intent,
+            preview_confidence=confidence,
+            tools_used=["template_preview", "ai_intent"],
+        )
+
+    return _documents_agent_reply_payload(
+        model_reply or "Я не уверена, что это подтверждение запуска. Массовую генерацию пока не начинаю: напишите, можно ли запускать все документы.",
+        source="documents_preview_ai",
+        action="hold_documents_generation",
+        preview_approved=False,
+        preview_intent=intent or "unclear",
+        preview_confidence=confidence,
+        tools_used=["template_preview", "ai_intent"],
+    )
+
 def _documents_agent_build_readonly_context(message: str, job_id: str | None, documents_status: dict[str, Any]) -> dict[str, Any]:
     paths = resolve_job_paths(job_id)
     state_dir = resolve_state_path("generator", job_id).parent
@@ -803,6 +984,7 @@ def _documents_agent_build_readonly_context(message: str, job_id: str | None, do
         "user_question": _documents_agent_sanitize_text(message, limit=600),
         "service_knowledge": _documents_agent_sanitize_text(service_docs, limit=2500),
         "template_analysis": template_analysis,
+        "template_preview": _documents_agent_template_preview_context(job_id),
         "status": {
             "status": documents_status.get("status"),
             "stage": documents_status.get("stage"),
@@ -1021,6 +1203,13 @@ def choose_documents_agent_reply(
         "session_id": resolved_session_id,
         "history": history,
     }
+    preview_decision = _documents_agent_preview_decision_reply(message, job_id, context, history)
+    if preview_decision is not None:
+        reply = str(preview_decision.get("reply") or "")
+        append_chat_turn(resolved_session_id, message, reply)
+        preview_decision.setdefault("session_id", resolved_session_id)
+        return preview_decision
+
     context_text = json.dumps(context, ensure_ascii=False, indent=2, default=str)
     if len(context_text) > _MAX_DIAGNOSTIC_TEXT:
         context_text = context_text[: _MAX_DIAGNOSTIC_TEXT - 1].rstrip() + "..."

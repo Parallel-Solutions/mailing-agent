@@ -1780,6 +1780,115 @@
     background: #f7fbf1;
   }
 
+  .documents-preview-card {
+    width: min(100%, 620px);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .documents-preview-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #1f3f08;
+  }
+
+  .documents-preview-subtitle {
+    font-size: 11px;
+    line-height: 1.45;
+    color: #4f6540;
+  }
+
+  .documents-preview-frame {
+    width: 100%;
+    height: 430px;
+    border: 1px solid #d8e4c8;
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .documents-preview-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .documents-preview-actions button.chat-download-link {
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .documents-preview-loading {
+    width: min(100%, 620px);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid #d8e4c8;
+    border-radius: 8px;
+    background: #f7fbf1;
+  }
+
+  .documents-preview-spinner {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+    border: 3px solid #d8e4c8;
+    border-top-color: #4f8f1d;
+    border-radius: 50%;
+    animation: documentsPreviewSpin 0.8s linear infinite;
+  }
+
+  .documents-preview-loading-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: #4f6540;
+  }
+
+  .documents-preview-loading-text strong {
+    font-size: 12px;
+    color: #1f3f08;
+  }
+
+  @keyframes documentsPreviewSpin {
+    to { transform: rotate(360deg); }
+  }
+
+  .documents-preview-modal-card {
+    width: min(1180px, calc(100vw - 36px));
+    height: min(92vh, 920px);
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .documents-preview-modal-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .documents-preview-modal-frame {
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+    border: 1px solid #d8e4c8;
+    border-radius: 10px;
+    background: #fff;
+  }
+
+  .documents-preview-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
   .chat-structured {
     display: flex;
     flex-direction: column;
@@ -2975,6 +3084,20 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="documents-preview-modal" role="dialog" aria-modal="true" aria-labelledby="documents-preview-modal-title" onclick="closeDocumentsPreviewModal()">
+  <div class="modal-card documents-preview-modal-card" onclick="event.stopPropagation()">
+    <div class="documents-preview-modal-head">
+      <div>
+        <div class="modal-title" id="documents-preview-modal-title">Предпросмотр документа</div>
+        <div class="modal-sub" id="documents-preview-modal-sub">Проверьте PDF перед запуском массовой генерации.</div>
+      </div>
+      <button class="btn-outline" type="button" onclick="closeDocumentsPreviewModal()">Закрыть</button>
+    </div>
+    <iframe class="documents-preview-modal-frame" id="documents-preview-modal-frame" title="Предпросмотр документа"></iframe>
+    <div class="documents-preview-modal-actions" id="documents-preview-modal-actions"></div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script src="/public/documents-ui.js"></script>
@@ -3031,6 +3154,7 @@
   let lastDocumentsUiState = {};
   let lastSenderUiState = {};
   let documentsStartClicked = false;
+  let documentsPreviewGate = null;
   let documentsStatusRequestSeq = 0;
   let documentsStatusEpoch = 0;
   let deliveryAnalyticsFollowupTimer = null;
@@ -3162,6 +3286,7 @@
       philologistUiState: lastPhilologistUiState,
       documentsUiState: lastDocumentsUiState,
       documentsStartClicked,
+      documentsPreviewGate,
       senderUiState: lastSenderUiState,
       senderPreviewState,
       parserRunning,
@@ -3379,6 +3504,7 @@
   function restoreUiState(snapshot) {
     if (!snapshot || typeof snapshot !== 'object') return;
     senderPreviewState = snapshot.senderPreviewState || null;
+    documentsPreviewGate = snapshot.documentsPreviewGate || null;
     documentsStartClicked = !!snapshot.documentsStartClicked;
     flowNotificationState = snapshot.flowNotificationState || createFlowNotificationState();
     Object.assign(lastAgentEventIds, snapshot.lastAgentEventIds || {});
@@ -3418,6 +3544,7 @@
   function resetModuleRuntimeState() {
     invalidateDocumentsStatusResponses();
     senderPreviewState = null;
+    documentsPreviewGate = null;
     parserRunning = false;
     phRunning = false;
     senderRunning = false;
@@ -5163,6 +5290,7 @@
         uploadCompleted = true;
         const previousJobId = currentJobId;
         if (data.job_id) setCurrentJobId(data.job_id);
+        documentsPreviewGate = null;
         resetModuleUiForNewDataUpload();
         const uploadFilename = document.getElementById('upload-data-filename');
         const uploadRows = document.getElementById('upload-data-rows');
@@ -5227,6 +5355,7 @@
       const data = await readJsonOrText(res);
       if (res.ok) {
         if (data.job_id) setCurrentJobId(data.job_id);
+        documentsPreviewGate = null;
         btn.innerHTML = '<span class="file-icon">✓</span> ' + (file.name || label);
         btn.classList.add('uploaded');
         updateSettingsChecklist();
@@ -5383,6 +5512,215 @@
     saveUiState();
   }
 
+  function openDocumentsPreviewModal(pdfUrl, rowLabel = '', docxUrl = '') {
+    const modal = document.getElementById('documents-preview-modal');
+    const frame = document.getElementById('documents-preview-modal-frame');
+    const sub = document.getElementById('documents-preview-modal-sub');
+    const actions = document.getElementById('documents-preview-modal-actions');
+    if (!modal || !frame || !pdfUrl) return;
+    const separator = String(pdfUrl).includes('?') ? '&' : '?';
+    frame.src = `${pdfUrl}${separator}v=${Date.now()}#toolbar=1&navpanes=0&scrollbar=1&view=FitH`;
+    if (sub) {
+      sub.textContent = rowLabel
+        ? `Пример готов для строки: ${rowLabel}. Проверьте PDF и ответьте в чат, можно ли запускать генерацию для всех строк.`
+        : 'Проверьте PDF и ответьте в чат, можно ли запускать генерацию для всех строк.';
+    }
+    if (actions) {
+      actions.innerHTML = '';
+      const pdfLink = document.createElement('a');
+      pdfLink.className = 'chat-download-link';
+      pdfLink.href = pdfUrl;
+      pdfLink.target = '_blank';
+      pdfLink.rel = 'noopener';
+      pdfLink.textContent = 'Открыть PDF отдельно';
+      actions.appendChild(pdfLink);
+      if (docxUrl) {
+        const docxLink = document.createElement('a');
+        docxLink.className = 'chat-download-link';
+        docxLink.href = docxUrl;
+        docxLink.target = '_blank';
+        docxLink.rel = 'noopener';
+        docxLink.textContent = 'Скачать DOCX';
+        actions.appendChild(docxLink);
+      }
+    }
+    modal.classList.add('open');
+  }
+
+  function closeDocumentsPreviewModal() {
+    const modal = document.getElementById('documents-preview-modal');
+    const frame = document.getElementById('documents-preview-modal-frame');
+    if (modal) modal.classList.remove('open');
+    if (frame) frame.removeAttribute('src');
+  }
+
+  function appendDocumentsPreviewMessage(result = {}) {
+    const messages = document.getElementById('g-chat-messages');
+    if (!messages) return;
+    const pdfUrl = String(result.pdf_url || '');
+    const docxUrl = String(result.docx_url || '');
+    const rowLabel = String(result.row_label || result.row_id || 'первая строка');
+
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg agent';
+    msg.dataset.documentsPreview = 'true';
+
+    const card = document.createElement('div');
+    card.className = 'documents-preview-card';
+
+    const title = document.createElement('div');
+    title.className = 'documents-preview-title';
+    title.textContent = 'Пример КП перед массовой генерацией';
+    card.appendChild(title);
+
+    const subtitle = document.createElement('div');
+    subtitle.className = 'documents-preview-subtitle';
+    subtitle.textContent = `Я собрала один пример для строки: ${rowLabel}. Проверьте, как выглядит документ, и ответьте в чат, можно ли запускать генерацию для всех строк.`;
+    card.appendChild(subtitle);
+
+
+
+    const actions = document.createElement('div');
+    actions.className = 'documents-preview-actions';
+    if (pdfUrl) {
+      const previewButton = document.createElement('button');
+      previewButton.type = 'button';
+      previewButton.className = 'chat-download-link';
+      previewButton.textContent = 'Открыть предпросмотр';
+      previewButton.addEventListener('click', () => openDocumentsPreviewModal(pdfUrl, rowLabel, docxUrl));
+      actions.appendChild(previewButton);
+
+      const pdfLink = document.createElement('a');
+      pdfLink.className = 'chat-download-link';
+      pdfLink.href = pdfUrl;
+      pdfLink.target = '_blank';
+      pdfLink.rel = 'noopener';
+      pdfLink.textContent = 'Открыть PDF отдельно';
+      actions.appendChild(pdfLink);
+    }
+    if (docxUrl) {
+      const docxLink = document.createElement('a');
+      docxLink.className = 'chat-download-link';
+      docxLink.href = docxUrl;
+      docxLink.target = '_blank';
+      docxLink.rel = 'noopener';
+      docxLink.textContent = 'Скачать DOCX';
+      actions.appendChild(docxLink);
+    }
+    card.appendChild(actions);
+
+    msg.appendChild(card);
+    messages.appendChild(msg);
+    messages.scrollTop = messages.scrollHeight;
+    saveUiState();
+  }
+
+  function appendDocumentsPreviewLoadingMessage(detailText = '') {
+    const messages = document.getElementById('g-chat-messages');
+    if (!messages) return null;
+    removeDocumentsPreviewLoadingMessage();
+
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg agent';
+    msg.dataset.documentsPreviewLoading = 'true';
+
+    const card = document.createElement('div');
+    card.className = 'documents-preview-loading';
+
+    const spinner = document.createElement('div');
+    spinner.className = 'documents-preview-spinner';
+    spinner.setAttribute('aria-hidden', 'true');
+    card.appendChild(spinner);
+
+    const textWrap = document.createElement('div');
+    textWrap.className = 'documents-preview-loading-text';
+
+    const title = document.createElement('strong');
+    title.textContent = 'Собираю пример документа';
+    textWrap.appendChild(title);
+
+    const details = document.createElement('span');
+    details.textContent = detailText || 'Готовлю DOCX, конвертирую PDF и проверяю, что КП помещается на одну страницу.';
+    textWrap.appendChild(details);
+
+    card.appendChild(textWrap);
+    msg.appendChild(card);
+    messages.appendChild(msg);
+    messages.scrollTop = messages.scrollHeight;
+    saveUiState();
+    return msg;
+  }
+
+  function removeDocumentsPreviewLoadingMessage(node = null) {
+    const messages = document.getElementById('g-chat-messages');
+    if (!messages) return;
+    const nodes = node ? [node] : Array.from(messages.querySelectorAll('[data-documents-preview-loading="true"]'));
+    nodes.forEach(item => {
+      if (item && item.parentElement) item.remove();
+    });
+  }
+
+  function documentsPreviewGateKey(documentMode, workType) {
+    return `${currentJobId || ''}|${documentMode || ''}|${workType || ''}`;
+  }
+
+  async function prepareDocumentsPreviewBeforeStart(documentMode, workType, { force = false } = {}) {
+    const key = documentsPreviewGateKey(documentMode, workType);
+    if (!force && documentsPreviewGate && documentsPreviewGate.status === 'pending' && documentsPreviewGate.key === key) {
+      appendChatMessage('g-chat', 'agent', 'Пример уже собран и ждёт подтверждения. Проверьте его в чате и напишите, можно ли запускать генерацию для всех строк.');
+      return false;
+    }
+
+    documentsPreviewGate = { status: 'building', key };
+    appendChatMessage('g-chat', 'agent', 'Сначала соберу один пример по первой строке таблицы. Массовую генерацию пока не запускаю.');
+    const loadingMessage = appendDocumentsPreviewLoadingMessage('Готовлю DOCX, конвертирую PDF и проверяю, что КП помещается на одну страницу.');
+    showToast('Собираю пример документа');
+
+    try {
+      const res = await fetchWithTimeout('/api/documents/template-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withJobPayload({
+          document_mode: documentMode || 'both',
+          work_type: workType || 'mngp_settlements',
+        })),
+      }, 120000);
+      const data = await readJsonOrText(res);
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || 'не удалось собрать пример');
+      }
+      const result = data.result || data || {};
+      documentsPreviewGate = { status: 'pending', key, result };
+      appendDocumentsPreviewMessage(result);
+      appendChatMessage('g-chat', 'agent', 'Проверьте пример. Если всё выглядит правильно, напишите в чат, что можно запускать массовую генерацию. Если нет — напишите, что нужно поправить.');
+      showToast('Пример готов, жду подтверждение в чате');
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error || 'неизвестная ошибка');
+      documentsPreviewGate = { status: 'error', key, error: message };
+      appendChatMessage('g-chat', 'agent', 'Не удалось собрать пример документа: ' + message + '. Массовую генерацию не запускаю.');
+      showToast('Не удалось собрать пример');
+    } finally {
+      removeDocumentsPreviewLoadingMessage(loadingMessage);
+    }
+    saveUiState();
+    return false;
+  }
+
+  async function handleDocumentsChatAction(data = {}) {
+    const action = String(data.action || (data.result && data.result.action) || '');
+    if (!action) return;
+    if (action === 'start_documents_after_preview') {
+      documentsPreviewGate = { ...(documentsPreviewGate || {}), status: 'approved' };
+      saveUiState();
+      await startDocumentsPipeline({ skipPreviewGate: true, fromChatApproval: true });
+      return;
+    }
+    if (action === 'regenerate_template_preview') {
+      const documentMode = getDocumentMode();
+      const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
+      await prepareDocumentsPreviewBeforeStart(documentMode, workType, { force: true });
+    }
+  }
   function appendStructuredOrchestratorMessage(state) {
     const messages = document.getElementById('o-chat-messages');
     if (!messages || !state) return;
@@ -5521,8 +5859,10 @@
         if (Array.isArray(data.downloads) && data.downloads.length) {
           appendDownloadMessage(chatId, data.downloads);
         }
-        if (chatId === 'o-chat' || chatId === 'g-chat') {
-          refreshOrchestratorStatus({ silent: true });
+        if (chatId === 'g-chat') {
+          handleDocumentsChatAction(data);
+        }
+        if (chatId === 'o-chat' || chatId === 'g-chat') {          refreshOrchestratorStatus({ silent: true });
           refreshParserStatus({ silent: true });
           refreshSenderStatus({ silent: true });
           refreshDocumentsStatus({ silent: true });
@@ -6460,12 +6800,13 @@ function clearAttachedFile() {
       return false;
     }
   }  // GENERATOR
-  async function startDocumentsPipeline() {
+  async function startDocumentsPipeline(options = {}) {
     await ensureCurrentJobId();
     invalidateDocumentsStatusResponses();
     documentsStartClicked = true;
     const documentMode = getDocumentMode();
     const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
+    const skipPreviewGate = Boolean(options && options.skipPreviewGate);
     syncSenderAttachmentModeFromDocuments({ force: true });
     scheduleUiStateSave();
     const documentsRunLock = getDocumentsRunLock();
@@ -6476,12 +6817,10 @@ function clearAttachedFile() {
     }
     const isResume = currentGeneratorStatus === 'stopped' || currentPhilologistStatus === 'stopped';
     const resumeStage = currentGeneratorStatus === 'completed' && currentPhilologistStatus === 'stopped' ? 'review' : 'generate';
-    if (!isResume) {
-      const templateConfirmed = await confirmTemplateAnalysisBeforeDocumentsStart(documentMode);
-      if (!templateConfirmed) {
-        documentsStartClicked = false;
-        return;
-      }
+    if (!isResume && !skipPreviewGate) {
+      await prepareDocumentsPreviewBeforeStart(documentMode, workType);
+      documentsStartClicked = false;
+      return;
     }
     try {
       syncGeneratorStartDescriptionVisibility('running');
@@ -6520,6 +6859,7 @@ function clearAttachedFile() {
         return;
       }
       const result = data.result || {};
+      documentsPreviewGate = null;
       setDocumentsUiState(result);
       if (result.status && ['running', 'waiting_review'].includes(String(result.status))) {
         documentsStatusPoll = startPollingLoop(() => refreshDocumentsStatus({ silent: true }), 1000);
@@ -8056,6 +8396,7 @@ function clearAttachedFile() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       closeAllHelpPopovers();
+      closeDocumentsPreviewModal();
     }
   });
 

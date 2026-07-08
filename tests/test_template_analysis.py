@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import tempfile
 import unittest
@@ -14,7 +14,7 @@ from src.generator.generation.template_analysis import analyze_template_file, bu
 
 
 def _workspace_temp_dir() -> tempfile.TemporaryDirectory[str]:
-    root = Path("C:/tmp") / "mailing-agent-tests"
+    root = Path(tempfile.gettempdir()) / "mailing-agent-tests"
     root.mkdir(exist_ok=True)
     return tempfile.TemporaryDirectory(dir=str(root))
 

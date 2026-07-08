@@ -9,12 +9,15 @@ from typing import Any
 from src.generator.generation.config_generator import DATA_XLSX_PATH, START_OUTGOING_NUMBER
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.generator_agent import finalize_generated_files, process_generator_row
-from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, normalize_document_mode
+from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, document_mode_kinds, normalize_document_mode
 from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 from src.jobs import resolve_job_paths
 
 
 PREVIEW_STATE_FILENAME = "template_preview.json"
+PREVIEW_APPROVAL_PENDING = "pending"
+PREVIEW_APPROVAL_APPROVED = "approved"
+PREVIEW_APPROVAL_REJECTED = "rejected"
 
 
 def _safe_str(value: Any) -> str:
@@ -97,6 +100,47 @@ def load_template_preview_state(job_id: str | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def save_template_preview_state(job_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+    _save_preview_state(job_id, payload)
+    return payload
+
+
+def mark_template_preview_approval(
+    job_id: str | None,
+    *,
+    approved: bool,
+    reason: str = "",
+    actor: str = "chat",
+) -> dict[str, Any]:
+    state = load_template_preview_state(job_id)
+    if not state:
+        raise FileNotFoundError("Предпросмотр шаблона ещё не собран.")
+    state["approval_status"] = PREVIEW_APPROVAL_APPROVED if approved else PREVIEW_APPROVAL_REJECTED
+    state["approval_reason"] = _safe_str(reason)
+    state["approved_by"] = _safe_str(actor)
+    state["approved_at"] = datetime.now().isoformat(timespec="seconds") if approved else ""
+    state["rejected_at"] = "" if approved else datetime.now().isoformat(timespec="seconds")
+    return save_template_preview_state(job_id, state)
+
+
+def is_template_preview_approved(
+    job_id: str | None,
+    *,
+    document_mode: str | None = None,
+    work_type: str | None = None,
+) -> bool:
+    state = load_template_preview_state(job_id)
+    if state.get("status") != "ready":
+        return False
+    if state.get("approval_status") != PREVIEW_APPROVAL_APPROVED:
+        return False
+    if document_mode and normalize_document_mode(state.get("document_mode") or "") != normalize_document_mode(document_mode):
+        return False
+    if work_type and normalize_work_type(state.get("work_type") or "") != normalize_work_type(work_type):
+        return False
+    return True
+
+
 def resolve_template_preview_file(job_id: str | None, kind: str) -> Path:
     state = load_template_preview_state(job_id)
     key = "pdf_path" if str(kind or "").lower() == "pdf" else "docx_path"
@@ -153,9 +197,13 @@ def build_template_preview(
         worker_count=1,
     )
 
-    result_files = results[0].get("files") or {}
+    result_payload = results[0]
+    result_files = result_payload.get("files") or {}
     pdf_path = _first_existing_file(result_files, ".pdf")
     docx_path = _first_existing_file(result_files, ".docx")
+    if pdf_path is None and "kp" in document_mode_kinds(document_mode):
+        error = str(result_payload.get("error") or "Не удалось собрать PDF-пример КП.").strip()
+        raise RuntimeError(error)
     if pdf_path is None and docx_path is None:
         raise RuntimeError("Не удалось собрать пример документа.")
 
@@ -168,6 +216,11 @@ def build_template_preview(
         "document_mode": document_mode,
         "work_type": work_type,
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "approval_status": PREVIEW_APPROVAL_PENDING,
+        "approval_reason": "",
+        "approved_by": "",
+        "approved_at": "",
+        "rejected_at": "",
         "pdf_path": str(pdf_path) if pdf_path else "",
         "docx_path": str(docx_path) if docx_path else "",
         "has_pdf": pdf_path is not None,

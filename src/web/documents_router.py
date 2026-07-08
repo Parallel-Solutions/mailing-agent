@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 
 from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, DOCUMENT_RENDERER_VERSION, normalize_document_mode
 from src.generator.generation.template_analysis import build_template_analysis_context, save_template_analysis_context
-from src.generator.generation.template_preview import build_template_preview, resolve_template_preview_file
+from src.generator.generation.template_preview import build_template_preview, is_template_preview_approved, resolve_template_preview_file
 from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 from src.jobs import resolve_job_paths
 from src.jobs.access import JobAccessDenied, authorize_job_access
@@ -92,15 +92,19 @@ def create_documents_router(
         )
         is_resume_after_generator = generator_is_current and str(generator_state.get("status") or "") == "completed" and str(philologist_state.get("status") or "") == "stopped"
         is_resume_after_stop = generator_is_current and str(generator_state.get("status") or "") == "stopped"
-        if not (is_resume_after_generator or is_resume_after_stop) and not bool(payload.template_analysis_confirmed):
-            raise HTTPException(
-                status_code=409,
-                detail="Сначала подтвердите AI-проверку шаблона перед подготовкой документов.",
-            )
         if generator_is_current and bool(initial_documents_status.get("restart_locked")):
             raise HTTPException(
                 status_code=409,
                 detail="Документы уже успешно подготовлены без ошибок. Повторный запуск для этой сессии заблокирован.",
+            )
+        if not (is_resume_after_generator or is_resume_after_stop) and not is_template_preview_approved(
+            job_id,
+            document_mode=document_mode,
+            work_type=work_type,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Сначала соберите пример документа в чате и подтвердите, что шаблон выглядит правильно.",
             )
         if str(generator_state.get("status") or "") == "completed":
             if generator_is_current and str(philologist_state.get("status") or "") != "completed":
