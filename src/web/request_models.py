@@ -41,11 +41,17 @@ class JobScopedRequest(ApiRequest):
 
 class ChatRequest(JobScopedRequest):
     message: str
+    session_id: str | None = None
 
     @field_validator("message", mode="before")
     @classmethod
     def _normalize_message(cls, value: Any) -> str:
         return _clean_required_text(value)
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def _normalize_session_id(cls, value: Any) -> str | None:
+        return _clean_optional_text(value)
 
 
 class PromptRequest(JobScopedRequest):

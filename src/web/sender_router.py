@@ -442,7 +442,7 @@ def create_sender_router(
             raise HTTPException(status_code=400, detail="Пустое сообщение")
         job_id = payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
-        result = chat_with_sender(message, job_id=job_id)
+        result = chat_with_sender(message, job_id=job_id, session_id=payload.session_id)
         return ok_response(result, **result)
 
     return router

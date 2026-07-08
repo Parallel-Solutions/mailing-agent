@@ -61,7 +61,7 @@ class SenderRequestValidationTests(unittest.TestCase):
                 logger=logger,
                 request_sender_stop=lambda **kwargs: {"status": "stopped"},
                 preview_recipients=lambda **kwargs: {"items": []},
-                chat_with_sender=lambda message, job_id=None: {"reply": message},
+                chat_with_sender=lambda message, job_id=None, session_id=None: {"reply": message},
                 is_load_test_job=lambda job_id: False,
             )
         )

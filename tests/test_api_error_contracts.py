@@ -63,7 +63,7 @@ class ApiErrorContractTests(unittest.TestCase):
                 logger=SimpleNamespace(exception=lambda *args, **kwargs: logs.append((args, kwargs))),
                 request_sender_stop=lambda **kwargs: {},
                 preview_recipients=lambda **kwargs: {},
-                chat_with_sender=lambda message, job_id=None: {"reply": message},
+                chat_with_sender=lambda message, job_id=None, session_id=None: {"reply": message},
                 is_load_test_job=lambda job_id: False,
             )
         )
@@ -147,7 +147,7 @@ class ApiErrorContractTests(unittest.TestCase):
                     prime_generator_state=lambda **kwargs: {},
                     request_generator_stop=lambda job_id: {},
                     request_philologist_stop=lambda job_id: {},
-                    documents_agent_choose_reply=lambda message, job_id=None: {"reply": message},
+                    documents_agent_choose_reply=lambda message, job_id=None, session_id=None: {"reply": message},
                 )
             )
 
@@ -190,7 +190,7 @@ class ApiErrorContractTests(unittest.TestCase):
                     prime_generator_state=lambda **kwargs: {},
                     request_generator_stop=lambda job_id: {},
                     request_philologist_stop=lambda job_id: {},
-                    documents_agent_choose_reply=lambda message, job_id=None: {"reply": message},
+                    documents_agent_choose_reply=lambda message, job_id=None, session_id=None: {"reply": message},
                 )
             )
 

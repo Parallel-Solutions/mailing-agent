@@ -481,12 +481,13 @@ def _mark_documents_waiting_review_stopped(job_id: str | None) -> None:
     _require("save_philologist_state")(philologist_state, job_id)
 
 
-def documents_agent_choose_reply(message: str, job_id: str | None = None) -> dict[str, Any]:
+def documents_agent_choose_reply(message: str, job_id: str | None = None, session_id: str | None = None) -> dict[str, Any]:
     return choose_documents_agent_reply(
         message,
         job_id=job_id,
         status_loader=compact_documents_status,
         chat_with_orchestrator=_deps.get("chat_with_orchestrator"),
+        session_id=session_id,
     )
 
 

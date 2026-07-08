@@ -14,6 +14,7 @@ from src.generator.inflection.ai_case_agent import (
 )
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
 from src.jobs import load_agent_state, resolve_job_paths, resolve_state_path
+from src.jobs.chat_memory import append_chat_turn, chat_history_for_prompt, get_chat_session
 from src.jobs.job_docs import read_events, read_sent_mail_log
 from src.utils.config import settings
 
@@ -997,95 +998,67 @@ def choose_documents_agent_reply(
     *,
     status_loader: StatusLoader,
     chat_with_orchestrator: ChatWithOrchestrator | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
-    lowered = message.lower()
-
-    if any(token in lowered for token in ("/test-scroll", "тест бегунка", "тест скролла", "проверить бегунок")):
-        return _documents_agent_reply_payload(
-            _documents_agent_scroll_test_reply(),
-            source="debug_scroll_test",
-            allow_long_reply=True,
-            tools_used=[],
-        )
-
-    if _documents_agent_is_capabilities_question(lowered):
-        documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-        return _documents_agent_reply_payload(
-            _documents_agent_capabilities_reply(documents_status),
-            tools_used=["get_documents_status"],
-        )
-
-    if _documents_agent_is_ack_or_greeting(lowered):
-        return _documents_agent_reply_payload(_documents_agent_general_reply(message), tools_used=[])
-    if any(token in lowered for token in ("ты агент", "ты вообще агент", "ты завис", "завис", "отвечаешь")):
-        if not any(token in lowered for token in ("почему долго", "так долго", "статус", "что происходит", "ошиб", "сколько")):
-            return _documents_agent_reply_payload(_documents_agent_general_reply(message), tools_used=[])
-
-    if any(token in lowered for token in ("технический лог", "служебный лог", "полный лог", "trace", "tool_trace", "журнал агента")):
-        reply, _ = _documents_agent_tool_get_technical_log(job_id, status_loader)
-        return _documents_agent_reply_payload(reply, tools_used=["get_technical_log"])
-
-    if any(token in lowered for token in ("почему долго", "так долго", "долго провер", "медленно", "тормоз")):
-        documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-        return _documents_agent_reply_payload(
-            _documents_agent_duration_reply(documents_status),
-            tools_used=["get_documents_status"],
-        )
-    if any(token in lowered for token in ("что происходит", "на каком этапе", "статус", "идет ли", "идёт ли", "что сейчас", "процесс")):
-        reply, _ = _documents_agent_tool_get_current_step(job_id, status_loader)
-        return _documents_agent_reply_payload(reply, tools_used=["get_current_step"])
-    if any(token in lowered for token in ("что дальше", "следующ", "можно ли дальше", "переход", "кнопк", "актив", "доступ", "заблок")):
-        documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-        return _documents_agent_reply_payload(
-            _documents_agent_next_step_reply(documents_status),
-            tools_used=["get_documents_status", "get_current_step"],
-        )
-
+    del chat_with_orchestrator
     documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-    rag_reply = _documents_agent_rag_reply(message, documents_status)
-    if rag_reply:
-        return _documents_agent_reply_payload(rag_reply, source="service_rag", tools_used=["service_rag"])
+    resolved_session_id, session = get_chat_session(session_id, namespace="documents", job_id=job_id)
+    history = chat_history_for_prompt(session)
+    context = _documents_agent_build_readonly_context(message, job_id, documents_status)
+    context["chat_session"] = {
+        "session_id": resolved_session_id,
+        "history": history,
+    }
+    context_text = json.dumps(context, ensure_ascii=False, indent=2, default=str)
+    if len(context_text) > _MAX_DIAGNOSTIC_TEXT:
+        context_text = context_text[: _MAX_DIAGNOSTIC_TEXT - 1].rstrip() + "..."
 
-    readonly_agent_reply = _documents_agent_readonly_ai_reply(message, documents_status, job_id)
-    if readonly_agent_reply:
-        return readonly_agent_reply
-
-    if any(
-        token in lowered
-        for token in (
-            "все прошло", "всё прошло", "нормально", "успешно", "документы собран", "документы готовы",
-            "все готово", "всё готово", "готово", "собран", "сформиров",
+    client = _documents_agent_build_llm_client()
+    source = "documents_ai"
+    if client is None:
+        reply = (
+            "AI chat is unavailable: model client or key is not configured. "
+            "This chat session context was saved; try again after AI is restored."
         )
-    ):
-        return _documents_agent_reply_payload(
-            _documents_agent_process_reply(documents_status),
-            tools_used=["get_documents_status"],
+        source = "documents_ai_unavailable"
+    else:
+        system_prompt = (
+            "You are the AI chat for the Documents screen of a proposal generation and mailing service. "
+            "Always answer in Russian, briefly and practically. "
+            "The current service context below is the source of truth; session history is only for conversational continuity. "
+            "Do not start generation, send emails, change files, or promise actions this chat does not perform. "
+            "Do not expose JSON, tokens, keys, stack traces, raw logs, or internal file paths. "
+            "If context is insufficient, say exactly what is missing."
         )
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        if history:
+            messages.append({
+                "role": "user",
+                "content": "Current chat session history:\n" + json.dumps(history, ensure_ascii=False, indent=2),
+            })
+        messages.append({
+            "role": "user",
+            "content": f"Current service context:\n{context_text}\n\nNew user message:\n{message}",
+        })
+        try:
+            response = client.chat.completions.create(
+                model=settings.case_agent_model,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=520,
+            )
+            reply = str(response.choices[0].message.content if response.choices else "").strip()
+            if not reply:
+                reply = "AI returned an empty answer. Session context was saved; try the question again."
+                source = "documents_ai_empty"
+        except Exception:
+            reply = "AI chat could not answer right now. Session context was saved; try again later."
+            source = "documents_ai_error"
 
-    if any(token in lowered for token in ("скачать", "архив", "отч", "файл", "pdf", "docx")):
-        reply, _ = _documents_agent_tool_get_downloads(job_id, status_loader)
-        return _documents_agent_reply_payload(reply, tools_used=["get_downloads"])
-    if any(token in lowered for token in ("итог", "результат", "сколько готово", "сколько документов", "сводк")):
-        documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-        return _documents_agent_reply_payload(
-            _documents_agent_result_reply(documents_status),
-            tools_used=["get_documents_status"],
-        )
-
-    if any(token in lowered for token in ("ошиб", "проблем", "упал", "не работает", "сломал")):
-        reply, _ = _documents_agent_tool_get_errors(job_id, status_loader)
-        return _documents_agent_reply_payload(reply, tools_used=["get_errors"])
-
-    if _documents_agent_should_delegate_to_philologist(message):
-        reply, _ = _documents_agent_tool_get_text_review_summary(job_id, status_loader)
-        return _documents_agent_reply_payload(reply, tools_used=["get_text_review_summary"])
-
-    readonly_agent_reply = _documents_agent_readonly_ai_reply(message, documents_status, job_id, force=True)
-    if readonly_agent_reply:
-        return readonly_agent_reply
-
+    append_chat_turn(resolved_session_id, message, reply)
     return _documents_agent_reply_payload(
-        _documents_agent_ai_unavailable_reply(),
-        source="documents_ai_unavailable",
-        tools_used=["get_documents_status"],
+        reply,
+        source=source,
+        session_id=resolved_session_id,
+        tools_used=["ai_context", "session_memory"],
     )
