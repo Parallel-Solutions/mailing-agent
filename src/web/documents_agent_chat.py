@@ -12,10 +12,12 @@ from src.generator.inflection.ai_case_agent import (
     _resolve_openai_api_key,
     _resolve_openai_base_url,
 )
+from src.generator.generation.template_analysis import build_template_analysis_context
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
 from src.jobs import resolve_job_paths, resolve_state_path
 from src.jobs.chat_memory import append_chat_turn, chat_history_for_prompt, get_chat_session
 from src.utils.config import settings
+from src.utils.env import resolve_env_value
 
 StatusLoader = Callable[[str | None], dict[str, Any]]
 ChatWithOrchestrator = Callable[..., dict[str, Any] | None]
@@ -802,12 +804,14 @@ def _documents_agent_build_readonly_context(message: str, job_id: str | None, do
     generator_details = _documents_agent_read_json(state_dir / "generator.details.json")
     philologist_details = _documents_agent_read_json(state_dir / "philologist.details.json")
     service_docs = format_service_rag_context(find_relevant_service_docs(message, limit=3))
+    template_analysis = build_template_analysis_context(job_id=job_id, document_mode=documents_status.get("document_mode"))
     context = {
         "screen": "documents",
         "job_id": job_id or "",
         "read_only": True,
         "user_question": _documents_agent_sanitize_text(message, limit=600),
         "service_knowledge": _documents_agent_sanitize_text(service_docs, limit=2500),
+        "template_analysis": template_analysis,
         "status": {
             "status": documents_status.get("status"),
             "stage": documents_status.get("stage"),
@@ -867,6 +871,14 @@ def _documents_agent_build_readonly_context(message: str, job_id: str | None, do
     return context
 
 
+def _documents_agent_resolve_openai_base_url() -> str | None:
+    for key_name in ("OPENAI_BASE_URL", "GENERATOR_OPENAI_BASE_URL", "VSELLM_BASE_URL", "VLLM_BASE_URL"):
+        base_url = resolve_env_value(key_name)
+        if base_url:
+            return base_url.strip().rstrip("/")
+    fallback = str(settings.openai_base_url or "").strip()
+    return fallback.rstrip("/") if fallback else None
+
 def _documents_agent_build_llm_client():
     if OpenAI is None:
         return None
@@ -874,7 +886,7 @@ def _documents_agent_build_llm_client():
     if not api_key:
         return None
     kwargs: dict[str, Any] = {"api_key": api_key}
-    base_url = _resolve_openai_base_url()
+    base_url = _documents_agent_resolve_openai_base_url()
     if base_url:
         kwargs["base_url"] = base_url
     http_client = _build_openai_http_client()
