@@ -32,6 +32,7 @@ class E2EConfig:
     password: str
     fixtures_dir: Path
     send_pause_seconds: float
+    parallel_jobs: int
     documents_timeout_seconds: float
     sender_timeout_seconds: float
     consent_timeout_seconds: float
@@ -48,6 +49,13 @@ def _env_float(name: str, default: float) -> float:
     if not raw:
         return default
     return float(raw)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    return int(raw)
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -71,6 +79,7 @@ def load_config() -> E2EConfig:
         password=os.environ.get("E2E_PASSWORD", os.environ.get("APP_PASSWORD", "change-me")),
         fixtures_dir=_env_path("E2E_FIXTURES_DIR", fixtures_default),
         send_pause_seconds=_env_float("E2E_SEND_PAUSE_SECONDS", 10.0),
+        parallel_jobs=max(1, _env_int("E2E_PARALLEL_JOBS", 1)),
         documents_timeout_seconds=_env_float("E2E_DOCUMENTS_TIMEOUT_SECONDS", 1800.0),
         sender_timeout_seconds=_env_float("E2E_SENDER_TIMEOUT_SECONDS", 600.0),
         consent_timeout_seconds=_env_float("E2E_CONSENT_TIMEOUT_SECONDS", 300.0),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -69,6 +70,7 @@ class ReportStore:
         config.out_dir.mkdir(parents=True, exist_ok=True)
         self.rows: dict[str, ReportRow] = {}
         self.job_map: dict[str, str] = {}
+        self._lock = threading.RLock()
         self._load()
 
     def _load(self) -> None:
@@ -84,44 +86,49 @@ class ReportStore:
             self.job_map = dict(state.get("job_map") or {})
 
     def save(self) -> None:
-        payload = {
-            "rows": [asdict(row) for row in self.rows.values()],
-            "summary": self.summary(),
-        }
+        with self._lock:
+            rows_snapshot = [asdict(row) for row in self.rows.values()]
+            summary = self._summary_unlocked()
+            job_map = dict(self.job_map)
+        payload = {"rows": rows_snapshot, "summary": summary}
         self.json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._write_csv()
+        self._write_csv_from(rows_snapshot)
         self.state_path.write_text(
-            json.dumps({"job_map": self.job_map}, ensure_ascii=False, indent=2),
+            json.dumps({"job_map": job_map}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
-    def _write_csv(self) -> None:
+    def _write_csv_from(self, rows_snapshot: list[dict[str, Any]]) -> None:
         fieldnames = list(ReportRow.__dataclass_fields__.keys())
         with self.csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
-            for row in sorted(self.rows.values(), key=lambda item: item.scenario_key):
-                writer.writerow(asdict(row))
+            for row in sorted(rows_snapshot, key=lambda item: item["scenario_key"]):
+                writer.writerow(row)
 
     def get_row(self, scenario_key: str, **defaults: Any) -> ReportRow:
-        if scenario_key not in self.rows:
-            self.rows[scenario_key] = ReportRow(scenario_key=scenario_key, **defaults)
-        return self.rows[scenario_key]
+        with self._lock:
+            if scenario_key not in self.rows:
+                self.rows[scenario_key] = ReportRow(scenario_key=scenario_key, **defaults)
+            return self.rows[scenario_key]
 
     def is_success(self, scenario_key: str) -> bool:
-        row = self.rows.get(scenario_key)
-        return bool(row and row.status == "success")
+        with self._lock:
+            row = self.rows.get(scenario_key)
+            return bool(row and row.status == "success")
 
     def remember_job(self, generation_key: str, job_id: str) -> None:
-        self.job_map[generation_key] = job_id
+        with self._lock:
+            self.job_map[generation_key] = job_id
 
     def job_for_generation(self, generation_key: str) -> str | None:
-        return self.job_map.get(generation_key)
+        with self._lock:
+            return self.job_map.get(generation_key)
 
     def _scenario_rows(self) -> list[ReportRow]:
         return [row for row in self.rows.values() if not row.recipient]
 
-    def summary(self) -> dict[str, Any]:
+    def _summary_unlocked(self) -> dict[str, Any]:
         scenario_rows = self._scenario_rows()
         total = len(scenario_rows)
         success = sum(1 for row in scenario_rows if row.status == "success")
@@ -145,6 +152,10 @@ class ReportStore:
             "pending": pending,
             "by_work_type": by_work_type,
         }
+
+    def summary(self) -> dict[str, Any]:
+        with self._lock:
+            return self._summary_unlocked()
 
     def print_summary(self) -> None:
         summary = self.summary()
