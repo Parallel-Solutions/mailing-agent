@@ -38,6 +38,9 @@ for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 5
 }
 
+Write-Host "Clearing E2E report/state inside app container ..."
+docker compose exec app rm -f tests/e2e/out/e2e_report.json tests/e2e/out/e2e_state.json 2>$null
+
 Get-ChildItem -Path "tmp\storage\jobs" -Recurse -Filter ".sender.run.lock" -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
 

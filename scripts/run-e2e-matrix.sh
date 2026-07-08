@@ -42,6 +42,9 @@ for i in $(seq 1 30); do
   sleep 5
 done
 
+echo "Clearing E2E report/state inside app container ..."
+docker compose exec app rm -f tests/e2e/out/e2e_report.json tests/e2e/out/e2e_state.json 2>/dev/null || true
+
 echo "Clearing stale sender locks under tmp/storage/jobs ..."
 find tmp/storage/jobs -path '*/state/.sender.run.lock' -delete 2>/dev/null || true
 

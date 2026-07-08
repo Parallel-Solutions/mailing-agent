@@ -78,7 +78,7 @@ RUN_REAL_E2E=1 ./scripts/run-e2e-matrix.sh
 ### Чистый прогон (без resume)
 
 ```bash
-rm -f tests/e2e/out/e2e_report.json tests/e2e/out/e2e_state.json
+docker compose exec app rm -f tests/e2e/out/e2e_report.json tests/e2e/out/e2e_state.json
 find tmp/storage/jobs -path '*/state/.sender.run.lock' -delete
 ```
 
