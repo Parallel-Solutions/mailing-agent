@@ -23,7 +23,6 @@ class AuthSessionTests(unittest.TestCase):
         self.settings = Settings(
             app_password="admin-pass",
             app_username="admin",
-            auth_db_path=str(self.db_path),
             app_session_ttl_days=7,
         )
         bootstrap_auth_store(self.settings)

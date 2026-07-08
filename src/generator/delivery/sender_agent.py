@@ -55,7 +55,7 @@ from src.generator.case_engine import build_inflected_fields_with_trace
 from src.generator.philologist.philologist_agent import run_philologist
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
-from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
+from src.jobs import load_agent_state, normalize_job_id, resolve_job_paths, save_agent_state
 from src.utils.config import settings
 
 
@@ -156,6 +156,7 @@ SENDER_STATE: dict[str, Any] = {
 SENDER_STATE_ROWS_LIMIT = 200
 SENDER_WORKBOOK_SAVE_EVERY = 25
 SENDER_RUN_LOCK_FILENAME = ".sender.run.lock"
+SENDER_RUN_LOCK_STALE_SECONDS = 300.0
 UNISENDER_RETRY_ATTEMPTS = 3
 UNISENDER_RETRY_BASE_SECONDS = 2.0
 UNISENDER_RETRYABLE_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -246,8 +247,33 @@ def _unlock_sender_run_file(handle: Any) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def _sender_run_lock_is_stale(lock_path: Path) -> bool:
+    try:
+        raw = lock_path.read_bytes()
+        if raw:
+            payload = json.loads(raw.decode("utf-8"))
+            locked_at = str(payload.get("locked_at") or "").strip()
+            if locked_at:
+                locked_time = datetime.fromisoformat(locked_at)
+                age_seconds = (datetime.now() - locked_time).total_seconds()
+                if age_seconds > SENDER_RUN_LOCK_STALE_SECONDS:
+                    return True
+        return (datetime.now().timestamp() - lock_path.stat().st_mtime) > SENDER_RUN_LOCK_STALE_SECONDS
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _clear_stale_sender_run_lock(lock_path: Path) -> None:
+    if lock_path.exists() and _sender_run_lock_is_stale(lock_path):
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+
 @contextmanager
 def _sender_run_file_lock(lock_path: Path, job_id: str | None = None):
+    _clear_stale_sender_run_lock(lock_path)
     handle = lock_path.open("a+b")
     locked = False
     try:
@@ -324,6 +350,19 @@ def _sleep_sender_retry(delay_seconds: float) -> None:
     sleep(delay_seconds)
 
 
+def _read_rows_with_retry(data_xlsx_path: Path, *, attempts: int = 4, delay_seconds: float = 0.4):
+    from zipfile import BadZipFile
+
+    last_exc: Exception | None = None
+    for _attempt in range(attempts):
+        try:
+            return load_rows(data_xlsx_path)
+        except (EOFError, BadZipFile, OSError) as exc:
+            last_exc = exc
+            _sleep_sender_retry(delay_seconds)
+    raise last_exc  # type: ignore[misc]
+
+
 def _is_retryable_unisender_exception(exc: Exception) -> bool:
     if isinstance(exc, HTTPError):
         return int(exc.code) in UNISENDER_RETRYABLE_HTTP_CODES
@@ -382,10 +421,20 @@ def _run_unisender_request(request: Request, *, timeout: float, request_label: s
 
 
 def _resolve_sender_data_xlsx_path(job_id: str | None = None) -> Path:
+    from src.jobs.clients_store import prepare_data_xlsx
+
     job_paths = resolve_job_paths(job_id)
-    if job_id:
-        return job_paths.data_xlsx
+    if normalize_job_id(job_id):
+        return prepare_data_xlsx(job_id, job_paths.data_xlsx)
     return job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+
+
+def _existing_sender_data_xlsx_path(job_id: str | None = None) -> Path:
+    """Путь к data.xlsx без пересборки из БД (для опроса статуса во время отправки)."""
+    job_paths = resolve_job_paths(job_id)
+    if job_paths.data_xlsx.exists():
+        return job_paths.data_xlsx
+    return DATA_XLSX_PATH
 
 
 def _refresh_sender_stop_flag(state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
@@ -1123,6 +1172,7 @@ def _persist_row_status(
     row: dict[str, Any],
     status_value: str,
     *,
+    job_id: str | None = None,
     flush: bool = True,
 ) -> str:
     try:
@@ -1130,6 +1180,9 @@ def _persist_row_status(
         row["STATUS"] = status_value
         if flush:
             save_workbook(workbook, data_xlsx_path)
+            from src.jobs.clients_store import sync_client_row
+
+            sync_client_row(job_id, row)
         return ""
     except Exception as exc:
         return f"Не удалось сохранить статус строки в data.xlsx: {_safe_text(exc) or exc}"
@@ -1199,7 +1252,12 @@ def _collect_excel_stats(data_xlsx_path: Path | None = None) -> dict[str, int]:
             if cached and cached.get("signature") == signature:
                 return dict(cached.get("stats") or {"total": 0, "sent": 0, "error": 0, "pending": 0})
 
-    workbook, _, rows = load_rows(source_path)
+    from zipfile import BadZipFile
+
+    try:
+        workbook, _, rows = _read_rows_with_retry(source_path)
+    except (EOFError, BadZipFile, OSError):
+        return {"total": 0, "sent": 0, "error": 0, "pending": 0}
     stats = {"total": len(rows), "sent": 0, "error": 0, "pending": 0}
     for row in rows:
         status_class = _status_class(row.get("STATUS"))
@@ -1737,7 +1795,7 @@ def _append_sent_mail_log(
     transport: str,
     warning: str = "",
     provider: dict[str, Any] | None = None,
-    sent_mail_log_path: Path | None = None,
+    job_id: str | None = None,
     send_run_id: str = "",
     send_run_started_at: str = "",
     send_mode: str = "",
@@ -1785,14 +1843,13 @@ def _append_sent_mail_log(
         if provider_idempotency_key:
             record["provider_idempotency_key"] = provider_idempotency_key
     try:
-        log_path = sent_mail_log_path or SENT_MAIL_LOG_PATH
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except OSError as exc:
+        from src.jobs.job_docs import append_event
+
+        append_event(job_id, "sent_mail_log", record)
+    except Exception as exc:
         return (
-            "Письмо отправлено, но не удалось записать его в локальный журнал: "
-            f"{_safe_text(exc) or 'ошибка записи файла'}."
+            "Письмо отправлено, но не удалось записать его в журнал: "
+            f"{_safe_text(exc) or 'ошибка записи'}."
         )
     return None
 
@@ -1843,26 +1900,15 @@ def _build_provider_idempotency_key(
 
 
 def _load_sent_mail_recipients(
-    sent_mail_log_path: Path | None = None,
+    job_id: str | None = None,
     *,
     send_run_id: str = "",
     send_run_started_at: str = "",
 ) -> dict[str, set[str]]:
-    log_path = sent_mail_log_path or SENT_MAIL_LOG_PATH
+    from src.jobs.job_docs import read_sent_mail_log
+
     sent_by_row: dict[str, set[str]] = {}
-    if not log_path.exists():
-        return sent_by_row
-
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return sent_by_row
-
-    for line in lines:
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for item in read_sent_mail_log(job_id):
         if not _sent_log_item_in_send_scope(
             item,
             send_run_id=send_run_id,
@@ -1895,25 +1941,10 @@ def _sent_log_item_in_send_scope(
     return True
 
 
-def _load_sent_mail_log_items(sent_mail_log_path: Path | None = None) -> list[dict[str, Any]]:
-    log_path = sent_mail_log_path or SENT_MAIL_LOG_PATH
-    if not log_path.exists():
-        return []
+def _load_sent_mail_log_items(job_id: str | None = None) -> list[dict[str, Any]]:
+    from src.jobs.job_docs import read_sent_mail_log
 
-    items: list[dict[str, Any]] = []
-    try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-
-    for line in lines:
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            items.append(item)
-    return items
+    return read_sent_mail_log(job_id)
 
 
 def schedule_delivery_fallback_check(job_ids: Any, *, provider: str = "") -> None:
@@ -1962,8 +1993,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
         return {"status": "skipped_running", "job_id": job_id, "dispatched_rows": []}
 
     job_paths = resolve_job_paths(job_id)
-    sent_mail_log_path = None if job_paths.uses_legacy_layout else job_paths.sent_mail_log_path
-    sent_items = _load_sent_mail_log_items(sent_mail_log_path)
+    sent_items = _load_sent_mail_log_items(job_id)
     if not sent_items:
         return {"status": "no_sent_log", "job_id": job_id, "dispatched_rows": []}
 
@@ -2333,10 +2363,9 @@ def get_unisender_history(
     refresh: bool = False,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
-    sent_mail_log_path = None if job_paths.uses_legacy_layout else job_paths.sent_mail_log_path
     items = [
         item
-        for item in _load_sent_mail_log_items(sent_mail_log_path)
+        for item in _load_sent_mail_log_items(job_id)
         if _safe_text(item.get("transport")) == "unisender"
     ]
     items = list(reversed(items))[: max(1, min(int(limit or 50), 200))]
@@ -3740,6 +3769,7 @@ def _restore_sent_from_local_log(
     workbook: Any,
     worksheet: Any,
     data_xlsx_path: Path,
+    job_id: str | None = None,
     success_status_value: str = STATUS_SENT_VALUE,
 ) -> bool:
     entry["result"] = "skipped_logged_sent"
@@ -3760,6 +3790,7 @@ def _restore_sent_from_local_log(
         data_xlsx_path,
         row,
         success_status_value,
+        job_id=job_id,
         flush=False,
     )
     if status_warning:
@@ -3785,7 +3816,7 @@ def _apply_send_result_to_entry(
     effective_recipient_strategy: str,
     effective_sender_email: str,
     effective_campaign_name: str,
-    sent_mail_log_path: Path | None,
+    job_id: str | None,
     sent_mail_recipients: dict[str, set[str]],
     send_run_id: str,
     send_run_started_at: str,
@@ -3809,7 +3840,7 @@ def _apply_send_result_to_entry(
                 transport=effective_transport,
                 warning=entry["warning"],
                 provider=_provider_for_recipient(entry["attempts"], sent_recipient),
-                sent_mail_log_path=sent_mail_log_path,
+                job_id=job_id,
                 send_run_id=send_run_id,
                 send_run_started_at=send_run_started_at,
                 send_mode=effective_send_mode,
@@ -3844,7 +3875,7 @@ def _apply_send_result_to_entry(
             transport=effective_transport,
             warning=entry["warning"],
             provider=_provider_for_recipient(entry["attempts"], sent_recipient),
-            sent_mail_log_path=sent_mail_log_path,
+            job_id=job_id,
             send_run_id=send_run_id,
             send_run_started_at=send_run_started_at,
             send_mode=effective_send_mode,
@@ -3866,6 +3897,7 @@ def _apply_send_result_to_entry(
         data_xlsx_path,
         row,
         success_status_value,
+        job_id=job_id,
         flush=False,
     )
     if status_warning:
@@ -3928,7 +3960,6 @@ def run_sender(
         mail_template_path = job_template_txt_path
     else:
         mail_template_path = None
-    sent_mail_log_path = None if job_paths.uses_legacy_layout else job_paths.sent_mail_log_path
     state = _load_sender_state(job_id)
     clear_sender_stop_request(job_id)
     state = _load_sender_state(job_id)
@@ -4020,7 +4051,7 @@ def run_sender(
         _save_sender_state(state, job_id)
         return dict(state)
 
-    workbook, worksheet, rows = load_rows(data_xlsx_path)
+    workbook, worksheet, rows = _read_rows_with_retry(data_xlsx_path)
     if requested_row_ids:
         rows = [row for row in rows if str(row.get("ID")).strip() in requested_row_ids]
     candidates = rows[:effective_limit] if effective_limit else rows
@@ -4047,7 +4078,7 @@ def run_sender(
     )
     sent_mail_recipients = (
         _load_sent_mail_recipients(
-            sent_mail_log_path,
+            job_id,
             send_run_id=send_run_id,
             send_run_started_at=send_run_started_at,
         )
@@ -4368,6 +4399,7 @@ def run_sender(
                     data_xlsx_path,
                     row,
                     _format_error_status(entry["error"] or entry["result"]),
+                    job_id=job_id,
                     flush=False,
                 )
                 workbook_dirty = workbook_dirty or not bool(status_warning)
@@ -4458,6 +4490,7 @@ def run_sender(
                             workbook=workbook,
                             worksheet=worksheet,
                             data_xlsx_path=data_xlsx_path,
+                            job_id=job_id,
                             success_status_value=success_status_value,
                         )
                         or workbook_dirty
@@ -4594,7 +4627,7 @@ def run_sender(
                             effective_recipient_strategy=effective_recipient_strategy,
                             effective_sender_email=effective_sender_email,
                             effective_campaign_name=effective_campaign_name,
-                            sent_mail_log_path=sent_mail_log_path,
+                            job_id=job_id,
                             sent_mail_recipients=sent_mail_recipients,
                             send_run_id=send_run_id,
                             send_run_started_at=send_run_started_at,
@@ -4630,6 +4663,7 @@ def run_sender(
                     data_xlsx_path,
                     row,
                     _format_error_status(entry["error"]),
+                    job_id=job_id,
                     flush=False,
                 )
                 workbook_dirty = workbook_dirty or not bool(status_warning)
@@ -4723,7 +4757,7 @@ def run_sender(
                                 effective_recipient_strategy=job.get("recipient_strategy") or effective_recipient_strategy,
                                 effective_sender_email=job.get("sender_email") or effective_sender_email,
                                 effective_campaign_name=job.get("campaign_name") or effective_campaign_name,
-                                sent_mail_log_path=sent_mail_log_path,
+                                job_id=job_id,
                                 sent_mail_recipients=sent_mail_recipients,
                                 send_run_id=send_run_id,
                                 send_run_started_at=send_run_started_at,
@@ -4760,6 +4794,7 @@ def run_sender(
                             data_xlsx_path,
                             row,
                             _format_error_status(entry["error"]),
+                            job_id=job_id,
                             flush=False,
                         )
                         workbook_dirty = workbook_dirty or not bool(status_warning)
@@ -4840,8 +4875,12 @@ def run_sender(
 def get_sender_status(job_id: str | None = None) -> dict[str, Any]:
     state = _load_sender_state(job_id)
     state["job_id"] = job_id
-    data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
-    if state.get("status") == "running" and isinstance(state.get("stats"), dict):
+    running = state.get("status") == "running"
+    if running:
+        data_xlsx_path = _existing_sender_data_xlsx_path(job_id)
+    else:
+        data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
+    if running and isinstance(state.get("stats"), dict):
         state["stats"] = dict(state.get("stats") or {})
     else:
         state["stats"] = _collect_excel_stats(data_xlsx_path)

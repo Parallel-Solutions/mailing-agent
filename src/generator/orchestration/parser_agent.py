@@ -108,7 +108,12 @@ def _row_count(job_id: str | None = None) -> int:
 
 
 def _parser_data_xlsx_path(job_id: str | None = None):
+    from src.jobs.clients_store import prepare_data_xlsx
+    from src.jobs.storage import normalize_job_id
+
     job_paths = resolve_job_paths(job_id)
+    if normalize_job_id(job_id):
+        return prepare_data_xlsx(job_id, job_paths.data_xlsx)
     if job_paths.data_xlsx.exists():
         return job_paths.data_xlsx
     if job_paths.uses_legacy_layout:
@@ -414,6 +419,12 @@ def run_parser_municipality_verification(job_id: str | None = None, *, source: s
         completed_at=datetime.now().isoformat(timespec="seconds"),
         result=result,
     )
+    if result.get("status") != "error":
+        from src.jobs.clients_store import import_clients_from_xlsx
+        from src.jobs.storage import normalize_job_id
+
+        if normalize_job_id(job_id):
+            import_clients_from_xlsx(job_id, data_xlsx_path)
     return result
 
 

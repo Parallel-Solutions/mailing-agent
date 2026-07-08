@@ -16,6 +16,8 @@ from src.generator.delivery import mailopost_events
 from src.generator.delivery import sender_agent
 from src.generator.delivery import sender_report
 from src.web import sender_service
+from src.jobs.job_docs import append_event
+from tests.bootstrap import reset_test_database
 
 
 class SenderAgentScalabilityTests(unittest.TestCase):
@@ -371,8 +373,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(compact["stats"], {"total": 2, "sent": 2, "error": 0, "pending": 0})
 
     def test_compact_sender_status_uses_campaign_log_after_scoped_consent_fallback(self) -> None:
-        tmpdir = self._tmp_dir("compact_campaign_consent")
-        log_path = tmpdir / "sent_mail_log.jsonl"
+        reset_test_database()
         campaign_name = "СТП_Регионы на букву К_146"
         items = [
             {
@@ -394,10 +395,8 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             }
             for row_id in (3, 11, 13, 16, 29, 139, 140)
         )
-        log_path.write_text(
-            "\n".join(json.dumps(item, ensure_ascii=False) for item in items),
-            encoding="utf-8",
-        )
+        for item in items:
+            append_event("job-campaign", "sent_mail_log", item)
         state = {
             "job_id": "job-campaign",
             "status": "completed",
@@ -414,12 +413,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             "stats": {"total": 146, "sent": 146, "error": 0, "pending": 0},
         }
 
-        with patch.object(
-            sender_service,
-            "resolve_job_paths",
-            return_value=SimpleNamespace(sent_mail_log_path=log_path),
-        ):
-            compact = sender_service.compact_sender_status(state)
+        compact = sender_service.compact_sender_status(state)
 
         self.assertEqual(compact["total_rows"], 146)
         self.assertEqual(compact["sent_rows"], 146)
@@ -1364,10 +1358,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         )
 
     def test_sent_mail_log_promotes_provider_idempotency_key(self) -> None:
-        log_path = Path("tmp") / "test_sender_agent_provider_idempotency.jsonl"
-        log_path.parent.mkdir(exist_ok=True)
-        log_path.unlink(missing_ok=True)
-        self.addCleanup(lambda: log_path.unlink(missing_ok=True))
+        self.addCleanup(lambda: reset_test_database())
 
         warning = sender_agent._append_sent_mail_log(
             row={"ID": "42", "MUN_NAME": "Test municipality"},
@@ -1380,7 +1371,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 "message_id": "message-1",
                 "idempotency_key": "mailing-agent:rusender:stable",
             },
-            sent_mail_log_path=log_path,
+            job_id="job-test",
             send_run_id="send-1",
             recipient_role="fallback",
             send_run_started_at="2026-06-21T10:00:00",
@@ -1388,7 +1379,9 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         )
 
         self.assertIsNone(warning)
-        record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+        from src.jobs.job_docs import read_events
+
+        record = read_events("job-test", "sent_mail_log")[0]
         self.assertEqual(record["provider_idempotency_key"], "mailing-agent:rusender:stable")
         self.assertEqual(record["provider"]["idempotency_key"], "mailing-agent:rusender:stable")
         self.assertEqual(record["recipient_role"], "fallback")

@@ -25,6 +25,7 @@ class GeneratorCaseWorkerTests(unittest.TestCase):
         data_path = self.tmp_dir / "data.xlsx"
         data_path.write_bytes(b"fake")
         job_paths = SimpleNamespace(
+            job_id="job-test",
             root_dir=self.tmp_dir,
             data_xlsx=data_path,
             output_dir=self.tmp_dir / "output",

@@ -31,12 +31,28 @@ class Settings(BaseSettings):
     app_password: str = ""
     app_users: str = ""
     app_admin_tenant_id: str = "admin"
-    auth_db_path: str = "storage/auth/auth.sqlite"
     app_session_ttl_days: int = 7
+
+    # PostgreSQL
+    database_url: str = "postgresql+psycopg://mailing:mailing@postgres:5432/mailing"
+
+    # S3 / MinIO
+    s3_endpoint_url: str = "http://minio:9000"
+    s3_access_key: str = "minioadmin"
+    s3_secret_key: str = "minioadmin"
+    s3_bucket: str = "mailing-agent"
+    s3_region: str = "us-east-1"
+    s3_use_path_style: bool = True
+
+    # Redis
+    redis_url: str = "redis://redis:6379"
+
+    # Local workspace (tmp) for document generation
+    workspace_dir: str = "/app/tmp"
 
     # Приложение
     app_host: str = "0.0.0.0"
-    app_port: int = 8000
+    app_port: int = 9806
     public_base_url: str = "https://31-130-150-209.sslip.io"
     upload_data_max_bytes: int = 25 * 1024 * 1024
     upload_template_max_bytes: int = 10 * 1024 * 1024

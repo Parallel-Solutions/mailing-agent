@@ -53,7 +53,7 @@ from src.generator.orchestration.responsibility_matrix import diagnose_responsib
 from src.generator.generation.transforms import build_document_context, build_output_folder_name
 from src.generator.philologist.document_review_agent import review_docx
 from src.generator.philologist.philologist_agent import _auto_fix_docx
-from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
+from src.jobs import load_agent_state, normalize_job_id, resolve_job_paths, save_agent_state
 from src.utils.config import settings
 from src.utils.logger import logger
 
@@ -414,18 +414,14 @@ def build_inflection_summary(results: list[dict]) -> dict[str, Any]:
     }
 
 
-def save_inflection_log(results: list[dict], *, log_path: Path | None) -> None:
-    if log_path is None:
-        return
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8") as handle:
-        for result in results:
-            for item in result.get("inflection_trace") or []:
-                payload = {
-                    "row_id": result.get("id"),
-                    **item,
-                }
-                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+def save_inflection_log(results: list[dict], *, job_id: str | None = None, log_path: Path | None = None) -> None:
+    from src.jobs.job_docs import replace_events
+
+    records: list[dict[str, Any]] = []
+    for result in results:
+        for item in result.get("inflection_trace") or []:
+            records.append({"row_id": result.get("id"), **item})
+    replace_events(job_id, "inflection_log", records)
 
 
 def build_docx_jobs(results: list[dict]) -> list[dict[str, Any]]:
@@ -873,6 +869,21 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
     return dict(state)
 
 
+def _resolve_generator_source_path(
+    *,
+    xlsx_path: Path | None,
+    job_id: str | None,
+    job_paths: Any,
+) -> Path:
+    if xlsx_path:
+        return xlsx_path
+    if normalize_job_id(job_id):
+        from src.jobs.clients_store import prepare_data_xlsx
+
+        return prepare_data_xlsx(job_id, job_paths.data_xlsx)
+    return job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH
+
+
 def prime_generator_state(
     *,
     xlsx_path: Path | None = None,
@@ -883,7 +894,7 @@ def prime_generator_state(
     work_type: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
-    source_path = xlsx_path or (job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH)
+    source_path = _resolve_generator_source_path(xlsx_path=xlsx_path, job_id=job_id, job_paths=job_paths)
     state = _load_generator_state(job_id)
 
     if not source_path.exists():
@@ -968,7 +979,14 @@ def run_generator_agent(
     work_type: str | None = None,
 ) -> dict[str, Any]:
     job_paths = resolve_job_paths(job_id)
-    source_path = xlsx_path or (job_paths.data_xlsx if job_paths.data_xlsx.exists() else DATA_XLSX_PATH)
+    if job_paths.job_id:
+        try:
+            from src.jobs.workspace import pull_job
+
+            pull_job(job_paths.job_id, ["input", "templates", "output"])
+        except ValueError:
+            pass
+    source_path = _resolve_generator_source_path(xlsx_path=xlsx_path, job_id=job_id, job_paths=job_paths)
     claimed_tasks = mark_tasks_in_progress("generator", limit=limit, job_id=job_id)
     state = _load_generator_state(job_id)
     was_stopped = str(state.get("status") or "") == "stopped"
@@ -1341,6 +1359,13 @@ def run_generator_agent(
             create_pdf=will_create_pdf,
             timing_callback=_report_pdf_backend_timing,
         )
+        if job_paths.job_id:
+            try:
+                from src.jobs.workspace import push_job
+
+                push_job(job_paths.job_id, ["output", "reports"])
+            except ValueError:
+                pass
         _record_generator_timing(
             state,
             job_id,
@@ -1360,11 +1385,10 @@ def run_generator_agent(
             state["stage"] = "waiting_review"
             state["stage_text"] = "Документы созданы. Проверяю текст."
         _save_generator_state(state, job_id)
-        inflection_log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
         postprocess_started = perf_counter()
         save_inflection_log(
             results,
-            log_path=inflection_log_path,
+            job_id=job_id,
         )
         inflection_summary = build_inflection_summary(results)
         review_handoffs = 0

@@ -195,7 +195,10 @@ class ApiErrorContractTests(unittest.TestCase):
             )
 
             with patch("src.web.documents_router.logger", SimpleNamespace(exception=lambda *args, **kwargs: logs.append((args, kwargs)))):
-                response = TestClient(app).post("/api/documents/start", json={})
+                response = TestClient(app).post(
+                    "/api/documents/start",
+                    json={"job_id": "job-test", "document_mode": "kp"},
+                )
 
             payload = response.json()
             self.assertEqual(response.status_code, 500)

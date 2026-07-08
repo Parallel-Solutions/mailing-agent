@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .json_store import JsonReadResult, read_json, write_json_atomic
-from .storage import resolve_job_paths
+from src.infra.db import session_scope
+from src.infra.models import AgentState
+from src.jobs.storage import normalize_job_id, resolve_job_paths
 
 
-LEGACY_STATE_DIR = Path("data/state")
+LEGACY_JOB_ID = "__legacy__"
 TERMINAL_STATE_STATUSES = {"completed", "error", "stopped"}
 ALWAYS_SPLIT_DETAIL_AGENTS = {"philologist"}
 DETAIL_KEYS_BY_AGENT: dict[str, tuple[str, ...]] = {
@@ -17,65 +19,52 @@ DETAIL_KEYS_BY_AGENT: dict[str, tuple[str, ...]] = {
 }
 
 
-def _state_dir(job_id: str | None = None) -> Path:
-    job_paths = resolve_job_paths(job_id)
-    if job_paths.uses_legacy_layout:
-        return LEGACY_STATE_DIR
-    return job_paths.root_dir / "state"
+def _storage_job_id(job_id: str | None) -> str:
+    normalized = normalize_job_id(job_id)
+    return normalized or LEGACY_JOB_ID
 
 
 def resolve_state_path(agent_name: str, job_id: str | None = None) -> Path:
-    return _state_dir(job_id) / f"{agent_name}.json"
+    job_paths = resolve_job_paths(job_id)
+    if job_paths.uses_legacy_layout:
+        return job_paths.root_dir / "state" / f"{agent_name}.json"
+    return job_paths.root_dir / "state" / f"{agent_name}.json"
 
 
 def resolve_state_details_path(agent_name: str, job_id: str | None = None) -> Path:
-    return _state_dir(job_id) / f"{agent_name}.details.json"
+    return resolve_state_path(agent_name, job_id).with_name(f"{agent_name}.details.json")
 
 
 def default_state_copy(default_state: dict[str, Any]) -> dict[str, Any]:
     return deepcopy(default_state)
 
 
-def _read_state_json(path: Path) -> JsonReadResult:
-    result = read_json(path, default={})
-    if result.ok and not isinstance(result.data, dict):
-        return JsonReadResult({}, error="state JSON root must be an object", error_type="invalid_json_shape")
-    return result
-
-
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    write_json_atomic(path, payload, trailing_newline=False)
-
-
-def _diagnostic_state(default_state: dict[str, Any], path: Path, result: JsonReadResult) -> dict[str, Any]:
+def _diagnostic_state(default_state: dict[str, Any], reason: str, message: str) -> dict[str, Any]:
     state = default_state_copy(default_state)
-    reason = "corrupt_json" if result.error_type in {"json_decode", "invalid_json_shape"} else "state_read_error"
     state.update(
         {
             "status": "error",
             "state_error": reason,
-            "state_error_type": result.error_type,
-            "state_error_path": str(path),
-            "state_error_message": result.error,
+            "state_error_type": "state_read_error",
+            "state_error_message": message,
             "summary_text": (
-                "Файл состояния поврежден или недоступен. "
-                f"Автоматический сброс не выполнен, чтобы не потерять данные: {path}"
+                "Состояние агента повреждено или недоступно. "
+                f"Автоматический сброс не выполнен, чтобы не потерять данные: {message}"
             ),
         }
     )
     return state
 
 
-def _attach_details_read_error(state: dict[str, Any], path: Path, result: JsonReadResult) -> dict[str, Any]:
+def _attach_details_read_error(state: dict[str, Any], message: str) -> dict[str, Any]:
     state["state_details_error"] = {
-        "reason": "corrupt_json" if result.error_type in {"json_decode", "invalid_json_shape"} else "state_read_error",
-        "type": result.error_type,
-        "path": str(path),
-        "message": result.error,
+        "reason": "state_read_error",
+        "type": "state_read_error",
+        "message": message,
     }
     state["summary_text"] = (
         str(state.get("summary_text") or "").strip()
-        + f"\n\nДетальный файл состояния поврежден или недоступен: {path}"
+        + f"\n\nДетальное состояние недоступно: {message}"
     ).strip()
     return state
 
@@ -85,7 +74,7 @@ def _details_payload(agent_name: str, state: dict[str, Any]) -> dict[str, Any]:
     return {key: deepcopy(state.get(key)) for key in keys if key in state}
 
 
-def _compact_state_for_primary(agent_name: str, state: dict[str, Any], details_path: Path) -> dict[str, Any]:
+def _compact_state_for_primary(agent_name: str, state: dict[str, Any]) -> dict[str, Any]:
     compact = deepcopy(state)
     details = _details_payload(agent_name, compact)
     if not details:
@@ -99,8 +88,6 @@ def _compact_state_for_primary(agent_name: str, state: dict[str, Any], details_p
             compact[key] = {}
         else:
             compact[key] = None
-
-    compact["details_path"] = str(details_path)
     return compact
 
 
@@ -120,46 +107,74 @@ def load_agent_state(
     include_details: bool = True,
 ) -> dict[str, Any]:
     state = default_state_copy(default_state)
-    path = resolve_state_path(agent_name, job_id)
-    if not path.exists():
+    storage_job_id = _storage_job_id(job_id)
+    with session_scope() as session:
+        row = session.get(AgentState, {"job_id": storage_job_id, "agent_name": agent_name})
+    if row is None:
         return state
-    # Manual PowerShell edits can leave a UTF-8 BOM; keep state recovery tolerant.
-    stored_result = _read_state_json(path)
-    if not stored_result.ok:
-        return _diagnostic_state(default_state, path, stored_result)
-    state.update(stored_result.data)
+
+    stored_state = row.state
+    if not isinstance(stored_state, dict):
+        return _diagnostic_state(default_state, "invalid_json_shape", "state JSON root must be an object")
+    state.update(stored_state)
 
     if not include_details and _should_split_state(agent_name, state):
         details = _details_payload(agent_name, state)
         has_inline_details = any(bool(value) for value in details.values())
         if has_inline_details:
-            details_path = resolve_state_details_path(agent_name, job_id)
-            _write_json_atomic(details_path, details)
-            state = _compact_state_for_primary(agent_name, state, details_path)
-            _write_json_atomic(path, state)
+            compact = _compact_state_for_primary(agent_name, state)
+            save_agent_state(agent_name, {**state, **compact}, job_id=job_id)
+            state = compact
 
-    if include_details:
-        details_path = resolve_state_details_path(agent_name, job_id)
-        compact_details_path = state.get("details_path")
-        if compact_details_path:
-            details_path = Path(str(compact_details_path))
-        if details_path.exists():
-            details_result = _read_state_json(details_path)
-            if not details_result.ok:
-                return _attach_details_read_error(state, details_path, details_result)
-            state.update(details_result.data)
+    if include_details and row.details and isinstance(row.details, dict):
+        state.update(row.details)
+    elif include_details and _should_split_state(agent_name, state) and not row.details:
+        return _attach_details_read_error(state, "details missing in database")
     return state
 
 
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(item) for item in value]
+    return value
+
+
 def save_agent_state(agent_name: str, state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
-    path = resolve_state_path(agent_name, job_id)
+    storage_job_id = _storage_job_id(job_id)
     stored_state = state
+    details: dict[str, Any] | None = None
     if _should_split_state(agent_name, state):
-        details_path = resolve_state_details_path(agent_name, job_id)
         details = _details_payload(agent_name, state)
         has_inline_details = any(bool(value) for value in details.values())
         if has_inline_details:
-            _write_json_atomic(details_path, details)
-            stored_state = _compact_state_for_primary(agent_name, state, details_path)
-    _write_json_atomic(path, stored_state)
+            stored_state = _compact_state_for_primary(agent_name, state)
+        else:
+            details = None
+
+    stored_state = _json_safe_value(stored_state)
+    if details is not None:
+        details = _json_safe_value(details)
+
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        row = session.get(AgentState, {"job_id": storage_job_id, "agent_name": agent_name})
+        if row is None:
+            row = AgentState(
+                job_id=storage_job_id,
+                agent_name=agent_name,
+                state=stored_state,
+                details=details,
+                updated_at=now,
+            )
+            session.add(row)
+        else:
+            row.state = stored_state
+            row.details = details
+            row.updated_at = now
     return state

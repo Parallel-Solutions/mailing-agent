@@ -13,7 +13,8 @@ from src.generator.inflection.ai_case_agent import (
     _resolve_openai_base_url,
 )
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
-from src.jobs import resolve_job_paths, resolve_state_path
+from src.jobs import load_agent_state, resolve_job_paths, resolve_state_path
+from src.jobs.job_docs import read_events, read_sent_mail_log
 from src.utils.config import settings
 
 StatusLoader = Callable[[str | None], dict[str, Any]]
@@ -240,15 +241,9 @@ def _documents_agent_load_philologist_state(job_id: str | None, documents_status
         state.update(inline)
     if not job_id:
         return state
-    state_dir = resolve_state_path("generator", job_id).parent
-    primary = _documents_agent_read_json(state_dir / "philologist.json")
-    if primary and not primary.get("_read_error") and not primary.get("_invalid_shape"):
-        state.update(primary)
-    details_path_raw = state.get("details_path")
-    details_path = Path(str(details_path_raw)) if details_path_raw else state_dir / "philologist.details.json"
-    details = _documents_agent_read_json(details_path)
-    if details and not details.get("_read_error") and not details.get("_invalid_shape"):
-        state.update(details)
+    loaded = load_agent_state("philologist", {}, job_id=job_id, include_details=True)
+    if isinstance(loaded, dict):
+        state.update(loaded)
     return state
 
 
@@ -715,8 +710,8 @@ def _documents_agent_generator_details(details: dict[str, Any]) -> dict[str, Any
     }
 
 
-def _documents_agent_sender_context(state_dir: Path, sent_log_path: Path) -> dict[str, Any]:
-    sender = _documents_agent_read_json(state_dir / "sender.json")
+def _documents_agent_sender_context(job_id: str | None) -> dict[str, Any]:
+    sender = load_agent_state("sender", {}, job_id=job_id, include_details=True)
     rows = sender.get("rows") if isinstance(sender, dict) else None
     row_sample = []
     if isinstance(rows, list):
@@ -740,12 +735,8 @@ def _documents_agent_sender_context(state_dir: Path, sent_log_path: Path) -> dic
                     if isinstance(attempt, dict)
                 ],
             })
-    sent_log_count = 0
-    if sent_log_path.exists():
-        try:
-            sent_log_count = sum(1 for line in sent_log_path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
-        except Exception:
-            sent_log_count = 0
+    sent_items = read_sent_mail_log(job_id)
+    sent_log_count = len(sent_items)
     return {
         "status": sender.get("status") if isinstance(sender, dict) else None,
         "mode": sender.get("mode") if isinstance(sender, dict) else None,
@@ -755,12 +746,12 @@ def _documents_agent_sender_context(state_dir: Path, sent_log_path: Path) -> dic
         "error_rows": sender.get("error_rows") if isinstance(sender, dict) else None,
         "rows_count": len(rows) if isinstance(rows, list) else 0,
         "rows_sample": row_sample,
-        "sent_log": {"exists": sent_log_path.exists(), "line_count": sent_log_count, "updated_at": _documents_agent_mtime(sent_log_path)},
+        "sent_log": {"exists": sent_log_count > 0, "line_count": sent_log_count, "updated_at": None},
     }
 
 
-def _documents_agent_rusender_context(state_dir: Path) -> dict[str, Any]:
-    events = _documents_agent_read_jsonl_tail(state_dir / "rusender_events.jsonl", limit=50)
+def _documents_agent_rusender_context(job_id: str | None) -> dict[str, Any]:
+    events = read_events(job_id, "rusender_events")[-50:]
     counts: dict[str, int] = {}
     for event in events:
         code = str(event.get("event") or event.get("type") or event.get("status") or event.get("event_type") or "unknown")
@@ -776,9 +767,9 @@ def _documents_agent_rusender_context(state_dir: Path) -> dict[str, Any]:
     return {"recent_count": len(events), "recent_counts": counts, "recent_tail": tail}
 
 
-def _documents_agent_audit_context(state_dir: Path) -> list[dict[str, Any]]:
+def _documents_agent_audit_context(job_id: str | None) -> list[dict[str, Any]]:
     payload = []
-    for item in _documents_agent_read_jsonl_tail(state_dir / "audit.jsonl", limit=8):
+    for item in read_events(job_id, "audit")[-8:]:
         details = item.get("details") if isinstance(item.get("details"), dict) else {}
         payload.append({
             "occurred_at": item.get("occurred_at"),
@@ -794,8 +785,8 @@ def _documents_agent_build_readonly_context(message: str, job_id: str | None, do
     state_dir = resolve_state_path("generator", job_id).parent
     generator = documents_status.get("generator") or {}
     philologist = documents_status.get("philologist") or {}
-    generator_details = _documents_agent_read_json(state_dir / "generator.details.json")
-    philologist_details = _documents_agent_read_json(state_dir / "philologist.details.json")
+    generator_details = load_agent_state("generator", {}, job_id=job_id, include_details=True)
+    philologist_details = load_agent_state("philologist", {}, job_id=job_id, include_details=True)
     service_docs = format_service_rag_context(find_relevant_service_docs(message, limit=3))
     context = {
         "screen": "documents",
@@ -855,9 +846,9 @@ def _documents_agent_build_readonly_context(message: str, job_id: str | None, do
             "output_zip": _documents_agent_file_info(state_dir / "output.zip"),
         },
         "workers": _documents_agent_worker_diagnostics(state_dir),
-        "audit_tail": _documents_agent_audit_context(state_dir),
-        "sender": _documents_agent_sender_context(state_dir, paths.sent_mail_log_path),
-        "rusender_events": _documents_agent_rusender_context(state_dir),
+        "audit_tail": _documents_agent_audit_context(job_id),
+        "sender": _documents_agent_sender_context(job_id),
+        "rusender_events": _documents_agent_rusender_context(job_id),
     }
     return context
 

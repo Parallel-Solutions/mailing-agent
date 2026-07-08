@@ -11,7 +11,7 @@ from src.generator.delivery.sender_report import (
     build_sender_delivery_report_xlsx,
     sender_delivery_report_has_data,
 )
-from src.generator.inflection.inflection_report import load_inflection_log, save_inflection_csv
+from src.generator.inflection.inflection_report import load_inflection_log, save_inflection_csv, write_inflection_log_jsonl
 from src.generator.knowledge.agent_memory import (
     build_agent_report,
     build_learning_candidates,
@@ -96,9 +96,33 @@ def create_download_router(
         if not verification_completed:
             raise HTTPException(status_code=409, detail="Дождитесь завершения проверки таблицы.")
 
+    def ensure_local_job_path(job_id: str | None, relative_path: str) -> Path:
+        from src.jobs.storage import normalize_job_id
+        from src.jobs.workspace import ensure_local_file
+
+        paths = resolve_job_paths(job_id)
+        if not normalize_job_id(job_id):
+            return paths.root_dir / relative_path
+        try:
+            return ensure_local_file(job_id, relative_path)
+        except Exception:
+            return paths.root_dir / relative_path
+
+    def pull_job_workspace(job_id: str | None, subdirs: list[str]) -> None:
+        from src.jobs.storage import normalize_job_id
+        from src.jobs.workspace import pull_job
+
+        if not normalize_job_id(job_id):
+            return
+        try:
+            pull_job(job_id, subdirs)
+        except ValueError:
+            pass
+
     @router.get("/api/download/output")
     async def download_output(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
+        pull_job_workspace(job_id, ["output", "archives"])
         output_dir = resolve_job_paths(job_id).output_dir
         if not output_dir.exists():
             raise HTTPException(status_code=404, detail="Файлы не найдены. Сначала запустите генерацию.")
@@ -124,7 +148,11 @@ def create_download_router(
     @router.get("/api/download/data-xlsx")
     async def download_data_xlsx(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
-        data_path = prefer_existing_file(resolve_job_paths(job_id).data_xlsx, Path("data/data.xlsx"))
+        job_paths = resolve_job_paths(job_id)
+        from src.jobs.clients_store import prepare_data_xlsx
+
+        ensure_local_job_path(job_id, "input/data.xlsx")
+        data_path = prepare_data_xlsx(job_id, job_paths.data_xlsx)
         if not data_path.exists():
             raise HTTPException(status_code=404, detail="Файл data.xlsx не найден.")
         return download_response(
@@ -187,14 +215,14 @@ def create_download_router(
     @router.get("/api/download/sent-mail-log")
     async def download_sent_mail_log(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
+        from src.jobs.job_docs import write_sent_mail_log_jsonl
+
         job_paths = resolve_job_paths(job_id)
-        log_path = (
-            job_paths.sent_mail_log_path
-            if not job_paths.uses_legacy_layout
-            else Path("data/sent_mail_log.jsonl")
-        )
-        if not log_path.exists():
-            raise HTTPException(status_code=404, detail="Журнал отправленных писем пока не создан.")
+        log_path = job_paths.sent_mail_log_path
+        try:
+            write_sent_mail_log_jsonl(job_id, log_path)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Журнал отправленных писем пока не создан.") from exc
         return download_response(
             log_path,
             media_type="application/x-ndjson",
@@ -211,20 +239,8 @@ def create_download_router(
             )
         job_paths = resolve_job_paths(job_id)
         report_path = job_state_dir(job_id) / "sender_delivery_report.xlsx"
-        sent_log_path = (
-            job_paths.sent_mail_log_path
-            if not job_paths.uses_legacy_layout
-            else Path("data/sent_mail_log.jsonl")
-        )
-        state_dir = job_state_dir(job_id)
-        report_sources = [
-            sent_log_path,
-            state_dir / "rusender_events.jsonl",
-            state_dir / "unisender_go_events.jsonl",
-            state_dir / "mailopost_events.jsonl",
-            state_dir / "consents.json",
-        ]
-        if not is_cache_fresh(report_path, report_sources, max_age_seconds=180):
+        pull_job_workspace(job_id, ["output"])
+        if not is_cache_fresh(report_path, [], max_age_seconds=180):
             report_path = build_sender_delivery_report_xlsx(job_id, refresh=True)
         return download_response(
             report_path,
@@ -237,8 +253,10 @@ def create_download_router(
         ensure_job_access(job_id, principal, allow_missing=True)
         job_paths = resolve_job_paths(job_id)
         log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
-        if not log_path.exists():
-            raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
+        try:
+            write_inflection_log_jsonl(job_id, log_path)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.") from exc
         return download_response(
             log_path,
             media_type="application/x-ndjson",
@@ -253,9 +271,7 @@ def create_download_router(
             raise HTTPException(status_code=404, detail="Журнал склонений пока не создан.")
         job_paths = resolve_job_paths(job_id)
         report_path = job_paths.root_dir / "state" / "inflection_report.csv"
-        log_path = job_paths.root_dir / "state" / "inflection_log.jsonl"
-        if not is_cache_fresh(report_path, [log_path]):
-            save_inflection_csv(rows, report_path)
+        save_inflection_csv(rows, report_path)
         return download_response(
             report_path,
             media_type="text/csv",

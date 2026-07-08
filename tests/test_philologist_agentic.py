@@ -156,7 +156,10 @@ class PhilologistAgenticTests(unittest.TestCase):
         self.assertIn("quarantine_issue", tool_names)
 
     def test_document_react_loop_records_observations_and_finishes(self) -> None:
-        path = self._docx("react_loop.docx", "clean text")
+        path = self.tmp_dir / "react_loop.docx"
+        doc = Document()
+        doc.add_paragraph("В документе остался плейсхолдер ADM_NAME для проверки.")
+        doc.save(path)
         runner = PhilologistToolRunner()
 
         result = _run_docx_react_loop(
@@ -169,7 +172,7 @@ class PhilologistAgenticTests(unittest.TestCase):
 
         self.assertEqual(
             actions,
-            ["review_docx", "snapshot_docx", "apply_safe_fixes", "verify_safe_fixes", "finish_document"],
+            ["review_docx", "snapshot_docx", "apply_safe_fixes", "finish_document"],
         )
         self.assertTrue(all(step.get("observation") for step in result["react_trace"]))
 

@@ -32,7 +32,7 @@ from src.generator.delivery.rusender_events import load_rusender_events
 from src.generator.delivery.unisender_go_events import load_unisender_go_events
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.work_types import DEFAULT_WORK_TYPE, get_work_type_profile, normalize_work_type
-from src.jobs import resolve_job_paths
+from src.jobs import normalize_job_id, resolve_job_paths
 from src.utils.config import settings
 
 
@@ -227,6 +227,13 @@ def build_sender_delivery_report_xlsx(job_id: str | None = None, *, refresh: boo
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
+    if normalize_job_id(job_id):
+        try:
+            from src.jobs.workspace import put_upload
+
+            put_upload(job_id, output_path.relative_to(job_paths.root_dir).as_posix(), output_path)
+        except ValueError:
+            pass
     return output_path
 
 
@@ -910,11 +917,9 @@ def _save_delivery_status_cache(job_id: str | None, statuses: dict[str, dict[str
 
 
 def _load_delivery_log_items(job_id: str | None) -> list[dict[str, Any]]:
-    job_paths = resolve_job_paths(job_id)
-    sent_mail_log_path = None if job_paths.uses_legacy_layout else job_paths.sent_mail_log_path
     items = [
         item
-        for item in _load_sent_mail_log_items(sent_mail_log_path)
+        for item in _load_sent_mail_log_items(job_id)
         if _safe_text(item.get("transport")) in {"unisender", "rusender", "smtp", "mailopost"}
     ]
     items = _filter_items_by_current_sender_state(job_id, items)
@@ -979,10 +984,17 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def _report_data_xlsx_path(job_id: str | None) -> Path:
+    from src.jobs.clients_store import prepare_data_xlsx
+
+    paths = resolve_job_paths(job_id)
+    return prepare_data_xlsx(job_id, paths.data_xlsx)
+
+
 def _filter_items_by_current_data(job_id: str | None, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not job_id or not items:
         return items
-    data_path = resolve_job_paths(job_id).data_xlsx
+    data_path = _report_data_xlsx_path(job_id)
     if not data_path.exists():
         return items
     try:
@@ -1016,7 +1028,7 @@ def _filter_items_by_current_data(job_id: str | None, items: list[dict[str, Any]
 def _current_data_recipient_roles(job_id: str | None) -> dict[tuple[str, str], str]:
     if not job_id:
         return {}
-    data_path = resolve_job_paths(job_id).data_xlsx
+    data_path = _report_data_xlsx_path(job_id)
     if not data_path.exists():
         return {}
     try:

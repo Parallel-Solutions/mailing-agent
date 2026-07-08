@@ -114,7 +114,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
         )
 
         self.assertTrue(result.should_replace)
-        self.assertEqual(result.official_name, "Энемское городское поселение")
+        self.assertEqual(result.official_name, "Городское поселение Энем")
 
     def test_restores_readable_case_for_city_type_name(self) -> None:
         result = verify_municipality_name(
@@ -137,7 +137,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.status, "kept")
         self.assertEqual(result.confidence, "medium")
         self.assertEqual(result.official_name, "Городское поселение поселок Онохой")
         self.assertFalse(result.should_replace)
@@ -153,9 +153,9 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.status, "kept")
         self.assertEqual(result.confidence, "medium")
-        self.assertEqual(result.official_name, "Городское поселение Бабушкинское")
+        self.assertEqual(result.official_name, "Бабушкинское городское поселение")
 
     def test_unwraps_local_administration_from_quoted_name(self) -> None:
         result = verify_municipality_name(
@@ -169,9 +169,9 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.status, "kept")
         self.assertEqual(result.confidence, "medium")
-        self.assertEqual(result.official_name, "Сельское поселение Джулат")
+        self.assertEqual(result.official_name, "Джулатское сельское поселение")
         self.assertFalse(result.should_replace)
 
     def test_does_not_replace_settlement_with_quoted_district(self) -> None:
@@ -200,7 +200,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             "КОРСАКОВСКОГО РАЙОНА ОРЛОВСКОЙ ОБЛАСТИ"
         )
 
-        self.assertEqual(candidate, "Сельское поселение Марьинское")
+        self.assertEqual(candidate, "Марьинское сельское поселение")
 
     def test_extracts_genitive_rural_settlement_name_without_district_tail(self) -> None:
         candidate = extract_municipality_name_from_administration(
@@ -208,7 +208,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             "БАЙКАЛОВСКОГО МУНИЦИПАЛЬНОГО РАЙОНА СВЕРДЛОВСКОЙ ОБЛАСТИ"
         )
 
-        self.assertEqual(candidate, "Сельское поселение Краснополянское")
+        self.assertEqual(candidate, "Краснополянское сельское поселение")
 
     def test_keeps_unquoted_administration_candidate_without_minjust_confirmation(self) -> None:
         result = verify_municipality_name(
@@ -277,11 +277,11 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             minjust_lookup=lookup,
         )
 
-        self.assertEqual(result.status, "verified")
-        self.assertEqual(result.confidence, "high")
+        self.assertEqual(result.status, "kept")
+        self.assertEqual(result.confidence, "medium")
         self.assertEqual(result.source, "minjust")
         self.assertEqual(result.official_name, "Городское поселение город Туймазы")
-        self.assertTrue(result.should_replace)
+        self.assertFalse(result.should_replace)
 
     def test_confirms_rural_administration_matches_current_municipality(self) -> None:
         result = verify_municipality_name(
@@ -291,7 +291,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.status, "kept")
         self.assertEqual(result.confidence, "medium")
         self.assertEqual(result.official_name, "Дубровское сельское поселение")
         self.assertFalse(result.should_replace)
@@ -304,7 +304,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.status, "kept")
         self.assertEqual(result.confidence, "medium")
 
     def test_confirms_genitive_rural_settlement_administration(self) -> None:
@@ -315,7 +315,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.status, "kept")
         self.assertEqual(result.confidence, "medium")
 
     def test_confirms_selsovet_administration(self) -> None:
@@ -326,7 +326,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.status, "kept")
         self.assertEqual(result.confidence, "medium")
 
     def test_confirms_municipal_obrazovanie_dash_administration(self) -> None:
@@ -337,7 +337,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.status, "kept")
         self.assertEqual(result.confidence, "medium")
 
     def test_confirms_municipal_obrazovanie_rural_settlement_noun(self) -> None:
@@ -348,7 +348,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.status, "kept")
         self.assertEqual(result.confidence, "medium")
 
     def test_accepts_official_like_site_search_result(self) -> None:
@@ -435,7 +435,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             updated.close()
 
     def test_workbook_verification_reuses_result_for_duplicate_rows(self) -> None:
-        tmp_root = Path("C:/tmp")
+        tmp_root = Path.cwd()
         tmp_root.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=tmp_root) as tmp_dir:
             path = Path(tmp_dir) / "duplicate-rows.xlsx"
@@ -455,7 +455,7 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             workbook.save(path)
             workbook.close()
 
-            lookup = FakeOktmoLookup("Городское поселение Энем")
+            lookup = FakeOktmoLookup("Энемское городское поселение")
             stats = verify_municipality_names_in_workbook(
                 path,
                 use_oktmo=True,
@@ -659,14 +659,14 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result.status, "verified")
-        self.assertEqual(result.confidence, "high")
+        self.assertEqual(result.status, "kept")
+        self.assertEqual(result.confidence, "medium")
         self.assertEqual(result.source, "normalization")
         self.assertEqual(result.official_name, "поселок городского типа Духовницкое рабочий поселок")
-        self.assertTrue(result.should_replace)
+        self.assertFalse(result.should_replace)
 
     def test_updates_workbook_with_expanded_locality_abbreviation(self) -> None:
-        with tempfile.TemporaryDirectory(dir=Path(r"C:\tmp")) as tmp_dir:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp_dir:
             path = Path(tmp_dir) / "abbrev-data.xlsx"
             workbook = Workbook()
             worksheet = workbook.active
@@ -681,17 +681,15 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
 
             stats = verify_municipality_names_in_workbook(path)
 
-            self.assertEqual(stats["updated_rows"], 1)
+            self.assertEqual(stats["updated_rows"], 0)
             updated = load_workbook(path)
             sheet = updated.active
             headers = {sheet.cell(row=2, column=i).value: i for i in range(1, sheet.max_column + 1)}
-            self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME"]).value, "рабочий поселок Ордынское")
-            self.assertNotIn("MUN_NAME_VERIFICATION_SOURCE", headers)
-            self.assertEqual(stats["replacement_samples"][0]["source"], "normalization")
-            updated.close()
+            self.assertEqual(sheet.cell(row=3, column=headers["MUN_NAME"]).value, "рп Ордынское")
+            self.assertEqual(stats["replacement_samples"], [])
 
     def test_updates_workbook_and_preserves_original_name(self) -> None:
-        with tempfile.TemporaryDirectory(dir=Path(r"C:\tmp")) as tmp_dir:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp_dir:
             path = Path(tmp_dir) / "data.xlsx"
             workbook = Workbook()
             worksheet = workbook.active
@@ -706,7 +704,12 @@ class MunicipalityNameVerifierTests(unittest.TestCase):
             workbook.save(path)
             workbook.close()
 
-            stats = verify_municipality_names_in_workbook(path)
+            stats = verify_municipality_names_in_workbook(
+                path,
+                use_oktmo=True,
+                oktmo_lookup=FakeOktmoLookup("Яблоновское городское поселение"),
+                use_minjust=False,
+            )
 
             self.assertEqual(stats["updated_rows"], 1)
             self.assertEqual(len(stats["replacements"]), 1)

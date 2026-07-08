@@ -98,11 +98,16 @@
 
 Docker Compose поднимает:
 
-
-
 - `app` — FastAPI-приложение на Python;
-
+- `postgres` — PostgreSQL (строковые/state-данные, auth, клиенты, события);
+- `minio` — S3-совместимое хранилище файлов (xlsx, docx, pdf, шаблоны);
+- `redis` — кэш и progress streams парсера;
 - `gotenberg`, `gotenberg-2` — внутренние сервисы для DOCX → PDF конвертации.
+
+Данные приложения:
+- **PostgreSQL** — users/sessions, состояние агентов, owner, consents, события (`*.jsonl`), строки клиентов;
+- **MinIO (S3)** — бинарные файлы job (`input/`, `templates/`, `output/`, `consents/`, отчёты);
+- **локальный `/app/tmp`** — рабочая папка для генерации документов (синхронизируется с S3 на границах upload/worker/finalize).
 
 
 
@@ -138,6 +143,10 @@ nano .env.docker
 
 docker compose up -d --build
 
+# при первом запуске на существующих данных (опционально):
+
+docker compose run --rm app .venv/bin/python -m scripts.migrate.migrate_all
+
 ```
 
 
@@ -170,25 +179,29 @@ docker compose logs -f app
 
 Тесты:
 
-
+**Unit/integration** (без реальной отправки, Postgres + MinIO):
 
 ```bash
-
 docker compose -f docker-compose.test.yml run --rm test
-
 ```
-
-
 
 Локально (из корня проекта, с активированным `.venv`):
 
+```bash
+python -m tests
+```
 
+**E2E send matrix** (реальная отправка через RuSender, 35×4=140 сценариев, несколько часов):
 
 ```bash
-
-python -m tests
-
+cp .env.e2e.example .env.docker   # заполнить RuSender и auth
+docker compose up -d
+./scripts/run-e2e-matrix.ps1      # Windows
+# или
+RUN_REAL_E2E=1 docker compose exec app .venv/bin/python -m tests.e2e.run_send_matrix
 ```
+
+Подробности: [`tests/e2e/README.md`](tests/e2e/README.md).
 
 
 
@@ -220,7 +233,7 @@ APP_PUBLIC_PORT=18080
 
 
 
-Runtime-данные (`storage/`, `logs/`, `data/`) монтируются с хоста в контейнер для бэкапа и просмотра файлов.
+Runtime-данные на хосте: `./logs` и `./tmp` (рабочая папка `/app/tmp`). PostgreSQL, MinIO и Redis хранятся в named Docker volumes (`pgdata`, `minio-data`, `redis-data`).
 
 
 
@@ -235,6 +248,14 @@ Runtime-данные (`storage/`, `logs/`, `data/`) монтируются с х
 Перед запуском нужно создать `.env.docker` и заполнить реальные значения:
 
 
+
+- `DATABASE_URL` — PostgreSQL DSN (по умолчанию `postgresql+psycopg://mailing:mailing@postgres:5432/mailing`);
+
+- `S3_ENDPOINT_URL`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET` — MinIO/S3 для файлов job;
+
+- `REDIS_URL` — Redis для кэша парсера;
+
+- `WORKSPACE_DIR` — локальная рабочая папка (`/app/tmp` в Docker);
 
 - `APP_USERNAME`, `APP_PASSWORD` — admin fallback для входа; `APP_PASSWORD` обязателен, с пустым значением сервис не запустится;
 
@@ -298,7 +319,7 @@ tests/                          регрессионные тесты
 
 - Долгие задачи запускаются в фоне внутри процесса FastAPI.
 
-- Состояние рабочих сессий хранится в файлах job внутри `storage/jobs`.
+- Состояние рабочих сессий, auth, клиенты и события хранятся в **PostgreSQL**; бинарные файлы job — в **MinIO (S3)**; `/app/tmp` используется как локальная рабочая папка для генерации.
 
 - Для высокой нагрузки лучше вынести генерацию, проверку документов и отправку в отдельный worker с очередью задач.
 

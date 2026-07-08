@@ -8,8 +8,7 @@ from typing import Any
 from src.generator.case_engine.overrides import lookup_override, upsert_override
 from src.generator.generation.config_generator import AGENT_MEMORY_AUTO_APPROVE_SAFE_INFLECTIONS
 from src.generator.inflection.inflection_report import load_inflection_log
-from src.jobs import resolve_state_path
-from src.jobs.storage import resolve_job_paths
+from src.jobs import load_agent_state, resolve_job_paths
 
 
 MEMORY_JSONL_NAME = "agent_memory_candidates.jsonl"
@@ -57,11 +56,9 @@ def save_learning_memory(job_id: str | None = None) -> list[dict[str, Any]]:
         candidates.extend(auto_approve_safe_inflections(job_id))
     quarantine = build_quarantine_items(job_id)
     save_quarantine(job_id, quarantine)
-    path = get_agent_memory_path(job_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for item in candidates:
-            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+    from src.jobs.job_docs import replace_events
+
+    replace_events(job_id, "agent_memory_candidates", candidates)
     save_agent_report(job_id, candidates=candidates, quarantine=quarantine)
     return candidates
 
@@ -231,11 +228,9 @@ def _philology_candidate_next_action(candidate: dict[str, Any]) -> str:
 
 def save_quarantine(job_id: str | None, items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     items = build_quarantine_items(job_id) if items is None else items
-    path = get_agent_quarantine_path(job_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for item in items:
-            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+    from src.jobs.job_docs import replace_events
+
+    replace_events(job_id, "agent_quarantine", items)
     return items
 
 
@@ -643,11 +638,4 @@ def _format_rag_rules(rag: dict[str, Any]) -> str:
 
 
 def _load_philologist_state(job_id: str | None) -> dict[str, Any]:
-    path = resolve_state_path("philologist", job_id)
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return load_agent_state("philologist", {}, job_id=job_id, include_details=True)
