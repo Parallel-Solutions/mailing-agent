@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 from pathlib import Path
 
 from tests.e2e.api_client import E2EApiClient, E2EApiError
 from tests.e2e.config import E2EConfig, fixture_path
 
 from src.generator.delivery.consent_store import CONSENT_FILENAME
-from src.generator.delivery.sender_agent import SENDER_RUN_LOCK_FILENAME
+from src.generator.delivery.sender_agent import SENDER_RUN_LOCK_FILENAME, SENDER_STATE
 from src.jobs.json_store import write_json_atomic
-from src.jobs.storage import resolve_job_paths
+from src.jobs.state import save_agent_state
+from src.jobs.storage import JOBS_DIR, resolve_job_paths
 
 
 def _state_dir(job_id: str) -> Path:
@@ -32,6 +34,7 @@ def clear_sender_state_files(job_id: str) -> None:
     for name in ("sender.json", "sender.details.json"):
         _unlink_if_exists(state_dir / name)
     _unlink_if_exists(state_dir / SENDER_RUN_LOCK_FILENAME)
+    save_agent_state("sender", deepcopy(SENDER_STATE), job_id)
 
 
 def clear_consent_records(job_id: str) -> None:
@@ -48,6 +51,51 @@ def ensure_sender_idle(api: E2EApiClient, job_id: str, *, timeout_seconds: float
             return
         time.sleep(2.0)
     raise E2EApiError(f"Sender still busy after {timeout_seconds}s (job={job_id})")
+
+
+def _stop_job_workers(api: E2EApiClient, job_id: str) -> None:
+    for endpoint in ("/api/documents/stop", "/api/sender/stop"):
+        try:
+            api._request("POST", endpoint, json={"job_id": job_id})
+        except Exception:
+            pass
+
+
+def cleanup_stale_job_workers(api: E2EApiClient) -> None:
+    """Stop documents/sender workers for all known jobs to free per-user worker slots."""
+    if not JOBS_DIR.exists():
+        return
+    for job_dir in sorted(JOBS_DIR.iterdir()):
+        if not job_dir.is_dir():
+            continue
+        job_id = job_dir.name
+        if not job_id.startswith("job-"):
+            continue
+        _stop_job_workers(api, job_id)
+
+    try:
+        payload = api._json(api._request("GET", "/api/workers/status"))
+        workers = api._result(payload).get("workers") or []
+    except Exception:
+        return
+
+    for worker in workers:
+        if not isinstance(worker, dict):
+            continue
+        status_path = str(worker.get("status_path") or "").strip()
+        if not status_path:
+            continue
+        pid = worker.get("pid")
+        try:
+            api._json(
+                api._request(
+                    "POST",
+                    "/api/workers/stop",
+                    json={"status_path": status_path, "pid": pid},
+                )
+            )
+        except Exception:
+            pass
 
 
 def reset_job_for_send_case(

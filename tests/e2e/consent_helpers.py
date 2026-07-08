@@ -114,5 +114,14 @@ def run_consent_flow(
         if response.status_code not in {200, 410}:
             raise RuntimeError(f"Consent confirm failed ({response.status_code}) for token={token[:8]}...")
         confirmed.append(record)
-    wait_materials_sent(job_id, timeout_seconds=config.consent_timeout_seconds)
+    recipients = {
+        str(record.get("recipient") or "").strip().lower()
+        for record in confirmed
+        if str(record.get("recipient") or "").strip()
+    }
+    wait_materials_sent(
+        job_id,
+        timeout_seconds=config.consent_timeout_seconds,
+        recipients=recipients or None,
+    )
     return confirmed

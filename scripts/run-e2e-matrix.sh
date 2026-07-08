@@ -30,6 +30,18 @@ if [[ "${RUN_REAL_E2E}" != "1" ]]; then
   exit 1
 fi
 
+echo "Restarting app to clear in-memory worker slots ..."
+docker compose restart app
+
+echo "Waiting for app health ..."
+for i in $(seq 1 30); do
+  status="$(docker compose ps app --format '{{.Health}}' 2>/dev/null || true)"
+  if [ "$status" = "healthy" ]; then
+    break
+  fi
+  sleep 5
+done
+
 echo "Clearing stale sender locks under tmp/storage/jobs ..."
 find tmp/storage/jobs -path '*/state/.sender.run.lock' -delete 2>/dev/null || true
 

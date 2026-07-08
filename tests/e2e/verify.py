@@ -7,6 +7,11 @@ try:
 except ImportError:  # pragma: no cover
     read_sent_mail_log = None  # type: ignore[assignment]
 
+try:
+    from tests.e2e.consent_helpers import load_consent_records
+except ImportError:  # pragma: no cover
+    load_consent_records = None  # type: ignore[assignment]
+
 EXPECTED_RECIPIENT_COUNT = 2
 
 _BLOCKED_RESULT_PREFIXES = ("blocked", "error", "needs_")
@@ -178,3 +183,26 @@ def classify_send_success(
         )
 
     return True, f"{send_mode} sent ({effective_success}/{expected_row_count})"
+
+
+def verify_consent_materials_dispatch(job_id: str, *, expected_count: int = EXPECTED_RECIPIENT_COUNT) -> tuple[bool, str]:
+    if load_consent_records is None:
+        return False, "consent_store unavailable"
+    records = load_consent_records(job_id)
+    recipients_expected = {
+        str(record.get("recipient") or "").strip().lower()
+        for record in records
+        if str(record.get("recipient") or "").strip()
+    }
+    if not recipients_expected:
+        return False, "no consent recipients found"
+    sent = [
+        record
+        for record in records
+        if str(record.get("materials_status") or "").lower() == "sent"
+        and str(record.get("recipient") or "").strip().lower() in recipients_expected
+    ]
+    target = max(expected_count, len(recipients_expected))
+    if len(sent) >= target:
+        return True, f"materials auto-dispatched ({len(sent)}/{target})"
+    return False, f"materials auto-dispatch incomplete ({len(sent)}/{target})"

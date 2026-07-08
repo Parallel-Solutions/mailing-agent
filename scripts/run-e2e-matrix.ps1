@@ -28,6 +28,16 @@ if ($env:RUN_REAL_E2E -ne "1") {
     Write-Error "Set RUN_REAL_E2E=1 to run the real send matrix."
 }
 
+Write-Host "Restarting app to clear in-memory worker slots ..."
+docker compose restart app
+
+Write-Host "Waiting for app health ..."
+for ($i = 0; $i -lt 30; $i++) {
+    $status = docker compose ps app --format "{{.Health}}" 2>$null
+    if ($status -eq "healthy") { break }
+    Start-Sleep -Seconds 5
+}
+
 Get-ChildItem -Path "tmp\storage\jobs" -Recurse -Filter ".sender.run.lock" -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
 

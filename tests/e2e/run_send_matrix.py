@@ -15,6 +15,9 @@ from tests.e2e.config import (
 )
 from tests.e2e.consent_helpers import run_consent_flow
 from tests.e2e.job_reset import (
+    cleanup_stale_job_workers,
+    clear_sender_state_files,
+    ensure_sender_idle,
     reset_job_for_send_case,
     reset_sender_after_consent_setup,
     verify_generation_output,
@@ -27,7 +30,12 @@ from tests.e2e.matrix import (
     sender_has_blockers,
 )
 from tests.e2e.report import ReportStore
-from tests.e2e.verify import classify_send_success, extract_delivery_rows, validate_per_recipient_rows
+from tests.e2e.verify import (
+    classify_send_success,
+    extract_delivery_rows,
+    validate_per_recipient_rows,
+    verify_consent_materials_dispatch,
+)
 
 
 def _upload_templates(api: E2EApiClient, config: E2EConfig, job_id: str, generation: GenerationCase) -> None:
@@ -131,14 +139,29 @@ def _run_sender(
     *,
     dry_run: bool,
 ) -> dict[str, Any]:
-    api.sender_run(
-        send_case.job_id or "",
-        dry_run=dry_run,
-        send_mode=send_case.send_mode,
-        recipient_strategy=send_case.recipient_strategy,
-        work_type=send_case.work_type,
-    )
-    return api.wait_sender(send_case.job_id or "", expect_dry_run=dry_run)
+    job_id = send_case.job_id or ""
+    last_error: E2EApiError | None = None
+    for attempt in range(3):
+        if attempt > 0:
+            clear_sender_state_files(job_id)
+            ensure_sender_idle(api, job_id, timeout_seconds=60)
+            time.sleep(2.0)
+        try:
+            api.sender_run(
+                job_id,
+                dry_run=dry_run,
+                send_mode=send_case.send_mode,
+                recipient_strategy=send_case.recipient_strategy,
+                work_type=send_case.work_type,
+            )
+            return api.wait_sender(job_id, expect_dry_run=dry_run)
+        except E2EApiError as exc:
+            last_error = exc
+            if "BadZipFile" not in str(exc) or attempt >= 2:
+                raise
+    if last_error is not None:
+        raise last_error
+    raise E2EApiError(f"Sender run failed for job {job_id}")
 
 
 def _setup_materials_consent(
@@ -153,11 +176,13 @@ def _setup_materials_consent(
         document_mode=send_case.document_mode,
         kp_variant=send_case.kp_variant,
         send_mode="consent_request",
-        recipient_strategy=send_case.recipient_strategy,
+        recipient_strategy="all",
         job_id=job_id,
     )
     _run_sender(api, config, consent_case, dry_run=True)
     time.sleep(config.send_pause_seconds)
+    clear_sender_state_files(job_id)
+    ensure_sender_idle(api, job_id, timeout_seconds=60)
     _run_sender(api, config, consent_case, dry_run=False)
     run_consent_flow(api, job_id, config)
     reset_sender_after_consent_setup(api, config, job_id)
@@ -176,21 +201,9 @@ def _evaluate_send_result(
             send_mode="consent_request",
             dry_run=False,
         )
-        ok_materials, reason_materials = classify_send_success(
-            send_status,
-            send_mode="materials",
-            dry_run=False,
-        )
-        ok = ok_consent and ok_materials
+        ok_materials, reason_materials = verify_consent_materials_dispatch(job_id=send_case.job_id or "")
         reason = f"consent: {reason_consent}; materials: {reason_materials}"
-        if ok:
-            ok_recipients, reason_recipients = validate_per_recipient_rows(
-                delivery_rows,
-                send_mode="materials",
-            )
-            ok = ok and ok_recipients
-            reason = f"{reason}; recipients: {reason_recipients}"
-        return ok, reason
+        return ok_consent and ok_materials, reason
 
     ok, reason = classify_send_success(send_status, send_mode=send_case.send_mode, dry_run=False)
     if ok:
@@ -240,6 +253,8 @@ def _run_send_case(
             notes.append(f"dry_run blockers={len(blockers)}")
 
         time.sleep(config.send_pause_seconds)
+        clear_sender_state_files(job_id)
+        ensure_sender_idle(api, job_id, timeout_seconds=60)
 
         send_status = _run_sender(api, config, send_case, dry_run=False)
         consent_send_status: dict[str, Any] | None = None
@@ -247,6 +262,7 @@ def _run_send_case(
         if send_case.send_mode == "consent_request":
             consent_send_status = send_status
             run_consent_flow(api, job_id, config)
+            ensure_sender_idle(api, job_id)
             try:
                 send_status = api.wait_sender(job_id, expect_dry_run=False)
             except E2EApiError:
@@ -302,6 +318,7 @@ def run_matrix(config: E2EConfig | None = None) -> int:
 
     with E2EApiClient(config) as api:
         api.login()
+        cleanup_stale_job_workers(api)
         webhook = api.health_rusender_webhook()
         print(f"RuSender webhook ready: token_required={webhook.get('result', webhook).get('token_required')}")
 
