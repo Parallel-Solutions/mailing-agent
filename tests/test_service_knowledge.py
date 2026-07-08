@@ -1,9 +1,23 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
 from src.web.documents_agent_chat import choose_documents_agent_reply
+
+
+class _FakeDocumentsAiClient:
+    def __init__(self, reply: str = "ai reply") -> None:
+        self.reply = reply
+        self.calls: list[dict] = []
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        message = SimpleNamespace(content=self.reply)
+        choice = SimpleNamespace(message=message)
+        return SimpleNamespace(choices=[choice])
 
 
 class ServiceKnowledgeTests(unittest.TestCase):
@@ -21,46 +35,49 @@ class ServiceKnowledgeTests(unittest.TestCase):
         self.assertIn("documents_pdf_conversion", context)
         self.assertIn("Ответ:", context)
 
-    def test_documents_chat_uses_service_rag_for_knowledge_questions(self) -> None:
+    def test_documents_chat_puts_service_rag_into_ai_context(self) -> None:
         def status_loader(_job_id):
             return {
                 "status": "idle",
-                "stage_text": "Подготовка документов ещё не запускалась.",
+                "stage_text": "not started",
                 "generator": {},
                 "philologist": {},
             }
 
-        result = choose_documents_agent_reply(
-            "что такое gotenberg для pdf?",
-            job_id="job-test",
-            status_loader=status_loader,
-        )
+        client = _FakeDocumentsAiClient("rag answer from ai")
+        with patch("src.web.documents_agent_chat._documents_agent_build_llm_client", return_value=client):
+            result = choose_documents_agent_reply(
+                "what is gotenberg for pdf?",
+                job_id="job-test",
+                status_loader=status_loader,
+            )
 
-        self.assertEqual(result["source"], "service_rag")
-        self.assertIn("Gotenberg", result["reply"])
-        self.assertIn("tools_used", result)
-
-
-    def test_documents_chat_explains_capabilities(self) -> None:
+        self.assertEqual(result["source"], "documents_ai")
+        self.assertEqual(result["tools_used"], ["ai_context", "session_memory"])
+        prompt = client.calls[0]["messages"][-1]["content"]
+        self.assertIn('"service_knowledge"', prompt)
+        self.assertIn("Gotenberg", prompt)
+    def test_documents_chat_capabilities_go_through_ai(self) -> None:
         def status_loader(_job_id):
             return {
                 "status": "completed",
-                "stage_text": "Результат собран.",
+                "stage_text": "done",
                 "generator": {},
                 "philologist": {},
             }
 
-        result = choose_documents_agent_reply(
-            "что ты умеешь?",
-            job_id="job-test",
-            status_loader=status_loader,
-        )
+        client = _FakeDocumentsAiClient("capabilities from ai")
+        with patch("src.web.documents_agent_chat._documents_agent_build_llm_client", return_value=client):
+            result = choose_documents_agent_reply(
+                "what can you do?",
+                job_id="job-test",
+                status_loader=status_loader,
+            )
 
-        self.assertIn("что сейчас с документами", result["reply"])
-        self.assertIn("ничего сам не запускаю", result["reply"])
-        self.assertEqual(result["tools_used"], ["get_documents_status"])
-
-    def test_documents_chat_shows_fix_examples_without_llm(self) -> None:
+        self.assertEqual(result["reply"], "capabilities from ai")
+        self.assertEqual(result["source"], "documents_ai")
+        self.assertTrue(result["session_id"].startswith("documents-"))
+    def test_documents_chat_text_review_context_goes_to_ai(self) -> None:
         def status_loader(_job_id):
             return {
                 "status": "completed",
@@ -71,50 +88,42 @@ class ServiceKnowledgeTests(unittest.TestCase):
                 "reviewed_documents": 2,
                 "generator": {},
                 "philologist": {
-                    "documents": [
-                        {
-                            "name": "Договор.docx",
-                            "applied_fixes": [
-                                {"issue": "неверный падеж", "suggestion": "Жигаловского муниципального округа"}
-                            ],
-                            "skipped_fixes": [
-                                {"issue": "спорная формулировка", "reason": "нужна ручная проверка"}
-                            ],
-                        }
-                    ]
+                    "fixed_documents": 1,
+                    "documents_with_issues": 1,
                 },
             }
 
-        result = choose_documents_agent_reply(
-            "какие исправления в документах ты сделал?",
-            job_id="job-test",
-            status_loader=status_loader,
-        )
+        client = _FakeDocumentsAiClient("review from ai")
+        with patch("src.web.documents_agent_chat._documents_agent_build_llm_client", return_value=client):
+            result = choose_documents_agent_reply(
+                "what was fixed in documents?",
+                job_id="job-test",
+                status_loader=status_loader,
+            )
 
-        self.assertEqual(result["tools_used"], ["get_text_review_summary"])
-        self.assertIn("Примеры исправлений", result["reply"])
-        self.assertIn("Договор.docx", result["reply"])
-        self.assertIn("Жигаловского муниципального округа", result["reply"])
-
-    def test_documents_chat_does_not_fake_generic_fallback(self) -> None:
+        self.assertEqual(result["tools_used"], ["ai_context", "session_memory"])
+        prompt = client.calls[0]["messages"][-1]["content"]
+        self.assertIn('"fixed_documents": 1', prompt)
+        self.assertIn('"documents_with_issues": 1', prompt)
+    def test_documents_chat_reports_ai_unavailable_without_legacy_fallback(self) -> None:
         def status_loader(_job_id):
             return {
                 "status": "completed",
-                "stage_text": "Результат собран.",
+                "stage_text": "done",
                 "generator": {},
                 "philologist": {},
             }
 
         with patch("src.web.documents_agent_chat._documents_agent_build_llm_client", return_value=None):
             result = choose_documents_agent_reply(
-                "почему всё такое странное?",
+                "why is this strange?",
                 job_id="job-test",
                 status_loader=status_loader,
             )
 
         self.assertEqual(result["source"], "documents_ai_unavailable")
-        self.assertIn("не смог получить ответ от AI", result["reply"])
-        self.assertNotIn("Я на связи", result["reply"])
+        self.assertIn("AI chat is unavailable", result["reply"])
+        self.assertNotIn("debug_scroll_test", result["source"])
 
 if __name__ == "__main__":
     unittest.main()

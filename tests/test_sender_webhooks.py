@@ -35,7 +35,7 @@ class SenderWebhookSecurityTests(unittest.TestCase):
                 logger=SimpleNamespace(exception=lambda *args, **kwargs: None),
                 request_sender_stop=lambda **kwargs: {},
                 preview_recipients=lambda **kwargs: {},
-                chat_with_sender=lambda message, job_id=None: {"reply": ""},
+                chat_with_sender=lambda message, job_id=None, session_id=None: {"reply": ""},
                 is_load_test_job=lambda job_id: False,
             )
         )

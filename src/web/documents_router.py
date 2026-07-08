@@ -36,7 +36,7 @@ def create_documents_router(
     prime_generator_state: Callable[..., dict],
     request_generator_stop: Callable[[str | None], dict],
     request_philologist_stop: Callable[[str | None], dict],
-    documents_agent_choose_reply: Callable[[str, str | None], dict[str, Any]],
+    documents_agent_choose_reply: Callable[..., dict[str, Any]],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -170,7 +170,7 @@ def create_documents_router(
             raise HTTPException(status_code=400, detail="Пустое сообщение")
         job_id = payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
-        result = documents_agent_choose_reply(message, job_id=job_id)
+        result = documents_agent_choose_reply(message, job_id=job_id, session_id=payload.session_id)
         return ok_response(result, **result)
 
     return router
