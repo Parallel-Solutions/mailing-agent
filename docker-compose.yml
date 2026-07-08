@@ -74,7 +74,7 @@ services:
 
     healthcheck:
 
-      test: ["CMD-SHELL", ".venv/bin/python -c \"import socket; s=socket.create_connection(('127.0.0.1', 9806), 5); s.close()\""]
+      test: ["CMD-SHELL", ".venv/bin/python -c \"from src.infra.db import check_db_connection; import socket; check_db_connection(); s=socket.create_connection(('127.0.0.1', 9806), 5); s.close()\""]
 
       interval: 30s
 

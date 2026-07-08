@@ -179,25 +179,29 @@ docker compose logs -f app
 
 Тесты:
 
-
+**Unit/integration** (без реальной отправки, Postgres + MinIO):
 
 ```bash
-
 docker compose -f docker-compose.test.yml run --rm test
-
 ```
-
-
 
 Локально (из корня проекта, с активированным `.venv`):
 
+```bash
+python -m tests
+```
 
+**E2E send matrix** (реальная отправка через RuSender, 35×4=140 сценариев, несколько часов):
 
 ```bash
-
-python -m tests
-
+cp .env.e2e.example .env.docker   # заполнить RuSender и auth
+docker compose up -d
+./scripts/run-e2e-matrix.ps1      # Windows
+# или
+RUN_REAL_E2E=1 docker compose exec app .venv/bin/python -m tests.e2e.run_send_matrix
 ```
+
+Подробности: [`tests/e2e/README.md`](tests/e2e/README.md).
 
 
 

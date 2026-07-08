@@ -133,6 +133,18 @@ def load_agent_state(
     return state
 
 
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(item) for item in value]
+    return value
+
+
 def save_agent_state(agent_name: str, state: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
     storage_job_id = _storage_job_id(job_id)
     stored_state = state
@@ -144,6 +156,10 @@ def save_agent_state(agent_name: str, state: dict[str, Any], job_id: str | None 
             stored_state = _compact_state_for_primary(agent_name, state)
         else:
             details = None
+
+    stored_state = _json_safe_value(stored_state)
+    if details is not None:
+        details = _json_safe_value(details)
 
     now = datetime.now(timezone.utc)
     with session_scope() as session:

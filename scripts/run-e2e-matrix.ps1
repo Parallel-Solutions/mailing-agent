@@ -1,0 +1,39 @@
+#Requires -Version 5.1
+$ErrorActionPreference = "Stop"
+
+$Root = Split-Path -Parent $PSScriptRoot
+Set-Location $Root
+
+$Required = @(
+    "RUN_REAL_E2E",
+    "RUSENDER_API_KEY",
+    "RUSENDER_SENDER_EMAIL",
+    "RUSENDER_WEBHOOK_SECRET",
+    "PUBLIC_BASE_URL"
+)
+
+$Missing = @()
+foreach ($Name in $Required) {
+    $Value = [Environment]::GetEnvironmentVariable($Name)
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        $Missing += $Name
+    }
+}
+
+if ($Missing.Count -gt 0) {
+    Write-Error ("Missing required environment variables: " + ($Missing -join ", "))
+}
+
+if ($env:RUN_REAL_E2E -ne "1") {
+    Write-Error "Set RUN_REAL_E2E=1 to run the real send matrix."
+}
+
+Get-ChildItem -Path "tmp\storage\jobs" -Recurse -Filter ".sender.run.lock" -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
+$E2EBase = if ($env:E2E_BASE_URL) { $env:E2E_BASE_URL } else { "http://localhost:9806" }
+
+docker compose exec `
+    -e RUN_REAL_E2E=1 `
+    -e E2E_BASE_URL=$E2EBase `
+    app .venv/bin/python -m tests.e2e.run_send_matrix

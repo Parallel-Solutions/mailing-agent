@@ -156,6 +156,7 @@ SENDER_STATE: dict[str, Any] = {
 SENDER_STATE_ROWS_LIMIT = 200
 SENDER_WORKBOOK_SAVE_EVERY = 25
 SENDER_RUN_LOCK_FILENAME = ".sender.run.lock"
+SENDER_RUN_LOCK_STALE_SECONDS = 300.0
 UNISENDER_RETRY_ATTEMPTS = 3
 UNISENDER_RETRY_BASE_SECONDS = 2.0
 UNISENDER_RETRYABLE_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -246,8 +247,33 @@ def _unlock_sender_run_file(handle: Any) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def _sender_run_lock_is_stale(lock_path: Path) -> bool:
+    try:
+        raw = lock_path.read_bytes()
+        if raw:
+            payload = json.loads(raw.decode("utf-8"))
+            locked_at = str(payload.get("locked_at") or "").strip()
+            if locked_at:
+                locked_time = datetime.fromisoformat(locked_at)
+                age_seconds = (datetime.now() - locked_time).total_seconds()
+                if age_seconds > SENDER_RUN_LOCK_STALE_SECONDS:
+                    return True
+        return (datetime.now().timestamp() - lock_path.stat().st_mtime) > SENDER_RUN_LOCK_STALE_SECONDS
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _clear_stale_sender_run_lock(lock_path: Path) -> None:
+    if lock_path.exists() and _sender_run_lock_is_stale(lock_path):
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+
 @contextmanager
 def _sender_run_file_lock(lock_path: Path, job_id: str | None = None):
+    _clear_stale_sender_run_lock(lock_path)
     handle = lock_path.open("a+b")
     locked = False
     try:
