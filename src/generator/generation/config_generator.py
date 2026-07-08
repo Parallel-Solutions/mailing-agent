@@ -77,6 +77,7 @@ GOTENBERG_BASE_URLS = tuple(
     if url.strip()
 )
 GOTENBERG_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("GOTENBERG_CONVERT_TIMEOUT_SECONDS", "300"))
+GOTENBERG_HEALTH_TIMEOUT_SECONDS = float(_read_env_override("GOTENBERG_HEALTH_TIMEOUT_SECONDS", "10"))
 GOTENBERG_RETRY_ATTEMPTS = max(1, int(_read_env_override("GOTENBERG_RETRY_ATTEMPTS", "2")))
 ONLYOFFICE_BASE_URL = _read_env_override("ONLYOFFICE_BASE_URL", "").strip().rstrip("/")
 ONLYOFFICE_CONVERTER_MODE = _read_env_override("ONLYOFFICE_CONVERTER_MODE", "url").strip().lower() or "url"

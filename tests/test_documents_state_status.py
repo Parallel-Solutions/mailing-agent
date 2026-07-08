@@ -331,6 +331,7 @@ class DocumentsStateStatusTests(unittest.TestCase):
         self.assertFalse(result["restart_locked"])
         self.assertFalse(result["ui"]["actions"]["can_download_output"])
         self.assertFalse(result["ui"]["actions"]["can_go_next"])
+        self.assertEqual(result["ui"]["process"]["pdf_text"], "42 из 229 файлов")
 
     def test_completed_successful_documents_lock_restart_action(self) -> None:
         self._configure_documents_service(

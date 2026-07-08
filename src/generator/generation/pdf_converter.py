@@ -29,6 +29,7 @@ try:
         BATCH_LIBREOFFICE_PROFILES_DIR,
         GOTENBERG_BASE_URLS,
         GOTENBERG_CONVERT_TIMEOUT_SECONDS,
+        GOTENBERG_HEALTH_TIMEOUT_SECONDS,
         GOTENBERG_RETRY_ATTEMPTS,
         LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_BASE_URL,
@@ -45,6 +46,7 @@ except ImportError:  # pragma: no cover
         BATCH_LIBREOFFICE_PROFILES_DIR,
         GOTENBERG_BASE_URLS,
         GOTENBERG_CONVERT_TIMEOUT_SECONDS,
+        GOTENBERG_HEALTH_TIMEOUT_SECONDS,
         GOTENBERG_RETRY_ATTEMPTS,
         LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_BASE_URL,
@@ -193,8 +195,9 @@ def _convert_with_libreoffice(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for chunk_results in executor.map(_convert_libreoffice_chunk, tasks):
             for docx_path_str, pdf_path_str in chunk_results:
-                result[Path(docx_path_str)] = Path(pdf_path_str) if pdf_path_str else None
-                if progress_callback:
+                converted_path = Path(pdf_path_str) if pdf_path_str else None
+                result[Path(docx_path_str)] = converted_path
+                if converted_path is not None and progress_callback:
                     progress_callback()
     return result
 
@@ -368,21 +371,84 @@ def _convert_with_onlyoffice(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for docx_path, pdf_path in executor.map(lambda path: _convert_onlyoffice_single(path, output_dir), docx_paths):
             result[docx_path] = pdf_path
-            if progress_callback:
+            if pdf_path is not None and progress_callback:
                 progress_callback()
     return result
 
 
-def _resolve_gotenberg_endpoint(base_url: str) -> str:
+def _resolve_gotenberg_base(base_url: str) -> str:
     base = str(base_url or "").strip().rstrip("/")
     if not base:
         raise RuntimeError("Gotenberg base URL is not configured.")
-    return f"{base}/forms/libreoffice/convert"
+    return base
 
 
-def _convert_gotenberg_single(task: Tuple[int, Path, Path]) -> Tuple[Path, Optional[Path]]:
-    index, docx_path, output_dir = task
-    base_urls = list(GOTENBERG_BASE_URLS)
+def _resolve_gotenberg_endpoint(base_url: str) -> str:
+    return f"{_resolve_gotenberg_base(base_url)}/forms/libreoffice/convert"
+
+
+def _resolve_gotenberg_health_endpoint(base_url: str) -> str:
+    return f"{_resolve_gotenberg_base(base_url)}/health"
+
+
+def _gotenberg_health_is_up(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    status = str(payload.get("status") or "").strip().lower()
+    if status and status not in {"up", "ok"}:
+        return False
+    details = payload.get("details")
+    if isinstance(details, dict):
+        libreoffice = details.get("libreoffice")
+        if isinstance(libreoffice, dict):
+            libreoffice_status = str(libreoffice.get("status") or "").strip().lower()
+            if libreoffice_status and libreoffice_status not in {"up", "ok"}:
+                return False
+    return True
+
+
+def _is_gotenberg_healthy(base_url: str) -> bool:
+    try:
+        endpoint = _resolve_gotenberg_health_endpoint(base_url)
+        timeout = httpx.Timeout(GOTENBERG_HEALTH_TIMEOUT_SECONDS, connect=min(3.0, GOTENBERG_HEALTH_TIMEOUT_SECONDS))
+        response = httpx.get(endpoint, timeout=timeout, follow_redirects=True)
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if not _gotenberg_health_is_up(payload):
+            logger.warning("gotenberg_health_not_ready", endpoint=endpoint, payload=payload)
+            return False
+        return True
+    except Exception as exc:
+        try:
+            logger.warning("gotenberg_health_failed", endpoint=_resolve_gotenberg_health_endpoint(base_url), error=str(exc))
+        except TypeError:  # pragma: no cover - stdlib logger fallback
+            logger.warning("gotenberg_health_failed %s %s", base_url, exc)
+        return False
+
+
+def _healthy_gotenberg_base_urls(base_urls: Tuple[str, ...] | List[str] | None = None) -> Tuple[str, ...]:
+    configured_urls = tuple(str(url).strip().rstrip("/") for url in (base_urls or GOTENBERG_BASE_URLS) if str(url).strip())
+    healthy_urls = tuple(url for url in configured_urls if _is_gotenberg_healthy(url))
+    if healthy_urls:
+        logger.info(
+            "gotenberg_health_ready",
+            configured_count=len(configured_urls),
+            healthy_count=len(healthy_urls),
+            endpoints=list(healthy_urls),
+        )
+    elif configured_urls:
+        logger.error("gotenberg_no_healthy_endpoints", configured_count=len(configured_urls), endpoints=list(configured_urls))
+    return healthy_urls
+
+
+def _convert_gotenberg_single(task: Tuple[int, Path, Path] | Tuple[int, Path, Path, Tuple[str, ...]]) -> Tuple[Path, Optional[Path]]:
+    index = task[0]
+    docx_path = task[1]
+    output_dir = task[2]
+    base_urls = list(task[3]) if len(task) > 3 else list(GOTENBERG_BASE_URLS)
     if not base_urls:
         return docx_path, None
 
@@ -440,21 +506,29 @@ def _convert_with_gotenberg(
     progress_callback: ProgressCallback | None = None,
 ) -> Dict[Path, Optional[Path]]:
     result: Dict[Path, Optional[Path]] = {path: None for path in docx_paths}
-    if not docx_paths or not GOTENBERG_BASE_URLS:
+    if not docx_paths:
+        return result
+    healthy_base_urls = _healthy_gotenberg_base_urls(GOTENBERG_BASE_URLS)
+    if not healthy_base_urls:
         return result
 
-    tasks = [(index, path, output_dir) for index, path in enumerate(docx_paths)]
+    tasks = [(index, path, output_dir, healthy_base_urls) for index, path in enumerate(docx_paths)]
     max_workers = max(1, min(worker_count, len(tasks)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for docx_path, pdf_path in executor.map(_convert_gotenberg_single, tasks):
             result[docx_path] = pdf_path
-            if progress_callback:
+            if pdf_path is not None and progress_callback:
                 progress_callback()
     return result
 
 
 def _backend_sequence() -> list[str]:
-    return ["gotenberg"]
+    sequence = ["gotenberg"]
+    if ONLYOFFICE_BASE_URL:
+        sequence.append("onlyoffice")
+    if find_soffice():
+        sequence.append("libreoffice")
+    return sequence
 
 
 def _run_backend(
