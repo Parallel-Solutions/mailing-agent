@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from urllib.parse import quote, urlencode
 from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, DOCUMENT_RENDERER_VERSION, normalize_document_mode
+from src.generator.generation.template_analysis import build_template_analysis_context, save_template_analysis_context
+from src.generator.generation.template_preview import build_template_preview, resolve_template_preview_file
 from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 from src.jobs import resolve_job_paths
 from src.jobs.access import JobAccessDenied, authorize_job_access
 from src.jobs.audit import append_audit_event
 from src.utils.logger import logger
 from src.web.errors import internal_server_error
-from src.web.request_models import ChatRequest, DocumentsStartRequest, JobScopedRequest
+from src.web.request_models import ChatRequest, DocumentsStartRequest, JobScopedRequest, TemplatePreviewRequest
 from src.web.responses import ok_response
 
 
@@ -86,6 +90,13 @@ def create_documents_router(
             and generator_work_type == work_type
             and generator_renderer_version == DOCUMENT_RENDERER_VERSION
         )
+        is_resume_after_generator = generator_is_current and str(generator_state.get("status") or "") == "completed" and str(philologist_state.get("status") or "") == "stopped"
+        is_resume_after_stop = generator_is_current and str(generator_state.get("status") or "") == "stopped"
+        if not (is_resume_after_generator or is_resume_after_stop) and not bool(payload.template_analysis_confirmed):
+            raise HTTPException(
+                status_code=409,
+                detail="Сначала подтвердите AI-проверку шаблона перед подготовкой документов.",
+            )
         if generator_is_current and bool(initial_documents_status.get("restart_locked")):
             raise HTTPException(
                 status_code=409,
@@ -152,6 +163,78 @@ def create_documents_router(
     ):
         ensure_job_access(job_id, principal, allow_missing=True)
         return {"status": "ok", "result": compact_documents_status(job_id, document_mode)}
+
+    @router.get("/api/documents/template-analysis")
+    async def documents_template_analysis(
+        job_id: str | None = None,
+        document_mode: str | None = None,
+        principal: object = Depends(check_auth),
+    ):
+        ensure_job_access(job_id, principal, allow_missing=True)
+        result = build_template_analysis_context(job_id=job_id, document_mode=normalize_document_mode(document_mode or DOCUMENT_MODE_BOTH))
+        save_template_analysis_context(result, job_id=job_id)
+        append_audit_event(action="documents.template_analysis", principal=principal, job_id=job_id)
+        return ok_response(result, **result)
+
+    @router.post("/api/documents/template-preview")
+    async def documents_template_preview(payload: TemplatePreviewRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        payload = payload or TemplatePreviewRequest()
+        job_id = payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
+        try:
+            result = build_template_preview(
+                job_id=job_id,
+                document_mode=normalize_document_mode(payload.document_mode or DOCUMENT_MODE_BOTH),
+                work_type=normalize_work_type(payload.work_type or DEFAULT_WORK_TYPE),
+                row_id=payload.row_id,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("documents_template_preview_failed", job_id=job_id)
+            raise internal_server_error("Не удалось собрать пример документа для предпросмотра.") from exc
+
+        url_query = {"kind": "pdf"}
+        if job_id:
+            url_query["job_id"] = job_id
+        if result.get("has_pdf"):
+            result["pdf_url"] = "/api/documents/template-preview/file?" + urlencode(url_query)
+        url_query["kind"] = "docx"
+        if result.get("has_docx"):
+            result["docx_url"] = "/api/documents/template-preview/file?" + urlencode(url_query)
+        append_audit_event(action="documents.template_preview", principal=principal, job_id=job_id)
+        return ok_response(result, **result)
+
+    @router.get("/api/documents/template-preview/file")
+    async def documents_template_preview_file(
+        job_id: str | None = None,
+        kind: str = "pdf",
+        principal: object = Depends(check_auth),
+    ):
+        ensure_job_access(job_id, principal, allow_missing=True)
+        normalized_kind = "docx" if str(kind or "").lower() == "docx" else "pdf"
+        try:
+            path = resolve_template_preview_file(job_id, normalized_kind)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            if normalized_kind == "docx"
+            else "application/pdf"
+        )
+        headers = {
+            "Cache-Control": "private, no-store, max-age=0",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if normalized_kind == "pdf":
+            encoded_filename = quote(path.name)
+            headers["Content-Disposition"] = (
+                f"inline; filename=template-preview.pdf; filename*=UTF-8''{encoded_filename}"
+            )
+            return FileResponse(path, media_type=media_type, headers=headers)
+        return FileResponse(path, media_type=media_type, filename=path.name, headers=headers)
 
     @router.post("/api/documents/stop")
     async def documents_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):

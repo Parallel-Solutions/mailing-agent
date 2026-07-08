@@ -2021,8 +2021,185 @@
     padding: 10px 16px;
   }
 
+  .template-review-card {
+    width: min(1080px, 100%);
+    max-height: min(88vh, 820px);
+    overflow: auto;
+  }
+
+  .template-review-layout {
+    display: grid;
+    grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.1fr);
+    gap: 16px;
+    align-items: start;
+  }
+
+  .template-review-panel {
+    border: 1px solid #e0e8d8;
+    border-radius: 12px;
+    background: #fbfcf8;
+    padding: 14px;
+  }
+
+  .template-review-panel-title {
+    font-size: 13px;
+    font-weight: 800;
+    color: #2f4d1a;
+    margin-bottom: 10px;
+  }
+
+  .template-review-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .template-review-metric {
+    border: 1px solid #e1e8d9;
+    border-radius: 10px;
+    background: #fff;
+    padding: 10px;
+  }
+
+  .template-review-metric strong {
+    display: block;
+    color: #17300a;
+    font-size: 20px;
+    line-height: 1;
+    margin-bottom: 5px;
+  }
+
+  .template-review-metric span {
+    color: #7b8970;
+    font-size: 11px;
+  }
+
+  .template-review-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-top: 8px;
+  }
+
+  .template-review-list-item {
+    border: 1px solid #e2ead9;
+    border-radius: 9px;
+    background: #fff;
+    padding: 9px 10px;
+    color: #394531;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .template-review-list-item strong {
+    color: #1f350e;
+  }
+
+  .template-review-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .template-review-tag {
+    border: 1px solid #d5e2c9;
+    border-radius: 999px;
+    background: #fff;
+    color: #40522f;
+    font-size: 11px;
+    padding: 5px 8px;
+  }
+
+  .template-review-warning {
+    border: 1px solid #f0cf83;
+    border-radius: 10px;
+    background: #fff8e6;
+    color: #6b4b05;
+    padding: 10px 12px;
+    font-size: 12px;
+    line-height: 1.45;
+    margin-top: 12px;
+  }
+
+  .template-preview-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .template-preview-status {
+    color: #68775d;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .template-preview-frame-wrap {
+    display: none;
+    height: min(58vh, 560px);
+    min-height: 360px;
+    border: 1px solid #dfe8d7;
+    border-radius: 12px;
+    background: #fff;
+    overflow: hidden;
+  }
+
+  .template-preview-frame-wrap.open {
+    display: block;
+  }
+
+  .template-preview-frame {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #fff;
+  }
+
+  .template-preview-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .template-review-empty-preview {
+    border: 1px dashed #cfdac4;
+    border-radius: 12px;
+    min-height: 360px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: #728267;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 24px;
+    background: #fff;
+  }
+  .template-review-empty-preview[hidden] {
+    display: none !important;
+  }
+
   @media (max-width: 980px) {
-    body { padding: 0; }
+    .template-review-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .template-preview-toolbar {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .template-preview-frame-wrap {
+      height: 55vh;
+      min-height: 300px;
+    }
+  }
+
+  @media (max-width: 980px) {    body { padding: 0; }
     .app {
       grid-template-columns: 1fr;
       min-height: 100vh;
@@ -2754,6 +2931,46 @@
     <div class="modal-actions">
       <button class="btn-outline" type="button" onclick="closeParserSearchModal()">Отмена</button>
       <button class="btn-primary" id="parser-search-submit-button" data-process-lock="true" type="button" onclick="submitParserSearchModal()">Сформировать и отправить</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="template-review-modal" role="dialog" aria-modal="true" aria-labelledby="template-review-title" onclick="cancelTemplateReviewModal()">
+  <div class="modal-card template-review-card" onclick="event.stopPropagation()">
+    <div class="modal-title" id="template-review-title">AI-проверка шаблона</div>
+    <div class="modal-sub" id="template-review-sub">Сначала посмотрите, какие данные нашлись в шаблоне, затем соберите один пример и подтвердите массовую подготовку.</div>
+    <div class="template-review-layout">
+      <div class="template-review-panel">
+        <div class="template-review-panel-title">Что нашлось</div>
+        <div class="template-review-metrics">
+          <div class="template-review-metric"><strong id="template-review-template-count">0</strong><span>шаблонов</span></div>
+          <div class="template-review-metric"><strong id="template-review-row-count">0</strong><span>строк</span></div>
+          <div class="template-review-metric"><strong id="template-review-placeholder-count">0</strong><span>полей</span></div>
+        </div>
+        <div class="template-review-panel-title">Загруженные шаблоны</div>
+        <div class="template-review-list" id="template-review-template-list"></div>
+        <div class="template-review-panel-title" style="margin-top:14px">Поля в шаблоне</div>
+        <div class="template-review-tags" id="template-review-placeholder-list"></div>
+        <div id="template-review-warning" class="template-review-warning" hidden></div>
+      </div>
+      <div class="template-review-panel">
+        <div class="template-preview-toolbar">
+          <div>
+            <div class="template-review-panel-title">Пример результата</div>
+            <div class="template-preview-status" id="template-preview-status">Соберите один документ по первой строке таблицы и проверьте PDF глазами.</div>
+          </div>
+          <button class="btn-outline" id="template-preview-generate" type="button" onclick="generateTemplatePreviewSample()">Сгенерировать пример</button>
+        </div>
+        <div class="template-review-empty-preview" id="template-preview-empty">PDF появится здесь после генерации примера.</div>
+        <div class="template-preview-frame-wrap" id="template-preview-frame-wrap">
+          <iframe class="template-preview-frame" id="template-preview-frame" title="Предпросмотр документа"></iframe>
+        </div>
+        <div class="template-preview-links" id="template-preview-links"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-outline" type="button" onclick="cancelTemplateReviewModal()">Отмена</button>
+      <button class="btn-primary" id="template-review-confirm" type="button" onclick="confirmTemplateReviewModal()" disabled>Запустить массовую генерацию</button>
     </div>
   </div>
 </div>
@@ -6028,7 +6245,221 @@ function clearAttachedFile() {
     }
   }
 
-  // GENERATOR
+  let templateReviewModalResolve = null;
+  let templateReviewModalAnalysis = null;
+  let templateReviewModalDocumentMode = 'both';
+  let templateReviewPreviewReady = false;
+
+  function normalizeTemplateAnalysisList(value) {
+    return Array.isArray(value) ? value.filter(item => item !== null && item !== undefined && String(item).trim()) : [];
+  }
+
+  function setTemplateReviewText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  }
+
+  function renderTemplateReviewModal(analysis) {
+    const templates = normalizeTemplateAnalysisList(analysis?.templates);
+    const data = analysis?.data || {};
+    const placeholders = normalizeTemplateAnalysisList(analysis?.all_placeholders).map(String);
+    const missing = normalizeTemplateAnalysisList(analysis?.placeholders_without_same_named_column).map(String);
+    setTemplateReviewText('template-review-template-count', templates.length);
+    setTemplateReviewText('template-review-row-count', Number(data.row_count || 0));
+    setTemplateReviewText('template-review-placeholder-count', placeholders.length);
+
+    const templateList = document.getElementById('template-review-template-list');
+    if (templateList) {
+      templateList.innerHTML = templates.length
+        ? templates.slice(0, 6).map(template => {
+            const kind = escapeHtml(template.kind || 'template');
+            const name = escapeHtml(template.name || template.path || 'без имени');
+            const tables = Number(template.table_count || 0);
+            const images = Number(template.image_count || 0);
+            const paragraphs = Number(template.paragraph_count || 0);
+            return `<div class="template-review-list-item"><strong>${name}</strong><br>${kind}: таблиц ${tables}, картинок ${images}, абзацев ${paragraphs}</div>`;
+          }).join('')
+        : '<div class="template-review-list-item">Шаблоны не найдены.</div>';
+    }
+
+    const placeholderList = document.getElementById('template-review-placeholder-list');
+    if (placeholderList) {
+      placeholderList.innerHTML = placeholders.length
+        ? placeholders.slice(0, 24).map(item => `<span class="template-review-tag">${escapeHtml(item)}</span>`).join('')
+        : '<span class="template-review-tag">плейсхолдеры не найдены</span>';
+    }
+
+    const warning = document.getElementById('template-review-warning');
+    if (warning) {
+      if (missing.length) {
+        warning.hidden = false;
+        warning.textContent = 'Нужно проверить: в шаблоне есть поля без одноимённых колонок в Excel: ' + missing.slice(0, 16).join(', ');
+      } else if (!templates.length) {
+        warning.hidden = false;
+        warning.textContent = 'Не нашла загруженные шаблоны. Массовую генерацию лучше не запускать, пока шаблоны не загружены.';
+      } else {
+        warning.hidden = false;
+        warning.textContent = 'Критичных расхождений между шаблоном и таблицей не найдено. Всё равно соберите пример и проверьте PDF перед массовым запуском.';
+      }
+    }
+
+    resetTemplatePreviewPane();
+  }
+
+  function resetTemplatePreviewPane() {
+    templateReviewPreviewReady = false;
+    const confirmButton = document.getElementById('template-review-confirm');
+    const previewButton = document.getElementById('template-preview-generate');
+    const frame = document.getElementById('template-preview-frame');
+    const frameWrap = document.getElementById('template-preview-frame-wrap');
+    const empty = document.getElementById('template-preview-empty');
+    const links = document.getElementById('template-preview-links');
+    if (confirmButton) confirmButton.disabled = true;
+    if (previewButton) {
+      previewButton.disabled = false;
+      previewButton.textContent = 'Сгенерировать пример';
+    }
+    if (frame) frame.removeAttribute('src');
+    if (frameWrap) frameWrap.classList.remove('open');
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = 'PDF появится здесь после генерации примера.';
+    }
+    if (links) links.innerHTML = '';
+    setTemplateReviewText('template-preview-status', 'Соберите один документ по первой строке таблицы и проверьте PDF глазами.');
+  }
+
+  function openTemplateReviewModal(analysis, documentMode) {
+    templateReviewModalAnalysis = analysis || {};
+    templateReviewModalDocumentMode = documentMode || 'both';
+    renderTemplateReviewModal(templateReviewModalAnalysis);
+    const modal = document.getElementById('template-review-modal');
+    if (modal) modal.classList.add('open');
+    return new Promise(resolve => {
+      templateReviewModalResolve = resolve;
+    });
+  }
+
+  function finishTemplateReviewModal(confirmed) {
+    const modal = document.getElementById('template-review-modal');
+    if (modal) modal.classList.remove('open');
+    const resolve = templateReviewModalResolve;
+    templateReviewModalResolve = null;
+    templateReviewModalAnalysis = null;
+    if (resolve) resolve(Boolean(confirmed));
+  }
+
+  function cancelTemplateReviewModal() {
+    finishTemplateReviewModal(false);
+  }
+
+  function confirmTemplateReviewModal() {
+    if (!templateReviewPreviewReady) {
+      showToast('Сначала сгенерируйте и проверьте пример');
+      return;
+    }
+    finishTemplateReviewModal(true);
+  }
+
+  async function generateTemplatePreviewSample() {
+    const previewButton = document.getElementById('template-preview-generate');
+    const confirmButton = document.getElementById('template-review-confirm');
+    const frame = document.getElementById('template-preview-frame');
+    const frameWrap = document.getElementById('template-preview-frame-wrap');
+    const empty = document.getElementById('template-preview-empty');
+    const links = document.getElementById('template-preview-links');
+    const workType = document.getElementById('settings-work-type')?.value || 'mngp_settlements';
+    if (previewButton) {
+      previewButton.disabled = true;
+      previewButton.textContent = 'Собираю пример...';
+    }
+    if (confirmButton) confirmButton.disabled = true;
+    templateReviewPreviewReady = false;
+    setTemplateReviewText('template-preview-status', 'Собираю один документ и конвертирую его в PDF.');
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = 'Генерирую пример. Обычно это занимает несколько секунд.';
+    }
+    if (frameWrap) frameWrap.classList.remove('open');
+    if (links) links.innerHTML = '';
+
+    try {
+      const res = await fetchWithTimeout('/api/documents/template-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withJobPayload({
+          document_mode: templateReviewModalDocumentMode || 'both',
+          work_type: workType,
+        })),
+      }, 120000);
+      const data = await readJsonOrText(res);
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || 'не удалось собрать пример');
+      }
+      const result = data.result || data || {};
+      if (result.pdf_url && frame && frameWrap) {
+        const separator = result.pdf_url.includes('?') ? '&' : '?';
+        frame.src = result.pdf_url + separator + 'v=' + Date.now();
+        frameWrap.classList.add('open');
+        if (empty) empty.hidden = true;
+        templateReviewPreviewReady = true;
+        if (confirmButton) confirmButton.disabled = false;
+        setTemplateReviewText('template-preview-status', 'Пример готов для строки: ' + (result.row_label || result.row_id || 'первая строка') + '. Проверьте PDF и запускайте массовую генерацию, если всё выглядит правильно.');
+      } else {
+        throw new Error('PDF для предпросмотра не создан');
+      }
+      if (links) {
+        const docxLink = result.docx_url ? `<a class="chat-download-link" href="${escapeHtml(result.docx_url)}" target="_blank" rel="noopener">Скачать DOCX примера</a>` : '';
+        const pdfLink = result.pdf_url ? `<a class="chat-download-link" href="${escapeHtml(result.pdf_url)}" target="_blank" rel="noopener">Открыть PDF отдельно</a>` : '';
+        links.innerHTML = pdfLink + docxLink;
+      }
+      showToast('Пример документа готов');
+    } catch (error) {
+      const message = error && error.message ? error.message : 'неизвестная ошибка';
+      setTemplateReviewText('template-preview-status', 'Не удалось собрать пример: ' + message);
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = 'Пример не собрался. Исправьте причину или напишите в чат подготовки документов.';
+      }
+      showToast('Не удалось собрать пример');
+    } finally {
+      if (previewButton) {
+        previewButton.disabled = false;
+        previewButton.textContent = templateReviewPreviewReady ? 'Пересобрать пример' : 'Сгенерировать пример';
+      }
+    }
+  }
+
+  async function confirmTemplateAnalysisBeforeDocumentsStart(documentMode) {
+    // Disabled for now: keep the template analysis/preview code available, but do not show it to users.
+    return true;
+    const query = new URLSearchParams({ document_mode: documentMode || 'both' });
+    if (currentJobId) query.set('job_id', currentJobId);
+    showToast('AI проверяет шаблон');
+    appendChatMessage('g-chat', 'agent', 'Сначала смотрю шаблон и таблицу. После проверки покажу окно с примером документа.');
+    try {
+      const res = await fetchWithTimeout('/api/documents/template-analysis?' + query.toString(), { method: 'GET' }, 30000);
+      const data = await readJsonOrText(res);
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || 'не удалось проверить шаблон');
+      }
+      const analysis = data.result || data || {};
+      const confirmed = await openTemplateReviewModal(analysis, documentMode);
+      appendChatMessage(
+        'g-chat',
+        'agent',
+        confirmed
+          ? 'Пример документа проверен и подтверждён. Запускаю массовую подготовку.'
+          : 'Подготовка не запущена: проверка шаблона или пример не подтверждены.'
+      );
+      return confirmed;
+    } catch (error) {
+      const message = error && error.message ? error.message : 'неизвестная ошибка';
+      appendChatMessage('g-chat', 'agent', 'Не удалось открыть проверку шаблона: ' + message + '. Массовую генерацию не запускаю без подтверждения.');
+      showToast('Не удалось проверить шаблон');
+      return false;
+    }
+  }  // GENERATOR
   async function startDocumentsPipeline() {
     await ensureCurrentJobId();
     invalidateDocumentsStatusResponses();
@@ -6045,6 +6476,13 @@ function clearAttachedFile() {
     }
     const isResume = currentGeneratorStatus === 'stopped' || currentPhilologistStatus === 'stopped';
     const resumeStage = currentGeneratorStatus === 'completed' && currentPhilologistStatus === 'stopped' ? 'review' : 'generate';
+    if (!isResume) {
+      const templateConfirmed = await confirmTemplateAnalysisBeforeDocumentsStart(documentMode);
+      if (!templateConfirmed) {
+        documentsStartClicked = false;
+        return;
+      }
+    }
     try {
       syncGeneratorStartDescriptionVisibility('running');
       if (!isResume) resetDocumentsProcessLogForNewRun();
@@ -6070,7 +6508,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/documents/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ mode: 'fast', document_mode: documentMode, work_type: workType })),
+        body: JSON.stringify(withJobPayload({ mode: 'fast', document_mode: documentMode, work_type: workType, template_analysis_confirmed: true })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) {
