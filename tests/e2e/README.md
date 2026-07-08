@@ -57,6 +57,28 @@ docker compose up -d
 
 ## Запуск
 
+### Быстрый параллельный прогон (~30–60 мин)
+
+Рекомендуемый способ для полной матрицы. Скрипт поднимает лимиты worker-процессов,
+очищает отчёты и запускает runner с параллелизмом по generation job:
+
+```powershell
+# Windows (из корня репозитория)
+.\scripts\run-e2e-fast.ps1
+```
+
+Скрипт выставляет:
+
+- `DOCUMENTS_WORKER_MAX_PROCESSES=8`
+- `SENDER_WORKER_MAX_PROCESSES=8`
+- `USER_WORKER_MAX_PROCESSES_PER_TASK=8`
+- `USER_INPROCESS_MAX_TASKS=8`
+- `E2E_PARALLEL_JOBS=6`
+- `E2E_SEND_PAUSE_SECONDS=1`
+
+**Важно:** `USER_WORKER_MAX_PROCESSES_PER_TASK` должен быть ≥ `E2E_PARALLEL_JOBS`,
+иначе сервер отклонит второй concurrent documents/sender worker для того же пользователя.
+
 ### Полная матрица (внутри контейнера app)
 
 ```bash
@@ -106,6 +128,41 @@ RUN_REAL_E2E=1 python -m unittest tests.e2e.test_send_matrix_smoke
 - `E2E_FILTER_SEND_MODE=materials`
 - `E2E_FILTER_RECIPIENT_STRATEGY=all`
 
+## Параллелизм и ускорение
+
+Runner параллелит **generation job** (разные `job_id`), но send-сценарии **внутри одного job**
+остаются последовательными (consent_request перед materials).
+
+Переменные:
+
+- `E2E_PARALLEL_JOBS` — число одновременных generation job (по умолчанию `1`, для fast-run: `6`)
+- `E2E_SEND_PAUSE_SECONDS` — пауза между send-сценариями (по умолчанию `10`, для fast-run: `1`)
+
+Лимиты worker-процессов app (через env или `docker-compose.yml`):
+
+- `DOCUMENTS_WORKER_MAX_PROCESSES`
+- `SENDER_WORKER_MAX_PROCESSES`
+- `USER_WORKER_MAX_PROCESSES_PER_TASK`
+- `USER_INPROCESS_MAX_TASKS`
+
+Пример ручного fast-run:
+
+```bash
+DOCUMENTS_WORKER_MAX_PROCESSES=8 SENDER_WORKER_MAX_PROCESSES=8 \
+USER_WORKER_MAX_PROCESSES_PER_TASK=8 USER_INPROCESS_MAX_TASKS=8 \
+docker compose up -d app
+
+RUN_REAL_E2E=1 E2E_PARALLEL_JOBS=6 E2E_SEND_PAUSE_SECONDS=1 \
+docker compose exec app .venv/bin/python -m tests.e2e.run_send_matrix
+```
+
+Smoke-тест параллельного пути (несколько минут):
+
+```bash
+RUN_REAL_E2E=1 E2E_FILTER_WORK_TYPE=mngp_settlements E2E_PARALLEL_JOBS=4 \
+E2E_SEND_PAUSE_SECONDS=1 docker compose exec app .venv/bin/python -m tests.e2e.run_send_matrix
+```
+
 ## Отчёты и resume
 
 После прогона:
@@ -118,7 +175,10 @@ RUN_REAL_E2E=1 python -m unittest tests.e2e.test_send_matrix_smoke
 
 Пауза между отправками: `E2E_SEND_PAUSE_SECONDS` (по умолчанию 10).
 
-Ожидаемое время полного прогона: **3–6 часов** (35 генераций документов + 140 отправок).
+Ожидаемое время полного прогона:
+
+- **последовательно** (без `E2E_PARALLEL_JOBS`): **3–6 часов**
+- **параллельно** (`E2E_PARALLEL_JOBS=6`, `run-e2e-fast.ps1`): **~30–60 минут**
 
 ## Изоляция сценариев
 

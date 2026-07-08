@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from tests.e2e.api_client import E2EApiClient, E2EApiError
@@ -307,6 +308,38 @@ def _run_send_case(
         traceback.print_exc()
 
 
+def _process_generation(
+    api: E2EApiClient,
+    config: E2EConfig,
+    report: ReportStore,
+    generation: GenerationCase,
+) -> None:
+    print(f"\n=== Generation: {generation.key} ===")
+    try:
+        job_id = _prepare_generation_job(api, config, report, generation)
+    except Exception as exc:
+        print(f"[failed] generation {generation.key}: {exc}")
+        traceback.print_exc()
+        for send_case in build_send_cases_for_job(generation, "", config):
+            row = report.get_row(
+                send_case.key,
+                work_type=send_case.work_type,
+                document_mode=send_case.document_mode,
+                kp_variant=send_case.kp_variant or "none",
+                send_mode=send_case.send_mode,
+                recipient_strategy=send_case.recipient_strategy,
+                job_id="",
+                phase="generation",
+            )
+            row.mark(status="failed", error=str(exc))
+        report.save()
+        return
+
+    for send_case in build_send_cases_for_job(generation, job_id, config):
+        _run_send_case(api, config, report, send_case)
+        time.sleep(config.send_pause_seconds)
+
+
 def run_matrix(config: E2EConfig | None = None) -> int:
     require_real_e2e_enabled()
     config = config or load_config()
@@ -316,6 +349,7 @@ def run_matrix(config: E2EConfig | None = None) -> int:
     print(f"E2E base URL: {config.base_url}")
     print(f"Generation cases: {len(generation_cases)}")
     print(f"Send runs per job: up to {2 * 2}")
+    print(f"Parallel generation jobs: {max(1, config.parallel_jobs)}")
 
     with E2EApiClient(config) as api:
         api.login()
@@ -323,31 +357,18 @@ def run_matrix(config: E2EConfig | None = None) -> int:
         webhook = api.health_rusender_webhook()
         print(f"RuSender webhook ready: token_required={webhook.get('result', webhook).get('token_required')}")
 
-        for generation in generation_cases:
-            print(f"\n=== Generation: {generation.key} ===")
-            try:
-                job_id = _prepare_generation_job(api, config, report, generation)
-            except Exception as exc:
-                print(f"[failed] generation {generation.key}: {exc}")
-                traceback.print_exc()
-                for send_case in build_send_cases_for_job(generation, "", config):
-                    row = report.get_row(
-                        send_case.key,
-                        work_type=send_case.work_type,
-                        document_mode=send_case.document_mode,
-                        kp_variant=send_case.kp_variant or "none",
-                        send_mode=send_case.send_mode,
-                        recipient_strategy=send_case.recipient_strategy,
-                        job_id="",
-                        phase="generation",
-                    )
-                    row.mark(status="failed", error=str(exc))
-                report.save()
-                continue
-
-            for send_case in build_send_cases_for_job(generation, job_id, config):
-                _run_send_case(api, config, report, send_case)
-                time.sleep(config.send_pause_seconds)
+        workers = max(1, config.parallel_jobs)
+        if workers == 1:
+            for generation in generation_cases:
+                _process_generation(api, config, report, generation)
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="e2e-gen") as pool:
+                futures = {
+                    pool.submit(_process_generation, api, config, report, generation): generation
+                    for generation in generation_cases
+                }
+                for future in as_completed(futures):
+                    future.result()
 
     report.print_summary()
     summary = report.summary()
