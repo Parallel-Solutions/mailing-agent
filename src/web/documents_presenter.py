@@ -59,6 +59,7 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
     fixed_documents = max(0, int(documents_status.get("fixed_documents") or 0))
     output_file_count = max(0, int(documents_status.get("output_file_count") or 0))
     output_pdf_count = max(0, int(documents_status.get("output_pdf_count") or 0))
+    output_ready = bool(documents_status.get("output_ready"))
     document_mode = normalize_document_mode(documents_status.get("document_mode") or generator.get("document_mode") or DOCUMENT_MODE_BOTH)
     documents_per_row = len(document_mode_kinds(document_mode))
     pdfs_per_row = 1 if "kp" in document_mode_kinds(document_mode) else 0
@@ -72,10 +73,10 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
     shown_pdf_total = expected_pdf_documents or pdf_total
     if shown_pdf_total <= 0:
         shown_pdf_done = 0
-    elif status == "completed" and output_pdf_count <= 0 and pdf_processed <= 0:
-        shown_pdf_done = shown_pdf_total
+    elif status in {"completed", "error"}:
+        shown_pdf_done = min(output_pdf_count, shown_pdf_total)
     else:
-        shown_pdf_done = max(pdf_processed, min(output_pdf_count, shown_pdf_total))
+        shown_pdf_done = min(max(pdf_processed, output_pdf_count), shown_pdf_total)
     clients_text = f"{processed_rows} из {total_rows} клиентов" if total_rows > 0 else "клиентов пока не найдено"
     documents_text = f"{shown_documents} из {expected_documents} документов"
     pdf_text = f"{shown_pdf_done} из {shown_pdf_total} файлов"
@@ -107,8 +108,10 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
     next_button_title = "Сначала завершите подготовку документов."
     current_item_text = _safe_label(documents_status.get("current_item_text"))
     progress_percent = max(0, min(100, int(documents_status.get("progress_percent") or 0)))
-    if status == "completed":
+    if status == "completed" and output_ready:
         progress_percent = 100
+    elif status == "completed":
+        progress_percent = min(progress_percent, 99)
     elif status == "idle":
         progress_percent = 0
     progress_running = status == "running"
@@ -250,9 +253,9 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
             # so stale readiness polling cannot trap the user on a disabled action.
             "can_run": status in {"idle", "completed", "stopped", "error", "waiting_review"} and not restart_locked,
             "can_stop": status == "running",
-            "can_download_output": status == "completed" and output_file_count > 0,
+            "can_download_output": output_ready,
             "can_download_report": status == "completed" and (fixed_documents > 0 or total_documents > 0),
-            "can_go_next": status == "completed",
+            "can_go_next": status == "completed" and output_ready,
             "next_button_text": next_button_text,
             "next_button_title": next_button_title,
             "run_disabled_reason": restart_disabled_reason,
@@ -343,6 +346,7 @@ def build_documents_chat_events(documents_status: dict) -> list[dict]:
     philologist = documents_status.get("philologist") or {}
     generator_stage = str(generator.get("stage") or "")
     total_rows = max(0, int(documents_status.get("total_rows") or 0))
+    output_ready = bool(documents_status.get("output_ready"))
 
     events: list[dict] = []
     if status == "idle":
@@ -387,7 +391,7 @@ def build_documents_chat_events(documents_status: dict) -> list[dict]:
             "title": "Документы созданы",
             "text": "Документы уже созданы. Следующий этап: проверка текста.",
         })
-    elif status == "completed":
+    elif status == "completed" and output_ready:
         events.append({
             "id": "documents:completed",
             "title": "Подготовка завершена",

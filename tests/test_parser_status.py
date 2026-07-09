@@ -4,7 +4,11 @@ import shutil
 import unittest
 from uuid import uuid4
 
-from src.generator.orchestration.parser_agent import PARSER_STATE, get_parser_status
+from src.generator.orchestration.parser_agent import (
+    PARSER_STATE,
+    get_parser_status,
+    mark_municipality_verification_skipped,
+)
 from src.jobs import resolve_job_paths, save_agent_state
 
 
@@ -43,6 +47,27 @@ class ParserStatusTests(unittest.TestCase):
         finally:
             shutil.rmtree(job_paths.root_dir, ignore_errors=True)
 
+    def test_mark_municipality_verification_skipped_completes_state(self) -> None:
+        job_id = f"job-test-parser-{uuid4().hex}"
+        job_paths = resolve_job_paths(job_id)
+        try:
+            result = mark_municipality_verification_skipped(
+                job_id,
+                source="upload",
+                reason="large file",
+                file_size_bytes=5,
+                limit_bytes=4,
+            )
+
+            state = get_parser_status(job_id)
+
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(state["municipality_name_verification"]["status"], "skipped")
+            self.assertEqual(state["municipality_name_verification"]["reason"], "large file")
+            self.assertEqual(state["municipality_name_verification_state"]["status"], "completed")
+            self.assertIn("large file", state["municipality_name_verification_state"]["summary_text"])
+        finally:
+            shutil.rmtree(job_paths.root_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()

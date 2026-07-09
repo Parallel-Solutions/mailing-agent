@@ -290,7 +290,7 @@ class SenderResponseContractTests(unittest.TestCase):
                 logger=SimpleNamespace(exception=lambda *args, **kwargs: None),
                 request_sender_stop=lambda **kwargs: {},
                 preview_recipients=lambda **kwargs: {},
-                chat_with_sender=lambda message, job_id=None: {"reply": f"echo:{message}", "job_id": job_id},
+                chat_with_sender=lambda message, job_id=None, session_id=None: {"reply": f"echo:{message}", "job_id": job_id},
                 is_load_test_job=lambda job_id: False,
             )
         )

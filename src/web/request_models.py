@@ -41,11 +41,17 @@ class JobScopedRequest(ApiRequest):
 
 class ChatRequest(JobScopedRequest):
     message: str
+    session_id: str | None = None
 
     @field_validator("message", mode="before")
     @classmethod
     def _normalize_message(cls, value: Any) -> str:
         return _clean_required_text(value)
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def _normalize_session_id(cls, value: Any) -> str | None:
+        return _clean_optional_text(value)
 
 
 class PromptRequest(JobScopedRequest):
@@ -74,6 +80,7 @@ class DocumentsStartRequest(JobScopedRequest):
     mode: str = "fast"
     document_mode: str | None = None
     work_type: str | None = None
+    template_analysis_confirmed: bool = False
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -82,6 +89,17 @@ class DocumentsStartRequest(JobScopedRequest):
         return cleaned or "fast"
 
     @field_validator("document_mode", "work_type", mode="before")
+    @classmethod
+    def _normalize_optional_text(cls, value: Any) -> str | None:
+        return _clean_optional_text(value)
+
+
+class TemplatePreviewRequest(JobScopedRequest):
+    document_mode: str | None = None
+    work_type: str | None = None
+    row_id: str | None = None
+
+    @field_validator("document_mode", "work_type", "row_id", mode="before")
     @classmethod
     def _normalize_optional_text(cls, value: Any) -> str | None:
         return _clean_optional_text(value)

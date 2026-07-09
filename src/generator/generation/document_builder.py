@@ -104,6 +104,56 @@ def resolve_kp_template_path(templates_dir: Path | None = None) -> Path:
     return root_dir / KP_TEMPLATE_FILENAME
 
 
+
+KP_TEMPLATE_AUTO_ENGINES = {"auto", "adaptive"}
+KP_TEMPLATE_REQUIRED_RECIPIENT_PLACEHOLDERS = {"ADM", "ADM_NAME", "ADM_NAME_1"}
+KP_TEMPLATE_REQUIRED_SCOPE_PLACEHOLDERS = {"MUN_NAME", "MUN_NAME_1", "MUN_NAME_2", "MUN_R_NAME", "MUN_R_NAME_1", "SUB_RF"}
+
+
+def _docx_main_text_and_table_count(template_path: Path) -> tuple[str, int]:
+    with zipfile.ZipFile(template_path, "r") as archive:
+        names = archive.namelist()
+        part_names = [
+            name
+            for name in names
+            if name == "word/document.xml" or re.match(r"word/(header|footer)\d+\.xml$", name)
+        ]
+        text_parts: list[str] = []
+        table_count = 0
+        for part_name in part_names:
+            xml_text = archive.read(part_name).decode("utf-8", errors="ignore")
+            table_count += len(re.findall(r"<w:tbl\b", xml_text))
+            text_parts.extend(re.findall(r"<w:t[^>]*>(.*?)</w:t>", xml_text, flags=re.S))
+    text = " ".join(re.sub(r"<[^>]+>", " ", part) for part in text_parts)
+    return " ".join(text.split()), table_count
+
+
+def is_kp_docx_template_compatible(template_path: Path) -> bool:
+    if not template_path.exists() or template_path.suffix.lower() != ".docx":
+        return False
+    try:
+        text, table_count = _docx_main_text_and_table_count(template_path)
+    except Exception:
+        return False
+    placeholders = set(re.findall(r"\b[A-ZА-ЯЁ0-9_]{2,}\b", text))
+    has_recipient = bool(placeholders & KP_TEMPLATE_REQUIRED_RECIPIENT_PLACEHOLDERS)
+    has_scope = bool(placeholders & KP_TEMPLATE_REQUIRED_SCOPE_PLACEHOLDERS)
+    has_price_table = table_count >= 2
+    return has_recipient and has_scope and has_price_table
+
+
+def should_use_structured_kp_renderer(template_path: Path, context: dict) -> bool:
+    engine = str(KP_GENERATION_ENGINE or "template").strip().lower()
+    if engine == "structured":
+        return True
+    if engine not in KP_TEMPLATE_AUTO_ENGINES:
+        return False
+    if str(context.get("WORK_TYPE") or "") == WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES:
+        # This type has a dedicated structured renderer path elsewhere.
+        return False
+    return not is_kp_docx_template_compatible(template_path)
+
+
 def read_output_folder_manifest(folder: Path) -> dict:
     result = read_json(folder / OUTPUT_FOLDER_MANIFEST_FILENAME, default={})
     return result.data if result.ok and isinstance(result.data, dict) else {}
@@ -2143,7 +2193,7 @@ def generate_documents_for_row(
     kp_pdf_path = batch_docx_dir / build_staged_filename(row, "kp", extension=".pdf")
     contract_path = batch_docx_dir / build_staged_filename(row, "contract")
     requested_kinds = set(document_mode_kinds(document_mode))
-    use_structured_kp = KP_GENERATION_ENGINE == "structured"
+    use_structured_kp = should_use_structured_kp_renderer(kp_docx_template_path, context)
 
     generated_files: dict[str, Path] = {}
 

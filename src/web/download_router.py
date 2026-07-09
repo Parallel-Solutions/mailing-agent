@@ -74,6 +74,7 @@ def create_download_router(
     job_state_dir: Callable[[str | None], Path],
     get_parser_status: Callable[[str | None], dict],
     safe_int: Callable[..., int],
+    output_archive_ready: Callable[[str | None], bool] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -129,6 +130,9 @@ def create_download_router(
 
         if not _downloadable_output_files(output_dir):
             raise HTTPException(status_code=404, detail="Готовые документы не найдены. Повторите подготовку документов.")
+
+        if output_archive_ready is not None and not output_archive_ready(job_id):
+            raise HTTPException(status_code=409, detail="Документы ещё собираются. Дождитесь завершения подготовки и повторите скачивание.")
 
         archive_path, cache_is_fresh = resolve_cached_output_archive(job_id)
         if cache_is_fresh and (not archive_path.exists() or archive_path.stat().st_size <= 22):

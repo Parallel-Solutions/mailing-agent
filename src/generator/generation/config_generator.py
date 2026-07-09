@@ -66,7 +66,7 @@ PHILOLOGIST_CONTEXT_LLM_MIN_CONFIDENCE = float(_read_env_override("PHILOLOGIST_C
 WEB_CASE_AGENT_MAX_WORKERS = max(1, int(_read_env_override("WEB_CASE_AGENT_MAX_WORKERS", "1")))
 
 # PDF-конвертация
-KP_GENERATION_ENGINE = _read_env_override("KP_GENERATION_ENGINE", "template").strip().lower() or "template"
+KP_GENERATION_ENGINE = _read_env_override("KP_GENERATION_ENGINE", "auto").strip().lower() or "auto"
 _GOTENBERG_BASE_URLS_RAW = _read_env_override(
     "GOTENBERG_BASE_URLS",
     _read_env_override("GOTENBERG_BASE_URL", ""),
@@ -77,11 +77,16 @@ GOTENBERG_BASE_URLS = tuple(
     if url.strip()
 )
 GOTENBERG_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("GOTENBERG_CONVERT_TIMEOUT_SECONDS", "300"))
-ONLYOFFICE_BASE_URL = ""
-ONLYOFFICE_CONVERTER_MODE = "url"
-ONLYOFFICE_CONVERT_TIMEOUT_SECONDS = 120.0
-ONLYOFFICE_JWT_SECRET = ""
-ONLYOFFICE_PUBLIC_FILES_DIR = DATA_DIR / "_onlyoffice_public"
-ONLYOFFICE_PUBLIC_FILES_URL = ""
+GOTENBERG_HEALTH_TIMEOUT_SECONDS = float(_read_env_override("GOTENBERG_HEALTH_TIMEOUT_SECONDS", "10"))
+GOTENBERG_RETRY_ATTEMPTS = max(1, int(_read_env_override("GOTENBERG_RETRY_ATTEMPTS", "2")))
+ONLYOFFICE_BASE_URL = _read_env_override("ONLYOFFICE_BASE_URL", "").strip().rstrip("/")
+ONLYOFFICE_CONVERTER_MODE = _read_env_override("ONLYOFFICE_CONVERTER_MODE", "url").strip().lower() or "url"
+ONLYOFFICE_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("ONLYOFFICE_CONVERT_TIMEOUT_SECONDS", "120"))
 LIBREOFFICE_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("LIBREOFFICE_CONVERT_TIMEOUT_SECONDS", "180"))
+ONLYOFFICE_JWT_SECRET = _read_env_override("ONLYOFFICE_JWT_SECRET", "").strip()
+ONLYOFFICE_PUBLIC_FILES_DIR = DATA_DIR / "_onlyoffice_public"
+ONLYOFFICE_PUBLIC_FILES_URL = _read_env_override(
+    "ONLYOFFICE_PUBLIC_FILES_URL",
+    "http://172.17.0.1:9806/public/onlyoffice",
+).strip().rstrip("/")
 

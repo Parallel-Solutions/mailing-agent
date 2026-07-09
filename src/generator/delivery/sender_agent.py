@@ -56,6 +56,7 @@ from src.generator.philologist.philologist_agent import run_philologist
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
 from src.jobs import load_agent_state, normalize_job_id, resolve_job_paths, save_agent_state
+from src.jobs.chat_memory import append_chat_turn, chat_history_for_prompt, get_chat_session
 from src.utils.config import settings
 
 
@@ -99,6 +100,8 @@ MAILOPOST_SEND_PATH = "email/messages"
 RECIPIENT_STRATEGY_ALL = "all"
 RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK = "primary_then_fallback"
 DEFAULT_RECIPIENT_STRATEGY = RECIPIENT_STRATEGY_ALL
+DELIVERY_FALLBACK_CHECK_INTERVAL_SECONDS = 10
+DELIVERY_FALLBACK_CHECK_MAX_WAIT_SECONDS = 24 * 60 * 60
 DELIVERY_FALLBACK_FAILURE_STATUSES = {
     "hard_bounced",
     "err_delivery_failed",
@@ -1976,11 +1979,12 @@ def schedule_delivery_fallback_check(job_ids: Any, *, provider: str = "") -> Non
 
 def _run_scheduled_delivery_fallback_check(job_id: str, provider: str, running_key: str) -> None:
     try:
-        for _ in range(30):
+        max_attempts = max(1, DELIVERY_FALLBACK_CHECK_MAX_WAIT_SECONDS // DELIVERY_FALLBACK_CHECK_INTERVAL_SECONDS)
+        for _ in range(max_attempts):
             state = _load_sender_state(job_id)
             if _safe_text(state.get("status")) != "running":
                 break
-            sleep(10)
+            sleep(DELIVERY_FALLBACK_CHECK_INTERVAL_SECONDS)
         process_delivery_fallbacks(job_id=job_id, provider=provider)
     finally:
         with _DELIVERY_FALLBACK_LOCK:
@@ -2067,6 +2071,7 @@ def process_delivery_fallbacks(*, job_id: str, provider: str = "") -> dict[str, 
             campaign_name=campaign_name,
             recipient_strategy=RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
             job_id=job_id,
+            preserve_sender_state=True,
         )
         results.append(
             {
@@ -3924,6 +3929,7 @@ def run_sender(
     work_type: str | None = None,
     recipient_strategy: str | None = None,
     job_id: str | None = None,
+    preserve_sender_state: bool = False,
     _sender_lock_acquired: bool = False,
 ) -> dict[str, Any]:
     if not _sender_lock_acquired:
@@ -3944,6 +3950,7 @@ def run_sender(
                 work_type=work_type,
                 recipient_strategy=recipient_strategy,
                 job_id=job_id,
+                preserve_sender_state=preserve_sender_state,
                 _sender_lock_acquired=True,
             )
 
@@ -3961,8 +3968,10 @@ def run_sender(
     else:
         mail_template_path = None
     state = _load_sender_state(job_id)
-    clear_sender_stop_request(job_id)
-    state = _load_sender_state(job_id)
+    if not preserve_sender_state:
+        clear_sender_stop_request(job_id)
+        state = _load_sender_state(job_id)
+    preserved_sender_state = dict(state) if preserve_sender_state else None
     effective_limit = _normalize_limit(limit, dry_run=dry_run)
     effective_transport = _normalize_transport(transport)
     effective_send_mode = _normalize_send_mode(send_mode)
@@ -4049,6 +4058,8 @@ def run_sender(
         state["status"] = "error"
         state["summary_text"] = "Файл data.xlsx не найден."
         _save_sender_state(state, job_id)
+        if preserved_sender_state is not None:
+            _save_sender_state(preserved_sender_state, job_id)
         return dict(state)
 
     workbook, worksheet, rows = _read_rows_with_retry(data_xlsx_path)
@@ -4865,11 +4876,14 @@ def run_sender(
         unique_warnings = list(dict.fromkeys(item for item in runtime_warnings if item))
         if unique_warnings:
             state["summary_text"] = f"{state['summary_text']} {' '.join(unique_warnings)}".strip()
+    result_state = dict(state)
     _save_sender_state(state, job_id)
+    if preserved_sender_state is not None:
+        _save_sender_state(preserved_sender_state, job_id)
     close = getattr(workbook, "close", None)
     if callable(close):
         close()
-    return dict(state)
+    return result_state
 
 
 def get_sender_status(job_id: str | None = None) -> dict[str, Any]:
@@ -4968,12 +4982,11 @@ def _build_openai_client() -> OpenAI | None:
         return None
 
 
-def chat_with_sender(message: str, *, job_id: str | None = None) -> dict[str, Any]:
+def chat_with_sender(message: str, *, job_id: str | None = None, session_id: str | None = None) -> dict[str, Any]:
     state = get_sender_status(job_id)
-    client = _build_openai_client()
     preview = preview_recipients(limit=30, job_id=job_id)
-    if not client:
-        return {"reply": _fallback_sender_chat(message, state, job_id=job_id), "state": state}
+    resolved_session_id, session = get_chat_session(session_id, namespace="sender", job_id=job_id)
+    history = chat_history_for_prompt(session)
 
     compact_rows = []
     for item in (state.get("rows") or [])[:20]:
@@ -4983,36 +4996,82 @@ def chat_with_sender(message: str, *, job_id: str | None = None) -> dict[str, An
                 "mun_name": item.get("mun_name"),
                 "result": item.get("result"),
                 "recipient": item.get("recipient"),
+                "recipient_role": item.get("recipient_role"),
                 "error": item.get("error"),
+                "warning": item.get("warning"),
             }
         )
     rag_context = format_service_rag_context(find_relevant_service_docs(message, limit=3))
-
-    prompt = (
-        "Ты агент-отправщик писем с выбранными вложениями: КП, договором или КП и договором. "
-        "Отвечай кратко, по-русски, только на основе текущего состояния запуска и предпросмотра адресов из data.xlsx. "
-        "Если пользователь спрашивает про адреса или почты до рассылки, опирайся на предпросмотр, а не проси запускать отправку. "
-        "Не выдумывай информацию, которой нет в данных. "
-        "Если справка RAG противоречит состоянию запуска, главным источником правды является состояние запуска.\n\n"
-        f"Справка RAG по сервису:\n{rag_context}\n\n"
-        f"Состояние последнего запуска:\n{json.dumps({'summary_text': state.get('summary_text'), 'stats': state.get('stats'), 'rows': compact_rows, 'task_stats': state.get('task_stats'), 'tasks': (state.get('tasks') or [])[:10], 'recent_events': (state.get('recent_events') or [])[:10]}, ensure_ascii=False, indent=2)}\n\n"
-        f"Предпросмотр адресов из data.xlsx:\n{json.dumps(preview, ensure_ascii=False, indent=2)}\n\n"
-        f"Вопрос пользователя:\n{message}"
-    )
-
-    request_kwargs = {
-        "model": settings.case_agent_model,
-        "messages": [{"role": "user", "content": prompt}],
+    context = {
+        "screen": "sender",
+        "job_id": job_id or "",
+        "read_only": True,
+        "user_question": message,
+        "service_knowledge": rag_context,
+        "sender_state": {
+            "status": state.get("status"),
+            "mode": state.get("mode"),
+            "send_mode": state.get("send_mode"),
+            "transport": state.get("transport"),
+            "campaign_name": state.get("campaign_name"),
+            "summary_text": state.get("summary_text"),
+            "stats": state.get("stats"),
+            "task_stats": state.get("task_stats"),
+            "tasks": (state.get("tasks") or [])[:10],
+            "recent_events": (state.get("recent_events") or [])[:10],
+            "rows": compact_rows,
+        },
+        "recipient_preview": preview,
+        "chat_session": {
+            "session_id": resolved_session_id,
+            "history": history,
+        },
     }
-    if not _resolve_openai_base_url():
-        request_kwargs["response_format"] = {"type": "text"}
+    context_text = json.dumps(context, ensure_ascii=False, indent=2, default=str)
+    if len(context_text) > 16000:
+        context_text = context_text[:15999].rstrip() + "..."
 
-    try:
-        response = client.chat.completions.create(**request_kwargs)
-        reply = _safe_text(response.choices[0].message.content)
-        if not reply:
-            reply = _fallback_sender_chat(message, state, job_id=job_id)
-    except Exception:
-        reply = _fallback_sender_chat(message, state, job_id=job_id)
+    client = _build_openai_client()
+    if not client:
+        reply = (
+            "AI chat is unavailable: model client or key is not configured. "
+            "This chat session context was saved; try again after AI is restored."
+        )
+    else:
+        system_prompt = (
+            "You are the AI chat for the Sender screen of a proposal mailing service. "
+            "Always answer in Russian, briefly and practically. "
+            "The current service context below is the source of truth; session history is only for conversational continuity. "
+            "Do not send emails, rerun campaigns, edit files, or promise actions this chat does not perform. "
+            "Explain delivery, fallback recipient strategy, consent requests, materials sending, provider events, and current errors using only the context. "
+            "Do not expose JSON, tokens, keys, stack traces, raw logs, or internal file paths. "
+            "If context is insufficient, say exactly what is missing."
+        )
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        if history:
+            messages.append({
+                "role": "user",
+                "content": "Current chat session history:\n" + json.dumps(history, ensure_ascii=False, indent=2),
+            })
+        messages.append({
+            "role": "user",
+            "content": f"Current service context:\n{context_text}\n\nNew user message:\n{message}",
+        })
+        request_kwargs: dict[str, Any] = {
+            "model": settings.case_agent_model,
+            "messages": messages,
+            "temperature": 0.2,
+            "max_tokens": 560,
+        }
+        if not _resolve_openai_base_url():
+            request_kwargs["response_format"] = {"type": "text"}
+        try:
+            response = client.chat.completions.create(**request_kwargs)
+            reply = _safe_text(response.choices[0].message.content if response.choices else "")
+            if not reply:
+                reply = "AI returned an empty answer. Session context was saved; try the question again."
+        except Exception:
+            reply = "AI chat could not answer right now. Session context was saved; try again later."
 
-    return {"reply": reply, "state": state}
+    append_chat_turn(resolved_session_id, message, reply)
+    return {"reply": reply, "state": state, "session_id": resolved_session_id}

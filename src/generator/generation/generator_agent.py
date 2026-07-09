@@ -48,6 +48,7 @@ from src.generator.generation.document_builder import (
 from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 from src.generator.generation.excel_io import load_rows
 from src.generator.generation.pdf_converter import convert_docx_batch
+from src.generator.generation.pdf_quality import validate_kp_pdf
 from src.generator.generation.pdf_safe import apply_pdf_safe_postprocess, is_kp_docx, prepare_docx_for_pdf_export
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
 from src.generator.generation.transforms import build_document_context, build_output_folder_name
@@ -521,7 +522,8 @@ def _finalize_generated_jobs(
         if not job_requires_pdf and final_pdf.exists():
             final_pdf.unlink()
         if job_requires_pdf and final_pdf.exists():
-            result_files[f"{job['file_kind']}_final_pdf"] = str(final_pdf)
+            if _reject_invalid_kp_pdf(final_pdf, result_entry, file_kind=job["file_kind"]):
+                result_files[f"{job['file_kind']}_final_pdf"] = str(final_pdf)
         elif job_requires_pdf and final_docx.exists():
             result_entry["status"] = "error"
             missing_pdf = f"{job['file_kind']}.pdf"
@@ -554,9 +556,10 @@ def _finalize_direct_pdf_jobs(
                 final_pdf.unlink()
             shutil.move(str(staged_pdf), str(final_pdf))
         if final_pdf.exists():
-            result_files[f"{job['file_kind']}_final_pdf"] = str(final_pdf)
-            if progress_callback:
-                progress_callback()
+            if _reject_invalid_kp_pdf(final_pdf, result_entry, file_kind=job["file_kind"]):
+                result_files[f"{job['file_kind']}_final_pdf"] = str(final_pdf)
+                if progress_callback:
+                    progress_callback()
         else:
             result_entry["status"] = "error"
             existing_error = str(result_entry.get("error") or "").strip()
@@ -714,8 +717,36 @@ def _is_valid_pdf(path: Path) -> bool:
         return False
 
 
+def _is_valid_kp_pdf(path: Path) -> bool:
+    return bool(validate_kp_pdf(path).get("ok"))
+
+
+def _reject_invalid_kp_pdf(
+    pdf_path: Path,
+    result_entry: dict[str, Any],
+    *,
+    file_kind: str = "kp",
+) -> bool:
+    if str(file_kind or "").lower() != "kp":
+        return True
+    validation = validate_kp_pdf(pdf_path)
+    if validation.get("ok"):
+        return True
+
+    result_entry["status"] = "error"
+    existing_error = str(result_entry.get("error") or "").strip()
+    pdf_error = str(validation.get("message") or "PDF КП не прошёл проверку.").strip()
+    result_entry["error"] = f"{existing_error} {pdf_error}".strip() if existing_error else pdf_error
+    try:
+        if pdf_path.exists():
+            pdf_path.unlink()
+    except OSError:
+        pass
+    return False
+
+
 def _is_pdf_current(pdf_path: Path, docx_path: Path) -> bool:
-    if not _is_valid_pdf(pdf_path):
+    if not _is_valid_kp_pdf(pdf_path):
         return False
     try:
         return pdf_path.stat().st_mtime >= docx_path.stat().st_mtime
@@ -836,8 +867,13 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
                 if final_pdf.exists():
                     final_pdf.unlink()
                 shutil.move(str(created_pdf), str(final_pdf))
-            if not _is_valid_pdf(final_pdf):
+            if not _is_valid_kp_pdf(final_pdf):
                 failed.append(str(final_pdf))
+                try:
+                    if final_pdf.exists():
+                        final_pdf.unlink()
+                except OSError:
+                    pass
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
         shutil.rmtree(pdf_work_dir, ignore_errors=True)
