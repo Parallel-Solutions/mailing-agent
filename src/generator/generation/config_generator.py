@@ -66,7 +66,16 @@ PHILOLOGIST_CONTEXT_LLM_MIN_CONFIDENCE = float(_read_env_override("PHILOLOGIST_C
 WEB_CASE_AGENT_MAX_WORKERS = max(1, int(_read_env_override("WEB_CASE_AGENT_MAX_WORKERS", "1")))
 
 # PDF-конвертация
-KP_GENERATION_ENGINE = _read_env_override("KP_GENERATION_ENGINE", "auto").strip().lower() or "auto"
+KP_GENERATION_ENGINE = _read_env_override("KP_GENERATION_ENGINE", "template").strip().lower() or "template"
+TEMPLATE_PREVIEW_PDF_RENDERER = (
+    _read_env_override("TEMPLATE_PREVIEW_PDF_RENDERER", "gotenberg").strip().lower() or "gotenberg"
+)
+TEMPLATE_PREVIEW_NORMALIZE_DOCX = _read_env_override("TEMPLATE_PREVIEW_NORMALIZE_DOCX", "0") == "1"
+TEMPLATE_PREVIEW_AUTO_FIT_ONE_PAGE = _read_env_override("TEMPLATE_PREVIEW_AUTO_FIT_ONE_PAGE", "1") == "1"
+ENABLE_TEMPLATE_VISUAL_AUDIT = _read_env_override("ENABLE_TEMPLATE_VISUAL_AUDIT", "1") == "1"
+TEMPLATE_VISUAL_AUDIT_MODEL = _read_env_override("TEMPLATE_VISUAL_AUDIT_MODEL", DOCUMENT_REVIEW_MODEL).strip()
+TEMPLATE_VISUAL_AUDIT_APPLY_SAFE_PATCHES = _read_env_override("TEMPLATE_VISUAL_AUDIT_APPLY_SAFE_PATCHES", "1") == "1"
+TEMPLATE_VISUAL_AUDIT_MAX_PATCH_ROUNDS = max(0, int(_read_env_override("TEMPLATE_VISUAL_AUDIT_MAX_PATCH_ROUNDS", "1")))
 _GOTENBERG_BASE_URLS_RAW = _read_env_override(
     "GOTENBERG_BASE_URLS",
     _read_env_override("GOTENBERG_BASE_URL", ""),
@@ -74,6 +83,15 @@ _GOTENBERG_BASE_URLS_RAW = _read_env_override(
 GOTENBERG_BASE_URLS = tuple(
     url.strip().rstrip("/")
     for url in _GOTENBERG_BASE_URLS_RAW.split(",")
+    if url.strip()
+)
+_GOTENBERG_HTML_BASE_URLS_RAW = _read_env_override(
+    "GOTENBERG_HTML_BASE_URLS",
+    _read_env_override("GOTENBERG_HTML_BASE_URL", ""),
+)
+GOTENBERG_HTML_BASE_URLS = tuple(
+    url.strip().rstrip("/")
+    for url in _GOTENBERG_HTML_BASE_URLS_RAW.split(",")
     if url.strip()
 )
 GOTENBERG_CONVERT_TIMEOUT_SECONDS = float(_read_env_override("GOTENBERG_CONVERT_TIMEOUT_SECONDS", "300"))
@@ -89,4 +107,3 @@ ONLYOFFICE_PUBLIC_FILES_URL = _read_env_override(
     "ONLYOFFICE_PUBLIC_FILES_URL",
     "http://172.17.0.1:9806/public/onlyoffice",
 ).strip().rstrip("/")
-

@@ -799,6 +799,12 @@ def _documents_agent_template_preview_context(job_id: str | None) -> dict[str, A
     if not state:
         return {"exists": False, "awaiting_confirmation": False}
     approval_status = str(state.get("approval_status") or PREVIEW_APPROVAL_PENDING)
+    visual_audit = state.get("visual_audit") if isinstance(state.get("visual_audit"), dict) else {}
+    issues = visual_audit.get("issues") if isinstance(visual_audit.get("issues"), list) else []
+    recommendations = visual_audit.get("recommendations") if isinstance(visual_audit.get("recommendations"), list) else []
+    patches_applied = visual_audit.get("patches_applied") if isinstance(visual_audit.get("patches_applied"), list) else []
+    pdf_quality = state.get("pdf_quality") if isinstance(state.get("pdf_quality"), dict) else {}
+    pdf_quality_after = visual_audit.get("pdf_quality_after") if isinstance(visual_audit.get("pdf_quality_after"), dict) else {}
     return {
         "exists": True,
         "awaiting_confirmation": state.get("status") == "ready" and approval_status != PREVIEW_APPROVAL_APPROVED,
@@ -812,6 +818,29 @@ def _documents_agent_template_preview_context(job_id: str | None) -> dict[str, A
         "created_at": state.get("created_at"),
         "has_pdf": bool(state.get("has_pdf")),
         "has_docx": bool(state.get("has_docx")),
+        "pdf_renderer": state.get("pdf_renderer"),
+        "pdf_quality": {
+            "ok": pdf_quality.get("ok"),
+            "page_count": pdf_quality.get("page_count"),
+            "reason": pdf_quality.get("reason"),
+        },
+        "visual_audit": {
+            "status": visual_audit.get("status"),
+            "ai_status": visual_audit.get("ai_status"),
+            "model": visual_audit.get("model"),
+            "ok": visual_audit.get("ok"),
+            "confidence": visual_audit.get("confidence"),
+            "image_available": bool(visual_audit.get("image_available")),
+            "issues": [_documents_agent_sanitize_text(item, limit=220) for item in issues[:5]],
+            "recommendations": [_documents_agent_sanitize_text(item, limit=220) for item in recommendations[:5]],
+            "patches_applied_count": len(patches_applied),
+            "pdf_quality_after": {
+                "ok": pdf_quality_after.get("ok"),
+                "page_count": pdf_quality_after.get("page_count"),
+                "reason": pdf_quality_after.get("reason"),
+            },
+            "error": _documents_agent_sanitize_text(visual_audit.get("error"), limit=260),
+        },
     }
 
 
