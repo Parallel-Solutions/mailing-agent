@@ -634,7 +634,6 @@
     font-size: 11px;
     line-height: 1.4;
   }
-
   .step-nav {
     display: flex;
     justify-content: flex-end;
@@ -1070,6 +1069,110 @@
     margin-top: 12px;
   }
 
+  .sales-requests-dashboard {
+    border: 1px solid #dce8d0;
+    border-radius: 16px;
+    padding: 16px;
+    background: #fbfcf8;
+    margin-bottom: 1.25rem;
+  }
+
+  .sales-requests-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .sales-requests-title {
+    font-size: 17px;
+    font-weight: 750;
+    color: #132008;
+  }
+
+  .sales-requests-sub {
+    margin-top: 3px;
+    color: #6d765f;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .sales-requests-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .sales-requests-empty {
+    border: 1px dashed #cfdcc2;
+    border-radius: 12px;
+    padding: 14px;
+    color: #728066;
+    background: #fff;
+    font-size: 13px;
+  }
+
+  .sales-request-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    border: 1px solid #e1e8d9;
+    border-radius: 12px;
+    padding: 12px;
+    background: #fff;
+  }
+
+  .sales-request-title {
+    color: #17230d;
+    font-size: 14px;
+    font-weight: 750;
+    line-height: 1.35;
+  }
+
+  .sales-request-meta,
+  .sales-request-field-label {
+    color: #7a8670;
+    font-size: 11px;
+  }
+
+  .sales-request-fields {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .sales-request-field {
+    border: 1px solid #edf1e8;
+    border-radius: 9px;
+    padding: 8px;
+    background: #fbfcf8;
+    min-width: 0;
+  }
+
+  .sales-request-field-value {
+    margin-top: 3px;
+    color: #223117;
+    font-size: 12px;
+    font-weight: 650;
+    overflow-wrap: anywhere;
+  }
+
+  .sales-request-materials-error {
+    color: #a02020;
+  }
+
+  @media (max-width: 760px) {
+    .sales-requests-head,
+    .sales-request-card {
+      grid-template-columns: 1fr;
+      display: grid;
+    }
+
+    .sales-request-fields {
+      grid-template-columns: 1fr;
+    }
+  }
   .jobs-history-card {
     margin-top: 1.25rem;
     border: 1px solid #e4e8dc;
@@ -1797,6 +1900,84 @@
     font-size: 11px;
     line-height: 1.45;
     color: #4f6540;
+  }
+  .documents-preview-diagnostics {
+    display: grid;
+    gap: 8px;
+    padding: 10px 11px;
+    border: 1px solid #dbe7cf;
+    border-radius: 8px;
+    background: #fbfdf7;
+    color: #435536;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .documents-preview-diagnostics-title {
+    font-weight: 800;
+    color: #21380f;
+  }
+
+  .documents-preview-diagnostics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .documents-preview-diagnostics-pill {
+    border: 1px solid #e0e9d7;
+    border-radius: 8px;
+    background: #fff;
+    padding: 7px 8px;
+    min-width: 0;
+  }
+
+  .documents-preview-diagnostics-pill strong {
+    display: block;
+    color: #183007;
+    font-size: 14px;
+    line-height: 1.1;
+    margin-bottom: 3px;
+  }
+
+  .documents-preview-diagnostics-list {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .documents-preview-diagnostics-list li {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+  }
+
+  .documents-preview-diagnostics-list li::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    margin-top: 6px;
+    border-radius: 50%;
+    background: #5a9e1f;
+  }
+
+  .documents-preview-diagnostics-warning {
+    border-color: #f0cf83;
+    background: #fff8e6;
+    color: #6b4b05;
+  }
+
+  .documents-preview-diagnostics-color {
+    display: inline-flex;
+    width: 10px;
+    height: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 50%;
+    vertical-align: -1px;
+    margin-right: 4px;
   }
 
   .documents-preview-frame {
@@ -2546,7 +2727,6 @@
           </button>
         </div>
       </div>
-
       <div id="settings-sender-credentials-section" hidden>
         <div class="divider"></div>
 
@@ -2974,6 +3154,19 @@
         </div>
       </div>
 
+      <div class="sales-requests-dashboard" id="sales-requests-dashboard" hidden>
+        <div class="sales-requests-head">
+          <div>
+            <div class="sales-requests-title">Заявки на документы для продаж</div>
+            <div class="sales-requests-sub" id="sales-requests-sub">Здесь появятся клиенты, которые подтвердили согласие и запросили КП/документы.</div>
+          </div>
+          <button class="btn-outline" id="sales-requests-refresh-button" data-process-lock="true" type="button" onclick="refreshSalesRequests()">Обновить заявки</button>
+        </div>
+        <div class="sales-requests-list" id="sales-requests-list">
+          <div class="sales-requests-empty">Заявки ещё не загружены.</div>
+        </div>
+      </div>
+
       <div style="display:flex; gap:8px; flex-wrap:wrap">
         <a class="btn-primary" href="/statistics" style="display:inline-flex;align-items:center;text-decoration:none;">Открыть раздел статистики для менеджера</a>
         <button class="btn-outline" id="status-download-data" data-process-lock="true" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать таблицу текущей отправки</button>
@@ -3160,6 +3353,8 @@
   let documentsStatusEpoch = 0;
   let deliveryAnalyticsFollowupTimer = null;
   let deliveryAnalyticsLoading = false;
+  let salesRequestsLoading = false;
+  let salesRequestsItems = [];
   let isRestoringUiState = false;
   let moduleReadinessServerLoaded = false;
 
@@ -4493,6 +4688,151 @@
     }
   }
 
+  function formatSalesRequestTime(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ');
+    return date.toLocaleString('ru', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function renderSalesRequests(result = {}) {
+    const dashboard = document.getElementById('sales-requests-dashboard');
+    const list = document.getElementById('sales-requests-list');
+    const sub = document.getElementById('sales-requests-sub');
+    const button = document.getElementById('sales-requests-refresh-button');
+    if (!dashboard || !list) return;
+
+    if (!currentJobId) {
+      dashboard.hidden = true;
+      salesRequestsItems = [];
+      return;
+    }
+
+    dashboard.hidden = false;
+    salesRequestsItems = Array.isArray(result.items) ? result.items : [];
+    const total = Number(result.total || salesRequestsItems.length || 0);
+    if (sub) {
+      sub.textContent = total > 0
+        ? `Найдено заявок: ${total.toLocaleString('ru')}. Можно скопировать контакты для отдела продаж.`
+        : 'Пока никто не подтвердил согласие на получение документов в этой сессии.';
+    }
+    if (button) {
+      button.disabled = salesRequestsLoading || !currentJobId;
+      button.textContent = salesRequestsLoading ? 'Обновляем...' : 'Обновить заявки';
+    }
+
+    if (!salesRequestsItems.length) {
+      list.innerHTML = '<div class="sales-requests-empty">Подтверждённых заявок пока нет.</div>';
+      return;
+    }
+
+    list.innerHTML = salesRequestsItems.map((item, index) => {
+      const adminName = escapeHtml(item.admin_name || item.municipality || 'Администрация не указана');
+      const municipality = escapeHtml(item.municipality || '');
+      const recipient = escapeHtml(item.recipient || 'email не найден');
+      const phones = escapeHtml(item.phones_text || 'телефон не найден');
+      const confirmedAt = escapeHtml(formatSalesRequestTime(item.confirmed_at || item.request_sent_at));
+      const rowId = escapeHtml(item.row_id || '-');
+      const campaign = escapeHtml(item.campaign_name || 'без названия рассылки');
+      const materialsStatus = escapeHtml(item.materials_status_label || 'статус материалов неизвестен');
+      const materialsError = escapeHtml(item.materials_error || '');
+      return `
+        <div class="sales-request-card">
+          <div>
+            <div class="sales-request-title">${adminName}</div>
+            <div class="sales-request-meta">${municipality ? municipality + ' · ' : ''}строка ${rowId}${confirmedAt ? ' · ' + confirmedAt : ''}</div>
+          </div>
+          <button class="btn-outline" type="button" onclick="copySalesRequest(${index})">Скопировать</button>
+          <div class="sales-request-fields">
+            <div class="sales-request-field">
+              <div class="sales-request-field-label">Email клиента</div>
+              <div class="sales-request-field-value">${recipient}</div>
+            </div>
+            <div class="sales-request-field">
+              <div class="sales-request-field-label">Телефон</div>
+              <div class="sales-request-field-value">${phones}</div>
+            </div>
+            <div class="sales-request-field">
+              <div class="sales-request-field-label">Материалы</div>
+              <div class="sales-request-field-value ${materialsError ? 'sales-request-materials-error' : ''}">${materialsStatus}${materialsError ? ': ' + materialsError : ''}</div>
+            </div>
+          </div>
+          <div class="sales-request-meta">${campaign}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function writeClipboardText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'readonly');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    textarea.remove();
+  }
+
+  async function copySalesRequest(index) {
+    const item = salesRequestsItems[index];
+    if (!item) return;
+    const text = item.copy_text || [
+      'Клиент запросил документы',
+      item.admin_name ? `Администрация: ${item.admin_name}` : '',
+      item.recipient ? `Email: ${item.recipient}` : '',
+      item.phones_text ? `Телефон: ${item.phones_text}` : '',
+    ].filter(Boolean).join('\n');
+    try {
+      await writeClipboardText(text);
+      showToast('Контакты скопированы');
+    } catch (error) {
+      showToast('Не удалось скопировать контакты');
+    }
+  }
+
+  async function refreshSalesRequests({ silent = false } = {}) {
+    const dashboard = document.getElementById('sales-requests-dashboard');
+    const list = document.getElementById('sales-requests-list');
+    if (!currentJobId) {
+      renderSalesRequests({});
+      return null;
+    }
+    if (salesRequestsLoading) return null;
+    salesRequestsLoading = true;
+    if (dashboard) dashboard.hidden = false;
+    if (list && !silent) {
+      list.innerHTML = '<div class="sales-requests-empty">Загружаю заявки...</div>';
+    }
+    renderSalesRequests({ items: salesRequestsItems, total: salesRequestsItems.length });
+    try {
+      const res = await fetchWithTimeout(apiUrl('/api/consents/sales-requests'), {}, 20000);
+      const data = await readJsonOrText(res);
+      if (!res.ok) throw new Error(data.detail || 'Не удалось загрузить заявки');
+      const result = data.result || {};
+      renderSalesRequests(result);
+      if (!silent) showToast('Заявки обновлены');
+      return result;
+    } catch (error) {
+      if (list) list.innerHTML = '<div class="sales-requests-empty">Не удалось загрузить заявки.</div>';
+      if (!silent) showToast('Не удалось загрузить заявки');
+      return null;
+    } finally {
+      salesRequestsLoading = false;
+      renderSalesRequests({ items: salesRequestsItems, total: salesRequestsItems.length });
+    }
+  }
   async function refreshDeliveryAnalytics({ refresh = false, silent = false } = {}) {
     if (!currentJobId) {
       renderDeliveryAnalytics({});
@@ -4825,12 +5165,14 @@
     if (!currentJobId) {
       renderJobSenderStatusScreen({});
       renderDeliveryAnalytics({});
+      renderSalesRequests({});
       showToast('Сначала загрузите таблицу');
       return;
     }
     const result = await refreshSenderStatus({ silent: true });
     renderJobSenderStatusScreen(result || lastSenderUiState || {});
     await refreshDeliveryAnalytics({ refresh: true, silent: true });
+    await refreshSalesRequests({ silent: true });
     showToast('Статусы текущей отправки обновлены');
   }
 
@@ -4877,6 +5219,7 @@
       renderJobSenderStatusScreen(lastSenderUiState || {});
       refreshSenderStatus({ silent: true });
       refreshDeliveryAnalytics({ silent: true });
+      refreshSalesRequests({ silent: true });
       refreshJobsHistory({ silent: true });
     }
     if (persist) {
@@ -5513,12 +5856,23 @@
     saveUiState();
   }
 
-  function openDocumentsPreviewModal(pdfUrl, rowLabel = '', docxUrl = '') {
+  async function openDocumentsPreviewModal(pdfUrl, rowLabel = '', docxUrl = '') {
     const modal = document.getElementById('documents-preview-modal');
     const frame = document.getElementById('documents-preview-modal-frame');
     const sub = document.getElementById('documents-preview-modal-sub');
     const actions = document.getElementById('documents-preview-modal-actions');
     if (!modal || !frame || !pdfUrl) return;
+    try {
+      const previewPdfCheck = await fetchWithTimeout(pdfUrl, { method: 'GET', headers: { Range: 'bytes=0-0' } }, 15000);
+      if (!previewPdfCheck.ok) {
+        throw new Error('preview_missing');
+      }
+    } catch (error) {
+      closeDocumentsPreviewModal();
+      appendChatMessage('g-chat', 'agent', '\u0424\u0430\u0439\u043b \u043f\u0440\u0435\u0434\u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d. \u041f\u0435\u0440\u0435\u0441\u043e\u0431\u0435\u0440\u0438\u0442\u0435 \u043f\u0440\u0438\u043c\u0435\u0440, \u0438 \u044f \u043e\u0442\u043a\u0440\u043e\u044e \u0441\u0432\u0435\u0436\u0438\u0439 PDF.');
+      showToast('\u0424\u0430\u0439\u043b \u043f\u0440\u0435\u0434\u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d');
+      return;
+    }
     const separator = String(pdfUrl).includes('?') ? '&' : '?';
     frame.src = `${pdfUrl}${separator}v=${Date.now()}#toolbar=1&navpanes=0&scrollbar=1&view=FitH`;
     if (sub) {
@@ -5555,7 +5909,114 @@
     if (frame) frame.removeAttribute('src');
   }
 
-  function appendDocumentsPreviewMessage(result = {}) {
+  function getDocumentsPreviewFailureMessage(result = {}) {
+    const pdfQuality = result && result.pdf_quality ? result.pdf_quality : {};
+    const failed = String(result.status || '') === 'failed_quality'
+      || String(result.approval_status || '') === 'rejected'
+      || pdfQuality.ok === false;
+    if (!failed) return '';
+    return String(
+      result.approval_reason
+      || pdfQuality.message
+      || result.message
+      || '\u041a\u041f \u043d\u0435 \u043f\u0440\u043e\u0448\u0451\u043b \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443 \u043a\u0430\u0447\u0435\u0441\u0442\u0432\u0430 \u043f\u0440\u0435\u0434\u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440\u0430.'
+    );
+  }
+
+  function getTemplateAnalysisForPreview(analysis = {}) {
+    const templates = normalizeTemplateAnalysisList(analysis.templates);
+    const kpTemplate = templates.find(item => String(item.kind || '').toLowerCase() === 'kp') || templates[0] || {};
+    const profile = kpTemplate.style_profile || {};
+    const mapping = normalizeTemplateAnalysisList(analysis.field_mapping_suggestions);
+    const mapped = mapping.filter(item => String(item.status || '') === 'mapped').length;
+    const needsReview = mapping.filter(item => String(item.status || '') !== 'mapped');
+    const plan = analysis.normalization_plan || {};
+    const risks = normalizeTemplateAnalysisList(plan.risks || profile.layout_risks).map(String);
+    const placeholders = normalizeTemplateAnalysisList(analysis.all_placeholders).map(String);
+    return { templates, kpTemplate, profile, mapping, mapped, needsReview, plan, risks, placeholders };
+  }
+
+  function describeTemplateRisk(risk) {
+    const normalized = String(risk || '');
+    const labels = {
+      template_has_foreground_or_inline_images: 'картинки в шаблоне будут перенесены за текст',
+      template_has_no_tables: 'таблица стоимости будет пересобрана сервисом',
+      template_has_no_readable_paragraphs: 'в шаблоне мало читаемого текста, пример нужно проверить внимательнее',
+      template_has_many_images: 'в шаблоне много изображений, они будут использоваться как фон/декор',
+      kp_template_is_not_docx: 'КП-шаблон не DOCX, поэтому будет применена нормализация через HTML/PDF',
+    };
+    return labels[normalized] || normalized.replaceAll('_', ' ');
+  }
+
+  function appendDocumentsPreviewDiagnostics(card, analysis = {}) {
+    const info = getTemplateAnalysisForPreview(analysis);
+    if (!info.templates.length && !info.placeholders.length && !info.mapping.length) return;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'documents-preview-diagnostics';
+
+    const title = document.createElement('div');
+    title.className = 'documents-preview-diagnostics-title';
+    title.textContent = 'Как сервис понял шаблон';
+    wrap.appendChild(title);
+
+    const grid = document.createElement('div');
+    grid.className = 'documents-preview-diagnostics-grid';
+    const metrics = [
+      [info.templates.length, 'шаблонов'],
+      [info.placeholders.length, 'полей'],
+      [`${info.mapped}/${info.mapping.length || info.placeholders.length || 0}`, 'полей сопоставлено'],
+    ];
+    metrics.forEach(([value, label]) => {
+      const pill = document.createElement('div');
+      pill.className = 'documents-preview-diagnostics-pill';
+      const strong = document.createElement('strong');
+      strong.textContent = String(value);
+      const span = document.createElement('span');
+      span.textContent = label;
+      pill.appendChild(strong);
+      pill.appendChild(span);
+      grid.appendChild(pill);
+    });
+    wrap.appendChild(grid);
+
+    const styleLines = [];
+    if (info.profile.font_family) styleLines.push(`стиль: ${info.profile.font_family}, ${info.profile.body_font_size_pt || 10} pt`);
+    if (info.profile.primary_color) styleLines.push(`цвет: ${info.profile.primary_color}`);
+    if (info.plan.one_page_required) styleLines.push('КП будет ужат до одной страницы');
+    if (info.plan.image_policy || info.profile.normalization?.images) styleLines.push('изображения будут удерживаться за текстом');
+    if (styleLines.length) {
+      const line = document.createElement('div');
+      if (info.profile.primary_color) {
+        const dot = document.createElement('span');
+        dot.className = 'documents-preview-diagnostics-color';
+        dot.style.backgroundColor = info.profile.primary_color;
+        line.appendChild(dot);
+      }
+      line.appendChild(document.createTextNode(styleLines.join(' · ')));
+      wrap.appendChild(line);
+    }
+
+    const missing = info.needsReview.slice(0, 5).map(item => String(item.placeholder || '')).filter(Boolean);
+    const risks = info.risks.slice(0, 4).map(describeTemplateRisk).filter(Boolean);
+    const notes = [];
+    if (risks.length) notes.push(...risks);
+    if (missing.length) notes.push('нужно проверить поля: ' + missing.join(', '));
+    if (!notes.length) notes.push('критичных расхождений между шаблоном и таблицей не найдено');
+
+    const list = document.createElement('ul');
+    list.className = 'documents-preview-diagnostics-list';
+    notes.slice(0, 5).forEach(note => {
+      const item = document.createElement('li');
+      item.textContent = note;
+      list.appendChild(item);
+    });
+    wrap.appendChild(list);
+
+    if (missing.length || risks.length) wrap.classList.add('documents-preview-diagnostics-warning');
+    card.appendChild(wrap);
+  }
+  function appendDocumentsPreviewMessage(result = {}, analysis = {}) {
     const messages = document.getElementById('g-chat-messages');
     if (!messages) return;
     const pdfUrl = String(result.pdf_url || '');
@@ -5578,8 +6039,7 @@
     subtitle.className = 'documents-preview-subtitle';
     subtitle.textContent = `Я собрала один пример для строки: ${rowLabel}. Проверьте, как выглядит документ, и ответьте в чат, можно ли запускать генерацию для всех строк.`;
     card.appendChild(subtitle);
-
-
+    appendDocumentsPreviewDiagnostics(card, analysis);
 
     const actions = document.createElement('div');
     actions.className = 'documents-preview-actions';
@@ -5676,6 +6136,19 @@
     appendChatMessage('g-chat', 'agent', 'Сначала соберу один пример по первой строке таблицы. Массовую генерацию пока не запускаю.');
     const loadingMessage = appendDocumentsPreviewLoadingMessage('Готовлю DOCX, конвертирую PDF и проверяю, что КП помещается на одну страницу.');
     showToast('Собираю пример документа');
+    let previewAnalysis = {};
+    try {
+      const analysisQuery = new URLSearchParams({ document_mode: documentMode || 'both' });
+      if (currentJobId) analysisQuery.set('job_id', currentJobId);
+      const analysisRes = await fetchWithTimeout('/api/documents/template-analysis?' + analysisQuery.toString(), { method: 'GET' }, 30000);
+      const analysisData = await readJsonOrText(analysisRes);
+      if (analysisRes.ok) {
+        previewAnalysis = analysisData.result || analysisData || {};
+      }
+    } catch (analysisError) {
+      console.warn('documents_template_analysis_for_preview_failed', analysisError);
+    }
+
 
     try {
       const res = await fetchWithTimeout('/api/documents/template-preview', {
@@ -5691,13 +6164,23 @@
         throw new Error(data.detail || data.message || 'не удалось собрать пример');
       }
       const result = data.result || data || {};
-      documentsPreviewGate = { status: 'pending', key, result };
-      appendDocumentsPreviewMessage(result);
+      const previewFailureMessage = getDocumentsPreviewFailureMessage(result);
+      if (previewFailureMessage) {
+        documentsPreviewGate = { status: 'error', key, result, analysis: previewAnalysis, error: previewFailureMessage };
+        closeDocumentsPreviewModal();
+        appendChatMessage('g-chat', 'agent', '\u041d\u0435 \u0437\u0430\u043f\u0443\u0441\u043a\u0430\u044e \u043c\u0430\u0441\u0441\u043e\u0432\u0443\u044e \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u044e: ' + previewFailureMessage + ' \u0418\u0441\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u0448\u0430\u0431\u043b\u043e\u043d \u0438\u043b\u0438 \u0434\u0430\u043d\u043d\u044b\u0435 \u0438 \u043f\u0435\u0440\u0435\u0441\u043e\u0431\u0435\u0440\u0438\u0442\u0435 \u043f\u0440\u0438\u043c\u0435\u0440.');
+        showToast('\u041f\u0440\u0438\u043c\u0435\u0440 \u043d\u0435 \u043f\u0440\u043e\u0448\u0451\u043b \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443');
+        saveUiState();
+        return false;
+      }
+      documentsPreviewGate = { status: 'pending', key, result, analysis: previewAnalysis };
+      appendDocumentsPreviewMessage(result, previewAnalysis);
       appendChatMessage('g-chat', 'agent', 'Проверьте пример. Если всё выглядит правильно, напишите в чат, что можно запускать массовую генерацию. Если нет — напишите, что нужно поправить.');
       showToast('Пример готов, жду подтверждение в чате');
     } catch (error) {
       const message = error && error.message ? error.message : String(error || 'неизвестная ошибка');
       documentsPreviewGate = { status: 'error', key, error: message };
+      closeDocumentsPreviewModal();
       appendChatMessage('g-chat', 'agent', 'Не удалось собрать пример документа: ' + message + '. Массовую генерацию не запускаю.');
       showToast('Не удалось собрать пример');
     } finally {
@@ -6738,6 +7221,19 @@ function clearAttachedFile() {
         throw new Error(data.detail || data.message || 'не удалось собрать пример');
       }
       const result = data.result || data || {};
+      const previewFailureMessage = getDocumentsPreviewFailureMessage(result);
+      if (previewFailureMessage) {
+        templateReviewPreviewReady = false;
+        if (frame) frame.removeAttribute('src');
+        if (frameWrap) frameWrap.classList.remove('open');
+        if (empty) {
+          empty.hidden = false;
+          empty.textContent = previewFailureMessage;
+        }
+        setTemplateReviewText('template-preview-status', '\u041f\u0440\u0438\u043c\u0435\u0440 \u043d\u0435 \u043f\u0440\u043e\u0448\u0451\u043b \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443: ' + previewFailureMessage);
+        showToast('\u041f\u0440\u0438\u043c\u0435\u0440 \u043d\u0435 \u043f\u0440\u043e\u0448\u0451\u043b \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443');
+        return;
+      }
       if (result.pdf_url && frame && frameWrap) {
         const separator = result.pdf_url.includes('?') ? '&' : '?';
         frame.src = result.pdf_url + separator + 'v=' + Date.now();

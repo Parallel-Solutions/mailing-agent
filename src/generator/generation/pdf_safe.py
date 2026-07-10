@@ -47,6 +47,7 @@ class PdfSafePlan:
     staged_docx: Path
     template_docx: Path | None = None
     should_overlay_kp_background: bool = False
+    should_overlay_kp_contact_icons: bool = False
 
 
 def prepare_docx_for_pdf_export(
@@ -55,6 +56,7 @@ def prepare_docx_for_pdf_export(
     *,
     file_kind: str | None = None,
     template_docx: Path | None = None,
+    max_body_font_half_points: int = 20,
 ) -> PdfSafePlan:
     staged_docx.parent.mkdir(parents=True, exist_ok=True)
     is_kp = is_kp_docx(source_docx, file_kind=file_kind)
@@ -62,12 +64,19 @@ def prepare_docx_for_pdf_export(
         shutil.copy2(str(source_docx), str(staged_docx))
         return PdfSafePlan(source_docx=source_docx, staged_docx=staged_docx)
 
-    copy_docx_without_pdf_unsafe_runs(source_docx, staged_docx)
+    can_overlay_contact_icons = len(extract_kp_contact_icons(source_docx)) >= 2
+    copy_docx_without_pdf_unsafe_runs(
+        source_docx,
+        staged_docx,
+        strip_contact_icons=can_overlay_contact_icons,
+        max_body_font_half_points=max_body_font_half_points,
+    )
     return PdfSafePlan(
         source_docx=source_docx,
         staged_docx=staged_docx,
         template_docx=template_docx if template_docx and template_docx.exists() else source_docx,
         should_overlay_kp_background=True,
+        should_overlay_kp_contact_icons=can_overlay_contact_icons,
     )
 
 
@@ -77,7 +86,13 @@ def is_kp_docx(path: Path, *, file_kind: str | None = None) -> bool:
     return path.name.casefold().startswith("\u043a\u043f_") or "_kp_" in path.name.casefold()
 
 
-def copy_docx_without_pdf_unsafe_runs(source_docx: Path, target_docx: Path) -> None:
+def copy_docx_without_pdf_unsafe_runs(
+    source_docx: Path,
+    target_docx: Path,
+    *,
+    strip_contact_icons: bool = False,
+    max_body_font_half_points: int = 20,
+) -> None:
     with zipfile.ZipFile(source_docx, "r") as source_zip:
         items = source_zip.infolist()
         payloads = {item.filename: source_zip.read(item.filename) for item in items}
@@ -85,10 +100,15 @@ def copy_docx_without_pdf_unsafe_runs(source_docx: Path, target_docx: Path) -> N
     document_name = "word/document.xml"
     if document_name in payloads:
         document_text = payloads[document_name].decode("utf-8", errors="ignore")
-        document_text, icons_changed = remove_contact_icon_runs(document_text)
+        icons_changed = False
+        if strip_contact_icons:
+            document_text, icons_changed = remove_contact_icon_runs(document_text)
         document_text, background_changed = remove_background_runs(document_text)
         document_text, contact_text_changed = normalize_contact_text_for_pdf(document_text)
-        document_text, body_font_changed = shrink_mngp_kp_body_for_pdf(document_text)
+        document_text, body_font_changed = shrink_mngp_kp_body_for_pdf(
+            document_text,
+            max_body_font_half_points=max_body_font_half_points,
+        )
         if background_changed or icons_changed or contact_text_changed or body_font_changed:
             payloads[document_name] = document_text.encode("utf-8")
 
@@ -97,8 +117,8 @@ def copy_docx_without_pdf_unsafe_runs(source_docx: Path, target_docx: Path) -> N
             target_zip.writestr(item, payloads[item.filename])
 
 
-def shrink_mngp_kp_body_for_pdf(document_text: str) -> tuple[str, bool]:
-    """Make only the MNGP KP body compact for PDF export.
+def shrink_mngp_kp_body_for_pdf(document_text: str, *, max_body_font_half_points: int = 20) -> tuple[str, bool]:
+    """Make the KP body compact for PDF export.
 
     The signature/contact area uses anchored objects and provider-specific PDF
     postprocessing, so changing that area tends to move the stamp/contact block.
@@ -116,44 +136,32 @@ def shrink_mngp_kp_body_for_pdf(document_text: str) -> tuple[str, bool]:
     ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     paragraphs = root.xpath(".//w:p", namespaces=ns)
     texts = ["".join(paragraph.xpath(".//w:t/text()", namespaces=ns)).strip() for paragraph in paragraphs]
-    full_text = "\n".join(texts).casefold()
-    if (
-        "\u043a\u043e\u043c\u043c\u0435\u0440\u0447\u0435\u0441\u043a\u043e\u0435 \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u0435".casefold()
-        not in full_text
-        or "\u043c\u0435\u0441\u0442\u043d\u044b\u0445 \u043d\u043e\u0440\u043c\u0430\u0442\u0438\u0432\u043e\u0432 \u0433\u0440\u0430\u0434\u043e\u0441\u0442\u0440\u043e\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0433\u043e \u043f\u0440\u043e\u0435\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f"
-        not in full_text
-    ):
+    body_range = _find_kp_body_paragraph_range(texts)
+    if body_range is None:
         return document_text, False
-
-    start_index = None
-    for index, text in enumerate(texts):
-        lowered = text.casefold()
-        if (
-            "\u043e\u043e\u043e \u00ab\u043f\u0430\u0440\u0430\u043b\u043b\u0435\u043b\u044c\u043d\u044b\u0435 \u0440\u0435\u0448\u0435\u043d\u0438\u044f\u00bb" in lowered
-            and "\u043f\u0440\u0435\u0434\u043b\u0430\u0433\u0430\u0435\u0442 \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u044c \u0440\u0430\u0431\u043e\u0442\u044b" in lowered
-        ):
-            start_index = index
-            break
-    if start_index is None:
-        return document_text, False
-
-    end_index = None
-    for index in range(start_index, len(texts)):
-        lowered = texts[index].casefold()
-        if lowered.startswith(
-            "\u0441\u0440\u043e\u043a \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044f \u043a\u043e\u043c\u043c\u0435\u0440\u0447\u0435\u0441\u043a\u043e\u0433\u043e \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u044f:"
-        ):
-            end_index = index
-            break
-        if lowered.startswith("\u0441 \u0443\u0432\u0430\u0436\u0435\u043d\u0438\u0435\u043c"):
-            end_index = index - 1
-            break
+    start_index, end_index = body_range
     if end_index is None or end_index < start_index:
         return document_text, False
 
     changed = False
-    size_value = "20"  # Word stores font size in half-points: 20 = 10 pt.
+    size_value = str(max(14, min(24, int(max_body_font_half_points))))  # Word stores font size in half-points.
     for paragraph in paragraphs[start_index : end_index + 1]:
+        ppr = paragraph.find("w:pPr", namespaces=ns)
+        if ppr is None:
+            ppr = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr")
+            paragraph.insert(0, ppr)
+            changed = True
+        spacing = ppr.find("w:spacing", namespaces=ns)
+        if spacing is None:
+            spacing = etree.Element("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}spacing")
+            ppr.append(spacing)
+            changed = True
+        for attr, value in (("before", "0"), ("after", "0")):
+            key = f"{{http://schemas.openxmlformats.org/wordprocessingml/2006/main}}{attr}"
+            if spacing.get(key) != value:
+                spacing.set(key, value)
+                changed = True
+
         for run in paragraph.xpath(".//w:r[w:t]", namespaces=ns):
             rpr = run.find("w:rPr", namespaces=ns)
             if rpr is None:
@@ -174,6 +182,39 @@ def shrink_mngp_kp_body_for_pdf(document_text: str) -> tuple[str, bool]:
         return document_text, False
     return etree.tostring(root, encoding="unicode"), True
 
+
+def _find_kp_body_paragraph_range(texts: list[str]) -> tuple[int, int] | None:
+    lowered_texts = [text.casefold() for text in texts]
+    full_text = "\n".join(lowered_texts)
+    title_token = "\u043a\u043e\u043c\u043c\u0435\u0440\u0447\u0435\u0441\u043a\u043e\u0435 \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0435\u043d\u0438\u0435"
+    if title_token not in full_text:
+        return None
+
+    start_index = None
+    for index, lowered in enumerate(lowered_texts):
+        if (
+            "\u043e\u043e\u043e \u00ab\u043f\u0430\u0440\u0430\u043b\u043b\u0435\u043b\u044c\u043d\u044b\u0435 \u0440\u0435\u0448\u0435\u043d\u0438\u044f\u00bb" in lowered
+            and "\u043f\u0440\u0435\u0434\u043b\u0430\u0433\u0430\u0435\u0442 \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u044c \u0440\u0430\u0431\u043e\u0442\u044b" in lowered
+        ):
+            start_index = index
+            break
+
+    if start_index is None:
+        for index, lowered in enumerate(lowered_texts):
+            if title_token in lowered:
+                start_index = min(index + 1, len(texts) - 1)
+                break
+
+    if start_index is None:
+        return None
+
+    end_index = len(texts) - 1
+    for index in range(start_index, len(texts)):
+        lowered = lowered_texts[index].strip()
+        if lowered.startswith("\u0441 \u0443\u0432\u0430\u0436\u0435\u043d\u0438\u0435\u043c"):
+            end_index = index - 1
+            break
+    return start_index, end_index
 
 def remove_contact_icon_runs(document_text: str) -> tuple[str, bool]:
     changed = False
@@ -272,9 +313,9 @@ def apply_pdf_safe_postprocess(pdf_path: Path, plan: PdfSafePlan) -> None:
     if not plan.should_overlay_kp_background:
         return
     source = plan.template_docx if plan.template_docx and plan.template_docx.exists() else plan.source_docx
-    backgrounds = extract_kp_backgrounds(source)
-    icons = extract_kp_contact_icons(plan.source_docx)
-    if len(icons) < 2 and source != plan.source_docx:
+    backgrounds = extract_kp_backgrounds(source) if plan.should_overlay_kp_background else []
+    icons = extract_kp_contact_icons(plan.source_docx) if plan.should_overlay_kp_contact_icons else []
+    if plan.should_overlay_kp_contact_icons and len(icons) < 2 and source != plan.source_docx:
         template_icons = extract_kp_contact_icons(source)
         if len(template_icons) > len(icons):
             icons = template_icons

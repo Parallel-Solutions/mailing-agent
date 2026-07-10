@@ -7,14 +7,29 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-from src.generator.generation.document_builder import (
-    CONTRACT_TEMPLATE_FILENAME,
-    KP_TEMPLATE_FILENAME,
-    KP_TEMPLATE_PDF_FILENAME,
-    document_mode_kinds,
-)
 from src.generator.generation.excel_io import load_rows
-from src.jobs import resolve_job_paths, save_agent_state
+from src.generator.generation.template_profile import analyze_docx_style_profile
+
+KP_TEMPLATE_FILENAME = "kp_template_source.docx"
+KP_TEMPLATE_PDF_FILENAME = "kp_template_source.pdf"
+CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
+DOCUMENT_MODE_KP = "kp"
+DOCUMENT_MODE_CONTRACT = "contract"
+DOCUMENT_MODE_BOTH = "both"
+
+
+def resolve_job_paths(job_id: str | None):
+    from src.jobs.storage import resolve_job_paths as _resolve_job_paths
+
+    return _resolve_job_paths(job_id)
+
+def _document_mode_kinds(value: str | None) -> tuple[str, ...]:
+    mode = str(value or DOCUMENT_MODE_BOTH).strip().lower()
+    if mode == DOCUMENT_MODE_KP:
+        return ("kp",)
+    if mode == DOCUMENT_MODE_CONTRACT:
+        return ("contract",)
+    return ("kp", "contract")
 
 
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -199,6 +214,7 @@ def _analyze_docx_template(path: Path, *, kind: str) -> dict[str, Any]:
         "placeholders": sorted(placeholders),
         "text_preview": all_text[:MAX_TEXT_CHARS],
         "blocks": blocks[:MAX_TEXT_BLOCKS],
+        "style_profile": analyze_docx_style_profile(path),
     }
 
 
@@ -247,7 +263,7 @@ def analyze_template_file(path: Path, *, kind: str) -> dict[str, Any]:
 
 
 def _template_candidates(templates_dir: Path, document_mode: str | None) -> list[tuple[str, Path]]:
-    requested_kinds = set(document_mode_kinds(document_mode))
+    requested_kinds = set(_document_mode_kinds(document_mode))
     candidates: list[tuple[str, Path]] = []
     if "kp" in requested_kinds:
         docx_path = templates_dir / KP_TEMPLATE_FILENAME
@@ -287,6 +303,81 @@ def _sample_data_context(data_xlsx_path: Path) -> dict[str, Any]:
         "sample_rows": sample_rows,
     }
 
+FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "ADM": ("ADM_NAME", "ADM_NAME_1", "Полное название администрации", "Администрация"),
+    "ADM_NAME": ("ADM", "ADM_NAME_1", "Полное название администрации", "Администрация"),
+    "ADM_NAME_1": ("ADM_NAME", "ADM", "Полное название администрации", "Администрация"),
+    "MUN_NAME": ("MUN_NAME_1", "MUN_NAME_2", "Муниципальное образование", "МО"),
+    "MUN_NAME_1": ("MUN_NAME", "MUN_NAME_2", "Муниципальное образование", "МО"),
+    "MUN_NAME_2": ("MUN_NAME", "MUN_NAME_1", "Муниципальное образование", "МО"),
+    "MUN_R_NAME": ("MUN_R_NAME_1", "Муниципальный район", "Район", "Округ"),
+    "MUN_R_NAME_1": ("MUN_R_NAME", "Муниципальный район", "Район", "Округ"),
+    "SUB_RF": ("Субъект РФ", "Регион", "Область", "Край", "Республика"),
+    "HEAD_FIO": ("Глава МО", "Руководитель", "ФИО", "HEAD_FIO_SHORT"),
+    "HEAD_FIO_SHORT": ("HEAD_FIO", "Глава МО", "Руководитель", "ФИО"),
+    "EMAIL_OSN": ("EMAIL", "E-MAIL", "Эл. Адрес (основной)", "Почта"),
+    "EMAIL_DOP": ("Эл. Адрес (доп)", "Доп почта", "Резерв"),
+    "TEL_OSN": ("Телефон", "Телефон основной"),
+    "TEL_DOP": ("Телефон (доп)", "Доп телефон"),
+}
+
+
+def _norm_token(value: str) -> str:
+    return re.sub(r"[^0-9A-ZА-ЯЁ]+", "", str(value or "").upper())
+
+
+def _mapping_suggestions(placeholders: list[str], headers: list[str]) -> list[dict[str, Any]]:
+    normalized_headers = {_norm_token(header): header for header in headers}
+    result: list[dict[str, Any]] = []
+    for placeholder in placeholders:
+        normalized_placeholder = _norm_token(placeholder)
+        candidates: list[dict[str, Any]] = []
+        if normalized_placeholder in normalized_headers:
+            candidates.append({"column": normalized_headers[normalized_placeholder], "confidence": 1.0, "reason": "exact_placeholder_match"})
+        for alias in FIELD_ALIASES.get(placeholder, ()):
+            normalized_alias = _norm_token(alias)
+            if normalized_alias in normalized_headers:
+                candidates.append({"column": normalized_headers[normalized_alias], "confidence": 0.85, "reason": "known_alias"})
+        if not candidates:
+            for header in headers:
+                header_norm = _norm_token(header)
+                if not header_norm:
+                    continue
+                if normalized_placeholder and (normalized_placeholder in header_norm or header_norm in normalized_placeholder):
+                    candidates.append({"column": header, "confidence": 0.55, "reason": "partial_name_match"})
+        unique_candidates: list[dict[str, Any]] = []
+        seen = set()
+        for item in sorted(candidates, key=lambda candidate: float(candidate.get("confidence") or 0), reverse=True):
+            column = str(item.get("column") or "")
+            if column in seen:
+                continue
+            seen.add(column)
+            unique_candidates.append(item)
+        result.append({
+            "placeholder": placeholder,
+            "status": "mapped" if unique_candidates else "needs_review",
+            "candidates": unique_candidates[:5],
+        })
+    return result
+
+
+def _normalization_plan(templates: list[dict[str, Any]]) -> dict[str, Any]:
+    kp_template = next((template for template in templates if template.get("kind") == "kp" and template.get("exists")), None)
+    profile = kp_template.get("style_profile") if isinstance(kp_template, dict) else {}
+    risks = list(profile.get("layout_risks") or []) if isinstance(profile, dict) else []
+    if kp_template and kp_template.get("format") != "docx":
+        risks.append("kp_template_is_not_docx")
+    return {
+        "applies_to": "kp",
+        "renderer": "docx_template_pdf_fit",
+        "style_source": kp_template.get("filename") if kp_template else "",
+        "one_page_required": True,
+        "image_policy": "preserve_template_layout",
+        "preview_required": True,
+        "mass_generation_requires_approval": True,
+        "risks": sorted(set(risks)),
+    }
+
 
 def build_template_analysis_context(
     *,
@@ -307,7 +398,8 @@ def build_template_analysis_context(
         }
     )
     data = _sample_data_context(paths.data_xlsx)
-    headers = set(data.get("headers") or [])
+    header_list = [str(header) for header in data.get("headers") or []]
+    headers = set(header_list)
     missing_header_matches = [placeholder for placeholder in placeholders if placeholder not in headers]
     return {
         "version": 1,
@@ -319,6 +411,8 @@ def build_template_analysis_context(
         "data": data,
         "all_placeholders": placeholders,
         "placeholders_without_same_named_column": missing_header_matches,
+        "field_mapping_suggestions": _mapping_suggestions(placeholders, header_list),
+        "normalization_plan": _normalization_plan(templates),
         "guidance": (
             "Use this as read-only template context. Propose a mapping/profile first; "
             "do not claim that files were edited until a deterministic tool applies changes."
@@ -327,4 +421,6 @@ def build_template_analysis_context(
 
 
 def save_template_analysis_context(context: dict[str, Any], *, job_id: str | None) -> dict[str, Any]:
+    from src.jobs.state import save_agent_state
+
     return save_agent_state("template_analysis", context, job_id)

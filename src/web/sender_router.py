@@ -12,6 +12,7 @@ from src.jobs.audit import append_audit_event
 from src.web.errors import internal_server_error
 from src.web.request_models import ChatRequest, JobScopedRequest, LimitRequest, SenderRunRequest
 from src.web.responses import ok_response
+from src.web.consent_sales_service import build_sales_consent_requests
 
 
 WEBHOOK_DEFAULT_MAX_BODY_BYTES = 256 * 1024
@@ -275,6 +276,20 @@ def create_sender_router(
                 refresh_wait=refresh_wait,
             ),
         }
+
+    @router.get("/api/consents/sales-requests")
+    async def consent_sales_requests(
+        job_id: str | None = None,
+        include_all: bool = False,
+        principal: object = Depends(check_auth),
+    ):
+        ensure_job_access(job_id, principal, allow_missing=True)
+        try:
+            result = build_sales_consent_requests(job_id, include_all=include_all)
+        except Exception as exc:
+            logger.exception("consent_sales_requests_failed", job_id=job_id)
+            raise internal_server_error("Не удалось получить заявки по согласиям.") from exc
+        return {"status": "ok", "result": result}
 
     @router.get("/api/webhooks/unisender-go")
     async def unisender_go_webhook_health():

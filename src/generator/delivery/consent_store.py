@@ -372,6 +372,16 @@ def public_consent_url(token: str) -> str:
     return f"{base_url}/consent/confirm/{token}"
 
 
+def _row_contact_snapshot(row: dict[str, Any]) -> dict[str, str]:
+    return {
+        "adm_name": _safe_text(row.get("ADM_NAME")),
+        "email_osn": _safe_text(row.get("EMAIL_OSN")),
+        "email_dop": _safe_text(row.get("EMAIL_DOP")),
+        "tel_osn": _safe_text(row.get("TEL_OSN")),
+        "tel_dop": _safe_text(row.get("TEL_DOP")),
+    }
+
+
 def prepare_consent_request(
     *,
     job_id: str | None,
@@ -395,6 +405,7 @@ def prepare_consent_request(
         effective_sender_email = _safe_text(sender_email)
         effective_campaign_name = _safe_text(campaign_name)
         owner_metadata = _job_owner_metadata(job_id)
+        contact_snapshot = _row_contact_snapshot(row)
         expires_at = _consent_expires_at(now)
         for record in records:
             if not _record_matches(record, row_id=row_id, recipient=recipient):
@@ -409,6 +420,7 @@ def prepare_consent_request(
             record.setdefault("token", secrets.token_urlsafe(24))
             record["job_id"] = _safe_text(job_id)
             record["recipient_key"] = _recipient_key(recipient)
+            record.update(contact_snapshot)
             if owner_metadata.get("tenant_id"):
                 record["tenant_id"] = owner_metadata["tenant_id"]
             if owner_metadata.get("owner_username"):
@@ -435,6 +447,7 @@ def prepare_consent_request(
             "job_id": _safe_text(job_id),
             "row_id": _safe_text(row_id),
             "mun_name": _safe_text(row.get("MUN_NAME")),
+            **contact_snapshot,
             "recipient": _safe_text(recipient),
             "recipient_key": _recipient_key(recipient),
             "tenant_id": _safe_text(owner_metadata.get("tenant_id")),

@@ -657,6 +657,8 @@ def finalize_generated_files(
             pdf_docx_dir.mkdir(parents=True, exist_ok=True)
             safe_docx_to_original: dict[Path, Path] = {}
             safe_plans = {}
+            safe_jobs = {}
+            safe_template_docx = {}
             for index, job in enumerate(job_batch, start=1):
                 source_docx = job["staged_docx"]
                 if not source_docx.exists():
@@ -671,6 +673,8 @@ def finalize_generated_files(
                 )
                 safe_docx_to_original[safe_docx] = source_docx
                 safe_plans[safe_docx] = plan
+                safe_jobs[safe_docx] = job
+                safe_template_docx[safe_docx] = kp_template_path if kp_template_path and kp_template_path.exists() else None
             pdf_safe_map = convert_docx_batch(
                 list(safe_docx_to_original.keys()),
                 pdf_target_dir,
@@ -681,9 +685,29 @@ def finalize_generated_files(
             )
             pdf_map = {}
             for safe_docx, created_pdf in pdf_safe_map.items():
+                job = safe_jobs.get(safe_docx, {})
+                original_docx = safe_docx_to_original[safe_docx]
                 if created_pdf and created_pdf.exists():
                     apply_pdf_safe_postprocess(created_pdf, safe_plans[safe_docx])
-                pdf_map[safe_docx_to_original[safe_docx]] = created_pdf
+                    if _kp_pdf_validation_reason(created_pdf, file_kind=str(job.get("file_kind") or "")) == "page_count":
+                        fitted_pdf = _try_refit_one_page_kp_pdf(
+                            source_docx=original_docx,
+                            pdf_output_dir=pdf_target_dir,
+                            work_docx_dir=pdf_docx_dir,
+                            template_docx=safe_template_docx.get(safe_docx),
+                            file_kind=str(job.get("file_kind") or ""),
+                            chunk_size=1,
+                            worker_count=1,
+                            timing_callback=timing_callback,
+                        )
+                        if fitted_pdf is not None:
+                            if created_pdf.exists() and created_pdf != fitted_pdf:
+                                try:
+                                    created_pdf.unlink()
+                                except OSError:
+                                    pass
+                            created_pdf = fitted_pdf
+                pdf_map[original_docx] = created_pdf
             _finalize_generated_jobs(
                 job_batch,
                 results,
@@ -704,6 +728,77 @@ def finalize_generated_files(
         result.pop("generated_files", None)
         result.pop("pdf_context", None)
 
+
+
+PDF_REFIT_BODY_FONT_HALF_POINTS = (19, 18, 17, 16, 15, 14)
+
+
+def _kp_pdf_validation_reason(path: Path, *, file_kind: str | None = None) -> str:
+    if str(file_kind or "").lower() != "kp" and not is_kp_docx(path.with_suffix(".docx"), file_kind=file_kind):
+        return ""
+    try:
+        return str(validate_kp_pdf(path).get("reason") or "")
+    except Exception:
+        return ""
+
+
+def _try_refit_one_page_kp_pdf(
+    *,
+    source_docx: Path,
+    pdf_output_dir: Path,
+    work_docx_dir: Path,
+    template_docx: Path | None,
+    file_kind: str | None = "kp",
+    chunk_size: int = 1,
+    worker_count: int = 1,
+    timing_callback: Any | None = None,
+) -> Path | None:
+    if str(file_kind or "").lower() != "kp":
+        return None
+    if not source_docx.exists():
+        return None
+
+    work_docx_dir.mkdir(parents=True, exist_ok=True)
+    for half_points in PDF_REFIT_BODY_FONT_HALF_POINTS:
+        fit_docx = work_docx_dir / f"{source_docx.stem}_fit_{half_points}.docx"
+        plan = prepare_docx_for_pdf_export(
+            source_docx,
+            fit_docx,
+            file_kind=file_kind,
+            template_docx=template_docx if template_docx and template_docx.exists() else None,
+            max_body_font_half_points=half_points,
+        )
+        pdf_map = convert_docx_batch(
+            [fit_docx],
+            pdf_output_dir,
+            chunk_size=max(1, chunk_size),
+            worker_count=max(1, min(worker_count, 1)),
+            timing_callback=timing_callback,
+        )
+        created_pdf = pdf_map.get(fit_docx)
+        if created_pdf and created_pdf.exists():
+            apply_pdf_safe_postprocess(created_pdf, plan)
+            validation = validate_kp_pdf(created_pdf)
+            if validation.get("ok"):
+                logger.info(
+                    "kp_pdf_refit_succeeded",
+                    source_docx=source_docx.name,
+                    half_points=half_points,
+                    pdf_path=str(created_pdf),
+                )
+                return created_pdf
+            logger.info(
+                "kp_pdf_refit_not_enough",
+                source_docx=source_docx.name,
+                half_points=half_points,
+                reason=validation.get("reason"),
+                page_count=validation.get("page_count"),
+            )
+            try:
+                created_pdf.unlink()
+            except OSError:
+                pass
+    return None
 
 def _is_valid_pdf(path: Path) -> bool:
     if not path.exists():
@@ -839,6 +934,7 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
     pdf_work_dir.mkdir(parents=True, exist_ok=True)
 
     staged_to_final: dict[Path, Path] = {}
+    staged_to_source: dict[Path, Path] = {}
     pdf_safe_plans = {}
     for index, source_docx in enumerate(pending, start=1):
         staged_docx = staging_dir / f"{index:06d}_{source_docx.stem}.docx"
@@ -848,6 +944,7 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
             template_docx=kp_template_path if kp_template_path.exists() else None,
         )
         staged_to_final[staged_docx] = source_docx.with_suffix(".pdf")
+        staged_to_source[staged_docx] = source_docx
         pdf_safe_plans[staged_docx] = plan
 
     try:
@@ -868,12 +965,29 @@ def finalize_output_pdfs_for_job(job_id: str | None = None) -> dict[str, Any]:
                     final_pdf.unlink()
                 shutil.move(str(created_pdf), str(final_pdf))
             if not _is_valid_kp_pdf(final_pdf):
-                failed.append(str(final_pdf))
-                try:
-                    if final_pdf.exists():
-                        final_pdf.unlink()
-                except OSError:
-                    pass
+                validation = validate_kp_pdf(final_pdf) if final_pdf.exists() else {"reason": "missing"}
+                if validation.get("reason") == "page_count":
+                    fitted_pdf = _try_refit_one_page_kp_pdf(
+                        source_docx=staged_to_source[staged_docx],
+                        pdf_output_dir=pdf_work_dir,
+                        work_docx_dir=staging_dir / "_fit",
+                        template_docx=kp_template_path if kp_template_path.exists() else None,
+                        file_kind="kp",
+                        chunk_size=1,
+                        worker_count=1,
+                        timing_callback=_report_pdf_backend_timing,
+                    )
+                    if fitted_pdf is not None:
+                        if final_pdf.exists():
+                            final_pdf.unlink()
+                        shutil.move(str(fitted_pdf), str(final_pdf))
+                if not _is_valid_kp_pdf(final_pdf):
+                    failed.append(str(final_pdf))
+                    try:
+                        if final_pdf.exists():
+                            final_pdf.unlink()
+                    except OSError:
+                        pass
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
         shutil.rmtree(pdf_work_dir, ignore_errors=True)
@@ -1628,10 +1742,3 @@ def _current_client_from_row(row: dict[str, Any], *, index: int, total: int) -> 
         "row_id": _safe_id(row.get("ID")),
         "name": label,
     }
-
-
-
-
-
-
-
