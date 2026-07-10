@@ -2070,6 +2070,238 @@
     flex-wrap: wrap;
   }
 
+  #file-preview-modal {
+    padding: 12px;
+    align-items: stretch;
+    justify-content: stretch;
+  }
+
+  .file-preview-modal-card {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .file-preview-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    padding-bottom: 4px;
+  }
+
+  .file-preview-head .modal-title {
+    font-size: 22px;
+    margin-bottom: 4px;
+  }
+
+  .file-preview-head .modal-sub {
+    margin-bottom: 0;
+  }
+
+  .file-preview-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .file-preview-loading,
+  .file-preview-loading-inline,
+  .file-preview-empty {
+    color: #58713f;
+    font-size: 13px;
+    padding: 12px;
+  }
+
+  .file-preview-pdf-frame.is-visible,
+  .file-preview-docx-container.is-visible,
+  .file-preview-text.is-visible,
+  .file-preview-loading.is-visible {
+    display: block !important;
+  }
+
+  .file-preview-table-wrap.is-visible {
+    display: flex !important;
+  }
+
+  .file-preview-pdf-frame,
+  .file-preview-archive-frame {
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+    border: 1px solid #d8e4c8;
+    border-radius: 10px;
+    background: #fff;
+  }
+
+  .file-preview-docx-container {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    border: 1px solid #d8e4c8;
+    border-radius: 10px;
+    background: #fff;
+    padding: 12px;
+  }
+
+  .file-preview-body > [data-preview-panel] {
+    display: none !important;
+  }
+
+  .file-preview-body > [data-preview-panel].is-visible {
+    display: flex !important;
+  }
+
+  .file-preview-archive-layout {
+    display: none;
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    gap: 12px;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .file-preview-archive-layout.is-visible {
+    display: grid !important;
+  }
+
+  .file-preview-archive-search {
+    grid-column: 1;
+    grid-row: 1;
+    width: 100%;
+    border: 1px solid #d8e4c8;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .file-preview-archive-list {
+    grid-column: 1;
+    grid-row: 2;
+    overflow: auto;
+    border: 1px solid #d8e4c8;
+    border-radius: 10px;
+    background: #fbfdf8;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .file-preview-archive-item {
+    text-align: left;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: #fff;
+    padding: 8px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .file-preview-archive-item.active,
+  .file-preview-archive-item:hover {
+    border-color: #8fbf63;
+    background: #f3f9ea;
+  }
+
+  .file-preview-archive-viewer {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .file-preview-table-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .file-preview-table-scroll {
+    overflow: auto;
+    border: 1px solid #d8e4c8;
+    border-radius: 10px;
+    background: #fff;
+  }
+
+  .file-preview-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .file-preview-table th,
+  .file-preview-table td {
+    border-bottom: 1px solid #e6efd8;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .file-preview-table th {
+    position: sticky;
+    top: 0;
+    background: #e8f3d8;
+    font-weight: 700;
+    color: #2a4a0e;
+    z-index: 1;
+  }
+
+  .file-preview-table tbody tr:nth-child(even) {
+    background: #f8fbf2;
+  }
+
+  .file-preview-sheet-tabs,
+  .file-preview-pagination,
+  .file-preview-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .file-preview-sheet-tab.active {
+    border-color: #8fbf63;
+    background: #edf6df;
+  }
+
+  .file-preview-text {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    border: 1px solid #d8e4c8;
+    border-radius: 10px;
+    background: #fff;
+    padding: 16px;
+    white-space: pre-wrap;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .file-preview-actions {
+    justify-content: flex-end;
+  }
+
+  .chat-downloads-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .chat-download-preview {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+  }
+
   .chat-structured {
     display: flex;
     flex-direction: column;
@@ -2240,6 +2472,14 @@
     background: #fff;
     box-shadow: 0 18px 55px rgba(32, 46, 20, 0.18);
     padding: 22px;
+  }
+
+  #file-preview-modal .file-preview-modal-card {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+    max-width: none;
+    padding: 24px;
+    border-radius: 14px;
   }
 
   .modal-title {
@@ -2915,7 +3155,9 @@
           <div class="module-actions-primary">
             <button class="btn-primary" id="g-run" data-process-lock="true" onclick="startDocumentsPipeline()">Подготовить документы</button>
             <button class="btn-outline" id="g-pause" onclick="pauseDocumentsPipeline()" disabled>Остановить</button>
+            <button class="btn-outline" id="g-preview-output" data-process-lock="true" onclick="openFilePreview('output')" disabled>Предпросмотр документов</button>
             <button class="btn-outline" id="g-download-output" data-process-lock="true" onclick="downloadWithJob('/api/download/output')" disabled>Скачать документы</button>
+            <button class="btn-outline" id="ph-preview-report" data-process-lock="true" onclick="openFilePreview('correction-report')" disabled>Предпросмотр отчёта</button>
             <button class="btn-outline" id="ph-download-report" data-process-lock="true" onclick="downloadWithJob('/api/download/correction-report')" disabled>Скачать отчёт</button>
           </div>
         </div>
@@ -3072,7 +3314,9 @@
           <div class="module-actions" style="margin-top:12px">
             <div class="module-actions-primary">
               <button type="button" class="btn-primary" id="s-run" data-process-lock="true">Проверить перед отправкой</button>
+              <button type="button" class="btn-outline" id="s-preview-xlsx" data-process-lock="true" onclick="openFilePreview('data-xlsx')" disabled>Предпросмотр таблицы</button>
               <button type="button" class="btn-outline" id="s-download-xlsx" data-process-lock="true" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать таблицу с результатами</button>
+              <button type="button" class="btn-outline" id="s-preview-delivery-report" data-process-lock="true" onclick="openFilePreview('sender-delivery-report')" disabled>Предпросмотр отчёта</button>
               <button type="button" class="btn-outline" id="s-delivery-report" data-process-lock="true" onclick="downloadWithJob('/api/download/sender-delivery-report')" disabled>Скачать отчёт отправки</button>
             </div>
           </div>
@@ -3168,7 +3412,9 @@
       </div>
 
       <div style="display:flex; gap:8px; flex-wrap:wrap">
+        <button class="btn-outline" id="status-preview-data" data-process-lock="true" onclick="openFilePreview('data-xlsx')" disabled>Предпросмотр таблицы</button>
         <button class="btn-outline" id="status-download-data" data-process-lock="true" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать таблицу текущей отправки</button>
+        <button class="btn-outline" id="status-preview-report" data-process-lock="true" onclick="openFilePreview('sender-delivery-report')" disabled>Предпросмотр отчёта</button>
         <button class="btn-outline" id="status-download-report" data-process-lock="true" onclick="downloadWithJob('/api/download/sender-delivery-report')" disabled>Скачать отчёт текущей отправки</button>
         <button class="btn-outline" id="status-refresh-button" data-process-lock="true" onclick="refreshCurrentJobStatusScreen()">Обновить статусы</button>
       </div>
@@ -3291,10 +3537,41 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="file-preview-modal" role="dialog" aria-modal="true" aria-labelledby="file-preview-modal-title" onclick="closeFilePreviewModal()">
+  <div class="modal-card file-preview-modal-card" onclick="event.stopPropagation()">
+    <div class="file-preview-head">
+      <div>
+        <div class="modal-title" id="file-preview-modal-title">Предпросмотр файла</div>
+        <div class="modal-sub" id="file-preview-modal-sub"></div>
+      </div>
+      <button class="btn-outline" type="button" onclick="closeFilePreviewModal()">Закрыть</button>
+    </div>
+    <div class="file-preview-body">
+      <div class="file-preview-loading" id="file-preview-loading" data-preview-panel hidden>Загружаю предпросмотр…</div>
+      <div class="file-preview-archive-layout" id="file-preview-archive-layout" data-preview-panel hidden>
+        <input class="file-preview-archive-search" id="file-preview-archive-search" type="search" placeholder="Поиск по документам...">
+        <div class="file-preview-archive-list" id="file-preview-archive-list"></div>
+        <div class="file-preview-archive-viewer" id="file-preview-archive-viewer"></div>
+      </div>
+      <iframe class="file-preview-pdf-frame" id="file-preview-pdf-frame" data-preview-panel title="Предпросмотр PDF" hidden></iframe>
+      <div class="file-preview-docx-container" id="file-preview-docx-container" data-preview-panel hidden></div>
+      <div class="file-preview-table-wrap" id="file-preview-table-wrap" data-preview-panel hidden>
+        <div class="file-preview-sheet-tabs" id="file-preview-sheet-tabs"></div>
+        <div class="file-preview-table-scroll" id="file-preview-table-scroll"></div>
+        <div class="file-preview-pagination" id="file-preview-table-pagination"></div>
+      </div>
+      <pre class="file-preview-text" id="file-preview-text" data-preview-panel hidden></pre>
+    </div>
+    <div class="file-preview-actions">
+      <a class="btn-primary" id="file-preview-download-link" href="#" download>Скачать</a>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
-<script src="/public/documents-ui.js"></script>
-<script src="/public/sender-ui.js"></script>
+<script src="/public/documents-ui.js?v=5"></script>
+<script src="/public/sender-ui.js?v=5"></script>
 <script>
   const chatSessions = {};
   const activeChatRequests = {};
@@ -3692,6 +3969,7 @@
       if (chatId === 'g-chat') {
         removeNoisyDocumentsChatMessages(messages);
       }
+      ensurePreviewButtons(messages);
       messages.scrollTop = messages.scrollHeight;
     });
   }
@@ -4594,9 +4872,15 @@
     }
 
     const dataButton = document.getElementById('status-download-data');
-    if (dataButton) dataButton.disabled = !currentJobId || numbers.total <= 0;
+    const previewDataButton = document.getElementById('status-preview-data');
+    const dataEnabled = !!currentJobId && numbers.total > 0;
+    if (dataButton) dataButton.disabled = !dataEnabled;
+    if (previewDataButton) previewDataButton.disabled = !dataEnabled;
     const reportButton = document.getElementById('status-download-report');
-    if (reportButton) reportButton.disabled = !currentJobId || numbers.sent <= 0;
+    const previewReportButton = document.getElementById('status-preview-report');
+    const reportEnabled = !!currentJobId && numbers.sent > 0;
+    if (reportButton) reportButton.disabled = !reportEnabled;
+    if (previewReportButton) previewReportButton.disabled = !reportEnabled;
   }
 
   function setDeliveryRefreshState(state = 'idle', message = '') {
@@ -5833,6 +6117,102 @@
     return 'Не получилось связаться с агентом. Попробуйте ещё раз чуть позже.';
   }
 
+  function normalizeDownloadUrlPath(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    try {
+      if (/^https?:\/\//i.test(raw)) {
+        return new URL(raw).pathname;
+      }
+    } catch (e) {}
+    return raw.split('?')[0].split('#')[0];
+  }
+
+  const DOWNLOAD_PREVIEW_KINDS = {
+    '/api/download/output': 'output',
+    '/api/download/data-xlsx': 'data-xlsx',
+    '/api/parser/download-result': 'parser-result',
+    '/api/parser/download-failed': 'parser-failed',
+    '/api/download/correction-report': 'correction-report',
+    '/api/download/sender-delivery-report': 'sender-delivery-report',
+    '/api/download/sent-mail-log': 'sent-mail-log',
+    '/api/download/inflection-log': 'inflection-log',
+    '/api/download/inflection-report': 'inflection-report',
+    '/api/download/agent-memory': 'agent-memory',
+    '/api/download/agent-quarantine': 'agent-quarantine',
+    '/api/download/agent-report': 'agent-report',
+  };
+
+  function resolveDownloadPreviewKind(url, explicitKind = '') {
+    if (explicitKind) return String(explicitKind).trim();
+    const normalizedUrl = String(url || '').trim();
+    if (!normalizedUrl) return '';
+    if (typeof previewKindFromDownloadUrl === 'function') {
+      const mappedKind = previewKindFromDownloadUrl(normalizedUrl);
+      if (mappedKind) return mappedKind;
+    }
+    return DOWNLOAD_PREVIEW_KINDS[normalizeDownloadUrlPath(normalizedUrl)] || '';
+  }
+
+  function createChatPreviewButton(previewKind, options = {}) {
+    const previewButton = document.createElement('button');
+    previewButton.type = 'button';
+    previewButton.className = 'chat-download-link chat-download-preview';
+    previewButton.dataset.previewKind = previewKind;
+    previewButton.dataset.previewLabel = options.downloadLabel || '';
+    previewButton.textContent = options.previewLabel || 'Предпросмотр';
+    return previewButton;
+  }
+
+  function upgradeChatDownloadRow(row) {
+    const link = row.querySelector('a.chat-download-link[href]');
+    if (!link) return;
+    const previewKind = resolveDownloadPreviewKind(link.getAttribute('href') || link.href || '');
+    if (!previewKind) return;
+    const existingPreview = row.querySelector('.chat-download-preview');
+    if (existingPreview) {
+      if (!existingPreview.dataset.previewKind) {
+        existingPreview.dataset.previewKind = previewKind;
+      }
+      if (!existingPreview.dataset.previewLabel) {
+        existingPreview.dataset.previewLabel = link.textContent || '';
+      }
+      return;
+    }
+    row.insertBefore(createChatPreviewButton(previewKind, {
+      downloadLabel: link.textContent || '',
+    }), link);
+  }
+
+  function normalizeChatDownloadRows(container) {
+    container.querySelectorAll('a.chat-download-link[href]').forEach((link) => {
+      if (link.closest('.chat-downloads-row')) return;
+      const parent = link.parentElement;
+      if (!parent) return;
+      const row = document.createElement('div');
+      row.className = 'chat-downloads-row';
+      parent.insertBefore(row, link);
+      row.appendChild(link);
+    });
+  }
+
+  function ensurePreviewButtons(container) {
+    if (!container) return;
+    normalizeChatDownloadRows(container);
+    container.querySelectorAll('.chat-downloads-row').forEach((row) => {
+      upgradeChatDownloadRow(row);
+    });
+  }
+
+  function upgradeAllChatPreviewButtons() {
+    ['p-chat', 'g-chat', 's-chat', 'o-chat'].forEach((chatId) => {
+      ensurePreviewButtons(document.getElementById(`${chatId}-messages`));
+    });
+  }
+
+  window.ensurePreviewButtons = ensurePreviewButtons;
+  window.upgradeAllChatPreviewButtons = upgradeAllChatPreviewButtons;
+
   function appendDownloadMessage(chatId, downloads) {
     if (!Array.isArray(downloads) || !downloads.length) return;
     const messages = document.getElementById(chatId + '-messages');
@@ -5842,13 +6222,24 @@
     wrap.className = 'chat-downloads';
     downloads.forEach(item => {
       if (!item || !item.url) return;
+      const row = document.createElement('div');
+      row.className = 'chat-downloads-row';
+      const previewKind = resolveDownloadPreviewKind(item.url, item.preview_kind);
+      if (previewKind) {
+        row.appendChild(createChatPreviewButton(previewKind, {
+          previewLabel: item.preview_label || 'Предпросмотр',
+          downloadLabel: item.label || '',
+        }));
+      }
       const link = document.createElement('a');
       link.className = 'chat-download-link';
       link.href = item.url;
       link.textContent = item.label || 'Скачать файл';
-      wrap.appendChild(link);
+      row.appendChild(link);
+      wrap.appendChild(row);
     });
     if (!wrap.children.length) return;
+    ensurePreviewButtons(wrap);
     msg.appendChild(wrap);
     messages.appendChild(msg);
     messages.scrollTop = messages.scrollHeight;
@@ -8090,7 +8481,9 @@ function clearAttachedFile() {
 
   function setGeneratorDownloadEnabled(isEnabled) {
     const downloadButton = document.getElementById('g-download-output');
+    const previewButton = document.getElementById('g-preview-output');
     if (downloadButton) downloadButton.disabled = !isEnabled;
+    if (previewButton) previewButton.disabled = !isEnabled;
   }
 
   function updateDocumentsActionHints({
@@ -8477,9 +8870,13 @@ function clearAttachedFile() {
 
   function setSenderDownloadEnabled({ data = false, report = false } = {}) {
     const downloadButton = document.getElementById('s-download-xlsx');
+    const previewDataButton = document.getElementById('s-preview-xlsx');
     const reportButton = document.getElementById('s-delivery-report');
+    const previewReportButton = document.getElementById('s-preview-delivery-report');
     if (downloadButton) downloadButton.disabled = !data;
+    if (previewDataButton) previewDataButton.disabled = !data;
     if (reportButton) reportButton.disabled = !report;
+    if (previewReportButton) previewReportButton.disabled = !report;
   }
 
   function setSenderUiState(result = {}) {
@@ -8876,6 +9273,9 @@ function clearAttachedFile() {
     const snapshot = currentJobId ? loadUiState(currentJobId) : null;
     if (snapshot) {
       restoreUiState(snapshot);
+      if (typeof upgradeAllChatPreviewButtons === 'function') {
+        upgradeAllChatPreviewButtons();
+      }
       return;
     }
     if (activeScreenId) {
@@ -8884,6 +9284,14 @@ function clearAttachedFile() {
   }
 
   document.addEventListener('click', (event) => {
+    const previewButton = event.target.closest('.chat-download-preview[data-preview-kind]');
+    if (previewButton && typeof openFilePreview === 'function') {
+      event.preventDefault();
+      openFilePreview(previewButton.dataset.previewKind, {
+        label: previewButton.dataset.previewLabel || '',
+      });
+      return;
+    }
     if (!event.target.closest('.help-popover-wrap')) {
       closeAllHelpPopovers();
     }
@@ -8978,6 +9386,7 @@ function clearAttachedFile() {
     senderPreviewButton.addEventListener('click', () => handleSenderPrimaryAction());
   }
 </script>
+<script src="/public/preview-ui.js?v=5"></script>
 
 </body>
 </html>

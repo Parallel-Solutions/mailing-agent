@@ -166,13 +166,19 @@
     setText('g-label', module.label_text || '');
 
     const reportButton = document.getElementById('ph-download-report');
-    if (reportButton) reportButton.disabled = typeof actions.can_download_report === 'boolean'
-      ? !actions.can_download_report
-      : status !== 'completed';
+    const previewReportButton = document.getElementById('ph-preview-report');
+    const canDownloadReport = typeof actions.can_download_report === 'boolean'
+      ? actions.can_download_report
+      : status === 'completed';
+    if (reportButton) reportButton.disabled = !canDownloadReport;
+    if (previewReportButton) previewReportButton.disabled = !canDownloadReport;
     const outputButton = document.getElementById('g-download-output');
-    if (outputButton) outputButton.disabled = typeof actions.can_download_output === 'boolean'
-      ? !actions.can_download_output
-      : status !== 'completed';
+    const previewOutputButton = document.getElementById('g-preview-output');
+    const canDownloadOutput = typeof actions.can_download_output === 'boolean'
+      ? actions.can_download_output
+      : status === 'completed';
+    if (outputButton) outputButton.disabled = !canDownloadOutput;
+    if (previewOutputButton) previewOutputButton.disabled = !canDownloadOutput;
 
     if (typeof helpers.updateDocumentsActionHints === 'function') {
       helpers.updateDocumentsActionHints({
