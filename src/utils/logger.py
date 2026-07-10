@@ -1,5 +1,6 @@
 import structlog
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 Path("logs").mkdir(exist_ok=True)
@@ -7,7 +8,13 @@ Path("logs").mkdir(exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     handlers=[
-        logging.FileHandler("logs/app.log", encoding="utf-8"),
+        # Rotate to keep disk usage bounded (50 MB x 5 backups).
+        RotatingFileHandler(
+            "logs/app.log",
+            maxBytes=50 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        ),
         logging.StreamHandler()
     ]
 )

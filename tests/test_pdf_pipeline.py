@@ -7,7 +7,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from pypdf import PdfWriter
+
 from src.generator.generation import generator_agent, pdf_converter, pdf_template_renderer
+from src.generator.generation.pdf_quality import count_pdf_pages
+
+
+# Tests in this module mock ``convert_docx_batch`` to write placeholder bytes
+# instead of real PDFs. The production KP finalizer validates the produced PDF
+# with ``pypdf`` (single-page check) and, on failure, runs an auto-refit loop
+# that deletes the "invalid" file. Since the converter is already mocked, we
+# also stub the validator so these placeholder files are treated as valid
+# single-page KP PDFs; the refit path itself is covered by dedicated tests.
+_VALID_KP_PDF_VALIDATION = {"ok": True, "reason": "", "message": "", "page_count": 1}
 
 
 class PdfPipelineTests(unittest.TestCase):
@@ -26,6 +38,14 @@ class PdfPipelineTests(unittest.TestCase):
                 "word/document.xml",
                 '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>',
             )
+
+    def _write_real_pdf(self, path: Path, pages: int = 1) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        writer = PdfWriter()
+        for _ in range(pages):
+            writer.add_blank_page(width=595, height=842)
+        with path.open("wb") as handle:
+            writer.write(handle)
 
     def test_pdf_template_cmap_parser_does_not_invent_ranges_from_bfchar(self) -> None:
         cmap = b"""
@@ -270,6 +290,7 @@ class PdfPipelineTests(unittest.TestCase):
 
         with (
             patch.object(generator_agent, "convert_docx_batch", side_effect=fake_convert),
+            patch.object(generator_agent, "validate_kp_pdf", return_value=_VALID_KP_PDF_VALIDATION),
         ):
             generator_agent.finalize_generated_files(results, batch_pdf_dir=batch_pdf_dir, create_pdf=True)
 
@@ -347,6 +368,7 @@ class PdfPipelineTests(unittest.TestCase):
         with (
             patch.object(generator_agent, "PDF_CHUNK_SIZE", 7),
             patch.object(generator_agent, "convert_docx_batch", side_effect=fake_convert) as convert_mock,
+            patch.object(generator_agent, "validate_kp_pdf", return_value=_VALID_KP_PDF_VALIDATION),
         ):
             generator_agent.finalize_generated_files(
                 results,
@@ -396,6 +418,7 @@ class PdfPipelineTests(unittest.TestCase):
 
         with (
             patch.object(generator_agent, "convert_docx_batch", side_effect=fake_convert),
+            patch.object(generator_agent, "validate_kp_pdf", return_value=_VALID_KP_PDF_VALIDATION),
         ):
             generator_agent.finalize_generated_files(results, batch_pdf_dir=self.tmp_dir / "batch_pdf", create_pdf=True)
 
@@ -430,7 +453,10 @@ class PdfPipelineTests(unittest.TestCase):
             nonlocal progress_calls
             progress_calls += 1
 
-        with patch.object(generator_agent, "convert_docx_batch") as convert_mock:
+        with (
+            patch.object(generator_agent, "convert_docx_batch") as convert_mock,
+            patch.object(generator_agent, "validate_kp_pdf", return_value=_VALID_KP_PDF_VALIDATION),
+        ):
             generator_agent.finalize_generated_files(
                 results,
                 batch_pdf_dir=self.tmp_dir / "batch_pdf",
@@ -482,6 +508,7 @@ class PdfPipelineTests(unittest.TestCase):
             patch.object(generator_agent, "prepare_docx_for_pdf_export", side_effect=fake_prepare),
             patch.object(generator_agent, "apply_pdf_safe_postprocess", return_value=None),
             patch.object(generator_agent, "convert_docx_batch", side_effect=fake_convert),
+            patch.object(generator_agent, "validate_kp_pdf", return_value=_VALID_KP_PDF_VALIDATION),
         ):
             state = generator_agent.finalize_output_pdfs_for_job("job-test")
 
@@ -491,6 +518,182 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(state["status"], "completed")
         self.assertEqual(state["pdf_total"], 1)
         self.assertEqual(state["pdf_processed"], 1)
+
+    def test_try_refit_returns_none_for_non_kp_file_kind(self) -> None:
+        source_docx = self.tmp_dir / "contract.docx"
+        self._write_minimal_docx(source_docx)
+
+        result = generator_agent._try_refit_one_page_kp_pdf(
+            source_docx=source_docx,
+            pdf_output_dir=self.tmp_dir / "pdf",
+            work_docx_dir=self.tmp_dir / "fit",
+            template_docx=None,
+            file_kind="contract",
+        )
+
+        self.assertIsNone(result)
+
+    def test_try_refit_returns_none_when_source_missing(self) -> None:
+        result = generator_agent._try_refit_one_page_kp_pdf(
+            source_docx=self.tmp_dir / "missing.docx",
+            pdf_output_dir=self.tmp_dir / "pdf",
+            work_docx_dir=self.tmp_dir / "fit",
+            template_docx=None,
+            file_kind="kp",
+        )
+
+        self.assertIsNone(result)
+
+    def test_try_refit_succeeds_on_later_font_size(self) -> None:
+        source_docx = self.tmp_dir / "kp.docx"
+        self._write_minimal_docx(source_docx)
+        pdf_output_dir = self.tmp_dir / "pdf"
+        work_docx_dir = self.tmp_dir / "fit"
+
+        def fake_prepare(src, target, **kwargs):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_bytes(b"docx")
+            return object()
+
+        # Fail (2 pages) until the font shrinks to 15 half-points, then fit on 1 page.
+        def fake_convert(docx_paths, output_dir, **kwargs):
+            fit_docx = docx_paths[0]
+            half_points = int(fit_docx.stem.rsplit("_", 1)[-1])
+            pdf_path = Path(output_dir) / f"{fit_docx.stem}.pdf"
+            self._write_real_pdf(pdf_path, pages=1 if half_points <= 15 else 2)
+            return {fit_docx: pdf_path}
+
+        with (
+            patch.object(generator_agent, "prepare_docx_for_pdf_export", side_effect=fake_prepare),
+            patch.object(generator_agent, "apply_pdf_safe_postprocess", return_value=None),
+            patch.object(generator_agent, "convert_docx_batch", side_effect=fake_convert),
+        ):
+            result = generator_agent._try_refit_one_page_kp_pdf(
+                source_docx=source_docx,
+                pdf_output_dir=pdf_output_dir,
+                work_docx_dir=work_docx_dir,
+                template_docx=None,
+                file_kind="kp",
+            )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result.exists())
+        self.assertTrue(generator_agent.validate_kp_pdf(result)["ok"])
+        self.assertIn("_fit_15", result.stem)
+
+    def test_try_refit_returns_none_when_all_attempts_fail(self) -> None:
+        source_docx = self.tmp_dir / "kp.docx"
+        self._write_minimal_docx(source_docx)
+
+        def fake_prepare(src, target, **kwargs):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_bytes(b"docx")
+            return object()
+
+        def fake_convert(docx_paths, output_dir, **kwargs):
+            fit_docx = docx_paths[0]
+            pdf_path = Path(output_dir) / f"{fit_docx.stem}.pdf"
+            self._write_real_pdf(pdf_path, pages=2)
+            return {fit_docx: pdf_path}
+
+        with (
+            patch.object(generator_agent, "prepare_docx_for_pdf_export", side_effect=fake_prepare),
+            patch.object(generator_agent, "apply_pdf_safe_postprocess", return_value=None),
+            patch.object(generator_agent, "convert_docx_batch", side_effect=fake_convert),
+        ):
+            result = generator_agent._try_refit_one_page_kp_pdf(
+                source_docx=source_docx,
+                pdf_output_dir=self.tmp_dir / "pdf",
+                work_docx_dir=self.tmp_dir / "fit",
+                template_docx=None,
+                file_kind="kp",
+            )
+
+        self.assertIsNone(result)
+
+    def test_try_refit_clamps_chunk_and_worker_counts(self) -> None:
+        source_docx = self.tmp_dir / "kp.docx"
+        self._write_minimal_docx(source_docx)
+        captured = {}
+
+        def fake_prepare(src, target, **kwargs):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_bytes(b"docx")
+            return object()
+
+        def fake_convert(docx_paths, output_dir, **kwargs):
+            captured["chunk_size"] = kwargs.get("chunk_size")
+            captured["worker_count"] = kwargs.get("worker_count")
+            fit_docx = docx_paths[0]
+            pdf_path = Path(output_dir) / f"{fit_docx.stem}.pdf"
+            self._write_real_pdf(pdf_path, pages=1)
+            return {fit_docx: pdf_path}
+
+        with (
+            patch.object(generator_agent, "prepare_docx_for_pdf_export", side_effect=fake_prepare),
+            patch.object(generator_agent, "apply_pdf_safe_postprocess", return_value=None),
+            patch.object(generator_agent, "convert_docx_batch", side_effect=fake_convert),
+        ):
+            generator_agent._try_refit_one_page_kp_pdf(
+                source_docx=source_docx,
+                pdf_output_dir=self.tmp_dir / "pdf",
+                work_docx_dir=self.tmp_dir / "fit",
+                template_docx=None,
+                file_kind="kp",
+                chunk_size=0,
+                worker_count=5,
+            )
+
+        self.assertEqual(captured["chunk_size"], 1)
+        self.assertEqual(captured["worker_count"], 1)
+
+    def test_finalize_output_pdfs_invokes_refit_on_page_count_failure(self) -> None:
+        output_dir = self.tmp_dir / "output"
+        batch_pdf_dir = self.tmp_dir / "batch_pdf"
+        folder = output_dir / "1_Test"
+        kp_docx = folder / "КП_МНГП_Test.docx"
+        self._write_minimal_docx(kp_docx)
+        job_paths = SimpleNamespace(
+            output_dir=output_dir,
+            batch_pdf_dir=batch_pdf_dir,
+            templates_dir=self.tmp_dir / "templates",
+            uses_legacy_layout=False,
+        )
+
+        def fake_prepare(source_docx, target_docx, **kwargs):
+            shutil.copy2(source_docx, target_docx)
+            return object()
+
+        # Main conversion yields a 2-page (invalid) KP PDF, triggering refit.
+        def fake_convert(docx_paths, output_dir, **kwargs):
+            pdf_path = Path(output_dir) / f"{docx_paths[0].stem}.pdf"
+            self._write_real_pdf(pdf_path, pages=2)
+            cb = kwargs.get("progress_callback")
+            if cb:
+                cb()
+            return {docx_paths[0]: pdf_path}
+
+        def fake_refit(*, source_docx, pdf_output_dir, **kwargs):
+            fitted = Path(pdf_output_dir) / "refit.pdf"
+            self._write_real_pdf(fitted, pages=1)
+            return fitted
+
+        with (
+            patch.object(generator_agent, "resolve_job_paths", return_value=job_paths),
+            patch.object(generator_agent, "_load_generator_state", return_value={"status": "running", "document_mode": "both"}),
+            patch.object(generator_agent, "_save_generator_state", return_value=None),
+            patch.object(generator_agent, "prepare_docx_for_pdf_export", side_effect=fake_prepare),
+            patch.object(generator_agent, "apply_pdf_safe_postprocess", return_value=None),
+            patch.object(generator_agent, "convert_docx_batch", side_effect=fake_convert),
+            patch.object(generator_agent, "_try_refit_one_page_kp_pdf", side_effect=fake_refit) as refit_mock,
+        ):
+            state = generator_agent.finalize_output_pdfs_for_job("job-test")
+
+        refit_mock.assert_called_once()
+        final_pdf = kp_docx.with_suffix(".pdf")
+        self.assertTrue(final_pdf.exists())
+        self.assertEqual(count_pdf_pages(final_pdf), 1)
+        self.assertEqual(state["status"], "completed")
 
 
 if __name__ == "__main__":

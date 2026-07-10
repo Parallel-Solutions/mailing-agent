@@ -234,7 +234,12 @@ def create_statistics_router(
                 created_by=_principal_name(principal),
             )
         except Exception as exc:
-            logger.exception("manager_action_save_failed", row_key=row_key)
+            # Avoid logging row_key directly (it encodes the recipient email).
+            try:
+                log_job_id, log_row_id, _ = parse_row_key(row_key)
+            except ValueError:
+                log_job_id, log_row_id = "", ""
+            logger.exception("manager_action_save_failed", job_id=log_job_id, row_id=log_row_id)
             raise internal_server_error("Не удалось сохранить действие менеджера.") from exc
         updated = build_recipient_detail(row_key)
         return {"status": "ok", "result": {"action": record, "recipient": updated}}

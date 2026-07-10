@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import secrets
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, select
@@ -10,6 +12,12 @@ from src.infra.models import Session as SessionModel
 
 
 SESSION_COOKIE_NAME = "mailing_agent_session"
+
+# Throttle expired-session sweeps so they don't run on every authenticated
+# request (which was one extra DELETE per request under load).
+_CLEANUP_MIN_INTERVAL_SECONDS = 60.0
+_cleanup_lock = threading.Lock()
+_last_cleanup_monotonic = 0.0
 
 
 def _now() -> datetime:
@@ -47,7 +55,7 @@ def get_session_username(token: str, *, ttl_days: int = 7) -> str | None:
     raw_token = str(token or "").strip()
     if not raw_token:
         return None
-    cleanup_expired_sessions()
+    _cleanup_expired_sessions_throttled()
     with session_scope() as session:
         row = session.get(SessionModel, raw_token)
     if row is None:
@@ -62,3 +70,13 @@ def cleanup_expired_sessions() -> None:
     now = _now()
     with session_scope() as session:
         session.execute(delete(SessionModel).where(SessionModel.expires_at <= now))
+
+
+def _cleanup_expired_sessions_throttled() -> None:
+    global _last_cleanup_monotonic
+    now = time.monotonic()
+    with _cleanup_lock:
+        if now - _last_cleanup_monotonic < _CLEANUP_MIN_INTERVAL_SECONDS:
+            return
+        _last_cleanup_monotonic = now
+    cleanup_expired_sessions()

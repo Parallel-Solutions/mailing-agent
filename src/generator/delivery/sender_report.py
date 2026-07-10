@@ -16,6 +16,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
+from src.utils.logger import logger
+
 from src.generator.delivery.sender_agent import (
     _build_unisender_go_url,
     _check_unisender_classic_messages,
@@ -914,7 +916,7 @@ def _delete_unisender_go_dump_safely(dump_id: str, *, api_key: str) -> None:
     try:
         _unisender_go_json_request("event-dump/delete.json", {"dump_id": dump_id}, api_key=api_key)
     except Exception:
-        return
+        logger.warning("unisender_dump_delete_failed", dump_id=dump_id, exc_info=True)
 
 
 def _delivery_status_cache_path(job_id: str | None) -> Path:

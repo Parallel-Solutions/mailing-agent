@@ -475,6 +475,25 @@ def _load_consents_for_jobs(job_ids: tuple[str, ...]) -> list[dict[str, Any]]:
     return rows
 
 
+PROVIDER_FILTER_GROUPS: dict[str, frozenset[str]] = {
+    "unisender": frozenset({"unisender", "unisender_go", "unisender_classic"}),
+}
+
+
+def _expand_provider_filters(providers: tuple[str, ...]) -> frozenset[str]:
+    allowed: set[str] = set()
+    for item in providers:
+        normalized = _safe_text(item).lower()
+        if not normalized:
+            continue
+        group = PROVIDER_FILTER_GROUPS.get(normalized)
+        if group:
+            allowed.update(group)
+        else:
+            allowed.add(normalized)
+    return frozenset(allowed)
+
+
 def _apply_recipient_filters(rows: list[dict[str, Any]], filters: StatsFilters) -> list[dict[str, Any]]:
     result = rows
     if filters.q:
@@ -493,7 +512,7 @@ def _apply_recipient_filters(rows: list[dict[str, Any]], filters: StatsFilters) 
             if _within_period(row.get("sent_at_timestamp") or row.get("sent_at"), period_from=filters.period_from, period_to=filters.period_to)
         ]
     if filters.providers:
-        allowed = {item.lower() for item in filters.providers}
+        allowed = _expand_provider_filters(filters.providers)
         result = [row for row in result if _safe_text(row.get("provider")).lower() in allowed]
     if filters.manager_statuses:
         allowed = set(filters.manager_statuses)
@@ -917,23 +936,19 @@ def build_consents_view(filters: StatsFilters, *, page: int = 1, per_page: int =
     need_call = sum(1 for row in rows if row.get("interest", {}).get("key") == "high")
     start = max(0, (page - 1) * per_page)
     page_rows = rows[start : start + per_page]
+    consent_base = confirmed or 1
     return {
         "summary": {
             "confirmed": confirmed,
             "materials_sent": materials_sent,
             "opened_after_consent": opened_after,
-            "clicked_after_consent": 0,
             "need_call": need_call,
         },
-        "funnel": build_funnels(
-            counts={
-                "consents": confirmed,
-                "sent": materials_sent,
-                "delivered": materials_sent,
-                "opened": opened_after,
-                "clicked": 0,
-            }
-        ),
+        "funnel": [
+            {"id": "consent", "label": "Согласие", "value": confirmed, "percent": _pct(confirmed, consent_base)},
+            {"id": "materials", "label": "Материалы отправлены", "value": materials_sent, "percent": _pct(materials_sent, consent_base)},
+            {"id": "opened", "label": "Открыли после согласия", "value": opened_after, "percent": _pct(opened_after, consent_base)},
+        ],
         "items": page_rows,
         "priority_contacts": sorted(page_rows, key=lambda row: row.get("interest", {}).get("key") != "high")[:5],
         "pagination": {
@@ -1273,10 +1288,8 @@ def build_reports_view(job_ids: tuple[str, ...]) -> dict[str, Any]:
             "xlsx": formats.get("xlsx", 0),
             "ndjson": formats.get("ndjson", 0),
             "csv": formats.get("csv", 0),
-            "scheduled": 0,
         },
         "history": history,
-        "scheduled": [],
     }
 
 

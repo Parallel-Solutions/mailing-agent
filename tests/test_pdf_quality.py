@@ -42,6 +42,43 @@ class PdfQualityTests(unittest.TestCase):
         self.assertEqual(result["reason"], "page_count")
         self.assertEqual(result["page_count"], 2)
 
+    def test_validate_kp_pdf_rejects_missing_file(self) -> None:
+        result = validate_kp_pdf(self.tmp_dir / "does-not-exist.pdf")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "missing")
+        self.assertIsNone(result["page_count"])
+
+    def test_validate_kp_pdf_rejects_empty_file(self) -> None:
+        pdf_path = self.tmp_dir / "empty.pdf"
+        pdf_path.write_bytes(b"")
+
+        result = validate_kp_pdf(pdf_path)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "empty")
+
+    def test_validate_kp_pdf_rejects_non_pdf_content(self) -> None:
+        pdf_path = self.tmp_dir / "not-a.pdf"
+        pdf_path.write_bytes(b"this is definitely not a pdf file")
+
+        result = validate_kp_pdf(pdf_path)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "not_pdf")
+
+    def test_validate_kp_pdf_honors_expected_pages(self) -> None:
+        pdf_path = self.tmp_dir / "two-pages.pdf"
+        self._write_pdf(pdf_path, 2)
+
+        self.assertTrue(validate_kp_pdf(pdf_path, expected_pages=2)["ok"])
+
+    def test_count_pdf_pages_returns_none_for_invalid_pdf(self) -> None:
+        pdf_path = self.tmp_dir / "broken.pdf"
+        pdf_path.write_bytes(b"%PDF-broken-not-really")
+
+        self.assertIsNone(count_pdf_pages(pdf_path))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -154,7 +154,13 @@ def _parse_optional_limit(payload: dict | None) -> int | None:
     text_value = str(raw_value).strip()
     if not text_value:
         return None
-    return int(text_value)
+    try:
+        return int(text_value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Параметр limit должен быть целым числом.",
+        ) from exc
 
 
 def _prefer_existing_file(primary: Path, fallback: Path) -> Path:
@@ -997,12 +1003,15 @@ async def index(session_token: str | None = Cookie(default=None, alias=SESSION_C
     return (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
 
 
-@app.get("/statistics", response_class=HTMLResponse)
+@app.get("/statistics")
 async def statistics_page(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
+    # The manager statistics UI is now embedded into the main application shell
+    # (screen #s-statistics in index.html). This route is kept only so older
+    # bookmarks/links keep working and land on the embedded section.
     username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
     if not username or get_user_record(username) is None:
         return RedirectResponse(url="/login", status_code=303)
-    return (TEMPLATES_DIR / "statistics.html").read_text(encoding="utf-8")
+    return RedirectResponse(url="/", status_code=307)
 
 
 @app.get("/api/status")

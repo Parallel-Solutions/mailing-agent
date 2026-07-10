@@ -45,7 +45,15 @@
     pollTimer: null,
     autoRefreshTimer: null,
     busyDepth: 0,
+    searchTimers: {},
   };
+
+  let pendingRecipientQuickFilter = null;
+
+  function debounceSearch(key, callback, delay = 300) {
+    if (state.searchTimers[key]) clearTimeout(state.searchTimers[key]);
+    state.searchTimers[key] = setTimeout(callback, delay);
+  }
 
   function qs(id) { return document.getElementById(id); }
   function badge(status) {
@@ -57,45 +65,56 @@
   }
   function fmt(value) { return Number(value || 0).toLocaleString('ru'); }
 
-  function readFiltersFromDom() {
+  function readGlobalFiltersFromDom() {
     return {
       period_from: qs('filter-from')?.value || '',
       period_to: qs('filter-to')?.value || '',
       campaign: qs('filter-campaign')?.value || '',
       provider: qs('filter-provider')?.value || '',
-      status: qs('filter-status')?.value || '',
-      q: '',
-      quick_filter: state.filters.quick_filter || '',
-      consent_status: state.filters.consent_status || '',
-      manager_action: state.filters.manager_action || '',
-      organization: state.filters.organization || '',
-      problems_only: !!state.filters.problems_only,
     };
   }
 
-  function syncFiltersToUrl() {
-    const params = new URLSearchParams();
-    params.set('page', state.page);
-    const filters = { ...readFiltersFromDom(), ...state.filters };
-    Object.entries(filters).forEach(([key, value]) => {
-      if (value !== '' && value !== false && value != null) params.set(key, String(value));
-    });
-    Object.entries(state.pagination).forEach(([key, value]) => {
-      if (value > 1) params.set(`${key}_page`, String(value));
-    });
-    history.replaceState(null, '', `?${params.toString()}`);
+  function recipientFilterParams() {
+    const params = {};
+    if (state.filters.quick_filter) params.quick_filter = state.filters.quick_filter;
+    const status = qs('filter-status')?.value || state.filters.status || '';
+    if (status) params.status = status;
+    if (state.filters.manager_action) params.manager_action = state.filters.manager_action;
+    if (state.filters.organization) params.organization = state.filters.organization;
+    if (state.filters.problems_only) params.problems_only = 'true';
+    return params;
   }
 
-  function loadFiltersFromUrl() {
-    const params = new URLSearchParams(window.location.search);
-    state.page = params.get('page') || 'dashboard';
-    ['period_from', 'period_to', 'campaign', 'provider', 'status', 'q', 'quick_filter', 'consent_status', 'manager_action', 'organization'].forEach((key) => {
-      if (params.has(key)) state.filters[key] = params.get(key) || '';
-    });
-    state.filters.problems_only = params.get('problems_only') === 'true';
-    state.pagination.recipients = Number(params.get('recipients_page') || 1);
-    state.pagination.consents = Number(params.get('consents_page') || 1);
-    state.pagination.problems = Number(params.get('problems_page') || 1);
+  function consentFilterParams() {
+    const params = {};
+    if (state.filters.consent_status) params.consent_status = state.filters.consent_status;
+    if (state.filters.organization) params.organization = state.filters.organization;
+    return params;
+  }
+
+  function problemFilterParams() {
+    const params = {};
+    if (state.filters.organization) params.organization = state.filters.organization;
+    if (state.filters.quick_filter) params.quick_filter = state.filters.quick_filter;
+    return params;
+  }
+
+  function buildQueryParams(extra = {}) {
+    const params = { ...readGlobalFiltersFromDom(), ...extra };
+    if (state.filters.providers) {
+      params.providers = state.filters.providers;
+      delete params.provider;
+    }
+    return params;
+  }
+
+  // Embedded inside the main SPA (index.html): the statistics section keeps its
+  // navigation/filter state in-memory only and must not touch the browser URL,
+  // otherwise it would fight the host app's own screen persistence.
+  function syncFiltersToUrl() {}
+
+  function initFilterDefaults() {
+    state.page = 'dashboard';
     if (qs('filter-from')) qs('filter-from').value = state.filters.period_from || '';
     if (qs('filter-to')) qs('filter-to').value = state.filters.period_to || '';
     if (qs('filter-campaign')) qs('filter-campaign').value = state.filters.campaign || '';
@@ -103,8 +122,56 @@
     if (qs('filter-status')) qs('filter-status').value = state.filters.status || '';
   }
 
+  function syncGlobalFiltersToDom() {
+    if (qs('filter-from')) qs('filter-from').value = state.filters.period_from || '';
+    if (qs('filter-to')) qs('filter-to').value = state.filters.period_to || '';
+    if (qs('filter-campaign')) qs('filter-campaign').value = state.filters.campaign || '';
+    if (qs('filter-provider')) qs('filter-provider').value = state.filters.provider || '';
+    if (qs('filter-status')) qs('filter-status').value = state.filters.status || '';
+  }
+
+  function clearAllFilters() {
+    state.filters = {};
+    syncGlobalFiltersToDom();
+    ['adv-from', 'adv-to', 'adv-organization'].forEach((id) => { if (qs(id)) qs(id).value = ''; });
+    ['adv-campaign', 'adv-consent-status', 'adv-manager-action'].forEach((id) => { if (qs(id)) qs(id).value = ''; });
+    if (qs('adv-problems-only')) qs('adv-problems-only').checked = false;
+    if (qs('adv-providers')) Array.from(qs('adv-providers').options).forEach((option) => { option.selected = false; });
+  }
+
+  function clearTabFiltersForPage(page) {
+    if (page !== 'recipients') {
+      state.filters.quick_filter = '';
+      state.filters.status = '';
+      state.filters.manager_action = '';
+      if (qs('filter-status')) qs('filter-status').value = '';
+    }
+    if (page !== 'consents') {
+      state.filters.consent_status = '';
+    }
+    if (page !== 'recipients' && page !== 'problems') {
+      state.filters.organization = '';
+      state.filters.problems_only = false;
+    }
+    if (page === 'recipients' && pendingRecipientQuickFilter !== null) {
+      state.filters.quick_filter = pendingRecipientQuickFilter;
+      pendingRecipientQuickFilter = null;
+    }
+  }
+
+  function updateFilterBarForPage(page) {
+    qs('btn-advanced-filters')?.classList.toggle('hidden', page === 'reports');
+  }
+
+  function closeSidePanels() {
+    qs('recipient-card')?.classList.add('hidden');
+    qs('problem-card')?.classList.add('hidden');
+    state.selectedRecipient = null;
+    state.selectedProblem = null;
+  }
+
   function queryString(extra = {}) {
-    const filters = { ...readFiltersFromDom(), ...state.filters, ...extra };
+    const filters = buildQueryParams(extra);
     const params = new URLSearchParams();
     Object.entries(filters).forEach(([key, value]) => {
       if (value !== '' && value !== false && value != null) params.set(key, String(value));
@@ -236,9 +303,9 @@
     ]);
     renderKpis('dashboard-rates', [
       { title: 'Доставляемость', value: `${result.rates?.delivery_rate ?? 0}%` },
-      { title: 'Open Rate', value: `${result.rates?.open_rate ?? 0}%` },
-      { title: 'CTR', value: `${result.rates?.ctr ?? 0}%` },
-      { title: 'Ошибка', value: `${result.rates?.error_rate ?? 0}%` },
+      { title: 'Открываемость', value: `${result.rates?.open_rate ?? 0}%` },
+      { title: 'Переходы (CTR)', value: `${result.rates?.ctr ?? 0}%` },
+      { title: 'Доля ошибок', value: `${result.rates?.error_rate ?? 0}%` },
     ]);
     renderFunnel('dashboard-funnel', result.funnels);
     qs('dashboard-empty')?.classList.toggle('hidden', !result.empty);
@@ -263,14 +330,21 @@
       options: { maintainAspectRatio: false, indexAxis: 'y' },
     });
     destroyChart('chart-roles');
-    state.charts['chart-roles'] = new Chart(qs('chart-roles'), {
-      type: 'doughnut',
-      data: {
-        labels: (result.roles || []).map((item) => item.label),
-        datasets: [{ data: (result.roles || []).map((item) => item.count), backgroundColor: ['#2563eb', '#94a3b8'] }],
-      },
-      options: { maintainAspectRatio: false },
-    });
+    const roles = result.roles || [];
+    const rolesCard = qs('card-chart-roles');
+    // Splitting by address role only helps when a fallback address actually
+    // exists; with a single role the chart is noise, so hide it.
+    if (rolesCard) rolesCard.classList.toggle('hidden', roles.length < 2);
+    if (roles.length >= 2) {
+      state.charts['chart-roles'] = new Chart(qs('chart-roles'), {
+        type: 'doughnut',
+        data: {
+          labels: roles.map((item) => item.label),
+          datasets: [{ data: roles.map((item) => item.count), backgroundColor: ['#5a9e1f', '#c9b98a'] }],
+        },
+        options: { maintainAspectRatio: false },
+      });
+    }
 
     const worklists = result.work_lists || {};
     qs('dashboard-worklists').innerHTML = [
@@ -286,28 +360,39 @@
     `).join('');
     qs('dashboard-worklists').querySelectorAll('[data-nav]').forEach((button) => {
       button.addEventListener('click', () => {
-        if (button.dataset.quick) state.filters.quick_filter = button.dataset.quick;
+        pendingRecipientQuickFilter = button.dataset.quick || '';
         activatePage(button.dataset.nav);
       });
     });
     qs('dashboard-insights').innerHTML = (result.insights || []).map((item) => `<li><strong>${escapeHtml(item.title)}:</strong> ${escapeHtml(item.text)}</li>`).join('');
   }
 
-  function renderCampaigns(result) {
-    state.campaigns = result.campaigns || [];
-    const select = qs('filter-campaign');
-    const exportSelect = qs('export-campaign');
+  function syncCampaignSelects() {
     const options = ['<option value="">Все рассылки</option>'].concat(
       state.campaigns.map((item) => `<option value="${escapeHtml(item.job_id)}">${escapeHtml(item.title)}</option>`)
     );
+    const analyticsOptions = ['<option value="">Выберите рассылку</option>'].concat(
+      state.campaigns.map((item) => `<option value="${escapeHtml(item.job_id)}">${escapeHtml(item.title)}</option>`)
+    );
+    const select = qs('filter-campaign');
+    const exportSelect = qs('export-campaign');
+    const analyticsSelect = qs('analytics-campaign');
     if (select) select.innerHTML = options.join('');
     if (exportSelect) exportSelect.innerHTML = ['<option value="">Текущая / первая доступная</option>'].concat(
       state.campaigns.map((item) => `<option value="${escapeHtml(item.job_id)}">${escapeHtml(item.title)}</option>`)
     ).join('');
     if (qs('adv-campaign')) qs('adv-campaign').innerHTML = options.join('');
-    if (state.filters.campaign) {
-      if (select) select.value = state.filters.campaign;
+    if (analyticsSelect) analyticsSelect.innerHTML = analyticsOptions.join('');
+    const selectedCampaign = state.filters.campaign || state.selectedCampaign || '';
+    if (selectedCampaign) {
+      if (select) select.value = selectedCampaign;
+      if (analyticsSelect) analyticsSelect.value = selectedCampaign;
     }
+  }
+
+  function renderCampaigns(result) {
+    state.campaigns = result.campaigns || [];
+    syncCampaignSelects();
     renderKpis('campaigns-kpis', [
       { title: 'Всего рассылок', value: fmt(result.summary?.total) },
       { title: 'Активные', value: fmt(result.summary?.active) },
@@ -340,6 +425,7 @@
         event.stopPropagation();
         state.selectedCampaign = button.dataset.openAnalytics;
         state.filters.campaign = state.selectedCampaign;
+        if (qs('analytics-campaign')) qs('analytics-campaign').value = state.selectedCampaign;
         activatePage('campaign-analytics');
       });
     });
@@ -363,6 +449,7 @@
     `;
     qs('campaign-open-analytics')?.addEventListener('click', () => {
       state.filters.campaign = jobId;
+      if (qs('analytics-campaign')) qs('analytics-campaign').value = jobId;
       activatePage('campaign-analytics');
     });
     qs('campaign-download-report')?.addEventListener('click', () => {
@@ -431,11 +518,21 @@
   }
 
   function renderCampaignAnalytics(result) {
+    const campaign = result.campaign || {};
+    const meta = qs('analytics-campaign-meta');
+    if (meta) {
+      meta.innerHTML = `
+        <strong>${escapeHtml(campaign.title || 'Рассылка')}</strong>
+        <span>${escapeHtml(result.period_from || '')}${result.period_to ? ` — ${escapeHtml(result.period_to)}` : ''}</span>
+      `;
+    }
+    qs('analytics-empty')?.classList.add('hidden');
+    qs('analytics-content')?.classList.remove('hidden');
     renderKpis('analytics-kpis', [
       { title: 'Отправлено', value: fmt(result.summary?.sent) },
       { title: 'Доставлено', value: `${fmt(result.summary?.delivered)} / ${result.rates?.delivery_rate ?? 0}%` },
       { title: 'Открыто', value: `${fmt(result.summary?.opened)} / ${result.rates?.open_rate ?? 0}%` },
-      { title: 'Клики', value: `${fmt(result.summary?.clicked)} / ${result.rates?.ctr ?? 0}%` },
+      { title: 'Переходы', value: `${fmt(result.summary?.clicked)} / ${result.rates?.ctr ?? 0}%` },
       { title: 'Недоставлено', value: fmt(result.summary?.errors) },
       { title: 'Отписки и спам', value: fmt((result.summary?.unsubscribed || 0) + (result.summary?.spam || 0)) },
     ]);
@@ -488,7 +585,6 @@
       { title: 'Дали согласие', value: fmt(result.summary?.confirmed) },
       { title: 'Материалы отправлены', value: fmt(result.summary?.materials_sent) },
       { title: 'Открыли после согласия', value: fmt(result.summary?.opened_after_consent) },
-      { title: 'Перешли по ссылке', value: fmt(result.summary?.clicked_after_consent) },
       { title: 'Нужно перезвонить', value: fmt(result.summary?.need_call) },
     ]);
     renderFunnel('consents-funnel', result.funnel);
@@ -571,18 +667,26 @@
     qs('problem-create-task').onclick = () => openActionModal(rowKey, 'create_task');
   }
 
+  function showAnalyticsEmpty(message) {
+    qs('analytics-empty')?.classList.remove('hidden');
+    if (qs('analytics-empty')) qs('analytics-empty').textContent = message;
+    qs('analytics-content')?.classList.add('hidden');
+    qs('analytics-campaign-meta').innerHTML = '';
+    schedulePoll(false);
+  }
+
   function renderReports(result) {
     renderKpis('reports-kpis', [
       { title: 'Сформировано отчётов', value: fmt(result.summary?.generated) },
       { title: 'Excel выгрузки', value: fmt(result.summary?.xlsx) },
+      { title: 'CSV выгрузки', value: fmt(result.summary?.csv) },
       { title: 'NDJSON журналы', value: fmt(result.summary?.ndjson) },
-      { title: 'Запланированные отчёты', value: fmt(result.summary?.scheduled) },
     ]);
     qs('reports-available').innerHTML = (result.available || []).map((item) => `
       <div class="report-card kpi-card">
         <h3>${escapeHtml(item.title)}</h3>
         <p>${escapeHtml(item.description)}</p>
-        <button class="btn-outline" data-export-type="${escapeHtml(item.id)}">Скачать</button>
+        <button class="btn-outline" data-export-type="${escapeHtml(item.id)}">Сформировать отчёт</button>
       </div>
     `).join('');
     qs('reports-available').querySelectorAll('[data-export-type]').forEach((button) => {
@@ -618,20 +722,28 @@
 
   async function loadRecipients() {
     const result = await api(`/api/sender/recipients${queryString({
+      ...recipientFilterParams(),
       q: qs('recipients-search')?.value || '',
       page: state.pagination.recipients,
       per_page: state.perPage,
     })}`);
     renderRecipients(result);
+    if (state.selectedRecipient?.row_key) {
+      openRecipientCard(state.selectedRecipient.row_key).catch((error) => console.error(error));
+    }
   }
 
   async function loadCampaignAnalytics(refresh = false) {
-    const jobId = state.filters.campaign || state.selectedCampaign || state.campaigns[0]?.job_id;
+    const preselected = state.filters.campaign || state.selectedCampaign || '';
+    if (preselected && qs('analytics-campaign')) qs('analytics-campaign').value = preselected;
+    const jobId = qs('analytics-campaign')?.value || preselected || '';
     if (!jobId) {
-      qs('analytics-kpis').innerHTML = '<div class="empty-state">Нет доступных рассылок для аналитики</div>';
-      schedulePoll(false);
+      showAnalyticsEmpty('Выберите рассылку, чтобы посмотреть детальную аналитику');
       return;
     }
+    state.filters.campaign = jobId;
+    state.selectedCampaign = jobId;
+    if (qs('filter-campaign')) qs('filter-campaign').value = jobId;
     const result = await api(`/api/sender/campaign-analytics/${encodeURIComponent(jobId)}${refresh ? '?refresh=true' : ''}`);
     renderCampaignAnalytics(result);
     schedulePoll(!!result.refresh_in_progress);
@@ -639,6 +751,7 @@
 
   async function loadConsents() {
     const result = await api(`/api/sender/consents${queryString({
+      ...consentFilterParams(),
       q: qs('consents-search')?.value || '',
       page: state.pagination.consents,
       per_page: state.perPage,
@@ -648,10 +761,14 @@
 
   async function loadProblems() {
     const result = await api(`/api/sender/email-problems${queryString({
+      ...problemFilterParams(),
       page: state.pagination.problems,
       per_page: state.perPage,
     })}`);
     renderProblems(result);
+    if (state.selectedProblem?.row_key) {
+      openProblemCard(state.selectedProblem.row_key, result.items);
+    }
   }
 
   async function loadReports() {
@@ -683,14 +800,20 @@
   }
 
   function activatePage(page) {
+    const prevPage = state.page;
+    if (prevPage !== page) {
+      clearTabFiltersForPage(page);
+      closeSidePanels();
+    }
     state.page = page;
-    document.querySelectorAll('.nav-item[data-page]').forEach((item) => {
+    document.querySelectorAll('.stx-tab[data-page]').forEach((item) => {
       item.classList.toggle('active', item.dataset.page === page);
     });
     document.querySelectorAll('.stats-page').forEach((section) => {
       section.classList.toggle('active', section.id === `page-${page}`);
     });
     qs('page-title').textContent = PAGE_TITLES[page] || 'Статистика';
+    updateFilterBarForPage(page);
     syncFiltersToUrl();
     loadCurrentPage();
   }
@@ -724,7 +847,8 @@
     const dueDate = qs('action-date').value;
     const dueTime = qs('action-time').value;
     const dueAt = dueDate ? `${dueDate}${dueTime ? `T${dueTime}` : ''}` : '';
-    await api(`/api/sender/recipients/${encodeURIComponent(state.actionRecipient.row_key)}/action`, {
+    const savedRowKey = state.actionRecipient.row_key;
+    await api(`/api/sender/recipients/${encodeURIComponent(savedRowKey)}/action`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -736,7 +860,9 @@
       }),
     });
     closeModal('modal-action');
-    loadCurrentPage();
+    const reopenRecipientCard = state.page === 'recipients' && !qs('recipient-card')?.classList.contains('hidden');
+    if (reopenRecipientCard) state.selectedRecipient = { row_key: savedRowKey };
+    await loadCurrentPage();
   }
 
   async function submitExport() {
@@ -774,54 +900,81 @@
     state.filters.problems_only = qs('adv-problems-only').checked;
     const providers = Array.from(qs('adv-providers').selectedOptions).map((option) => option.value);
     state.filters.providers = providers.join(',');
-    if (qs('filter-from')) qs('filter-from').value = state.filters.period_from;
-    if (qs('filter-to')) qs('filter-to').value = state.filters.period_to;
-    if (qs('filter-campaign')) qs('filter-campaign').value = state.filters.campaign;
+    syncGlobalFiltersToDom();
+    if (state.filters.campaign && qs('analytics-campaign')) qs('analytics-campaign').value = state.filters.campaign;
     closeModal('modal-filters');
     syncFiltersToUrl();
     loadCurrentPage(true);
   }
 
   function bindEvents() {
-    document.querySelectorAll('.nav-item[data-page]').forEach((item) => {
+    document.querySelectorAll('.stx-tab[data-page]').forEach((item) => {
       item.addEventListener('click', () => activatePage(item.dataset.page));
     });
     qs('btn-refresh')?.addEventListener('click', () => { loadCurrentPage(true); startAutoRefresh(); });
     qs('stats-error-retry')?.addEventListener('click', () => { clearError(); loadCurrentPage(); });
     qs('btn-advanced-filters')?.addEventListener('click', () => openModal('modal-filters'));
     qs('btn-export-report')?.addEventListener('click', () => openModal('modal-export'));
-    ['filter-from', 'filter-to', 'filter-campaign', 'filter-provider', 'filter-status'].forEach((id) => {
+    ['filter-from', 'filter-to', 'filter-campaign', 'filter-provider'].forEach((id) => {
       qs(id)?.addEventListener('change', () => {
-        state.filters[id.replace('filter-', '')] = qs(id).value;
+        const key = id.replace('filter-', '');
+        state.filters[key] = qs(id).value;
+        if (key === 'campaign') {
+          state.selectedCampaign = qs(id).value;
+          if (qs('analytics-campaign')) qs('analytics-campaign').value = qs(id).value;
+        }
         syncFiltersToUrl();
         loadCurrentPage();
       });
     });
-    qs('campaigns-search')?.addEventListener('input', () => loadCampaigns());
-    qs('recipients-search')?.addEventListener('input', () => { state.pagination.recipients = 1; loadRecipients(); });
-    qs('consents-search')?.addEventListener('input', () => { state.pagination.consents = 1; loadConsents(); });
+    qs('filter-status')?.addEventListener('change', () => {
+      state.filters.status = qs('filter-status').value;
+      state.pagination.recipients = 1;
+      syncFiltersToUrl();
+      loadRecipients();
+    });
+    qs('analytics-campaign')?.addEventListener('change', () => {
+      const jobId = qs('analytics-campaign').value;
+      state.filters.campaign = jobId;
+      state.selectedCampaign = jobId;
+      if (qs('filter-campaign')) qs('filter-campaign').value = jobId;
+      loadCampaignAnalytics();
+    });
+    qs('campaigns-search')?.addEventListener('input', () => {
+      debounceSearch('campaigns', () => loadCampaigns());
+    });
+    qs('recipients-search')?.addEventListener('input', () => {
+      debounceSearch('recipients', () => { state.pagination.recipients = 1; loadRecipients(); });
+    });
+    qs('consents-search')?.addEventListener('input', () => {
+      debounceSearch('consents', () => { state.pagination.consents = 1; loadConsents(); });
+    });
     qs('recipient-card-close')?.addEventListener('click', () => qs('recipient-card').classList.add('hidden'));
     qs('problem-card-close')?.addEventListener('click', () => qs('problem-card').classList.add('hidden'));
     qs('adv-cancel')?.addEventListener('click', () => closeModal('modal-filters'));
     qs('adv-apply')?.addEventListener('click', applyAdvancedFilters);
     qs('adv-reset')?.addEventListener('click', () => {
-      state.filters = {};
-      ['adv-from', 'adv-to', 'adv-organization'].forEach((id) => { if (qs(id)) qs(id).value = ''; });
-      ['adv-campaign', 'adv-consent-status', 'adv-manager-action'].forEach((id) => { if (qs(id)) qs(id).value = ''; });
-      if (qs('adv-problems-only')) qs('adv-problems-only').checked = false;
+      clearAllFilters();
+      closeModal('modal-filters');
+      syncFiltersToUrl();
+      loadCurrentPage(true);
     });
     qs('export-cancel')?.addEventListener('click', () => closeModal('modal-export'));
     qs('export-submit')?.addEventListener('click', submitExport);
     qs('action-cancel')?.addEventListener('click', () => closeModal('modal-action'));
     qs('action-save')?.addEventListener('click', saveAction);
-    document.querySelectorAll('.modal-backdrop').forEach((modal) => {
+    document.querySelectorAll('.stx-modal').forEach((modal) => {
       modal.addEventListener('click', (event) => {
         if (event.target === modal) modal.classList.remove('open');
       });
     });
   }
 
-  async function bootstrap() {
+  let initialized = false;
+
+  async function init() {
+    if (initialized) return;
+    initialized = true;
     try {
       const response = await fetch('/api/auth/me', { credentials: 'same-origin' });
       if (response.ok) {
@@ -830,12 +983,11 @@
         if (qs('stats-user-name')) qs('stats-user-name').textContent = state.userName || 'Менеджер';
       }
     } catch (_) {
-      /* page still works with cookie session */
+      /* section still works with the cookie session */
     }
-    loadFiltersFromUrl();
+    initFilterDefaults();
     bindEvents();
     activatePage(state.page);
-    startAutoRefresh();
     // The campaigns endpoint also fills the campaign dropdowns. The campaigns
     // page already loads it via activatePage; for other pages fetch it once in
     // the background (reuses the server-side cache) without blocking first paint.
@@ -844,5 +996,19 @@
     }
   }
 
-  bootstrap();
+  // Lazy entry point used by the host SPA (index.html). Nothing runs until the
+  // statistics screen is opened, and polling is suspended while it is hidden.
+  function show() {
+    const wasInitialized = initialized;
+    init();
+    if (wasInitialized) loadCurrentPage();
+    startAutoRefresh();
+  }
+
+  function hide() {
+    stopAutoRefresh();
+    clearPoll();
+  }
+
+  window.StatsEmbed = { show, hide };
 }());

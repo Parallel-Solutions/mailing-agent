@@ -29,6 +29,7 @@ from src.generator.knowledge.correction_report import (
 )
 from src.jobs import resolve_job_paths
 from src.jobs.access import JobAccessDenied, authorize_job_access
+from src.utils.logger import logger
 
 
 DOWNLOAD_HEADERS = {
@@ -106,7 +107,16 @@ def create_download_router(
             return paths.root_dir / relative_path
         try:
             return ensure_local_file(job_id, relative_path)
+        except FileNotFoundError:
+            # Object legitimately absent in the store; fall back to local path.
+            return paths.root_dir / relative_path
         except Exception:
+            logger.warning(
+                "ensure_local_job_path_failed",
+                job_id=job_id,
+                relative_path=relative_path,
+                exc_info=True,
+            )
             return paths.root_dir / relative_path
 
     def pull_job_workspace(job_id: str | None, subdirs: list[str]) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from typing import Iterator
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
@@ -21,6 +22,7 @@ engine = create_engine(
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,
+    pool_recycle=1800,
 )
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -38,11 +40,19 @@ def session_scope() -> Iterator[Session]:
         session.close()
 
 
+_SAFE_DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
 def _database_name_from_url(database_url: str) -> str:
     parsed = urlparse(database_url)
     database_name = unquote((parsed.path or "").lstrip("/"))
     if not database_name:
         raise ValueError("DATABASE_URL must include a database name.")
+    if not _SAFE_DB_NAME_RE.match(database_name):
+        raise ValueError(
+            "Database name must contain only letters, digits and underscores; "
+            f"got {database_name!r}."
+        )
     return database_name
 
 
