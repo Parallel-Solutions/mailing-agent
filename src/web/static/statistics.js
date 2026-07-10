@@ -1,4 +1,6 @@
 (function () {
+  const AUTO_REFRESH_MS = 20 * 60 * 1000;
+
   const PAGE_TITLES = {
     dashboard: 'Статистика рассылки',
     campaigns: 'Рассылки',
@@ -38,7 +40,11 @@
     actionType: 'call',
     charts: {},
     campaigns: [],
+    campaignsLoaded: false,
     userName: '',
+    pollTimer: null,
+    autoRefreshTimer: null,
+    busyDepth: 0,
   };
 
   function qs(id) { return document.getElementById(id); }
@@ -113,9 +119,58 @@
       window.location.href = '/login';
       throw new Error('Unauthorized');
     }
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'API error');
+    let data = {};
+    try { data = await response.json(); } catch (_) { data = {}; }
+    if (!response.ok) throw new Error(data.detail || 'Не удалось загрузить данные.');
     return data.result ?? data;
+  }
+
+  function setBusy(isBusy) {
+    state.busyDepth = Math.max(0, state.busyDepth + (isBusy ? 1 : -1));
+    qs('stats-status')?.classList.toggle('hidden', state.busyDepth === 0);
+  }
+
+  function showError(message) {
+    const el = qs('stats-error');
+    if (!el) return;
+    const text = el.querySelector('.stats-error-text');
+    if (text) text.textContent = message || 'Не удалось загрузить данные.';
+    el.classList.remove('hidden');
+  }
+
+  function clearError() {
+    qs('stats-error')?.classList.add('hidden');
+  }
+
+  function setRefreshBadge(inProgress) {
+    qs('refresh-badge')?.classList.toggle('hidden', !inProgress);
+  }
+
+  function clearPoll() {
+    if (state.pollTimer) {
+      clearTimeout(state.pollTimer);
+      state.pollTimer = null;
+    }
+  }
+
+  function schedulePoll(inProgress) {
+    clearPoll();
+    setRefreshBadge(inProgress);
+    if (inProgress) {
+      state.pollTimer = setTimeout(() => { loadCurrentPage(); }, 5000);
+    }
+  }
+
+  function stopAutoRefresh() {
+    if (state.autoRefreshTimer) {
+      clearInterval(state.autoRefreshTimer);
+      state.autoRefreshTimer = null;
+    }
+  }
+
+  function startAutoRefresh() {
+    stopAutoRefresh();
+    state.autoRefreshTimer = setInterval(() => { loadCurrentPage(true); }, AUTO_REFRESH_MS);
   }
 
   function destroyChart(id) {
@@ -276,8 +331,8 @@
         <td>${escapeHtml(item.status_label)}</td>
         <td><button class="btn-outline" data-open-analytics="${escapeHtml(item.job_id)}">Аналитика</button></td>
       </tr>
-    `).join('');
-    qs('campaigns-table').querySelectorAll('tr').forEach((row) => {
+    `).join('') || '<tr><td colspan="10" class="empty-state">Пока нет рассылок с отправками</td></tr>';
+    qs('campaigns-table').querySelectorAll('tr[data-job-id]').forEach((row) => {
       row.addEventListener('click', () => selectCampaign(row.dataset.jobId));
     });
     qs('campaigns-table').querySelectorAll('[data-open-analytics]').forEach((button) => {
@@ -552,11 +607,13 @@
   async function loadDashboard(refresh = false) {
     const result = await api(`/api/sender/manager-dashboard${queryString({ refresh: refresh ? 'true' : '' })}`);
     renderDashboard(result);
+    schedulePoll(!!result.refresh_in_progress);
   }
 
   async function loadCampaigns() {
     const result = await api(`/api/sender/campaigns${queryString({ q: qs('campaigns-search')?.value || '' })}`);
     renderCampaigns(result);
+    state.campaignsLoaded = true;
   }
 
   async function loadRecipients() {
@@ -568,14 +625,16 @@
     renderRecipients(result);
   }
 
-  async function loadCampaignAnalytics() {
+  async function loadCampaignAnalytics(refresh = false) {
     const jobId = state.filters.campaign || state.selectedCampaign || state.campaigns[0]?.job_id;
     if (!jobId) {
       qs('analytics-kpis').innerHTML = '<div class="empty-state">Нет доступных рассылок для аналитики</div>';
+      schedulePoll(false);
       return;
     }
-    const result = await api(`/api/sender/campaign-analytics/${encodeURIComponent(jobId)}`);
+    const result = await api(`/api/sender/campaign-analytics/${encodeURIComponent(jobId)}${refresh ? '?refresh=true' : ''}`);
     renderCampaignAnalytics(result);
+    schedulePoll(!!result.refresh_in_progress);
   }
 
   async function loadConsents() {
@@ -601,16 +660,25 @@
   }
 
   async function loadCurrentPage(refresh = false) {
+    clearError();
+    clearPoll();
+    setRefreshBadge(false);
+    setBusy(true);
     try {
       if (state.page === 'dashboard') await loadDashboard(refresh);
       else if (state.page === 'campaigns') await loadCampaigns();
       else if (state.page === 'recipients') await loadRecipients();
-      else if (state.page === 'campaign-analytics') await loadCampaignAnalytics();
+      else if (state.page === 'campaign-analytics') await loadCampaignAnalytics(refresh);
       else if (state.page === 'consents') await loadConsents();
       else if (state.page === 'problems') await loadProblems();
       else if (state.page === 'reports') await loadReports();
     } catch (error) {
       console.error(error);
+      if (error && error.message !== 'Unauthorized') {
+        showError(error.message || 'Не удалось загрузить данные.');
+      }
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -718,7 +786,8 @@
     document.querySelectorAll('.nav-item[data-page]').forEach((item) => {
       item.addEventListener('click', () => activatePage(item.dataset.page));
     });
-    qs('btn-refresh')?.addEventListener('click', () => loadCurrentPage(true));
+    qs('btn-refresh')?.addEventListener('click', () => { loadCurrentPage(true); startAutoRefresh(); });
+    qs('stats-error-retry')?.addEventListener('click', () => { clearError(); loadCurrentPage(); });
     qs('btn-advanced-filters')?.addEventListener('click', () => openModal('modal-filters'));
     qs('btn-export-report')?.addEventListener('click', () => openModal('modal-export'));
     ['filter-from', 'filter-to', 'filter-campaign', 'filter-provider', 'filter-status'].forEach((id) => {
@@ -766,7 +835,13 @@
     loadFiltersFromUrl();
     bindEvents();
     activatePage(state.page);
-    await loadCampaigns();
+    startAutoRefresh();
+    // The campaigns endpoint also fills the campaign dropdowns. The campaigns
+    // page already loads it via activatePage; for other pages fetch it once in
+    // the background (reuses the server-side cache) without blocking first paint.
+    if (state.page !== 'campaigns' && !state.campaignsLoaded) {
+      loadCampaigns().catch((error) => console.error(error));
+    }
   }
 
   bootstrap();

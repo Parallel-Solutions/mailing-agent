@@ -28,7 +28,11 @@
       <div class="page-header">
         <div>
           <h1 id="page-title">Статистика рассылки</h1>
-          <div class="refresh-meta" id="refresh-meta">Обновлено: —</div>
+          <div class="refresh-meta">
+            <span id="refresh-meta">Обновлено: —</span>
+            <span class="stats-status hidden" id="stats-status"><span class="spinner"></span>Загрузка…</span>
+            <span class="refresh-badge hidden" id="refresh-badge"><span class="spinner"></span>Дообор из провайдеров…</span>
+          </div>
         </div>
         <div class="filters-bar">
           <input type="date" id="filter-from" aria-label="Период с">
@@ -53,6 +57,11 @@
           <button class="btn-outline" id="btn-advanced-filters" type="button">Расширенные фильтры</button>
           <button class="btn-primary" id="btn-refresh" type="button">Обновить</button>
         </div>
+      </div>
+
+      <div class="stats-error hidden" id="stats-error">
+        <span class="stats-error-text">Не удалось загрузить данные.</span>
+        <button class="btn-outline" id="stats-error-retry" type="button">Повторить</button>
       </div>
 
       <section class="stats-page active" id="page-dashboard">

@@ -23,6 +23,7 @@ from src.generator.delivery.manager_stats import (
     parse_row_key,
 )
 from src.jobs.access import JobAccessDenied, authorize_job_access, job_is_visible
+from src.jobs.job_docs import list_job_ids_with_sent_mail
 from src.jobs.storage import normalize_job_id
 from src.security.auth import coerce_principal
 from src.web.download_router import DOWNLOAD_HEADERS
@@ -66,25 +67,18 @@ def create_statistics_router(
         return coerce_principal(principal).username
 
     def _list_user_mailing_jobs(principal: object, *, limit: int = 200) -> list[str]:
-        job_ids: list[tuple[float, str]] = []
-        if not jobs_dir.exists():
-            return []
-        for job_dir in jobs_dir.iterdir():
-            if not job_dir.is_dir() or not job_dir.name.startswith("job-"):
+        # Statistics only make sense for jobs that actually sent mail. Resolve the
+        # candidate list from the database (a single grouped query, already ordered
+        # by most recent activity) instead of walking the jobs directory on disk,
+        # which used to `rglob` every file of every job on every request.
+        visible: list[str] = []
+        for job_id in list_job_ids_with_sent_mail():
+            if not job_is_visible(job_id, principal):
                 continue
-            if not job_is_visible(job_dir.name, principal):
-                continue
-            try:
-                mtime = max(
-                    path.stat().st_mtime
-                    for path in job_dir.rglob("*")
-                    if path.is_file()
-                )
-            except ValueError:
-                mtime = job_dir.stat().st_mtime
-            job_ids.append((mtime, job_dir.name))
-        job_ids.sort(key=lambda item: item[0], reverse=True)
-        return [job_id for _, job_id in job_ids[:limit]]
+            visible.append(job_id)
+            if len(visible) >= limit:
+                break
+        return visible
 
     def _resolve_job_ids(
         principal: object,

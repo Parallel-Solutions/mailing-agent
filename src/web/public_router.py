@@ -42,6 +42,7 @@ def create_public_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="Sender UI script not found.")
         return FileResponse(script_path, media_type="application/javascript")
 
+
     @router.get("/public/statistics.css")
     async def public_statistics_css():
         css_path = WEB_STATIC_DIR / "statistics.css"
@@ -64,3 +65,4 @@ def create_public_router() -> APIRouter:
         return FileResponse(script_path, media_type="application/javascript")
 
     return router
+

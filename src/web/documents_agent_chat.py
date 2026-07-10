@@ -12,10 +12,20 @@ from src.generator.inflection.ai_case_agent import (
     _resolve_openai_api_key,
     _resolve_openai_base_url,
 )
+from src.generator.generation.template_analysis import build_template_analysis_context
+from src.generator.generation.template_preview import (
+    PREVIEW_APPROVAL_APPROVED,
+    PREVIEW_APPROVAL_PENDING,
+    PREVIEW_APPROVAL_REJECTED,
+    load_template_preview_state,
+    mark_template_preview_approval,
+)
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
 from src.jobs import load_agent_state, resolve_job_paths, resolve_state_path
+from src.jobs.chat_memory import append_chat_turn, chat_history_for_prompt, get_chat_session
 from src.jobs.job_docs import read_events, read_sent_mail_log
 from src.utils.config import settings
+from src.utils.env import resolve_env_value
 
 StatusLoader = Callable[[str | None], dict[str, Any]]
 ChatWithOrchestrator = Callable[..., dict[str, Any] | None]
@@ -202,8 +212,9 @@ def _documents_agent_result_reply(documents_status: dict) -> str:
 def _documents_agent_download_reply(documents_status: dict) -> str:
     status = str(documents_status.get("status") or "idle")
     output_file_count = int(documents_status.get("output_file_count") or 0)
+    output_ready = bool(documents_status.get("output_ready"))
     fixed_documents = int(documents_status.get("fixed_documents") or 0)
-    if status != "completed":
+    if status != "completed" or not output_ready:
         return (
             "Архив и итоговый отчёт лучше скачивать после завершения подготовки. "
             "Пока дождитесь статуса «Готово»."
@@ -223,8 +234,11 @@ def _documents_agent_download_reply(documents_status: dict) -> str:
 
 def _documents_agent_next_step_reply(documents_status: dict) -> str:
     status = str(documents_status.get("status") or "idle")
-    if status == "completed":
+    output_ready = bool(documents_status.get("output_ready"))
+    if status == "completed" and output_ready:
         return "Следующий шаг: скачать архив при необходимости и перейти к проверке отправки писем."
+    if status == "completed":
+        return "Архив ещё собирается. Дождитесь завершения подготовки, затем можно будет скачать документы."
     if status == "running":
         return "Сейчас ничего делать не нужно. Следующий шаг откроется автоматически после завершения подготовки."
     if status == "stopped":
@@ -780,6 +794,180 @@ def _documents_agent_audit_context(job_id: str | None) -> list[dict[str, Any]]:
     return payload
 
 
+def _documents_agent_template_preview_context(job_id: str | None) -> dict[str, Any]:
+    state = load_template_preview_state(job_id)
+    if not state:
+        return {"exists": False, "awaiting_confirmation": False}
+    approval_status = str(state.get("approval_status") or PREVIEW_APPROVAL_PENDING)
+    return {
+        "exists": True,
+        "awaiting_confirmation": state.get("status") == "ready" and approval_status != PREVIEW_APPROVAL_APPROVED,
+        "status": state.get("status"),
+        "approval_status": approval_status,
+        "row_id": state.get("row_id"),
+        "row_label": _documents_agent_sanitize_text(state.get("row_label"), limit=180),
+        "row_number": state.get("row_number"),
+        "document_mode": state.get("document_mode"),
+        "work_type": state.get("work_type"),
+        "created_at": state.get("created_at"),
+        "has_pdf": bool(state.get("has_pdf")),
+        "has_docx": bool(state.get("has_docx")),
+    }
+
+
+def _documents_agent_extract_json_object(text: str) -> dict[str, Any] | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE).strip()
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        payload = json.loads(raw[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _documents_agent_preview_decision_reply(
+    message: str,
+    job_id: str | None,
+    context: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    preview = context.get("template_preview") if isinstance(context.get("template_preview"), dict) else {}
+    if not preview.get("awaiting_confirmation"):
+        return None
+
+    client = _documents_agent_build_llm_client()
+    if client is None:
+        reply = (
+            "Я собрала пример, но сейчас не могу распознать ответ через AI. "
+            "Массовую генерацию не запускаю; попробуйте подтвердить позже, когда AI снова будет доступен."
+        )
+        return _documents_agent_reply_payload(
+            reply,
+            source="documents_preview_ai_unavailable",
+            action="hold_documents_generation",
+            preview_approved=False,
+            tools_used=["template_preview", "ai_intent"],
+        )
+
+    decision_context = {
+        "screen": "documents",
+        "task": "decide whether the user approved the generated preview document",
+        "allowed_intents": [
+            "approve_preview",
+            "reject_preview",
+            "request_preview_regenerate",
+            "request_template_change",
+            "ask_question",
+            "unclear",
+        ],
+        "preview": preview,
+        "status": context.get("status"),
+        "recent_chat_history": history[-8:],
+        "new_user_message": _documents_agent_sanitize_text(message, limit=800),
+    }
+    system_prompt = (
+        "You classify the user's latest Russian message while the service is waiting for approval of a generated document preview. "
+        "Return only compact JSON with keys: intent, confidence, reply. "
+        "intent must be one of: approve_preview, reject_preview, request_preview_regenerate, request_template_change, ask_question, unclear. "
+        "approve_preview means the user clearly allows mass generation to start. "
+        "reject_preview or request_template_change means the user is unhappy with the preview or asks to change the template. "
+        "request_preview_regenerate means the user asks to rebuild the same preview. "
+        "If the message is ambiguous, use unclear. Never approve if there is doubt. reply must be short Russian text."
+    )
+    try:
+        response = client.chat.completions.create(
+            model=settings.case_agent_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(decision_context, ensure_ascii=False, indent=2, default=str)},
+            ],
+            temperature=0,
+            max_tokens=260,
+        )
+    except Exception:
+        reply = "AI сейчас не смог разобрать ответ по примеру. Массовую генерацию не запускаю; попробуйте ещё раз чуть позже."
+        return _documents_agent_reply_payload(
+            reply,
+            source="documents_preview_ai_error",
+            action="hold_documents_generation",
+            preview_approved=False,
+            tools_used=["template_preview", "ai_intent"],
+        )
+
+    raw_reply = str(response.choices[0].message.content if response.choices else "").strip()
+    decision = _documents_agent_extract_json_object(raw_reply) or {}
+    intent = str(decision.get("intent") or "unclear").strip()
+    try:
+        confidence = float(decision.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    model_reply = _documents_agent_sanitize_text(decision.get("reply"), limit=500)
+
+    if intent == "approve_preview" and confidence >= 0.7:
+        try:
+            mark_template_preview_approval(job_id, approved=True, reason=message, actor="documents_chat")
+        except FileNotFoundError:
+            return _documents_agent_reply_payload(
+                "Пример уже не найден. Сначала соберите preview заново, потом я запущу массовую генерацию.",
+                source="documents_preview_missing",
+                action="regenerate_template_preview",
+                preview_approved=False,
+                tools_used=["template_preview", "ai_intent"],
+            )
+        return _documents_agent_reply_payload(
+            model_reply or "Поняла, пример подтверждён. Запускаю массовую подготовку документов.",
+            source="documents_preview_ai",
+            action="start_documents_after_preview",
+            preview_approved=True,
+            preview_intent=intent,
+            preview_confidence=confidence,
+            tools_used=["template_preview", "ai_intent"],
+        )
+
+    if intent in {"reject_preview", "request_template_change"} and confidence >= 0.55:
+        try:
+            mark_template_preview_approval(job_id, approved=False, reason=message, actor="documents_chat")
+        except FileNotFoundError:
+            pass
+        return _documents_agent_reply_payload(
+            model_reply or "Поняла, массовую генерацию не запускаю. Напишите, что именно поправить в шаблоне.",
+            source="documents_preview_ai",
+            action="hold_documents_generation",
+            preview_approved=False,
+            preview_intent=intent,
+            preview_confidence=confidence,
+            tools_used=["template_preview", "ai_intent"],
+        )
+
+    if intent == "request_preview_regenerate" and confidence >= 0.55:
+        return _documents_agent_reply_payload(
+            model_reply or "Хорошо, пересобираю пример по первой строке. После этого снова попрошу подтверждение.",
+            source="documents_preview_ai",
+            action="regenerate_template_preview",
+            preview_approved=False,
+            preview_intent=intent,
+            preview_confidence=confidence,
+            tools_used=["template_preview", "ai_intent"],
+        )
+
+    return _documents_agent_reply_payload(
+        model_reply or "Я не уверена, что это подтверждение запуска. Массовую генерацию пока не начинаю: напишите, можно ли запускать все документы.",
+        source="documents_preview_ai",
+        action="hold_documents_generation",
+        preview_approved=False,
+        preview_intent=intent or "unclear",
+        preview_confidence=confidence,
+        tools_used=["template_preview", "ai_intent"],
+    )
+
 def _documents_agent_build_readonly_context(message: str, job_id: str | None, documents_status: dict[str, Any]) -> dict[str, Any]:
     paths = resolve_job_paths(job_id)
     state_dir = resolve_state_path("generator", job_id).parent
@@ -788,12 +976,15 @@ def _documents_agent_build_readonly_context(message: str, job_id: str | None, do
     generator_details = load_agent_state("generator", {}, job_id=job_id, include_details=True)
     philologist_details = load_agent_state("philologist", {}, job_id=job_id, include_details=True)
     service_docs = format_service_rag_context(find_relevant_service_docs(message, limit=3))
+    template_analysis = build_template_analysis_context(job_id=job_id, document_mode=documents_status.get("document_mode"))
     context = {
         "screen": "documents",
         "job_id": job_id or "",
         "read_only": True,
         "user_question": _documents_agent_sanitize_text(message, limit=600),
         "service_knowledge": _documents_agent_sanitize_text(service_docs, limit=2500),
+        "template_analysis": template_analysis,
+        "template_preview": _documents_agent_template_preview_context(job_id),
         "status": {
             "status": documents_status.get("status"),
             "stage": documents_status.get("stage"),
@@ -853,6 +1044,14 @@ def _documents_agent_build_readonly_context(message: str, job_id: str | None, do
     return context
 
 
+def _documents_agent_resolve_openai_base_url() -> str | None:
+    for key_name in ("OPENAI_BASE_URL", "GENERATOR_OPENAI_BASE_URL", "VSELLM_BASE_URL", "VLLM_BASE_URL"):
+        base_url = resolve_env_value(key_name)
+        if base_url:
+            return base_url.strip().rstrip("/")
+    fallback = str(settings.openai_base_url or "").strip()
+    return fallback.rstrip("/") if fallback else None
+
 def _documents_agent_build_llm_client():
     if OpenAI is None:
         return None
@@ -860,7 +1059,7 @@ def _documents_agent_build_llm_client():
     if not api_key:
         return None
     kwargs: dict[str, Any] = {"api_key": api_key}
-    base_url = _resolve_openai_base_url()
+    base_url = _documents_agent_resolve_openai_base_url()
     if base_url:
         kwargs["base_url"] = base_url
     http_client = _build_openai_http_client()
@@ -993,95 +1192,74 @@ def choose_documents_agent_reply(
     *,
     status_loader: StatusLoader,
     chat_with_orchestrator: ChatWithOrchestrator | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
-    lowered = message.lower()
-
-    if any(token in lowered for token in ("/test-scroll", "тест бегунка", "тест скролла", "проверить бегунок")):
-        return _documents_agent_reply_payload(
-            _documents_agent_scroll_test_reply(),
-            source="debug_scroll_test",
-            allow_long_reply=True,
-            tools_used=[],
-        )
-
-    if _documents_agent_is_capabilities_question(lowered):
-        documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-        return _documents_agent_reply_payload(
-            _documents_agent_capabilities_reply(documents_status),
-            tools_used=["get_documents_status"],
-        )
-
-    if _documents_agent_is_ack_or_greeting(lowered):
-        return _documents_agent_reply_payload(_documents_agent_general_reply(message), tools_used=[])
-    if any(token in lowered for token in ("ты агент", "ты вообще агент", "ты завис", "завис", "отвечаешь")):
-        if not any(token in lowered for token in ("почему долго", "так долго", "статус", "что происходит", "ошиб", "сколько")):
-            return _documents_agent_reply_payload(_documents_agent_general_reply(message), tools_used=[])
-
-    if any(token in lowered for token in ("технический лог", "служебный лог", "полный лог", "trace", "tool_trace", "журнал агента")):
-        reply, _ = _documents_agent_tool_get_technical_log(job_id, status_loader)
-        return _documents_agent_reply_payload(reply, tools_used=["get_technical_log"])
-
-    if any(token in lowered for token in ("почему долго", "так долго", "долго провер", "медленно", "тормоз")):
-        documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-        return _documents_agent_reply_payload(
-            _documents_agent_duration_reply(documents_status),
-            tools_used=["get_documents_status"],
-        )
-    if any(token in lowered for token in ("что происходит", "на каком этапе", "статус", "идет ли", "идёт ли", "что сейчас", "процесс")):
-        reply, _ = _documents_agent_tool_get_current_step(job_id, status_loader)
-        return _documents_agent_reply_payload(reply, tools_used=["get_current_step"])
-    if any(token in lowered for token in ("что дальше", "следующ", "можно ли дальше", "переход", "кнопк", "актив", "доступ", "заблок")):
-        documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-        return _documents_agent_reply_payload(
-            _documents_agent_next_step_reply(documents_status),
-            tools_used=["get_documents_status", "get_current_step"],
-        )
-
+    del chat_with_orchestrator
     documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-    rag_reply = _documents_agent_rag_reply(message, documents_status)
-    if rag_reply:
-        return _documents_agent_reply_payload(rag_reply, source="service_rag", tools_used=["service_rag"])
+    resolved_session_id, session = get_chat_session(session_id, namespace="documents", job_id=job_id)
+    history = chat_history_for_prompt(session)
+    context = _documents_agent_build_readonly_context(message, job_id, documents_status)
+    context["chat_session"] = {
+        "session_id": resolved_session_id,
+        "history": history,
+    }
+    preview_decision = _documents_agent_preview_decision_reply(message, job_id, context, history)
+    if preview_decision is not None:
+        reply = str(preview_decision.get("reply") or "")
+        append_chat_turn(resolved_session_id, message, reply)
+        preview_decision.setdefault("session_id", resolved_session_id)
+        return preview_decision
 
-    readonly_agent_reply = _documents_agent_readonly_ai_reply(message, documents_status, job_id)
-    if readonly_agent_reply:
-        return readonly_agent_reply
+    context_text = json.dumps(context, ensure_ascii=False, indent=2, default=str)
+    if len(context_text) > _MAX_DIAGNOSTIC_TEXT:
+        context_text = context_text[: _MAX_DIAGNOSTIC_TEXT - 1].rstrip() + "..."
 
-    if any(
-        token in lowered
-        for token in (
-            "все прошло", "всё прошло", "нормально", "успешно", "документы собран", "документы готовы",
-            "все готово", "всё готово", "готово", "собран", "сформиров",
+    client = _documents_agent_build_llm_client()
+    source = "documents_ai"
+    if client is None:
+        reply = (
+            "AI chat is unavailable: model client or key is not configured. "
+            "This chat session context was saved; try again after AI is restored."
         )
-    ):
-        return _documents_agent_reply_payload(
-            _documents_agent_process_reply(documents_status),
-            tools_used=["get_documents_status"],
+        source = "documents_ai_unavailable"
+    else:
+        system_prompt = (
+            "You are the AI chat for the Documents screen of a proposal generation and mailing service. "
+            "Always answer in Russian, briefly and practically. "
+            "The current service context below is the source of truth; session history is only for conversational continuity. "
+            "Do not start generation, send emails, change files, or promise actions this chat does not perform. "
+            "Do not expose JSON, tokens, keys, stack traces, raw logs, or internal file paths. "
+            "If context is insufficient, say exactly what is missing."
         )
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        if history:
+            messages.append({
+                "role": "user",
+                "content": "Current chat session history:\n" + json.dumps(history, ensure_ascii=False, indent=2),
+            })
+        messages.append({
+            "role": "user",
+            "content": f"Current service context:\n{context_text}\n\nNew user message:\n{message}",
+        })
+        try:
+            response = client.chat.completions.create(
+                model=settings.case_agent_model,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=520,
+            )
+            reply = str(response.choices[0].message.content if response.choices else "").strip()
+            if not reply:
+                reply = "AI returned an empty answer. Session context was saved; try the question again."
+                source = "documents_ai_empty"
+        except Exception:
+            reply = "AI chat could not answer right now. Session context was saved; try again later."
+            source = "documents_ai_error"
 
-    if any(token in lowered for token in ("скачать", "архив", "отч", "файл", "pdf", "docx")):
-        reply, _ = _documents_agent_tool_get_downloads(job_id, status_loader)
-        return _documents_agent_reply_payload(reply, tools_used=["get_downloads"])
-    if any(token in lowered for token in ("итог", "результат", "сколько готово", "сколько документов", "сводк")):
-        documents_status = _documents_agent_tool_get_documents_status(job_id, status_loader)
-        return _documents_agent_reply_payload(
-            _documents_agent_result_reply(documents_status),
-            tools_used=["get_documents_status"],
-        )
-
-    if any(token in lowered for token in ("ошиб", "проблем", "упал", "не работает", "сломал")):
-        reply, _ = _documents_agent_tool_get_errors(job_id, status_loader)
-        return _documents_agent_reply_payload(reply, tools_used=["get_errors"])
-
-    if _documents_agent_should_delegate_to_philologist(message):
-        reply, _ = _documents_agent_tool_get_text_review_summary(job_id, status_loader)
-        return _documents_agent_reply_payload(reply, tools_used=["get_text_review_summary"])
-
-    readonly_agent_reply = _documents_agent_readonly_ai_reply(message, documents_status, job_id, force=True)
-    if readonly_agent_reply:
-        return readonly_agent_reply
-
+    append_chat_turn(resolved_session_id, message, reply)
     return _documents_agent_reply_payload(
-        _documents_agent_ai_unavailable_reply(),
-        source="documents_ai_unavailable",
-        tools_used=["get_documents_status"],
+        reply,
+        source=source,
+        session_id=resolved_session_id,
+        tools_used=["ai_context", "session_memory"],
     )

@@ -22,6 +22,7 @@ tmp*
 pytest-cache-files-*
 
 *.xlsx
+!tests/e2e/fixtures/*.xlsx
 *.db
 *.sqlite
 *.sqlite3

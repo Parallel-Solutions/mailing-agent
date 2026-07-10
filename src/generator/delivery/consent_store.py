@@ -481,6 +481,36 @@ def mark_consent_request_sent(
             return
 
 
+def mark_materials_dispatch_started(
+    *,
+    job_id: str | None,
+    row_id: Any,
+    recipient: str,
+    attachment_mode: str | None = None,
+) -> None:
+    with _locked_records(job_id):
+        records = _load_records(job_id)
+        now = datetime.now().isoformat(timespec="seconds")
+        for record in records:
+            if not _record_matches(record, row_id=row_id, recipient=recipient):
+                continue
+            if attachment_mode is not None and not _record_matches_attachment_mode(record, attachment_mode):
+                continue
+            if _materials_dispatch_sent(record):
+                _save_records(job_id, records)
+                return
+            record["materials_dispatch_requested_at"] = now
+            record["materials_dispatch_completed_at"] = ""
+            record["materials_dispatch_summary"] = ""
+            record["materials_error"] = ""
+            record["materials_status"] = "queued"
+            try:
+                record["materials_dispatch_attempts"] = int(record.get("materials_dispatch_attempts") or 0) + 1
+            except (TypeError, ValueError):
+                record["materials_dispatch_attempts"] = 1
+            _save_records(job_id, records)
+            return
+
 def mark_materials_dispatch_result(
     *,
     job_id: str | None,

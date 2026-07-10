@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -92,8 +94,24 @@ def materialize_xlsx(job_id: str | None, local_path: Path) -> Path:
         if local_path.exists():
             return local_path
         wb = Workbook()
-        wb.save(local_path)
+        fd, tmp_name = tempfile.mkstemp(dir=str(local_path.parent), suffix=".xlsxtmp")
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        try:
+            wb.save(tmp_path)
+            os.replace(tmp_path, local_path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
         return local_path
     df = pd.DataFrame(clients)
-    df.to_excel(local_path, index=False)
+    fd, tmp_name = tempfile.mkstemp(dir=str(local_path.parent), suffix=".xlsxtmp")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        df.to_excel(tmp_path, index=False)
+        os.replace(tmp_path, local_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return local_path

@@ -5,6 +5,8 @@ import csv
 import io
 import json
 import re
+import threading
+import time
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -26,12 +28,14 @@ from src.generator.delivery.sender_report import (
     _build_delivery_rows,
     _campaign_metadata,
     _format_moscow_datetime,
+    _is_sender_delivery_refresh_running,
     _load_sender_state,
     _normalize_provider_status,
     _normalize_recipient_role,
     _now_moscow,
     _provider_label,
     _safe_text,
+    _start_sender_delivery_refresh,
     build_sender_delivery_report_xlsx,
 )
 from src.jobs import load_agent_state, resolve_job_paths
@@ -264,77 +268,210 @@ def _email_domain_provider(email: str) -> str:
     return EMAIL_DOMAIN_PROVIDERS.get(domain, "Другие")
 
 
+# --- Short-lived in-memory cache -------------------------------------------------
+# Every statistics endpoint (dashboard, recipients, problems, campaigns,
+# analytics) needs the same per-job delivery/consent rows, and each rebuild is
+# expensive (DB reads + provider event files + state files). Cache the enriched
+# rows per job for a short TTL so a single page load with several API calls does
+# not recompute the same jobs repeatedly. Provider refresh runs in the background
+# and invalidates the affected job on completion.
+_CACHE_TTL_SECONDS = 20.0
+_cache_lock = threading.Lock()
+_delivery_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_consent_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+# Jobs for which a background provider refresh was requested. When that refresh
+# finishes we invalidate the job's cache once so the freshly pulled events show
+# up on the next read (see _settle_refreshed_job).
+_pending_invalidations: set[str] = set()
+
+
+def _cache_get(store: dict[str, tuple[float, list[dict[str, Any]]]], job_id: str) -> list[dict[str, Any]] | None:
+    with _cache_lock:
+        entry = store.get(job_id)
+        if entry is None:
+            return None
+        cached_at, value = entry
+        if (time.monotonic() - cached_at) >= _CACHE_TTL_SECONDS:
+            store.pop(job_id, None)
+            return None
+        return value
+
+
+def _cache_set(store: dict[str, tuple[float, list[dict[str, Any]]]], job_id: str, value: list[dict[str, Any]]) -> None:
+    with _cache_lock:
+        store[job_id] = (time.monotonic(), value)
+
+
+def invalidate_stats_cache(job_id: str | None = None) -> None:
+    """Drop cached delivery/consent rows so the next read rebuilds from source."""
+
+    with _cache_lock:
+        if job_id is None:
+            _delivery_cache.clear()
+            _consent_cache.clear()
+            return
+        _delivery_cache.pop(job_id, None)
+        _consent_cache.pop(job_id, None)
+
+
+def _mark_pending_refresh(job_id: str) -> None:
+    with _cache_lock:
+        _pending_invalidations.add(job_id)
+
+
+def _settle_refreshed_job(job_id: str) -> None:
+    """If a requested background refresh has finished, rebuild the cache once."""
+
+    with _cache_lock:
+        pending = job_id in _pending_invalidations
+    if not pending or _is_sender_delivery_refresh_running(job_id):
+        return
+    with _cache_lock:
+        _pending_invalidations.discard(job_id)
+        _delivery_cache.pop(job_id, None)
+        _consent_cache.pop(job_id, None)
+
+
+_BACKGROUND_REFRESH_LIMIT = 25
+
+
+def _job_awaiting_provider_events(rows: list[dict[str, Any]]) -> bool:
+    """True when a job has sends but no provider events yet (all pending)."""
+
+    if not rows:
+        # No sent mail for this job → nothing to fetch from providers.
+        return False
+    for row in rows:
+        if row.get("manager_status", {}).get("key") not in {"pending", "no_data"}:
+            return False
+    return True
+
+
+def _trigger_provider_refresh(
+    job_ids: tuple[str, ...],
+    rows_by_job: dict[str, list[dict[str, Any]]],
+    *,
+    manual: bool,
+    auto: bool,
+) -> tuple[bool, bool]:
+    """Start background provider dooбор for the relevant jobs.
+
+    Returns (refresh_started, refresh_in_progress). Bounded by
+    _BACKGROUND_REFRESH_LIMIT so an "all campaigns" view never spawns hundreds of
+    provider API calls at once — webhooks keep the rest up to date.
+    """
+
+    started = False
+    triggered = 0
+    for job_id in job_ids:
+        if triggered >= _BACKGROUND_REFRESH_LIMIT:
+            break
+        wants = manual or (auto and _job_awaiting_provider_events(rows_by_job.get(job_id, [])))
+        if not wants:
+            continue
+        triggered += 1
+        if _start_sender_delivery_refresh(job_id):
+            started = True
+        _mark_pending_refresh(job_id)
+    in_progress = any(_is_sender_delivery_refresh_running(job_id) for job_id in job_ids)
+    return started, in_progress
+
+
+def _build_delivery_rows_for_job(job_id: str, *, refresh: bool) -> list[dict[str, Any]]:
+    delivery_rows, _ = _build_delivery_rows(job_id, refresh=refresh)
+    latest_actions = latest_action_by_recipient(job_id)
+    rows: list[dict[str, Any]] = []
+    for row in delivery_rows:
+        manager_status = normalize_manager_status(row.get("provider_status") or "unknown")
+        interest = interest_for(manager_status["key"])
+        recommended = recommended_action_for(manager_status["key"])
+        action = latest_actions.get((_safe_text(row.get("row_id")), _safe_text(row.get("recipient")).lower()))
+        next_action = _manager_action_view(action) if action else recommended
+        rows.append(
+            {
+                **row,
+                "job_id": job_id,
+                "row_key": make_row_key(job_id, row.get("row_id"), row.get("recipient")),
+                "organization": _safe_text(row.get("mun_name")),
+                "recipient_name": _safe_text(row.get("recipient")),
+                "email": _safe_text(row.get("recipient")).lower(),
+                "role": _normalize_recipient_role(row.get("recipient_role")),
+                "role_label": RECIPIENT_ROLE_LABELS.get(
+                    _normalize_recipient_role(row.get("recipient_role")),
+                    RECIPIENT_ROLE_LABELS["unknown"],
+                ),
+                "manager_status": manager_status,
+                "interest": interest,
+                "recommended_action": recommended,
+                "next_action": next_action,
+                "last_event_at": _safe_text(row.get("checked_at") or row.get("sent_at")),
+                "last_event_label": manager_status["label"],
+                "attempts": 1,
+                "bounce_reason": _bounce_reason(row.get("provider_status"), row.get("delivery_response")),
+                "bounce_reason_label": BOUNCE_REASON_LABELS.get(
+                    _bounce_reason(row.get("provider_status"), row.get("delivery_response")),
+                    "Прочее",
+                ),
+                "email_domain_provider": _email_domain_provider(_safe_text(row.get("recipient"))),
+            }
+        )
+    return rows
+
+
 def _load_delivery_for_jobs(job_ids: tuple[str, ...], *, refresh: bool = False) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for job_id in job_ids:
-        delivery_rows, _ = _build_delivery_rows(job_id, refresh=refresh)
-        latest_actions = latest_action_by_recipient(job_id)
-        for row in delivery_rows:
-            manager_status = normalize_manager_status(row.get("provider_status") or "unknown")
-            interest = interest_for(manager_status["key"])
-            recommended = recommended_action_for(manager_status["key"])
-            action = latest_actions.get((_safe_text(row.get("row_id")), _safe_text(row.get("recipient")).lower()))
-            next_action = _manager_action_view(action) if action else recommended
-            rows.append(
-                {
-                    **row,
-                    "job_id": job_id,
-                    "row_key": make_row_key(job_id, row.get("row_id"), row.get("recipient")),
-                    "organization": _safe_text(row.get("mun_name")),
-                    "recipient_name": _safe_text(row.get("recipient")),
-                    "email": _safe_text(row.get("recipient")).lower(),
-                    "role": _normalize_recipient_role(row.get("recipient_role")),
-                    "role_label": RECIPIENT_ROLE_LABELS.get(
-                        _normalize_recipient_role(row.get("recipient_role")),
-                        RECIPIENT_ROLE_LABELS["unknown"],
-                    ),
-                    "manager_status": manager_status,
-                    "interest": interest,
-                    "recommended_action": recommended,
-                    "next_action": next_action,
-                    "last_event_at": _safe_text(row.get("checked_at") or row.get("sent_at")),
-                    "last_event_label": manager_status["label"],
-                    "attempts": 1,
-                    "bounce_reason": _bounce_reason(row.get("provider_status"), row.get("delivery_response")),
-                    "bounce_reason_label": BOUNCE_REASON_LABELS.get(
-                        _bounce_reason(row.get("provider_status"), row.get("delivery_response")),
-                        "Прочее",
-                    ),
-                    "email_domain_provider": _email_domain_provider(_safe_text(row.get("recipient"))),
-                }
-            )
+        if refresh:
+            invalidate_stats_cache(job_id)
+        else:
+            _settle_refreshed_job(job_id)
+        cached = None if refresh else _cache_get(_delivery_cache, job_id)
+        if cached is None:
+            cached = _build_delivery_rows_for_job(job_id, refresh=refresh)
+            _cache_set(_delivery_cache, job_id, cached)
+        rows.extend(cached)
+    return rows
+
+
+def _build_consent_rows_for_job(job_id: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in _build_consent_rows(job_id):
+        status_key = _safe_text(row.get("status")) or "pending"
+        materials_status = _safe_text(row.get("materials_status"))
+        interest_key = "high" if status_key == "confirmed" and materials_status == "sent" else "medium"
+        if status_key != "confirmed":
+            interest_key = "low"
+        rows.append(
+            {
+                **row,
+                "job_id": job_id,
+                "organization": _safe_text(row.get("mun_name")),
+                "contact": _safe_text(row.get("recipient")),
+                "email": _safe_text(row.get("recipient")).lower(),
+                "consent_status_key": status_key,
+                "consent_status_label": _safe_text(row.get("status_label")),
+                "materials_label": _safe_text(row.get("materials_status_label")),
+                "last_action_label": _safe_text(row.get("materials_status_label") or row.get("status_label")),
+                "last_action_at": _safe_text(row.get("materials_sent_at") or row.get("confirmed_at") or row.get("request_sent_at")),
+                "interest": {
+                    "key": interest_key,
+                    "label": INTEREST_LABELS[interest_key],
+                    "tone": INTEREST_TONES[interest_key],
+                },
+                "next_action": recommended_action_for("opened" if status_key == "confirmed" else "pending"),
+            }
+        )
     return rows
 
 
 def _load_consents_for_jobs(job_ids: tuple[str, ...]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for job_id in job_ids:
-        for row in _build_consent_rows(job_id):
-            status_key = _safe_text(row.get("status")) or "pending"
-            materials_status = _safe_text(row.get("materials_status"))
-            interest_key = "high" if status_key == "confirmed" and materials_status == "sent" else "medium"
-            if status_key != "confirmed":
-                interest_key = "low"
-            rows.append(
-                {
-                    **row,
-                    "job_id": job_id,
-                    "organization": _safe_text(row.get("mun_name")),
-                    "contact": _safe_text(row.get("recipient")),
-                    "email": _safe_text(row.get("recipient")).lower(),
-                    "consent_status_key": status_key,
-                    "consent_status_label": _safe_text(row.get("status_label")),
-                    "materials_label": _safe_text(row.get("materials_status_label")),
-                    "last_action_label": _safe_text(row.get("materials_status_label") or row.get("status_label")),
-                    "last_action_at": _safe_text(row.get("materials_sent_at") or row.get("confirmed_at") or row.get("request_sent_at")),
-                    "interest": {
-                        "key": interest_key,
-                        "label": INTEREST_LABELS[interest_key],
-                        "tone": INTEREST_TONES[interest_key],
-                    },
-                    "next_action": recommended_action_for("opened" if status_key == "confirmed" else "pending"),
-                }
-            )
+        cached = _cache_get(_consent_cache, job_id)
+        if cached is None:
+            cached = _build_consent_rows_for_job(job_id)
+            _cache_set(_consent_cache, job_id, cached)
+        rows.extend(cached)
     return rows
 
 
@@ -545,7 +682,19 @@ def build_insights(*, rows: list[dict[str, Any]], counts: dict[str, int]) -> lis
 
 
 def build_manager_dashboard(filters: StatsFilters, *, refresh: bool = False) -> dict[str, Any]:
-    rows = _load_delivery_for_jobs(filters.job_ids, refresh=refresh)
+    # Always serve cached rows instantly; provider dooбор happens in the
+    # background so the request never blocks on remote provider APIs.
+    all_rows = _load_delivery_for_jobs(filters.job_ids)
+    rows_by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in all_rows:
+        rows_by_job[_safe_text(row.get("job_id"))].append(row)
+    refresh_started, refresh_in_progress = _trigger_provider_refresh(
+        filters.job_ids,
+        rows_by_job,
+        manual=refresh,
+        auto=True,
+    )
+    rows = all_rows
     consent_rows = _load_consents_for_jobs(filters.job_ids)
     rows = _apply_recipient_filters(rows, filters)
     consent_rows = [
@@ -606,6 +755,9 @@ def build_manager_dashboard(filters: StatsFilters, *, refresh: bool = False) -> 
         "insights": build_insights(rows=rows, counts=counts),
         "total": total,
         "empty": total <= 0,
+        "refresh_started": refresh_started,
+        "refresh_in_progress": refresh_in_progress,
+        "awaiting_provider_events": bool(total > 0 and counts["pending"] >= total),
     }
 
 
@@ -614,9 +766,19 @@ def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
     totals = {"total": 0, "active": 0, "completed": 0, "draft": 0}
     delivery_rates: list[float] = []
     open_rates: list[float] = []
+    # Load and filter everything once, then group by job in memory instead of
+    # re-reading each job (DB + provider files) inside the loop.
+    all_rows = _apply_recipient_filters(_load_delivery_for_jobs(filters.job_ids), filters)
+    all_consents = _load_consents_for_jobs(filters.job_ids)
+    rows_by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in all_rows:
+        rows_by_job[_safe_text(row.get("job_id"))].append(row)
+    consents_by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in all_consents:
+        consents_by_job[_safe_text(row.get("job_id"))].append(row)
     for job_id in filters.job_ids:
-        rows = [row for row in _load_delivery_for_jobs((job_id,)) if _apply_recipient_filters([row], filters)]
-        consent_rows = _load_consents_for_jobs((job_id,))
+        rows = rows_by_job.get(job_id, [])
+        consent_rows = consents_by_job.get(job_id, [])
         counts = _aggregate_counts(rows, consent_rows)
         status = _campaign_status(job_id)
         totals["total"] += 1
@@ -817,7 +979,13 @@ def build_email_problems(filters: StatsFilters, *, page: int = 1, per_page: int 
 
 
 def build_campaign_analytics(job_id: str, *, refresh: bool = False) -> dict[str, Any]:
-    rows = _load_delivery_for_jobs((job_id,), refresh=refresh)
+    rows = _load_delivery_for_jobs((job_id,))
+    refresh_started, refresh_in_progress = _trigger_provider_refresh(
+        (job_id,),
+        {job_id: rows},
+        manual=refresh,
+        auto=True,
+    )
     consent_rows = _load_consents_for_jobs((job_id,))
     counts = _aggregate_counts(rows, consent_rows)
     campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows)
@@ -892,6 +1060,9 @@ def build_campaign_analytics(job_id: str, *, refresh: bool = False) -> dict[str,
         "high_interest_companies": high_interest,
         "problem_addresses": problematic,
         "recommendations": [item["text"] for item in build_insights(rows=rows, counts=counts)],
+        "refresh_started": refresh_started,
+        "refresh_in_progress": refresh_in_progress,
+        "awaiting_provider_events": bool(counts["sent"] > 0 and counts["pending"] >= counts["sent"]),
     }
 
 

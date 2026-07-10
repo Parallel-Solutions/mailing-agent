@@ -31,7 +31,8 @@ class DownloadRouterIsolationTests(unittest.TestCase):
         self.assertTrue(
             legacy_parser_output_dir().as_posix().endswith("src/parser_new/output/latest")
         )
-    def _client(self, *, latest_matching_file, parser_verified: bool = True) -> TestClient:
+
+    def _client(self, *, latest_matching_file, parser_verified: bool = True, output_archive_ready=None) -> TestClient:
         app = FastAPI()
         parser_status = (
             {"municipality_name_verification_state": {"status": "completed"}}
@@ -49,6 +50,7 @@ class DownloadRouterIsolationTests(unittest.TestCase):
                 job_state_dir=lambda job_id: Path("state"),
                 get_parser_status=lambda job_id: parser_status,
                 safe_int=lambda value, default=0: int(value or default),
+                output_archive_ready=output_archive_ready,
             )
         )
         return TestClient(app)
@@ -128,6 +130,22 @@ class DownloadRouterIsolationTests(unittest.TestCase):
         self.assertEqual(searched_dirs, [(parser_output,)])
 
 
+    def test_output_download_waits_until_archive_is_ready(self) -> None:
+        with _workspace_temp_dir() as tmpdir:
+            job_output = tmpdir / "jobs" / "job-a" / "output"
+            job_output.mkdir(parents=True)
+            (job_output / "document.docx").write_bytes(b"docx")
+
+            client = self._client(
+                latest_matching_file=lambda *args, **kwargs: None,
+                output_archive_ready=lambda job_id: False,
+            )
+            paths = SimpleNamespace(output_dir=job_output)
+            with patch("src.web.download_router.resolve_job_paths", return_value=paths):
+                response = client.get("/api/download/output?job_id=job-a")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Документы ещё собираются", response.json()["detail"])
     def test_output_download_rejects_manifest_only_output(self) -> None:
         with _workspace_temp_dir() as tmpdir:
             job_output = tmpdir / "jobs" / "job-a" / "output"

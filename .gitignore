@@ -21,6 +21,8 @@ tmp*/
 pytest-cache-files-*/
 src/parser_new/output/
 *.xlsx
+!tests/e2e/fixtures/*.xlsx
+tests/e2e/out/
 *.db
 *.sqlite
 *.sqlite3

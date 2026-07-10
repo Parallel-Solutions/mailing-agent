@@ -5,6 +5,8 @@ services:
       POSTGRES_USER: mailing
       POSTGRES_PASSWORD: mailing
       POSTGRES_DB: mailing_test
+    volumes:
+      - pgdata-test:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mailing -d mailing_test"]
       interval: 5s
@@ -61,3 +63,6 @@ services:
       - ./.test-runtime:/app/.test-runtime
     command:
       [".venv/bin/python", "-m", "tests"]
+
+volumes:
+  pgdata-test:

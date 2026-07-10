@@ -15,7 +15,7 @@ from src.workers.process_manager import (
     terminate_worker_process,
 )
 from src.web.agent_router import create_agent_router
-from src.web.consent_router import create_consent_router
+from src.web.consent_router import create_consent_router, recover_pending_materials_dispatches
 from src.web.documents_router import create_documents_router
 from src.web.documents_service import (
     compact_documents_status,
@@ -68,6 +68,9 @@ _parser_verification_threads: dict[str, threading.Thread] = {}
 _parser_verification_threads_lock = threading.Lock()
 _output_archive_threads: dict[str, threading.Thread] = {}
 _output_archive_threads_lock = threading.Lock()
+_consent_materials_recovery_thread: threading.Thread | None = None
+_consent_materials_recovery_thread_lock = threading.Lock()
+_consent_materials_recovery_stop_event = threading.Event()
 
 
 @app.on_event("startup")
@@ -79,13 +82,43 @@ async def app_startup():
     init_db()
     ensure_bucket()
     bootstrap_auth_store(settings)
+    _start_consent_materials_recovery_thread()
     return None
 
 
 @app.on_event("shutdown")
 async def app_shutdown():
+    _consent_materials_recovery_stop_event.set()
     return None
 
+
+def _start_consent_materials_recovery_thread() -> None:
+    if not bool(settings.consent_materials_recovery_enabled):
+        return
+    with _consent_materials_recovery_thread_lock:
+        global _consent_materials_recovery_thread
+        if _consent_materials_recovery_thread and _consent_materials_recovery_thread.is_alive():
+            return
+        _consent_materials_recovery_stop_event.clear()
+        _consent_materials_recovery_thread = threading.Thread(
+            target=_run_consent_materials_recovery_loop,
+            daemon=True,
+            name="consent-materials-recovery",
+        )
+        _consent_materials_recovery_thread.start()
+
+
+def _run_consent_materials_recovery_loop() -> None:
+    poll_seconds = max(10, int(settings.consent_materials_recovery_poll_seconds or 60))
+    batch_size = max(1, int(settings.consent_materials_recovery_batch_size or 25))
+    while not _consent_materials_recovery_stop_event.is_set():
+        try:
+            result = recover_pending_materials_dispatches(limit=batch_size)
+            if any(int(result.get(key) or 0) for key in ("checked", "sent", "failed", "skipped")):
+                logger.info("consent_materials_recovery_tick", **result)
+        except Exception as exc:
+            logger.exception("consent_materials_recovery_failed", error=str(exc))
+        _consent_materials_recovery_stop_event.wait(poll_seconds)
 
 def check_auth(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
     try:
@@ -270,11 +303,26 @@ def _output_archive_path(job_id: str | None) -> Path:
     return archive_path
 
 
+def _archive_contains_output_files(archive_path: Path, output_dir: Path, output_files: list[Path]) -> bool:
+    if not output_files:
+        return False
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            archived_names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return False
+    expected_names = {path.relative_to(output_dir).as_posix() for path in output_files}
+    return expected_names.issubset(archived_names)
+
+
 def _resolve_cached_output_archive(job_id: str | None) -> tuple[Path, bool]:
     job_paths = resolve_job_paths(job_id)
     output_dir = job_paths.output_dir
     archive_path = _output_archive_path(job_id)
     if not output_dir.exists():
+        return archive_path, False
+    output_files = _iter_output_archive_files(output_dir)
+    if not output_files:
         return archive_path, False
     if not archive_path.exists():
         return archive_path, False
@@ -282,7 +330,10 @@ def _resolve_cached_output_archive(job_id: str | None) -> tuple[Path, bool]:
         archive_mtime = archive_path.stat().st_mtime
     except OSError:
         return archive_path, False
-    return archive_path, archive_mtime >= _latest_tree_mtime(output_dir)
+    cache_is_fresh = archive_mtime >= _latest_tree_mtime(output_dir)
+    if cache_is_fresh:
+        cache_is_fresh = _archive_contains_output_files(archive_path, output_dir, output_files)
+    return archive_path, cache_is_fresh
 
 
 def _iter_output_archive_files(output_dir: Path) -> list[Path]:
@@ -332,6 +383,9 @@ def _schedule_output_archive_build(job_id: str | None) -> None:
 
         def _run() -> None:
             try:
+                if not bool(compact_documents_status(job_id).get("output_ready")):
+                    logger.info("output_archive_build_waiting_for_ready_documents", job_id=job_id)
+                    return
                 output_dir = resolve_job_paths(job_id).output_dir
                 if _iter_output_archive_files(output_dir):
                     _build_output_archive(job_id)
@@ -829,6 +883,21 @@ def _run_parser_verification_background(*, job_id: str | None, source: str) -> N
                 _parser_verification_threads.pop(_parser_job_key(job_id), None)
 
 
+def _large_upload_verification_limit_exceeded(job_id: str | None, source: str) -> tuple[int, int] | None:
+    if source != "upload" or not job_id:
+        return None
+    limit_bytes = int(getattr(settings, "municipality_upload_auto_verify_max_bytes", 0) or 0)
+    if limit_bytes <= 0:
+        return None
+    data_xlsx_path = resolve_job_paths(job_id).data_xlsx
+    try:
+        file_size_bytes = data_xlsx_path.stat().st_size
+    except OSError:
+        return None
+    if file_size_bytes <= limit_bytes:
+        return None
+    return file_size_bytes, limit_bytes
+
 def _start_parser_verification_process(*, job_id: str | None, filename: str, source: str = "upload") -> None:
     started_at = perf_counter()
     key = _parser_job_key(job_id)
@@ -844,6 +913,29 @@ def _start_parser_verification_process(*, job_id: str | None, filename: str, sou
             return
         if existing_thread and not existing_thread.is_alive():
             _parser_verification_threads.pop(key, None)
+
+        skipped_upload = _large_upload_verification_limit_exceeded(job_id, source)
+        if skipped_upload is not None:
+            file_size_bytes, limit_bytes = skipped_upload
+            reason = (
+                f"файл {file_size_bytes} байт больше лимита автопроверки {limit_bytes} байт"
+            )
+            mark_municipality_verification_skipped(
+                job_id,
+                source=source,
+                reason=reason,
+                file_size_bytes=file_size_bytes,
+                limit_bytes=limit_bytes,
+            )
+            logger.info(
+                "upload_data_verification_skipped_large_file",
+                filename=filename,
+                job_id=job_id,
+                file_size_bytes=file_size_bytes,
+                limit_bytes=limit_bytes,
+                schedule_seconds=round(perf_counter() - started_at, 3),
+            )
+            return
 
         prime_municipality_verification_running(
             job_id,
@@ -965,6 +1057,7 @@ from src.generator.orchestration.parser_agent import (
     format_municipality_verification_for_chat,
     get_parser_status,
     mark_municipality_verification_failed,
+    mark_municipality_verification_skipped,
     prime_municipality_verification_running,
     run_parser_agent,
     run_parser_municipality_verification,
@@ -1189,6 +1282,7 @@ app.include_router(
         job_state_dir=_job_state_dir,
         get_parser_status=get_parser_status,
         safe_int=_safe_int,
+        output_archive_ready=lambda job_id: bool(compact_documents_status(job_id).get("output_ready")),
     )
 )
 

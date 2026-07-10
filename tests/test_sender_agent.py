@@ -17,6 +17,7 @@ from src.generator.delivery import sender_agent
 from src.generator.delivery import sender_report
 from src.web import sender_service
 from src.jobs.job_docs import append_event
+from src.workers import background_worker
 from tests.bootstrap import reset_test_database
 
 
@@ -89,6 +90,69 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(events, [("enter", "job-lock"), ("exit", "job-lock")])
         self.assertEqual(result["status"], "error")
         self.assertIn("data.xlsx", result["summary_text"])
+
+    def test_run_sender_preserves_existing_state_for_service_send(self) -> None:
+        saved_states: list[dict] = []
+        original_state = dict(
+            sender_agent.SENDER_STATE,
+            status="running",
+            mode="send",
+            send_mode="consent_request",
+            summary_text="main campaign is running",
+            sent_rows=12,
+        )
+
+        class FakeLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+        job_paths = SimpleNamespace(
+            uses_legacy_layout=True,
+            templates_dir=Path("missing-templates"),
+            output_dir=Path("missing-output"),
+            sent_mail_log_path=Path("missing-log.jsonl"),
+        )
+
+        with patch.object(sender_agent, "_sender_run_lock", return_value=FakeLock()), patch.object(
+            sender_agent, "resolve_job_paths", return_value=job_paths
+        ), patch.object(
+            sender_agent, "_resolve_sender_data_xlsx_path", return_value=Path("missing-data.xlsx")
+        ), patch.object(
+            sender_agent, "_load_sender_state", side_effect=lambda job_id=None: dict(original_state)
+        ), patch.object(
+            sender_agent, "_save_sender_state", side_effect=lambda state, job_id=None: saved_states.append(dict(state)) or state
+        ), patch.object(
+            sender_agent, "clear_sender_stop_request", return_value=None
+        ), patch.object(
+            sender_agent, "_collect_excel_stats", return_value={"total": 0, "sent": 0, "error": 0, "pending": 0}
+        ):
+            result = sender_agent.run_sender(dry_run=False, job_id="job-preserve", preserve_sender_state=True)
+
+        self.assertEqual(result["status"], "error")
+        self.assertGreaterEqual(len(saved_states), 2)
+        self.assertEqual(saved_states[-1]["summary_text"], "main campaign is running")
+        self.assertEqual(saved_states[-1]["send_mode"], "consent_request")
+
+    def test_background_sender_worker_passes_campaign_name(self) -> None:
+        calls: list[dict] = []
+
+        with patch("src.generator.delivery.sender_agent.run_sender", side_effect=lambda **kwargs: calls.append(kwargs) or {}):
+            background_worker._run_sender(
+                {
+                    "dry_run": False,
+                    "transport": "rusender",
+                    "send_mode": "consent_request",
+                    "attachment_mode": "kp",
+                    "campaign_name": "summer campaign",
+                    "job_id": "job-worker",
+                }
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["campaign_name"], "summer campaign")
 
     def test_unisender_parallel_workers_only_for_real_unisender_send(self) -> None:
         with patch.object(sender_agent.settings, "sender_unisender_concurrency", 7):
@@ -783,6 +847,23 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(calls[0]["recipient_strategy"], sender_agent.RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK)
         self.assertEqual(calls[0]["sender_email"], "override@example.com")
         self.assertEqual(calls[0]["transport"], "mailopost")
+        self.assertTrue(calls[0]["preserve_sender_state"])
+
+    def test_scheduled_delivery_fallback_waits_until_sender_finishes(self) -> None:
+        states = iter([
+            {"status": "running"},
+            {"status": "running"},
+            {"status": "completed"},
+        ])
+        sleeps: list[int] = []
+
+        with patch.object(sender_agent, "_load_sender_state", side_effect=lambda job_id=None: next(states)), patch.object(
+            sender_agent, "sleep", side_effect=lambda seconds: sleeps.append(seconds)
+        ), patch.object(sender_agent, "process_delivery_fallbacks", return_value={"status": "dispatched"}) as process_mock:
+            sender_agent._run_scheduled_delivery_fallback_check("job-1", "mailopost", "mailopost:job-1")
+
+        self.assertEqual(sleeps, [sender_agent.DELIVERY_FALLBACK_CHECK_INTERVAL_SECONDS] * 2)
+        process_mock.assert_called_once_with(job_id="job-1", provider="mailopost")
 
     def test_delivery_failure_does_not_replay_old_primary_bounce_after_fallback_sent(self) -> None:
         sent_items = [
