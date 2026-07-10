@@ -2302,6 +2302,10 @@
     font: inherit;
   }
 
+  #p-chat-messages .chat-download-preview {
+    display: none;
+  }
+
   .chat-structured {
     display: flex;
     flex-direction: column;
@@ -6424,7 +6428,13 @@
     return previewButton;
   }
 
+  function isParserChatContainer(container) {
+    if (!container) return false;
+    return container.id === 'p-chat-messages' || !!container.closest?.('#p-chat-messages');
+  }
+
   function upgradeChatDownloadRow(row) {
+    if (isParserChatContainer(row)) return;
     const link = row.querySelector('a.chat-download-link[href]');
     if (!link) return;
     const previewKind = resolveDownloadPreviewKind(link.getAttribute('href') || link.href || '');
@@ -6459,6 +6469,10 @@
   function ensurePreviewButtons(container) {
     if (!container) return;
     normalizeChatDownloadRows(container);
+    if (isParserChatContainer(container)) {
+      container.querySelectorAll('.chat-download-preview').forEach((btn) => btn.remove());
+      return;
+    }
     container.querySelectorAll('.chat-downloads-row').forEach((row) => {
       upgradeChatDownloadRow(row);
     });
@@ -6485,7 +6499,7 @@
       const row = document.createElement('div');
       row.className = 'chat-downloads-row';
       const previewKind = resolveDownloadPreviewKind(item.url, item.preview_kind);
-      if (previewKind) {
+      if (previewKind && chatId !== 'p-chat') {
         row.appendChild(createChatPreviewButton(previewKind, {
           previewLabel: item.preview_label || 'Предпросмотр',
           downloadLabel: item.label || '',
