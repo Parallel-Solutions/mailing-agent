@@ -25,6 +25,7 @@ from urllib.request import Request, urlopen
 
 from docx import Document
 
+from src.utils.logger import logger
 from src.generator.inflection.ai_case_agent import (
     OpenAI,
     _resolve_openai_api_key,
@@ -2175,14 +2176,14 @@ def _load_delivery_events(job_id: str, provider: str) -> list[dict[str, Any]]:
 
             events.extend(load_mailopost_events(job_id))
         except Exception:
-            pass
+            logger.exception("delivery_events_load_failed", job_id=job_id, provider="mailopost")
     if "rusender" in providers:
         try:
             from src.generator.delivery.rusender_events import load_rusender_events
 
             events.extend(load_rusender_events(job_id))
         except Exception:
-            pass
+            logger.exception("delivery_events_load_failed", job_id=job_id, provider="rusender")
     if "unisender" in providers:
         try:
             from src.generator.delivery.unisender_go_events import load_unisender_go_events
@@ -2192,7 +2193,7 @@ def _load_delivery_events(job_id: str, provider: str) -> list[dict[str, Any]]:
                 normalized.setdefault("provider_status", _safe_text(event.get("event_type")))
                 events.append(normalized)
         except Exception:
-            pass
+            logger.exception("delivery_events_load_failed", job_id=job_id, provider="unisender")
     return events
 
 

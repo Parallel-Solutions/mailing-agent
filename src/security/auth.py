@@ -122,6 +122,8 @@ def authenticate_basic_user(username: str, password: str, settings_obj: Any) -> 
     safe_username = _safe_identifier(username, fallback="")
     user_config = configured_auth_users(settings_obj).get(safe_username)
     if not user_config:
+        # Constant-time-ish path for unknown users to reduce enumeration signal.
+        secrets.compare_digest(str(password or ""), "dummy-password-placeholder")
         return None
     expected_password = _safe_text(user_config.get("password"))
     if not expected_password or not secrets.compare_digest(str(password or ""), expected_password):
