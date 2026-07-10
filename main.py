@@ -24,6 +24,7 @@ from src.web.documents_service import (
     run_documents_pipeline_background,
 )
 from src.web.download_router import create_download_router
+from src.web.preview_router import create_preview_router
 from src.web.generator_router import create_generator_router
 from src.web.jobs_router import JobsWebController
 from src.web.load_test_service import create_documents_load_test_job, is_load_test_job
@@ -1000,7 +1001,15 @@ async def index(session_token: str | None = Cookie(default=None, alias=SESSION_C
     username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
     if not username or get_user_record(username) is None:
         return RedirectResponse(url="/login", status_code=303)
-    return (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
+    html = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/statistics")
@@ -1291,6 +1300,20 @@ app.include_router(
         job_state_dir=_job_state_dir,
         get_parser_status=get_parser_status,
         safe_int=_safe_int,
+        output_archive_ready=lambda job_id: bool(compact_documents_status(job_id).get("output_ready")),
+    )
+)
+
+app.include_router(
+    create_preview_router(
+        check_auth=check_auth,
+        latest_matching_file=_latest_matching_file,
+        is_cache_fresh=_is_cache_fresh,
+        job_state_dir=_job_state_dir,
+        get_parser_status=get_parser_status,
+        safe_int=_safe_int,
+        resolve_cached_output_archive=_resolve_cached_output_archive,
+        build_output_archive=_build_output_archive,
         output_archive_ready=lambda job_id: bool(compact_documents_status(job_id).get("output_ready")),
     )
 )

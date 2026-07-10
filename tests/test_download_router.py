@@ -73,7 +73,7 @@ class DownloadRouterIsolationTests(unittest.TestCase):
 
             client = self._client(latest_matching_file=latest_matching_file)
             paths = SimpleNamespace(output_dir=job_output)
-            with patch("src.web.download_router.resolve_job_paths", return_value=paths):
+            with patch("src.web.download_sources.resolve_job_paths", return_value=paths):
                 response = client.get("/api/parser/download-result?job_id=job-a")
 
         self.assertEqual(response.status_code, 404)
@@ -97,7 +97,7 @@ class DownloadRouterIsolationTests(unittest.TestCase):
 
             client = self._client(latest_matching_file=latest_matching_file)
             paths = SimpleNamespace(output_dir=job_output)
-            with patch("src.web.download_router.resolve_job_paths", return_value=paths):
+            with patch("src.web.download_sources.resolve_job_paths", return_value=paths):
                 response = client.get("/api/parser/download-failed?job_id=job-a")
 
         self.assertEqual(response.status_code, 404)
@@ -116,7 +116,7 @@ class DownloadRouterIsolationTests(unittest.TestCase):
                 return parser_file if directories == [parser_output] else None
 
             client = self._client(latest_matching_file=latest_matching_file)
-            with patch("src.web.download_router.legacy_parser_output_dir", return_value=parser_output):
+            with patch("src.web.download_sources.legacy_parser_output_dir", return_value=parser_output):
                 response = client.get("/api/parser/download-result")
 
         self.assertEqual(response.status_code, 200)
@@ -141,7 +141,7 @@ class DownloadRouterIsolationTests(unittest.TestCase):
                 output_archive_ready=lambda job_id: False,
             )
             paths = SimpleNamespace(output_dir=job_output)
-            with patch("src.web.download_router.resolve_job_paths", return_value=paths):
+            with patch("src.web.download_sources.resolve_job_paths", return_value=paths):
                 response = client.get("/api/download/output?job_id=job-a")
 
         self.assertEqual(response.status_code, 409)
@@ -154,7 +154,7 @@ class DownloadRouterIsolationTests(unittest.TestCase):
 
             client = self._client(latest_matching_file=lambda *args, **kwargs: None)
             paths = SimpleNamespace(output_dir=job_output)
-            with patch("src.web.download_router.resolve_job_paths", return_value=paths):
+            with patch("src.web.download_sources.resolve_job_paths", return_value=paths):
                 response = client.get("/api/download/output?job_id=job-a")
 
         self.assertEqual(response.status_code, 404)

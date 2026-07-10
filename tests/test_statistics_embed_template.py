@@ -37,8 +37,8 @@ class StatisticsEmbedTemplateTests(unittest.TestCase):
 
     def test_static_assets_included(self) -> None:
         self.assertIn('href="/public/statistics.css"', self.index)
-        self.assertIn('src="/public/statistics.js"', self.index)
-        self.assertIn('src="/public/chart.min.js"', self.index)
+        self.assertIn('/public/statistics.js', self.index)
+        self.assertIn('/public/chart.min.js', self.index)
 
     def test_no_navigation_away_to_statistics_page(self) -> None:
         # The old standalone link must be gone; the section lives inside the SPA.

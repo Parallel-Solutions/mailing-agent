@@ -26,7 +26,7 @@ from src.jobs.access import JobAccessDenied, authorize_job_access, job_is_visibl
 from src.jobs.job_docs import list_job_ids_with_sent_mail
 from src.jobs.storage import normalize_job_id
 from src.security.auth import coerce_principal
-from src.web.download_router import DOWNLOAD_HEADERS
+from src.web.download_sources import DOWNLOAD_HEADERS
 from src.web.errors import internal_server_error
 
 
