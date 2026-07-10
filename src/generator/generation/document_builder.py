@@ -22,6 +22,7 @@ from docx.table import _Cell, Table
 
 from src.generator.generation.config_generator import BATCH_DOCX_DIR, KP_GENERATION_ENGINE, OUTPUT_DIR, TEMPLATES_DIR
 from src.generator.generation.structured_kp import render_structured_kp_docx
+from src.generator.generation.html_kp import render_html_kp_pdf, should_use_html_kp_renderer
 from src.generator.generation.transforms import (
     build_district_admin_name,
     build_output_folder_name,
@@ -2193,11 +2194,15 @@ def generate_documents_for_row(
     kp_pdf_path = batch_docx_dir / build_staged_filename(row, "kp", extension=".pdf")
     contract_path = batch_docx_dir / build_staged_filename(row, "contract")
     requested_kinds = set(document_mode_kinds(document_mode))
+    use_html_kp = should_use_html_kp_renderer(KP_GENERATION_ENGINE)
     use_structured_kp = should_use_structured_kp_renderer(kp_docx_template_path, context)
 
     generated_files: dict[str, Path] = {}
 
-    if "kp" in requested_kinds and (kp_template_path.exists() or use_structured_kp):
+    if "kp" in requested_kinds and use_html_kp:
+        generated_files["kp_pdf"] = render_html_kp_pdf(context, kp_pdf_path, template_path=kp_docx_template_path if kp_docx_template_path.exists() else None)
+        generated_files["kp_final_pdf"] = output_folder / build_kp_pdf_filename(row, context)
+    elif "kp" in requested_kinds and (kp_template_path.exists() or use_structured_kp):
         if kp_template_path.suffix.lower() == ".pdf":
             from src.generator.generation.pdf_template_renderer import can_render_kp_pdf_template, render_kp_pdf_template
 

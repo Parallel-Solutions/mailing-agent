@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -30,6 +31,7 @@ try:
         GOTENBERG_BASE_URLS,
         GOTENBERG_CONVERT_TIMEOUT_SECONDS,
         GOTENBERG_HEALTH_TIMEOUT_SECONDS,
+        GOTENBERG_HTML_BASE_URLS,
         GOTENBERG_RETRY_ATTEMPTS,
         LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_BASE_URL,
@@ -47,6 +49,7 @@ except ImportError:  # pragma: no cover
         GOTENBERG_BASE_URLS,
         GOTENBERG_CONVERT_TIMEOUT_SECONDS,
         GOTENBERG_HEALTH_TIMEOUT_SECONDS,
+        GOTENBERG_HTML_BASE_URLS,
         GOTENBERG_RETRY_ATTEMPTS,
         LIBREOFFICE_CONVERT_TIMEOUT_SECONDS,
         ONLYOFFICE_BASE_URL,
@@ -164,6 +167,7 @@ def _kill_process_tree(process: subprocess.Popen) -> None:
 ProgressCallback = Callable[[], None]
 BackendTimingCallback = Callable[[dict[str, Any]], None]
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+HTML_MIME = "text/html; charset=utf-8"
 
 
 def _convert_with_libreoffice(
@@ -385,6 +389,139 @@ def _resolve_gotenberg_base(base_url: str) -> str:
 
 def _resolve_gotenberg_endpoint(base_url: str) -> str:
     return f"{_resolve_gotenberg_base(base_url)}/forms/libreoffice/convert"
+
+
+def _resolve_gotenberg_html_endpoint(base_url: str) -> str:
+    return f"{_resolve_gotenberg_base(base_url)}/forms/chromium/convert/html"
+
+
+def _convert_html_to_pdf_with_playwright_sync(html: str, output_path: Path) -> Optional[Path]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:  # pragma: no cover - optional local dependency
+        try:
+            logger.warning("playwright_html_convert_unavailable", error=str(exc))
+        except TypeError:  # pragma: no cover - stdlib logger fallback
+            logger.warning("playwright_html_convert_unavailable %s", exc)
+        return None
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    browser = None
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+            page = browser.new_page(
+                viewport={"width": 794, "height": 1123},
+                device_scale_factor=1,
+            )
+            page.set_content(
+                html,
+                wait_until="networkidle",
+                timeout=max(1, GOTENBERG_CONVERT_TIMEOUT_SECONDS) * 1000,
+            )
+            pdf_bytes = page.pdf(
+                format="A4",
+                print_background=True,
+                prefer_css_page_size=True,
+                margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+            )
+            browser.close()
+            browser = None
+        if not pdf_bytes.startswith(b"%PDF"):
+            raise RuntimeError("Playwright returned unexpected HTML conversion payload")
+        output_path.write_bytes(pdf_bytes)
+        return output_path if output_path.exists() else None
+    except Exception as exc:
+        try:
+            logger.warning("playwright_html_convert_failed", error=str(exc))
+        except TypeError:  # pragma: no cover - stdlib logger fallback
+            logger.warning("playwright_html_convert_failed %s", exc)
+        return None
+    finally:
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+
+def _convert_html_to_pdf_with_playwright(html: str, output_path: Path) -> Optional[Path]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _convert_html_to_pdf_with_playwright_sync(html, output_path)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_convert_html_to_pdf_with_playwright_sync, html, output_path)
+        return future.result()
+
+
+def convert_html_to_pdf(
+    html: str,
+    output_path: Path,
+    *,
+    filename: str = "index.html",
+    base_urls: Tuple[str, ...] | List[str] | None = None,
+) -> Optional[Path]:
+    source_urls = GOTENBERG_HTML_BASE_URLS if base_urls is None else base_urls
+    configured_urls = tuple(str(url).strip().rstrip("/") for url in source_urls if str(url).strip())
+    if not configured_urls:
+        return _convert_html_to_pdf_with_playwright(html, output_path)
+    healthy_base_urls = _healthy_gotenberg_base_urls(configured_urls)
+    if not healthy_base_urls:
+        return _convert_html_to_pdf_with_playwright(html, output_path)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    timeout = httpx.Timeout(GOTENBERG_CONVERT_TIMEOUT_SECONDS, connect=10.0)
+    html_bytes = html.encode("utf-8")
+
+    for attempt in range(1, max(1, GOTENBERG_RETRY_ATTEMPTS) + 1):
+        for base_url in healthy_base_urls:
+            endpoint = _resolve_gotenberg_html_endpoint(base_url)
+            try:
+                with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                    response = client.post(
+                        endpoint,
+                        files={
+                            "files": (
+                                filename or "index.html",
+                                html_bytes,
+                                HTML_MIME,
+                            )
+                        },
+                        data={
+                            "paperWidth": "8.27",
+                            "paperHeight": "11.69",
+                            "marginTop": "0",
+                            "marginBottom": "0",
+                            "marginLeft": "0",
+                            "marginRight": "0",
+                            "printBackground": "true",
+                        },
+                    )
+                    response.raise_for_status()
+                    if not response.content.startswith(b"%PDF"):
+                        raise RuntimeError(
+                            "Gotenberg returned unexpected HTML conversion payload: "
+                            f"{response.headers.get('content-type', 'unknown')}"
+                        )
+                    output_path.write_bytes(response.content)
+                    return output_path if output_path.exists() else None
+            except Exception as exc:
+                try:
+                    logger.warning(
+                        "gotenberg_html_convert_failed",
+                        endpoint=endpoint,
+                        attempt=attempt,
+                        attempts=GOTENBERG_RETRY_ATTEMPTS,
+                        error=str(exc),
+                    )
+                except TypeError:  # pragma: no cover - stdlib logger fallback
+                    logger.warning("gotenberg_html_convert_failed %s %s", endpoint, exc)
+                continue
+        if attempt < GOTENBERG_RETRY_ATTEMPTS:
+            sleep(min(1.0, 0.25 * attempt))
+    return _convert_html_to_pdf_with_playwright(html, output_path)
 
 
 def _resolve_gotenberg_health_endpoint(base_url: str) -> str:
