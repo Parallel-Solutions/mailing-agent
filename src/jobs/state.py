@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,15 @@ from src.jobs.storage import normalize_job_id, resolve_job_paths
 
 
 LEGACY_JOB_ID = "__legacy__"
+_SAFE_AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _safe_agent_name(agent_name: str) -> str:
+    """Guard against path traversal via ``agent_name`` (used in filenames)."""
+    name = str(agent_name)
+    if not _SAFE_AGENT_NAME_RE.match(name) or name in {".", ".."}:
+        raise ValueError(f"invalid agent_name: {agent_name!r}")
+    return name
 TERMINAL_STATE_STATUSES = {"completed", "error", "stopped"}
 ALWAYS_SPLIT_DETAIL_AGENTS = {"philologist"}
 DETAIL_KEYS_BY_AGENT: dict[str, tuple[str, ...]] = {
@@ -25,10 +35,9 @@ def _storage_job_id(job_id: str | None) -> str:
 
 
 def resolve_state_path(agent_name: str, job_id: str | None = None) -> Path:
+    safe_name = _safe_agent_name(agent_name)
     job_paths = resolve_job_paths(job_id)
-    if job_paths.uses_legacy_layout:
-        return job_paths.root_dir / "state" / f"{agent_name}.json"
-    return job_paths.root_dir / "state" / f"{agent_name}.json"
+    return job_paths.root_dir / "state" / f"{safe_name}.json"
 
 
 def resolve_state_details_path(agent_name: str, job_id: str | None = None) -> Path:

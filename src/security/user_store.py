@@ -10,7 +10,7 @@ from sqlalchemy import select
 from src.infra.db import session_scope
 from src.infra.models import User
 from src.security.auth import _safe_identifier
-from src.security.passwords import hash_password, verify_password
+from src.security.passwords import dummy_verify_password, hash_password, verify_password
 
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,32}$")
@@ -111,10 +111,12 @@ def create_user(
 def verify_user_password(username: str, password: str) -> UserRecord | None:
     safe_username = _safe_identifier(username, fallback="")
     if not safe_username:
+        dummy_verify_password()
         return None
     with session_scope() as session:
         row = session.get(User, safe_username)
     if row is None:
+        dummy_verify_password()
         return None
     if not verify_password(password, row.password_hash):
         return None

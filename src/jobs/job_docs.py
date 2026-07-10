@@ -167,3 +167,29 @@ def iter_sent_mail_items() -> list[tuple[str, dict[str, Any]]]:
         if isinstance(row.payload, dict):
             result.append((row.job_id, dict(row.payload)))
     return result
+
+
+def list_job_ids_with_events(stream: str) -> list[str]:
+    """Return storage job ids that have at least one event in the given stream.
+
+    Ordered by most recent activity first. Cheap single grouped query — used by
+    the statistics dashboard instead of scanning the jobs directory on disk.
+    """
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(JobEvent.job_id, func.max(JobEvent.created_at).label("last_at"))
+            .where(JobEvent.stream == stream)
+            .group_by(JobEvent.job_id)
+            .order_by(func.max(JobEvent.created_at).desc())
+        ).all()
+    job_ids: list[str] = []
+    for row in rows:
+        job_id = str(row[0] or "").strip()
+        if job_id and job_id != LEGACY_JOB_ID:
+            job_ids.append(job_id)
+    return job_ids
+
+
+def list_job_ids_with_sent_mail() -> list[str]:
+    return list_job_ids_with_events("sent_mail_log")

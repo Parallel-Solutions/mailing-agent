@@ -26,7 +26,12 @@ def _s3_client():
             aws_access_key_id=settings.s3_access_key,
             aws_secret_access_key=settings.s3_secret_key,
             region_name=settings.s3_region,
-            config=BotoConfig(s3={"addressing_style": "path" if settings.s3_use_path_style else "auto"}),
+            config=BotoConfig(
+                s3={"addressing_style": "path" if settings.s3_use_path_style else "auto"},
+                connect_timeout=10,
+                read_timeout=60,
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
         )
     return _client
 
@@ -36,8 +41,14 @@ def ensure_bucket() -> None:
     bucket = settings.s3_bucket
     try:
         client.head_bucket(Bucket=bucket)
-    except ClientError:
-        client.create_bucket(Bucket=bucket)
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        # Only create the bucket when it truly does not exist; surface
+        # permission/connectivity errors (e.g. 403) instead of masking them.
+        if code in {"404", "NoSuchBucket", "NotFound"}:
+            client.create_bucket(Bucket=bucket)
+        else:
+            raise
 
 
 def put_bytes(key: str, data: bytes, content_type: str | None = None) -> None:

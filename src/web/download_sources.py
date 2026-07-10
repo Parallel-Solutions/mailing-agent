@@ -34,6 +34,7 @@ from src.generator.knowledge.correction_report import (
     correction_report_has_data,
 )
 from src.jobs import resolve_job_paths
+from src.utils.logger import logger
 
 
 class PreviewMode(StrEnum):
@@ -224,7 +225,15 @@ def ensure_local_job_path(job_id: str | None, relative_path: str) -> Path:
         return paths.root_dir / relative_path
     try:
         return ensure_local_file(job_id, relative_path)
+    except FileNotFoundError:
+        return paths.root_dir / relative_path
     except Exception:
+        logger.warning(
+            "ensure_local_job_path_failed",
+            job_id=job_id,
+            relative_path=relative_path,
+            exc_info=True,
+        )
         return paths.root_dir / relative_path
 
 
