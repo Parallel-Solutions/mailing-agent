@@ -5,6 +5,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from scripts.migrate.legacy_paths import legacy_parser_db_path
 from src.infra.db import init_db, session_scope
 from src.infra.models import ParserError, ParserRule, ParserRunHistory, ParserSourceStat
 from src.parser_new import config
@@ -12,7 +13,7 @@ from src.parser_new import config
 
 def migrate_parser_memory(db_path: Path | None = None) -> dict[str, int]:
     init_db()
-    path = db_path or Path(config.MEMORY_DIR / "agent.db")
+    path = db_path or legacy_parser_db_path(Path(config.MEMORY_DIR / "agent.db"))
     if not path.exists():
         return {"rules": 0, "errors": 0, "stats": 0, "runs": 0, "skipped": 1}
 

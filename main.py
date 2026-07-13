@@ -75,6 +75,15 @@ _consent_materials_recovery_thread_lock = threading.Lock()
 _consent_materials_recovery_stop_event = threading.Event()
 
 
+def _start_stats_cache_warm_thread() -> None:
+    if not bool(settings.stats_cache_warm_enabled):
+        return
+    from src.generator.delivery.manager_stats import start_stats_cache_warm_loop
+
+    interval_seconds = max(60, int(settings.stats_cache_warm_interval_seconds or 1200))
+    start_stats_cache_warm_loop(interval_seconds=interval_seconds)
+
+
 @app.on_event("startup")
 async def app_startup():
     require_configured_app_password(settings)
@@ -85,12 +94,16 @@ async def app_startup():
     await run_in_threadpool(ensure_bucket)
     await run_in_threadpool(bootstrap_auth_store, settings)
     _start_consent_materials_recovery_thread()
+    _start_stats_cache_warm_thread()
     return None
 
 
 @app.on_event("shutdown")
 async def app_shutdown():
     _consent_materials_recovery_stop_event.set()
+    from src.generator.delivery.manager_stats import stop_stats_cache_warm_loop
+
+    stop_stats_cache_warm_loop()
     return None
 
 

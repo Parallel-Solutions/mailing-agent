@@ -12,7 +12,8 @@ from src.infra.object_store import exists as s3_exists
 from src.infra.object_store import job_key, put_file
 from src.jobs.clients_store import import_clients_from_xlsx
 from src.jobs.job_docs import append_event
-from src.jobs.storage import DATA_DIR, JOBS_DIR, normalize_job_id
+from scripts.migrate.legacy_paths import iter_jobs_dirs
+from src.jobs.storage import DATA_DIR, normalize_job_id
 
 
 def _read_json_file(path: Path) -> dict:
@@ -170,8 +171,13 @@ def _migrate_job_dir(job_dir: Path, *, legacy: bool = False) -> dict[str, int]:
 def migrate_jobs() -> dict[str, dict[str, int]]:
     init_db()
     report: dict[str, dict[str, int]] = {}
-    if JOBS_DIR.exists():
-        for job_dir in sorted(path for path in JOBS_DIR.iterdir() if path.is_dir()):
+    migrated_job_ids: set[str] = set()
+    for jobs_dir in iter_jobs_dirs():
+        for job_dir in sorted(path for path in jobs_dir.iterdir() if path.is_dir()):
+            job_id = normalize_job_id(job_dir.name)
+            if not job_id or job_id in migrated_job_ids:
+                continue
+            migrated_job_ids.add(job_id)
             report[job_dir.name] = _migrate_job_dir(job_dir, legacy=False)
     report["__legacy__"] = _migrate_job_dir(DATA_DIR, legacy=True)
     return report

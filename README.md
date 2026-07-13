@@ -143,11 +143,28 @@ nano .env.docker
 
 docker compose up -d --build
 
-# при первом запуске на существующих данных (опционально):
-
-docker compose run --rm app .venv/bin/python -m scripts.migrate.migrate_all
-
 ```
+
+
+
+Миграция существующих данных с диска в PostgreSQL и MinIO (первый деплой на сервере с историческими job-ами):
+
+
+
+```bash
+
+# Убедиться, что ./storage/jobs содержит исторические job-ы.
+# Если новые job-ы уже созданы в ./tmp/storage/jobs, смержить их в storage:
+# cp -rn ./tmp/storage/jobs/* ./storage/jobs/
+
+docker compose --profile migrate run --rm migrate
+docker compose --profile migrate run --rm verify
+docker compose up -d
+```
+
+
+
+Скрипт `migrate` импортирует данные из `./storage` (через mount `/app/legacy/storage`) и из текущего `./tmp/storage/jobs`. Скрипт `verify` сравнивает количество записей в файлах и в PostgreSQL.
 
 
 
