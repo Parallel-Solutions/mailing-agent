@@ -20,6 +20,9 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: mailing-agent
       WORKSPACE_DIR: /app/tmp
+      LEGACY_JOBS_DIR: /app/legacy/storage/jobs
+      LEGACY_AUTH_DB: /app/legacy/storage/auth/auth.sqlite
+      LEGACY_PARSER_DB: /app/legacy/parser_memory/agent.db
       DOCUMENTS_WORKER_MAX_PROCESSES: ${DOCUMENTS_WORKER_MAX_PROCESSES:-1}
       SENDER_WORKER_MAX_PROCESSES: ${SENDER_WORKER_MAX_PROCESSES:-1}
       USER_WORKER_MAX_PROCESSES_PER_TASK: ${USER_WORKER_MAX_PROCESSES_PER_TASK:-1}
@@ -29,6 +32,8 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./tmp:/app/tmp
+      - ./storage:/app/legacy/storage:ro
+      - ./src/parser_new/memory:/app/legacy/parser_memory:ro
       - chroma-data:/app/src/parser_new/memory/vectors
     depends_on:
       postgres:
@@ -130,6 +135,56 @@ services:
       timeout: 10s
       retries: 10
       start_period: 30s
+
+  migrate:
+    profiles: ["migrate"]
+    image: mailing-agent:local
+    env_file:
+      - .env.docker
+    environment:
+      DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: mailing-agent
+      WORKSPACE_DIR: /app/tmp
+      LEGACY_JOBS_DIR: /app/legacy/storage/jobs
+      LEGACY_AUTH_DB: /app/legacy/storage/auth/auth.sqlite
+      LEGACY_PARSER_DB: /app/legacy/parser_memory/agent.db
+    volumes:
+      - ./logs:/app/logs
+      - ./tmp:/app/tmp
+      - ./scripts:/app/scripts:ro
+      - ./storage:/app/legacy/storage:ro
+      - ./src/parser_new/memory:/app/legacy/parser_memory:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: .venv/bin/python -m scripts.migrate.migrate_all
+
+  verify:
+    profiles: ["migrate"]
+    image: mailing-agent:local
+    env_file:
+      - .env.docker
+    environment:
+      DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing
+      WORKSPACE_DIR: /app/tmp
+      LEGACY_JOBS_DIR: /app/legacy/storage/jobs
+      LEGACY_AUTH_DB: /app/legacy/storage/auth/auth.sqlite
+      LEGACY_PARSER_DB: /app/legacy/parser_memory/agent.db
+    volumes:
+      - ./tmp:/app/tmp
+      - ./scripts:/app/scripts:ro
+      - ./storage:/app/legacy/storage:ro
+      - ./src/parser_new/memory:/app/legacy/parser_memory:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: .venv/bin/python -m scripts.migrate.verify_migration
 
 volumes:
   pgdata:

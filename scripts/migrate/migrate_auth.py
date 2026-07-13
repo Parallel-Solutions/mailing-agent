@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from scripts.migrate.legacy_paths import legacy_auth_db_path
 from src.infra.db import init_db, session_scope
 from src.infra.models import Session as SessionModel
 from src.infra.models import User
@@ -11,7 +12,7 @@ from src.infra.models import User
 
 def migrate_auth(auth_db_path: Path | None = None) -> dict[str, int]:
     init_db()
-    path = auth_db_path or Path("storage/auth/auth.sqlite")
+    path = auth_db_path or legacy_auth_db_path()
     if not path.exists():
         return {"users": 0, "sessions": 0, "skipped": 1}
 

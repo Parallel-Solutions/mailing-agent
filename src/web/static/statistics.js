@@ -46,6 +46,8 @@
     autoRefreshTimer: null,
     busyDepth: 0,
     searchTimers: {},
+    silentRefresh: false,
+    cachedCampaignIds: '',
   };
 
   let pendingRecipientQuickFilter = null;
@@ -224,7 +226,7 @@
     clearPoll();
     setRefreshBadge(inProgress);
     if (inProgress) {
-      state.pollTimer = setTimeout(() => { loadCurrentPage(); }, 5000);
+      state.pollTimer = setTimeout(() => { loadCurrentPage(false, { silent: true }); }, 5000);
     }
   }
 
@@ -237,7 +239,7 @@
 
   function startAutoRefresh() {
     stopAutoRefresh();
-    state.autoRefreshTimer = setInterval(() => { loadCurrentPage(true); }, AUTO_REFRESH_MS);
+    state.autoRefreshTimer = setInterval(() => { loadCurrentPage(false, { silent: true }); }, AUTO_REFRESH_MS);
   }
 
   function destroyChart(id) {
@@ -247,9 +249,42 @@
     }
   }
 
+  function upsertChart(id, canvas, config) {
+    if (!canvas) return null;
+    const existing = state.charts[id];
+    if (existing) {
+      existing.data = config.data;
+      if (config.options) existing.options = config.options;
+      existing.update('none');
+      return existing;
+    }
+    state.charts[id] = new Chart(canvas, config);
+    return state.charts[id];
+  }
+
+  function setContainerHtml(container, html, bindFn) {
+    if (!container) return false;
+    if (state.silentRefresh && container.innerHTML === html) return false;
+    const changed = container.innerHTML !== html;
+    container.innerHTML = html;
+    if (changed && bindFn) bindFn();
+    return changed;
+  }
+
   function renderKpis(containerId, items) {
     const container = qs(containerId);
     if (!container) return;
+    const cards = container.querySelectorAll('.kpi-card');
+    if (cards.length === items.length && items.length > 0) {
+      cards.forEach((card, index) => {
+        const label = card.querySelector('.label');
+        const value = card.querySelector('.value');
+        const item = items[index];
+        if (label) label.textContent = item.title;
+        if (value) value.textContent = String(item.value);
+      });
+      return;
+    }
     container.innerHTML = items.map((item) => `
       <div class="kpi-card">
         <div class="label">${escapeHtml(item.title)}</div>
@@ -261,7 +296,20 @@
   function renderFunnel(containerId, funnel) {
     const container = qs(containerId);
     if (!container) return;
-    container.innerHTML = (funnel || []).map((step) => `
+    const steps = funnel || [];
+    const stepEls = container.querySelectorAll('.funnel-step');
+    if (stepEls.length === steps.length && steps.length > 0) {
+      stepEls.forEach((stepEl, index) => {
+        const labels = stepEl.querySelectorAll('.label');
+        const valueEl = stepEl.querySelector('.value');
+        const step = steps[index];
+        if (labels[0]) labels[0].textContent = step.label;
+        if (valueEl) valueEl.textContent = fmt(step.value);
+        if (labels[1]) labels[1].textContent = `${step.percent ?? 0}%`;
+      });
+      return;
+    }
+    container.innerHTML = steps.map((step) => `
       <div class="funnel-step">
         <div class="label">${escapeHtml(step.label)}</div>
         <div class="value">${fmt(step.value)}</div>
@@ -273,7 +321,7 @@
   function renderPagination(containerId, pagination, key) {
     const container = qs(containerId);
     if (!container || !pagination) return;
-    container.innerHTML = `
+    const html = `
       <span>Показано ${Math.min((pagination.page - 1) * pagination.per_page + 1, pagination.total)}–${Math.min(pagination.page * pagination.per_page, pagination.total)} из ${fmt(pagination.total)}</span>
       <span>
         <button class="btn-outline" data-page="${pagination.page - 1}" ${pagination.page <= 1 ? 'disabled' : ''}>Назад</button>
@@ -281,11 +329,13 @@
         <button class="btn-outline" data-page="${pagination.page + 1}" ${pagination.page >= pagination.pages ? 'disabled' : ''}>Вперёд</button>
       </span>
     `;
-    container.querySelectorAll('button[data-page]').forEach((button) => {
-      button.addEventListener('click', () => {
-        state.pagination[key] = Number(button.dataset.page);
-        syncFiltersToUrl();
-        loadCurrentPage();
+    setContainerHtml(container, html, () => {
+      container.querySelectorAll('button[data-page]').forEach((button) => {
+        button.addEventListener('click', () => {
+          state.pagination[key] = Number(button.dataset.page);
+          syncFiltersToUrl();
+          loadCurrentPage();
+        });
       });
     });
   }
@@ -311,8 +361,7 @@
     qs('dashboard-empty')?.classList.toggle('hidden', !result.empty);
     qs('refresh-meta').textContent = `Обновлено: ${result.generated_at_label || 'сейчас'}`;
 
-    destroyChart('chart-statuses');
-    state.charts['chart-statuses'] = new Chart(qs('chart-statuses'), {
+    upsertChart('chart-statuses', qs('chart-statuses'), {
       type: 'doughnut',
       data: {
         labels: (result.statuses || []).map((item) => item.label),
@@ -320,8 +369,7 @@
       },
       options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } },
     });
-    destroyChart('chart-providers');
-    state.charts['chart-providers'] = new Chart(qs('chart-providers'), {
+    upsertChart('chart-providers', qs('chart-providers'), {
       type: 'bar',
       data: {
         labels: (result.providers || []).map((item) => item.label),
@@ -329,14 +377,13 @@
       },
       options: { maintainAspectRatio: false, indexAxis: 'y' },
     });
-    destroyChart('chart-roles');
     const roles = result.roles || [];
     const rolesCard = qs('card-chart-roles');
     // Splitting by address role only helps when a fallback address actually
     // exists; with a single role the chart is noise, so hide it.
     if (rolesCard) rolesCard.classList.toggle('hidden', roles.length < 2);
     if (roles.length >= 2) {
-      state.charts['chart-roles'] = new Chart(qs('chart-roles'), {
+      upsertChart('chart-roles', qs('chart-roles'), {
         type: 'doughnut',
         data: {
           labels: roles.map((item) => item.label),
@@ -344,10 +391,12 @@
         },
         options: { maintainAspectRatio: false },
       });
+    } else {
+      destroyChart('chart-roles');
     }
 
     const worklists = result.work_lists || {};
-    qs('dashboard-worklists').innerHTML = [
+    const worklistsHtml = [
       ['Заинтересованные', worklists.interested || [], 'recipients', 'opened'],
       ['Проблемы с email', worklists.email_problems || [], 'problems'],
       ['Нужно перезвонить', worklists.need_call || [], 'recipients', 'action'],
@@ -358,16 +407,37 @@
         <button class="btn-outline" data-nav="${page}" data-quick="${quick || ''}">Посмотреть все</button>
       </div>
     `).join('');
-    qs('dashboard-worklists').querySelectorAll('[data-nav]').forEach((button) => {
-      button.addEventListener('click', () => {
-        pendingRecipientQuickFilter = button.dataset.quick || '';
-        activatePage(button.dataset.nav);
+    setContainerHtml(qs('dashboard-worklists'), worklistsHtml, () => {
+      qs('dashboard-worklists').querySelectorAll('[data-nav]').forEach((button) => {
+        button.addEventListener('click', () => {
+          pendingRecipientQuickFilter = button.dataset.quick || '';
+          activatePage(button.dataset.nav);
+        });
       });
     });
-    qs('dashboard-insights').innerHTML = (result.insights || []).map((item) => `<li><strong>${escapeHtml(item.title)}:</strong> ${escapeHtml(item.text)}</li>`).join('');
+    setContainerHtml(
+      qs('dashboard-insights'),
+      (result.insights || []).map((item) => `<li><strong>${escapeHtml(item.title)}:</strong> ${escapeHtml(item.text)}</li>`).join(''),
+    );
+  }
+
+  function campaignIdsSignature() {
+    return state.campaigns.map((item) => item.job_id).join('\u0001');
   }
 
   function syncCampaignSelects() {
+    const signature = campaignIdsSignature();
+    const selectedCampaign = state.filters.campaign || state.selectedCampaign || '';
+    if (signature === state.cachedCampaignIds) {
+      const select = qs('filter-campaign');
+      const analyticsSelect = qs('analytics-campaign');
+      if (selectedCampaign) {
+        if (select && select.value !== selectedCampaign) select.value = selectedCampaign;
+        if (analyticsSelect && analyticsSelect.value !== selectedCampaign) analyticsSelect.value = selectedCampaign;
+      }
+      return;
+    }
+    state.cachedCampaignIds = signature;
     const options = ['<option value="">Все рассылки</option>'].concat(
       state.campaigns.map((item) => `<option value="${escapeHtml(item.job_id)}">${escapeHtml(item.title)}</option>`)
     );
@@ -383,7 +453,6 @@
     ).join('');
     if (qs('adv-campaign')) qs('adv-campaign').innerHTML = options.join('');
     if (analyticsSelect) analyticsSelect.innerHTML = analyticsOptions.join('');
-    const selectedCampaign = state.filters.campaign || state.selectedCampaign || '';
     if (selectedCampaign) {
       if (select) select.value = selectedCampaign;
       if (analyticsSelect) analyticsSelect.value = selectedCampaign;
@@ -403,7 +472,7 @@
     ]);
     const search = (qs('campaigns-search')?.value || '').toLowerCase();
     const rows = state.campaigns.filter((item) => !search || item.title.toLowerCase().includes(search));
-    qs('campaigns-table').innerHTML = rows.map((item) => `
+    const tableHtml = rows.map((item) => `
       <tr data-job-id="${escapeHtml(item.job_id)}">
         <td>${escapeHtml(item.title)}</td>
         <td>${escapeHtml(item.period_label)}</td>
@@ -417,16 +486,18 @@
         <td><button class="btn-outline" data-open-analytics="${escapeHtml(item.job_id)}">Аналитика</button></td>
       </tr>
     `).join('') || '<tr><td colspan="10" class="empty-state">Пока нет рассылок с отправками</td></tr>';
-    qs('campaigns-table').querySelectorAll('tr[data-job-id]').forEach((row) => {
-      row.addEventListener('click', () => selectCampaign(row.dataset.jobId));
-    });
-    qs('campaigns-table').querySelectorAll('[data-open-analytics]').forEach((button) => {
-      button.addEventListener('click', (event) => {
-        event.stopPropagation();
-        state.selectedCampaign = button.dataset.openAnalytics;
-        state.filters.campaign = state.selectedCampaign;
-        if (qs('analytics-campaign')) qs('analytics-campaign').value = state.selectedCampaign;
-        activatePage('campaign-analytics');
+    setContainerHtml(qs('campaigns-table'), tableHtml, () => {
+      qs('campaigns-table').querySelectorAll('tr[data-job-id]').forEach((row) => {
+        row.addEventListener('click', () => selectCampaign(row.dataset.jobId));
+      });
+      qs('campaigns-table').querySelectorAll('[data-open-analytics]').forEach((button) => {
+        button.addEventListener('click', (event) => {
+          event.stopPropagation();
+          state.selectedCampaign = button.dataset.openAnalytics;
+          state.filters.campaign = state.selectedCampaign;
+          if (qs('analytics-campaign')) qs('analytics-campaign').value = state.selectedCampaign;
+          activatePage('campaign-analytics');
+        });
       });
     });
   }
@@ -464,18 +535,20 @@
       { title: 'Проблемные', value: fmt(result.summary?.problematic) },
       { title: 'Нужно перезвонить', value: fmt(result.summary?.need_call) },
     ]);
-    qs('recipient-chips').innerHTML = RECIPIENT_CHIPS.map(([value, label]) => `
+    const chipsHtml = RECIPIENT_CHIPS.map(([value, label]) => `
       <button class="chip ${state.filters.quick_filter === value ? 'active' : ''}" data-quick="${value}">${label}</button>
     `).join('');
-    qs('recipient-chips').querySelectorAll('.chip').forEach((chip) => {
-      chip.addEventListener('click', () => {
-        state.filters.quick_filter = chip.dataset.quick;
-        state.pagination.recipients = 1;
-        syncFiltersToUrl();
-        loadRecipients();
+    setContainerHtml(qs('recipient-chips'), chipsHtml, () => {
+      qs('recipient-chips').querySelectorAll('.chip').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          state.filters.quick_filter = chip.dataset.quick;
+          state.pagination.recipients = 1;
+          syncFiltersToUrl();
+          loadRecipients();
+        });
       });
     });
-    qs('recipients-table').innerHTML = (result.items || []).map((item) => `
+    const tableHtml = (result.items || []).map((item) => `
       <tr data-row-key="${escapeHtml(item.row_key)}">
         <td>${escapeHtml(item.organization)}</td>
         <td>${escapeHtml(item.recipient_name)}<div>${escapeHtml(item.email)}</div></td>
@@ -487,16 +560,19 @@
         <td><button class="btn-outline" data-action="${escapeHtml(item.row_key)}">⋯</button></td>
       </tr>
     `).join('') || '<tr><td colspan="8" class="empty-state">Нет получателей за выбранный период</td></tr>';
-    qs('recipients-table').querySelectorAll('tr[data-row-key]').forEach((row) => {
-      row.addEventListener('click', () => openRecipientCard(row.dataset.rowKey));
-    });
-    qs('recipients-table').querySelectorAll('[data-action]').forEach((button) => {
-      button.addEventListener('click', (event) => {
-        event.stopPropagation();
-        openActionModal(button.dataset.action);
+    const tableChanged = setContainerHtml(qs('recipients-table'), tableHtml, () => {
+      qs('recipients-table').querySelectorAll('tr[data-row-key]').forEach((row) => {
+        row.addEventListener('click', () => openRecipientCard(row.dataset.rowKey));
+      });
+      qs('recipients-table').querySelectorAll('[data-action]').forEach((button) => {
+        button.addEventListener('click', (event) => {
+          event.stopPropagation();
+          openActionModal(button.dataset.action);
+        });
       });
     });
     renderPagination('recipients-pagination', result.pagination, 'recipients');
+    return tableChanged;
   }
 
   async function openRecipientCard(rowKey) {
@@ -521,10 +597,11 @@
     const campaign = result.campaign || {};
     const meta = qs('analytics-campaign-meta');
     if (meta) {
-      meta.innerHTML = `
+      const metaHtml = `
         <strong>${escapeHtml(campaign.title || 'Рассылка')}</strong>
         <span>${escapeHtml(result.period_from || '')}${result.period_to ? ` — ${escapeHtml(result.period_to)}` : ''}</span>
       `;
+      setContainerHtml(meta, metaHtml);
     }
     qs('analytics-empty')?.classList.add('hidden');
     qs('analytics-content')?.classList.remove('hidden');
@@ -537,8 +614,7 @@
       { title: 'Отписки и спам', value: fmt((result.summary?.unsubscribed || 0) + (result.summary?.spam || 0)) },
     ]);
     renderFunnel('analytics-funnel', result.funnel);
-    destroyChart('chart-daily');
-    state.charts['chart-daily'] = new Chart(qs('chart-daily'), {
+    upsertChart('chart-daily', qs('chart-daily'), {
       type: 'line',
       data: {
         labels: (result.daily || []).map((item) => item.date),
@@ -550,8 +626,7 @@
       },
       options: { maintainAspectRatio: false },
     });
-    destroyChart('chart-reasons');
-    state.charts['chart-reasons'] = new Chart(qs('chart-reasons'), {
+    upsertChart('chart-reasons', qs('chart-reasons'), {
       type: 'bar',
       data: {
         labels: (result.undelivery_reasons || []).map((item) => item.label),
@@ -559,8 +634,7 @@
       },
       options: { maintainAspectRatio: false, indexAxis: 'y' },
     });
-    destroyChart('chart-provider-eff');
-    state.charts['chart-provider-eff'] = new Chart(qs('chart-provider-eff'), {
+    upsertChart('chart-provider-eff', qs('chart-provider-eff'), {
       type: 'bar',
       data: {
         labels: (result.provider_effectiveness || []).map((item) => item.provider),
@@ -571,13 +645,22 @@
       },
       options: { maintainAspectRatio: false },
     });
-    qs('analytics-high-interest').innerHTML = (result.high_interest_companies || []).map((item) => `
+    setContainerHtml(
+      qs('analytics-high-interest'),
+      (result.high_interest_companies || []).map((item) => `
       <tr><td>${escapeHtml(item.organization)}</td><td>${fmt(item.sent)}</td><td>${item.open_rate}%</td><td>${item.clicked}</td></tr>
-    `).join('') || '<tr><td colspan="4" class="empty-state">Нет компаний с высоким интересом</td></tr>';
-    qs('analytics-problems').innerHTML = (result.problem_addresses || []).map((item) => `
+    `).join('') || '<tr><td colspan="4" class="empty-state">Нет компаний с высоким интересом</td></tr>',
+    );
+    setContainerHtml(
+      qs('analytics-problems'),
+      (result.problem_addresses || []).map((item) => `
       <tr><td>${escapeHtml(item.email)}</td><td>${escapeHtml(item.reason_label)}</td><td>${escapeHtml(item.provider_label)}</td><td>${fmt(item.attempts)}</td></tr>
-    `).join('') || '<tr><td colspan="4" class="empty-state">Нет проблемных адресов</td></tr>';
-    qs('analytics-recommendations').innerHTML = (result.recommendations || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+    `).join('') || '<tr><td colspan="4" class="empty-state">Нет проблемных адресов</td></tr>',
+    );
+    setContainerHtml(
+      qs('analytics-recommendations'),
+      (result.recommendations || []).map((item) => `<li>${escapeHtml(item)}</li>`).join(''),
+    );
   }
 
   function renderConsents(result) {
@@ -588,7 +671,9 @@
       { title: 'Нужно перезвонить', value: fmt(result.summary?.need_call) },
     ]);
     renderFunnel('consents-funnel', result.funnel);
-    qs('consents-table').innerHTML = (result.items || []).map((item) => `
+    setContainerHtml(
+      qs('consents-table'),
+      (result.items || []).map((item) => `
       <tr>
         <td>${escapeHtml(item.organization)}</td>
         <td>${escapeHtml(item.contact)}</td>
@@ -599,10 +684,14 @@
         <td>${escapeHtml(item.interest?.label)}</td>
         <td>${escapeHtml(item.next_action?.label)}</td>
       </tr>
-    `).join('') || '<tr><td colspan="8" class="empty-state">Нет данных по согласиям</td></tr>';
-    qs('consents-priority').innerHTML = (result.priority_contacts || []).map((item, index) => `
+    `).join('') || '<tr><td colspan="8" class="empty-state">Нет данных по согласиям</td></tr>',
+    );
+    setContainerHtml(
+      qs('consents-priority'),
+      (result.priority_contacts || []).map((item, index) => `
       <div class="worklist-item"><span>${index + 1}. ${escapeHtml(item.organization)}</span><span>${escapeHtml(item.contact)}</span></div>
-    `).join('') || '<div class="empty-state">Нет приоритетных контактов</div>';
+    `).join('') || '<div class="empty-state">Нет приоритетных контактов</div>',
+    );
     renderPagination('consents-pagination', result.pagination, 'consents');
   }
 
@@ -614,8 +703,7 @@
       { title: 'Требуют проверки', value: fmt(result.summary?.need_check) },
       { title: 'Повторить позже', value: fmt(result.summary?.retry_later) },
     ]);
-    destroyChart('chart-problem-reasons');
-    state.charts['chart-problem-reasons'] = new Chart(qs('chart-problem-reasons'), {
+    upsertChart('chart-problem-reasons', qs('chart-problem-reasons'), {
       type: 'doughnut',
       data: {
         labels: (result.reasons || []).map((item) => item.label),
@@ -623,8 +711,7 @@
       },
       options: { maintainAspectRatio: false },
     });
-    destroyChart('chart-problem-domains');
-    state.charts['chart-problem-domains'] = new Chart(qs('chart-problem-domains'), {
+    upsertChart('chart-problem-domains', qs('chart-problem-domains'), {
       type: 'bar',
       data: {
         labels: (result.domains || []).map((item) => item.provider),
@@ -632,7 +719,7 @@
       },
       options: { maintainAspectRatio: false, indexAxis: 'y' },
     });
-    qs('problems-table').innerHTML = (result.items || []).map((item) => `
+    const tableHtml = (result.items || []).map((item) => `
       <tr data-row-key="${escapeHtml(item.row_key)}">
         <td>${escapeHtml(item.organization)}</td>
         <td>${escapeHtml(item.email)}</td>
@@ -643,10 +730,13 @@
         <td>${escapeHtml(item.recommended_action?.label)}</td>
       </tr>
     `).join('') || '<tr><td colspan="7" class="empty-state">Нет проблемных адресов</td></tr>';
-    qs('problems-table').querySelectorAll('tr[data-row-key]').forEach((row) => {
-      row.addEventListener('click', () => openProblemCard(row.dataset.rowKey, result.items));
+    const tableChanged = setContainerHtml(qs('problems-table'), tableHtml, () => {
+      qs('problems-table').querySelectorAll('tr[data-row-key]').forEach((row) => {
+        row.addEventListener('click', () => openProblemCard(row.dataset.rowKey, result.items));
+      });
     });
     renderPagination('problems-pagination', result.pagination, 'problems');
+    return tableChanged;
   }
 
   function openProblemCard(rowKey, items) {
@@ -695,7 +785,9 @@
         openModal('modal-export');
       });
     });
-    qs('reports-history').innerHTML = (result.history || []).map((item) => `
+    setContainerHtml(
+      qs('reports-history'),
+      (result.history || []).map((item) => `
       <tr>
         <td>${escapeHtml(item.report_type)}</td>
         <td>${escapeHtml(item.period_from)} — ${escapeHtml(item.period_to)}</td>
@@ -705,7 +797,8 @@
         <td>${escapeHtml(item.status)}</td>
         <td><a class="btn-outline" href="/api/sender/reports/download/${encodeURIComponent(item.report_id)}">Скачать</a></td>
       </tr>
-    `).join('') || '<tr><td colspan="7" class="empty-state">Отчёты ещё не формировались</td></tr>';
+    `).join('') || '<tr><td colspan="7" class="empty-state">Отчёты ещё не формировались</td></tr>',
+    );
   }
 
   async function loadDashboard(refresh = false) {
@@ -727,8 +820,8 @@
       page: state.pagination.recipients,
       per_page: state.perPage,
     })}`);
-    renderRecipients(result);
-    if (state.selectedRecipient?.row_key) {
+    const tableChanged = renderRecipients(result);
+    if (state.selectedRecipient?.row_key && (!state.silentRefresh || tableChanged)) {
       openRecipientCard(state.selectedRecipient.row_key).catch((error) => console.error(error));
     }
   }
@@ -765,8 +858,8 @@
       page: state.pagination.problems,
       per_page: state.perPage,
     })}`);
-    renderProblems(result);
-    if (state.selectedProblem?.row_key) {
+    const tableChanged = renderProblems(result);
+    if (state.selectedProblem?.row_key && (!state.silentRefresh || tableChanged)) {
       openProblemCard(state.selectedProblem.row_key, result.items);
     }
   }
@@ -776,11 +869,14 @@
     renderReports(result);
   }
 
-  async function loadCurrentPage(refresh = false) {
-    clearError();
-    clearPoll();
-    setRefreshBadge(false);
-    setBusy(true);
+  async function loadCurrentPage(refresh = false, { silent = false } = {}) {
+    state.silentRefresh = silent;
+    if (!silent) {
+      clearError();
+      clearPoll();
+      setRefreshBadge(false);
+      setBusy(true);
+    }
     try {
       if (state.page === 'dashboard') await loadDashboard(refresh);
       else if (state.page === 'campaigns') await loadCampaigns();
@@ -791,11 +887,12 @@
       else if (state.page === 'reports') await loadReports();
     } catch (error) {
       console.error(error);
-      if (error && error.message !== 'Unauthorized') {
+      if (!silent && error && error.message !== 'Unauthorized') {
         showError(error.message || 'Не удалось загрузить данные.');
       }
     } finally {
-      setBusy(false);
+      state.silentRefresh = false;
+      if (!silent) setBusy(false);
     }
   }
 
@@ -1001,7 +1098,7 @@
   function show() {
     const wasInitialized = initialized;
     init();
-    if (wasInitialized) loadCurrentPage();
+    if (wasInitialized) loadCurrentPage(false, { silent: true });
     startAutoRefresh();
   }
 
