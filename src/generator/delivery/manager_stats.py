@@ -46,13 +46,13 @@ from src.utils.logger import logger
 MANAGER_STATUS_DEFINITIONS: dict[str, dict[str, str]] = {
     "delivered": {"label": "Доставлено", "tone": "good", "category": "success"},
     "opened": {"label": "Открыто", "tone": "good", "category": "success"},
-    "clicked": {"label": "Клик", "tone": "good", "category": "success"},
+    "clicked": {"label": "Переход по ссылке", "tone": "good", "category": "success"},
     "email_broken": {"label": "Email не работает", "tone": "bad", "category": "problem"},
     "soft_bounce": {"label": "Временная ошибка", "tone": "warn", "category": "problem"},
     "delivery_error": {"label": "Ошибка доставки", "tone": "bad", "category": "problem"},
     "unsubscribed": {"label": "Отписался", "tone": "warn", "category": "warning"},
     "spam": {"label": "Жалоба / спам", "tone": "bad", "category": "warning"},
-    "pending": {"label": "Ожидаем статус", "tone": "neutral", "category": "pending"},
+    "pending": {"label": "Ожидают статуса", "tone": "neutral", "category": "pending"},
     "no_data": {"label": "Нет данных от сервиса", "tone": "neutral", "category": "pending"},
 }
 
@@ -151,6 +151,71 @@ EMAIL_DOMAIN_PROVIDERS = {
     "outlook.com": "Outlook",
     "hotmail.com": "Outlook",
     "live.com": "Outlook",
+}
+
+# Statistics are aggregated per company (one input-data record / row_id), not per
+# email. A single company can have several emails (primary + fallback) with
+# different provider statuses. We collapse them into one "best" status: if any of
+# the company's emails reached the recipient, the whole company counts as reached.
+# The tuple is ordered best -> worst; the earliest match wins.
+COMPANY_STATUS_PRIORITY: tuple[str, ...] = (
+    "clicked",
+    "opened",
+    "delivered",
+    "pending",
+    "no_data",
+    "soft_bounce",
+    "delivery_error",
+    "email_broken",
+    "unsubscribed",
+    "spam",
+)
+
+# Company data comes from a future dedicated service. Until it exists we surface
+# whatever the uploaded/collected data.xlsx already has and show this placeholder
+# for the fields we cannot fill yet.
+COMPANY_DATA_PLACEHOLDER = "Данные появятся позже"
+
+# Company card fields (technical key -> Russian label) surfaced in statistics.
+COMPANY_FIELD_LABELS: dict[str, str] = {
+    "region": "Субъект РФ",
+    "district": "Муниципальный район",
+    "settlement": "Муниципальное образование",
+    "admin_name": "Администрация",
+    "address": "Адрес",
+    "head": "Глава",
+    "population": "Население",
+    "email_primary": "Email (основной)",
+    "email_extra": "Email (доп.)",
+    "phone": "Телефон",
+    "phone_extra": "Доп. телефон",
+    "inn": "ИНН",
+    "kpp": "КПП",
+    "ogrn": "ОГРН",
+    "okpo": "ОКПО",
+    "oktmo": "ОКТМО",
+    "note": "Примечание",
+}
+
+# Map company field -> source columns in data.xlsx (excel_io aliases OKTNO/OKTMO).
+COMPANY_SOURCE_FIELDS: dict[str, tuple[str, ...]] = {
+    "region": ("SUB_RF",),
+    "district": ("MUN_R_NAME",),
+    "settlement": ("MUN_NAME",),
+    "admin_name": ("ADM_NAME",),
+    "address": ("ADRES",),
+    "head": ("HEAD_FIO",),
+    "population": ("POPULATION",),
+    "email_primary": ("EMAIL_OSN",),
+    "email_extra": ("EMAIL_DOP",),
+    "phone": ("TEL_OSN",),
+    "phone_extra": ("TEL_DOP",),
+    "inn": ("REQUISITES_INN",),
+    "kpp": ("REQUISITES_KPP",),
+    "ogrn": ("REQUISITES_OGRN",),
+    "okpo": ("REQUISITES_OKPO",),
+    "oktmo": ("REQUISITES_OKTMO", "REQUISITES_OKTNO"),
+    "note": ("NOTE",),
 }
 
 
@@ -282,6 +347,9 @@ _CACHE_TTL_SECONDS = float(25 * 60)
 _cache_lock = threading.Lock()
 _delivery_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _consent_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+# Company data (data.xlsx joined by row_id). Cached like delivery/consent rows so
+# a single page load does not re-read/rebuild the workbook for every job.
+_company_cache: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
 # Jobs for which a background provider refresh was requested. When that refresh
 # finishes we invalidate the job's cache once so the freshly pulled events show
 # up on the next read (see _settle_refreshed_job).
@@ -360,9 +428,11 @@ def invalidate_stats_cache(job_id: str | None = None) -> None:
         if job_id is None:
             _delivery_cache.clear()
             _consent_cache.clear()
+            _company_cache.clear()
             return
         _delivery_cache.pop(job_id, None)
         _consent_cache.pop(job_id, None)
+        _company_cache.pop(job_id, None)
 
 
 def _mark_pending_refresh(job_id: str) -> None:
@@ -381,6 +451,7 @@ def _settle_refreshed_job(job_id: str) -> None:
         _pending_invalidations.discard(job_id)
         _delivery_cache.pop(job_id, None)
         _consent_cache.pop(job_id, None)
+        _company_cache.pop(job_id, None)
 
 
 _BACKGROUND_REFRESH_LIMIT = 25
@@ -428,9 +499,83 @@ def _trigger_provider_refresh(
     return started, in_progress
 
 
+def _company_display_name(source: dict[str, Any], row_id: str) -> str:
+    """Best available company name (data.xlsx has no dedicated company service yet)."""
+    for key in ("MUN_NAME", "ADM_NAME", "MUN_R_NAME"):
+        name = _safe_text(source.get(key))
+        if name:
+            return name
+    return f"Компания №{row_id}" if row_id else "Без названия"
+
+
+def _company_info_from_source(source: dict[str, Any]) -> dict[str, str]:
+    info: dict[str, str] = {}
+    for field, keys in COMPANY_SOURCE_FIELDS.items():
+        value = ""
+        for key in keys:
+            value = _safe_text(source.get(key))
+            if value:
+                break
+        info[field] = value
+    return info
+
+
+def _load_company_data_for_job(job_id: str) -> dict[str, dict[str, Any]]:
+    """Load per-company data (keyed by row_id) from the job's data.xlsx.
+
+    Returns ``{row_id: {"name": str, "info": {field: value}}}``. Missing/absent
+    data is tolerated: statistics fall back to placeholders when a row is absent.
+    """
+
+    cached = _cache_get(_company_cache, job_id)
+    if cached is not None:
+        return cached
+    data: dict[str, dict[str, Any]] = {}
+    try:
+        from src.generator.delivery.sender_report import _report_data_xlsx_path
+        from src.generator.generation.excel_io import load_rows
+
+        path = _report_data_xlsx_path(job_id)
+        if path.exists():
+            _, _, rows = load_rows(path)
+            for source in rows:
+                row_id = _safe_text(source.get("ID"))
+                if not row_id:
+                    continue
+                data[row_id] = {
+                    "name": _company_display_name(source, row_id),
+                    "info": _company_info_from_source(source),
+                }
+    except Exception as exc:  # pragma: no cover - defensive, data may be missing
+        logger.warning("company_data_load_failed", job_id=job_id, error=str(exc))
+    _cache_set(_company_cache, job_id, data)
+    return data
+
+
+def _company_view(company_entry: dict[str, Any] | None, row_id: str, fallback_org: str) -> dict[str, Any]:
+    """Build the company card payload with generic placeholders for empty fields."""
+    source_info = (company_entry or {}).get("info", {})
+    fields: dict[str, dict[str, Any]] = {}
+    for field, label in COMPANY_FIELD_LABELS.items():
+        value = _safe_text(source_info.get(field))
+        fields[field] = {
+            "label": label,
+            "value": value,
+            "display": value or COMPANY_DATA_PLACEHOLDER,
+            "present": bool(value),
+        }
+    name = (
+        _safe_text((company_entry or {}).get("name"))
+        or fallback_org
+        or (f"Компания №{row_id}" if row_id else "Без названия")
+    )
+    return {"row_id": row_id, "name": name, "fields": fields}
+
+
 def _build_delivery_rows_for_job(job_id: str, *, refresh: bool) -> list[dict[str, Any]]:
     delivery_rows, _ = _build_delivery_rows(job_id, refresh=refresh)
     latest_actions = latest_action_by_recipient(job_id)
+    company_data = _load_company_data_for_job(job_id)
     rows: list[dict[str, Any]] = []
     for row in delivery_rows:
         manager_status = normalize_manager_status(row.get("provider_status") or "unknown")
@@ -438,12 +583,15 @@ def _build_delivery_rows_for_job(job_id: str, *, refresh: bool) -> list[dict[str
         recommended = recommended_action_for(manager_status["key"])
         action = latest_actions.get((_safe_text(row.get("row_id")), _safe_text(row.get("recipient")).lower()))
         next_action = _manager_action_view(action) if action else recommended
+        row_id = _safe_text(row.get("row_id"))
+        company = _company_view(company_data.get(row_id), row_id, _safe_text(row.get("mun_name")))
         rows.append(
             {
                 **row,
                 "job_id": job_id,
                 "row_key": make_row_key(job_id, row.get("row_id"), row.get("recipient")),
-                "organization": _safe_text(row.get("mun_name")),
+                "company": company,
+                "organization": company["name"],
                 "recipient_name": _safe_text(row.get("recipient")),
                 "email": _safe_text(row.get("recipient")).lower(),
                 "role": _normalize_recipient_role(row.get("recipient_role")),
@@ -526,6 +674,199 @@ def _load_consents_for_jobs(job_ids: tuple[str, ...]) -> list[dict[str, Any]]:
     return rows
 
 
+# --- Company aggregation ---------------------------------------------------------
+# Statistics group per-email delivery rows into one row per company (row_id) so
+# every view (dashboard, recipients, campaigns, analytics, problems) counts
+# companies rather than individual emails.
+
+
+def _company_status_rank(key: str) -> int:
+    try:
+        return COMPANY_STATUS_PRIORITY.index(key)
+    except ValueError:
+        return len(COMPANY_STATUS_PRIORITY)
+
+
+def _manager_status_view(key: str) -> dict[str, str]:
+    resolved = key if key in MANAGER_STATUS_DEFINITIONS else "no_data"
+    definition = MANAGER_STATUS_DEFINITIONS[resolved]
+    return {
+        "key": resolved,
+        "label": definition["label"],
+        "tone": definition["tone"],
+        "category": definition["category"],
+    }
+
+
+def _build_company_row(group: list[dict[str, Any]]) -> dict[str, Any]:
+    first = group[0]
+    job_id = _safe_text(first.get("job_id"))
+    row_id = _safe_text(first.get("row_id"))
+    # Best status wins: the company is "reached" if any of its emails worked.
+    best_key = min(
+        (row.get("manager_status", {}).get("key") or "no_data" for row in group),
+        key=_company_status_rank,
+    )
+
+    def _rep_sort(row: dict[str, Any]) -> tuple[int, int]:
+        return (
+            _company_status_rank(row.get("manager_status", {}).get("key") or "no_data"),
+            0 if row.get("role") == "primary" else 1,
+        )
+
+    # Representative row produced the best status (keeps its manual next_action /
+    # bounce reason); on ties prefer the primary email.
+    representative = sorted(group, key=_rep_sort)[0]
+    # Action target: prefer the primary email so manager actions land on the main
+    # contact of the company.
+    primary_row = next((row for row in group if row.get("role") == "primary"), representative)
+
+    emails = [
+        {
+            "email": _safe_text(row.get("email")),
+            "role": _safe_text(row.get("role")),
+            "role_label": _safe_text(row.get("role_label")),
+            "manager_status": row.get("manager_status", {}),
+            "last_event_at": _safe_text(row.get("last_event_at")),
+            "provider": _safe_text(row.get("provider")),
+            "provider_label": _provider_label(_safe_text(row.get("provider"))),
+            "bounce_reason_label": _safe_text(row.get("bounce_reason_label")),
+        }
+        for row in group
+    ]
+
+    timestamps = [
+        _parse_datetime(row.get("sent_at_timestamp") or row.get("sent_at")) for row in group
+    ]
+    timestamps = [item for item in timestamps if item is not None]
+    earliest = min(timestamps) if timestamps else None
+
+    providers: list[str] = []
+    for row in group:
+        provider = _safe_text(row.get("provider"))
+        if provider and provider not in providers:
+            providers.append(provider)
+
+    manager_status = _manager_status_view(best_key)
+    company = first.get("company") or _company_view(None, row_id, _safe_text(first.get("organization")))
+    organization = _safe_text(first.get("organization")) or _safe_text(company.get("name"))
+    return {
+        "job_id": job_id,
+        "row_id": row_id,
+        "row_key": _safe_text(primary_row.get("row_key")) or _safe_text(representative.get("row_key")),
+        "company": company,
+        "organization": organization,
+        "recipient_name": organization,
+        "email": _safe_text(primary_row.get("email")) or _safe_text(representative.get("email")),
+        "emails": emails,
+        "emails_text": " ".join(item["email"] for item in emails if item["email"]),
+        "email_count": len(emails),
+        "role": _safe_text(representative.get("role")),
+        "role_label": _safe_text(representative.get("role_label")),
+        "manager_status": manager_status,
+        "interest": interest_for(best_key),
+        "recommended_action": recommended_action_for(best_key),
+        "next_action": representative.get("next_action") or recommended_action_for(best_key),
+        "last_event_at": _safe_text(representative.get("last_event_at")),
+        "last_event_label": manager_status["label"],
+        "attempts": len(group),
+        "provider": _safe_text(representative.get("provider")),
+        "providers": providers,
+        "bounce_reason": _safe_text(representative.get("bounce_reason")),
+        "bounce_reason_label": _safe_text(representative.get("bounce_reason_label")),
+        "email_domain_provider": _safe_text(representative.get("email_domain_provider")),
+        "sent_at": _safe_text(representative.get("sent_at")),
+        "sent_at_timestamp": earliest.isoformat() if earliest else _safe_text(representative.get("sent_at_timestamp")),
+        "checked_at": _safe_text(representative.get("checked_at")),
+        "work_type": _safe_text(first.get("work_type")),
+        "campaign_name": _safe_text(first.get("campaign_name")),
+        "subject": _safe_text(first.get("subject")),
+    }
+
+
+def _group_rows_into_companies(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    order: list[tuple[str, str]] = []
+    for row in rows:
+        key = (_safe_text(row.get("job_id")), _safe_text(row.get("row_id")))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+    return [_build_company_row(groups[key]) for key in order]
+
+
+def _load_companies_for_jobs(job_ids: tuple[str, ...], *, refresh: bool = False) -> list[dict[str, Any]]:
+    return _group_rows_into_companies(_load_delivery_for_jobs(job_ids, refresh=refresh))
+
+
+CONSENT_STATUS_PRIORITY: tuple[str, ...] = ("confirmed", "pending", "declined", "expired", "revoked")
+
+
+def _consent_status_rank(key: str) -> int:
+    try:
+        return CONSENT_STATUS_PRIORITY.index(key)
+    except ValueError:
+        return len(CONSENT_STATUS_PRIORITY)
+
+
+def _group_consents_into_companies(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    order: list[tuple[str, str]] = []
+    for row in rows:
+        key = (_safe_text(row.get("job_id")), _safe_text(row.get("row_id")))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+    companies: list[dict[str, Any]] = []
+    for key in order:
+        group = groups[key]
+        first = group[0]
+        confirmed = any(row.get("consent_status_key") == "confirmed" for row in group)
+        materials_sent = any(
+            _safe_text(row.get("materials_status")) == "sent" or _safe_text(row.get("materials_sent_at"))
+            for row in group
+        )
+        best_status = min(
+            (row.get("consent_status_key") or "pending" for row in group),
+            key=_consent_status_rank,
+        )
+        representative = next(
+            (row for row in group if row.get("consent_status_key") == "confirmed"), first
+        )
+        contacts = list(dict.fromkeys(_safe_text(row.get("contact")) for row in group if _safe_text(row.get("contact"))))
+        interest_key = "high" if confirmed and materials_sent else ("medium" if confirmed else "low")
+        companies.append(
+            {
+                **representative,
+                "job_id": _safe_text(first.get("job_id")),
+                "row_id": _safe_text(first.get("row_id")),
+                "organization": _safe_text(first.get("organization")),
+                "contact": ", ".join(contacts),
+                "email": _safe_text(representative.get("email")),
+                "consent_status_key": best_status,
+                "consent_status_label": _safe_text(representative.get("consent_status_label")),
+                "materials_status": "sent" if materials_sent else _safe_text(representative.get("materials_status")),
+                "materials_label": _safe_text(representative.get("materials_label")),
+                "last_action_label": _safe_text(representative.get("last_action_label")),
+                "last_action_at": _safe_text(representative.get("last_action_at")),
+                "interest": {
+                    "key": interest_key,
+                    "label": INTEREST_LABELS[interest_key],
+                    "tone": INTEREST_TONES[interest_key],
+                },
+                "next_action": recommended_action_for("opened" if confirmed else "pending"),
+                "email_count": len(group),
+            }
+        )
+    return companies
+
+
+def _load_company_consents_for_jobs(job_ids: tuple[str, ...]) -> list[dict[str, Any]]:
+    return _group_consents_into_companies(_load_consents_for_jobs(job_ids))
+
+
 PROVIDER_FILTER_GROUPS: dict[str, frozenset[str]] = {
     "unisender": frozenset({"unisender", "unisender_go", "unisender_classic"}),
 }
@@ -555,6 +896,7 @@ def _apply_recipient_filters(rows: list[dict[str, Any]], filters: StatsFilters) 
             if query in _safe_text(row.get("organization")).lower()
             or query in _safe_text(row.get("recipient_name")).lower()
             or query in _safe_text(row.get("email")).lower()
+            or query in _safe_text(row.get("emails_text")).lower()
         ]
     if filters.period_from or filters.period_to:
         result = [
@@ -660,9 +1002,9 @@ def build_funnels(*, counts: dict[str, int]) -> list[dict[str, Any]]:
         ("sent", "Отправлено", sent),
         ("delivered", "Доставлено", delivered),
         ("opened", "Открыто", opened),
-        ("clicked", "Клик", clicked),
+        ("clicked", "Переходы", clicked),
     ]
-    base = consent or sent or 1
+    base = sent or consent or 1
     return [
         {"id": step_id, "label": label, "value": value, "percent": _pct(value, base)}
         for step_id, label, value in steps
@@ -753,8 +1095,9 @@ def build_insights(*, rows: list[dict[str, Any]], counts: dict[str, int]) -> lis
 
 def build_manager_dashboard(filters: StatsFilters, *, refresh: bool = False) -> dict[str, Any]:
     # Always serve cached rows instantly; provider dooбор happens in the
-    # background so the request never blocks on remote provider APIs.
-    all_rows = _load_delivery_for_jobs(filters.job_ids)
+    # background so the request never blocks on remote provider APIs. Rows are
+    # aggregated per company (row_id), not per email.
+    all_rows = _load_companies_for_jobs(filters.job_ids)
     rows_by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in all_rows:
         rows_by_job[_safe_text(row.get("job_id"))].append(row)
@@ -765,7 +1108,7 @@ def build_manager_dashboard(filters: StatsFilters, *, refresh: bool = False) -> 
         auto=True,
     )
     rows = all_rows
-    consent_rows = _load_consents_for_jobs(filters.job_ids)
+    consent_rows = _load_company_consents_for_jobs(filters.job_ids)
     rows = _apply_recipient_filters(rows, filters)
     consent_rows = [
         row
@@ -783,7 +1126,7 @@ def build_manager_dashboard(filters: StatsFilters, *, refresh: bool = False) -> 
         "pending_rate": _pct(counts["pending"], total),
     }
     cards = [
-        {"id": "sent", "title": "Отправлено", "value": counts["sent"], "tone": "neutral"},
+        {"id": "sent", "title": "Компаний в рассылке", "value": counts["sent"], "tone": "neutral"},
         {"id": "delivered", "title": "Доставлено", "value": counts["delivered"], "tone": "good"},
         {"id": "opened", "title": "Открыто", "value": counts["opened"], "tone": "good"},
         {"id": "clicked", "title": "Переходы", "value": counts["clicked"], "tone": "good"},
@@ -838,8 +1181,8 @@ def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
     open_rates: list[float] = []
     # Load and filter everything once, then group by job in memory instead of
     # re-reading each job (DB + provider files) inside the loop.
-    all_rows = _apply_recipient_filters(_load_delivery_for_jobs(filters.job_ids), filters)
-    all_consents = _load_consents_for_jobs(filters.job_ids)
+    all_rows = _apply_recipient_filters(_load_companies_for_jobs(filters.job_ids), filters)
+    all_consents = _load_company_consents_for_jobs(filters.job_ids)
     rows_by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in all_rows:
         rows_by_job[_safe_text(row.get("job_id"))].append(row)
@@ -894,8 +1237,29 @@ def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
     }
 
 
+def _company_item(row: dict[str, Any]) -> dict[str, Any]:
+    """Public per-company payload consumed by the recipients/companies views."""
+    return {
+        "row_key": row.get("row_key"),
+        "job_id": row.get("job_id"),
+        "row_id": row.get("row_id"),
+        "organization": row.get("organization"),
+        "recipient_name": row.get("recipient_name"),
+        "email": row.get("email"),
+        "emails": row.get("emails", []),
+        "email_count": row.get("email_count", len(row.get("emails", []))),
+        "role_label": row.get("role_label"),
+        "company": row.get("company", {}),
+        "manager_status": row.get("manager_status"),
+        "last_event_at": row.get("last_event_at"),
+        "last_event_label": row.get("last_event_label"),
+        "interest": row.get("interest"),
+        "next_action": row.get("next_action"),
+    }
+
+
 def build_recipients(filters: StatsFilters, *, page: int = 1, per_page: int = 10) -> dict[str, Any]:
-    rows = _apply_recipient_filters(_load_delivery_for_jobs(filters.job_ids), filters)
+    rows = _apply_recipient_filters(_load_companies_for_jobs(filters.job_ids), filters)
     total = len(rows)
     start = max(0, (page - 1) * per_page)
     end = start + per_page
@@ -907,22 +1271,7 @@ def build_recipients(filters: StatsFilters, *, page: int = 1, per_page: int = 10
         "need_call": sum(1 for row in rows if row.get("next_action", {}).get("key") == "call"),
     }
     return {
-        "items": [
-            {
-                "row_key": row["row_key"],
-                "job_id": row["job_id"],
-                "organization": row["organization"],
-                "recipient_name": row["recipient_name"],
-                "email": row["email"],
-                "role_label": row["role_label"],
-                "manager_status": row["manager_status"],
-                "last_event_at": row["last_event_at"],
-                "last_event_label": row["last_event_label"],
-                "interest": row["interest"],
-                "next_action": row["next_action"],
-            }
-            for row in page_rows
-        ],
+        "items": [_company_item(row) for row in page_rows],
         "summary": summary,
         "pagination": {
             "page": page,
@@ -934,41 +1283,86 @@ def build_recipients(filters: StatsFilters, *, page: int = 1, per_page: int = 10
 
 
 def build_recipient_detail(row_key: str) -> dict[str, Any] | None:
-    job_id, row_id, email = parse_row_key(row_key)
-    rows = _load_delivery_for_jobs((job_id,))
-    matched = next((row for row in rows if row["row_key"] == row_key), None)
+    job_id, row_id, _email = parse_row_key(row_key)
+    companies = _load_companies_for_jobs((job_id,))
+    matched = next(
+        (row for row in companies if row.get("row_key") == row_key or _safe_text(row.get("row_id")) == row_id),
+        None,
+    )
     if matched is None:
         return None
-    history = [
+    # One status per email so the card can show the whole company at a glance.
+    status_history = [
+        {
+            "label": f"{item.get('email', '')} · {item.get('manager_status', {}).get('label', '')}".strip(" ·"),
+            "at": item.get("last_event_at", ""),
+            "tone": item.get("manager_status", {}).get("tone", "neutral"),
+        }
+        for item in matched.get("emails", [])
+    ] or [
         {
             "label": matched["manager_status"]["label"],
             "at": matched["last_event_at"],
             "tone": matched["manager_status"]["tone"],
         }
     ]
+    # Company-level action history: every manager action recorded for this row_id.
     action_history = [
-        record
+        {
+            **record,
+            "action_type_label": ACTION_TYPES.get(
+                _safe_text(record.get("action_type")),
+                _safe_text(record.get("action_label")) or _safe_text(record.get("action_type")),
+            ),
+        }
         for record in load_manager_actions(job_id)
-        if _safe_text(record.get("row_id")) == row_id and _safe_text(record.get("recipient_email")).lower() == email
+        if _safe_text(record.get("row_id")) == row_id
+    ]
+    # Consent records for this company (matched by row_id).
+    consents = [
+        row
+        for row in _load_consents_for_jobs((job_id,))
+        if _safe_text(row.get("row_id")) == row_id
     ]
     return {
-        "row_key": row_key,
+        "row_key": matched.get("row_key") or row_key,
         "job_id": job_id,
+        "row_id": row_id,
         "organization": matched["organization"],
         "email": matched["email"],
+        "emails": matched.get("emails", []),
         "recipient_name": matched["recipient_name"],
         "role_label": matched["role_label"],
+        "company": matched.get("company", {}),
         "manager_status": matched["manager_status"],
         "interest": matched["interest"],
         "recommended_action": matched["recommended_action"],
         "next_action": matched["next_action"],
-        "status_history": history,
+        "status_history": status_history,
         "action_history": action_history,
+        "consents": consents,
     }
 
 
+def _row_key_index(delivery_rows: list[dict[str, Any]]) -> dict[tuple[str, str], str]:
+    """Map ``(job_id, email) -> row_key`` so consent/analytics rows can reuse the
+    recipient action flow without a dedicated endpoint."""
+    index: dict[tuple[str, str], str] = {}
+    for row in delivery_rows:
+        row_key = row.get("row_key")
+        if not row_key:
+            continue
+        key = (normalize_job_id(row.get("job_id")), _safe_text(row.get("email")).lower())
+        index.setdefault(key, row_key)
+    return index
+
+
+def _row_key_for(index: dict[tuple[str, str], str], job_id: Any, email: Any) -> str | None:
+    return index.get((normalize_job_id(job_id), _safe_text(email).lower()))
+
+
 def build_consents_view(filters: StatsFilters, *, page: int = 1, per_page: int = 10) -> dict[str, Any]:
-    rows = _load_consents_for_jobs(filters.job_ids)
+    rows = _load_company_consents_for_jobs(filters.job_ids)
     if filters.q:
         query = filters.q.lower()
         rows = [
@@ -987,6 +1381,11 @@ def build_consents_view(filters: StatsFilters, *, page: int = 1, per_page: int =
     need_call = sum(1 for row in rows if row.get("interest", {}).get("key") == "high")
     start = max(0, (page - 1) * per_page)
     page_rows = rows[start : start + per_page]
+    key_index = _row_key_index(_load_delivery_for_jobs(filters.job_ids))
+    items = []
+    for row in page_rows:
+        row_key = _row_key_for(key_index, row.get("job_id"), row.get("email"))
+        items.append({**row, "row_key": row_key} if row_key else row)
     consent_base = confirmed or 1
     return {
         "summary": {
@@ -1000,8 +1399,8 @@ def build_consents_view(filters: StatsFilters, *, page: int = 1, per_page: int =
             {"id": "materials", "label": "Материалы отправлены", "value": materials_sent, "percent": _pct(materials_sent, consent_base)},
             {"id": "opened", "label": "Открыли после согласия", "value": opened_after, "percent": _pct(opened_after, consent_base)},
         ],
-        "items": page_rows,
-        "priority_contacts": sorted(page_rows, key=lambda row: row.get("interest", {}).get("key") != "high")[:5],
+        "items": items,
+        "priority_contacts": sorted(items, key=lambda row: row.get("interest", {}).get("key") != "high")[:5],
         "pagination": {
             "page": page,
             "per_page": per_page,
@@ -1012,7 +1411,7 @@ def build_consents_view(filters: StatsFilters, *, page: int = 1, per_page: int =
 
 
 def build_email_problems(filters: StatsFilters, *, page: int = 1, per_page: int = 10) -> dict[str, Any]:
-    rows = _apply_recipient_filters(_load_delivery_for_jobs(filters.job_ids), filters)
+    rows = _apply_recipient_filters(_load_companies_for_jobs(filters.job_ids), filters)
     rows = [row for row in rows if row.get("manager_status", {}).get("category") == "problem"]
     total = len(rows)
     hard = sum(1 for row in rows if row.get("manager_status", {}).get("key") == "email_broken")
@@ -1045,14 +1444,14 @@ def build_email_problems(filters: StatsFilters, *, page: int = 1, per_page: int 
 
 
 def build_campaign_analytics(job_id: str, *, refresh: bool = False) -> dict[str, Any]:
-    rows = _load_delivery_for_jobs((job_id,))
+    rows = _load_companies_for_jobs((job_id,))
     refresh_started, refresh_in_progress = _trigger_provider_refresh(
         (job_id,),
         {job_id: rows},
         manual=refresh,
         auto=True,
     )
-    consent_rows = _load_consents_for_jobs((job_id,))
+    consent_rows = _load_company_consents_for_jobs((job_id,))
     counts = _aggregate_counts(rows, consent_rows)
     campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows)
     period_from, period_to = _campaign_period(job_id, rows)
@@ -1085,9 +1484,12 @@ def build_campaign_analytics(job_id: str, *, refresh: bool = False) -> dict[str,
         for row in rows
         if row.get("interest", {}).get("key") == "high"
     ][:10]
+    key_index = _row_key_index(rows)
     problematic = [
         {
             "email": row.get("email"),
+            "organization": row.get("organization"),
+            "row_key": _row_key_for(key_index, row.get("job_id"), row.get("email")),
             "reason_label": row.get("bounce_reason_label"),
             "provider_label": _provider_label(row.get("provider")),
             "attempts": row.get("attempts", 1),
@@ -1180,11 +1582,15 @@ def export_report(
         output_path = build_sender_delivery_report_xlsx(job_id, refresh=bool(options.get("refresh", True)))
     else:
         filters = StatsFilters(job_ids=(normalize_job_id(job_id),) if normalize_job_id(job_id) else ())
-        rows = _load_delivery_for_jobs(filters.job_ids)
-        consent_rows = _load_consents_for_jobs(filters.job_ids)
-        problems = [row for row in rows if row.get("manager_status", {}).get("category") == "problem"]
+        # Delivery-based reports are aggregated per company; the "sent_mail_log"
+        # journal stays per email because it is a raw send-by-send log.
+        company_rows = _load_companies_for_jobs(filters.job_ids)
+        email_rows = _load_delivery_for_jobs(filters.job_ids)
+        consent_rows = _load_company_consents_for_jobs(filters.job_ids)
+        problems = [row for row in company_rows if row.get("manager_status", {}).get("category") == "problem"]
         actions = load_manager_actions(job_id)
         reports_dir = _reports_dir(job_id)
+        rows = email_rows if report_type == "sent_mail_log" else company_rows
         if normalized_fmt == "csv":
             output_path = reports_dir / f"{report_type}_{report_id}.csv"
             _write_csv_report(output_path, report_type, rows, consent_rows, problems, actions)
@@ -1214,6 +1620,16 @@ def export_report(
     }
 
 
+def _company_field_value(row: dict[str, Any], field: str) -> str:
+    fields = (row.get("company") or {}).get("fields") or {}
+    return _safe_text(fields.get(field, {}).get("value"))
+
+
+def _company_emails_text(row: dict[str, Any]) -> str:
+    emails = [item.get("email") for item in row.get("emails", []) if item.get("email")]
+    return ", ".join(emails) or _safe_text(row.get("email"))
+
+
 def _write_csv_report(
     path: Path,
     report_type: str,
@@ -1223,16 +1639,16 @@ def _write_csv_report(
     actions: list[dict[str, Any]],
 ) -> None:
     if report_type == "consents":
-        fieldnames = ["organization", "contact", "email", "consent_status_label", "materials_label", "last_action_at"]
+        fieldnames = ["organization", "region", "inn", "contact", "email", "consent_status_label", "materials_label", "last_action_at"]
         source = consent_rows
     elif report_type == "email_problems":
-        fieldnames = ["organization", "email", "bounce_reason_label", "provider", "attempts", "last_event_at"]
+        fieldnames = ["organization", "region", "inn", "emails", "bounce_reason_label", "provider", "attempts", "last_event_at"]
         source = problems
     elif report_type == "sent_mail_log":
         fieldnames = ["organization", "email", "provider", "manager_status", "sent_at", "last_event_at"]
         source = rows
     else:
-        fieldnames = ["organization", "email", "manager_status", "interest", "next_action", "last_event_at"]
+        fieldnames = ["organization", "region", "inn", "emails", "manager_status", "interest", "next_action", "last_event_at"]
         source = rows
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -1242,6 +1658,8 @@ def _write_csv_report(
                 writer.writerow(
                     {
                         "organization": row.get("organization"),
+                        "region": _company_field_value(row, "region"),
+                        "inn": _company_field_value(row, "inn"),
                         "contact": row.get("contact"),
                         "email": row.get("email"),
                         "consent_status_label": row.get("consent_status_label"),
@@ -1253,7 +1671,9 @@ def _write_csv_report(
                 writer.writerow(
                     {
                         "organization": row.get("organization"),
-                        "email": row.get("email"),
+                        "region": _company_field_value(row, "region"),
+                        "inn": _company_field_value(row, "inn"),
+                        "emails": _company_emails_text(row),
                         "bounce_reason_label": row.get("bounce_reason_label"),
                         "provider": row.get("provider"),
                         "attempts": row.get("attempts"),
@@ -1275,7 +1695,9 @@ def _write_csv_report(
                 writer.writerow(
                     {
                         "organization": row.get("organization"),
-                        "email": row.get("email"),
+                        "region": _company_field_value(row, "region"),
+                        "inn": _company_field_value(row, "inn"),
+                        "emails": _company_emails_text(row),
                         "manager_status": row.get("manager_status", {}).get("label"),
                         "interest": row.get("interest", {}).get("label"),
                         "next_action": row.get("next_action", {}).get("label"),
