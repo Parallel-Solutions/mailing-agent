@@ -39,7 +39,9 @@ from src.generator.delivery.sender_report import (
     build_sender_delivery_report_xlsx,
 )
 from src.jobs import load_agent_state, resolve_job_paths
+from src.jobs.job_docs import list_job_ids_with_sent_mail
 from src.jobs.storage import normalize_job_id
+from src.utils.logger import logger
 
 MANAGER_STATUS_DEFINITIONS: dict[str, dict[str, str]] = {
     "delivered": {"label": "Доставлено", "tone": "good", "category": "success"},
@@ -268,14 +270,15 @@ def _email_domain_provider(email: str) -> str:
     return EMAIL_DOMAIN_PROVIDERS.get(domain, "Другие")
 
 
-# --- Short-lived in-memory cache -------------------------------------------------
+# --- In-memory cache + background warm -------------------------------------------
 # Every statistics endpoint (dashboard, recipients, problems, campaigns,
 # analytics) needs the same per-job delivery/consent rows, and each rebuild is
 # expensive (DB reads + provider event files + state files). Cache the enriched
-# rows per job for a short TTL so a single page load with several API calls does
-# not recompute the same jobs repeatedly. Provider refresh runs in the background
-# and invalidates the affected job on completion.
-_CACHE_TTL_SECONDS = 20.0
+# rows per job so a single page load with several API calls does not recompute
+# the same jobs repeatedly. A background warm loop refreshes the cache every
+# 20 minutes; TTL is slightly longer to avoid gaps between warm cycles.
+_CACHE_WARM_INTERVAL_SECONDS = 20 * 60
+_CACHE_TTL_SECONDS = float(25 * 60)
 _cache_lock = threading.Lock()
 _delivery_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _consent_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
@@ -283,6 +286,54 @@ _consent_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # finishes we invalidate the job's cache once so the freshly pulled events show
 # up on the next read (see _settle_refreshed_job).
 _pending_invalidations: set[str] = set()
+_stats_cache_warm_thread: threading.Thread | None = None
+_stats_cache_warm_thread_lock = threading.Lock()
+_stats_cache_warm_stop_event = threading.Event()
+
+
+def warm_stats_cache() -> dict[str, int]:
+    """Pre-load delivery/consent rows for all jobs with sent mail (no provider API)."""
+
+    started = time.monotonic()
+    job_ids = tuple(list_job_ids_with_sent_mail())
+    if job_ids:
+        _load_delivery_for_jobs(job_ids)
+        _load_consents_for_jobs(job_ids)
+    duration_ms = int((time.monotonic() - started) * 1000)
+    result = {"jobs": len(job_ids), "duration_ms": duration_ms}
+    logger.info("stats_cache_warm_completed", **result)
+    return result
+
+
+def _run_stats_cache_warm_loop(interval_seconds: int) -> None:
+    poll_seconds = max(60, int(interval_seconds or _CACHE_WARM_INTERVAL_SECONDS))
+    while not _stats_cache_warm_stop_event.is_set():
+        try:
+            warm_stats_cache()
+        except Exception as exc:
+            logger.exception("stats_cache_warm_failed", error=str(exc))
+        _stats_cache_warm_stop_event.wait(poll_seconds)
+
+
+def start_stats_cache_warm_loop(*, interval_seconds: int = _CACHE_WARM_INTERVAL_SECONDS) -> None:
+    """Start daemon thread that warms statistics cache on startup and every interval."""
+
+    with _stats_cache_warm_thread_lock:
+        global _stats_cache_warm_thread
+        if _stats_cache_warm_thread and _stats_cache_warm_thread.is_alive():
+            return
+        _stats_cache_warm_stop_event.clear()
+        _stats_cache_warm_thread = threading.Thread(
+            target=_run_stats_cache_warm_loop,
+            kwargs={"interval_seconds": interval_seconds},
+            daemon=True,
+            name="stats-cache-warm",
+        )
+        _stats_cache_warm_thread.start()
+
+
+def stop_stats_cache_warm_loop() -> None:
+    _stats_cache_warm_stop_event.set()
 
 
 def _cache_get(store: dict[str, tuple[float, list[dict[str, Any]]]], job_id: str) -> list[dict[str, Any]] | None:

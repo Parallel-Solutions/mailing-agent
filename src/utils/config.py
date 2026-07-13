@@ -120,6 +120,8 @@ class Settings(BaseSettings):
     consent_materials_recovery_poll_seconds: int = 60
     consent_materials_recovery_batch_size: int = 25
     consent_materials_recovery_max_attempts: int = 3
+    stats_cache_warm_enabled: bool = True
+    stats_cache_warm_interval_seconds: int = 1200
 
     municipality_oktmo_lookup_enabled: bool = True
     municipality_oktmo_csv_path: str = ""

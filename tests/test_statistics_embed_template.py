@@ -56,6 +56,12 @@ class StatisticsEmbedTemplateTests(unittest.TestCase):
         self.assertIn("analytics-campaign", self.stats_js)
         self.assertIn("readGlobalFiltersFromDom", self.stats_js)
 
+    def test_statistics_js_uses_session_storage_stale_while_revalidate(self) -> None:
+        self.assertIn("sessionStorage", self.stats_js)
+        self.assertIn("readDashboardCache", self.stats_js)
+        self.assertIn("writeDashboardCache", self.stats_js)
+        self.assertIn("dashboardCacheKey", self.stats_js)
+
     def test_recipient_status_filter_lives_on_recipients_page(self) -> None:
         recipients_section = self.index.split('id="page-recipients"', 1)[1].split('</section>', 1)[0]
         self.assertIn('id="filter-status"', recipients_section)
