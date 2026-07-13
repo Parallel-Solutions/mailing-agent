@@ -10,6 +10,7 @@ from src.generator.delivery.manager_stats import (
     build_campaigns,
     build_manager_dashboard,
     invalidate_stats_cache,
+    warm_stats_cache,
 )
 
 
@@ -138,6 +139,45 @@ class BuildCampaignsSingleLoadTests(unittest.TestCase):
         # A single bulk load for all jobs — not one call per job (no N+1).
         self.assertEqual(len(load_calls), 1)
         self.assertEqual(len(result["campaigns"]), 3)
+
+
+class WarmStatsCacheTests(unittest.TestCase):
+    def setUp(self) -> None:
+        invalidate_stats_cache()
+
+    def test_warm_loads_delivery_and_consent_for_all_jobs(self) -> None:
+        job_ids = ("job-a", "job-b")
+        delivery_calls: list[tuple] = []
+        consent_calls: list[tuple] = []
+
+        def _fake_delivery(ids, *, refresh=False):
+            delivery_calls.append(tuple(ids))
+            return [_delivery_row(job_id, "1", "delivered") for job_id in ids]
+
+        def _fake_consents(ids):
+            consent_calls.append(tuple(ids))
+            return []
+
+        with unittest.mock.patch.object(manager_stats, "list_job_ids_with_sent_mail", return_value=list(job_ids)), \
+                unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs", side_effect=_fake_delivery) as load_delivery, \
+                unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", side_effect=_fake_consents) as load_consents, \
+                unittest.mock.patch.object(manager_stats, "_trigger_provider_refresh") as trigger_refresh:
+            result = warm_stats_cache()
+
+        self.assertEqual(result["jobs"], 2)
+        load_delivery.assert_called_once_with(job_ids)
+        load_consents.assert_called_once_with(job_ids)
+        trigger_refresh.assert_not_called()
+
+    def test_warm_handles_no_jobs(self) -> None:
+        with unittest.mock.patch.object(manager_stats, "list_job_ids_with_sent_mail", return_value=[]), \
+                unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs") as load_delivery, \
+                unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs") as load_consents:
+            result = warm_stats_cache()
+
+        self.assertEqual(result["jobs"], 0)
+        load_delivery.assert_not_called()
+        load_consents.assert_not_called()
 
 
 if __name__ == "__main__":

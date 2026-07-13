@@ -1,5 +1,6 @@
 (function () {
   const AUTO_REFRESH_MS = 20 * 60 * 1000;
+  const DASHBOARD_CACHE_PREFIX = 'stats-dashboard-v1:';
 
   const PAGE_TITLES = {
     dashboard: 'Статистика рассылки',
@@ -180,6 +181,28 @@
     });
     const query = params.toString();
     return query ? `?${query}` : '';
+  }
+
+  function dashboardCacheKey() {
+    return DASHBOARD_CACHE_PREFIX + JSON.stringify(readGlobalFiltersFromDom());
+  }
+
+  function readDashboardCache() {
+    try {
+      const raw = sessionStorage.getItem(dashboardCacheKey());
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeDashboardCache(result) {
+    try {
+      sessionStorage.setItem(dashboardCacheKey(), JSON.stringify(result));
+    } catch (_) {
+      /* sessionStorage full or unavailable */
+    }
   }
 
   async function api(path, options = {}) {
@@ -802,8 +825,17 @@
   }
 
   async function loadDashboard(refresh = false) {
+    const useStale = !state.silentRefresh && !refresh;
+    if (useStale) {
+      const cached = readDashboardCache();
+      if (cached) {
+        renderDashboard(cached);
+        schedulePoll(!!cached.refresh_in_progress);
+      }
+    }
     const result = await api(`/api/sender/manager-dashboard${queryString({ refresh: refresh ? 'true' : '' })}`);
     renderDashboard(result);
+    writeDashboardCache(result);
     schedulePoll(!!result.refresh_in_progress);
   }
 
@@ -871,7 +903,11 @@
 
   async function loadCurrentPage(refresh = false, { silent = false } = {}) {
     state.silentRefresh = silent;
-    if (!silent) {
+    let skipBusy = silent;
+    if (!silent && state.page === 'dashboard' && !refresh && readDashboardCache()) {
+      skipBusy = true;
+    }
+    if (!skipBusy) {
       clearError();
       clearPoll();
       setRefreshBadge(false);
@@ -892,7 +928,7 @@
       }
     } finally {
       state.silentRefresh = false;
-      if (!silent) setBusy(false);
+      if (!skipBusy) setBusy(false);
     }
   }
 
