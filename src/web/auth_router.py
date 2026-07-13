@@ -48,15 +48,15 @@ def create_auth_router(
     ttl_days = max(1, int(getattr(settings_obj, "app_session_ttl_days", 7) or 7))
 
     @router.get("/login", response_class=HTMLResponse)
-    async def login_page():
+    def login_page():
         return login_template_path.read_text(encoding="utf-8")
 
     @router.get("/register", response_class=HTMLResponse)
-    async def register_page():
+    def register_page():
         return register_template_path.read_text(encoding="utf-8")
 
     @router.post("/api/auth/register")
-    async def auth_register(payload: AuthRegisterRequest, response: Response):
+    def auth_register(payload: AuthRegisterRequest, response: Response):
         if payload.password_confirm is not None and payload.password != payload.password_confirm:
             raise HTTPException(status_code=400, detail="Пароли не совпадают.")
         try:
@@ -74,7 +74,7 @@ def create_auth_router(
         }
 
     @router.post("/api/auth/login")
-    async def auth_login(payload: AuthLoginRequest, response: Response):
+    def auth_login(payload: AuthLoginRequest, response: Response):
         principal = authenticate_user(payload.username, payload.password)
         if principal is None:
             raise HTTPException(
@@ -91,7 +91,7 @@ def create_auth_router(
         }
 
     @router.post("/api/auth/logout")
-    async def auth_logout(
+    def auth_logout(
         response: Response,
         session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
     ):
@@ -101,7 +101,7 @@ def create_auth_router(
         return {"status": "ok"}
 
     @router.get("/api/auth/me")
-    async def auth_me(principal: object = Depends(check_auth)):
+    def auth_me(principal: object = Depends(check_auth)):
         return {
             "status": "ok",
             "result": {

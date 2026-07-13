@@ -361,16 +361,16 @@ def create_consent_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/consent/request/{token}", response_class=HTMLResponse)
-    async def consent_request(token: str):
+    def consent_request(token: str):
         return _preview_and_render(token)
 
     @router.get("/consent/confirm/{token}", response_class=HTMLResponse)
-    async def consent_confirm_get(token: str, request: Request, background_tasks: BackgroundTasks):
-        return await _confirm_and_render(token, request, background_tasks)
+    def consent_confirm_get(token: str, request: Request, background_tasks: BackgroundTasks):
+        return _confirm_and_render(token, request, background_tasks)
 
     @router.post("/consent/confirm/{token}", response_class=HTMLResponse)
-    async def consent_confirm(token: str, request: Request, background_tasks: BackgroundTasks):
-        return await _confirm_and_render(token, request, background_tasks)
+    def consent_confirm(token: str, request: Request, background_tasks: BackgroundTasks):
+        return _confirm_and_render(token, request, background_tasks)
 
     return router
 
@@ -435,7 +435,7 @@ def _preview_and_render(token: str) -> HTMLResponse:
     )
 
 
-async def _confirm_and_render(token: str, request: Request, background_tasks: BackgroundTasks) -> HTMLResponse:
+def _confirm_and_render(token: str, request: Request, background_tasks: BackgroundTasks) -> HTMLResponse:
     record = confirm_consent(
         token,
         ip=request.client.host if request.client else "",

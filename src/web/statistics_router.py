@@ -133,7 +133,7 @@ def create_statistics_router(
         )
 
     @router.get("/api/sender/campaigns")
-    async def sender_campaigns(
+    def sender_campaigns(
         job_id: str | None = None,
         campaign: str | None = None,
         period_from: str = "",
@@ -156,7 +156,7 @@ def create_statistics_router(
         return {"status": "ok", "result": build_campaigns(filters)}
 
     @router.get("/api/sender/recipients")
-    async def sender_recipients(
+    def sender_recipients(
         job_id: str | None = None,
         campaign: str | None = None,
         period_from: str = "",
@@ -191,7 +191,7 @@ def create_statistics_router(
         return {"status": "ok", "result": build_recipients(filters, page=page, per_page=per_page)}
 
     @router.get("/api/sender/recipients/{row_key}")
-    async def sender_recipient_detail(row_key: str, principal: object = Depends(check_auth)):
+    def sender_recipient_detail(row_key: str, principal: object = Depends(check_auth)):
         try:
             job_id, _, _ = parse_row_key(row_key)
         except Exception as exc:
@@ -203,7 +203,7 @@ def create_statistics_router(
         return {"status": "ok", "result": detail}
 
     @router.post("/api/sender/recipients/{row_key}/action")
-    async def sender_recipient_action(
+    def sender_recipient_action(
         row_key: str,
         payload: ManagerActionRequest = Body(...),
         principal: object = Depends(check_auth),
@@ -245,7 +245,7 @@ def create_statistics_router(
         return {"status": "ok", "result": {"action": record, "recipient": updated}}
 
     @router.get("/api/sender/consents")
-    async def sender_consents(
+    def sender_consents(
         job_id: str | None = None,
         campaign: str | None = None,
         period_from: str = "",
@@ -268,7 +268,7 @@ def create_statistics_router(
         return {"status": "ok", "result": build_consents_view(filters, page=page, per_page=per_page)}
 
     @router.get("/api/sender/email-problems")
-    async def sender_email_problems(
+    def sender_email_problems(
         job_id: str | None = None,
         campaign: str | None = None,
         period_from: str = "",
@@ -294,7 +294,7 @@ def create_statistics_router(
         return {"status": "ok", "result": build_email_problems(filters, page=page, per_page=per_page)}
 
     @router.get("/api/sender/campaign-analytics/{job_id}")
-    async def sender_campaign_analytics(
+    def sender_campaign_analytics(
         job_id: str,
         refresh: bool = False,
         principal: object = Depends(check_auth),
@@ -303,7 +303,7 @@ def create_statistics_router(
         return {"status": "ok", "result": build_campaign_analytics(job_id, refresh=refresh)}
 
     @router.get("/api/sender/reports")
-    async def sender_reports(
+    def sender_reports(
         job_id: str | None = None,
         principal: object = Depends(check_auth),
     ):
@@ -311,7 +311,7 @@ def create_statistics_router(
         return {"status": "ok", "result": build_reports_view(job_ids)}
 
     @router.post("/api/sender/reports/export")
-    async def sender_reports_export(
+    def sender_reports_export(
         payload: ReportExportRequest = Body(...),
         principal: object = Depends(check_auth),
     ):
@@ -339,7 +339,7 @@ def create_statistics_router(
         return {"status": "ok", "result": result}
 
     @router.get("/api/sender/reports/download/{report_id}")
-    async def sender_reports_download(report_id: str, principal: object = Depends(check_auth)):
+    def sender_reports_download(report_id: str, principal: object = Depends(check_auth)):
         job_ids = _resolve_job_ids(principal)
         path = find_report_file(job_ids, report_id)
         if path is None or not path.exists():
@@ -358,7 +358,7 @@ def create_statistics_router(
         )
 
     @router.get("/api/sender/manager-dashboard")
-    async def sender_manager_dashboard(
+    def sender_manager_dashboard(
         job_id: str | None = None,
         campaign: str | None = None,
         period_from: str = "",

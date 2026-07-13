@@ -44,6 +44,7 @@ from src.web.sender_service import (
     run_sender_background,
 )
 from fastapi import Cookie, Depends, FastAPI, HTTPException, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 import shutil
 import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -80,9 +81,9 @@ async def app_startup():
     from src.infra.db import init_db
     from src.infra.object_store import ensure_bucket
 
-    init_db()
-    ensure_bucket()
-    bootstrap_auth_store(settings)
+    await run_in_threadpool(init_db)
+    await run_in_threadpool(ensure_bucket)
+    await run_in_threadpool(bootstrap_auth_store, settings)
     _start_consent_materials_recovery_thread()
     return None
 
@@ -94,6 +95,8 @@ async def app_shutdown():
 
 
 def _start_consent_materials_recovery_thread() -> None:
+    if bool(settings.background_queue_enabled):
+        return
     if not bool(settings.consent_materials_recovery_enabled):
         return
     with _consent_materials_recovery_thread_lock:
@@ -382,6 +385,20 @@ def _build_output_archive(job_id: str | None) -> Path:
 
 
 def _schedule_output_archive_build(job_id: str | None) -> None:
+    if bool(settings.background_queue_enabled):
+        from src.workers.task_queue import enqueue_task
+
+        owner = read_job_owner(job_id)
+        enqueue_task(
+            task_type="output_archive",
+            job_id=job_id,
+            payload={"job_id": job_id},
+            owner_username=str(owner.get("owner_username") or ""),
+            max_attempts=max(1, int(settings.background_queue_max_attempts or 3)),
+        )
+        return
+
+
     key = _generator_job_key(job_id)
     with _output_archive_threads_lock:
         existing = _output_archive_threads.get(key)
@@ -691,6 +708,58 @@ def _start_parser_thread_if_absent(
     )
 
 
+def _unregister_generator_task(job_id: str | None) -> None:
+    with _generator_threads_lock:
+        _generator_threads.pop(_generator_job_key(job_id), None)
+
+
+def _unregister_philologist_task(job_id: str | None) -> None:
+    with _philologist_threads_lock:
+        _philologist_threads.pop(_philologist_job_key(job_id), None)
+
+
+def _start_generator_task(
+    job_id: str | None,
+    *,
+    xlsx_path: Path,
+    name: str | None = None,
+) -> tuple[threading.Thread, bool]:
+    return _start_background_worker_process(
+        job_id,
+        task="generator",
+        kwargs={"xlsx_path": xlsx_path, "job_id": job_id},
+        name=name,
+        registry=_generator_threads,
+        registry_lock=_generator_threads_lock,
+        key_factory=_generator_job_key,
+        unregister=_unregister_generator_task,
+        max_workers=max(1, int(settings.documents_worker_max_processes or 1)),
+        timeout_seconds=max(0, int(settings.documents_worker_timeout_seconds or 0)),
+    )
+
+
+def _start_philologist_task(
+    job_id: str | None,
+    *,
+    ai_enabled: bool,
+    mode: str | None,
+    name: str | None = None,
+) -> tuple[threading.Thread, bool]:
+    return _start_background_worker_process(
+        job_id,
+        task="philologist",
+        kwargs={"ai_enabled": ai_enabled, "mode": mode, "job_id": job_id},
+        name=name,
+        registry=_philologist_threads,
+        registry_lock=_philologist_threads_lock,
+        key_factory=_philologist_job_key,
+        unregister=_unregister_philologist_task,
+        max_workers=max(1, int(settings.documents_worker_max_processes or 1)),
+        timeout_seconds=max(0, int(settings.documents_worker_timeout_seconds or 0)),
+    )
+
+
+
 def _unregister_sender_thread(job_id: str | None) -> None:
     with _sender_threads_lock:
         _sender_threads.pop(_sender_job_key(job_id), None)
@@ -949,14 +1018,31 @@ def _start_parser_verification_process(*, job_id: str | None, filename: str, sou
             source=source,
             summary_text="Файл загружен. Проверяю официальные названия МО.",
         )
-        verification_thread = threading.Thread(
-            target=_run_parser_verification_background,
-            kwargs={"job_id": job_id, "source": source},
-            daemon=True,
-            name=f"parser-verify-{key}",
-        )
-        _parser_verification_threads[key] = verification_thread
-        verification_thread.start()
+        if bool(settings.background_queue_enabled):
+            from src.workers.task_queue import QueueTaskHandle, enqueue_task
+
+            owner = read_job_owner(job_id)
+            queued_task, _ = enqueue_task(
+                task_type="parser_verification",
+                job_id=job_id,
+                payload={"job_id": job_id, "source": source},
+                owner_username=str(owner.get("owner_username") or ""),
+                max_attempts=max(1, int(settings.background_queue_max_attempts or 3)),
+            )
+            verification_thread = QueueTaskHandle(
+                str(queued_task["id"]),
+                name=f"parser-verify-{key}",
+            )
+            _parser_verification_threads[key] = verification_thread  # type: ignore[assignment]
+        else:
+            verification_thread = threading.Thread(
+                target=_run_parser_verification_background,
+                kwargs={"job_id": job_id, "source": source},
+                daemon=True,
+                name=f"parser-verify-{key}",
+            )
+            _parser_verification_threads[key] = verification_thread
+            verification_thread.start()
     logger.info(
         "upload_data_verification_scheduled",
         filename=filename,
@@ -997,7 +1083,7 @@ def _prime_philologist_running_state(job_id: str | None, mode: str | None) -> di
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
+def index(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
     username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
     if not username or get_user_record(username) is None:
         return RedirectResponse(url="/login", status_code=303)
@@ -1013,7 +1099,7 @@ async def index(session_token: str | None = Cookie(default=None, alias=SESSION_C
 
 
 @app.get("/statistics")
-async def statistics_page(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
+def statistics_page(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
     # The manager statistics UI is now embedded into the main application shell
     # (screen #s-statistics in index.html). This route is kept only so older
     # bookmarks/links keep working and land on the embedded section.
@@ -1024,7 +1110,7 @@ async def statistics_page(session_token: str | None = Cookie(default=None, alias
 
 
 @app.get("/api/status")
-async def app_status(principal: object = Depends(check_auth)):
+def app_status(principal: object = Depends(check_auth)):
     return {"status": "ok", "message": "Сервер работает"}
 
 from src.generator.generation.excel_io import load_rows
@@ -1337,6 +1423,7 @@ app.include_router(
         register_generator_thread=_register_generator_thread,
         request_generator_stop=request_generator_stop,
         ensure_user_inprocess_limit=_ensure_generator_user_limit,
+        start_generator_task=_start_generator_task,
     )
 )
 
@@ -1362,6 +1449,7 @@ app.include_router(
         get_philologist_thread=_get_philologist_thread,
         compact_philologist_status=_compact_philologist_status,
         get_philologist_status=lambda job_id: get_philologist_status(job_id, include_details=False),
+        start_philologist_task=_start_philologist_task,
         clear_philologist_stop_request=clear_philologist_stop_request,
         prime_philologist_running_state=_prime_philologist_running_state,
         run_philologist_background=_run_philologist_background,

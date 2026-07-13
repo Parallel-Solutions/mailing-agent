@@ -173,7 +173,13 @@ docker compose ps
 
 docker compose logs -f app
 
+docker compose logs -f worker
+
 ```
+
+The `worker` service executes durable PostgreSQL-backed tasks. Queued and
+running tasks survive API restarts; expired leases are retried automatically.
+The API service must not be deployed without at least one worker replica.
 
 
 

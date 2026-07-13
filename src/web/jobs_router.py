@@ -529,7 +529,7 @@ class JobsWebController:
             },
         }
 
-    async def job_readiness(
+    def job_readiness(
         self,
         job_id: str | None = None,
         document_mode: str | None = None,
@@ -541,7 +541,7 @@ class JobsWebController:
         router = APIRouter()
 
         @router.post("/api/jobs")
-        async def create_job(principal: object = Depends(self.check_auth)):
+        def create_job(principal: object = Depends(self.check_auth)):
             job_id = self.create_job_id()
             paths = self.resolve_job_paths(job_id)
             paths.ensure_dirs()
@@ -551,7 +551,7 @@ class JobsWebController:
             return ok_response(result, **result)
 
         @router.post("/api/load-test/documents")
-        async def create_documents_load_test(payload: DocumentsLoadTestRequest | None = Body(default=None), principal: object = Depends(self.check_auth)):
+        def create_documents_load_test(payload: DocumentsLoadTestRequest | None = Body(default=None), principal: object = Depends(self.check_auth)):
             payload = payload or DocumentsLoadTestRequest()
             row_count = payload.row_count
             source_job_id = payload.source_job_id
@@ -575,7 +575,7 @@ class JobsWebController:
             return {"status": "ok", "result": result}
 
         @router.get("/api/jobs/history")
-        async def jobs_history(limit: int = 40, principal: object = Depends(self.check_auth)):
+        def jobs_history(limit: int = 40, principal: object = Depends(self.check_auth)):
             safe_limit = max(1, min(int(limit or 40), 200))
             if not self.jobs_dir.exists():
                 return {"status": "ok", "result": {"jobs": []}}
@@ -607,7 +607,7 @@ class JobsWebController:
             return {"status": "ok", "result": {"jobs": jobs}}
 
         @router.get("/api/jobs/latest-data")
-        async def latest_data_job(
+        def latest_data_job(
             after: float = 0.0,
             upload_token: str | None = None,
             principal: object = Depends(self.check_auth),
@@ -653,7 +653,7 @@ class JobsWebController:
             }
 
         @router.post("/api/upload/data")
-        async def upload_data(
+        def upload_data(
             file: UploadFile = File(...),
             job_id: str | None = Form(default=None),
             upload_token: str | None = Form(default=None),
@@ -734,7 +734,7 @@ class JobsWebController:
             return ok_response(result, **result)
 
         @router.get("/api/data/info")
-        async def data_info(job_id: str | None = None, principal: object = Depends(self.check_auth)):
+        def data_info(job_id: str | None = None, principal: object = Depends(self.check_auth)):
             self._authorize_job(job_id, principal, allow_missing=True)
             data_path = self._data_xlsx_path(job_id)
             if not data_path.exists():
@@ -744,16 +744,16 @@ class JobsWebController:
             return ok_response(result, **result)
 
         @router.get("/api/job/readiness")
-        async def job_readiness(
+        def job_readiness(
             job_id: str | None = None,
             document_mode: str | None = None,
             principal: object = Depends(self.check_auth),
         ):
             self._authorize_job(job_id, principal, allow_missing=True)
-            return await self.job_readiness(job_id=job_id, document_mode=document_mode, username=principal)
+            return self.job_readiness(job_id=job_id, document_mode=document_mode, username=principal)
 
         @router.post("/api/data/verify-municipality-names")
-        async def data_verify_municipality_names(
+        def data_verify_municipality_names(
             payload: DataVerifyMunicipalityNamesRequest | None = Body(default=None),
             principal: object = Depends(self.check_auth),
         ):
@@ -768,7 +768,7 @@ class JobsWebController:
             }
 
         @router.post("/api/upload/template")
-        async def upload_template(
+        def upload_template(
             file: UploadFile = File(...),
             job_id: str | None = Form(default=None),
             template_kind: str | None = Form(default=None),

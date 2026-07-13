@@ -80,7 +80,7 @@ def create_preview_router(
         return f"{meta_path}?{urlencode(query)}"
 
     @router.get("/api/preview/meta")
-    async def preview_meta(
+    def preview_meta(
         kind: str,
         job_id: str | None = None,
         principal: object = Depends(check_auth),
@@ -104,7 +104,7 @@ def create_preview_router(
         return ok_response(payload, **payload)
 
     @router.get("/api/preview/table")
-    async def preview_table(
+    def preview_table(
         kind: str,
         job_id: str | None = None,
         offset: int = 0,
@@ -134,7 +134,7 @@ def create_preview_router(
         return ok_response(result, **result)
 
     @router.get("/api/preview/text")
-    async def preview_text(
+    def preview_text(
         kind: str,
         job_id: str | None = None,
         offset: int = 0,
@@ -154,7 +154,7 @@ def create_preview_router(
         return ok_response(result, **result)
 
     @router.get("/api/preview/archive")
-    async def preview_archive(
+    def preview_archive(
         kind: str = "output",
         job_id: str | None = None,
         offset: int = 0,
@@ -180,7 +180,7 @@ def create_preview_router(
         return ok_response(payload, **payload)
 
     @router.get("/api/preview/file")
-    async def preview_file(
+    def preview_file(
         kind: str = "output",
         path: str = "",
         job_id: str | None = None,

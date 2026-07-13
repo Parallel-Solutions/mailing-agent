@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import threading
+from inspect import isawaitable
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
@@ -15,7 +17,7 @@ from src.web.responses import ok_response
 def create_generator_router(
     *,
     check_auth: Callable[..., str],
-    job_readiness: Callable[..., Awaitable[dict]],
+    job_readiness: Callable[..., dict],
     prefer_existing_file: Callable[[Path, Path], Path],
     resolve_job_paths: Callable[[str | None], Any],
     get_generator_thread: Callable[[str | None], threading.Thread | None],
@@ -29,6 +31,7 @@ def create_generator_router(
     register_generator_thread: Callable[[str | None, threading.Thread], None],
     request_generator_stop: Callable[[str | None], dict],
     ensure_user_inprocess_limit: Callable[[str | None], None] | None = None,
+    start_generator_task: Callable[..., tuple[Any, bool]] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -39,9 +42,11 @@ def create_generator_router(
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @router.get("/api/counts")
-    async def counts(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def counts(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
-        readiness = await job_readiness(job_id=job_id, username=principal)
+        readiness = job_readiness(job_id=job_id, username=principal)
+        if isawaitable(readiness):
+            readiness = asyncio.run(readiness)
         counts_result = ((readiness or {}).get("result") or {}).get("counts") or {}
         result = {
             "parser_total": int(counts_result.get("parser_total", 0) or 0),
@@ -51,7 +56,7 @@ def create_generator_router(
         return ok_response(result, **result)
 
     @router.post("/api/generate")
-    async def generate(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def generate(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         job_id = None if payload is None else payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
         job_paths = resolve_job_paths(job_id)
@@ -88,24 +93,33 @@ def create_generator_router(
             return {"status": "ok", "result": compact_generator_status(primed_state)}
 
 
-        thread = threading.Thread(
-            target=run_generator_background,
-            kwargs={"xlsx_path": xlsx_path, "job_id": job_id},
-            daemon=True,
-            name=f"generator-{generator_job_key(job_id)}",
-        )
-        register_generator_thread(job_id, thread)
-        thread.start()
+        if start_generator_task is not None:
+            _, started = start_generator_task(
+                job_id,
+                xlsx_path=xlsx_path,
+                name=f"generator-{generator_job_key(job_id)}",
+            )
+            if not started:
+                return {"status": "ok", "result": compact_generator_status(get_generator_status(job_id))}
+        else:
+            thread = threading.Thread(
+                target=run_generator_background,
+                kwargs={"xlsx_path": xlsx_path, "job_id": job_id},
+                daemon=True,
+                name=f"generator-{generator_job_key(job_id)}",
+            )
+            register_generator_thread(job_id, thread)
+            thread.start()
         append_audit_event(action="generator.start", principal=principal, job_id=job_id)
         return {"status": "ok", "result": compact_generator_status(primed_state)}
 
     @router.get("/api/generator/status")
-    async def generator_status(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def generator_status(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         return {"status": "ok", "result": compact_generator_status(get_generator_status(job_id))}
 
     @router.post("/api/generator/stop")
-    async def generator_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def generator_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         job_id = None if payload is None else payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
         result = request_generator_stop(job_id)

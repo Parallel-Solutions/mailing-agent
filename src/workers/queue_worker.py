@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+from types import FrameType
+from typing import Any
+from uuid import uuid4
+
+from src.infra.db import init_db
+from src.jobs.workspace import pull_job, push_job
+from src.utils.config import settings
+from src.utils.logger import logger
+from src.workers.task_queue import (
+    reconcile_orphaned_agent_states,
+    FAILED,
+    claim_task,
+    complete_task,
+    fail_task,
+    heartbeat_task,
+    is_cancel_requested,
+    mark_task_cancelled,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_STOP_REQUESTED = False
+
+
+def _request_stop(signum: int, frame: FrameType | None) -> None:
+    del frame
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = True
+    logger.info("queue_worker_stop_requested", signal=signum)
+
+
+def _terminate_process(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=max(1, int(settings.background_queue_shutdown_grace_seconds)))
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _task_timeout_seconds(task_type: str) -> int:
+    if task_type == "documents":
+        return max(0, int(settings.documents_worker_timeout_seconds or 0))
+    if task_type == "sender":
+        return max(0, int(settings.sender_worker_timeout_seconds or 0))
+    return 0
+
+
+def _mark_terminal_failure(task: dict[str, Any], message: str) -> None:
+    try:
+        from src.workers.background_worker import mark_task_state_failed
+
+        mark_task_state_failed(
+            str(task.get("task_type") or ""),
+            str(task.get("job_id") or "").strip() or None,
+            message,
+        )
+    except Exception:
+        logger.exception(
+            "queue_worker_mark_state_failed",
+            task_id=task.get("id"),
+            task_type=task.get("task_type"),
+            job_id=task.get("job_id"),
+        )
+
+
+def _finish_failed(task: dict[str, Any], worker_id: str, message: str) -> None:
+    status = fail_task(
+        task_id=str(task["id"]),
+        worker_id=worker_id,
+        error=message,
+        retry_base_seconds=max(1, int(settings.background_queue_retry_base_seconds)),
+    )
+    logger.error(
+        "queue_task_failed",
+        task_id=task["id"],
+        task_type=task["task_type"],
+        job_id=task.get("job_id"),
+        status=status,
+        error=message,
+    )
+    if status == FAILED:
+        _mark_terminal_failure(task, message)
+
+
+def _sync_workspace(job_id: str | None, *, pull: bool) -> None:
+    if not job_id:
+        return
+    try:
+        if pull:
+            pull_job(job_id, ["input", "templates", "output"])
+        else:
+            push_job(job_id, ["output", "reports", "consents"])
+    except ValueError:
+        return
+    except Exception:
+        logger.exception("queue_worker_workspace_sync_failed", job_id=job_id, pull=pull)
+
+
+def _run_claimed_task(task: dict[str, Any], worker_id: str) -> None:
+    task_id = str(task["id"])
+    task_type = str(task["task_type"])
+    job_id = str(task.get("job_id") or "").strip() or None
+    timeout_seconds = _task_timeout_seconds(task_type)
+    heartbeat_seconds = max(1, int(settings.background_queue_heartbeat_seconds))
+    lease_seconds = max(heartbeat_seconds * 2, int(settings.background_queue_lease_seconds))
+    started_monotonic = time.monotonic()
+    process: subprocess.Popen[Any] | None = None
+
+    _sync_workspace(job_id, pull=True)
+    try:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "src.workers.background_worker",
+                "--task-id",
+                task_id,
+            ],
+            cwd=str(PROJECT_ROOT),
+        )
+        logger.info(
+            "queue_task_started",
+            task_id=task_id,
+            task_type=task_type,
+            job_id=job_id,
+            pid=process.pid,
+            attempt=task.get("attempt"),
+        )
+
+        while process.poll() is None:
+            try:
+                process.wait(timeout=heartbeat_seconds)
+            except subprocess.TimeoutExpired:
+                pass
+
+            if process.poll() is not None:
+                break
+            if is_cancel_requested(task_id):
+                _terminate_process(process)
+                mark_task_cancelled(task_id=task_id, worker_id=worker_id)
+                _mark_terminal_failure(task, "task cancelled")
+                logger.info("queue_task_cancelled", task_id=task_id, task_type=task_type, job_id=job_id)
+                return
+            if _STOP_REQUESTED:
+                _terminate_process(process)
+                _finish_failed(task, worker_id, "queue worker is shutting down")
+                return
+            if timeout_seconds > 0 and time.monotonic() - started_monotonic > timeout_seconds:
+                _terminate_process(process)
+                _finish_failed(task, worker_id, f"worker process exceeded timeout {timeout_seconds} seconds")
+                return
+            if not heartbeat_task(task_id=task_id, worker_id=worker_id, lease_seconds=lease_seconds):
+                _terminate_process(process)
+                logger.error("queue_task_lease_lost", task_id=task_id, task_type=task_type, job_id=job_id)
+                return
+
+        return_code = int(process.returncode or 0)
+        if return_code == 0:
+            complete_task(
+                task_id=task_id,
+                worker_id=worker_id,
+                result={"return_code": return_code, "pid": process.pid},
+            )
+            logger.info("queue_task_completed", task_id=task_id, task_type=task_type, job_id=job_id)
+        else:
+            _finish_failed(task, worker_id, f"worker process exited with code {return_code}")
+    except Exception as exc:
+        if process is not None:
+            _terminate_process(process)
+        _finish_failed(task, worker_id, f"worker process failed: {type(exc).__name__}: {exc}")
+    finally:
+        _sync_workspace(job_id, pull=False)
+
+
+def _run_consent_recovery_if_due(last_run: float) -> float:
+    if not bool(settings.consent_materials_recovery_enabled):
+        return last_run
+    interval = max(10, int(settings.consent_materials_recovery_poll_seconds or 60))
+    now = time.monotonic()
+    if now - last_run < interval:
+        return last_run
+    try:
+        from src.web.consent_router import recover_pending_materials_dispatches
+
+        result = recover_pending_materials_dispatches(
+            limit=max(1, int(settings.consent_materials_recovery_batch_size or 25))
+        )
+        if any(int(result.get(key) or 0) for key in ("checked", "sent", "failed", "skipped")):
+            logger.info("consent_materials_recovery_tick", **result)
+    except Exception:
+        logger.exception("consent_materials_recovery_failed")
+    return now
+
+
+def main() -> None:
+    signal.signal(signal.SIGTERM, _request_stop)
+    if hasattr(signal, "SIGINT"):
+        signal.signal(signal.SIGINT, _request_stop)
+
+    init_db()
+    reconciled = reconcile_orphaned_agent_states()
+    if reconciled:
+        logger.warning("queue_worker_orphaned_states_reconciled", count=reconciled)
+
+    worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:8]}"
+    poll_seconds = max(0.1, float(settings.background_queue_poll_seconds or 1.0))
+    lease_seconds = max(
+        int(settings.background_queue_heartbeat_seconds) * 2,
+        int(settings.background_queue_lease_seconds),
+    )
+    last_consent_recovery = 0.0
+    logger.info("queue_worker_started", worker_id=worker_id)
+    last_orphan_reconciliation = time.monotonic()
+
+    while not _STOP_REQUESTED:
+        last_consent_recovery = _run_consent_recovery_if_due(last_consent_recovery)
+        task = claim_task(worker_id=worker_id, lease_seconds=lease_seconds)
+        now = time.monotonic()
+        if now - last_orphan_reconciliation >= 60:
+            reconciled = reconcile_orphaned_agent_states()
+            if reconciled:
+                logger.warning("queue_worker_orphaned_states_reconciled", count=reconciled)
+            last_orphan_reconciliation = now
+
+        if task is None:
+            time.sleep(poll_seconds)
+            continue
+        _run_claimed_task(task, worker_id)
+
+    logger.info("queue_worker_stopped", worker_id=worker_id)
+
+
+if __name__ == "__main__":
+    main()

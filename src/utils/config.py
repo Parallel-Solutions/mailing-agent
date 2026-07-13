@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     user_inprocess_max_tasks: int = 1
     documents_worker_timeout_seconds: int = 21600
     sender_worker_timeout_seconds: int = 0
+    background_queue_enabled: bool = True
+    background_queue_poll_seconds: float = 1.0
+    background_queue_lease_seconds: int = 60
+    background_queue_heartbeat_seconds: int = 15
+    background_queue_retry_base_seconds: int = 30
+    background_queue_max_attempts: int = 3
+    background_queue_shutdown_grace_seconds: int = 20
     unisender_api_key: str = ""
     unisender_api_base_url: str = "https://goapi.unisender.ru/ru/transactional/api/v1"
     unisender_sender_name: str = "ООО «ПР»"

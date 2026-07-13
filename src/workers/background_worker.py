@@ -242,6 +242,110 @@ def _run_sender(kwargs: dict[str, Any]) -> None:
         raise
 
 
+def _run_generator(kwargs: dict[str, Any]) -> None:
+    from src.generator.generation.generator_agent import run_generator_agent
+
+    job_id = str(kwargs.get("job_id") or "").strip() or None
+    xlsx_path = Path(str(kwargs.get("xlsx_path") or ""))
+    result = run_generator_agent(xlsx_path=xlsx_path, job_id=job_id)
+    if isinstance(result, dict) and result.get("status") == "completed":
+        _build_output_archive(job_id)
+
+
+def _run_philologist(kwargs: dict[str, Any]) -> None:
+    from src.generator.philologist.philologist_agent import run_philologist
+
+    job_id = str(kwargs.get("job_id") or "").strip() or None
+    result = run_philologist(
+        ai_enabled=bool(kwargs.get("ai_enabled", True)),
+        job_id=job_id,
+        mode=str(kwargs.get("mode") or "").strip() or None,
+    )
+    if isinstance(result, dict) and result.get("status") == "completed":
+        _build_output_archive(job_id)
+
+
+def _run_parser_verification(kwargs: dict[str, Any]) -> None:
+    from src.generator.orchestration.parser_agent import run_parser_municipality_verification
+
+    job_id = str(kwargs.get("job_id") or "").strip() or None
+    source = str(kwargs.get("source") or "upload")
+    run_parser_municipality_verification(job_id, source=source)
+
+
+def _run_output_archive(kwargs: dict[str, Any]) -> None:
+    job_id = str(kwargs.get("job_id") or "").strip() or None
+    _build_output_archive(job_id)
+
+
+
+def mark_task_state_failed(task: str, job_id: str | None, message: str) -> None:
+    completed_at = datetime.now().isoformat(timespec="seconds")
+    safe_message = str(message or "background task failed")
+
+    if task == "sender":
+        from src.generator.delivery.sender_agent import _load_sender_state, _save_sender_state
+
+        state = _load_sender_state(job_id)
+        if str(state.get("status") or "") not in {"completed", "stopped"}:
+            state["status"] = "error"
+            state["completed_at"] = completed_at
+            state["summary_text"] = f"Background sender task failed: {safe_message}"
+            _save_sender_state(state, job_id)
+        return
+
+    if task == "generator":
+        from src.generator.generation.generator_agent import _load_generator_state, _save_generator_state
+
+        state = _load_generator_state(job_id)
+        if str(state.get("status") or "") not in {"completed", "stopped"}:
+            state["status"] = "error"
+            state["completed_at"] = completed_at
+            state["summary_text"] = f"Generator task failed: {safe_message}"
+            _save_generator_state(state, job_id)
+        return
+
+    if task == "philologist":
+        from src.generator.philologist.philologist_agent import _load_philologist_state, _save_philologist_state
+
+        state = _load_philologist_state(job_id)
+        if str(state.get("status") or "") not in {"completed", "stopped"}:
+            state["status"] = "error"
+            state["completed_at"] = completed_at
+            state["summary_text"] = f"Philologist task failed: {safe_message}"
+            _save_philologist_state(state, job_id)
+        return
+
+
+    if task == "documents":
+        from src.generator.generation.generator_agent import _load_generator_state, _save_generator_state
+        from src.generator.philologist.philologist_agent import _load_philologist_state, _save_philologist_state
+
+        generator_state = _load_generator_state(job_id)
+        philologist_state = _load_philologist_state(job_id)
+        if str(philologist_state.get("status") or "") in {"running", "finalizing"}:
+            philologist_state["status"] = "error"
+            philologist_state["completed_at"] = completed_at
+            philologist_state["summary_text"] = f"Document review task failed: {safe_message}"
+            _save_philologist_state(philologist_state, job_id)
+        elif str(generator_state.get("status") or "") not in {"completed", "stopped"}:
+            generator_state["status"] = "error"
+            generator_state["completed_at"] = completed_at
+            generator_state["summary_text"] = f"Document generation task failed: {safe_message}"
+            _save_generator_state(generator_state, job_id)
+        return
+
+    if task in {"parser_start", "parser_agent"}:
+        from src.generator.orchestration.parser_agent import _load_parser_state, _save_parser_state
+
+        state = _load_parser_state(job_id)
+        state["status"] = "error"
+        state["completed_at"] = completed_at
+        state["summary_text"] = f"Parser task failed: {safe_message}"
+        _save_parser_state(state, job_id)
+
+
+
 def run_payload(payload: dict[str, Any]) -> None:
     task = str(payload.get("task") or "").strip()
     kwargs = payload.get("kwargs") or {}
@@ -259,14 +363,33 @@ def run_payload(payload: dict[str, Any]) -> None:
     if task == "parser_agent":
         _run_parser_agent(kwargs)
         return
+    if task == "generator":
+        _run_generator(kwargs)
+        return
+    if task == "philologist":
+        _run_philologist(kwargs)
+        return
+    if task == "parser_verification":
+        _run_parser_verification(kwargs)
+        return
+    if task == "output_archive":
+        _run_output_archive(kwargs)
+        return
     raise ValueError(f"unknown worker task: {task}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--payload", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--payload")
+    source.add_argument("--task-id")
     args = parser.parse_args()
-    run_payload(_load_payload(Path(args.payload)))
+    if args.task_id:
+        from src.workers.task_queue import get_task_payload
+
+        run_payload(get_task_payload(str(args.task_id)))
+        return
+    run_payload(_load_payload(Path(str(args.payload))))
 
 
 if __name__ == "__main__":

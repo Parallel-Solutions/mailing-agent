@@ -64,7 +64,7 @@ def create_download_router(
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     @router.get("/api/download/output")
-    async def download_output(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_output(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("output", job_id)
         return download_response(
@@ -74,7 +74,7 @@ def create_download_router(
         )
 
     @router.get("/api/download/data-xlsx")
-    async def download_data_xlsx(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_data_xlsx(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("data-xlsx", job_id)
         return download_response(
@@ -84,7 +84,7 @@ def create_download_router(
         )
 
     @router.get("/api/parser/download-result")
-    async def download_parser_result(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_parser_result(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("parser-result", job_id)
         return download_response(
@@ -94,7 +94,7 @@ def create_download_router(
         )
 
     @router.get("/api/parser/download-failed")
-    async def download_parser_failed(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_parser_failed(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("parser-failed", job_id)
         return download_response(
@@ -104,7 +104,7 @@ def create_download_router(
         )
 
     @router.get("/api/download/sent-mail-log")
-    async def download_sent_mail_log(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_sent_mail_log(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("sent-mail-log", job_id)
         return download_response(
@@ -114,7 +114,7 @@ def create_download_router(
         )
 
     @router.get("/api/download/sender-delivery-report")
-    async def download_sender_delivery_report(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_sender_delivery_report(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("sender-delivery-report", job_id)
         return download_response(
@@ -124,7 +124,7 @@ def create_download_router(
         )
 
     @router.get("/api/download/inflection-log")
-    async def download_inflection_log(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_inflection_log(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("inflection-log", job_id)
         return download_response(
@@ -134,7 +134,7 @@ def create_download_router(
         )
 
     @router.get("/api/download/inflection-report")
-    async def download_inflection_report(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_inflection_report(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("inflection-report", job_id)
         return download_response(
@@ -144,7 +144,7 @@ def create_download_router(
         )
 
     @router.get("/api/download/agent-memory")
-    async def download_agent_memory(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_agent_memory(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("agent-memory", job_id)
         return download_response(
@@ -154,7 +154,7 @@ def create_download_router(
         )
 
     @router.get("/api/download/agent-quarantine")
-    async def download_agent_quarantine(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_agent_quarantine(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("agent-quarantine", job_id)
         return download_response(
@@ -164,7 +164,7 @@ def create_download_router(
         )
 
     @router.get("/api/download/agent-report")
-    async def download_agent_report(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_agent_report(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("agent-report", job_id)
         return download_response(
@@ -174,7 +174,7 @@ def create_download_router(
         )
 
     @router.get("/api/download/correction-report")
-    async def download_correction_report(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def download_correction_report(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         resolved = resolve_or_http("correction-report", job_id)
         return download_response(
