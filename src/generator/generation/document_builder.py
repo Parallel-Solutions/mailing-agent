@@ -20,7 +20,13 @@ from docx.oxml import OxmlElement
 from docx.shared import Cm, Pt, RGBColor
 from docx.table import _Cell, Table
 
-from src.generator.generation.config_generator import BATCH_DOCX_DIR, KP_GENERATION_ENGINE, OUTPUT_DIR, TEMPLATES_DIR
+from src.generator.generation.config_generator import (
+    BATCH_DOCX_DIR,
+    KP_ADAPTIVE_TEMPLATE_ENGINE,
+    KP_GENERATION_ENGINE,
+    OUTPUT_DIR,
+    TEMPLATES_DIR,
+)
 from src.generator.generation.structured_kp import render_structured_kp_docx
 from src.generator.generation.html_kp import render_html_kp_pdf, should_use_html_kp_renderer
 from src.generator.generation.transforms import (
@@ -2199,7 +2205,23 @@ def generate_documents_for_row(
 
     generated_files: dict[str, Path] = {}
 
-    if "kp" in requested_kinds and use_html_kp:
+    use_adaptive_kp = False
+    if "kp" in requested_kinds and KP_ADAPTIVE_TEMPLATE_ENGINE:
+        from src.generator.templates.store import AdaptiveTemplateStore
+
+        use_adaptive_kp = AdaptiveTemplateStore(templates_dir or TEMPLATES_DIR, "kp").load_active() is not None
+
+    if "kp" in requested_kinds and use_adaptive_kp:
+        from src.generator.templates.renderer import render_active_template
+
+        generated_files["kp_pdf"] = render_active_template(
+            templates_dir or TEMPLATES_DIR,
+            context,
+            kp_pdf_path,
+            kind="kp",
+        )
+        generated_files["kp_final_pdf"] = output_folder / build_kp_pdf_filename(row, context)
+    elif "kp" in requested_kinds and use_html_kp:
         generated_files["kp_pdf"] = render_html_kp_pdf(context, kp_pdf_path, template_path=kp_docx_template_path if kp_docx_template_path.exists() else None)
         generated_files["kp_final_pdf"] = output_folder / build_kp_pdf_filename(row, context)
     elif "kp" in requested_kinds and (kp_template_path.exists() or use_structured_kp):
@@ -2231,6 +2253,5 @@ def generate_documents_for_row(
             context,
         )
         generated_files["contract_final_docx"] = output_folder / contract_filename
-        generated_files["contract_final_pdf"] = output_folder / contract_filename.replace(".docx", ".pdf")
 
     return generated_files

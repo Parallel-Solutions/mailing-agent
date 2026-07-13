@@ -25,6 +25,7 @@ services:
       USER_WORKER_MAX_PROCESSES_PER_TASK: ${USER_WORKER_MAX_PROCESSES_PER_TASK:-1}
       USER_INPROCESS_MAX_TASKS: ${USER_INPROCESS_MAX_TASKS:-1}
       BACKGROUND_QUEUE_ENABLED: "true"
+      KP_ADAPTIVE_TEMPLATE_ENGINE: ${KP_ADAPTIVE_TEMPLATE_ENGINE:-1}
     ports:
       - "${APP_PUBLIC_PORT:-9806}:9806"
     volumes:
@@ -69,6 +70,7 @@ services:
       S3_BUCKET: mailing-agent
       WORKSPACE_DIR: /app/tmp
       BACKGROUND_QUEUE_ENABLED: "true"
+      KP_ADAPTIVE_TEMPLATE_ENGINE: ${KP_ADAPTIVE_TEMPLATE_ENGINE:-1}
     volumes:
       - ./logs:/app/logs
       - ./tmp:/app/tmp

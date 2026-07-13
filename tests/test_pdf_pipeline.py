@@ -403,7 +403,6 @@ class PdfPipelineTests(unittest.TestCase):
                     "kp_final_pdf": final_kp_pdf,
                     "contract": staged_contract,
                     "contract_final_docx": final_contract_docx,
-                    "contract_final_pdf": final_contract_pdf,
                 },
             }
         ]

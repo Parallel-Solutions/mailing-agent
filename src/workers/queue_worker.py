@@ -101,7 +101,7 @@ def _sync_workspace(job_id: str | None, *, pull: bool) -> None:
         if pull:
             pull_job(job_id, ["input", "templates", "output"])
         else:
-            push_job(job_id, ["output", "reports", "consents"])
+            push_job(job_id, ["output", "reports", "consents", "templates"])
     except ValueError:
         return
     except Exception:

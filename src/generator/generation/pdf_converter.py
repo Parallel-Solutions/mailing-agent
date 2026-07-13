@@ -497,6 +497,7 @@ def convert_html_to_pdf(
                             "marginLeft": "0",
                             "marginRight": "0",
                             "printBackground": "true",
+                            "preferCssPageSize": "true",
                         },
                     )
                     response.raise_for_status()

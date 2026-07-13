@@ -16,6 +16,7 @@ data/
 logs/
 storage/
 .test-runtime/
+.runtime/
 tmp/
 tmp*/
 pytest-cache-files-*/

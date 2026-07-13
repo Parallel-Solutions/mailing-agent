@@ -1,0 +1,51 @@
+{
+  "purpose": "Test-only adaptive commercial proposal templates",
+  "fields": [
+    "OUTGOING_NUMBER",
+    "DATE",
+    "ADM_NAME",
+    "HEAD_FIO_SHORT",
+    "HEAD_GREETING",
+    "WORK_TITLE",
+    "MUN_NAME_1",
+    "SUB_RF_1"
+  ],
+  "companies": [
+    {
+      "slug": "severnaya_geodeziya",
+      "company": "ООО «Северная Геодезия»",
+      "style": "technical",
+      "files": [
+        "kp_template.docx",
+        "kp_preview.docx",
+        "kp_template.pdf",
+        "kp_preview.pdf",
+        "kp_preview.png"
+      ]
+    },
+    {
+      "slug": "gorodskie_sistemy",
+      "company": "АО «Городские Системы»",
+      "style": "formal",
+      "files": [
+        "kp_template.docx",
+        "kp_preview.docx",
+        "kp_template.pdf",
+        "kp_preview.pdf",
+        "kp_preview.png"
+      ]
+    },
+    {
+      "slug": "terraproekt",
+      "company": "ООО «ТерраПроект»",
+      "style": "minimal",
+      "files": [
+        "kp_template.docx",
+        "kp_preview.docx",
+        "kp_template.pdf",
+        "kp_preview.pdf",
+        "kp_preview.png"
+      ]
+    }
+  ]
+}

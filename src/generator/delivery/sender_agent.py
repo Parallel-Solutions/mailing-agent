@@ -1758,6 +1758,45 @@ def _build_consent_request_body(
     values = _mail_template_values(row)
     mun_name = _safe_text(values.get("MUN_R_NAME")) or _safe_text(values.get("MUN_NAME"))
     subject_name = _safe_text(values.get("SUB_RF_1")) or _safe_text(values.get("SUB_RF"))
+    mode = _normalize_attachment_mode(attachment_mode)
+    if mode == ATTACHMENT_MODE_KP:
+        client_name = " ".join(part for part in (mun_name, subject_name) if part).strip()
+        if not client_name:
+            client_name = "муниципального образования"
+        work_name = {
+            "territorial_zone_boundaries": "описания местоположения границ территориальных зон",
+            "random_forest": "решения по интеллектуальной автоматизации государственного сектора",
+        }.get(profile.key) or _safe_text(profile.short_name) or _safe_text(profile.label)
+        return _append_mail_footer_text(
+            "\n\n".join(
+                [
+                    (
+                        "В открытых источниках мы нашли контакт, связанный с вашим муниципальным образованием. "
+                        "В связи с этим подготовили проект коммерческого предложения "
+                        f"на разработку {work_name} для территории {client_name}."
+                    ),
+                    (
+                        "ООО «Параллельные Решения» специализируется на разработке документов территориального "
+                        "планирования и градостроительного зонирования. Для удостоверения в благонадежности "
+                        "сайт компании https://parresh.ru/. Данная информация носит справочный характер."
+                    ),
+                    (
+                        "Для получения подготовленного файла просим вас подтвердить актуальность данного запроса. "
+                        "Пожалуйста, перейдите по ссылке ниже:"
+                    ),
+                    f"«Направить предложение по разработке {work_name}» {consent_url}",
+                    (
+                        "Это действие является техническим подтверждением того, что вы принимаете информацию "
+                        "к сведению. Нажимая кнопку, вы не даете согласие на рекламную рассылку, а лишь "
+                        "инициируете отправку запрошенной документации в рамках деловой переписки."
+                    ),
+                    (
+                        "Если разработка нормативов в данный момент не входит в ваши планы, пожалуйста, "
+                        "проигнорируйте это письмо — дополнительных уведомлений по данному вопросу не последует."
+                    ),
+                ]
+            )
+        )
     prepared_materials, package_text, button_text = _consent_request_material_text(attachment_mode, work_type)
     action_text, dispatch_text = _consent_request_action_text(attachment_mode)
     object_text = (
@@ -2606,7 +2645,10 @@ def _htmlify_mail_body(
     parts: list[str] = []
     for line in body.splitlines():
         stripped = line.strip()
-        consent_match = re.match(r"^(Получить .+?\.?)\s*:?\s*(https?://\S+)\s*$", stripped)
+        consent_match = re.match(
+            r'^[«"]?((?:Получить|Направить) [^»"]+?\.?)[»"]?\s*:?\s*(https?://\S+)\s*$',
+            stripped,
+        )
         if consent_match:
             button_text = escape(consent_match.group(1), quote=False)
             consent_url = escape(consent_match.group(2), quote=True)
@@ -2617,9 +2659,6 @@ def _htmlify_mail_body(
                 "style=\"display:inline-block;padding:12px 18px;background:#2d720d;"
                 "color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;\""
                 f">{button_text}</a>"
-                "<div style=\"margin-top:8px;font-size:12px;line-height:1.45;color:#60705a;\">"
-                "Нажимая на кнопку, вы просто даёте нам знать, что документы нужны. Мы вышлем их сразу."
-                "</div>"
                 "</div>"
             )
             continue

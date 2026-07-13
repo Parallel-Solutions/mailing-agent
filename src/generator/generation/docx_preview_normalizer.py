@@ -128,19 +128,11 @@ def _normalize_xml_part(
 
     changed = False
 
-    for anchor in list(root.iter(_qn(WP_NS, "anchor"))):
-        safety_changed = _send_anchor_behind_text(anchor)
-        if safety_changed:
-            report.anchors_sent_behind_text += 1
-            changed = True
-
-        if _is_large_background_anchor(anchor):
-            report.background_anchors_kept += 1
-            continue
-
-        # Keep the original drawing position. Converting anchors to inline changes
-        # paragraph flow and creates empty gaps near signature/contact blocks.
-        report.foreground_anchors_normalized += 1
+    # Floating drawings are part of the template layout. Rewriting behindDoc,
+    # allowOverlap or layoutInCell changes Word's z-order and can corrupt
+    # translucent page decorations during LibreOffice PDF conversion. Compact
+    # only the textual body and leave logos, icons, stamps and backgrounds byte
+    # for byte as the template author positioned them.
 
     if compact_body:
         runs, paragraphs = _compact_main_body(root, max_body_font_half_points=max_body_font_half_points)
@@ -287,18 +279,6 @@ def _is_large_background_anchor(anchor: etree._Element) -> bool:
     is_large = cx >= 3_800_000 or cy >= 3_800_000
     return is_large and str(anchor.get("behindDoc") or "").lower() in {"1", "true"}
 
-
-def _send_anchor_behind_text(anchor: etree._Element) -> bool:
-    changed = False
-    for key, value in {
-        "behindDoc": "1",
-        "allowOverlap": "0",
-        "layoutInCell": "1",
-    }.items():
-        if anchor.get(key) != value:
-            anchor.set(key, value)
-            changed = True
-    return changed
 
 
 def _anchor_to_inline(anchor: etree._Element) -> etree._Element | None:

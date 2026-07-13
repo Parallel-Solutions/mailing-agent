@@ -185,6 +185,7 @@ class JobsResponseContractTests(unittest.TestCase):
             with (
                 patch("src.jobs.access.resolve_job_paths", side_effect=lambda job_id=None: _job_paths(root, job_id)),
                 patch("src.web.jobs_router.append_audit_event", lambda **kwargs: None),
+                patch("src.generator.generation.config_generator.KP_ADAPTIVE_TEMPLATE_ENGINE", False),
             ):
                 response = TestClient(app).post(
                     "/api/upload/template",

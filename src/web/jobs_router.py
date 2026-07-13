@@ -398,9 +398,11 @@ class JobsWebController:
             return
         target_dir.mkdir(parents=True, exist_ok=True)
         for source_path in source_dir.iterdir():
-            if not source_path.is_file():
-                continue
-            shutil.copy2(source_path, target_dir / source_path.name)
+            target_path = target_dir / source_path.name
+            if source_path.is_dir():
+                shutil.copytree(source_path, target_path, dirs_exist_ok=True)
+            elif source_path.is_file():
+                shutil.copy2(source_path, target_path)
 
     def _data_xlsx_path(self, job_id: str | None) -> Path:
         from src.jobs.clients_store import prepare_data_xlsx
@@ -414,7 +416,18 @@ class JobsWebController:
         row_count = self.cached_excel_row_count(data_path) if data_path.exists() else 0
 
         templates_dir = paths.templates_dir
-        kp_template_loaded = any((templates_dir / name).exists() for name in (KP_TEMPLATE_FILENAME, KP_TEMPLATE_PDF_FILENAME))
+        kp_template_loaded = any(
+            (templates_dir / name).exists()
+            for name in (KP_TEMPLATE_FILENAME, KP_TEMPLATE_PDF_FILENAME)
+        )
+        if not kp_template_loaded:
+            from src.generator.generation.config_generator import KP_ADAPTIVE_TEMPLATE_ENGINE
+            from src.generator.templates.store import AdaptiveTemplateStore
+
+            kp_template_loaded = bool(
+                KP_ADAPTIVE_TEMPLATE_ENGINE
+                and AdaptiveTemplateStore(templates_dir, "kp").load_active() is not None
+            )
         contract_template_loaded = (templates_dir / CONTRACT_TEMPLATE_FILENAME).exists()
         mail_template_loaded = any((templates_dir / name).exists() for name in ("mail_template.docx", "mail_template.txt"))
 
@@ -767,6 +780,53 @@ class JobsWebController:
                 "result": self.run_parser_municipality_verification(job_id, source="api"),
             }
 
+        @router.get("/api/templates/adaptive/status")
+        def adaptive_template_status(
+            job_id: str | None = None,
+            template_kind: str = "kp",
+            principal: object = Depends(self.check_auth),
+        ):
+            self._authorize_job(job_id, principal, allow_missing=True)
+            from src.generator.generation.config_generator import KP_ADAPTIVE_TEMPLATE_ENGINE
+            from src.generator.templates.store import AdaptiveTemplateStore
+
+            store = AdaptiveTemplateStore(self.resolve_job_paths(job_id).templates_dir, template_kind)
+            return ok_response(
+                {
+                    "enabled": KP_ADAPTIVE_TEMPLATE_ENGINE,
+                    "active_template_id": store.active_template_id(),
+                    "latest_template_id": store.latest_template_id(),
+                    "versions": store.list_versions(),
+                }
+            )
+
+        @router.post("/api/templates/adaptive/{template_id}/activate")
+        def activate_adaptive_template(
+            template_id: str,
+            job_id: str | None = Body(default=None, embed=True),
+            template_kind: str = Body(default="kp", embed=True),
+            principal: object = Depends(self.check_auth),
+        ):
+            self._authorize_job(job_id, principal, allow_missing=True)
+            from src.generator.templates.store import AdaptiveTemplateStore
+
+            paths = self.resolve_job_paths(job_id)
+            store = AdaptiveTemplateStore(paths.templates_dir, template_kind)
+            try:
+                store.activate(template_id)
+                if paths.job_id:
+                    from src.jobs.workspace import push_job
+
+                    push_job(paths.job_id, ["templates"])
+            except (FileNotFoundError, ValueError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            append_audit_event(
+                action="job.template.activate",
+                principal=principal,
+                job_id=paths.job_id,
+                details={"template_kind": template_kind, "template_id": template_id},
+            )
+            return ok_response({"template_id": template_id, "active": True})
         @router.post("/api/upload/template")
         def upload_template(
             file: UploadFile = File(...),
@@ -782,7 +842,17 @@ class JobsWebController:
             templates_dir = paths.templates_dir
             templates_dir.mkdir(exist_ok=True)
             kind = (template_kind or "").strip().lower()
-            allowed_extensions = (".docx", ".txt") if kind == "mail" else ((".docx", ".pdf") if kind == "kp" else (".docx",))
+            from src.generator.generation.config_generator import KP_ADAPTIVE_TEMPLATE_ENGINE
+
+            adaptive_enabled = kind == "kp" and KP_ADAPTIVE_TEMPLATE_ENGINE
+
+            allowed_extensions = (
+                (".docx", ".txt")
+                if kind == "mail"
+                else ((".docx", ".pdf", ".html", ".htm") if adaptive_enabled else (".docx", ".pdf"))
+                if kind == "kp"
+                else (".docx",)
+            )
             human_name = (
                 "почтового шаблона"
                 if kind == "mail"
@@ -798,42 +868,91 @@ class JobsWebController:
                 max_bytes=self.settings.upload_template_max_bytes,
                 human_name=human_name,
             )
+            stale_names: tuple[str, ...] = ()
             if kind == "mail":
-                for stale_name in ("mail_template.txt", "mail_template.docx"):
-                    stale_path = templates_dir / stale_name
-                    if stale_path.exists():
-                        stale_path.unlink()
+                stale_names = ("mail_template.txt", "mail_template.docx")
                 dest = templates_dir / ("mail_template.docx" if original_name.lower().endswith(".docx") else "mail_template.txt")
             elif kind == "kp":
-                for stale_name in (KP_TEMPLATE_FILENAME, KP_TEMPLATE_PDF_FILENAME):
-                    stale_path = templates_dir / stale_name
-                    if stale_path.exists():
-                        stale_path.unlink()
-                dest = templates_dir / (KP_TEMPLATE_PDF_FILENAME if original_name.lower().endswith(".pdf") else KP_TEMPLATE_FILENAME)
+                stale_names = (KP_TEMPLATE_FILENAME, KP_TEMPLATE_PDF_FILENAME, "kp_template_source.html", "kp_template_source.htm")
+                suffix = Path(original_name).suffix.lower()
+                destination_names = {
+                    ".docx": KP_TEMPLATE_FILENAME,
+                    ".pdf": KP_TEMPLATE_PDF_FILENAME,
+                    ".html": "kp_template_source.html",
+                    ".htm": "kp_template_source.htm",
+                }
+                if suffix not in destination_names:
+                    suffix = Path(file.filename or "").suffix.lower()
+                if suffix not in destination_names:
+                    raise HTTPException(status_code=400, detail=f"Неподдерживаемый формат {human_name}")
+                dest = templates_dir / destination_names[suffix]
             elif kind == "contract":
                 dest = templates_dir / CONTRACT_TEMPLATE_FILENAME
             else:
-                raise HTTPException(status_code=400, detail="Не указан тип шаблона.")
-            fd, tmp_name = tempfile.mkstemp(dir=str(templates_dir), suffix=".uptmp")
+                raise HTTPException(status_code=400, detail='Не указан тип шаблона.')
+            fd, tmp_name = tempfile.mkstemp(dir=str(templates_dir), suffix=Path(original_name).suffix.lower())
             os.close(fd)
             tmp_dest = Path(tmp_name)
+            adaptive_package = None
             try:
                 with tmp_dest.open("wb") as f:
                     shutil.copyfileobj(file.file, f)
+                if adaptive_enabled:
+                    from src.generator.templates.base import TemplateCompileError
+                    from src.generator.templates.compiler import compile_template
+
+                    try:
+                        from src.generator.templates.auto_compiler import build_reference_context
+
+                        reference_context = build_reference_context(paths.data_xlsx)
+                        adaptive_package = compile_template(
+                            tmp_dest,
+                            templates_dir,
+                            kind="kp",
+                            source_name=original_name,
+                            reference_context=reference_context,
+                        )
+                    except TemplateCompileError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+                for stale_name in stale_names:
+                    stale_path = templates_dir / stale_name
+                    if stale_path != dest:
+                        stale_path.unlink(missing_ok=True)
                 os.replace(tmp_dest, dest)
             except BaseException:
                 tmp_dest.unlink(missing_ok=True)
                 raise
             if paths.job_id:
-                from src.jobs.workspace import put_upload
+                from src.jobs.workspace import put_upload, push_job
 
                 relative = f"templates/{dest.name}"
                 put_upload(paths.job_id, relative, dest)
+                if adaptive_package is not None:
+                    push_job(paths.job_id, ["templates"])
+            adaptive_task = None
+            if adaptive_package is not None:
+                from src.workers.task_queue import enqueue_task
+
+                adaptive_task, _ = enqueue_task(
+                    task_type=f"template_compile:{adaptive_package.template_id}",
+                    job_id=paths.job_id,
+                    payload={
+                        "job_id": paths.job_id,
+                        "template_id": adaptive_package.template_id,
+                        "kind": "kp",
+                        "activate": True,
+                    },
+                    owner_username=coerce_principal(principal).username,
+                    idempotency_key=f"template_compile:{adaptive_package.template_id}",
+                    max_attempts=2,
+                )
             append_audit_event(action="job.template.upload", principal=principal, job_id=paths.job_id, details={"template_kind": kind, "filename": original_name})
             result = {
                 "filename": file.filename,
                 "stored_as": dest.name,
                 "job_id": paths.job_id,
+                "adaptive_template": adaptive_package.to_dict() if adaptive_package is not None else None,
+                "adaptive_task": adaptive_task,
             }
             return ok_response(result, **result)
 

@@ -277,6 +277,22 @@ def _run_output_archive(kwargs: dict[str, Any]) -> None:
     job_id = str(kwargs.get("job_id") or "").strip() or None
     _build_output_archive(job_id)
 
+def _run_template_compile(kwargs: dict[str, Any]) -> None:
+    from src.generator.templates.certification import certify_template
+    from src.generator.templates.store import AdaptiveTemplateStore
+    from src.jobs.storage import resolve_job_paths
+
+    job_id = str(kwargs.get("job_id") or "").strip() or None
+    template_id = str(kwargs.get("template_id") or "").strip()
+    kind = str(kwargs.get("kind") or "kp").strip().lower()
+    if not template_id:
+        raise ValueError("template_id is required")
+    store = AdaptiveTemplateStore(resolve_job_paths(job_id).templates_dir, kind)
+    package = store.load_package(template_id)
+    result = certify_template(store, package, activate=bool(kwargs.get("activate", True)))
+    if not result.passed:
+        raise RuntimeError(result.error or "template certification failed")
+
 
 
 def mark_task_state_failed(task: str, job_id: str | None, message: str) -> None:
@@ -374,6 +390,9 @@ def run_payload(payload: dict[str, Any]) -> None:
         return
     if task == "output_archive":
         _run_output_archive(kwargs)
+        return
+    if task == "template_compile" or task.startswith("template_compile:"):
+        _run_template_compile(kwargs)
         return
     raise ValueError(f"unknown worker task: {task}")
 
