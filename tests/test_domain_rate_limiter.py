@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from src.generator.delivery.domain_rate_limiter import acquire_domain_slot, recipient_domain_bucket
 
@@ -12,7 +13,8 @@ class DomainRateLimiterTests(unittest.TestCase):
         self.assertEqual(recipient_domain_bucket("user@unknown.example"), "other")
 
     def test_acquire_domain_slot_allows_under_limit(self) -> None:
-        allowed, wait_seconds, bucket = acquire_domain_slot("test-limit@example.com")
+        with patch("src.generator.delivery.domain_rate_limiter._get_redis", return_value=None):
+            allowed, wait_seconds, bucket = acquire_domain_slot("test-limit@example.com")
         self.assertTrue(allowed)
         self.assertEqual(wait_seconds, 0.0)
         self.assertEqual(bucket, "other")
