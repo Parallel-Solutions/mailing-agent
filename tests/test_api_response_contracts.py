@@ -269,6 +269,7 @@ class SenderResponseContractTests(unittest.TestCase):
                 clear_sender_stop_request=lambda job_id: None,
                 prime_sender_checking_state=lambda *args, **kwargs: {},
                 prime_sender_running_state=lambda *args, **kwargs: {},
+                prime_sender_queued_state=lambda *args, **kwargs: {},
                 start_sender_thread_if_absent=lambda *args, **kwargs: (None, True),
                 run_sender_background=lambda **kwargs: None,
                 sender_job_key=lambda job_id: job_id or "default",

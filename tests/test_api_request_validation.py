@@ -25,7 +25,7 @@ class SenderRequestValidationTests(unittest.TestCase):
             if before_start:
                 before_start()
             calls.append({"job_id": job_id, **kwargs})
-            return object(), True
+            return {"task_id": "task-1", "created": True, "queue_position": 1, "queue_total": 1}, True
 
         app = FastAPI()
         logger = SimpleNamespace(exception=lambda *args, **kwargs: None)
@@ -46,6 +46,10 @@ class SenderRequestValidationTests(unittest.TestCase):
                     "mode": "send",
                     "transport": transport,
                     "attachment_mode": attachment_mode,
+                },
+                prime_sender_queued_state=lambda *args, **kwargs: {
+                    "status": "queued",
+                    "mode": kwargs.get("dry_run") and "dry_run" or "send",
                 },
                 start_sender_thread_if_absent=start_sender_thread_if_absent,
                 run_sender_background=lambda **kwargs: None,

@@ -43,7 +43,11 @@ class ApiErrorContractTests(unittest.TestCase):
                 clear_sender_stop_request=lambda job_id: (_ for _ in ()).throw(failure),
                 prime_sender_checking_state=lambda *args, **kwargs: {},
                 prime_sender_running_state=lambda *args, **kwargs: {},
-                start_sender_thread_if_absent=lambda *args, **kwargs: (None, True),
+                prime_sender_queued_state=lambda *args, **kwargs: {},
+                start_sender_thread_if_absent=lambda *args, **kwargs: (
+                    {"task_id": "task-1", "created": True, "queue_position": 1, "queue_total": 1},
+                    True,
+                ),
                 run_sender_background=lambda **kwargs: None,
                 sender_job_key=lambda job_id: job_id or "default",
                 get_sender_status=lambda job_id: {},
