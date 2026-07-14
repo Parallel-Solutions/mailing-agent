@@ -7,11 +7,22 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_ASYNC_FUNCTIONS = {
+    ("auth_router.py", "register_page"),
+    ("auth_router.py", "auth_register"),
+    ("auth_router.py", "admin_create_user"),
     ("parser_router.py", "parser_chat"),
     ("sender_router.py", "read_webhook_json"),
     ("sender_router.py", "unisender_go_webhook_tokenized"),
     ("sender_router.py", "rusender_webhook_tokenized"),
     ("sender_router.py", "mailopost_webhook_tokenized"),
+    ("sender_router.py", "sender_queue"),
+    ("sender_router.py", "sender_resume"),
+    ("sender_router.py", "sender_suppression_list"),
+    ("sender_router.py", "sender_suppression_add"),
+    ("sender_router.py", "sender_suppression_remove"),
+    ("sender_router.py", "sender_domain_stats"),
+    ("sender_router.py", "sender_webhook_status"),
+    ("statistics_router.py", "sender_domain_delivery_stats"),
 }
 
 

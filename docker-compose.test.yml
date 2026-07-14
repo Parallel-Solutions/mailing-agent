@@ -62,7 +62,7 @@ services:
     volumes:
       - ./.test-runtime:/app/.test-runtime
     command:
-      [".venv/bin/python", "-m", "tests"]
+      ["/bin/sh", "-c", "uv sync --frozen --extra dev --no-install-project && .venv/bin/python -m tests"]
 
 volumes:
   pgdata-test:

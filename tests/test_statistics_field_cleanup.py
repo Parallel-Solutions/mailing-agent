@@ -45,7 +45,7 @@ class ConsentsViewCleanupTests(unittest.TestCase):
         ]
 
     def test_summary_drops_clicked_after_consent(self) -> None:
-        with unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=self._consent_rows()):
+        with unittest.mock.patch.object(manager_stats, "_load_company_consents_for_jobs", return_value=self._consent_rows()):
             result = build_consents_view(StatsFilters(job_ids=("job-test",)))
 
         summary = result["summary"]
@@ -56,7 +56,7 @@ class ConsentsViewCleanupTests(unittest.TestCase):
         self.assertEqual(summary["need_call"], 1)
 
     def test_funnel_is_consent_specific_three_steps(self) -> None:
-        with unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=self._consent_rows()):
+        with unittest.mock.patch.object(manager_stats, "_load_company_consents_for_jobs", return_value=self._consent_rows()):
             result = build_consents_view(StatsFilters(job_ids=("job-test",)))
 
         funnel = result["funnel"]
