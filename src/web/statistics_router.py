@@ -13,6 +13,7 @@ from src.generator.delivery.manager_stats import (
     build_campaign_analytics,
     build_campaigns,
     build_consents_view,
+    build_domain_delivery_stats,
     build_email_problems,
     build_manager_dashboard,
     build_recipient_detail,
@@ -392,5 +393,20 @@ def create_statistics_router(
             q=q,
         )
         return {"status": "ok", "result": build_manager_dashboard(filters, refresh=refresh)}
+
+    @router.get("/api/sender/domain-delivery-stats")
+    async def sender_domain_delivery_stats(
+        job_id: str | None = None,
+        period_from: str = "",
+        period_to: str = "",
+        principal: object = Depends(check_auth),
+    ):
+        filters = _build_filters(
+            principal,
+            job_id=job_id,
+            period_from=period_from,
+            period_to=period_to,
+        )
+        return {"status": "ok", "result": build_domain_delivery_stats(filters)}
 
     return router

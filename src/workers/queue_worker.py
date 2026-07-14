@@ -112,6 +112,10 @@ def _run_claimed_task(task: dict[str, Any], worker_id: str) -> None:
     task_id = str(task["id"])
     task_type = str(task["task_type"])
     job_id = str(task.get("job_id") or "").strip() or None
+    if task_type == "sender":
+        from src.generator.delivery.send_guard import assert_sending_allowed
+
+        assert_sending_allowed()
     timeout_seconds = _task_timeout_seconds(task_type)
     heartbeat_seconds = max(1, int(settings.background_queue_heartbeat_seconds))
     lease_seconds = max(heartbeat_seconds * 2, int(settings.background_queue_lease_seconds))
@@ -226,6 +230,14 @@ def main() -> None:
 
     while not _STOP_REQUESTED:
         last_consent_recovery = _run_consent_recovery_if_due(last_consent_recovery)
+        try:
+            from src.generator.delivery.send_guard import is_sending_paused
+
+            if is_sending_paused():
+                time.sleep(poll_seconds)
+                continue
+        except Exception:
+            logger.exception("queue_worker_send_guard_check_failed")
         task = claim_task(worker_id=worker_id, lease_seconds=lease_seconds)
         now = time.monotonic()
         if now - last_orphan_reconciliation >= 60:
@@ -240,6 +252,42 @@ def main() -> None:
         _run_claimed_task(task, worker_id)
 
     logger.info("queue_worker_stopped", worker_id=worker_id)
+
+
+def enqueue_sender_task(
+    *,
+    job_id: str | None,
+    owner_username: str,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    from src.workers.task_queue import enqueue_task, get_queue_snapshot
+
+    task, created = enqueue_task(
+        task_type="sender",
+        job_id=job_id,
+        owner_username=owner_username,
+        payload={"kwargs": dict(kwargs or {})},
+        max_workers=max(1, int(settings.sender_worker_max_processes or 1)),
+        max_attempts=max(1, int(settings.background_queue_max_attempts or 3)),
+    )
+    snapshot = get_queue_snapshot(task_type="sender", job_id=job_id)
+    return {
+        "task_id": task["id"],
+        "created": created,
+        "status": task["status"],
+        "queue_position": snapshot.get("job_queue_position"),
+        "queue_total": snapshot.get("total_active"),
+        "queued_count": snapshot.get("queued_count"),
+        "running_count": snapshot.get("running_count"),
+    }
+
+
+def start_queue_worker(*, project_root: Path) -> None:
+    del project_root
+
+
+def stop_queue_worker() -> None:
+    return None
 
 
 if __name__ == "__main__":

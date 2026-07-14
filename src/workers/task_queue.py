@@ -457,3 +457,59 @@ def list_task_statuses(jobs_dir: Path, *, limit: int = 100) -> list[dict[str, An
                 }
             )
         return statuses
+
+
+def list_active_tasks(*, task_type: str = "sender", limit: int = 50) -> list[dict[str, Any]]:
+    safe_type = str(task_type or "").strip()
+    safe_limit = max(1, min(int(limit or 50), 200))
+    with session_scope() as session:
+        tasks = session.execute(
+            select(BackgroundTask)
+            .where(
+                BackgroundTask.task_type == safe_type,
+                BackgroundTask.status.in_(ACTIVE_STATUSES),
+            )
+            .order_by(BackgroundTask.priority.desc(), BackgroundTask.created_at.asc())
+            .limit(safe_limit)
+        ).scalars().all()
+        return [_as_dict(task) for task in tasks]
+
+
+def get_queue_snapshot(*, task_type: str = "sender", job_id: str | None = None) -> dict[str, Any]:
+    safe_type = str(task_type or "").strip()
+    safe_job_id = str(job_id or "").strip() or None
+    active = list_active_tasks(task_type=safe_type)
+    running = [item for item in active if item["status"] == RUNNING]
+    queued = [item for item in active if item["status"] in (QUEUED, RETRY)]
+    job_task: dict[str, Any] | None = None
+    job_position: int | None = None
+    if safe_job_id:
+        target_storage = _storage_job_id(safe_job_id)
+        for index, item in enumerate(active, start=1):
+            if _storage_job_id(item.get("job_id")) == target_storage:
+                job_task = item
+                job_position = index
+                break
+
+    def _serialize(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "task_id": item["id"],
+            "job_id": item.get("job_id"),
+            "owner_username": item.get("owner_username") or "",
+            "status": item.get("status") or "",
+            "started_at": item.get("started_at") or "",
+            "created_at": item.get("created_at") or "",
+        }
+
+    return {
+        "task_type": safe_type,
+        "running_count": len(running),
+        "queued_count": len(queued),
+        "total_active": len(active),
+        "running": [_serialize(item) for item in running],
+        "queued": [_serialize(item) for item in queued],
+        "job_id": safe_job_id,
+        "job_task_id": job_task["id"] if job_task else None,
+        "job_queue_position": job_position,
+        "job_status": job_task["status"] if job_task else "",
+    }

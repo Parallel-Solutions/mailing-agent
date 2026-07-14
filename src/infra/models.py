@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -234,4 +234,30 @@ class ParserRunHistory(Base):
     records_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32), nullable=False    )
+
+
+class SuppressionEntry(Base):
+    __tablename__ = "suppression_entries"
+
+    email: Mapped[str] = mapped_column(String(320), primary_key=True)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="manual")
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_suppression_entries_reason", "reason"),
+        Index("idx_suppression_entries_expires_at", "expires_at"),
+    )
+
+
+class SendGuardState(Base):
+    __tablename__ = "send_guard_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pause_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

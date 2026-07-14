@@ -69,6 +69,21 @@ def append_rusender_events(payload: Any) -> dict[str, Any]:
         if job_id:
             jobs.add(job_id)
             saved += 1
+            try:
+                from src.generator.delivery.suppression_store import upsert_from_provider_event
+
+                upsert_from_provider_event(
+                    recipient=str(record.get("recipient") or ""),
+                    provider_status=str(record.get("provider_status") or ""),
+                    source="webhook_rusender",
+                    job_id=job_id,
+                )
+                from src.generator.delivery.send_guard import record_complaint
+
+                if str(record.get("provider_status") or "").strip().lower() in {"spam", "complaint"}:
+                    record_complaint()
+            except Exception:
+                pass
         else:
             unmatched += 1
     return {"saved": saved, "skipped": skipped, "duplicates": duplicates, "unmatched": unmatched, "jobs": sorted(jobs)}

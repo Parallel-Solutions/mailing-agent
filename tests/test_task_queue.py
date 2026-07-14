@@ -145,6 +145,19 @@ class DurableTaskQueueTests(unittest.TestCase):
         self.assertTrue(row.state["recovered_after_restart"])
         self.assertIsNone(claim_task(worker_id="worker-a", lease_seconds=60))
 
+    def test_sender_queue_snapshot_tracks_position(self) -> None:
+        from uuid import uuid4
+
+        from src.workers.task_queue import get_queue_snapshot
+
+        job_a = f"job-a-{uuid4().hex[:8]}"
+        job_b = f"job-b-{uuid4().hex[:8]}"
+        enqueue_task(task_type="sender", job_id=job_a, owner_username="alice", payload={"kwargs": {}})
+        enqueue_task(task_type="sender", job_id=job_b, owner_username="bob", payload={"kwargs": {}})
+        snapshot = get_queue_snapshot(task_type="sender", job_id=job_b)
+        self.assertEqual(snapshot["total_active"], 2)
+        self.assertEqual(snapshot["job_queue_position"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -282,7 +282,13 @@ Runtime-данные на хосте: `./logs` и `./tmp` (рабочая пап
 
 - `APP_USERNAME`, `APP_PASSWORD` — admin fallback для входа; `APP_PASSWORD` обязателен, с пустым значением сервис не запустится;
 
-- `APP_USERS` — optional JSON map пользователей для multi-user режима, например `{"alice":{"password":"...","tenant_id":"tenant-a","role":"user"}}`; пользователи одного `tenant_id` видят общие jobs tenant-а, admin видит все;
+- `APP_ALLOW_REGISTRATION` — открытая регистрация (`1`/`0`, по умолчанию `0` = только admin создаёт пользователей);
+
+- `APP_USERS` — optional JSON map пользователей для multi-user режима, например `{"alice":{"password":"...","tenant_id":"team","role":"user"}}`; пользователи видят только свои jobs, admin видит все;
+
+- `SENDER_WORKER_MAX_PROCESSES=1` — одновременно выполняется одна sender-задача; остальные встают в PostgreSQL-очередь;
+
+- `SENDER_DOMAIN_LIMITS_JSON` — лимиты отправки на домены получателей за окно `SENDER_DOMAIN_LIMIT_WINDOW_SECONDS`;
 
 - `PUBLIC_BASE_URL` — внешний URL сервиса для consent-ссылок и webhooks;
 

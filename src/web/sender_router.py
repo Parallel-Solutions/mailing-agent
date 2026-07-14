@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -27,7 +28,8 @@ def create_sender_router(
     clear_sender_stop_request: Callable[[str | None], Any],
     prime_sender_checking_state: Callable[..., dict],
     prime_sender_running_state: Callable[..., dict],
-    start_sender_thread_if_absent: Callable[..., tuple[threading.Thread, bool]],
+    prime_sender_queued_state: Callable[..., dict],
+    start_sender_thread_if_absent: Callable[..., tuple[Any, bool]],
     run_sender_background: Callable[..., None],
     sender_job_key: Callable[[str | None], str],
     get_sender_status: Callable[[str | None], dict],
@@ -196,13 +198,9 @@ def create_sender_router(
             primed_state_box: dict[str, Any] = {}
 
             def _prime_state() -> None:
-                primed_state_box["state"] = (
-                    prime_sender_checking_state(job_id, transport, attachment_mode, recipient_strategy, sender_email, campaign_name)
-                    if dry_run
-                    else prime_sender_running_state(job_id, transport, attachment_mode, recipient_strategy, sender_email, campaign_name)
-                )
+                pass
 
-            _, started = start_sender_thread_if_absent(
+            queue_result, started = start_sender_thread_if_absent(
                 job_id,
                 target=run_sender_background,
                 kwargs={
@@ -222,7 +220,30 @@ def create_sender_router(
                 before_start=_prime_state,
             )
             if not started:
-                return {"status": "ok", "result": compact_sender_status(get_sender_status(job_id))}
+                return {"status": "ok", "result": compact_sender_status(get_sender_status(job_id)), "queue": queue_result}
+
+            queue_position = int(queue_result.get("queue_position") or 1)
+            queue_total = int(queue_result.get("queue_total") or queue_position)
+            if queue_position > 1:
+                primed_state_box["state"] = prime_sender_queued_state(
+                    job_id,
+                    queue_position=queue_position,
+                    queue_total=queue_total,
+                    transport=transport,
+                    attachment_mode=attachment_mode,
+                    recipient_strategy=recipient_strategy,
+                    sender_email=sender_email,
+                    campaign_name=campaign_name,
+                    dry_run=dry_run,
+                )
+            elif dry_run:
+                primed_state_box["state"] = prime_sender_checking_state(
+                    job_id, transport, attachment_mode, recipient_strategy, sender_email, campaign_name
+                )
+            else:
+                primed_state_box["state"] = prime_sender_running_state(
+                    job_id, transport, attachment_mode, recipient_strategy, sender_email, campaign_name
+                )
             append_audit_event(
                 action="sender.run",
                 principal=principal,
@@ -241,7 +262,101 @@ def create_sender_router(
         except Exception as exc:
             logger.exception("sender_run_start_failed", job_id=job_id, transport=transport)
             raise internal_server_error("Не удалось запустить отправку.") from exc
-        return {"status": "ok", "result": compact_sender_status(primed_state)}
+        return {
+            "status": "ok",
+            "result": compact_sender_status(primed_state),
+            "queue": queue_result,
+            "accepted": True,
+            "started": started,
+        }
+
+    @router.get("/api/sender/queue")
+    async def sender_queue(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
+        from src.workers.task_queue import get_queue_snapshot
+        from src.generator.delivery.send_guard import get_send_guard_status
+
+        snapshot = get_queue_snapshot(task_type="sender", job_id=job_id)
+        snapshot["send_guard"] = get_send_guard_status()
+        return {"status": "ok", "result": snapshot}
+
+    @router.post("/api/sender/resume")
+    async def sender_resume(principal: object = Depends(check_auth)):
+        from src.jobs.access import coerce_principal
+        from src.generator.delivery.send_guard import get_send_guard_status, resume_sending
+
+        actor = coerce_principal(principal)
+        if not actor.is_admin:
+            raise HTTPException(status_code=403, detail="Только администратор может возобновить отправку.")
+        resume_sending()
+        return {"status": "ok", "result": get_send_guard_status()}
+
+    @router.get("/api/sender/suppression")
+    async def sender_suppression_list(
+        limit: int = 200,
+        offset: int = 0,
+        q: str = "",
+        principal: object = Depends(check_auth),
+    ):
+        from src.generator.delivery.suppression_store import list_suppressions
+
+        return {"status": "ok", "result": list_suppressions(limit=limit, offset=offset, q=q)}
+
+    @router.post("/api/sender/suppression")
+    async def sender_suppression_add(payload: dict = Body(default={}), principal: object = Depends(check_auth)):
+        from src.jobs.access import coerce_principal
+        from src.generator.delivery.suppression_store import upsert_suppression
+
+        actor = coerce_principal(principal)
+        if not actor.is_admin:
+            raise HTTPException(status_code=403, detail="Только администратор может редактировать стоп-лист.")
+        email = str(payload.get("email") or "").strip()
+        reason = str(payload.get("reason") or "manual").strip()
+        if not email:
+            raise HTTPException(status_code=400, detail="email обязателен")
+        upsert_suppression(email, reason=reason, source="manual")
+        return {"status": "ok", "result": {"email": email, "reason": reason}}
+
+    @router.delete("/api/sender/suppression")
+    async def sender_suppression_remove(email: str = "", principal: object = Depends(check_auth)):
+        from src.jobs.access import coerce_principal
+        from src.generator.delivery.suppression_store import remove_suppression
+
+        actor = coerce_principal(principal)
+        if not actor.is_admin:
+            raise HTTPException(status_code=403, detail="Только администратор может редактировать стоп-лист.")
+        if not str(email or "").strip():
+            raise HTTPException(status_code=400, detail="email обязателен")
+        removed = remove_suppression(email)
+        return {"status": "ok", "result": {"removed": removed, "email": email}}
+
+    @router.get("/api/sender/domain-stats")
+    async def sender_domain_stats(principal: object = Depends(check_auth)):
+        from src.generator.delivery.domain_rate_limiter import get_domain_stats
+
+        return {"status": "ok", "result": get_domain_stats()}
+
+    @router.get("/api/sender/webhook-status")
+    async def sender_webhook_status(principal: object = Depends(check_auth)):
+        from src.generator.delivery.rusender_events import _unmatched_events_path
+
+        unmatched_path = _unmatched_events_path()
+        unmatched_count = 0
+        try:
+            if unmatched_path.exists():
+                unmatched_count = sum(1 for _ in unmatched_path.open("r", encoding="utf-8"))
+        except OSError:
+            unmatched_count = 0
+        return {
+            "status": "ok",
+            "result": {
+                "rusender_webhook_configured": bool(
+                    str(getattr(settings, "rusender_webhook_token", "") or getattr(settings, "rusender_webhook_secret", "") or "").strip()
+                ),
+                "unmatched_events_count": unmatched_count,
+                "unmatched_events_path": str(unmatched_path),
+            },
+        }
 
     @router.get("/api/sender/status")
     def sender_status(job_id: str | None = None, principal: object = Depends(check_auth)):

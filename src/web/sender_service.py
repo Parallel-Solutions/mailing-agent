@@ -240,6 +240,8 @@ def compact_sender_status(state: dict) -> dict:
         "transport": state.get("transport", "unisender"),
         "sender_email": state.get("sender_email", ""),
         "campaign_name": state.get("campaign_name", ""),
+        "queue_position": state.get("queue_position"),
+        "queue_total": state.get("queue_total"),
         "campaign_scope_applied": campaign_scope_applied,
         "campaign_email_sends": (
             _safe_int(campaign_log_totals.get("email_sends")) if campaign_scope_applied else 0
@@ -372,6 +374,60 @@ def prime_sender_checking_state(
     state["total_rows"] = total_rows
     state["remaining_rows"] = total_rows
     state["summary_text"] = "Проверяю адреса и вложения. Письма пока не отправляются."
+    state["stop_requested"] = False
+    state["stop_requested_at"] = None
+    _require("save_sender_state")(state, job_id)
+    return state
+
+
+def prime_sender_queued_state(
+    job_id: str | None,
+    *,
+    queue_position: int | None = None,
+    queue_total: int | None = None,
+    transport: str | None = None,
+    attachment_mode: str | None = None,
+    recipient_strategy: str | None = None,
+    sender_email: str | None = None,
+    campaign_name: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    state = _require("load_sender_state")(job_id)
+    stats = _require("collect_excel_stats")(resolve_job_paths(job_id).data_xlsx)
+    total_rows = int(state.get("total_rows") or stats.get("total", 0) or 0)
+    started_at = datetime.now().isoformat(timespec="seconds")
+    position = int(queue_position or 0)
+    total = int(queue_total or position or 1)
+    state["status"] = "queued"
+    state["mode"] = "dry_run" if dry_run else "send"
+    state["transport"] = transport or state.get("transport") or "smtp"
+    state["attachment_mode"] = attachment_mode or state.get("attachment_mode") or "kp"
+    state["recipient_strategy"] = recipient_strategy or state.get("recipient_strategy") or "all"
+    state["sender_email"] = sender_email or state.get("sender_email") or ""
+    state["campaign_name"] = campaign_name or state.get("campaign_name") or ""
+    state["started_at"] = started_at
+    state["completed_at"] = None
+    state["processed_rows"] = 0
+    state["ready_rows"] = 0
+    state["sent_rows"] = int(stats.get("sent", 0))
+    state["error_rows"] = 0
+    state["skipped_rows"] = 0
+    state["warning_rows"] = 0
+    state["handoff_rows"] = 0
+    state["generator_handoff_rows"] = 0
+    state["philology_blocked_rows"] = 0
+    state["autonomous_recovery_rows"] = 0
+    state["rows"] = []
+    state["stats"] = stats
+    state["total_rows"] = total_rows
+    state["remaining_rows"] = total_rows
+    state["queue_position"] = position
+    state["queue_total"] = total
+    state["summary_text"] = (
+        f"Задача в очереди отправки: позиция {position} из {total}."
+        if position > 0
+        else "Задача поставлена в очередь отправки."
+    )
     state["stop_requested"] = False
     state["stop_requested_at"] = None
     _require("save_sender_state")(state, job_id)
