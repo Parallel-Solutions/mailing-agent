@@ -3219,6 +3219,7 @@
       <div class="page-sub">Сначала система проверит адреса и вложения. Реальная отправка начнётся только после вашего подтверждения.</div>
 
       <div class="document-process-panel document-process-panel-top" aria-label="Что сейчас происходит с отправкой">
+        <div id="s-send-guard-banner" class="document-process-detail" style="display:none;color:#9a3412;font-weight:600;"></div>
         <div class="document-process-title" id="s-process-title">Готово к проверке</div>
         <div class="document-process-main" id="s-process-main">Сервис проверит письма перед отправкой.</div>
         <div class="document-process-detail" id="s-process-detail">Реальная отправка начнётся только после вашего подтверждения.</div>
@@ -3836,7 +3837,7 @@
 <div class="toast" id="toast"></div>
 
 <script src="/public/documents-ui.js?v=6"></script>
-<script src="/public/sender-ui.js?v=6"></script>
+<script src="/public/sender-ui.js?v=9"></script>
 <script src="/public/chart.min.js?v=6"></script>
 <script src="/public/statistics.js?v=8"></script>
 <script>
@@ -9203,6 +9204,33 @@ function clearAttachedFile() {
       const result = data.result || {};
       setSenderUiState(result);
       maybeAnnounceSenderFlow(result);
+      try {
+        const queueRes = await fetchWithTimeout(requestedJobId ? `/api/sender/queue?job_id=${encodeURIComponent(requestedJobId)}` : '/api/sender/queue', {}, 12000);
+        const queueData = await readJsonOrText(queueRes);
+        if (queueRes.ok && queueData.result) {
+          const guard = queueData.result.send_guard || {};
+          const banner = document.getElementById('s-send-guard-banner');
+          if (banner) {
+            if (guard.paused) {
+              banner.style.display = 'block';
+              banner.textContent = guard.pause_reason || 'Отправка временно приостановлена.';
+            } else {
+              banner.style.display = 'none';
+              banner.textContent = '';
+            }
+          }
+          if (result.status === 'queued' && queueData.result.job_queue_position) {
+            setSenderUiState({
+              ...result,
+              queue_position: queueData.result.job_queue_position,
+              queue_total: queueData.result.total_active,
+              force: true,
+            });
+          }
+        }
+      } catch (queueErr) {
+        if (!silent) console.warn('sender_queue_status_failed', queueErr);
+      }
       return result;
     } catch (err) {
       if (!silent) {
@@ -9226,7 +9254,7 @@ function clearAttachedFile() {
       }
       failedPolls = 0;
       const status = result && result.status ? result.status : 'idle';
-      if (status !== 'running') {
+      if (status !== 'running' && status !== 'queued') {
         return result;
       }
     }

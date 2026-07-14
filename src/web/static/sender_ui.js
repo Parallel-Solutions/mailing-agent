@@ -283,6 +283,24 @@
     const actionsHint = document.getElementById('s-actions-hint');
     let senderRunning = false;
 
+    if (status === 'queued') {
+      senderRunning = true;
+      const queuePosition = Number(nextState.queue_position || 0);
+      const queueTotal = Number(nextState.queue_total || queuePosition || 0);
+      if (badge) {
+        badge.textContent = 'В очереди';
+        badge.className = 'badge badge-wait';
+      }
+      if (label) {
+        label.textContent = queuePosition > 0
+          ? `В очереди отправки: позиция ${fmt(queuePosition)} из ${fmt(queueTotal)}.`
+          : humanize(nextState.summary_text, 'Задача поставлена в очередь отправки.');
+      }
+      if (actionsHint) actionsHint.textContent = 'Отправка начнётся автоматически, когда дойдёт ваша очередь.';
+      setSenderButtonsState({ status: 'running', mode, total, ready, canConfirm: false, hasPendingRows, errorRows: errors }, helpers);
+      return { senderRunning, canConfirm, hasPendingRows };
+    }
+
     if (status === 'running') {
       senderRunning = true;
       if (badge) {

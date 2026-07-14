@@ -53,10 +53,14 @@ def create_auth_router(
 
     @router.get("/register", response_class=HTMLResponse)
     async def register_page():
+        if not bool(getattr(settings_obj, "app_allow_registration", False)):
+            raise HTTPException(status_code=403, detail="Регистрация отключена. Обратитесь к администратору.")
         return register_template_path.read_text(encoding="utf-8")
 
     @router.post("/api/auth/register")
     async def auth_register(payload: AuthRegisterRequest, response: Response):
+        if not bool(getattr(settings_obj, "app_allow_registration", False)):
+            raise HTTPException(status_code=403, detail="Регистрация отключена. Обратитесь к администратору.")
         if payload.password_confirm is not None and payload.password != payload.password_confirm:
             raise HTTPException(status_code=400, detail="Пароли не совпадают.")
         try:
@@ -106,6 +110,24 @@ def create_auth_router(
             "status": "ok",
             "result": {
                 "user": principal_payload(principal),
+            },
+        }
+
+    @router.post("/api/admin/users")
+    async def admin_create_user(payload: AuthRegisterRequest, principal: object = Depends(check_auth)):
+        from src.jobs.access import coerce_principal
+
+        actor = coerce_principal(principal)
+        if not actor.is_admin:
+            raise HTTPException(status_code=403, detail="Только администратор может создавать пользователей.")
+        try:
+            record = create_user(payload.username, payload.password)
+        except UserStoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "status": "ok",
+            "result": {
+                "user": principal_payload(principal_from_user_record(record)),
             },
         }
 

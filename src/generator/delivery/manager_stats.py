@@ -1352,3 +1352,31 @@ def find_report_file(job_ids: tuple[str, ...], report_id: str) -> Path | None:
                 if path.exists():
                     return path
     return None
+
+
+def build_domain_delivery_stats(filters: StatsFilters) -> dict[str, Any]:
+    rows = _apply_recipient_filters(_load_delivery_for_jobs(filters.job_ids), filters)
+    buckets: dict[str, dict[str, int]] = {}
+    for row in rows:
+        provider = _safe_text(row.get("email_domain_provider")) or "Другие"
+        bucket = buckets.setdefault(
+            provider,
+            {"provider": provider, "sent": 0, "delivered": 0, "opened": 0, "bounced": 0, "unsubscribed": 0, "spam": 0},
+        )
+        bucket["sent"] += 1
+        status_key = _safe_text(row.get("manager_status", {}).get("key"))
+        if status_key in {"delivered", "opened", "clicked"}:
+            bucket["delivered"] += 1
+        if status_key in {"opened", "clicked"}:
+            bucket["opened"] += 1
+        if status_key in {"email_broken", "soft_bounce", "delivery_error"}:
+            bucket["bounced"] += 1
+        if status_key == "unsubscribed":
+            bucket["unsubscribed"] += 1
+        if status_key == "spam":
+            bucket["spam"] += 1
+    items = sorted(buckets.values(), key=lambda item: item["sent"], reverse=True)
+    return {
+        "total_sent": len(rows),
+        "providers": items,
+    }
