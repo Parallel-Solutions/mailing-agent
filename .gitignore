@@ -29,3 +29,5 @@ tests/e2e/out/
 *.sqlite3
 *.db-shm
 *.db-wal
+.bitrix-board/
+../worktrees/
