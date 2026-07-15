@@ -3,9 +3,9 @@
   const DASHBOARD_CACHE_PREFIX = 'stats-dashboard-v3:';
 
   const PAGE_TITLES = {
-    dashboard: 'Статистика рассылки',
+    dashboard: 'Аналитика рассылок',
     campaigns: 'Рассылки',
-    recipients: 'Компании и статусы',
+    recipients: 'Организации и статусы',
     'campaign-analytics': 'Детальная аналитика рассылки',
     consents: 'Согласия и интерес',
     problems: 'Проблемы с email',

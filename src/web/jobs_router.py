@@ -25,7 +25,11 @@ from src.generator.generation.work_types import DEFAULT_WORK_TYPE, get_work_type
 from src.jobs.access import JobAccessDenied, assign_job_owner, authorize_job_access, job_is_visible
 from src.jobs.audit import append_audit_event
 from src.security.auth import coerce_principal
-from src.web.request_models import DataVerifyMunicipalityNamesRequest, DocumentsLoadTestRequest
+from src.web.request_models import (
+    DataVerifyMunicipalityNamesRequest,
+    DocumentsLoadTestRequest,
+    TemplateEditorStateRequest,
+)
 from src.web.responses import ok_response
 
 MOSCOW_TZ = timezone(timedelta(hours=3), "MSK")
@@ -800,6 +804,45 @@ class JobsWebController:
                 "status": "ok",
                 "result": self.run_parser_municipality_verification(job_id, source="api"),
             }
+
+        @router.get("/api/templates/editor-state")
+        def template_editor_state(
+            job_id: str | None = None,
+            principal: object = Depends(self.check_auth),
+        ):
+            self._authorize_job(job_id, principal, allow_missing=True)
+            from src.jobs.json_store import read_json
+
+            path = self.resolve_job_paths(job_id).templates_dir / "editor_state.json"
+            result = read_json(path, default={})
+            state = result.data if isinstance(result.data, dict) else {}
+            return ok_response({"job_id": job_id or "", "state": state})
+
+        @router.put("/api/templates/editor-state")
+        def save_template_editor_state(
+            payload: TemplateEditorStateRequest,
+            principal: object = Depends(self.check_auth),
+        ):
+            self._authorize_job(payload.job_id, principal, allow_missing=True)
+            encoded = json.dumps(payload.state, ensure_ascii=False, default=str).encode("utf-8")
+            if len(encoded) > 512_000:
+                raise HTTPException(status_code=413, detail="Состояние редактора превышает 500 КБ.")
+            from src.jobs.json_store import write_json_atomic
+
+            paths = self.resolve_job_paths(payload.job_id)
+            path = paths.templates_dir / "editor_state.json"
+            write_json_atomic(path, payload.state)
+            if paths.job_id:
+                from src.jobs.workspace import push_job
+
+                push_job(paths.job_id, ["templates"])
+            append_audit_event(
+                action="job.template.editor_state.save",
+                principal=principal,
+                job_id=paths.job_id,
+                details={"bytes": len(encoded)},
+            )
+            return ok_response({"job_id": paths.job_id or "", "saved": True})
 
         @router.get("/api/templates/adaptive/status")
         def adaptive_template_status(

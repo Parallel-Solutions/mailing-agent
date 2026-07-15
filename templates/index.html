@@ -2815,32 +2815,52 @@
 
 </style>
 <link rel="stylesheet" href="/public/statistics.css?v=8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/public/template-editor.css?v=4">
+<link rel="stylesheet" href="/public/service-design.css?v=3">
 </head>
 <body>
 
 <div class="app">
 
   <!-- SIDEBAR -->
-  <div class="sidebar">
+  <aside class="sidebar" aria-label="Основная навигация">
     <div class="sidebar-logo">
-      <div class="logo-title">Формирование и рассылка коммерческих предложений</div>
-      <div class="logo-sub"></div>
+      <div class="sidebar-brand-mark" aria-hidden="true">M</div>
+      <div>
+        <div class="logo-title">Mailing Agent</div>
+        <div class="logo-sub">Документы и рассылки</div>
+      </div>
     </div>
 
-    <div class="nav-section">Начало</div>
+    <div class="nav-section">Рабочее пространство</div>
     <div class="nav-item active" data-nav-screen="settings" onclick="show('settings', this)">
-      <div class="nav-dot dot-green"></div> Настройки
+      <span class="material-symbols-outlined nav-icon" aria-hidden="true">campaign</span>
+      <span>Рассылки</span>
+    </div>
+    <div class="nav-item" data-nav-screen="templates" onclick="show('templates', this)">
+      <span class="material-symbols-outlined nav-icon" aria-hidden="true">description</span>
+      <span>Шаблоны</span>
+    </div>
+    <div class="nav-item" data-nav-screen="statistics" onclick="show('statistics', this)">
+      <span class="material-symbols-outlined nav-icon" aria-hidden="true">monitoring</span>
+      <span>Аналитика</span>
     </div>
 
-    <div class="nav-section" style="margin-top:0.5rem">Что делаем</div>
+    <div class="nav-section nav-section-campaign">Текущая рассылка</div>
     <div class="nav-item" data-nav-screen="parser" onclick="show('parser', this)">
-      <div class="nav-dot dot-gray"></div> Парсинг
+      <div class="nav-dot dot-gray"></div><span>Аудитория</span>
     </div>
     <div class="nav-item" data-nav-screen="generator" onclick="show('generator', this)">
-      <div class="nav-dot dot-gray"></div> Документы
+      <div class="nav-dot dot-gray"></div><span>Документы</span>
     </div>
     <div class="nav-item" data-nav-screen="sender" onclick="show('sender', this)">
-      <div class="nav-dot dot-gray"></div> Отправка писем
+      <div class="nav-dot dot-gray"></div><span>Отправка</span>
+    </div>
+    <div class="nav-item" data-nav-screen="status" onclick="show('status', this)">
+      <div class="nav-dot dot-gray"></div><span>Результаты</span>
     </div>
 
     <div class="sidebar-bottom">
@@ -2849,56 +2869,66 @@
         <button class="sidebar-reset-button" type="button" onclick="resetAllMailingState()">Очистить поля</button>
       </div>
       <button class="sidebar-logout-button" type="button" onclick="logoutCurrentUser()">Выйти</button>
-      <div class="nav-item" data-nav-screen="status" onclick="show('status', this)">
-        <div class="nav-dot dot-amber"></div> Статистика отправок (старая)
-      </div>
-      <div class="nav-item" data-nav-screen="statistics" onclick="show('statistics', this)">
-        <div class="nav-dot dot-amber"></div> Статистика отправок (новая)
-      </div>
     </div>
-  </div>
-
+  </aside>
   <!-- CONTENT -->
   <div class="content">
-    <div class="workflow-progress" aria-label="Путь пользователя">
+    <header class="service-topbar">
+      <div class="service-topbar-context">
+        <span class="service-topbar-section" id="service-topbar-section">Рассылки</span>
+        <span class="material-symbols-outlined" aria-hidden="true">chevron_right</span>
+        <strong id="service-topbar-title">Обзор рассылки</strong>
+      </div>
+      <div class="service-topbar-actions">
+        <button class="btn-outline" type="button" onclick="goToScreen('templates')">Шаблоны</button>
+        <button class="btn-primary" type="button" onclick="saveUiState(); showToast('Черновик сохранён')">Сохранить</button>
+      </div>
+    </header>
+    <div class="workflow-progress" aria-label="Разделы текущей рассылки">
       <button class="workflow-step active" type="button" data-workflow-screen="settings" onclick="goToScreen('settings')">
-        <span class="workflow-step-kicker">Шаг 0</span>
-        <span class="workflow-step-title">Настройки</span>
-        <span class="workflow-step-sub">Шаблоны и почта</span>
+        <span class="workflow-step-kicker">01</span><span class="workflow-step-title">Обзор</span><span class="workflow-step-sub">Параметры рассылки</span>
       </button>
       <button class="workflow-step" type="button" data-workflow-screen="parser" onclick="goToScreen('parser')">
-        <span class="workflow-step-kicker">Шаг 1</span>
-        <span class="workflow-step-title">Таблица</span>
-        <span class="workflow-step-sub">Данные клиентов</span>
+        <span class="workflow-step-kicker">02</span><span class="workflow-step-title">Аудитория</span><span class="workflow-step-sub">Организации и контакты</span>
       </button>
       <button class="workflow-step" type="button" data-workflow-screen="generator" onclick="goToScreen('generator')">
-        <span class="workflow-step-kicker">Шаг 2</span>
-        <span class="workflow-step-title">Документы</span>
-        <span class="workflow-step-sub">КП, договор, архив</span>
+        <span class="workflow-step-kicker">03</span><span class="workflow-step-title">Документы</span><span class="workflow-step-sub">Пакеты и проверка</span>
       </button>
       <button class="workflow-step" type="button" data-workflow-screen="sender" onclick="goToScreen('sender')">
-        <span class="workflow-step-kicker">Шаг 3</span>
-        <span class="workflow-step-title">Отправка</span>
-        <span class="workflow-step-sub">Проверка и письма</span>
+        <span class="workflow-step-kicker">04</span><span class="workflow-step-title">Отправка</span><span class="workflow-step-sub">Письма и подтверждение</span>
       </button>
       <button class="workflow-step" type="button" data-workflow-screen="status" onclick="goToScreen('status')">
-        <span class="workflow-step-kicker">Шаг 4</span>
-        <span class="workflow-step-title">Статистика</span>
-        <span class="workflow-step-sub">Что дошло</span>
+        <span class="workflow-step-kicker">05</span><span class="workflow-step-title">Результаты</span><span class="workflow-step-sub">Доставка и интерес</span>
       </button>
     </div>
-
+    <!-- ШАБЛОНЫ -->
+    <div class="screen" id="s-templates">
+      <div class="template-studio" id="template-editor-root" aria-label="Редактор шаблонов">
+        <input id="template-editor-upload" type="file" accept=".docx,.pdf,.html,.htm,.txt" hidden onchange="TemplateEditor.upload(this)">
+        <div class="template-studio__notice" id="template-editor-notice" role="status" aria-live="polite" hidden></div>
+        <div id="template-editor-app" class="template-studio__loading">Загружаем рабочее пространство…</div>
+      </div>
+    </div>
     <!-- НАСТРОЙКИ -->
     <div class="screen active" id="s-settings">
-      <div class="page-title">Подготовить шаблоны</div>
-      <div class="page-sub">Загрузите шаблоны и проверьте тему письма. После этого можно переходить к таблице клиентов.</div>
-
-      <div class="friendly-lead">
+      <div class="page-heading-row">
         <div>
-          <div class="friendly-lead-title">Что нужно на старте?</div>
-          <div class="friendly-lead-text">Выберите, что формируем, загрузите нужные шаблоны и проверьте тему письма. Остальное система будет подсказывать по шагам.</div>
+          <div class="page-kicker">Рассылка · Черновик</div>
+          <div class="page-title">Обзор рассылки</div>
+          <div class="page-sub">Настройте назначение, контент и отправителя. Все следующие разделы относятся к этой рассылке.</div>
         </div>
-        <div class="friendly-lead-badge">Начальный шаг</div>
+        <span class="entity-status entity-status-draft">Черновик</span>
+      </div>
+
+      <aside class="settings-inspector" aria-label="Свойства рассылки">
+        <div class="settings-inspector-heading"><strong>Properties</strong><span>Campaign config</span></div>
+        <div class="settings-inspector-tabs"><span class="active">Готовность</span><span>Шаблоны</span><span>Проверка</span></div>
+        <div class="friendly-lead">
+        <div>
+          <div class="friendly-lead-title">Готовность рассылки</div>
+          <div class="friendly-lead-text">Заполните обязательные параметры. Система покажет, когда можно добавлять аудиторию.</div>
+        </div>
+        <div class="friendly-lead-badge">Шаг 1 из 5</div>
       </div>
 
       <div class="settings-checklist" aria-label="Что уже готово для рассылки">
@@ -2907,73 +2937,87 @@
         <div class="settings-check-item" id="settings-check-contract"><span class="settings-check-dot"></span>Договор</div>
         <div class="settings-check-item" id="settings-check-subject"><span class="settings-check-dot"></span>Тема письма</div>
         <div class="settings-check-item" id="settings-check-sender-email"><span class="settings-check-dot"></span>Отправитель</div>
-      </div>
-
-      <div class="field">
-        <label>Вид работ</label>
-        <select id="settings-work-type" onchange="handleSettingsWorkTypeChange(this.value)">
-          <option value="mngp_settlements">МНГП (сельских и городских поселений)</option>
-          <option value="mngp_districts">МНГП по муниципальным районам</option>
-          <option value="stp_mo">СТП МО</option>
-          <option value="random_forest">Случайный лес</option>
-          <option value="territorial_zone_boundaries">Описание местоположения границ территориальных зон</option>
-        </select>
-      </div>
-
-      <div class="field">
-        <label>Название рассылки</label>
-        <input id="settings-campaign-name" type="text" placeholder="Например: СТП июль 2026" oninput="saveUiState()">
-      </div>
-
-      <div class="document-mode-row settings-document-mode-row">
-        <div class="sender-transport-field">
-          <label for="settings-document-mode">Что формируем</label>
-          <select id="settings-document-mode" onchange="handleSettingsDocumentModeChange(this.value)">
-            <option value="kp">Только КП</option>
-            <option value="both">КП + договор</option>
-            <option value="contract">Только договор</option>
-          </select>
         </div>
-        <div class="sender-transport-note" id="settings-document-mode-note">
-          Загрузить нужно только те шаблоны, которые будут использоваться в этой сессии.
-        </div>
-      </div>
+      </aside>
 
-      <div class="field">
-        <label>Тема письма для рассылки</label>
-        <input id="settings-mail-subject" type="text" value="Коммерческое предложение на разработку МНГП." oninput="updateSettingsChecklist()">
-      </div>
+      <div class="settings-entity-grid">
+        <section class="entity-card" aria-labelledby="campaign-main-title">
+          <div class="entity-card-header">
+            <div><div class="entity-card-kicker">Рассылка</div><h2 id="campaign-main-title">Основные параметры</h2></div>
+            <span class="material-symbols-outlined entity-card-icon" aria-hidden="true">tune</span>
+          </div>
+          <div class="field">
+            <label>Вид работ</label>
+            <select id="settings-work-type" onchange="handleSettingsWorkTypeChange(this.value)">
+              <option value="mngp_settlements">МНГП (сельских и городских поселений)</option>
+              <option value="mngp_districts">МНГП по муниципальным районам</option>
+              <option value="stp_mo">СТП МО</option>
+              <option value="random_forest">Случайный лес</option>
+              <option value="territorial_zone_boundaries">Описание местоположения границ территориальных зон</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Название рассылки</label>
+            <input id="settings-campaign-name" type="text" placeholder="Например: СТП июль 2026" oninput="saveUiState()">
+          </div>
+          <div class="document-mode-row settings-document-mode-row">
+            <div class="sender-transport-field">
+              <label for="settings-document-mode">Пакет документов</label>
+              <select id="settings-document-mode" onchange="handleSettingsDocumentModeChange(this.value)">
+                <option value="kp">Только КП</option>
+                <option value="both">КП + договор</option>
+                <option value="contract">Только договор</option>
+              </select>
+            </div>
+            <div class="sender-transport-note" id="settings-document-mode-note">Выберите состав пакета для каждой организации.</div>
+          </div>
+        </section>
 
-      <div class="field">
-        <label>Подтверждённая почта отправителя</label>
-        <input id="settings-sender-email" type="email" placeholder="info@company.ru" oninput="updateSettingsChecklist()">
-        <div class="muted" style="margin-top:6px">Эта почта должна быть подтверждена в выбранном сервисе отправки.</div>
-      </div>
+        <section class="entity-card" aria-labelledby="campaign-content-title">
+          <div class="entity-card-header">
+            <div><div class="entity-card-kicker">Контент</div><h2 id="campaign-content-title">Шаблоны</h2></div>
+            <button class="btn-text" type="button" onclick="goToScreen('templates')">Открыть библиотеку</button>
+          </div>
+          <div class="template-settings-summary" id="settings-template-library-link">
+            <span class="material-symbols-outlined" aria-hidden="true">verified</span>
+            <div><strong>Активные версии</strong><span id="settings-active-template-summary">Версии КП, найденные поля и статусы проверки находятся в библиотеке.</span></div>
+          </div>
+          <div class="template-upload-stack">
+            <div class="field">
+              <label>Текст письма (.txt/.docx)</label>
+              <input type="file" id="upload-mail-input" accept=".txt,.docx" style="display:none" onchange="uploadTemplate(this, 'mail-btn', 'Шаблон письма', 'mail')">
+              <button class="file-btn" id="mail-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-mail-input').click()"><span class="file-icon">📎</span> Выбрать файл</button>
+            </div>
+            <div class="field template-field" id="settings-kp-template-field">
+              <label>Коммерческое предложение (.docx/.pdf/.html)</label>
+              <input type="file" id="upload-kp-input" accept=".docx,.pdf,.html,.htm,.txt" style="display:none" onchange="uploadTemplate(this, 'kp-btn', 'Шаблон КП', 'kp')">
+              <button class="file-btn" id="kp-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-kp-input').click()"><span class="file-icon">📎</span> Выбрать файл</button>
+            </div>
+            <div class="field template-field" id="settings-contract-template-field">
+              <label>Договор (.docx)</label>
+              <input type="file" id="upload-contract-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'contract-btn', 'Шаблон Договор', 'contract')">
+              <button class="file-btn" id="contract-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-contract-input').click()"><span class="file-icon">📎</span> Выбрать файл</button>
+            </div>
+          </div>
+        </section>
 
-      <div class="divider"></div>
-
-      <div class="grid2">
-        <div class="field">
-          <label>Шаблон текста письма (.txt/.docx)</label>
-          <input type="file" id="upload-mail-input" accept=".txt,.docx" style="display:none" onchange="uploadTemplate(this, 'mail-btn', 'Шаблон письма', 'mail')">
-          <button class="file-btn" id="mail-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-mail-input').click()">
-            <span class="file-icon">📎</span> Выбрать файл
-          </button>
-        </div>
-        <div class="field template-field" id="settings-kp-template-field">
-          <label>Шаблон КП (.docx/.pdf/.html)</label>
-          <input type="file" id="upload-kp-input" accept=".docx,.pdf,.html,.htm" style="display:none" onchange="uploadTemplate(this, 'kp-btn', 'Шаблон КП', 'kp')">
-          <button class="file-btn" id="kp-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-kp-input').click()">
-            <span class="file-icon">📎</span> Выбрать файл
-          </button>
-        </div>
-        <div class="field template-field" id="settings-contract-template-field">
-          <label>Шаблон договора (.docx)</label>
-          <input type="file" id="upload-contract-input" accept=".docx" style="display:none" onchange="uploadTemplate(this, 'contract-btn', 'Шаблон Договор', 'contract')">
-          <button class="file-btn" id="contract-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-contract-input').click()">
-            <span class="file-icon">📎</span> Выбрать файл
-          </button>
-        </div>
+        <section class="entity-card entity-card-wide" aria-labelledby="campaign-delivery-title">
+          <div class="entity-card-header">
+            <div><div class="entity-card-kicker">Письмо</div><h2 id="campaign-delivery-title">Параметры отправки</h2></div>
+            <span class="material-symbols-outlined entity-card-icon" aria-hidden="true">outgoing_mail</span>
+          </div>
+          <div class="delivery-fields-grid">
+            <div class="field">
+              <label>Тема письма</label>
+              <input id="settings-mail-subject" type="text" value="Коммерческое предложение на разработку МНГП." oninput="updateSettingsChecklist()">
+            </div>
+            <div class="field">
+              <label>Подтверждённый отправитель</label>
+              <input id="settings-sender-email" type="email" placeholder="info@company.ru" oninput="updateSettingsChecklist()">
+              <div class="muted field-hint">Адрес должен быть подтверждён в выбранном сервисе отправки.</div>
+            </div>
+          </div>
+        </section>
       </div>
       <div id="settings-sender-credentials-section" hidden>
         <div class="divider"></div>
@@ -3347,14 +3391,14 @@
 
       <div class="step-nav">
         <button class="btn-outline" type="button" onclick="goToScreen('generator')">Назад к документам</button>
-        <button class="btn-primary" id="sender-next-status" type="button" onclick="goToScreen('status')" disabled>Дальше: статистика отправок</button>
+        <button class="btn-primary" id="sender-next-status" type="button" onclick="goToScreen('status')" disabled>Дальше: результаты рассылки</button>
       </div>
     </div>
 
-    <!-- СТАТУСЫ -->
+    <!-- РЕЗУЛЬТАТЫ ТЕКУЩЕЙ РАССЫЛКИ -->
     <div class="screen" id="s-status">
-      <div class="page-title">Статистика отправок (старая)</div>
-      <div class="page-sub">Здесь видно, сколько писем ушло, сколько осталось и где возникли ошибки по текущей таблице.</div>
+      <div class="page-title">Результаты рассылки</div>
+      <div class="page-sub">Доставка, интерес, согласия и проблемы по организациям текущей рассылки.</div>
 
       <div class="stats-row" style="grid-template-columns: repeat(4, 1fr)">
         <div class="stat">
@@ -3457,12 +3501,12 @@
       </div>
     </div>
 
-    <!-- СТАТИСТИКА ДЛЯ МЕНЕДЖЕРА -->
+    <!-- ГЛОБАЛЬНАЯ АНАЛИТИКА -->
     <div class="screen" id="s-statistics">
       <div class="stats-embed">
         <div class="page-header">
           <div>
-            <h1 id="page-title">Статистика рассылки</h1>
+            <h1 id="page-title">Аналитика рассылок</h1>
             <div class="refresh-meta">
               <span id="refresh-meta">Обновлено: —</span>
               <span class="stats-status is-hidden" id="stats-status"><span class="spinner"></span>Загрузка…</span>
@@ -3749,6 +3793,10 @@
     </div>
 
   </div>
+  <footer class="service-statusbar" aria-label="Статус рабочей области">
+    <div><span id="service-status-context">Рассылка: черновик</span><span class="service-status-divider"></span><span id="service-status-entities">Сущности: 4</span></div>
+    <div><span class="service-status-dot"></span>Система готова</div>
+  </footer>
 </div>
 
 <div class="modal-backdrop" id="parser-search-modal" role="dialog" aria-modal="true" aria-labelledby="parser-search-title" onclick="closeParserSearchModal()">
@@ -3873,7 +3921,7 @@
 <script src="/public/documents-ui.js?v=6"></script>
 <script src="/public/sender-ui.js?v=9"></script>
 <script src="/public/chart.min.js?v=6"></script>
-<script src="/public/statistics.js?v=19"></script>
+<script src="/public/statistics.js?v=20"></script>
 <script>
   const chatSessions = {};
   const activeChatRequests = {};
@@ -5761,7 +5809,30 @@
     showToast('Статусы текущей отправки обновлены');
   }
 
+  function updateServiceShellContext(id) {
+    const contexts = {
+      settings: ['Рассылки', 'Обзор рассылки', 'Рассылка: черновик', 'Сущности: 4'],
+      parser: ['Рассылки', 'Аудитория', 'Организации: таблица', 'Сущности: аудитория · организация · контакт'],
+      generator: ['Рассылки', 'Документы', 'Пакеты документов', 'Сущности: пакет · документ · проверка'],
+      sender: ['Рассылки', 'Отправка', 'Письма к отправке', 'Сущности: письмо · попытка · защита'],
+      status: ['Рассылки', 'Результаты', 'Результаты рассылки', 'Сущности: доставка · согласие · действие'],
+      statistics: ['Аналитика', 'Обзор', 'Аналитика рассылок', 'Сущности: отчёт · событие · организация'],
+    };
+    const context = contexts[id] || contexts.settings;
+    const section = document.getElementById('service-topbar-section');
+    const title = document.getElementById('service-topbar-title');
+    const statusContext = document.getElementById('service-status-context');
+    const statusEntities = document.getElementById('service-status-entities');
+    if (section) section.textContent = context[0];
+    if (title) title.textContent = context[1];
+    if (statusContext) statusContext.textContent = context[2];
+    if (statusEntities) statusEntities.textContent = context[3];
+  }
+
   function activateScreen(id, { scroll = true, persist = true, navElement = null } = {}) {
+
+    document.body.classList.toggle('template-workspace-active', id === 'templates');
+    updateServiceShellContext(id);
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     const screen = document.getElementById('s-' + id);
@@ -5803,6 +5874,9 @@
       }
     } else if (window.StatsEmbed && typeof window.StatsEmbed.hide === 'function') {
       window.StatsEmbed.hide();
+    }
+    if (id === 'templates' && window.TemplateEditor && typeof window.TemplateEditor.show === 'function') {
+      window.TemplateEditor.show();
     }
     if (persist) {
       refreshActiveScreenStatus({ silent: true });
@@ -9769,6 +9843,7 @@ function clearAttachedFile() {
     senderPreviewButton.addEventListener('click', () => handleSenderPrimaryAction());
   }
 </script>
+<script src="/public/template-editor.js?v=3"></script>
 <script src="/public/preview-ui.js?v=6"></script>
 
 </body>

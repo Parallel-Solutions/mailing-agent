@@ -52,6 +52,13 @@ def create_public_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="Preview UI script not found.")
         return FileResponse(script_path, media_type="application/javascript", headers=NO_CACHE_HEADERS)
 
+    @router.get("/public/template-editor.js")
+    def public_template_editor_script():
+        script_path = WEB_STATIC_DIR / "template_editor.js"
+        if not script_path.exists():
+            raise HTTPException(status_code=404, detail="Template editor script not found.")
+        return FileResponse(script_path, media_type="application/javascript", headers=NO_CACHE_HEADERS)
+
     @router.get("/public/vendor/jszip.min.js")
     def public_jszip_vendor():
         script_path = DOCXJS_VENDOR_DIR / "jszip.min.js"
@@ -72,6 +79,20 @@ def create_public_router() -> APIRouter:
         css_path = WEB_STATIC_DIR / "statistics.css"
         if not css_path.exists():
             raise HTTPException(status_code=404, detail="Statistics CSS not found.")
+        return FileResponse(css_path, media_type="text/css", headers=NO_CACHE_HEADERS)
+
+    @router.get("/public/template-editor.css")
+    def public_template_editor_css():
+        css_path = WEB_STATIC_DIR / "template_editor.css"
+        if not css_path.exists():
+            raise HTTPException(status_code=404, detail="Template editor CSS not found.")
+        return FileResponse(css_path, media_type="text/css", headers=NO_CACHE_HEADERS)
+
+    @router.get("/public/service-design.css")
+    def public_service_design_css():
+        css_path = WEB_STATIC_DIR / "service_design.css"
+        if not css_path.exists():
+            raise HTTPException(status_code=404, detail="Service design CSS not found.")
         return FileResponse(css_path, media_type="text/css", headers=NO_CACHE_HEADERS)
 
     @router.get("/public/statistics.js")

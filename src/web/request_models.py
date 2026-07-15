@@ -39,6 +39,10 @@ class JobScopedRequest(ApiRequest):
         return _clean_optional_text(value)
 
 
+class TemplateEditorStateRequest(JobScopedRequest):
+    state: dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatRequest(JobScopedRequest):
     message: str
     session_id: str | None = None
