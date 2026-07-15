@@ -929,30 +929,12 @@ class JobsWebController:
                 put_upload(paths.job_id, relative, dest)
                 if adaptive_package is not None:
                     push_job(paths.job_id, ["templates"])
-            adaptive_task = None
-            if adaptive_package is not None:
-                from src.workers.task_queue import enqueue_task
-
-                adaptive_task, _ = enqueue_task(
-                    task_type=f"template_compile:{adaptive_package.template_id}",
-                    job_id=paths.job_id,
-                    payload={
-                        "job_id": paths.job_id,
-                        "template_id": adaptive_package.template_id,
-                        "kind": "kp",
-                        "activate": True,
-                    },
-                    owner_username=coerce_principal(principal).username,
-                    idempotency_key=f"template_compile:{adaptive_package.template_id}",
-                    max_attempts=2,
-                )
             append_audit_event(action="job.template.upload", principal=principal, job_id=paths.job_id, details={"template_kind": kind, "filename": original_name})
             result = {
                 "filename": file.filename,
                 "stored_as": dest.name,
                 "job_id": paths.job_id,
                 "adaptive_template": adaptive_package.to_dict() if adaptive_package is not None else None,
-                "adaptive_task": adaptive_task,
             }
             return ok_response(result, **result)
 

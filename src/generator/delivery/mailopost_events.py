@@ -90,6 +90,20 @@ def append_mailopost_events(payload: Any) -> dict[str, Any]:
         if job_id:
             jobs.add(job_id)
             saved += 1
+            try:
+                from src.generator.delivery.suppression_store import upsert_from_provider_event
+                from src.generator.delivery.send_guard import record_complaint
+
+                upsert_from_provider_event(
+                    recipient=str(record.get("recipient") or ""),
+                    provider_status=str(record.get("provider_status") or ""),
+                    source="webhook_mailopost",
+                    job_id=job_id,
+                )
+                if str(record.get("provider_status") or "").strip().lower() in {"spam", "complaint", "complained"}:
+                    record_complaint()
+            except Exception:
+                pass
         else:
             unmatched += 1
     return {"saved": saved, "skipped": skipped, "duplicates": duplicates, "unmatched": unmatched, "jobs": sorted(jobs)}

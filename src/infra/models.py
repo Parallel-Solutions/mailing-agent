@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.infra.db import Base
@@ -108,58 +108,6 @@ class EventStreamCounter(Base):
     )
 
 
-class BackgroundTask(Base):
-    __tablename__ = "background_tasks"
-
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
-    task_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    owner_username: Mapped[str] = mapped_column(String(32), nullable=False, default="")
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
-    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
-    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    active_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
-
-    __table_args__ = (
-        Index(
-            "idx_background_tasks_claim",
-            "status",
-            "available_at",
-            "priority",
-            "created_at",
-        ),
-        Index("idx_background_tasks_job_created", "job_id", "created_at"),
-        Index("idx_background_tasks_lease", "status", "lease_expires_at"),
-        Index(
-            "uq_background_tasks_idempotency_key",
-            "idempotency_key",
-            unique=True,
-            postgresql_where=text("idempotency_key IS NOT NULL"),
-        ),
-        Index(
-            "uq_background_tasks_active_key",
-            "active_key",
-            unique=True,
-            postgresql_where=text("active_key IS NOT NULL"),
-        ),
-    )
-
 
 class Client(Base):
     __tablename__ = "clients"
@@ -235,3 +183,54 @@ class ParserRunHistory(Base):
     status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class BackgroundTask(Base):
+    __tablename__ = "background_tasks"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    task_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_background_tasks_type_status_created", "task_type", "status", "created_at"),
+        Index("idx_background_tasks_job_type_status", "job_id", "task_type", "status"),
+    )
+
+
+class SuppressionEntry(Base):
+    __tablename__ = "suppression_entries"
+
+    email: Mapped[str] = mapped_column(String(320), primary_key=True)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="manual")
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_suppression_entries_reason", "reason"),
+        Index("idx_suppression_entries_expires_at", "expires_at"),
+    )
+
+
+class SendGuardState(Base):
+    __tablename__ = "send_guard_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pause_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

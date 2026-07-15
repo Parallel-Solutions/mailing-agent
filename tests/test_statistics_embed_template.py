@@ -36,7 +36,7 @@ class StatisticsEmbedTemplateTests(unittest.TestCase):
         self.assertNotIn('Открыть раздел статистики для менеджера', self.index)
 
     def test_static_assets_included(self) -> None:
-        self.assertIn('href="/public/statistics.css"', self.index)
+        self.assertIn('href="/public/statistics.css', self.index)
         self.assertIn('/public/statistics.js', self.index)
         self.assertIn('/public/chart.min.js', self.index)
 
@@ -47,10 +47,12 @@ class StatisticsEmbedTemplateTests(unittest.TestCase):
     def test_standalone_statistics_template_removed(self) -> None:
         self.assertFalse((REPO_ROOT / "templates" / "statistics.html").exists())
 
-    def test_statistics_js_is_lazy_and_url_free(self) -> None:
+    def test_statistics_js_is_lazy_and_hash_routed(self) -> None:
         self.assertIn("window.StatsEmbed", self.stats_js)
-        self.assertNotIn("history.replaceState", self.stats_js)
-        self.assertNotIn("window.location.search", self.stats_js)
+        self.assertIn("parseStatsHash", self.stats_js)
+        self.assertIn("syncFiltersToUrl", self.stats_js)
+        self.assertIn("buildStatsHash", self.stats_js)
+        self.assertIn("history.replaceState", self.stats_js)
         self.assertIn(".stx-tab", self.stats_js)
         self.assertIn(".stx-modal", self.stats_js)
         self.assertIn("analytics-campaign", self.stats_js)
@@ -61,12 +63,26 @@ class StatisticsEmbedTemplateTests(unittest.TestCase):
         self.assertIn("readDashboardCache", self.stats_js)
         self.assertIn("writeDashboardCache", self.stats_js)
         self.assertIn("dashboardCacheKey", self.stats_js)
+        self.assertIn("paintDashboardFromCacheSync", self.stats_js)
+        self.assertIn("dashboardDataKey", self.stats_js)
 
-    def test_recipient_status_filter_lives_on_recipients_page(self) -> None:
+    def test_dashboard_skeleton_in_index(self) -> None:
+        dashboard = self.index.split('id="page-dashboard"', 1)[1].split('</section>', 1)[0]
+        self.assertIn('id="dashboard-kpis"', dashboard)
+        self.assertGreaterEqual(dashboard.count('class="kpi-card"'), 8)
+        self.assertIn('id="dashboard-funnel"', dashboard)
+        self.assertGreaterEqual(dashboard.count('class="funnel-step"'), 5)
+        self.assertIn('id="dashboard-worklists"', dashboard)
+        self.assertIn('chart-roles-placeholder', dashboard)
+        stats_header = self.index.split('class="stats-embed"', 1)[1].split('class="stx-tabs"', 1)[0]
+        self.assertIn('is-hidden', stats_header)
+
+    def test_recipient_status_filter_uses_chips_only(self) -> None:
         recipients_section = self.index.split('id="page-recipients"', 1)[1].split('</section>', 1)[0]
-        self.assertIn('id="filter-status"', recipients_section)
-        header_bar = self.index.split('class="filters-bar"', 1)[1].split('</div>', 1)[0]
-        self.assertNotIn('id="filter-status"', header_bar)
+        # Chips are the single status filter on the recipients tab.
+        self.assertIn('id="recipient-chips"', recipients_section)
+        # The duplicate status <select> was removed to avoid duplicated controls.
+        self.assertNotIn('id="filter-status"', self.index)
 
     def test_statistics_css_is_scoped(self) -> None:
         self.assertIn("#s-statistics", self.stats_css)

@@ -1,246 +1,223 @@
 from __future__ import annotations
 
-import os
+import secrets
 import signal
-import socket
 import subprocess
 import sys
+import threading
 import time
+from datetime import datetime
 from pathlib import Path
-from types import FrameType
-from typing import Any
-from uuid import uuid4
+from typing import Any, Callable
 
-from src.infra.db import init_db
-from src.jobs.workspace import pull_job, push_job
+from src.jobs import resolve_job_paths
 from src.utils.config import settings
 from src.utils.logger import logger
+from src.workers.process_manager import _run_worker_process_monitor, _write_worker_payload
 from src.workers.task_queue import (
-    reconcile_orphaned_agent_states,
-    FAILED,
-    claim_task,
+    TaskRecord,
+    claim_next_task,
     complete_task,
     fail_task,
     heartbeat_task,
-    is_cancel_requested,
-    mark_task_cancelled,
+    reconcile_expired_leases,
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_STOP_REQUESTED = False
+_stop_event = threading.Event()
+_worker_thread: threading.Thread | None = None
+_worker_thread_lock = threading.Lock()
 
 
-def _request_stop(signum: int, frame: FrameType | None) -> None:
-    del frame
-    global _STOP_REQUESTED
-    _STOP_REQUESTED = True
-    logger.info("queue_worker_stop_requested", signal=signum)
+def request_queue_worker_stop() -> None:
+    _stop_event.set()
 
 
-def _terminate_process(process: subprocess.Popen[Any]) -> None:
-    if process.poll() is not None:
+def _job_state_dir(job_id: str | None) -> Path:
+    return resolve_job_paths(job_id).state_dir
+
+
+def _mark_sender_failed(task: str, job_id: str | None, message: str) -> None:
+    from src.generator.delivery.sender_agent import _load_sender_state, _save_sender_state
+
+    if task != "sender":
         return
-    process.terminate()
-    try:
-        process.wait(timeout=max(1, int(settings.background_queue_shutdown_grace_seconds)))
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
+    state = _load_sender_state(job_id)
+    state["status"] = "error"
+    state["completed_at"] = datetime.now().isoformat(timespec="seconds")
+    state["summary_text"] = f"Агент-отправщик остановился с ошибкой: {message}"
+    _save_sender_state(state, job_id)
 
 
-def _task_timeout_seconds(task_type: str) -> int:
-    if task_type == "documents":
-        return max(0, int(settings.documents_worker_timeout_seconds or 0))
-    if task_type == "sender":
-        return max(0, int(settings.sender_worker_timeout_seconds or 0))
-    return 0
+def _prime_sender_task_state(task: TaskRecord) -> None:
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    kwargs = payload.get("kwargs") if isinstance(payload.get("kwargs"), dict) else payload
+    dry_run = bool(kwargs.get("dry_run", False))
+    job_id = task.job_id
+    transport = kwargs.get("transport")
+    attachment_mode = kwargs.get("attachment_mode")
+    recipient_strategy = kwargs.get("recipient_strategy")
+    sender_email = kwargs.get("sender_email")
+    campaign_name = kwargs.get("campaign_name")
+    from src.web.sender_service import prime_sender_checking_state, prime_sender_running_state
 
-
-def _mark_terminal_failure(task: dict[str, Any], message: str) -> None:
-    try:
-        from src.workers.background_worker import mark_task_state_failed
-
-        mark_task_state_failed(
-            str(task.get("task_type") or ""),
-            str(task.get("job_id") or "").strip() or None,
-            message,
+    if dry_run:
+        prime_sender_checking_state(
+            job_id,
+            transport,
+            attachment_mode,
+            recipient_strategy,
+            sender_email,
+            campaign_name,
         )
-    except Exception:
-        logger.exception(
-            "queue_worker_mark_state_failed",
-            task_id=task.get("id"),
-            task_type=task.get("task_type"),
-            job_id=task.get("job_id"),
+    else:
+        prime_sender_running_state(
+            job_id,
+            transport,
+            attachment_mode,
+            recipient_strategy,
+            sender_email,
+            campaign_name,
         )
 
 
-def _finish_failed(task: dict[str, Any], worker_id: str, message: str) -> None:
-    status = fail_task(
-        task_id=str(task["id"]),
-        worker_id=worker_id,
-        error=message,
-        retry_base_seconds=max(1, int(settings.background_queue_retry_base_seconds)),
-    )
-    logger.error(
-        "queue_task_failed",
-        task_id=task["id"],
-        task_type=task["task_type"],
-        job_id=task.get("job_id"),
-        status=status,
-        error=message,
-    )
-    if status == FAILED:
-        _mark_terminal_failure(task, message)
+def _run_sender_payload(task: TaskRecord, *, project_root: Path, worker_id: str) -> None:
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    kwargs = payload.get("kwargs") if isinstance(payload.get("kwargs"), dict) else payload
+    job_id = task.job_id
+    if job_id:
+        try:
+            from src.jobs.workspace import pull_job
 
-
-def _sync_workspace(job_id: str | None, *, pull: bool) -> None:
-    if not job_id:
-        return
-    try:
-        if pull:
             pull_job(job_id, ["input", "templates", "output"])
-        else:
-            push_job(job_id, ["output", "reports", "consents", "templates"])
-    except ValueError:
+        except ValueError:
+            pass
+
+    payload_path = _write_worker_payload(job_id, "sender", kwargs, _job_state_dir)
+    status_path = payload_path.with_suffix(".status.json")
+    timeout_seconds = max(0, int(settings.sender_worker_timeout_seconds or 0))
+    _run_worker_process_monitor(
+        task="sender",
+        payload_path=payload_path,
+        status_path=status_path,
+        job_id=job_id,
+        project_root=project_root,
+        unregister=lambda _job_id: None,
+        mark_failed=_mark_sender_failed,
+        logger=logger,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _process_task(task: TaskRecord, *, project_root: Path, worker_id: str) -> None:
+    task_type = task.task_type
+    if task_type == "sender":
+        from src.generator.delivery.send_guard import assert_sending_allowed
+
+        assert_sending_allowed()
+        _prime_sender_task_state(task)
+        _run_sender_payload(task, project_root=project_root, worker_id=worker_id)
         return
-    except Exception:
-        logger.exception("queue_worker_workspace_sync_failed", job_id=job_id, pull=pull)
+    raise RuntimeError(f"unsupported queued task type: {task_type}")
 
 
-def _run_claimed_task(task: dict[str, Any], worker_id: str) -> None:
-    task_id = str(task["id"])
-    task_type = str(task["task_type"])
-    job_id = str(task.get("job_id") or "").strip() or None
-    timeout_seconds = _task_timeout_seconds(task_type)
-    heartbeat_seconds = max(1, int(settings.background_queue_heartbeat_seconds))
-    lease_seconds = max(heartbeat_seconds * 2, int(settings.background_queue_lease_seconds))
-    started_monotonic = time.monotonic()
-    process: subprocess.Popen[Any] | None = None
-
-    _sync_workspace(job_id, pull=True)
-    try:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "src.workers.background_worker",
-                "--task-id",
-                task_id,
-            ],
-            cwd=str(PROJECT_ROOT),
-        )
-        logger.info(
-            "queue_task_started",
-            task_id=task_id,
-            task_type=task_type,
-            job_id=job_id,
-            pid=process.pid,
-            attempt=task.get("attempt"),
-        )
-
-        while process.poll() is None:
-            try:
-                process.wait(timeout=heartbeat_seconds)
-            except subprocess.TimeoutExpired:
-                pass
-
-            if process.poll() is not None:
-                break
-            if is_cancel_requested(task_id):
-                _terminate_process(process)
-                mark_task_cancelled(task_id=task_id, worker_id=worker_id)
-                _mark_terminal_failure(task, "task cancelled")
-                logger.info("queue_task_cancelled", task_id=task_id, task_type=task_type, job_id=job_id)
-                return
-            if _STOP_REQUESTED:
-                _terminate_process(process)
-                _finish_failed(task, worker_id, "queue worker is shutting down")
-                return
-            if timeout_seconds > 0 and time.monotonic() - started_monotonic > timeout_seconds:
-                _terminate_process(process)
-                _finish_failed(task, worker_id, f"worker process exceeded timeout {timeout_seconds} seconds")
-                return
-            if not heartbeat_task(task_id=task_id, worker_id=worker_id, lease_seconds=lease_seconds):
-                _terminate_process(process)
-                logger.error("queue_task_lease_lost", task_id=task_id, task_type=task_type, job_id=job_id)
-                return
-
-        return_code = int(process.returncode or 0)
-        if return_code == 0:
-            complete_task(
-                task_id=task_id,
-                worker_id=worker_id,
-                result={"return_code": return_code, "pid": process.pid},
-            )
-            logger.info("queue_task_completed", task_id=task_id, task_type=task_type, job_id=job_id)
-        else:
-            _finish_failed(task, worker_id, f"worker process exited with code {return_code}")
-    except Exception as exc:
-        if process is not None:
-            _terminate_process(process)
-        _finish_failed(task, worker_id, f"worker process failed: {type(exc).__name__}: {exc}")
-    finally:
-        _sync_workspace(job_id, pull=False)
-
-
-def _run_consent_recovery_if_due(last_run: float) -> float:
-    if not bool(settings.consent_materials_recovery_enabled):
-        return last_run
-    interval = max(10, int(settings.consent_materials_recovery_poll_seconds or 60))
-    now = time.monotonic()
-    if now - last_run < interval:
-        return last_run
-    try:
-        from src.web.consent_router import recover_pending_materials_dispatches
-
-        result = recover_pending_materials_dispatches(
-            limit=max(1, int(settings.consent_materials_recovery_batch_size or 25))
-        )
-        if any(int(result.get(key) or 0) for key in ("checked", "sent", "failed", "skipped")):
-            logger.info("consent_materials_recovery_tick", **result)
-    except Exception:
-        logger.exception("consent_materials_recovery_failed")
-    return now
-
-
-def main() -> None:
-    signal.signal(signal.SIGTERM, _request_stop)
-    if hasattr(signal, "SIGINT"):
-        signal.signal(signal.SIGINT, _request_stop)
-
-    init_db()
-    reconciled = reconcile_orphaned_agent_states()
-    if reconciled:
-        logger.warning("queue_worker_orphaned_states_reconciled", count=reconciled)
-
-    worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:8]}"
+def _queue_worker_loop(*, project_root: Path) -> None:
+    worker_id = f"queue-worker-{secrets.token_hex(6)}"
     poll_seconds = max(0.1, float(settings.background_queue_poll_seconds or 1.0))
     lease_seconds = max(
-        int(settings.background_queue_heartbeat_seconds) * 2,
-        int(settings.background_queue_lease_seconds),
+        int(settings.background_queue_heartbeat_seconds or 30) * 2,
+        int(settings.background_queue_lease_seconds or 7200),
     )
-    last_consent_recovery = 0.0
+    heartbeat_seconds = max(1, int(settings.background_queue_heartbeat_seconds or 30))
     logger.info("queue_worker_started", worker_id=worker_id)
-    last_orphan_reconciliation = time.monotonic()
+    while not _stop_event.is_set():
+        try:
+            reconcile_expired_leases(task_type="sender")
+            from src.generator.delivery.send_guard import is_sending_paused
 
-    while not _STOP_REQUESTED:
-        last_consent_recovery = _run_consent_recovery_if_due(last_consent_recovery)
-        task = claim_task(worker_id=worker_id, lease_seconds=lease_seconds)
-        now = time.monotonic()
-        if now - last_orphan_reconciliation >= 60:
-            reconciled = reconcile_orphaned_agent_states()
-            if reconciled:
-                logger.warning("queue_worker_orphaned_states_reconciled", count=reconciled)
-            last_orphan_reconciliation = now
+            if is_sending_paused():
+                _stop_event.wait(poll_seconds)
+                continue
 
-        if task is None:
-            time.sleep(poll_seconds)
-            continue
-        _run_claimed_task(task, worker_id)
+            task = claim_next_task(task_type="sender", worker_id=worker_id, lease_seconds=lease_seconds)
+            if task is None:
+                _stop_event.wait(poll_seconds)
+                continue
 
+            logger.info("queue_task_started", task_id=task.id, task_type=task.task_type, job_id=task.job_id)
+            try:
+                monitor_stop = threading.Event()
+
+                def _heartbeat_loop() -> None:
+                    while not monitor_stop.wait(heartbeat_seconds):
+                        if not heartbeat_task(task.id, worker_id=worker_id, lease_seconds=lease_seconds):
+                            return
+
+                heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+                heartbeat_thread.start()
+                try:
+                    _process_task(task, project_root=project_root, worker_id=worker_id)
+                finally:
+                    monitor_stop.set()
+                    heartbeat_thread.join(timeout=heartbeat_seconds + 1)
+
+                complete_task(task.id, worker_id=worker_id)
+                logger.info("queue_task_completed", task_id=task.id, task_type=task.task_type, job_id=task.job_id)
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {exc}"
+                logger.exception("queue_task_failed", task_id=task.id, task_type=task.task_type, job_id=task.job_id)
+                fail_task(task.id, worker_id=worker_id, error=message, retry=True)
+        except Exception:
+            logger.exception("queue_worker_loop_failed")
+            _stop_event.wait(poll_seconds)
     logger.info("queue_worker_stopped", worker_id=worker_id)
 
 
-if __name__ == "__main__":
-    main()
+def start_queue_worker(*, project_root: Path) -> None:
+    with _worker_thread_lock:
+        global _worker_thread
+        if _worker_thread and _worker_thread.is_alive():
+            return
+        _stop_event.clear()
+        _worker_thread = threading.Thread(
+            target=_queue_worker_loop,
+            kwargs={"project_root": project_root},
+            daemon=True,
+            name="sender-queue-worker",
+        )
+        _worker_thread.start()
+
+
+def stop_queue_worker() -> None:
+    request_queue_worker_stop()
+    with _worker_thread_lock:
+        global _worker_thread
+        if _worker_thread and _worker_thread.is_alive():
+            _worker_thread.join(timeout=max(1, int(settings.background_queue_shutdown_grace_seconds or 30)))
+        _worker_thread = None
+
+
+def enqueue_sender_task(
+    *,
+    job_id: str | None,
+    owner_username: str,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    from src.workers.task_queue import enqueue_task, get_queue_snapshot
+
+    task, created = enqueue_task(
+        task_type="sender",
+        job_id=job_id,
+        owner_username=owner_username,
+        payload={"kwargs": kwargs},
+    )
+    snapshot = get_queue_snapshot(task_type="sender", job_id=job_id)
+    return {
+        "task_id": task.id,
+        "created": created,
+        "status": task.status,
+        "queue_position": snapshot.get("job_queue_position"),
+        "queue_total": snapshot.get("total_active"),
+        "queued_count": snapshot.get("queued_count"),
+        "running_count": snapshot.get("running_count"),
+    }

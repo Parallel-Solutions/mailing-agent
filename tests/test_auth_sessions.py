@@ -24,6 +24,7 @@ class AuthSessionTests(unittest.TestCase):
             app_password="admin-pass",
             app_username="admin",
             app_session_ttl_days=7,
+            app_allow_registration=True,
         )
         bootstrap_auth_store(self.settings)
         create_user("alice", "alice-pass-123")

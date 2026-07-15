@@ -2814,7 +2814,7 @@
   }
 
 </style>
-<link rel="stylesheet" href="/public/statistics.css">
+<link rel="stylesheet" href="/public/statistics.css?v=8">
 </head>
 <body>
 
@@ -3219,6 +3219,7 @@
       <div class="page-sub">Сначала система проверит адреса и вложения. Реальная отправка начнётся только после вашего подтверждения.</div>
 
       <div class="document-process-panel document-process-panel-top" aria-label="Что сейчас происходит с отправкой">
+        <div id="s-send-guard-banner" class="document-process-detail" style="display:none;color:#9a3412;font-weight:600;"></div>
         <div class="document-process-title" id="s-process-title">Готово к проверке</div>
         <div class="document-process-main" id="s-process-main">Сервис проверит письма перед отправкой.</div>
         <div class="document-process-detail" id="s-process-detail">Реальная отправка начнётся только после вашего подтверждения.</div>
@@ -3464,8 +3465,7 @@
             <h1 id="page-title">Статистика рассылки</h1>
             <div class="refresh-meta">
               <span id="refresh-meta">Обновлено: —</span>
-              <span class="stats-status hidden" id="stats-status"><span class="spinner"></span>Загрузка…</span>
-              <span class="refresh-badge hidden" id="refresh-badge"><span class="spinner"></span>Дообор из провайдеров…</span>
+              <span class="stats-status is-hidden" id="stats-status"><span class="spinner"></span>Загрузка…</span>
             </div>
           </div>
           <div class="filters-bar">
@@ -3485,9 +3485,9 @@
         </div>
 
         <div class="stx-tabs" role="tablist">
-          <button class="stx-tab active" type="button" data-page="dashboard">Дашборд</button>
+          <button class="stx-tab active" type="button" data-page="dashboard">Обзор</button>
           <button class="stx-tab" type="button" data-page="campaigns">Рассылки</button>
-          <button class="stx-tab" type="button" data-page="recipients">Получатели</button>
+          <button class="stx-tab" type="button" data-page="recipients">Компании</button>
           <button class="stx-tab" type="button" data-page="campaign-analytics">Аналитика рассылки</button>
           <button class="stx-tab" type="button" data-page="consents">Согласия</button>
           <button class="stx-tab" type="button" data-page="problems">Проблемы с email</button>
@@ -3500,81 +3500,71 @@
         </div>
 
         <section class="stats-page active" id="page-dashboard">
-          <div class="kpi-grid" id="dashboard-kpis"></div>
-          <div class="rate-grid" id="dashboard-rates"></div>
+          <div class="kpi-grid" id="dashboard-kpis">
+            <div class="kpi-card"><div class="label">Компаний в рассылке</div><div class="value">—</div></div>
+            <div class="kpi-card"><div class="label">Доставлено</div><div class="value">—</div></div>
+            <div class="kpi-card"><div class="label">Открыто</div><div class="value">—</div></div>
+            <div class="kpi-card"><div class="label">Переходы</div><div class="value">—</div></div>
+            <div class="kpi-card"><div class="label">Ошибки</div><div class="value">—</div></div>
+            <div class="kpi-card"><div class="label">Ожидают статуса</div><div class="value">—</div></div>
+            <div class="kpi-card"><div class="label">Согласия</div><div class="value">—</div></div>
+            <div class="kpi-card"><div class="label">Материалы отправлены</div><div class="value">—</div></div>
+          </div>
+          <div class="chart-card funnel-card"><h3>Воронка рассылки</h3><div class="funnel-hint">Доля от базы воронки на каждом этапе</div><div class="funnel-row" id="dashboard-funnel">
+            <div class="funnel-step"><div class="value">—</div><div class="label">Согласие</div></div>
+            <div class="funnel-step"><div class="value">—</div><div class="label">Компаний</div></div>
+            <div class="funnel-step"><div class="value">—</div><div class="label">Доставлено</div></div>
+            <div class="funnel-step"><div class="value">—</div><div class="label">Открыто</div></div>
+            <div class="funnel-step"><div class="value">—</div><div class="label">Переходы</div></div>
+          </div></div>
           <div class="chart-grid">
-            <div class="chart-card"><h3>Воронка рассылки</h3><div class="funnel-row" id="dashboard-funnel"></div></div>
             <div class="chart-card"><h3>Статусы доставки</h3><div class="chart-box"><canvas id="chart-statuses"></canvas></div></div>
             <div class="chart-card"><h3>По провайдерам</h3><div class="chart-box"><canvas id="chart-providers"></canvas></div></div>
-            <div class="chart-card" id="card-chart-roles"><h3>По роли адреса</h3><div class="chart-box"><canvas id="chart-roles"></canvas></div></div>
+            <div class="chart-card" id="card-chart-roles"><h3>По роли адреса</h3><div class="chart-box"><div class="chart-placeholder" id="chart-roles-placeholder">Недостаточно данных для сравнения</div><canvas id="chart-roles" class="hidden"></canvas></div></div>
           </div>
-          <div class="worklists" id="dashboard-worklists"></div>
-          <div class="panel" style="margin-top:16px;"><h3>Инсайты</h3><ul class="insight-list" id="dashboard-insights"></ul></div>
+          <div class="worklists" id="dashboard-worklists">
+            <div class="panel"><h3>Заинтересованные</h3><div class="empty-state">Нет данных</div><button class="btn-outline" type="button" disabled>Посмотреть все</button></div>
+            <div class="panel"><h3>Проблемы с email</h3><div class="empty-state">Нет данных</div><button class="btn-outline" type="button" disabled>Посмотреть все</button></div>
+          </div>
+          <div class="panel panel--spaced"><h3>Выводы</h3><ul class="insight-list" id="dashboard-insights"></ul></div>
           <div class="empty-state hidden" id="dashboard-empty">Нет данных за выбранный период</div>
         </section>
 
         <section class="stats-page" id="page-campaigns">
           <div class="kpi-grid" id="campaigns-kpis"></div>
-          <div class="layout-with-side">
-            <div class="table-card">
-              <div class="table-toolbar">
-                <input type="search" id="campaigns-search" placeholder="Поиск по названию рассылки">
-              </div>
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>Название</th><th>Период</th><th>Провайдер</th><th>Отправлено</th>
-                    <th>Доставлено</th><th>Открыто</th><th>Переходы</th><th>Согласия</th><th>Статус</th><th></th>
-                  </tr>
-                </thead>
-                <tbody id="campaigns-table"></tbody>
-              </table>
+          <div class="table-card">
+            <div class="table-toolbar">
+              <input type="search" id="campaigns-search" placeholder="Поиск по названию рассылки">
             </div>
-            <aside class="side-panel" id="campaign-summary">
-              <h3>Сводка по выбранной рассылке</h3>
-              <p id="campaign-summary-empty">Выберите рассылку в таблице</p>
-              <div id="campaign-summary-body" class="hidden"></div>
-            </aside>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Название</th><th>Период</th><th>Провайдер</th><th>Отправлено</th>
+                  <th>Доставлено</th><th>Открыто</th><th>Переходы</th><th>Согласия</th><th>Статус</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="campaigns-table"></tbody>
+            </table>
           </div>
         </section>
 
         <section class="stats-page" id="page-recipients">
           <div class="kpi-grid" id="recipients-kpis"></div>
-          <div class="layout-with-side">
-            <div class="table-card">
-              <div class="table-toolbar">
-                <input type="search" id="recipients-search" placeholder="Поиск по организации, получателю или email">
-                <select id="filter-status" aria-label="Статус получателя">
-                  <option value="">Все статусы</option>
-                  <option value="delivered">Доставлено</option>
-                  <option value="opened">Открыто</option>
-                  <option value="clicked">Клик</option>
-                  <option value="email_broken">Email не работает</option>
-                  <option value="soft_bounce">Временная ошибка</option>
-                  <option value="delivery_error">Ошибка доставки</option>
-                  <option value="unsubscribed">Отписался</option>
-                  <option value="spam">Жалоба / спам</option>
-                  <option value="pending">Ожидаем статус</option>
-                </select>
-                <div class="chips" id="recipient-chips"></div>
-              </div>
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>Организация</th><th>Получатель</th><th>Роль</th><th>Статус</th>
-                    <th>Последнее событие</th><th>Интерес</th><th>Следующее действие</th><th></th>
-                  </tr>
-                </thead>
-                <tbody id="recipients-table"></tbody>
-              </table>
-              <div class="pagination" id="recipients-pagination"></div>
+          <div class="table-card">
+            <div class="table-toolbar">
+              <input type="search" id="recipients-search" placeholder="Поиск по компании, региону, ИНН или email">
+              <div class="chips" id="recipient-chips"></div>
             </div>
-            <aside class="side-panel hidden" id="recipient-card">
-              <button class="close-btn" id="recipient-card-close" type="button">×</button>
-              <h3>Карточка контакта</h3>
-              <div id="recipient-card-body"></div>
-              <button class="btn-danger" id="recipient-action-btn" type="button">Действие по получателю</button>
-            </aside>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Компания</th><th>Регион</th><th>ИНН</th><th>Контакты</th><th>Статус</th>
+                  <th>Интерес</th><th>Следующее действие</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="recipients-table"></tbody>
+            </table>
+            <div class="pagination" id="recipients-pagination"></div>
           </div>
         </section>
 
@@ -3593,11 +3583,11 @@
             <div class="chart-card"><h3>Эффективность провайдеров</h3><div class="chart-box"><canvas id="chart-provider-eff"></canvas></div></div>
           </div>
           <div class="funnel-row" id="analytics-funnel"></div>
-          <div class="layout-with-side">
-            <div class="table-card"><h3 style="padding:16px;">Компании с высоким интересом</h3><table class="data-table"><tbody id="analytics-high-interest"></tbody></table></div>
-            <div class="table-card"><h3 style="padding:16px;">Проблемные адреса</h3><table class="data-table"><tbody id="analytics-problems"></tbody></table></div>
+          <div class="two-col">
+            <div class="table-card"><h3 class="table-card-title">Компании с высоким интересом</h3><table class="data-table"><tbody id="analytics-high-interest"></tbody></table></div>
+            <div class="table-card"><h3 class="table-card-title">Проблемные компании</h3><table class="data-table"><tbody id="analytics-problems"></tbody></table></div>
           </div>
-          <div class="panel" style="margin-top:16px;"><h3>Рекомендации</h3><ul id="analytics-recommendations"></ul></div>
+          <div class="panel panel--spaced"><h3>Рекомендации</h3><ul id="analytics-recommendations"></ul></div>
           </div>
         </section>
 
@@ -3606,10 +3596,10 @@
           <div class="funnel-row" id="consents-funnel"></div>
           <div class="layout-with-side">
             <div class="table-card">
-              <div class="table-toolbar"><input type="search" id="consents-search" placeholder="Поиск по организации, контакту или email"></div>
+              <div class="table-toolbar"><input type="search" id="consents-search" placeholder="Поиск по компании, контакту или email"></div>
               <table class="data-table">
                 <thead>
-                  <tr><th>Организация</th><th>Контакт</th><th>Email</th><th>Статус согласия</th><th>Материалы</th><th>Последнее действие</th><th>Интерес</th><th>Действие</th></tr>
+                  <tr><th>Компания</th><th>Контакт</th><th>Email</th><th>Статус согласия</th><th>Материалы</th><th>Последнее действие</th><th>Интерес</th><th>Действие</th></tr>
                 </thead>
                 <tbody id="consents-table"></tbody>
               </table>
@@ -3628,7 +3618,7 @@
           <div class="layout-with-side">
             <div class="table-card">
               <table class="data-table">
-                <thead><tr><th>Организация</th><th>Email</th><th>Причина</th><th>Провайдер</th><th>Попыток</th><th>Последнее событие</th><th>Действие</th></tr></thead>
+                <thead><tr><th>Компания</th><th>Контакты</th><th>Причина</th><th>Провайдер</th><th>Писем</th><th>Последнее событие</th><th>Действие</th></tr></thead>
                 <tbody id="problems-table"></tbody>
               </table>
               <div class="pagination" id="problems-pagination"></div>
@@ -3661,7 +3651,7 @@
             <div class="modal-field"><label>Кампания</label><select id="adv-campaign"><option value="">Все рассылки</option></select></div>
             <div class="modal-field"><label>Статус согласия</label><select id="adv-consent-status"><option value="">Все статусы</option><option value="confirmed">Подтверждено</option><option value="pending">Ожидает</option><option value="request_sent">Запрос отправлен</option></select></div>
             <div class="modal-field"><label>Действие менеджера</label><select id="adv-manager-action"><option value="">Все действия</option><option value="call">Перезвонить</option><option value="find_another_email">Найти другой email</option><option value="manual_check">Проверить вручную</option></select></div>
-            <div class="modal-field"><label>Организация</label><input type="search" id="adv-organization" placeholder="Поиск по названию"></div>
+            <div class="modal-field"><label>Компания</label><input type="search" id="adv-organization" placeholder="Поиск по названию компании"></div>
             <div class="modal-field"><label><input type="checkbox" id="adv-problems-only"> Показывать только проблемные адреса</label></div>
           </div>
           <div class="modal-actions">
@@ -3708,6 +3698,51 @@
           <div class="modal-actions">
             <button class="btn-outline" id="action-cancel" type="button">Отмена</button>
             <button class="btn-danger" id="action-save" type="button">Сохранить действие</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stx-modal" id="modal-drilldown">
+        <div class="modal-card wide">
+          <div class="drilldown-head">
+            <h2 class="modal-title" id="drilldown-title">Список</h2>
+            <span class="drilldown-count" id="drilldown-count"></span>
+          </div>
+          <div class="drilldown-table-wrap">
+            <table class="data-table" id="drilldown-table">
+              <thead><tr id="drilldown-head-row"></tr></thead>
+              <tbody id="drilldown-body"></tbody>
+            </table>
+          </div>
+          <div class="modal-actions">
+            <button class="btn-outline" id="drilldown-close" type="button">Закрыть</button>
+            <button class="btn-primary" id="drilldown-download" type="button">Скачать таблицу</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stx-modal" id="modal-campaign-summary">
+        <div class="modal-card wide">
+          <div class="drilldown-head">
+            <h2 class="modal-title" id="campaign-summary-title">Сводка по рассылке</h2>
+          </div>
+          <div id="campaign-summary-modal-body"></div>
+          <div class="modal-actions">
+            <button class="btn-outline" id="campaign-summary-close" type="button">Закрыть</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stx-modal" id="modal-company">
+        <div class="modal-card wide company-modal-card">
+          <div class="drilldown-head">
+            <h2 class="modal-title" id="company-modal-title">Компания</h2>
+            <span class="company-modal-sub" id="company-modal-sub"></span>
+          </div>
+          <div id="company-modal-body"></div>
+          <div class="modal-actions">
+            <button class="btn-outline" id="company-modal-close" type="button">Закрыть</button>
+            <button class="btn-danger" id="company-modal-action-btn" type="button">Действие по компании</button>
           </div>
         </div>
       </div>
@@ -3836,9 +3871,9 @@
 <div class="toast" id="toast"></div>
 
 <script src="/public/documents-ui.js?v=6"></script>
-<script src="/public/sender-ui.js?v=6"></script>
+<script src="/public/sender-ui.js?v=9"></script>
 <script src="/public/chart.min.js?v=6"></script>
-<script src="/public/statistics.js?v=8"></script>
+<script src="/public/statistics.js?v=19"></script>
 <script>
   const chatSessions = {};
   const activeChatRequests = {};
@@ -9245,6 +9280,33 @@ function clearAttachedFile() {
       const result = data.result || {};
       setSenderUiState(result);
       maybeAnnounceSenderFlow(result);
+      try {
+        const queueRes = await fetchWithTimeout(requestedJobId ? `/api/sender/queue?job_id=${encodeURIComponent(requestedJobId)}` : '/api/sender/queue', {}, 12000);
+        const queueData = await readJsonOrText(queueRes);
+        if (queueRes.ok && queueData.result) {
+          const guard = queueData.result.send_guard || {};
+          const banner = document.getElementById('s-send-guard-banner');
+          if (banner) {
+            if (guard.paused) {
+              banner.style.display = 'block';
+              banner.textContent = guard.pause_reason || 'Отправка временно приостановлена.';
+            } else {
+              banner.style.display = 'none';
+              banner.textContent = '';
+            }
+          }
+          if (result.status === 'queued' && queueData.result.job_queue_position) {
+            setSenderUiState({
+              ...result,
+              queue_position: queueData.result.job_queue_position,
+              queue_total: queueData.result.total_active,
+              force: true,
+            });
+          }
+        }
+      } catch (queueErr) {
+        if (!silent) console.warn('sender_queue_status_failed', queueErr);
+      }
       return result;
     } catch (err) {
       if (!silent) {
@@ -9268,7 +9330,7 @@ function clearAttachedFile() {
       }
       failedPolls = 0;
       const status = result && result.status ? result.status : 'idle';
-      if (status !== 'running') {
+      if (status !== 'running' && status !== 'queued') {
         return result;
       }
     }
@@ -9586,6 +9648,10 @@ function clearAttachedFile() {
   setScenario(1);
 
   function restoreInitialUiState() {
+    if (location.hash.startsWith('#stats')) {
+      goToScreen('statistics', { scroll: false, persist: false });
+      return;
+    }
     const snapshot = currentJobId ? loadUiState(currentJobId) : null;
     if (snapshot) {
       restoreUiState(snapshot);

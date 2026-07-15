@@ -271,41 +271,6 @@ def start_worker_process_thread(
     timeout_seconds: int = 0,
     before_start: Callable[[], None] | None = None,
 ) -> tuple[threading.Thread, bool]:
-    from src.utils.config import settings
-
-    if bool(settings.background_queue_enabled):
-        from src.workers.task_queue import QueueTaskHandle, enqueue_task, get_active_task
-
-        key = key_factory(job_id)
-        with registry_lock:
-            existing_handle = registry.get(key)
-            if existing_handle and existing_handle.is_alive():
-                return existing_handle, False
-            if existing_handle:
-                registry.pop(key, None)
-
-            active_task = get_active_task(task, job_id)
-            if active_task is not None:
-                handle = QueueTaskHandle(str(active_task["id"]), name=name)
-                registry[key] = handle  # type: ignore[assignment]
-                return handle, False
-
-            if before_start is not None:
-                before_start()
-            queued_task, created = enqueue_task(
-                task_type=task,
-                job_id=job_id,
-                payload=_json_safe(kwargs or {}),
-                owner_username=owner_username,
-                max_attempts=max(1, int(settings.background_queue_max_attempts or 3)),
-                max_workers=max_workers,
-                user_max_workers=user_max_workers,
-            )
-            handle = QueueTaskHandle(str(queued_task["id"]), name=name)
-            registry[key] = handle  # type: ignore[assignment]
-            return handle, created
-
-
     with registry_lock:
         key = key_factory(job_id)
         existing = registry.get(key)
@@ -368,14 +333,6 @@ def start_worker_process_thread(
 
 
 def list_worker_statuses(jobs_dir: Path, *, limit: int = 100) -> list[dict[str, Any]]:
-    from src.utils.config import settings
-
-    if bool(settings.background_queue_enabled):
-        from src.workers.task_queue import list_task_statuses
-
-        return list_task_statuses(jobs_dir, limit=limit)
-
-
     from sqlalchemy import select
 
     from src.infra.db import session_scope
@@ -397,20 +354,6 @@ def list_worker_statuses(jobs_dir: Path, *, limit: int = 100) -> list[dict[str, 
 
 
 def terminate_worker_process(*, status_path: str | None = None, pid: int | None = None) -> dict[str, Any]:
-    from src.workers.task_queue import request_cancel, task_id_from_status_path
-
-    queue_task_id = task_id_from_status_path(status_path)
-    if queue_task_id is not None:
-        task = request_cancel(queue_task_id)
-        return {
-            "terminated": task.get("status") == "cancelled",
-            "cancel_requested": True,
-            "task_id": queue_task_id,
-            "method": "durable_queue",
-            "status": task.get("status"),
-        }
-
-
     active_key = str(status_path or "")
     if not active_key:
         raise RuntimeError("Не указан status_path активного worker-процесса.")
