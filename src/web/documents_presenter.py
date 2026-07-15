@@ -70,6 +70,8 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
     expected_documents = total_rows * documents_per_row if total_rows > 0 else max(total_documents, generated_docx_count, output_file_count)
     expected_pdf_documents = total_rows * pdfs_per_row if total_rows > 0 else pdf_total
     shown_documents = max(generated_docx_count, total_documents if stage in {"review", "completed"} else 0)
+    if expected_documents > 0:
+        shown_documents = min(shown_documents, expected_documents)
     shown_pdf_total = expected_pdf_documents or pdf_total
     if shown_pdf_total <= 0:
         shown_pdf_done = 0
@@ -161,11 +163,18 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
     elif status == "completed":
         process_title = "Готово"
         process_main = "Результат собран."
-        process_detail = (
-            f"Готовы комплекты для {total_rows} клиентов. Проверено {reviewed_documents} из {total_documents} документов."
-            if total_rows > 0
-            else "Подготовка завершена."
-        )
+        if total_rows > 0 and reviewed_documents > 0:
+            process_detail = (
+                f"Готовы комплекты для {total_rows} клиентов. "
+                f"Проверено {reviewed_documents} из {total_documents} документов."
+            )
+        elif total_rows > 0:
+            process_detail = (
+                f"Готовы комплекты для {total_rows} клиентов. "
+                "Проверка текста завершена."
+            )
+        else:
+            process_detail = "Подготовка завершена."
         process_next = "Теперь можно скачать результат или перейти к проверке отправки."
         badge_text = "Готово"
         badge_tone = "done"
@@ -225,8 +234,8 @@ def build_documents_ui_payload(documents_status: dict, *, readiness: dict) -> di
             "review_done": reviewed_documents,
             "show_review": total_documents > 0 and (
                 stage == "review"
-                or status == "completed"
-                or str(philologist.get("status") or "") in {"running", "finalizing", "completed", "stopped", "error"}
+                or reviewed_documents > 0
+                or str(philologist.get("status") or "") in {"running", "finalizing", "stopped", "error"}
             ),
             "steps": _build_step_track(status=status, stage=stage),
         },

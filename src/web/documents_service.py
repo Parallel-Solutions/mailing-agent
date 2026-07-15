@@ -42,24 +42,36 @@ def _pdf_count_per_row(document_mode: str | None) -> int:
     return 1 if "kp" in document_mode_kinds(document_mode) else 0
 
 
+def _docx_count_per_row(document_mode: str | None) -> int:
+    # Adaptive and HTML KP engines render their final artifact directly to PDF.
+    # DOCX remains a required final artifact only for contracts.
+    return 1 if "contract" in document_mode_kinds(document_mode) else 0
+
+
 def _expected_output_counts(
     *,
     document_mode: str | None,
     total_rows: int,
-    total_documents: int,
     generator_state: dict,
 ) -> tuple[int, int]:
-    documents_per_row = _document_count_per_row(document_mode)
+    docx_per_row = _docx_count_per_row(document_mode)
     pdfs_per_row = _pdf_count_per_row(document_mode)
-    expected_documents = total_rows * documents_per_row if total_rows > 0 else max(
-        total_documents,
-        _safe_int(generator_state.get("staged_docx_count")),
-        _safe_int(generator_state.get("generated_docx_count")),
+    expected_documents = total_rows * docx_per_row if total_rows > 0 else (
+        max(
+            _safe_int(generator_state.get("staged_docx_count")),
+            _safe_int(generator_state.get("generated_docx_count")),
+        )
+        if docx_per_row > 0
+        else 0
     )
-    expected_pdf_documents = total_rows * pdfs_per_row if total_rows > 0 else max(
-        _safe_int(generator_state.get("pdf_total")),
-        _safe_int(generator_state.get("pdf_processed")),
-        _safe_int(generator_state.get("staged_pdf_count")),
+    expected_pdf_documents = total_rows * pdfs_per_row if total_rows > 0 else (
+        max(
+            _safe_int(generator_state.get("pdf_total")),
+            _safe_int(generator_state.get("pdf_processed")),
+            _safe_int(generator_state.get("staged_pdf_count")),
+        )
+        if pdfs_per_row > 0
+        else 0
     )
     return expected_documents, expected_pdf_documents
 
@@ -77,7 +89,7 @@ def _is_output_ready(
 ) -> bool:
     if status != "completed" or not generator_done or not philologist_done:
         return False
-    if expected_documents <= 0:
+    if expected_documents + expected_pdf_documents <= 0:
         return output_file_count > 0
     return output_docx_count >= expected_documents and output_pdf_count >= expected_pdf_documents
 
@@ -204,17 +216,22 @@ def _recover_completed_generator_after_worker_exit(
         return generator_state
 
     document_mode = normalize_document_mode(generator_state.get("document_mode") or DOCUMENT_MODE_BOTH)
-    documents_per_row = _document_count_per_row(document_mode)
+    docx_per_row = _docx_count_per_row(document_mode)
     pdfs_per_row = _pdf_count_per_row(document_mode)
-    expected_documents = max(
-        _safe_int(generator_state.get("staged_docx_count")),
-        _safe_int(generator_state.get("total_rows")) * documents_per_row,
-        _safe_int(philologist_state.get("total_documents")),
-    )
+    expected_documents = _safe_int(generator_state.get("total_rows")) * docx_per_row
+    if expected_documents <= 0 and docx_per_row > 0:
+        expected_documents = max(
+            _safe_int(generator_state.get("staged_docx_count")),
+            _safe_int(generator_state.get("generated_docx_count")),
+        )
     expected_pdf_documents = _safe_int(generator_state.get("total_rows")) * pdfs_per_row
     output_docx_count = _safe_int(readiness.get("output_docx_count"))
     output_pdf_count = _safe_int(readiness.get("output_pdf_count"))
-    if expected_documents <= 0 or output_docx_count < expected_documents or output_pdf_count < expected_pdf_documents:
+    if (
+        expected_documents + expected_pdf_documents <= 0
+        or output_docx_count < expected_documents
+        or output_pdf_count < expected_pdf_documents
+    ):
         return generator_state
 
     recovered_state = dict(generator_state)
@@ -380,17 +397,18 @@ def compact_documents_status(job_id: str | None, document_mode: str | None = Non
         )
 
     documents_per_row = _document_count_per_row(document_mode)
-    total_rows = max(
-        int(generator_state.get("total_rows") or 0),
-        int(philologist_state.get("total_documents") or 0) // max(1, documents_per_row),
-    )
+    total_rows = int(generator_state.get("total_rows") or 0)
+    if total_rows <= 0:
+        total_rows = (
+            int(philologist_state.get("total_documents") or 0)
+            // max(1, documents_per_row)
+        )
     processed_rows = int(generator_state.get("processed_rows") or 0)
     if generator_done and total_rows:
         processed_rows = total_rows
     expected_documents, expected_pdf_documents = _expected_output_counts(
         document_mode=document_mode,
         total_rows=total_rows,
-        total_documents=total_documents,
         generator_state=generator_state,
     )
     output_file_count = int(generator_state.get("output_file_count") or 0)

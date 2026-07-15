@@ -214,6 +214,97 @@ class DocumentsStateStatusTests(unittest.TestCase):
         self.assertEqual(saved_generator_states[-1]["status"], "completed")
         self.assertEqual(saved_generator_states[-1]["pdf_processed"], 2)
         self.assertEqual(saved_generator_states[-1]["staged_pdf_count"], 2)
+
+    def test_expected_output_counts_follow_document_mode(self) -> None:
+        self.assertEqual(
+            documents_service._expected_output_counts(
+                document_mode="kp",
+                total_rows=2,
+                generator_state={},
+            ),
+            (0, 2),
+        )
+        self.assertEqual(
+            documents_service._expected_output_counts(
+                document_mode="contract",
+                total_rows=2,
+                generator_state={},
+            ),
+            (2, 0),
+        )
+        self.assertEqual(
+            documents_service._expected_output_counts(
+                document_mode="both",
+                total_rows=2,
+                generator_state={},
+            ),
+            (2, 2),
+        )
+
+    def test_completed_kp_with_pdf_only_output_reaches_100(self) -> None:
+        generator_state = {
+            "status": "completed",
+            "stage": "completed",
+            "document_mode": "kp",
+            "total_rows": 2,
+            "processed_rows": 2,
+            "staged_docx_count": 0,
+            "staged_pdf_count": 2,
+            "pdf_total": 2,
+            "pdf_processed": 2,
+            "output_file_count": 2,
+            "error_rows": 0,
+        }
+        philologist_state = {
+            "status": "completed",
+            "total_documents": 3,
+            "processed_documents": 0,
+        }
+
+        documents_service._deps.clear()
+        documents_service.configure_documents_service(
+            compact_generator_status=lambda state: state,
+            get_generator_status=lambda job_id: generator_state,
+            compact_philologist_status=lambda state: state,
+            get_philologist_status=lambda job_id, include_details=False: philologist_state,
+            get_documents_thread=lambda job_id: None,
+            get_generator_thread=lambda job_id: None,
+            get_philologist_thread=lambda job_id: None,
+            save_generator_state=lambda state, job_id: state,
+            save_philologist_state=lambda state, job_id: state,
+            build_job_readiness_result=lambda job_id, **kwargs: {
+                "generator_ready": True,
+                "generator_reason": "",
+                "output_docx_count": 0,
+                "output_pdf_count": 2,
+            },
+        )
+
+        result = documents_service.compact_documents_status(
+            "job-test",
+            document_mode="kp",
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["total_rows"], 2)
+        self.assertTrue(result["output_ready"])
+        self.assertEqual(result["expected_output_docx_count"], 0)
+        self.assertEqual(result["expected_output_pdf_count"], 2)
+        self.assertEqual(result["progress_percent"], 100)
+        self.assertEqual(result["ui"]["progress"]["percent"], 100)
+        self.assertTrue(result["ui"]["actions"]["can_download_output"])
+        self.assertTrue(result["ui"]["actions"]["can_go_next"])
+        self.assertEqual(result["ui"]["process"]["documents_text"], "2 из 2 документов")
+        self.assertFalse(result["ui"]["process"]["show_review"])
+        self.assertIn(
+            "Проверка текста завершена.",
+            result["ui"]["process"]["detail"],
+        )
+        self.assertNotIn(
+            "Проверено 0 из",
+            result["ui"]["process"]["detail"],
+        )
+
     def test_running_documents_progress_never_reaches_100(self) -> None:
         generator_state = {
             "status": "running",
