@@ -470,6 +470,75 @@
     margin-top: 14px;
   }
 
+  .sender-transport-row[hidden] {
+    display: none !important;
+  }
+
+  #settings-smtp-discover-hint.settings-smtp-hint-error {
+    color: #b42318;
+  }
+
+  #settings-smtp-discover-hint.settings-smtp-hint-success {
+    color: #2d5a0e;
+  }
+
+  .smtp-setup-wizard {
+    border: 1px solid #dbe5d3;
+    border-radius: 12px;
+    background: #f8fbf5;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+
+  .smtp-setup-step {
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    color: #58713f;
+    margin-bottom: 8px;
+  }
+
+  .smtp-setup-instructions {
+    margin: 10px 0 0;
+    padding-left: 18px;
+    color: #4f5d47;
+  }
+
+  .smtp-oauth-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+
+  .smtp-oauth-row[hidden] {
+    display: none !important;
+  }
+
+  .smtp-password-field[hidden] {
+    display: none !important;
+  }
+
+  .smtp-discovered-summary {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #eef5e8;
+    color: #3f5230;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .smtp-discovered-summary[hidden] {
+    display: none !important;
+  }
+
+  .smtp-oauth-alt-link {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #5f6f55;
+  }
+
   .sender-transport-field label {
     display: block;
     margin-bottom: 6px;
@@ -2977,22 +3046,21 @@
       </div>
       <div id="settings-sender-credentials-section">
         <div class="divider"></div>
-        <div class="page-sub" style="margin-bottom:12px">Подключите свой SMTP-ящик для отправки писем. Пароль хранится в зашифрованном виде и не показывается после сохранения.</div>
-        <div class="sender-transport-row">
-          <div class="sender-transport-field">
-            <label for="settings-smtp-provider">Провайдер почты</label>
-            <select id="settings-smtp-provider">
-              <option value="gmail">Gmail</option>
-              <option value="outlook">Outlook / Microsoft 365</option>
-              <option value="yandex">Яндекс</option>
-              <option value="mailru">Mail.ru</option>
-              <option value="custom">Другой SMTP-сервер</option>
-            </select>
+        <div class="page-sub" style="margin-bottom:12px">Мастер подключит исходящую почту: подберёт SMTP-сервер и порт, предложит OAuth или пароль приложения.</div>
+        <div class="smtp-setup-wizard">
+          <div class="smtp-setup-step" id="settings-smtp-wizard-step">Шаг 1. Укажите email отправителя выше</div>
+          <div id="settings-smtp-discovered-summary" class="smtp-discovered-summary" hidden></div>
+          <div id="settings-smtp-discover-hint" class="muted" hidden></div>
+          <ul id="settings-smtp-instructions" class="smtp-setup-instructions" hidden></ul>
+          <div class="smtp-oauth-row" id="settings-smtp-oauth-row" hidden>
+            <button class="btn-outline" id="settings-smtp-oauth-google" type="button" onclick="startSmtpOAuth('google')">Войти через Google</button>
+            <button class="btn-outline" id="settings-smtp-oauth-microsoft" type="button" onclick="startSmtpOAuth('microsoft')">Войти через Microsoft</button>
           </div>
-          <div class="sender-transport-field">
-            <label for="settings-smtp-sender-name">Имя отправителя</label>
-            <input id="settings-smtp-sender-name" type="text" placeholder="Компания или ФИО">
-          </div>
+          <div class="smtp-oauth-alt-link" id="settings-smtp-oauth-alt" hidden>Или введите пароль приложения в поле ниже.</div>
+        </div>
+        <div class="field">
+          <label for="settings-smtp-sender-name">Имя отправителя</label>
+          <input id="settings-smtp-sender-name" type="text" placeholder="Компания или ФИО (необязательно)">
         </div>
         <div class="sender-transport-row" id="settings-smtp-custom-fields" hidden>
           <div class="sender-transport-field">
@@ -3018,7 +3086,7 @@
             </select>
           </div>
         </div>
-        <div class="field">
+        <div class="field smtp-password-field" id="settings-smtp-password-field">
           <label>Пароль почтового ящика</label>
           <input id="settings-sender-password" type="password" placeholder="Пароль приложения или SMTP-пароль">
         </div>
@@ -3029,9 +3097,10 @@
           </select>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn-outline" id="settings-smtp-manual-button" type="button" onclick="showSmtpManualSetup()">Настроить вручную</button>
           <button class="btn-outline" id="settings-smtp-test-button" data-process-lock="true" type="button" onclick="testSmtpMailboxSettings()">Проверить подключение</button>
-          <button class="btn-primary" id="settings-smtp-save-button" data-process-lock="true" type="button" onclick="saveSmtpMailboxSettings()">Сохранить почтовый ящик</button>
-          <button class="btn-primary" id="settings-save-button" data-process-lock="true" onclick="saveSettingsAndValidate()">Сохранить настройки</button>
+          <button class="btn-primary" id="settings-smtp-save-button" data-process-lock="true" type="button" onclick="saveSmtpMailboxSettings()">Проверить и сохранить</button>
+          <button class="btn-primary" id="settings-save-button" data-process-lock="true" type="button" onclick="saveSettingsAndValidate()">Сохранить настройки</button>
           <button class="btn-outline" id="settings-reset-button" data-process-lock="true" type="button" onclick="resetAllMailingState()">Очистить все поля</button>
         </div>
       </div>
@@ -4359,7 +4428,15 @@
     if (workType && settings.workType) workType.value = settings.workType;
     if (mailSubject && typeof settings.mailSubject === 'string') mailSubject.value = settings.mailSubject;
     if (campaignName && typeof settings.campaignName === 'string') campaignName.value = settings.campaignName;
-    if (senderEmail && typeof settings.senderEmail === 'string') senderEmail.value = settings.senderEmail;
+    if (senderEmail && typeof settings.senderEmail === 'string') {
+      senderEmail.value = settings.senderEmail;
+      smtpLastDiscoverDomain = '';
+      smtpFieldsTouched = false;
+      smtpDiscoveredState = null;
+      smtpRequiresManual = false;
+      syncSmtpManualFieldsVisibility();
+      scheduleSmtpDiscover();
+    }
     if (workType && settings.workType) syncDefaultSubjectForWorkType(settings.workType);
     if (settings.documentMode) syncDocumentModeControls(settings.documentMode);
     syncSenderAttachmentModeFromDocuments();
@@ -4923,6 +5000,14 @@
       return detail.message || detail.msg || JSON.stringify(detail);
     }
     return String(detail);
+  }
+
+  function redirectToLoginIfUnauthorized(res) {
+    if (res && res.status === 401) {
+      window.location.href = '/login';
+      return true;
+    }
+    return false;
   }
 
   async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
@@ -8303,15 +8388,492 @@ function clearAttachedFile() {
     return String((select && select.value) || '').trim() || null;
   }
 
-  function syncSmtpCustomFields() {
-    const provider = document.getElementById('settings-smtp-provider');
+  function getSelectedSettingsSmtpMailboxId() {
+    const select = document.getElementById('settings-smtp-mailboxes');
+    return String((select && select.value) || '').trim() || null;
+  }
+
+  function getSettingsSmtpPassword() {
+    const field = document.getElementById('settings-sender-password');
+    return String((field && field.value) || '');
+  }
+
+  function looksLikeEmail(value) {
+    const text = String(value || '').trim();
+    const at = text.indexOf('@');
+    const dot = text.lastIndexOf('.');
+    return at > 0 && dot > at + 1 && dot < text.length - 1;
+  }
+
+  function showSmtpStatusHint(text, tone = 'info') {
+    const hint = document.getElementById('settings-smtp-discover-hint');
+    if (!hint) return;
+    hint.textContent = text || '';
+    hint.hidden = !text;
+    hint.classList.remove('settings-smtp-hint-error', 'settings-smtp-hint-success');
+    if (tone === 'error') hint.classList.add('settings-smtp-hint-error');
+    if (tone === 'success') hint.classList.add('settings-smtp-hint-success');
+  }
+
+  const SMTP_ACTION_BUTTONS = [
+    { id: 'settings-smtp-test-button', busy: 'Проверяем…', default: 'Проверить подключение' },
+    { id: 'settings-smtp-save-button', busy: 'Сохраняем…', default: 'Проверить и сохранить' },
+  ];
+
+  function setSmtpActionButtonsBusy(busy, actionId = '') {
+    SMTP_ACTION_BUTTONS.forEach(({ id, busy: busyLabel, default: defaultLabel }) => {
+      const button = document.getElementById(id);
+      if (!button) return;
+      const isActive = !!busy && (!actionId || actionId === id);
+      button.disabled = !!busy;
+      button.textContent = isActive ? busyLabel : defaultLabel;
+    });
+  }
+
+  function syncSmtpManualFieldsVisibility() {
     const custom = document.getElementById('settings-smtp-custom-fields');
-    if (custom) custom.hidden = String((provider && provider.value) || 'custom') !== 'custom';
+    if (custom) custom.hidden = !smtpRequiresManual;
+  }
+
+  let smtpDiscoverTimer = null;
+  let smtpLastDiscoverDomain = '';
+  let smtpAutofillSnapshot = null;
+  let smtpFieldsTouched = false;
+  let smtpDiscoveredState = null;
+  let smtpDiscoverPending = false;
+  let smtpRequiresManual = false;
+  let smtpMailboxCatalog = [];
+  let smtpSetupSessionId = '';
+  let smtpSetupAction = '';
+  let smtpOAuthTokens = null;
+  let smtpOAuthProvider = '';
+  let smtpAnalyzeAttemptCount = 0;
+  let smtpLastAnalyzeError = '';
+  let smtpOAuthAvailable = { google: false, microsoft: false };
+
+  const SMTP_DISCOVER_SOURCE_LABELS = {
+    preset: 'пресет провайдера',
+    domain_map: 'известный домен',
+    mx_hint: 'MX-запись домена',
+    thunderbird: 'Thunderbird autoconfig',
+    microsoft_autodiscover: 'Microsoft Autodiscover',
+    mozilla_autoconfig: 'Mozilla autoconfig',
+    submission_srv: 'DNS SRV',
+    probe: 'проверка портов',
+    unknown: 'эвристика',
+  };
+
+  function renderSmtpInstructions(items) {
+    const list = document.getElementById('settings-smtp-instructions');
+    if (!list) return;
+    const rows = Array.isArray(items) ? items.filter(Boolean) : [];
+    if (!rows.length) {
+      list.hidden = true;
+      list.innerHTML = '';
+      return;
+    }
+    list.innerHTML = rows.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('');
+    list.hidden = false;
+  }
+
+  function syncSmtpWizardStep(text) {
+    const step = document.getElementById('settings-smtp-wizard-step');
+    if (step) step.textContent = text || 'Шаг 1. Укажите email отправителя';
+  }
+
+  function syncSmtpAuthPanels(action) {
+    const oauthRow = document.getElementById('settings-smtp-oauth-row');
+    const passwordField = document.getElementById('settings-smtp-password-field');
+    const googleBtn = document.getElementById('settings-smtp-oauth-google');
+    const microsoftBtn = document.getElementById('settings-smtp-oauth-microsoft');
+    const oauthAlt = document.getElementById('settings-smtp-oauth-alt');
+    const showOAuth = action === 'show_oauth';
+    const showPassword = action === 'show_password'
+      || action === 'show_app_password'
+      || action === 'show_manual'
+      || showOAuth
+      || !action;
+    const googleAvailable = !!smtpOAuthAvailable.google;
+    const microsoftAvailable = !!smtpOAuthAvailable.microsoft;
+    const hasOAuthButton = showOAuth && (googleAvailable || microsoftAvailable);
+    if (oauthRow) oauthRow.hidden = !hasOAuthButton;
+    if (passwordField) passwordField.hidden = !showPassword;
+    if (googleBtn) googleBtn.hidden = !(showOAuth && googleAvailable);
+    if (microsoftBtn) microsoftBtn.hidden = !(showOAuth && microsoftAvailable);
+    if (oauthAlt) oauthAlt.hidden = !(showOAuth && hasOAuthButton);
+  }
+
+  function pickBestDiscovery(discoveries) {
+    const rows = Array.isArray(discoveries) ? discoveries.filter((item) => item && item.host) : [];
+    if (!rows.length) return null;
+    const high = rows.find((item) => String(item.confidence || '').toLowerCase() === 'high');
+    return high || rows[0];
+  }
+
+  function formatSmtpEncryptionLabel(settings) {
+    if (!settings) return '';
+    if (settings.use_ssl) return 'SSL';
+    if (settings.use_starttls) return 'STARTTLS';
+    return 'без шифрования';
+  }
+
+  function renderSmtpDiscoveredSummary(settings) {
+    const summary = document.getElementById('settings-smtp-discovered-summary');
+    if (!summary) return;
+    if (!settings || !settings.host) {
+      summary.hidden = true;
+      summary.textContent = '';
+      return;
+    }
+    const sourceLabel = SMTP_DISCOVER_SOURCE_LABELS[settings.source] || settings.source || 'автоопределение';
+    const provider = String(settings.provider || 'custom').trim();
+    const providerLabel = provider === 'custom' ? 'SMTP' : provider;
+    summary.textContent = `${providerLabel}: ${settings.host}, порт ${settings.port}, ${formatSmtpEncryptionLabel(settings)} (источник: ${sourceLabel})`;
+    summary.hidden = false;
+  }
+
+  function resolveSmtpRecommendedSettings(result, action) {
+    const actionSettings = action && action.recommended_settings;
+    if (actionSettings && actionSettings.host) return actionSettings;
+    const discovery = pickBestDiscovery(result && result.discoveries);
+    if (discovery && discovery.host) return discovery;
+    const probe = result && result.probe;
+    if (probe && probe.host) return probe;
+    return null;
+  }
+
+  function applySmtpRecommendedSettings(settings, options = {}) {
+    const preserveManual = !!options.preserveManual;
+    if (!settings || !settings.host) return;
+    smtpDiscoveredState = {
+      provider: String(settings.provider || 'custom').trim(),
+      host: String(settings.host || '').trim(),
+      port: settings.port != null ? Number(settings.port) : 587,
+      use_ssl: !!settings.use_ssl,
+      use_starttls: !!settings.use_starttls,
+      source: String(settings.source || 'probe').trim(),
+    };
+    smtpRequiresManual = smtpDiscoveredState.provider === 'custom';
+    renderSmtpDiscoveredSummary(smtpDiscoveredState);
+    if (!preserveManual) {
+      syncSmtpManualFieldsVisibility();
+      if (smtpRequiresManual || smtpSetupAction === 'show_manual') {
+        const host = document.getElementById('settings-smtp-host');
+        const port = document.getElementById('settings-smtp-port');
+        const useSsl = document.getElementById('settings-smtp-use-ssl');
+        const useStarttls = document.getElementById('settings-smtp-use-starttls');
+        if (host) host.value = smtpDiscoveredState.host;
+        if (port) port.value = String(smtpDiscoveredState.port || '');
+        if (useSsl) useSsl.value = smtpDiscoveredState.use_ssl ? 'true' : 'false';
+        if (useStarttls) useStarttls.value = smtpDiscoveredState.use_starttls ? 'true' : 'false';
+        smtpAutofillSnapshot = getSmtpManualFieldSnapshot();
+      }
+    }
+  }
+
+  function applySmtpSetupAnalysis(result) {
+    if (!result || typeof result !== 'object') return;
+    smtpSetupSessionId = String(result.setup_session_id || smtpSetupSessionId || '').trim();
+    smtpOAuthAvailable = {
+      google: !!(result.oauth_available && result.oauth_available.google),
+      microsoft: !!(result.oauth_available && result.oauth_available.microsoft),
+    };
+    const action = (result.action && typeof result.action === 'object') ? result.action : {};
+    smtpSetupAction = String(action.action || '').trim();
+    const message = String(action.message_ru || '').trim();
+    if (message) {
+      const tone = smtpSetupAction === 'contact_admin' ? 'error' : 'info';
+      showSmtpStatusHint(message, tone);
+    }
+    renderSmtpInstructions(action.instructions || []);
+    const recommendedSettings = resolveSmtpRecommendedSettings(result, action);
+    applySmtpRecommendedSettings(recommendedSettings, { preserveManual: smtpFieldsTouched });
+    syncSmtpAuthPanels(smtpSetupAction);
+    if (smtpSetupAction === 'show_manual' && !smtpDiscoveredState) {
+      smtpRequiresManual = true;
+      syncSmtpManualFieldsVisibility();
+    } else if (smtpDiscoveredState && smtpDiscoveredState.provider !== 'custom') {
+      smtpRequiresManual = false;
+      syncSmtpManualFieldsVisibility();
+    }
+    const probeStatus = String(result.probe_status || '').trim();
+    if (result.probe && result.probe.reachable) {
+      const sourceLabel = SMTP_DISCOVER_SOURCE_LABELS[result.probe.source] || result.probe.source || 'проверка портов';
+      syncSmtpWizardStep(`Шаг 2. Сервер найден (${sourceLabel}, порт ${result.probe.port})`);
+    } else if (smtpDiscoveredState && smtpDiscoveredState.host) {
+      const sourceLabel = SMTP_DISCOVER_SOURCE_LABELS[smtpDiscoveredState.source] || smtpDiscoveredState.source || 'автоопределение';
+      const probeNote = probeStatus === 'skipped' ? ' (проверка портов пропущена)' : '';
+      syncSmtpWizardStep(`Шаг 2. Настройки определены (${sourceLabel}${probeNote})`);
+    } else if (smtpSetupAction === 'show_manual') {
+      syncSmtpWizardStep('Шаг 2. Укажите SMTP-сервер вручную');
+    } else if (smtpSetupAction === 'contact_admin') {
+      syncSmtpWizardStep('Шаг 2. Требуется помощь администратора сети');
+    } else {
+      syncSmtpWizardStep('Шаг 2. Выберите способ входа');
+    }
+    scheduleUiStateSave();
+  }
+
+  async function analyzeSmtpSetupFromEmail(lastError = '') {
+    const senderEmail = document.getElementById('settings-sender-email');
+    const email = String((senderEmail && senderEmail.value) || '').trim();
+    if (!email || email.indexOf('@') < 1) {
+      smtpDiscoveredState = null;
+      smtpRequiresManual = false;
+      smtpSetupSessionId = '';
+      smtpSetupAction = '';
+      smtpOAuthTokens = null;
+      smtpOAuthProvider = '';
+      smtpLastAnalyzeError = '';
+      renderSmtpDiscoveredSummary(null);
+      syncSmtpManualFieldsVisibility();
+      syncSmtpAuthPanels('');
+      renderSmtpInstructions([]);
+      hideSmtpDiscoverHint();
+      syncSmtpWizardStep('Шаг 1. Укажите email отправителя выше');
+      return;
+    }
+    const domain = email.split('@').pop().trim().toLowerCase();
+    if (!domain) return;
+    if (domain !== smtpLastDiscoverDomain) {
+      smtpFieldsTouched = false;
+      smtpDiscoveredState = null;
+      smtpRequiresManual = false;
+      smtpAnalyzeAttemptCount = 0;
+      smtpOAuthTokens = null;
+      smtpOAuthProvider = '';
+      smtpLastAnalyzeError = '';
+      renderSmtpDiscoveredSummary(null);
+      syncSmtpManualFieldsVisibility();
+    }
+    smtpLastDiscoverDomain = domain;
+    smtpDiscoverPending = true;
+    syncSmtpWizardStep('Шаг 2. Проверяем SMTP-сервер и порты…');
+    showSmtpStatusHint('Проверяем SMTP-сервер и порты…', 'info');
+    try {
+      const res = await fetchWithTimeout('/api/smtp/setup/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          setup_session_id: smtpSetupSessionId || null,
+          attempt_count: smtpAnalyzeAttemptCount,
+          last_error: String(lastError || smtpLastAnalyzeError || '').trim(),
+        }),
+      }, 60000);
+      if (redirectToLoginIfUnauthorized(res)) return;
+      const data = await readJsonOrText(res);
+      if (!res.ok) {
+        const detail = formatApiErrorDetail(data.detail, 'Не удалось проанализировать SMTP');
+        showSmtpStatusHint(detail, 'error');
+        return;
+      }
+      const result = (data.result && typeof data.result === 'object') ? data.result : data;
+      applySmtpSetupAnalysis(result);
+    } catch (e) {
+      const isTimeout = e && (e.name === 'AbortError' || String(e.message || '').toLowerCase().includes('abort'));
+      showSmtpStatusHint(
+        isTimeout
+          ? 'Анализ SMTP занял слишком много времени. Попробуйте снова или укажите сервер вручную.'
+          : 'Не удалось выполнить анализ SMTP. Проверьте сеть и попробуйте снова.',
+        'error',
+      );
+    } finally {
+      smtpDiscoverPending = false;
+    }
+  }
+
+  function showSmtpManualSetup() {
+    smtpRequiresManual = true;
+    smtpSetupAction = 'show_manual';
+    smtpFieldsTouched = true;
+    syncSmtpManualFieldsVisibility();
+    syncSmtpAuthPanels('show_manual');
+    syncSmtpWizardStep('Шаг 2. Укажите SMTP-сервер вручную');
+    showSmtpStatusHint('Укажите SMTP-сервер, порт и шифрование вручную.', 'info');
+    scheduleUiStateSave();
+  }
+
+  async function startSmtpOAuth(provider) {
+    const senderEmail = document.getElementById('settings-sender-email');
+    const email = String((senderEmail && senderEmail.value) || '').trim();
+    if (!email) {
+      showToast('Сначала укажите email отправителя');
+      return;
+    }
+    if (!smtpSetupSessionId) {
+      await analyzeSmtpSetupFromEmail();
+    }
+    if (!smtpSetupSessionId) {
+      showToast('Не удалось подготовить сессию OAuth');
+      return;
+    }
+    try {
+      const res = await fetchWithTimeout(
+        '/api/smtp/oauth/start?provider=' + encodeURIComponent(provider)
+          + '&email=' + encodeURIComponent(email)
+          + '&setup_session_id=' + encodeURIComponent(smtpSetupSessionId),
+        {},
+        15000,
+      );
+      const data = await readJsonOrText(res);
+      if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'OAuth недоступен'));
+      const payload = (data.result && typeof data.result === 'object') ? data.result : data;
+      const url = String(payload.authorize_url || '').trim();
+      if (!url) throw new Error('OAuth URL не получен');
+      window.open(url, 'smtp-oauth', 'width=520,height=720');
+    } catch (err) {
+      showToast(err && err.message ? err.message : String(err));
+    }
+  }
+
+  function bindSmtpOAuthListener() {
+    if (window.__smtpOAuthListenerBound) return;
+    window.__smtpOAuthListenerBound = true;
+    window.addEventListener('message', (event) => {
+      if (!event || !event.data || event.origin !== window.location.origin) return;
+      const payload = event.data;
+      if (payload.type !== 'smtp-oauth-success' && payload.type !== 'smtp-oauth-error') return;
+      if (payload.type === 'smtp-oauth-error') {
+        showSmtpStatusHint(String(payload.message || 'OAuth не удался'), 'error');
+        showToast(String(payload.message || 'OAuth не удался'));
+        return;
+      }
+      const tokens = payload.payload && payload.payload.tokens;
+      if (!tokens || !tokens.access_token) {
+        showToast('OAuth завершился без токена');
+        return;
+      }
+      smtpOAuthTokens = tokens;
+      smtpOAuthProvider = String((payload.payload && payload.payload.provider) || '').trim();
+      smtpSetupSessionId = String((payload.payload && payload.payload.setup_session_id) || smtpSetupSessionId || '').trim();
+      showSmtpStatusHint('OAuth выполнен. Нажмите «Проверить и сохранить».', 'success');
+      showToast('OAuth выполнен');
+    });
+  }
+
+  function getSmtpManualFieldSnapshot() {
+    const host = document.getElementById('settings-smtp-host');
+    const port = document.getElementById('settings-smtp-port');
+    const useSsl = document.getElementById('settings-smtp-use-ssl');
+    const useStarttls = document.getElementById('settings-smtp-use-starttls');
+    return {
+      host: String((host && host.value) || '').trim(),
+      port: port && port.value ? Number(port.value) : null,
+      use_ssl: useSsl ? useSsl.value === 'true' : null,
+      use_starttls: useStarttls ? useStarttls.value === 'true' : null,
+    };
+  }
+
+  function smtpManualSnapshotsEqual(left, right) {
+    if (!left || !right) return false;
+    return left.host === right.host
+      && left.port === right.port
+      && left.use_ssl === right.use_ssl
+      && left.use_starttls === right.use_starttls;
+  }
+
+  function hideSmtpDiscoverHint() {
+    showSmtpStatusHint('', 'info');
+  }
+
+  function scheduleSmtpDiscover() {
+    if (smtpDiscoverTimer) clearTimeout(smtpDiscoverTimer);
+    smtpDiscoverTimer = setTimeout(() => {
+      smtpDiscoverTimer = null;
+      analyzeSmtpSetupFromEmail();
+    }, 500);
+  }
+
+  async function discoverSmtpSettingsFromEmail() {
+    if (smtpDiscoverTimer) {
+      clearTimeout(smtpDiscoverTimer);
+      smtpDiscoverTimer = null;
+    }
+    return analyzeSmtpSetupFromEmail();
+  }
+
+  function markSmtpFieldsTouched() {
+    const current = getSmtpManualFieldSnapshot();
+    if (smtpAutofillSnapshot && smtpManualSnapshotsEqual(current, smtpAutofillSnapshot)) return;
+    smtpFieldsTouched = true;
+    smtpRequiresManual = true;
+    syncSmtpManualFieldsVisibility();
+    hideSmtpDiscoverHint();
+    scheduleUiStateSave();
+  }
+
+  function validateSmtpMailboxReady() {
+    const senderEmail = document.getElementById('settings-sender-email');
+    const senderName = document.getElementById('settings-smtp-sender-name');
+    const email = String((senderEmail && senderEmail.value) || '').trim();
+    const nameValue = String((senderName && senderName.value) || '').trim();
+    const mailboxId = getSelectedSettingsSmtpMailboxId();
+    const password = getSettingsSmtpPassword();
+
+    if (!email && looksLikeEmail(nameValue)) {
+      return 'Похоже, вы ввели email в поле «Имя отправителя». Укажите его в поле «Подтверждённая почта отправителя» выше.';
+    }
+
+    if (mailboxId && !password) {
+      return '';
+    }
+
+    if (!email) return 'Укажите email отправителя';
+    if (smtpDiscoverPending) return 'Определяем SMTP-настройки…';
+    if (smtpOAuthTokens && smtpOAuthTokens.access_token) return '';
+    if (smtpDiscoveredState) return '';
+    const manual = getSmtpManualFieldSnapshot();
+    if (!manual.host) {
+      return 'Не удалось определить SMTP автоматически. Укажите сервер вручную или проверьте email.';
+    }
+    return '';
+  }
+
+  function applyMailboxPresetFromCatalog(mailbox) {
+    if (!mailbox) return;
+    smtpDiscoveredState = {
+      provider: String(mailbox.provider || 'custom').trim(),
+      host: String(mailbox.host || '').trim(),
+      port: mailbox.port != null ? Number(mailbox.port) : 587,
+      use_ssl: !!mailbox.use_ssl,
+      use_starttls: !!mailbox.use_starttls,
+      source: 'saved',
+    };
+    smtpRequiresManual = smtpDiscoveredState.provider === 'custom';
+    renderSmtpDiscoveredSummary(smtpDiscoveredState);
+    syncSmtpManualFieldsVisibility();
+    if (smtpRequiresManual) {
+      const host = document.getElementById('settings-smtp-host');
+      const port = document.getElementById('settings-smtp-port');
+      const useSsl = document.getElementById('settings-smtp-use-ssl');
+      const useStarttls = document.getElementById('settings-smtp-use-starttls');
+      if (host) host.value = smtpDiscoveredState.host;
+      if (port) port.value = String(smtpDiscoveredState.port || '');
+      if (useSsl) useSsl.value = smtpDiscoveredState.use_ssl ? 'true' : 'false';
+      if (useStarttls) useStarttls.value = smtpDiscoveredState.use_starttls ? 'true' : 'false';
+    }
+  }
+
+  function applySelectedSettingsSmtpMailbox() {
+    const mailboxId = getSelectedSettingsSmtpMailboxId();
+    const mailbox = smtpMailboxCatalog.find((item) => item.id === mailboxId);
+    if (!mailbox) return;
+    const senderEmail = document.getElementById('settings-sender-email');
+    const senderName = document.getElementById('settings-smtp-sender-name');
+    if (senderEmail) senderEmail.value = mailbox.email || '';
+    if (senderName) senderName.value = mailbox.sender_name || '';
+    smtpLastDiscoverDomain = '';
+    smtpFieldsTouched = false;
+    applyMailboxPresetFromCatalog(mailbox);
+    scheduleSmtpDiscover();
+    updateSettingsChecklist();
   }
 
   function renderSmtpMailboxOptions(mailboxes, selectedId = '') {
+    smtpMailboxCatalog = Array.isArray(mailboxes) ? mailboxes.slice() : [];
     const options = ['<option value="">По умолчанию / из настроек</option>'].concat(
-      (mailboxes || []).map((item) => {
+      smtpMailboxCatalog.map((item) => {
         const label = `${item.email}${item.is_default ? ' (по умолчанию)' : ''}`;
         const selected = selectedId && selectedId === item.id ? ' selected' : (!selectedId && item.is_default ? ' selected' : '');
         return `<option value="${escapeHtml(item.id)}"${selected}>${escapeHtml(label)}</option>`;
@@ -8321,98 +8883,222 @@ function clearAttachedFile() {
     const settingsSelect = document.getElementById('settings-smtp-mailboxes');
     if (senderSelect) senderSelect.innerHTML = options.join('');
     if (settingsSelect) {
-      settingsSelect.innerHTML = mailboxes && mailboxes.length
-        ? mailboxes.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.email)}${item.is_default ? ' (по умолчанию)' : ''}</option>`).join('')
+      settingsSelect.innerHTML = smtpMailboxCatalog.length
+        ? smtpMailboxCatalog.map((item) => {
+          const selected = selectedId && selectedId === item.id ? ' selected' : (!selectedId && item.is_default ? ' selected' : '');
+          return `<option value="${escapeHtml(item.id)}"${selected}>${escapeHtml(item.email)}${item.is_default ? ' (по умолчанию)' : ''}</option>`;
+        }).join('')
         : '<option value="">Нет подключённых ящиков</option>';
     }
   }
 
-  async function refreshSmtpMailboxesSelects() {
+  async function refreshSmtpMailboxesSelects(selectedId = '') {
     try {
       const res = await fetchWithTimeout('/api/smtp/mailboxes', {}, 15000);
       const data = await readJsonOrText(res);
       if (!res.ok) return;
       const mailboxes = (data.result && data.result.mailboxes) || data.mailboxes || [];
-      renderSmtpMailboxOptions(mailboxes);
+      renderSmtpMailboxOptions(mailboxes, selectedId);
     } catch (e) {}
   }
 
   function collectSmtpMailboxPayload() {
-    const provider = document.getElementById('settings-smtp-provider');
     const senderEmail = document.getElementById('settings-sender-email');
     const senderPassword = document.getElementById('settings-sender-password');
     const senderName = document.getElementById('settings-smtp-sender-name');
-    const host = document.getElementById('settings-smtp-host');
-    const port = document.getElementById('settings-smtp-port');
-    const useSsl = document.getElementById('settings-smtp-use-ssl');
-    const useStarttls = document.getElementById('settings-smtp-use-starttls');
-    return {
-      provider: String((provider && provider.value) || 'custom').trim(),
+    const mailboxId = getSelectedSettingsSmtpMailboxId();
+    const base = {
       email: String((senderEmail && senderEmail.value) || '').trim(),
       password: String((senderPassword && senderPassword.value) || ''),
       sender_name: String((senderName && senderName.value) || '').trim(),
-      host: String((host && host.value) || '').trim(),
-      port: port && port.value ? Number(port.value) : null,
-      use_ssl: useSsl ? useSsl.value === 'true' : null,
-      use_starttls: useStarttls ? useStarttls.value === 'true' : null,
     };
+    let payload;
+    if (smtpDiscoveredState) {
+      payload = {
+        ...base,
+        provider: smtpDiscoveredState.provider,
+        host: smtpDiscoveredState.host,
+        port: smtpDiscoveredState.port,
+        use_ssl: smtpDiscoveredState.use_ssl,
+        use_starttls: smtpDiscoveredState.use_starttls,
+      };
+    } else {
+      const manual = getSmtpManualFieldSnapshot();
+      payload = {
+        ...base,
+        provider: 'custom',
+        host: manual.host,
+        port: manual.port,
+        use_ssl: manual.use_ssl,
+        use_starttls: manual.use_starttls,
+      };
+    }
+    if (mailboxId) {
+      payload.mailbox_id = mailboxId;
+    }
+    if (smtpSetupSessionId) payload.setup_session_id = smtpSetupSessionId;
+    if (smtpOAuthTokens && smtpOAuthTokens.access_token) {
+      payload.auth_method = 'oauth';
+      payload.oauth_provider = smtpOAuthProvider;
+      payload.oauth_tokens = smtpOAuthTokens;
+      payload.password = '';
+    } else {
+      payload.auth_method = 'password';
+    }
+    return payload;
   }
 
   async function testSmtpMailboxSettings() {
-    const payload = collectSmtpMailboxPayload();
-    if (!payload.email) {
-      showToast('Укажите email отправителя');
+    const readinessError = validateSmtpMailboxReady();
+    if (readinessError) {
+      showSmtpStatusHint(readinessError, 'error');
+      showToast(readinessError);
       return;
     }
+    const mailboxId = getSelectedSettingsSmtpMailboxId();
+    const password = getSettingsSmtpPassword();
+    const useSavedMailbox = !!(mailboxId && !password && !(smtpOAuthTokens && smtpOAuthTokens.access_token));
+    setSmtpActionButtonsBusy(true, 'settings-smtp-test-button');
+    showSmtpStatusHint('Проверяем SMTP-подключение…', 'info');
     try {
-      const res = await fetchWithTimeout('/api/smtp/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      }, 30000);
+      let res;
+      if (useSavedMailbox) {
+        res = await fetchWithTimeout(`/api/smtp/mailboxes/${encodeURIComponent(mailboxId)}/test`, {
+          method: 'POST',
+        }, 45000);
+      } else {
+        const payload = collectSmtpMailboxPayload();
+        res = await fetchWithTimeout('/api/smtp/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }, 30000);
+      }
       const data = await readJsonOrText(res);
+      if (redirectToLoginIfUnauthorized(res)) return;
       if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Не удалось проверить SMTP'));
-      showToast('SMTP-подключение успешно проверено');
+      const message = (data.result && data.result.message) || data.message || 'SMTP-подключение успешно проверено';
+      showSmtpStatusHint(message, 'success');
+      showToast(message);
     } catch (err) {
-      showToast('Ошибка SMTP: ' + (err && err.message ? err.message : String(err)));
+      const msg = err && err.message ? err.message : String(err);
+      smtpAnalyzeAttemptCount += 1;
+      smtpLastAnalyzeError = msg;
+      showSmtpStatusHint('Ошибка SMTP: ' + msg, 'error');
+      showToast('Ошибка SMTP: ' + msg);
+      analyzeSmtpSetupFromEmail(msg);
+    } finally {
+      setSmtpActionButtonsBusy(false);
     }
   }
 
   async function saveSmtpMailboxSettings() {
-    const payload = collectSmtpMailboxPayload();
-    if (!payload.email || !payload.password) {
-      showToast('Укажите email и пароль почтового ящика');
+    const readinessError = validateSmtpMailboxReady();
+    if (readinessError) {
+      showSmtpStatusHint(readinessError, 'error');
+      showToast(readinessError);
       return;
     }
+    const mailboxId = getSelectedSettingsSmtpMailboxId();
+    const payload = collectSmtpMailboxPayload();
+    const isUpdate = !!mailboxId;
+    if (!isUpdate && !payload.password && !(smtpOAuthTokens && smtpOAuthTokens.access_token)) {
+      showSmtpStatusHint('Укажите пароль или выполните OAuth', 'error');
+      showToast('Укажите пароль или выполните OAuth');
+      return;
+    }
+    setSmtpActionButtonsBusy(true, 'settings-smtp-save-button');
+    showSmtpStatusHint(isUpdate ? 'Обновляем почтовый ящик…' : 'Сохраняем почтовый ящик…', 'info');
     try {
-      const res = await fetchWithTimeout('/api/smtp/mailboxes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payload, make_default: true, send_test: true }),
-      }, 45000);
+      let res;
+      if (isUpdate) {
+        const patchBody = {
+          email: payload.email,
+          sender_name: payload.sender_name,
+          provider: payload.provider,
+          host: payload.host,
+          port: payload.port,
+          use_ssl: payload.use_ssl,
+          use_starttls: payload.use_starttls,
+          auth_method: payload.auth_method,
+          oauth_provider: payload.oauth_provider,
+          oauth_tokens: payload.oauth_tokens,
+          send_test: true,
+        };
+        if (payload.password) patchBody.password = payload.password;
+        res = await fetchWithTimeout(`/api/smtp/mailboxes/${encodeURIComponent(mailboxId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patchBody),
+        }, 45000);
+      } else {
+        res = await fetchWithTimeout('/api/smtp/mailboxes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...payload, make_default: true, send_test: true }),
+        }, 45000);
+      }
       const data = await readJsonOrText(res);
+      if (redirectToLoginIfUnauthorized(res)) return;
       if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Не удалось сохранить SMTP-ящик'));
       const mailbox = (data.result && data.result.mailbox) || data.mailbox;
+      const savedId = mailbox && mailbox.id ? String(mailbox.id) : mailboxId;
       const senderPassword = document.getElementById('settings-sender-password');
       if (senderPassword) senderPassword.value = '';
-      await refreshSmtpMailboxesSelects();
+      smtpOAuthTokens = null;
+      smtpOAuthProvider = '';
+      await refreshSmtpMailboxesSelects(savedId);
+      showSmtpStatusHint('Почтовый ящик сохранён', 'success');
       showToast('Почтовый ящик сохранён');
     } catch (err) {
-      showToast('Ошибка сохранения SMTP: ' + (err && err.message ? err.message : String(err)));
+      const msg = err && err.message ? err.message : String(err);
+      smtpAnalyzeAttemptCount += 1;
+      smtpLastAnalyzeError = msg;
+      showSmtpStatusHint('Ошибка сохранения SMTP: ' + msg, 'error');
+      showToast('Ошибка сохранения SMTP: ' + msg);
+      analyzeSmtpSetupFromEmail(msg);
+    } finally {
+      setSmtpActionButtonsBusy(false);
     }
   }
 
   function bindSmtpSettingsControls() {
-    const provider = document.getElementById('settings-smtp-provider');
-    if (provider && provider.dataset.bound !== '1') {
-      provider.dataset.bound = '1';
-      provider.addEventListener('change', () => {
-        syncSmtpCustomFields();
-        scheduleUiStateSave();
-      });
+    bindSmtpOAuthListener();
+    const senderEmail = document.getElementById('settings-sender-email');
+    if (senderEmail && senderEmail.dataset.smtpDiscoverBound !== '1') {
+      senderEmail.dataset.smtpDiscoverBound = '1';
+      senderEmail.addEventListener('input', scheduleSmtpDiscover);
+      senderEmail.addEventListener('blur', discoverSmtpSettingsFromEmail);
     }
-    syncSmtpCustomFields();
-    refreshSmtpMailboxesSelects();
+    const settingsMailboxSelect = document.getElementById('settings-smtp-mailboxes');
+    if (settingsMailboxSelect && settingsMailboxSelect.dataset.smtpMailboxBound !== '1') {
+      settingsMailboxSelect.dataset.smtpMailboxBound = '1';
+      settingsMailboxSelect.addEventListener('change', applySelectedSettingsSmtpMailbox);
+    }
+    const smtpTouchFieldIds = [
+      'settings-smtp-host',
+      'settings-smtp-port',
+      'settings-smtp-use-ssl',
+      'settings-smtp-use-starttls',
+    ];
+    smtpTouchFieldIds.forEach((fieldId) => {
+      const field = document.getElementById(fieldId);
+      if (!field || field.dataset.smtpTouchBound === '1') return;
+      field.dataset.smtpTouchBound = '1';
+      field.addEventListener('input', markSmtpFieldsTouched);
+      field.addEventListener('change', markSmtpFieldsTouched);
+    });
+    syncSmtpManualFieldsVisibility();
+    refreshSmtpMailboxesSelects().then(() => {
+      const selectedId = getSelectedSettingsSmtpMailboxId();
+      if (!selectedId) return;
+      const mailbox = smtpMailboxCatalog.find((item) => item.id === selectedId);
+      if (mailbox) applyMailboxPresetFromCatalog(mailbox);
+    });
+    if (senderEmail && senderEmail.value.trim()) {
+      smtpLastDiscoverDomain = '';
+      scheduleSmtpDiscover();
+    }
   }
 
   function normalizeDocumentModeClient(value) {
@@ -9998,6 +10684,12 @@ function clearAttachedFile() {
       if (!authenticated) return;
       restoreInitialUiState();
       updateSettingsChecklist();
+      smtpLastDiscoverDomain = '';
+      smtpFieldsTouched = false;
+      smtpDiscoveredState = null;
+      smtpRequiresManual = false;
+      syncSmtpManualFieldsVisibility();
+      scheduleSmtpDiscover();
       uiPersistenceEnabled = true;
       saveUiState();
       refreshAllModuleStatuses({ silent: true, full: true });

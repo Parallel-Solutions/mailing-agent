@@ -9,6 +9,13 @@ from uuid import uuid4
 
 from sqlalchemy import select, update
 
+from src.generator.delivery.smtp_oauth import (
+    OAuthTokens,
+    build_xoauth2_string,
+    decrypt_oauth_tokens,
+    encrypt_oauth_tokens,
+    refresh_oauth_tokens,
+)
 from src.generator.delivery.smtp_providers import resolve_provider_settings
 from src.infra.db import session_scope
 from src.infra.models import SmtpMailbox
@@ -27,6 +34,10 @@ class ResolvedSmtpCredentials:
     use_starttls: bool
     sender_name: str = ""
     mailbox_id: str | None = None
+    auth_method: str = "password"
+    oauth_provider: str | None = None
+    oauth_tokens: OAuthTokens | None = None
+    smtp_username: str = ""
 
 
 def _now() -> datetime:
@@ -49,6 +60,9 @@ def _public_mailbox(row: SmtpMailbox) -> dict[str, Any]:
         "port": row.port,
         "use_ssl": bool(row.use_ssl),
         "use_starttls": bool(row.use_starttls),
+        "auth_method": row.auth_method or "password",
+        "oauth_provider": row.oauth_provider or "",
+        "smtp_username": row.smtp_username or "",
         "status": row.status,
         "last_error": row.last_error or "",
         "is_default": bool(row.is_default),
@@ -57,7 +71,52 @@ def _public_mailbox(row: SmtpMailbox) -> dict[str, Any]:
     }
 
 
+def build_oauth_credentials(
+    *,
+    email: str,
+    provider: str,
+    tokens: OAuthTokens,
+    host: str,
+    port: int,
+    use_ssl: bool,
+    use_starttls: bool,
+    sender_name: str = "",
+    smtp_username: str | None = None,
+    mailbox_id: str | None = None,
+) -> ResolvedSmtpCredentials:
+    return ResolvedSmtpCredentials(
+        email=email,
+        password=tokens.access_token,
+        host=host,
+        port=port,
+        use_ssl=use_ssl,
+        use_starttls=use_starttls,
+        sender_name=sender_name,
+        auth_method="oauth",
+        oauth_provider=provider,
+        oauth_tokens=tokens,
+        smtp_username=str(smtp_username or email),
+        mailbox_id=mailbox_id,
+    )
+
+
 def _credentials_from_row(row: SmtpMailbox) -> ResolvedSmtpCredentials:
+    auth_method = _safe_text(row.auth_method) or "password"
+    smtp_username = _safe_text(row.smtp_username) or row.email
+    if auth_method == "oauth" and row.oauth_tokens_encrypted:
+        tokens = decrypt_oauth_tokens(row.oauth_tokens_encrypted)
+        return build_oauth_credentials(
+            email=row.email,
+            provider=_safe_text(row.oauth_provider),
+            tokens=tokens,
+            host=row.host,
+            port=int(row.port),
+            use_ssl=bool(row.use_ssl),
+            use_starttls=bool(row.use_starttls),
+            sender_name=row.sender_name or "",
+            smtp_username=smtp_username,
+            mailbox_id=row.id,
+        )
     return ResolvedSmtpCredentials(
         email=row.email,
         password=decrypt_secret(row.password_encrypted),
@@ -67,6 +126,8 @@ def _credentials_from_row(row: SmtpMailbox) -> ResolvedSmtpCredentials:
         use_starttls=bool(row.use_starttls),
         sender_name=row.sender_name or "",
         mailbox_id=row.id,
+        auth_method="password",
+        smtp_username=smtp_username,
     )
 
 
@@ -83,6 +144,7 @@ def _credentials_from_env(sender_email: str | None = None) -> ResolvedSmtpCreden
         port=int(settings.smtp_port or 587),
         use_ssl=bool(settings.smtp_use_ssl),
         use_starttls=bool(settings.smtp_use_starttls),
+        smtp_username=email,
     )
 
 
@@ -117,13 +179,17 @@ def create_mailbox(
     owner_username: str,
     provider: str,
     email: str,
-    password: str,
+    password: str = "",
     sender_name: str = "",
     host: str = "",
     port: int | None = None,
     use_ssl: bool | None = None,
     use_starttls: bool | None = None,
     make_default: bool = False,
+    auth_method: str = "password",
+    oauth_provider: str | None = None,
+    oauth_tokens: OAuthTokens | None = None,
+    smtp_username: str | None = None,
 ) -> dict[str, Any]:
     preset = resolve_provider_settings(
         provider,
@@ -135,8 +201,20 @@ def create_mailbox(
     safe_email = _safe_text(email).lower()
     if not safe_email:
         raise ValueError("Укажите email почтового ящика.")
-    if not _safe_text(password):
-        raise ValueError("Укажите пароль или токен приложения.")
+    normalized_auth = _safe_text(auth_method) or "password"
+    safe_oauth_provider = _safe_text(oauth_provider) or None
+    safe_username = _safe_text(smtp_username) or safe_email
+    if normalized_auth == "oauth":
+        if oauth_tokens is None or not oauth_tokens.access_token:
+            raise ValueError("Для OAuth-ящика нужен access token.")
+        password_encrypted = ""
+        oauth_tokens_encrypted = encrypt_oauth_tokens(oauth_tokens)
+    else:
+        if not _safe_text(password):
+            raise ValueError("Укажите пароль или токен приложения.")
+        password_encrypted = encrypt_secret(password)
+        oauth_tokens_encrypted = None
+        safe_oauth_provider = None
     now = _now()
     mailbox_id = str(uuid4())
     with session_scope() as session:
@@ -156,7 +234,11 @@ def create_mailbox(
             port=preset.port,
             use_ssl=preset.use_ssl,
             use_starttls=preset.use_starttls,
-            password_encrypted=encrypt_secret(password),
+            auth_method=normalized_auth,
+            oauth_provider=safe_oauth_provider,
+            oauth_tokens_encrypted=oauth_tokens_encrypted,
+            smtp_username=safe_username,
+            password_encrypted=password_encrypted,
             status="active",
             last_error=None,
             is_default=should_default,
@@ -180,6 +262,10 @@ def update_mailbox(
     port: int | None = None,
     use_ssl: bool | None = None,
     use_starttls: bool | None = None,
+    auth_method: str | None = None,
+    oauth_provider: str | None = None,
+    oauth_tokens: OAuthTokens | None = None,
+    smtp_username: str | None = None,
 ) -> dict[str, Any]:
     with session_scope() as session:
         row = session.get(SmtpMailbox, mailbox_id)
@@ -198,10 +284,22 @@ def update_mailbox(
             if not safe_email:
                 raise ValueError("Укажите email почтового ящика.")
             row.email = safe_email
+        if auth_method is not None:
+            row.auth_method = _safe_text(auth_method) or "password"
+        if oauth_provider is not None:
+            row.oauth_provider = _safe_text(oauth_provider) or None
+        if oauth_tokens is not None:
+            row.oauth_tokens_encrypted = encrypt_oauth_tokens(oauth_tokens)
+            row.auth_method = "oauth"
         if password:
             row.password_encrypted = encrypt_secret(password)
+            row.auth_method = "password"
+            row.oauth_provider = None
+            row.oauth_tokens_encrypted = None
         if sender_name is not None:
             row.sender_name = _safe_text(sender_name)
+        if smtp_username is not None:
+            row.smtp_username = _safe_text(smtp_username) or row.email
         row.provider = preset.id
         row.host = preset.host
         row.port = preset.port
@@ -280,7 +378,8 @@ def resolve_smtp_credentials(
             if row is not None and row.owner_username == owner:
                 if row.status == "auth_failed":
                     raise RuntimeError(row.last_error or "SMTP-ящик недоступен: ошибка авторизации.")
-                return _credentials_from_row(row)
+                credentials = _credentials_from_row(row)
+                return _ensure_fresh_oauth_credentials(credentials, row)
     if owner:
         with session_scope() as session:
             row = session.execute(
@@ -293,7 +392,8 @@ def resolve_smtp_credentials(
                 .limit(1)
             ).scalar_one_or_none()
             if row is not None:
-                return _credentials_from_row(row)
+                credentials = _credentials_from_row(row)
+                return _ensure_fresh_oauth_credentials(credentials, row)
             if _safe_text(sender_email):
                 row = session.execute(
                     select(SmtpMailbox)
@@ -305,8 +405,43 @@ def resolve_smtp_credentials(
                     .limit(1)
                 ).scalar_one_or_none()
                 if row is not None:
-                    return _credentials_from_row(row)
+                    credentials = _credentials_from_row(row)
+                    return _ensure_fresh_oauth_credentials(credentials, row)
     return _credentials_from_env(sender_email)
+
+
+def _ensure_fresh_oauth_credentials(
+    credentials: ResolvedSmtpCredentials,
+    row: SmtpMailbox,
+) -> ResolvedSmtpCredentials:
+    if credentials.auth_method != "oauth" or credentials.oauth_tokens is None:
+        return credentials
+    if not credentials.oauth_tokens.refresh_token:
+        return credentials
+    try:
+        refreshed = refresh_oauth_tokens(
+            provider=_safe_text(credentials.oauth_provider),
+            refresh_token=credentials.oauth_tokens.refresh_token,
+        )
+    except Exception:
+        return credentials
+    with session_scope() as session:
+        db_row = session.get(SmtpMailbox, row.id)
+        if db_row is not None:
+            db_row.oauth_tokens_encrypted = encrypt_oauth_tokens(refreshed)
+            db_row.updated_at = _now()
+    return build_oauth_credentials(
+        email=credentials.email,
+        provider=_safe_text(credentials.oauth_provider),
+        tokens=refreshed,
+        host=credentials.host,
+        port=credentials.port,
+        use_ssl=credentials.use_ssl,
+        use_starttls=credentials.use_starttls,
+        sender_name=credentials.sender_name,
+        smtp_username=credentials.smtp_username or credentials.email,
+        mailbox_id=credentials.mailbox_id,
+    )
 
 
 def humanize_smtp_error(exc: Exception) -> str:
@@ -316,27 +451,66 @@ def humanize_smtp_error(exc: Exception) -> str:
         return "Не удалось подключиться к SMTP-серверу. Проверьте host, порт и шифрование."
     if isinstance(exc, CredentialVaultError):
         return str(exc)
+    if isinstance(exc, (TimeoutError,)):
+        return "SMTP-сервер не ответил вовремя. Проверьте сеть и доступность портов 465/587."
+    if isinstance(exc, OSError):
+        text = _safe_text(exc).lower()
+        if "network is unreachable" in text or getattr(exc, "errno", None) == 101:
+            return (
+                "Нет доступа к SMTP-серверу из контейнера. "
+                "Проверьте файрвол и VPN: порты 465 и 587 должны быть открыты наружу."
+            )
+        if "timed out" in text:
+            return "SMTP-сервер не ответил вовремя. Проверьте сеть и доступность портов 465/587."
     text = _safe_text(exc)
     if "timed out" in text.lower():
-        return "SMTP-сервер не ответил вовремя."
+        return "SMTP-сервер не ответил вовремя. Проверьте сеть и доступность портов 465/587."
+    if "network is unreachable" in text.lower():
+        return (
+            "Нет доступа к SMTP-серверу из контейнера. "
+            "Проверьте файрвол и VPN: порты 465 и 587 должны быть открыты наружу."
+        )
     return text or "Не удалось проверить SMTP-подключение."
 
 
-def verify_smtp_credentials(credentials: ResolvedSmtpCredentials) -> None:
-    if credentials.use_ssl:
-        with smtplib.SMTP_SSL(credentials.host, credentials.port, timeout=30) as server:
-            server.login(credentials.email, credentials.password)
+def _login_smtp(server: smtplib.SMTP, credentials: ResolvedSmtpCredentials) -> None:
+    username = _safe_text(credentials.smtp_username) or credentials.email
+    if credentials.auth_method == "oauth":
+        auth_string = build_xoauth2_string(username, credentials.password)
+        code, response = server.docmd("AUTH", "XOAUTH2 " + auth_string)
+        if code != 235:
+            detail = response.decode("utf-8", errors="replace") if isinstance(response, bytes) else str(response)
+            raise smtplib.SMTPAuthenticationError(code, detail)
         return
-    with smtplib.SMTP(credentials.host, credentials.port, timeout=30) as server:
+    server.login(username, credentials.password)
+
+
+def _open_smtp_connection(credentials: ResolvedSmtpCredentials) -> smtplib.SMTP:
+    if credentials.use_ssl:
+        server = smtplib.SMTP_SSL(credentials.host, credentials.port, timeout=30)
+        _login_smtp(server, credentials)
+        return server
+    server = smtplib.SMTP(credentials.host, credentials.port, timeout=30)
+    server.ehlo()
+    if credentials.use_starttls:
+        server.starttls()
         server.ehlo()
-        if credentials.use_starttls:
-            server.starttls()
-            server.ehlo()
-        server.login(credentials.email, credentials.password)
+    _login_smtp(server, credentials)
+    return server
+
+
+def verify_smtp_credentials(credentials: ResolvedSmtpCredentials) -> None:
+    server = _open_smtp_connection(credentials)
+    try:
+        server.noop()
+    finally:
+        try:
+            server.quit()
+        except smtplib.SMTPException:
+            server.close()
 
 
 def send_test_email(credentials: ResolvedSmtpCredentials, *, recipient: str | None = None) -> None:
-    verify_smtp_credentials(credentials)
     target = _safe_text(recipient) or credentials.email
     message = EmailMessage()
     sender_label = credentials.sender_name or credentials.email
@@ -344,15 +518,33 @@ def send_test_email(credentials: ResolvedSmtpCredentials, *, recipient: str | No
     message["From"] = f"{sender_label} <{credentials.email}>" if sender_label else credentials.email
     message["To"] = target
     message.set_content("Тестовое письмо от mailing-agent. SMTP-подключение работает.")
-    if credentials.use_ssl:
-        with smtplib.SMTP_SSL(credentials.host, credentials.port, timeout=30) as server:
-            server.login(credentials.email, credentials.password)
-            server.send_message(message)
-        return
-    with smtplib.SMTP(credentials.host, credentials.port, timeout=30) as server:
-        server.ehlo()
-        if credentials.use_starttls:
-            server.starttls()
-            server.ehlo()
-        server.login(credentials.email, credentials.password)
+    server = _open_smtp_connection(credentials)
+    try:
         server.send_message(message)
+    finally:
+        try:
+            server.quit()
+        except smtplib.SMTPException:
+            server.close()
+
+
+def verify_and_mark_mailbox(
+    credentials: ResolvedSmtpCredentials,
+    *,
+    mailbox_id: str | None = None,
+    send_test: bool = False,
+    recipient: str | None = None,
+) -> None:
+    try:
+        if send_test:
+            send_test_email(credentials, recipient=recipient)
+        else:
+            verify_smtp_credentials(credentials)
+    except smtplib.SMTPAuthenticationError as exc:
+        if mailbox_id:
+            mark_mailbox_status(mailbox_id, status="auth_failed", last_error=humanize_smtp_error(exc))
+        raise
+    except Exception:
+        raise
+    if mailbox_id:
+        mark_mailbox_status(mailbox_id, status="active", last_error="")

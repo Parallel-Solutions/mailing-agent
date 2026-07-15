@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     smtp_use_ssl: bool = True
     smtp_use_starttls: bool = False
     smtp_allow_real_send: bool = False
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    microsoft_oauth_client_id: str = ""
+    microsoft_oauth_client_secret: str = ""
+    microsoft_oauth_tenant: str = "common"
+    smtp_oauth_redirect_base: str = "http://localhost:9806"
     imap_host: str = "imap.mail.ru"
     imap_port: int = 993
     imap_use_ssl: bool = True

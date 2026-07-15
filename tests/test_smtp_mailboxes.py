@@ -149,6 +149,95 @@ class SmtpMailboxApiTests(unittest.TestCase):
         self.assertEqual(len(mailboxes), 1)
         self.assertNotIn("password", mailboxes[0])
 
+    def test_discover_gmail(self) -> None:
+        client = self._client()
+        response = client.get("/api/smtp/discover", params={"email": "test@gmail.com"})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()["result"]
+        self.assertTrue(result["discovered"])
+        self.assertEqual(result["provider"], "gmail")
+        self.assertEqual(result["domain"], "gmail.com")
+        self.assertEqual(result["confidence"], "high")
+
+    def test_discover_invalid_email(self) -> None:
+        client = self._client()
+        empty_response = client.get("/api/smtp/discover", params={"email": ""})
+        self.assertEqual(empty_response.status_code, 400)
+
+        invalid_response = client.get("/api/smtp/discover", params={"email": "not-an-email"})
+        self.assertEqual(invalid_response.status_code, 400)
+
+    @patch("src.web.smtp_router.discover_smtp_settings", return_value=None)
+    def test_discover_unknown_domain(self, _mock_discover: object) -> None:
+        client = self._client()
+        response = client.get("/api/smtp/discover", params={"email": "user@unknown-example.test"})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()["result"]
+        self.assertFalse(result["discovered"])
+        self.assertEqual(result["email"], "user@unknown-example.test")
+        self.assertEqual(result["domain"], "unknown-example.test")
+
+    @patch("src.web.smtp_router.analyze_smtp_setup")
+    def test_setup_analyze_endpoint(self, mock_analyze: object) -> None:
+        from src.generator.delivery.smtp_setup_ai import SetupAction
+        from src.generator.delivery.smtp_setup_orchestrator import SetupAnalysis
+
+        mock_analyze.return_value = SetupAnalysis(
+            setup_session_id="session-1",
+            email="user@gmail.com",
+            domain="gmail.com",
+            probe=None,
+            discoveries=[],
+            action=SetupAction(
+                action="show_app_password",
+                message_ru="Gmail готов",
+                instructions=["Создайте пароль приложения"],
+                oauth_provider=None,
+                recommended_settings={
+                    "provider": "gmail",
+                    "host": "smtp.gmail.com",
+                    "port": 587,
+                    "use_ssl": False,
+                    "use_starttls": True,
+                },
+            ),
+        )
+        client = self._client()
+        response = client.post("/api/smtp/setup/analyze", json={"email": "user@gmail.com"})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()["result"]
+        self.assertEqual(result["setup_session_id"], "session-1")
+        self.assertEqual(result["action"]["action"], "show_app_password")
+
+    def test_api_test_connection_with_mailbox_id(self) -> None:
+        client = self._client()
+        with patch("src.web.smtp_router.send_test_email", return_value=None):
+            create_response = client.post(
+                "/api/smtp/mailboxes",
+                json={
+                    "provider": "gmail",
+                    "email": "api@example.com",
+                    "password": "api-secret",
+                    "make_default": True,
+                    "send_test": False,
+                },
+            )
+        self.assertEqual(create_response.status_code, 200, create_response.text)
+        mailbox_id = create_response.json()["result"]["mailbox"]["id"]
+
+        with patch("src.web.smtp_router.verify_smtp_credentials", return_value=None):
+            response = client.post(
+                "/api/smtp/test",
+                json={
+                    "mailbox_id": mailbox_id,
+                    "email": "api@example.com",
+                    "password": "new-password",
+                    "provider": "gmail",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("principal", response.text.lower())
+
 
 class SenderAgentSmtpMailboxTests(unittest.TestCase):
     def test_send_via_smtp_uses_mailbox_credentials(self) -> None:
@@ -174,8 +263,10 @@ class SenderAgentSmtpMailboxTests(unittest.TestCase):
             return_value=credentials,
         ), patch.object(sender_agent, "_build_message", return_value=message), patch.object(
             sender_agent, "_save_sent_copy", return_value="sent-copy.eml"
-        ), patch("src.generator.delivery.sender_agent.smtplib.SMTP") as smtp_cls:
-            smtp_cls.return_value.__enter__.return_value = mock_server
+        ), patch(
+            "src.generator.delivery.smtp_mailboxes._open_smtp_connection",
+            return_value=mock_server,
+        ):
             result = sender_agent._send_via_smtp(
                 {"MUN_NAME": "Тест"},
                 "recipient@example.com",
@@ -185,8 +276,22 @@ class SenderAgentSmtpMailboxTests(unittest.TestCase):
                 owner_username="owner",
             )
         self.assertEqual(result, "sent-copy.eml")
-        mock_server.login.assert_called_once_with("mailbox@example.com", "mailbox-pass")
         mock_server.send_message.assert_called_once_with(message)
+
+
+class HumanizeSmtpErrorTests(unittest.TestCase):
+    def test_network_unreachable_oserror(self) -> None:
+        from src.generator.delivery.smtp_mailboxes import humanize_smtp_error
+
+        message = humanize_smtp_error(OSError(101, "Network is unreachable"))
+        self.assertIn("Нет доступа к SMTP-серверу", message)
+        self.assertIn("465", message)
+
+    def test_timeout_error(self) -> None:
+        from src.generator.delivery.smtp_mailboxes import humanize_smtp_error
+
+        message = humanize_smtp_error(TimeoutError("timed out"))
+        self.assertIn("не ответил вовремя", message)
 
 
 if __name__ == "__main__":

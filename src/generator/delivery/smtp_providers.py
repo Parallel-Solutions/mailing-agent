@@ -14,7 +14,7 @@ class SmtpProviderPreset:
 
 
 PROVIDER_PRESETS: dict[str, SmtpProviderPreset] = {
-    "gmail": SmtpProviderPreset("gmail", "Gmail", "smtp.gmail.com", 465, True, False),
+    "gmail": SmtpProviderPreset("gmail", "Gmail", "smtp.gmail.com", 587, False, True),
     "outlook": SmtpProviderPreset("outlook", "Outlook / Microsoft 365", "smtp.office365.com", 587, False, True),
     "yandex": SmtpProviderPreset("yandex", "Яндекс", "smtp.yandex.ru", 465, True, False),
     "mailru": SmtpProviderPreset("mailru", "Mail.ru", "smtp.mail.ru", 465, True, False),
@@ -46,9 +46,18 @@ def resolve_provider_settings(
 ) -> SmtpProviderPreset:
     normalized = str(provider or "custom").strip().lower() or "custom"
     preset = PROVIDER_PRESETS.get(normalized, PROVIDER_PRESETS["custom"])
-    if normalized != "custom":
-        return preset
     safe_host = str(host or "").strip()
+    if normalized != "custom":
+        if safe_host or port is not None or use_ssl is not None or use_starttls is not None:
+            return SmtpProviderPreset(
+                id=preset.id,
+                title=preset.title,
+                host=safe_host or preset.host,
+                port=int(port if port is not None else preset.port),
+                use_ssl=bool(use_ssl) if use_ssl is not None else preset.use_ssl,
+                use_starttls=bool(use_starttls) if use_starttls is not None else preset.use_starttls,
+            )
+        return preset
     if not safe_host:
         raise ValueError("Укажите SMTP-сервер для пользовательского провайдера.")
     safe_port = int(port or preset.port or 587)

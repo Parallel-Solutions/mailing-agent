@@ -45,10 +45,9 @@ class SmtpMailboxesAcceptanceTests(AppUITestCase):
 
     def _open_smtp_settings(self) -> None:
         self.go_to_screen("settings")
-        self.page.wait_for_selector("#settings-smtp-provider", state="visible", timeout=15000)
+        self.page.wait_for_selector("#settings-smtp-test-button", state="visible", timeout=15000)
 
-    def _fill_smtp_form(self, *, email: str, password: str, provider: str = "mailru") -> None:
-        self.page.select_option("#settings-smtp-provider", provider)
+    def _fill_smtp_form(self, *, email: str, password: str) -> None:
         self.page.fill("#settings-sender-email", email)
         self.page.fill("#settings-sender-password", password)
         self.page.fill("#settings-smtp-sender-name", "Acceptance Test")
@@ -58,38 +57,67 @@ class SmtpMailboxesAcceptanceTests(AppUITestCase):
         self._fill_smtp_form(
             email=self.creds["email"],
             password=self.creds["password"],
-            provider=self.creds["provider"],
         )
+        self.page.wait_for_timeout(1500)
         self.page.click("#settings-smtp-test-button")
         self.page.wait_for_timeout(15000)
         mailbox_id = self._ensure_mailbox_via_api()
         self.assertTrue(mailbox_id)
         self.record_scenario("s1_connect", "pass", f"mailbox={self.creds['email']}")
 
-    def test_scenario_2_provider_presets(self) -> None:
+    def test_scenario_2_autodiscover_without_provider_dropdown(self) -> None:
         providers_resp = self.api_get("/api/smtp/providers")
         self.assertEqual(providers_resp.status_code, 200)
         presets = providers_resp.json().get("result", {}).get("providers") or providers_resp.json().get("providers") or []
         preset_ids = {item["id"] for item in presets}
         self.assertTrue({"gmail", "outlook", "yandex", "mailru", "custom"}.issubset(preset_ids))
+
+        discover_resp = self.api_get("/api/smtp/discover", params={"email": "test@gmail.com"})
+        self.assertEqual(discover_resp.status_code, 200, discover_resp.text)
+        discover = discover_resp.json().get("result") or discover_resp.json()
+        self.assertTrue(discover.get("discovered"))
+        self.assertEqual(discover.get("provider"), "gmail")
+
         self._open_smtp_settings()
-        provider_options = self.page.eval_on_selector(
-            "#settings-smtp-provider",
-            "el => Array.from(el.options).map(o => o.value)",
+        self.page.wait_for_selector("#settings-smtp-wizard-step", state="visible", timeout=15000)
+        provider_count = self.page.locator("#settings-smtp-provider").count()
+        self.assertEqual(provider_count, 0)
+
+        self.page.fill("#settings-sender-email", "test@gmail.com")
+        self.page.wait_for_function(
+            "() => { const step = document.getElementById('settings-smtp-wizard-step'); return step && (step.textContent.includes('Настройки определены') || step.textContent.includes('Сервер найден') || step.textContent.includes('Выберите способ входа')); }",
+            timeout=60000,
         )
-        self.assertTrue({"gmail", "mailru", "custom"}.issubset(set(provider_options)))
+        custom_hidden = self.page.eval_on_selector(
+            "#settings-smtp-custom-fields",
+            "el => el.hidden",
+        )
+        self.assertTrue(custom_hidden)
         self.record_scenario("s2_presets", "pass", f"providers={sorted(preset_ids)}")
+
+    def test_scenario_setup_analyze_gmail_api(self) -> None:
+        response = self.api_post("/api/smtp/setup/analyze", json={"email": "test@gmail.com"})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json().get("result") or response.json()
+        discoveries = result.get("discoveries") or []
+        self.assertTrue(discoveries, result)
+        self.assertEqual(discoveries[0].get("provider"), "gmail")
+        self.assertEqual(discoveries[0].get("host"), "smtp.gmail.com")
+        recommended = (result.get("action") or {}).get("recommended_settings") or {}
+        self.assertEqual(recommended.get("host"), "smtp.gmail.com")
+        self.assertIn(result.get("action", {}).get("action"), {"show_oauth", "show_app_password"})
+        self.record_scenario("setup_analyze_gmail", "pass", f"action={result.get('action', {}).get('action')}")
 
     def test_scenario_3_wrong_password(self) -> None:
         self._open_smtp_settings()
         self._fill_smtp_form(
             email=self.creds["email"],
             password="definitely-wrong-password-12345",
-            provider=self.creds["provider"],
         )
+        self.page.wait_for_timeout(1500)
         self.page.click("#settings-smtp-test-button")
         self.page.wait_for_timeout(8000)
-        toast = self.page.locator(".toast, [class*='toast']").first
+        self.page.locator(".toast, [class*='toast']").first
         self.record_scenario("s3_wrong_password", "pass", "SMTP error shown in UI")
 
     def test_scenario_4_api_no_secrets(self) -> None:

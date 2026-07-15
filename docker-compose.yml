@@ -34,6 +34,9 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./tmp:/app/tmp
+      - ./templates:/app/templates:ro
+      - ./src:/app/src
+      - ./main.py:/app/main.py:ro
       - ./storage:/app/legacy/storage:ro
       - ./src/parser_new/memory:/app/legacy/parser_memory:ro
       - chroma-data:/app/src/parser_new/memory/vectors

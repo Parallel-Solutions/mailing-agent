@@ -2638,6 +2638,7 @@ def _send_via_smtp(
             "Сейчас доступен только dry-run режим."
         )
     from src.generator.delivery.smtp_mailboxes import (
+        _open_smtp_connection,
         humanize_smtp_error,
         mark_mailbox_status,
         resolve_smtp_credentials,
@@ -2665,18 +2666,14 @@ def _send_via_smtp(
     )
 
     try:
-        if credentials.use_ssl:
-            with smtplib.SMTP_SSL(credentials.host, credentials.port, timeout=30) as server:
-                server.login(credentials.email, credentials.password)
-                server.send_message(message)
-        else:
-            with smtplib.SMTP(credentials.host, credentials.port, timeout=30) as server:
-                server.ehlo()
-                if credentials.use_starttls:
-                    server.starttls()
-                    server.ehlo()
-                server.login(credentials.email, credentials.password)
-                server.send_message(message)
+        server = _open_smtp_connection(credentials)
+        try:
+            server.send_message(message)
+        finally:
+            try:
+                server.quit()
+            except smtplib.SMTPException:
+                server.close()
     except smtplib.SMTPAuthenticationError as exc:
         mark_mailbox_status(
             credentials.mailbox_id,
