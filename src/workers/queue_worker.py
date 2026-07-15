@@ -27,6 +27,7 @@ from src.workers.task_queue import (
 _stop_event = threading.Event()
 _worker_thread: threading.Thread | None = None
 _worker_thread_lock = threading.Lock()
+TEMPLATE_COMPILE_TASK_PREFIX = "template_compile:"
 
 
 def request_queue_worker_stop() -> None:
@@ -34,7 +35,9 @@ def request_queue_worker_stop() -> None:
 
 
 def _job_state_dir(job_id: str | None) -> Path:
-    return resolve_job_paths(job_id).state_dir
+    state_dir = resolve_job_paths(job_id).root_dir / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir
 
 
 def _mark_sender_failed(task: str, job_id: str | None, message: str) -> None:
@@ -109,6 +112,43 @@ def _run_sender_payload(task: TaskRecord, *, project_root: Path, worker_id: str)
     )
 
 
+def _run_template_compile(task: TaskRecord) -> None:
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    job_id = str(payload.get("job_id") or task.job_id or "").strip() or None
+    template_id = str(payload.get("template_id") or "").strip()
+    kind = str(payload.get("kind") or "kp").strip().lower() or "kp"
+    activate = bool(payload.get("activate", True))
+    if not template_id:
+        raise ValueError("template_id is required for template certification")
+    if task.task_type != f"{TEMPLATE_COMPILE_TASK_PREFIX}{template_id}":
+        raise ValueError("template task id does not match its payload")
+
+    if job_id:
+        from src.jobs.workspace import pull_job
+
+        pull_job(job_id, ["templates"])
+
+    from src.generator.templates.certification import certify_template
+    from src.generator.templates.store import AdaptiveTemplateStore
+
+    paths = resolve_job_paths(job_id)
+    store = AdaptiveTemplateStore(paths.templates_dir, kind)
+    package = store.load_package(template_id)
+    result = certify_template(store, package, activate=activate)
+    if job_id:
+        from src.jobs.workspace import push_job
+
+        push_job(job_id, ["templates"])
+    logger.info(
+        "template_certification_finished",
+        task_id=task.id,
+        job_id=job_id,
+        template_id=template_id,
+        status=result.status,
+        active=store.active_template_id() == template_id,
+    )
+
+
 def _process_task(task: TaskRecord, *, project_root: Path, worker_id: str) -> None:
     task_type = task.task_type
     if task_type == "sender":
@@ -117,6 +157,9 @@ def _process_task(task: TaskRecord, *, project_root: Path, worker_id: str) -> No
         assert_sending_allowed()
         _prime_sender_task_state(task)
         _run_sender_payload(task, project_root=project_root, worker_id=worker_id)
+        return
+    if task_type.startswith(TEMPLATE_COMPILE_TASK_PREFIX):
+        _run_template_compile(task)
         return
     raise RuntimeError(f"unsupported queued task type: {task_type}")
 
@@ -132,14 +175,19 @@ def _queue_worker_loop(*, project_root: Path) -> None:
     logger.info("queue_worker_started", worker_id=worker_id)
     while not _stop_event.is_set():
         try:
-            reconcile_expired_leases(task_type="sender")
+            reconcile_expired_leases(
+                task_type="sender",
+                task_type_prefixes=(TEMPLATE_COMPILE_TASK_PREFIX,),
+            )
             from src.generator.delivery.send_guard import is_sending_paused
 
-            if is_sending_paused():
-                _stop_event.wait(poll_seconds)
-                continue
-
-            task = claim_next_task(task_type="sender", worker_id=worker_id, lease_seconds=lease_seconds)
+            sender_task_type = None if is_sending_paused() else "sender"
+            task = claim_next_task(
+                task_type=sender_task_type,
+                task_type_prefixes=(TEMPLATE_COMPILE_TASK_PREFIX,),
+                worker_id=worker_id,
+                lease_seconds=lease_seconds,
+            )
             if task is None:
                 _stop_event.wait(poll_seconds)
                 continue

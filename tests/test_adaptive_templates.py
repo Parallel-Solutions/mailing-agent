@@ -92,6 +92,10 @@ def test_compiler_versions_package_and_activation_requires_certification(tmp_pat
     with pytest.raises(ValueError, match="certified"):
         store.activate(package.template_id)
 
+    pending_state = store.activation_state()
+    assert pending_state["certification_status"] == "pending"
+    assert pending_state["ready"] is False
+
     certification = CertificationResult(
         template_id=package.template_id,
         status="passed",
@@ -103,6 +107,11 @@ def test_compiler_versions_package_and_activation_requires_certification(tmp_pat
     assert store.load_active() == package
     active_payload = json.loads(store.active_path.read_text(encoding="utf-8"))
     assert active_payload["template_id"] == package.template_id
+
+    active_state = store.activation_state()
+    assert active_state["active_template_id"] == package.template_id
+    assert active_state["ready"] is True
+
 
 def test_pdf_acroform_is_autosized_and_flattened(tmp_path: Path) -> None:
     source = tmp_path / "form.pdf"

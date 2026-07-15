@@ -45,9 +45,34 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(claimed.id, task_a.id)
         complete_task(claimed.id, worker_id="worker-1")
         claimed_b = claim_next_task(task_type="sender", worker_id="worker-1", lease_seconds=120)
+
         self.assertIsNotNone(claimed_b)
         assert claimed_b is not None
         self.assertEqual(claimed_b.id, task_b.id)
+
+    def test_claim_next_task_accepts_template_prefix(self) -> None:
+        from src.workers.task_queue import claim_next_task, enqueue_task
+
+        job_id = f"job-template-{uuid4().hex[:8]}"
+        template_id = f"template-{uuid4().hex[:8]}"
+        template_task, _ = enqueue_task(
+            task_type=f"template_compile:{template_id}",
+            job_id=job_id,
+            owner_username="alice",
+            payload={"template_id": template_id},
+            priority=100,
+        )
+
+        claimed = claim_next_task(
+            task_type=None,
+            task_type_prefixes=("template_compile:",),
+            worker_id="template-worker",
+            lease_seconds=120,
+        )
+
+        self.assertIsNotNone(claimed)
+        assert claimed is not None
+        self.assertEqual(claimed.id, template_task.id)
 
 
 if __name__ == "__main__":

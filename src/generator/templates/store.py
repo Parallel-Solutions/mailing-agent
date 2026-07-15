@@ -109,6 +109,33 @@ class AdaptiveTemplateStore:
         value = str(payload.get("template_id") or "").strip()
         return value or None
 
+    def activation_state(self) -> dict:
+        """Return whether the latest uploaded template is safe to render.
+
+        An older active version must not mask a newer upload that is still
+        pending or has failed certification. The caller can therefore fail
+        closed instead of silently falling back to another rendering engine.
+        """
+
+        latest_id = self.latest_template_id()
+        active_id = self.active_template_id()
+        certification = self.load_certification(latest_id) if latest_id else {}
+        certification_status = str(certification.get("status") or "").strip() or (
+            "missing" if latest_id is None else "pending"
+        )
+        ready = bool(
+            latest_id
+            and active_id == latest_id
+            and certification_status == "passed"
+        )
+        return {
+            "latest_template_id": latest_id,
+            "active_template_id": active_id,
+            "certification_status": certification_status,
+            "certification_error": str(certification.get("error") or "").strip(),
+            "ready": ready,
+        }
+
     def load_active(self) -> TemplatePackage | None:
         template_id = self.active_template_id()
         if not template_id:

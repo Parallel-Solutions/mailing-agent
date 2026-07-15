@@ -290,6 +290,7 @@ class HtmlKPTests(unittest.TestCase):
             return output_path
 
         with (
+            patch.object(document_builder, "KP_ADAPTIVE_TEMPLATE_ENGINE", False),
             patch.object(document_builder, "KP_GENERATION_ENGINE", "html"),
             patch.object(document_builder, "render_html_kp_pdf", side_effect=fake_render),
         ):
@@ -307,6 +308,91 @@ class HtmlKPTests(unittest.TestCase):
         self.assertNotIn("kp", generated)
         self.assertNotIn("kp_final_docx", generated)
         self.assertTrue(generated["kp_pdf"].exists())
+
+    @unittest.skipIf(document_builder is None, f"document_builder dependencies unavailable: {DOCUMENT_BUILDER_IMPORT_ERROR}")
+    def test_pending_adaptive_template_never_falls_back_to_html(self) -> None:
+        row = self._row()
+        context = build_document_context(row, 101)
+        output_dir = self.tmp_dir / "pending-output"
+        batch_dir = self.tmp_dir / "pending-batch"
+        templates_dir = self.tmp_dir / "pending-templates"
+        templates_dir.mkdir()
+
+        pending_state = {
+            "latest_template_id": "latest-template",
+            "active_template_id": None,
+            "certification_status": "pending",
+            "certification_error": "",
+            "ready": False,
+        }
+        with (
+            patch.object(document_builder, "KP_ADAPTIVE_TEMPLATE_ENGINE", True),
+            patch.object(document_builder, "KP_GENERATION_ENGINE", "html"),
+            patch(
+                "src.generator.templates.store.AdaptiveTemplateStore.activation_state",
+                return_value=pending_state,
+            ),
+            patch.object(document_builder, "render_html_kp_pdf") as html_renderer,
+        ):
+            with self.assertRaisesRegex(ValueError, "не активирован"):
+                document_builder.generate_documents_for_row(
+                    row,
+                    context,
+                    output_dir=output_dir,
+                    batch_docx_dir=batch_dir,
+                    templates_dir=templates_dir,
+                    document_mode="kp",
+                )
+
+        html_renderer.assert_not_called()
+
+    @unittest.skipIf(document_builder is None, f"document_builder dependencies unavailable: {DOCUMENT_BUILDER_IMPORT_ERROR}")
+    def test_active_latest_template_has_priority_over_html(self) -> None:
+        row = self._row()
+        context = build_document_context(row, 101)
+        output_dir = self.tmp_dir / "active-output"
+        batch_dir = self.tmp_dir / "active-batch"
+        templates_dir = self.tmp_dir / "active-templates"
+        templates_dir.mkdir()
+
+        active_state = {
+            "latest_template_id": "latest-template",
+            "active_template_id": "latest-template",
+            "certification_status": "passed",
+            "certification_error": "",
+            "ready": True,
+        }
+
+        def fake_adaptive_render(_templates_dir, _context, output_path, **_kwargs):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"%PDF adaptive")
+            return output_path
+
+        with (
+            patch.object(document_builder, "KP_ADAPTIVE_TEMPLATE_ENGINE", True),
+            patch.object(document_builder, "KP_GENERATION_ENGINE", "html"),
+            patch(
+                "src.generator.templates.store.AdaptiveTemplateStore.activation_state",
+                return_value=active_state,
+            ),
+            patch(
+                "src.generator.templates.renderer.render_active_template",
+                side_effect=fake_adaptive_render,
+            ) as adaptive_renderer,
+            patch.object(document_builder, "render_html_kp_pdf") as html_renderer,
+        ):
+            generated = document_builder.generate_documents_for_row(
+                row,
+                context,
+                output_dir=output_dir,
+                batch_docx_dir=batch_dir,
+                templates_dir=templates_dir,
+                document_mode="kp",
+            )
+
+        self.assertTrue(generated["kp_pdf"].exists())
+        adaptive_renderer.assert_called_once()
+        html_renderer.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -416,18 +416,23 @@ class JobsWebController:
         row_count = self.cached_excel_row_count(data_path) if data_path.exists() else 0
 
         templates_dir = paths.templates_dir
-        kp_template_loaded = any(
+        raw_kp_template_loaded = any(
             (templates_dir / name).exists()
             for name in (KP_TEMPLATE_FILENAME, KP_TEMPLATE_PDF_FILENAME)
         )
-        if not kp_template_loaded:
-            from src.generator.generation.config_generator import KP_ADAPTIVE_TEMPLATE_ENGINE
+        from src.generator.generation.config_generator import KP_ADAPTIVE_TEMPLATE_ENGINE
+
+        adaptive_kp_enabled = bool(KP_ADAPTIVE_TEMPLATE_ENGINE)
+        adaptive_kp_state: dict | None = None
+        if adaptive_kp_enabled:
             from src.generator.templates.store import AdaptiveTemplateStore
 
-            kp_template_loaded = bool(
-                KP_ADAPTIVE_TEMPLATE_ENGINE
-                and AdaptiveTemplateStore(templates_dir, "kp").load_active() is not None
-            )
+            adaptive_kp_state = AdaptiveTemplateStore(
+                templates_dir, "kp"
+            ).activation_state()
+            kp_template_loaded = bool(adaptive_kp_state["ready"])
+        else:
+            kp_template_loaded = raw_kp_template_loaded
         contract_template_loaded = (templates_dir / CONTRACT_TEMPLATE_FILENAME).exists()
         mail_template_loaded = any((templates_dir / name).exists() for name in ("mail_template.docx", "mail_template.txt"))
 
@@ -483,7 +488,22 @@ class JobsWebController:
             sender_reasons.append("В data.xlsx нет строк для отправки.")
 
         if "kp" in required_document_kinds and not kp_template_loaded:
-            generator_reasons.append("Не загружен шаблон КП.")
+            if adaptive_kp_enabled and adaptive_kp_state and adaptive_kp_state["latest_template_id"]:
+                certification_status = adaptive_kp_state["certification_status"]
+                if certification_status == "failed":
+                    certification_error = adaptive_kp_state["certification_error"]
+                    message = "Проверка последнего шаблона КП завершилась ошибкой."
+                    if certification_error:
+                        message += f" {certification_error}"
+                    generator_reasons.append(message)
+                else:
+                    generator_reasons.append(
+                        "Последний загруженный шаблон КП ещё проверяется и не активирован."
+                    )
+            elif adaptive_kp_enabled and raw_kp_template_loaded:
+                generator_reasons.append("Шаблон КП загружен, но не подготовлен адаптивным движком.")
+            else:
+                generator_reasons.append("Не загружен шаблон КП.")
         if "contract" in required_document_kinds and not contract_template_loaded:
             generator_reasons.append("Не загружен шаблон договора.")
         if parser_running:
@@ -520,6 +540,7 @@ class JobsWebController:
         return {
             "data_loaded": data_path.exists(),
             "row_count": row_count,
+            "kp_template_state": adaptive_kp_state,
             "kp_template_loaded": kp_template_loaded,
             "contract_template_loaded": contract_template_loaded,
             "mail_template_loaded": mail_template_loaded,
@@ -929,12 +950,41 @@ class JobsWebController:
                 put_upload(paths.job_id, relative, dest)
                 if adaptive_package is not None:
                     push_job(paths.job_id, ["templates"])
+            adaptive_task = None
+            if adaptive_package is not None:
+                from src.workers.task_queue import enqueue_task
+
+                task_record, created = enqueue_task(
+                    task_type=f"template_compile:{adaptive_package.template_id}",
+                    job_id=paths.job_id,
+                    payload={
+                        "job_id": paths.job_id,
+                        "template_id": adaptive_package.template_id,
+                        "kind": "kp",
+                        "activate": True,
+                    },
+                    owner_username=coerce_principal(principal).username,
+                    priority=100,
+                )
+                if isinstance(task_record, dict):
+                    task_id = task_record.get("task_id") or task_record.get("id")
+                    task_status = str(task_record.get("status") or "queued")
+                else:
+                    task_id = task_record.id
+                    task_status = task_record.status
+                adaptive_task = {
+                    "task_id": task_id,
+                    "status": task_status,
+                    "created": created,
+                    "template_id": adaptive_package.template_id,
+                }
             append_audit_event(action="job.template.upload", principal=principal, job_id=paths.job_id, details={"template_kind": kind, "filename": original_name})
             result = {
                 "filename": file.filename,
                 "stored_as": dest.name,
                 "job_id": paths.job_id,
                 "adaptive_template": adaptive_package.to_dict() if adaptive_package is not None else None,
+                "adaptive_task": adaptive_task,
             }
             return ok_response(result, **result)
 
