@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -10,6 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 from src.jobs.access import JobAccessDenied, authorize_job_access
+from src.security.auth import coerce_principal
 from src.jobs.audit import append_audit_event
 from src.web.errors import internal_server_error
 from src.web.request_models import ChatRequest, JobScopedRequest, LimitRequest, SenderRunRequest
@@ -29,6 +31,7 @@ def create_sender_router(
     prime_sender_checking_state: Callable[..., dict],
     prime_sender_running_state: Callable[..., dict],
     prime_sender_queued_state: Callable[..., dict],
+    prime_sender_scheduled_state: Callable[..., dict],
     start_sender_thread_if_absent: Callable[..., tuple[Any, bool]],
     run_sender_background: Callable[..., None],
     sender_job_key: Callable[[str | None], str],
@@ -179,7 +182,9 @@ def create_sender_router(
         subject_template = payload.mail_subject
         sender_email = payload.sender_email
         campaign_name = payload.campaign_name
+        smtp_mailbox_id = payload.smtp_mailbox_id
         job_id = payload.job_id
+        owner_username = coerce_principal(principal).username
         ensure_job_access(job_id, principal, allow_missing=True)
         generator_state = get_generator_status(job_id)
         work_type = str(payload.work_type or generator_state.get("work_type") or "").strip() or None
@@ -192,6 +197,15 @@ def create_sender_router(
                     "можно только проверить письма без отправки."
                 ),
             )
+
+        scheduled_start_at = payload.scheduled_start_at
+        if scheduled_start_at is not None:
+            now = datetime.now(timezone.utc)
+            if scheduled_start_at <= now - timedelta(seconds=30):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Время отложенного старта должно быть в будущем.",
+                )
 
         try:
             clear_sender_stop_request(job_id)
@@ -215,16 +229,35 @@ def create_sender_router(
                     "campaign_name": campaign_name,
                     "work_type": work_type,
                     "job_id": job_id,
+                    "smtp_mailbox_id": smtp_mailbox_id,
+                    "owner_username": owner_username,
                 },
                 name=f"sender-{sender_job_key(job_id)}",
                 before_start=_prime_state,
+                available_at=scheduled_start_at,
             )
             if not started:
                 return {"status": "ok", "result": compact_sender_status(get_sender_status(job_id)), "queue": queue_result}
 
             queue_position = int(queue_result.get("queue_position") or 1)
             queue_total = int(queue_result.get("queue_total") or queue_position)
-            if queue_position > 1:
+            is_scheduled = (
+                scheduled_start_at is not None
+                and scheduled_start_at > datetime.now(timezone.utc) - timedelta(seconds=30)
+            )
+            if is_scheduled:
+                primed_state_box["state"] = prime_sender_scheduled_state(
+                    job_id,
+                    scheduled_start_at=scheduled_start_at,
+                    transport=transport,
+                    attachment_mode=attachment_mode,
+                    recipient_strategy=recipient_strategy,
+                    sender_email=sender_email,
+                    campaign_name=campaign_name,
+                    dry_run=dry_run,
+                    queue_task_id=str(queue_result.get("task_id") or ""),
+                )
+            elif queue_position > 1:
                 primed_state_box["state"] = prime_sender_queued_state(
                     job_id,
                     queue_position=queue_position,
@@ -256,6 +289,7 @@ def create_sender_router(
                     "recipient_strategy": recipient_strategy,
                     "sender_email": sender_email,
                     "campaign_name": campaign_name,
+                    "scheduled_start_at": scheduled_start_at.isoformat(timespec="seconds") if scheduled_start_at else None,
                 },
             )
             primed_state = primed_state_box.get("state") or get_sender_status(job_id)
@@ -279,6 +313,42 @@ def create_sender_router(
         snapshot = get_queue_snapshot(task_type="sender", job_id=job_id)
         snapshot["send_guard"] = get_send_guard_status()
         return {"status": "ok", "result": snapshot}
+
+    @router.post("/api/sender/scheduled/cancel")
+    def sender_scheduled_cancel(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        from src.generator.delivery.sender_agent import _load_sender_state, _save_sender_state
+        from src.workers.task_queue import get_active_task, request_cancel
+
+        payload = payload or JobScopedRequest()
+        job_id = payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
+
+        state = get_sender_status(job_id)
+        if str(state.get("status") or "") != "scheduled":
+            raise HTTPException(status_code=409, detail="Для этой рассылки нет запланированного старта.")
+
+        task_id = str(state.get("scheduled_task_id") or "").strip()
+        if not task_id:
+            active = get_active_task("sender", job_id)
+            task_id = str((active or {}).get("id") or "").strip()
+        if not task_id:
+            raise HTTPException(status_code=404, detail="Запланированная задача не найдена.")
+
+        cancelled = request_cancel(task_id)
+        fresh = _load_sender_state(job_id)
+        fresh["status"] = "idle"
+        fresh["scheduled_start_at"] = None
+        fresh["scheduled_task_id"] = None
+        fresh["summary_text"] = "Запланированная рассылка отменена."
+        fresh["completed_at"] = datetime.now().isoformat(timespec="seconds")
+        _save_sender_state(fresh, job_id)
+        append_audit_event(
+            action="sender.scheduled_cancel",
+            principal=principal,
+            job_id=job_id,
+            details={"task_id": task_id},
+        )
+        return ok_response({"cancelled": True, "task": cancelled, "result": compact_sender_status(fresh)})
 
     @router.post("/api/sender/resume")
     async def sender_resume(principal: object = Depends(check_auth)):

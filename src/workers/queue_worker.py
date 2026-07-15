@@ -259,8 +259,15 @@ def enqueue_sender_task(
     job_id: str | None,
     owner_username: str,
     kwargs: dict[str, Any],
+    available_at: datetime | None = None,
 ) -> dict[str, Any]:
+    from datetime import datetime, timezone
+
     from src.workers.task_queue import enqueue_task, get_queue_snapshot
+
+    safe_available_at = available_at
+    if safe_available_at is not None and safe_available_at.tzinfo is None:
+        safe_available_at = safe_available_at.replace(tzinfo=timezone.utc)
 
     task, created = enqueue_task(
         task_type="sender",
@@ -269,6 +276,7 @@ def enqueue_sender_task(
         payload={"kwargs": dict(kwargs or {})},
         max_workers=max(1, int(settings.sender_worker_max_processes or 1)),
         max_attempts=max(1, int(settings.background_queue_max_attempts or 3)),
+        available_at=safe_available_at,
     )
     snapshot = get_queue_snapshot(task_type="sender", job_id=job_id)
     return {

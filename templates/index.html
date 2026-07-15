@@ -2975,16 +2975,62 @@
           </button>
         </div>
       </div>
-      <div id="settings-sender-credentials-section" hidden>
+      <div id="settings-sender-credentials-section">
         <div class="divider"></div>
-
-
+        <div class="page-sub" style="margin-bottom:12px">Подключите свой SMTP-ящик для отправки писем. Пароль хранится в зашифрованном виде и не показывается после сохранения.</div>
+        <div class="sender-transport-row">
+          <div class="sender-transport-field">
+            <label for="settings-smtp-provider">Провайдер почты</label>
+            <select id="settings-smtp-provider">
+              <option value="gmail">Gmail</option>
+              <option value="outlook">Outlook / Microsoft 365</option>
+              <option value="yandex">Яндекс</option>
+              <option value="mailru">Mail.ru</option>
+              <option value="custom">Другой SMTP-сервер</option>
+            </select>
+          </div>
+          <div class="sender-transport-field">
+            <label for="settings-smtp-sender-name">Имя отправителя</label>
+            <input id="settings-smtp-sender-name" type="text" placeholder="Компания или ФИО">
+          </div>
+        </div>
+        <div class="sender-transport-row" id="settings-smtp-custom-fields" hidden>
+          <div class="sender-transport-field">
+            <label for="settings-smtp-host">SMTP-сервер</label>
+            <input id="settings-smtp-host" type="text" placeholder="smtp.example.com">
+          </div>
+          <div class="sender-transport-field">
+            <label for="settings-smtp-port">Порт</label>
+            <input id="settings-smtp-port" type="number" min="1" max="65535" placeholder="587">
+          </div>
+          <div class="sender-transport-field">
+            <label for="settings-smtp-use-ssl">SSL</label>
+            <select id="settings-smtp-use-ssl">
+              <option value="false">Нет</option>
+              <option value="true">Да</option>
+            </select>
+          </div>
+          <div class="sender-transport-field">
+            <label for="settings-smtp-use-starttls">STARTTLS</label>
+            <select id="settings-smtp-use-starttls">
+              <option value="true">Да</option>
+              <option value="false">Нет</option>
+            </select>
+          </div>
+        </div>
         <div class="field">
           <label>Пароль почтового ящика</label>
-          <input id="settings-sender-password" type="password" placeholder="••••••••••">
+          <input id="settings-sender-password" type="password" placeholder="Пароль приложения или SMTP-пароль">
         </div>
-
+        <div class="field">
+          <label for="settings-smtp-mailboxes">Подключённые ящики</label>
+          <select id="settings-smtp-mailboxes">
+            <option value="">Нет подключённых ящиков</option>
+          </select>
+        </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn-outline" id="settings-smtp-test-button" data-process-lock="true" type="button" onclick="testSmtpMailboxSettings()">Проверить подключение</button>
+          <button class="btn-primary" id="settings-smtp-save-button" data-process-lock="true" type="button" onclick="saveSmtpMailboxSettings()">Сохранить почтовый ящик</button>
           <button class="btn-primary" id="settings-save-button" data-process-lock="true" onclick="saveSettingsAndValidate()">Сохранить настройки</button>
           <button class="btn-outline" id="settings-reset-button" data-process-lock="true" type="button" onclick="resetAllMailingState()">Очистить все поля</button>
         </div>
@@ -3313,11 +3359,29 @@
             </select>
           </div>
           <div class="sender-transport-field">
+            <label for="sender-smtp-mailbox">Почтовый ящик SMTP</label>
+            <select id="sender-smtp-mailbox">
+              <option value="">По умолчанию / из настроек</option>
+            </select>
+          </div>
+          <div class="sender-transport-field">
             <label>Что отправляем</label>
             <div class="sender-fixed-value" id="sender-attachment-mode-label">КП</div>
           </div>
           <div class="sender-transport-note" id="sender-transport-note">
             Отправщик использует документы, выбранные и подготовленные на предыдущем шаге.
+          </div>
+        </div>
+        <div class="sender-transport-row" id="sender-schedule-row" style="margin-top:10px">
+          <div class="sender-transport-field">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="sender-schedule-enabled">
+              Запустить позже
+            </label>
+          </div>
+          <div class="sender-transport-field" id="sender-schedule-at-field" hidden>
+            <label for="sender-schedule-at">Дата и время старта</label>
+            <input type="datetime-local" id="sender-schedule-at">
           </div>
         </div>
           <div class="module-actions" style="margin-top:12px">
@@ -3327,6 +3391,7 @@
               <button type="button" class="btn-outline" id="s-download-xlsx" data-process-lock="true" onclick="downloadWithJob('/api/download/data-xlsx')" disabled>Скачать таблицу с результатами</button>
               <button type="button" class="btn-outline" id="s-preview-delivery-report" data-process-lock="true" onclick="openFilePreview('sender-delivery-report')" disabled>Предпросмотр отчёта</button>
               <button type="button" class="btn-outline" id="s-delivery-report" data-process-lock="true" onclick="downloadWithJob('/api/download/sender-delivery-report')" disabled>Скачать отчёт отправки</button>
+              <button type="button" class="btn-outline" id="s-cancel-scheduled" data-process-lock="true" onclick="cancelScheduledSender()" hidden>Отменить запланированную отправку</button>
             </div>
           </div>
           <div class="module-actions-hint" id="s-actions-hint">Сначала запустите проверку. Реальная отправка начнётся только после подтверждения.</div>
@@ -3572,6 +3637,7 @@
           <div class="table-toolbar analytics-toolbar">
             <label for="analytics-campaign">Рассылка</label>
             <select id="analytics-campaign"><option value="">Выберите рассылку</option></select>
+            <button class="btn-outline" id="btn-export-auto-call" type="button">Выгрузить для обзвона</button>
             <div id="analytics-campaign-meta" class="analytics-campaign-meta"></div>
           </div>
           <div class="empty-state hidden" id="analytics-empty">Выберите рассылку, чтобы посмотреть детальную аналитику</div>
@@ -3666,7 +3732,7 @@
         <div class="modal-card wide">
           <h2 class="modal-title">Экспорт отчёта</h2>
           <div class="modal-grid">
-            <div class="modal-field"><label>Тип отчёта</label><select id="export-type"><option value="delivery_summary">Сводка по доставке</option><option value="sent_mail_log">Журнал отправок</option><option value="consents">Согласия</option><option value="email_problems">Проблемные адреса</option></select></div>
+            <div class="modal-field"><label>Тип отчёта</label><select id="export-type"><option value="delivery_summary">Сводка по доставке</option><option value="sent_mail_log">Журнал отправок</option><option value="consents">Согласия</option><option value="email_problems">Проблемные адреса</option><option value="auto_call_contacts">Контакты для обзвона</option></select></div>
             <div class="modal-field"><label>Период с</label><input type="date" id="export-from"></div>
             <div class="modal-field"><label>Период по</label><input type="date" id="export-to"></div>
             <div class="modal-field"><label>Кампания</label><select id="export-campaign"><option value="">Текущая / первая доступная</option></select></div>
@@ -8179,6 +8245,176 @@ function clearAttachedFile() {
     return String((input && input.value) || '').trim();
   }
 
+  function syncSenderScheduleControls() {
+    const enabled = document.getElementById('sender-schedule-enabled');
+    const field = document.getElementById('sender-schedule-at-field');
+    const atInput = document.getElementById('sender-schedule-at');
+    const isEnabled = !!(enabled && enabled.checked);
+    if (field) field.hidden = !isEnabled;
+    if (isEnabled && atInput && !atInput.value) {
+      const next = new Date(Date.now() + 60 * 60 * 1000);
+      next.setMinutes(0, 0, 0);
+      atInput.value = next.toISOString().slice(0, 16);
+    }
+  }
+
+  function getScheduledStartAtPayload() {
+    const enabled = document.getElementById('sender-schedule-enabled');
+    const atInput = document.getElementById('sender-schedule-at');
+    if (!enabled || !enabled.checked || !atInput || !atInput.value) return null;
+    const local = new Date(atInput.value);
+    if (Number.isNaN(local.getTime())) return null;
+    return local.toISOString();
+  }
+
+  function bindSenderScheduleControls() {
+    const enabled = document.getElementById('sender-schedule-enabled');
+    if (!enabled || enabled.dataset.bound === '1') return;
+    enabled.dataset.bound = '1';
+    enabled.addEventListener('change', () => {
+      syncSenderScheduleControls();
+      scheduleUiStateSave();
+    });
+    const atInput = document.getElementById('sender-schedule-at');
+    if (atInput) atInput.addEventListener('change', scheduleUiStateSave);
+    syncSenderScheduleControls();
+  }
+
+  async function cancelScheduledSender() {
+    try {
+      const res = await fetchWithTimeout('/api/sender/scheduled/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withJobPayload({})),
+      }, 15000);
+      const data = await readJsonOrText(res);
+      if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Не удалось отменить запланированную отправку'));
+      safeSetSenderUiState((data.result && data.result.result) || data.result || {});
+      showToast('Запланированная отправка отменена');
+      safeAppendChatMessage('s-chat', 'agent', 'Запланированная отправка отменена.');
+    } catch (err) {
+      showToast('Ошибка отмены');
+      safeAppendChatMessage('s-chat', 'agent', 'Не удалось отменить запланированную отправку: ' + (err && err.message ? err.message : String(err)));
+    }
+  }
+
+  function getSenderSmtpMailboxId() {
+    const select = document.getElementById('sender-smtp-mailbox');
+    return String((select && select.value) || '').trim() || null;
+  }
+
+  function syncSmtpCustomFields() {
+    const provider = document.getElementById('settings-smtp-provider');
+    const custom = document.getElementById('settings-smtp-custom-fields');
+    if (custom) custom.hidden = String((provider && provider.value) || 'custom') !== 'custom';
+  }
+
+  function renderSmtpMailboxOptions(mailboxes, selectedId = '') {
+    const options = ['<option value="">По умолчанию / из настроек</option>'].concat(
+      (mailboxes || []).map((item) => {
+        const label = `${item.email}${item.is_default ? ' (по умолчанию)' : ''}`;
+        const selected = selectedId && selectedId === item.id ? ' selected' : (!selectedId && item.is_default ? ' selected' : '');
+        return `<option value="${escapeHtml(item.id)}"${selected}>${escapeHtml(label)}</option>`;
+      })
+    );
+    const senderSelect = document.getElementById('sender-smtp-mailbox');
+    const settingsSelect = document.getElementById('settings-smtp-mailboxes');
+    if (senderSelect) senderSelect.innerHTML = options.join('');
+    if (settingsSelect) {
+      settingsSelect.innerHTML = mailboxes && mailboxes.length
+        ? mailboxes.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.email)}${item.is_default ? ' (по умолчанию)' : ''}</option>`).join('')
+        : '<option value="">Нет подключённых ящиков</option>';
+    }
+  }
+
+  async function refreshSmtpMailboxesSelects() {
+    try {
+      const res = await fetchWithTimeout('/api/smtp/mailboxes', {}, 15000);
+      const data = await readJsonOrText(res);
+      if (!res.ok) return;
+      const mailboxes = (data.result && data.result.mailboxes) || data.mailboxes || [];
+      renderSmtpMailboxOptions(mailboxes);
+    } catch (e) {}
+  }
+
+  function collectSmtpMailboxPayload() {
+    const provider = document.getElementById('settings-smtp-provider');
+    const senderEmail = document.getElementById('settings-sender-email');
+    const senderPassword = document.getElementById('settings-sender-password');
+    const senderName = document.getElementById('settings-smtp-sender-name');
+    const host = document.getElementById('settings-smtp-host');
+    const port = document.getElementById('settings-smtp-port');
+    const useSsl = document.getElementById('settings-smtp-use-ssl');
+    const useStarttls = document.getElementById('settings-smtp-use-starttls');
+    return {
+      provider: String((provider && provider.value) || 'custom').trim(),
+      email: String((senderEmail && senderEmail.value) || '').trim(),
+      password: String((senderPassword && senderPassword.value) || ''),
+      sender_name: String((senderName && senderName.value) || '').trim(),
+      host: String((host && host.value) || '').trim(),
+      port: port && port.value ? Number(port.value) : null,
+      use_ssl: useSsl ? useSsl.value === 'true' : null,
+      use_starttls: useStarttls ? useStarttls.value === 'true' : null,
+    };
+  }
+
+  async function testSmtpMailboxSettings() {
+    const payload = collectSmtpMailboxPayload();
+    if (!payload.email) {
+      showToast('Укажите email отправителя');
+      return;
+    }
+    try {
+      const res = await fetchWithTimeout('/api/smtp/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }, 30000);
+      const data = await readJsonOrText(res);
+      if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Не удалось проверить SMTP'));
+      showToast('SMTP-подключение успешно проверено');
+    } catch (err) {
+      showToast('Ошибка SMTP: ' + (err && err.message ? err.message : String(err)));
+    }
+  }
+
+  async function saveSmtpMailboxSettings() {
+    const payload = collectSmtpMailboxPayload();
+    if (!payload.email || !payload.password) {
+      showToast('Укажите email и пароль почтового ящика');
+      return;
+    }
+    try {
+      const res = await fetchWithTimeout('/api/smtp/mailboxes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, make_default: true, send_test: true }),
+      }, 45000);
+      const data = await readJsonOrText(res);
+      if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Не удалось сохранить SMTP-ящик'));
+      const mailbox = (data.result && data.result.mailbox) || data.mailbox;
+      const senderPassword = document.getElementById('settings-sender-password');
+      if (senderPassword) senderPassword.value = '';
+      await refreshSmtpMailboxesSelects();
+      showToast('Почтовый ящик сохранён');
+    } catch (err) {
+      showToast('Ошибка сохранения SMTP: ' + (err && err.message ? err.message : String(err)));
+    }
+  }
+
+  function bindSmtpSettingsControls() {
+    const provider = document.getElementById('settings-smtp-provider');
+    if (provider && provider.dataset.bound !== '1') {
+      provider.dataset.bound = '1';
+      provider.addEventListener('change', () => {
+        syncSmtpCustomFields();
+        scheduleUiStateSave();
+      });
+    }
+    syncSmtpCustomFields();
+    refreshSmtpMailboxesSelects();
+  }
+
   function normalizeDocumentModeClient(value) {
     const mode = String(value || '').trim();
     return ['kp', 'contract', 'both'].includes(mode) ? mode : 'kp';
@@ -9403,7 +9639,7 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, sender_email: senderEmail, campaign_name: campaignName, work_type: workType })),
+        body: JSON.stringify(withJobPayload({ dry_run: true, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, sender_email: senderEmail, campaign_name: campaignName, work_type: workType, scheduled_start_at: getScheduledStartAtPayload(), smtp_mailbox_id: getSenderSmtpMailboxId() })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Ошибка проверки готовности отправщика'));
@@ -9415,6 +9651,11 @@ function clearAttachedFile() {
           result = finalResult || result;
           safeSetSenderUiState(result);
           maybeAnnounceSenderFlow(result);
+        }
+        if (result.status === 'scheduled') {
+          showToast('Проверка запланирована');
+          safeAppendChatMessage('s-chat', 'agent', humanizeSenderMessage(result.summary_text, 'Проверка запланирована.'));
+          return;
         }
         if (result.status === 'stopped') {
           showToast('Проверка остановлена');
@@ -9486,13 +9727,18 @@ function clearAttachedFile() {
       const res = await fetchWithTimeout('/api/sender/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, sender_email: senderEmail, campaign_name: campaignName, work_type: workType })),
+        body: JSON.stringify(withJobPayload({ dry_run: false, limit, transport, send_mode: sendMode, attachment_mode: attachmentMode, recipient_strategy: recipientStrategy, mail_subject: mailSubject, sender_email: senderEmail, campaign_name: campaignName, work_type: workType, scheduled_start_at: getScheduledStartAtPayload(), smtp_mailbox_id: getSenderSmtpMailboxId() })),
       }, 30000);
       const data = await readJsonOrText(res);
       if (!res.ok) throw new Error(formatApiErrorDetail(data.detail, 'Ошибка реальной отправки'));
         const result = data.result || {};
         safeSetSenderUiState(result);
         maybeAnnounceSenderFlow(result);
+        if (result.status === 'scheduled') {
+          showToast('Отправка запланирована');
+          safeAppendChatMessage('s-chat', 'agent', humanizeSenderMessage(result.summary_text, 'Отправка запланирована.'));
+          return;
+        }
         if (result.status === 'running') {
           const finalResult = await waitForSenderCompletion();
           safeSetSenderUiState(finalResult || {});
@@ -9767,6 +10013,8 @@ function clearAttachedFile() {
     senderPreviewButton.onclick = null;
     senderPreviewButton.addEventListener('click', () => handleSenderPrimaryAction());
   }
+  bindSenderScheduleControls();
+  bindSmtpSettingsControls();
 </script>
 <script src="/public/preview-ui.js?v=6"></script>
 

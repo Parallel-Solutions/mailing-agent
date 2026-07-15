@@ -51,6 +51,13 @@ class SenderRequestValidationTests(unittest.TestCase):
                     "status": "queued",
                     "mode": kwargs.get("dry_run") and "dry_run" or "send",
                 },
+                prime_sender_scheduled_state=lambda *args, **kwargs: {
+                    "status": "scheduled",
+                    "mode": kwargs.get("dry_run") and "dry_run" or "send",
+                    "scheduled_start_at": kwargs.get("scheduled_start_at").isoformat(timespec="seconds")
+                    if kwargs.get("scheduled_start_at")
+                    else None,
+                },
                 start_sender_thread_if_absent=start_sender_thread_if_absent,
                 run_sender_background=lambda **kwargs: None,
                 sender_job_key=lambda job_id: str(job_id or "__legacy__"),
@@ -123,6 +130,21 @@ class SenderRequestValidationTests(unittest.TestCase):
         self.assertEqual(worker_kwargs["sender_email"], "sender@example.com")
         self.assertEqual(worker_kwargs["campaign_name"], "июльская рассылка")
         self.assertEqual(worker_kwargs["work_type"], "custom-work")
+
+    def test_sender_run_rejects_past_scheduled_start_at(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        client, calls = self._client()
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+        with patch("src.web.sender_router.append_audit_event", lambda **kwargs: None):
+            response = client.post(
+                "/api/sender/run",
+                json={"job_id": "job-api", "dry_run": False, "scheduled_start_at": past},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(calls, [])
 
 
 class WorkerRequestValidationTests(unittest.TestCase):

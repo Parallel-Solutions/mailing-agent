@@ -79,6 +79,7 @@ class Settings(BaseSettings):
 
     smtp_sender_email: str = ""
     smtp_sender_password: str = ""
+    smtp_credentials_key: str = ""
     smtp_host: str = ""
     smtp_port: int = 465
     smtp_use_ssl: bool = True

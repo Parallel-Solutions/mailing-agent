@@ -30,9 +30,15 @@
     const recipientStrategySelect = document.getElementById('sender-recipient-strategy');
     const disabledReason = helpers.senderDisabledReason || 'Сначала подготовьте документы.';
     const hasFailedRows = Number(errorRows || 0) > 0;
-    if (transportSelect) transportSelect.disabled = status === 'running';
-    if (sendModeSelect) sendModeSelect.disabled = status === 'running';
-    if (recipientStrategySelect) recipientStrategySelect.disabled = status === 'running';
+    if (transportSelect) transportSelect.disabled = status === 'running' || status === 'scheduled';
+    if (sendModeSelect) sendModeSelect.disabled = status === 'running' || status === 'scheduled';
+    if (recipientStrategySelect) recipientStrategySelect.disabled = status === 'running' || status === 'scheduled';
+    const scheduleEnabled = document.getElementById('sender-schedule-enabled');
+    const scheduleAt = document.getElementById('sender-schedule-at');
+    if (scheduleEnabled) scheduleEnabled.disabled = status === 'running' || status === 'scheduled';
+    if (scheduleAt) scheduleAt.disabled = status === 'running' || status === 'scheduled';
+    const cancelScheduledButton = document.getElementById('s-cancel-scheduled');
+    if (cancelScheduledButton) cancelScheduledButton.hidden = status !== 'scheduled';
     if (!runButton) return;
 
     runButton.dataset.action = 'preview';
@@ -44,6 +50,15 @@
       runButton.dataset.action = 'stop';
       runButton.textContent = mode === 'send' ? 'Остановить отправку' : 'Остановить проверку';
       runButton.className = 'btn-danger';
+      return;
+    }
+
+    if (status === 'scheduled') {
+      runButton.dataset.action = 'scheduled';
+      runButton.textContent = 'Отправка запланирована';
+      runButton.className = 'btn-outline';
+      runButton.disabled = true;
+      runButton.title = 'Дождитесь запланированного времени или отмените отправку.';
       return;
     }
 

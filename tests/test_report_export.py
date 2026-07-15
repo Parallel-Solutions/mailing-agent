@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
+from src.generator.delivery.auto_call_export import build_auto_call_phone_numbers, write_auto_call_csv
 from src.generator.delivery.manager_stats import export_report
+from src.generator.delivery.phone_normalize import collect_normalized_phones, normalize_phone_for_auto_call
 from src.generator.delivery.sender_report import build_sender_delivery_report_xlsx
 from tests.bootstrap import bootstrap_test_runtime
 
@@ -88,6 +90,77 @@ class ReportExportTests(unittest.TestCase):
         path = Path(result["path"])
         self.assertTrue(path.exists())
         self.assertEqual(path.suffix, ".csv")
+
+
+class AutoCallExportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = Path.cwd() / "tmp" / f"test-auto-call-export-{uuid.uuid4().hex}"
+        self.tmpdir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_normalize_phone_for_auto_call(self) -> None:
+        self.assertEqual(normalize_phone_for_auto_call("+7 (343) 939-69-79"), "73439396979")
+        self.assertEqual(normalize_phone_for_auto_call("8-343-939-69-79"), "73439396979")
+        self.assertEqual(normalize_phone_for_auto_call("9156848204"), "79156848204")
+        self.assertIsNone(normalize_phone_for_auto_call(""))
+        self.assertIsNone(normalize_phone_for_auto_call("123"))
+
+    def test_collect_normalized_phones_deduplicates(self) -> None:
+        phones = collect_normalized_phones("73439396979", "8 (343) 939-69-79", "TEL_DOP: 79156848204; 79156848204")
+        self.assertEqual(phones, ["73439396979", "79156848204"])
+
+    def test_write_auto_call_csv(self) -> None:
+        output_path = self.tmpdir / "phones.csv"
+        write_auto_call_csv(output_path, ["73439396979", "79156848204"])
+        self.assertEqual(output_path.read_text(encoding="utf-8-sig").splitlines(), ["phone_number", "73439396979", "79156848204"])
+
+    def test_build_auto_call_phone_numbers_from_rows(self) -> None:
+        rows = [{"TEL_OSN": "73439396979"}, {"TEL_DOP": "79156848204"}]
+        data_path = self.tmpdir / "data.xlsx"
+        data_path.write_bytes(b"stub")
+        with patch("src.generator.delivery.auto_call_export._resolve_sender_data_xlsx_path", return_value=data_path), patch(
+            "src.generator.delivery.auto_call_export.load_rows",
+            return_value=(None, None, rows),
+        ):
+            phones = build_auto_call_phone_numbers("job-call")
+        self.assertEqual(phones, ["73439396979", "79156848204"])
+
+
+class AutoCallReportExportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        bootstrap_test_runtime(reset_db=True)
+        self.tmpdir = Path.cwd() / "tmp" / f"test-auto-call-report-{uuid.uuid4().hex}"
+        self.tmpdir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_auto_call_csv_export(self) -> None:
+        rows = [
+            {"TEL_OSN": "+7 (343) 939-69-79", "TEL_DOP": "8-343-939-69-79"},
+            {"TEL_OSN": "9156848204", "TEL_DOP": ""},
+            {"TEL_OSN": "invalid", "TEL_DOP": ""},
+        ]
+        data_path = self.tmpdir / "data.xlsx"
+        data_path.write_bytes(b"stub")
+        with patch("src.generator.delivery.auto_call_export._resolve_sender_data_xlsx_path", return_value=data_path), patch(
+            "src.generator.delivery.auto_call_export.load_rows",
+            return_value=(None, None, rows),
+        ), patch("src.generator.delivery.manager_stats._reports_dir", return_value=self.tmpdir / "reports"), patch(
+            "src.generator.delivery.manager_stats.normalize_job_id", return_value="job-call"
+        ):
+            (self.tmpdir / "reports").mkdir(parents=True, exist_ok=True)
+            result = export_report(
+                "job-call",
+                report_type="auto_call_contacts",
+                fmt="csv",
+                author="tester",
+            )
+        path = Path(result["path"])
+        content = path.read_text(encoding="utf-8-sig")
+        self.assertEqual(content.splitlines(), ["phone_number", "73439396979", "79156848204"])
 
 
 if __name__ == "__main__":

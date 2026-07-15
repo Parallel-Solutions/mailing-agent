@@ -261,3 +261,28 @@ class SendGuardState(Base):
     pause_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SmtpMailbox(Base):
+    __tablename__ = "smtp_mailboxes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="custom")
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    sender_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False, default=587)
+    use_ssl: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    use_starttls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("idx_smtp_mailboxes_owner", "owner_username"),
+        Index("idx_smtp_mailboxes_owner_default", "owner_username", "is_default"),
+    )

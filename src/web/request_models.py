@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -115,11 +116,35 @@ class SenderRunRequest(LimitRequest):
     sender_email: str | None = None
     work_type: str | None = None
     campaign_name: str | None = None
+    scheduled_start_at: datetime | None = None
+    smtp_mailbox_id: str | None = None
 
-    @field_validator("transport", "send_mode", "attachment_mode", "recipient_strategy", "mail_subject", "sender_email", "work_type", "campaign_name", mode="before")
+    @field_validator("transport", "send_mode", "attachment_mode", "recipient_strategy", "mail_subject", "sender_email", "work_type", "campaign_name", "smtp_mailbox_id", mode="before")
     @classmethod
     def _normalize_optional_text(cls, value: Any) -> str | None:
         return _clean_optional_text(value)
+
+    @field_validator("scheduled_start_at", mode="before")
+    @classmethod
+    def _normalize_scheduled_start_at(cls, value: Any) -> datetime | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            normalized = text.replace("Z", "+00:00")
+            try:
+                dt = datetime.fromisoformat(normalized)
+            except ValueError as exc:
+                raise ValueError("must be a valid ISO datetime") from exc
+        else:
+            raise ValueError("must be a datetime string")
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
 
 
 class WorkerStopRequest(ApiRequest):

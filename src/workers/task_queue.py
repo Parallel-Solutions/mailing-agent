@@ -78,6 +78,7 @@ def enqueue_task(
     idempotency_key: str | None = None,
     max_workers: int = 0,
     user_max_workers: int = 0,
+    available_at: datetime | None = None,
 ) -> tuple[dict[str, Any], bool]:
     safe_task_type = str(task_type or "").strip()
     if not safe_task_type:
@@ -136,7 +137,7 @@ def enqueue_task(
                 priority=int(priority),
                 attempt=0,
                 max_attempts=max(1, int(max_attempts)),
-                available_at=_now(),
+                available_at=available_at.astimezone(timezone.utc) if available_at is not None else _now(),
                 idempotency_key=safe_idempotency_key,
                 active_key=active_key,
             )

@@ -941,6 +941,8 @@ def _campaign_status(job_id: str) -> str:
     sender_state = _load_sender_state(job_id)
     status = _safe_text(sender_state.get("status")) or "idle"
     mode = _safe_text(sender_state.get("mode")) or "dry_run"
+    if status == "scheduled":
+        return "scheduled"
     if status == "running":
         return "active"
     if status in {"completed", "stopped", "error"} and mode == "send":
@@ -1176,7 +1178,7 @@ def build_manager_dashboard(filters: StatsFilters, *, refresh: bool = False) -> 
 
 def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
     campaigns: list[dict[str, Any]] = []
-    totals = {"total": 0, "active": 0, "completed": 0, "draft": 0}
+    totals = {"total": 0, "active": 0, "completed": 0, "draft": 0, "scheduled": 0}
     delivery_rates: list[float] = []
     open_rates: list[float] = []
     # Load and filter everything once, then group by job in memory instead of
@@ -1223,7 +1225,12 @@ def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
                 "open_rate": open_rate,
                 "ctr": _pct(counts["clicked"], counts["sent"]),
                 "status": status,
-                "status_label": {"active": "Активна", "completed": "Завершена", "draft": "Черновик"}[status],
+                "status_label": {
+                    "active": "Активна",
+                    "completed": "Завершена",
+                    "draft": "Черновик",
+                    "scheduled": "Запланирована",
+                }[status],
             }
         )
     campaigns.sort(key=lambda item: item.get("period_to") or "", reverse=True)
@@ -1556,6 +1563,11 @@ def list_available_reports() -> list[dict[str, str]]:
             "title": "Проблемные адреса",
             "description": "Список адресов с ошибками доставки, hard/soft bounce и жалобами.",
         },
+        {
+            "id": "auto_call_contacts",
+            "title": "Контакты для обзвона",
+            "description": "CSV со списком телефонов в формате phone_number для автоматического обзвона.",
+        },
     ]
 
 
@@ -1578,7 +1590,15 @@ def export_report(
     options = options or {}
     report_id = uuid.uuid4().hex[:12]
     normalized_fmt = _safe_text(fmt).lower() or "xlsx"
-    if normalized_fmt == "xlsx":
+    if report_type == "auto_call_contacts":
+        if normalized_fmt != "csv":
+            raise ValueError("Контакты для обзвона доступны только в формате CSV.")
+        from src.generator.delivery.auto_call_export import build_auto_call_phone_numbers, write_auto_call_csv
+
+        reports_dir = _reports_dir(job_id)
+        output_path = reports_dir / f"{report_type}_{report_id}.csv"
+        write_auto_call_csv(output_path, build_auto_call_phone_numbers(job_id))
+    elif normalized_fmt == "xlsx":
         output_path = build_sender_delivery_report_xlsx(job_id, refresh=bool(options.get("refresh", True)))
     else:
         filters = StatsFilters(job_ids=(normalize_job_id(job_id),) if normalize_job_id(job_id) else ())

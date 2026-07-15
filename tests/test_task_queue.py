@@ -158,6 +158,24 @@ class DurableTaskQueueTests(unittest.TestCase):
         self.assertEqual(snapshot["total_active"], 2)
         self.assertEqual(snapshot["job_queue_position"], 2)
 
+    def test_future_available_at_is_not_claimed_until_due(self) -> None:
+        future = datetime.now(timezone.utc) + timedelta(hours=2)
+        queued, created = enqueue_task(
+            task_type="sender",
+            job_id="job-scheduled",
+            available_at=future,
+        )
+        self.assertTrue(created)
+        self.assertIsNone(claim_task(worker_id="worker-a", lease_seconds=60))
+
+        with session_scope() as session:
+            row = session.get(BackgroundTask, queued["id"])
+            row.available_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        claimed = claim_task(worker_id="worker-b", lease_seconds=60)
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["id"], queued["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -183,6 +183,23 @@ def create_download_router(
             filename=resolved.meta.filename,
         )
 
+    @router.get("/api/download/auto-call-contacts")
+    def download_auto_call_contacts(job_id: str | None = None, principal: object = Depends(check_auth)):
+        if not str(job_id or "").strip():
+            raise HTTPException(status_code=400, detail="Укажите job_id рассылки.")
+        ensure_job_access(job_id, principal, allow_missing=False)
+        from src.generator.delivery.auto_call_export import build_auto_call_phone_numbers, write_auto_call_csv
+
+        phones = build_auto_call_phone_numbers(job_id)
+        output_path = job_state_dir(job_id) / "auto_call_contacts.csv"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        write_auto_call_csv(output_path, phones)
+        return download_response(
+            output_path,
+            media_type="text/csv; charset=utf-8",
+            filename=f"auto_call_contacts_{job_id}.csv",
+        )
+
     return router
 
 

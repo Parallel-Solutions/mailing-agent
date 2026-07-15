@@ -242,6 +242,8 @@ def compact_sender_status(state: dict) -> dict:
         "campaign_name": state.get("campaign_name", ""),
         "queue_position": state.get("queue_position"),
         "queue_total": state.get("queue_total"),
+        "scheduled_start_at": state.get("scheduled_start_at"),
+        "scheduled_task_id": state.get("scheduled_task_id"),
         "campaign_scope_applied": campaign_scope_applied,
         "campaign_email_sends": (
             _safe_int(campaign_log_totals.get("email_sends")) if campaign_scope_applied else 0
@@ -267,6 +269,8 @@ def run_sender_background(
     require_confirmed_consent: bool = False,
     work_type: str | None = None,
     job_id: str | None,
+    smtp_mailbox_id: str | None = None,
+    owner_username: str | None = None,
 ) -> None:
     try:
         _require("run_sender")(
@@ -281,6 +285,8 @@ def run_sender_background(
             campaign_name=campaign_name,
             require_confirmed_consent=require_confirmed_consent,
             work_type=work_type,
+            smtp_mailbox_id=smtp_mailbox_id,
+            owner_username=owner_username,
             auto_recover=False,
             job_id=job_id,
         )
@@ -428,6 +434,57 @@ def prime_sender_queued_state(
         if position > 0
         else "Задача поставлена в очередь отправки."
     )
+    state["stop_requested"] = False
+    state["stop_requested_at"] = None
+    _require("save_sender_state")(state, job_id)
+    return state
+
+
+def prime_sender_scheduled_state(
+    job_id: str | None,
+    *,
+    scheduled_start_at: datetime,
+    transport: str | None = None,
+    attachment_mode: str | None = None,
+    recipient_strategy: str | None = None,
+    sender_email: str | None = None,
+    campaign_name: str | None = None,
+    dry_run: bool = False,
+    queue_task_id: str | None = None,
+) -> dict:
+    state = _require("load_sender_state")(job_id)
+    stats = _require("collect_excel_stats")(resolve_job_paths(job_id).data_xlsx)
+    total_rows = int(state.get("total_rows") or stats.get("total", 0) or 0)
+    started_at = datetime.now().isoformat(timespec="seconds")
+    scheduled_label = scheduled_start_at.astimezone().strftime("%d.%m.%Y %H:%M")
+    state["status"] = "scheduled"
+    state["mode"] = "dry_run" if dry_run else "send"
+    state["transport"] = transport or state.get("transport") or "smtp"
+    state["attachment_mode"] = attachment_mode or state.get("attachment_mode") or "kp"
+    state["recipient_strategy"] = recipient_strategy or state.get("recipient_strategy") or "all"
+    state["sender_email"] = sender_email or state.get("sender_email") or ""
+    state["campaign_name"] = campaign_name or state.get("campaign_name") or ""
+    state["started_at"] = started_at
+    state["scheduled_start_at"] = scheduled_start_at.isoformat(timespec="seconds")
+    state["scheduled_task_id"] = str(queue_task_id or "").strip()
+    state["completed_at"] = None
+    state["processed_rows"] = 0
+    state["ready_rows"] = 0
+    state["sent_rows"] = int(stats.get("sent", 0))
+    state["error_rows"] = 0
+    state["skipped_rows"] = 0
+    state["warning_rows"] = 0
+    state["handoff_rows"] = 0
+    state["generator_handoff_rows"] = 0
+    state["philology_blocked_rows"] = 0
+    state["autonomous_recovery_rows"] = 0
+    state["rows"] = []
+    state["stats"] = stats
+    state["total_rows"] = total_rows
+    state["remaining_rows"] = total_rows
+    state["queue_position"] = None
+    state["queue_total"] = None
+    state["summary_text"] = f"Рассылка запланирована на {scheduled_label}."
     state["stop_requested"] = False
     state["stop_requested_at"] = None
     _require("save_sender_state")(state, job_id)

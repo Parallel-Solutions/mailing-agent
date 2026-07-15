@@ -165,6 +165,13 @@
       params: {},
       filter: (i) => i.status === 'draft',
     },
+    campaigns_scheduled: {
+      title: 'Запланированные рассылки',
+      source: 'campaigns',
+      columns: DRILLDOWN_CAMPAIGN_COLUMNS,
+      params: {},
+      filter: (i) => i.status === 'scheduled',
+    },
     campaigns_delivery: { title: 'Доставляемость по рассылкам', source: 'campaigns', columns: DRILLDOWN_CAMPAIGN_COLUMNS, params: {} },
     campaigns_open: { title: 'Открываемость по рассылкам', source: 'campaigns', columns: DRILLDOWN_CAMPAIGN_COLUMNS, params: {} },
     // Согласия
@@ -922,6 +929,7 @@
       { title: 'Активные', value: fmt(result.summary?.active), drill: 'campaigns_active' },
       { title: 'Завершённые', value: fmt(result.summary?.completed), drill: 'campaigns_completed' },
       { title: 'Черновики', value: fmt(result.summary?.draft), drill: 'campaigns_draft' },
+      { title: 'Запланированные', value: fmt(result.summary?.scheduled), drill: 'campaigns_scheduled' },
       { title: 'Средняя доставляемость', value: `${result.summary?.avg_delivery_rate ?? 0}%`, drill: 'campaigns_delivery' },
       { title: 'Средняя открываемость', value: `${result.summary?.avg_open_rate ?? 0}%`, drill: 'campaigns_open' },
     ]);
@@ -966,6 +974,7 @@
       <div class="modal-actions">
         <button class="btn-primary" id="campaign-open-analytics" type="button">Открыть аналитику</button>
         <button class="btn-outline" id="campaign-download-report" type="button">Скачать отчёт</button>
+        <button class="btn-outline" id="campaign-export-auto-call" type="button">Выгрузить для обзвона</button>
       </div>
     `;
     qs('campaign-open-analytics')?.addEventListener('click', () => {
@@ -974,6 +983,9 @@
     });
     qs('campaign-download-report')?.addEventListener('click', () => {
       window.location.href = `/api/download/sender-delivery-report?job_id=${encodeURIComponent(jobId)}`;
+    });
+    qs('campaign-export-auto-call')?.addEventListener('click', () => {
+      downloadAutoCallContacts(jobId);
     });
     state.modalParams = { cs: jobId };
     openModal('modal-campaign-summary');
@@ -1337,6 +1349,7 @@
       button.addEventListener('click', () => {
         qs('export-type').value = button.dataset.exportType;
         state.modalParams = { et: button.dataset.exportType || '' };
+        syncExportFormatForReportType();
         openModal('modal-export');
       });
     });
@@ -1709,7 +1722,33 @@
     }
   }
 
+  function syncExportFormatForReportType() {
+    const reportType = qs('export-type')?.value || '';
+    const formatSelect = qs('export-format');
+    if (!formatSelect) return;
+    if (reportType === 'auto_call_contacts') {
+      formatSelect.value = 'csv';
+      Array.from(formatSelect.options).forEach((option) => {
+        option.disabled = option.value !== 'csv';
+      });
+      return;
+    }
+    Array.from(formatSelect.options).forEach((option) => {
+      option.disabled = false;
+    });
+  }
+
+  function downloadAutoCallContacts(jobId) {
+    const resolvedJobId = String(jobId || qs('analytics-campaign')?.value || state.selectedCampaign || '').trim();
+    if (!resolvedJobId) {
+      showAnalyticsEmpty('Выберите рассылку для выгрузки контактов');
+      return;
+    }
+    window.location.href = `/api/download/auto-call-contacts?job_id=${encodeURIComponent(resolvedJobId)}`;
+  }
+
   async function submitExport() {
+    syncExportFormatForReportType();
     const payload = {
       report_type: qs('export-type').value,
       period_from: qs('export-from').value,
@@ -1774,6 +1813,7 @@
         case 'export':
           if (mp.et && qs('export-type')) qs('export-type').value = mp.et;
           state.modalParams = { et: mp.et || '' };
+          syncExportFormatForReportType();
           openModal('modal-export');
           break;
         case 'filters':
@@ -1836,8 +1876,11 @@
     });
     qs('btn-export-report')?.addEventListener('click', () => {
       state.modalParams = {};
+      syncExportFormatForReportType();
       openModal('modal-export');
     });
+    qs('export-type')?.addEventListener('change', syncExportFormatForReportType);
+    qs('btn-export-auto-call')?.addEventListener('click', () => downloadAutoCallContacts());
     ['filter-from', 'filter-to', 'filter-campaign', 'filter-provider'].forEach((id) => {
       qs(id)?.addEventListener('change', () => {
         const key = id.replace('filter-', '');

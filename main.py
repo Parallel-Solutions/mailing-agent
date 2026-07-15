@@ -34,6 +34,7 @@ from src.web.philologist_router import create_philologist_router
 from src.web.public_router import create_public_router
 from src.web.sender_router import create_sender_router
 from src.web.statistics_router import create_statistics_router
+from src.web.smtp_router import create_smtp_router
 from src.web.auth_router import create_auth_router
 from src.web.workers_router import create_workers_router
 from src.web.sender_service import (
@@ -42,6 +43,7 @@ from src.web.sender_service import (
     prime_sender_checking_state,
     prime_sender_running_state,
     prime_sender_queued_state,
+    prime_sender_scheduled_state,
     run_sender_background,
 )
 from fastapi import Cookie, Depends, FastAPI, HTTPException, UploadFile, status
@@ -656,6 +658,7 @@ def _start_sender_thread_if_absent(
     kwargs: dict | None = None,
     name: str | None = None,
     before_start=None,
+    available_at: datetime | None = None,
 ) -> tuple[dict[str, Any], bool]:
     if before_start is not None:
         before_start()
@@ -667,6 +670,7 @@ def _start_sender_thread_if_absent(
         job_id=job_id,
         owner_username=owner_username,
         kwargs=dict(kwargs or {}),
+        available_at=available_at,
     )
     return queue_result, bool(queue_result.get("created"))
 
@@ -1368,6 +1372,7 @@ app.include_router(
         prime_sender_checking_state=prime_sender_checking_state,
         prime_sender_running_state=prime_sender_running_state,
         prime_sender_queued_state=prime_sender_queued_state,
+        prime_sender_scheduled_state=prime_sender_scheduled_state,
         start_sender_thread_if_absent=_start_sender_thread_if_absent,
         run_sender_background=run_sender_background,
         sender_job_key=_sender_job_key,
@@ -1384,6 +1389,12 @@ app.include_router(
         preview_recipients=preview_recipients,
         chat_with_sender=chat_with_sender,
         is_load_test_job=is_load_test_job,
+    )
+)
+
+app.include_router(
+    create_smtp_router(
+        check_auth=check_auth,
     )
 )
 

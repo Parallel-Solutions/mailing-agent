@@ -2628,17 +2628,32 @@ def _send_via_smtp(
     mail_template_path: Path | None = None,
     body_override: str | None = None,
     sender_email: str | None = None,
+    smtp_mailbox_id: str | None = None,
+    owner_username: str | None = None,
+    job_id: str | None = None,
 ) -> str | None:
     if not settings.smtp_allow_real_send:
         raise RuntimeError(
             "Реальная SMTP-отправка запрещена настройкой smtp_allow_real_send. "
             "Сейчас доступен только dry-run режим."
         )
-    if not settings.smtp_sender_email or not settings.smtp_sender_password:
-        raise RuntimeError("Не настроены SMTP-учётные данные отправителя.")
-    if not settings.smtp_host:
-        raise RuntimeError("Не указан SMTP host.")
+    from src.generator.delivery.smtp_mailboxes import (
+        humanize_smtp_error,
+        mark_mailbox_status,
+        resolve_smtp_credentials,
+    )
 
+    try:
+        credentials = resolve_smtp_credentials(
+            mailbox_id=smtp_mailbox_id,
+            sender_email=sender_email,
+            owner_username=owner_username,
+            job_id=job_id,
+        )
+    except Exception as exc:
+        raise RuntimeError(_safe_text(exc) or "Не настроены SMTP-учётные данные отправителя.") from exc
+
+    effective_sender_email = sender_email or credentials.email
     message = _build_message(
         row,
         recipient,
@@ -2646,22 +2661,31 @@ def _send_via_smtp(
         subject,
         mail_template_path=mail_template_path,
         body_override=body_override,
-        sender_email=sender_email,
+        sender_email=effective_sender_email,
     )
 
-    if settings.smtp_use_ssl:
-        with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
-            server.login(settings.smtp_sender_email, settings.smtp_sender_password)
-            server.send_message(message)
-        return _save_sent_copy(message)
-
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as server:
-        server.ehlo()
-        if settings.smtp_use_starttls:
-            server.starttls()
-            server.ehlo()
-        server.login(settings.smtp_sender_email, settings.smtp_sender_password)
-        server.send_message(message)
+    try:
+        if credentials.use_ssl:
+            with smtplib.SMTP_SSL(credentials.host, credentials.port, timeout=30) as server:
+                server.login(credentials.email, credentials.password)
+                server.send_message(message)
+        else:
+            with smtplib.SMTP(credentials.host, credentials.port, timeout=30) as server:
+                server.ehlo()
+                if credentials.use_starttls:
+                    server.starttls()
+                    server.ehlo()
+                server.login(credentials.email, credentials.password)
+                server.send_message(message)
+    except smtplib.SMTPAuthenticationError as exc:
+        mark_mailbox_status(
+            credentials.mailbox_id,
+            status="auth_failed",
+            last_error=humanize_smtp_error(exc),
+        )
+        raise RuntimeError(humanize_smtp_error(exc)) from exc
+    except smtplib.SMTPException as exc:
+        raise RuntimeError(humanize_smtp_error(exc)) from exc
     return _save_sent_copy(message)
 
 
@@ -3563,6 +3587,8 @@ def _send_with_transport(
     sender_email: str | None = None,
     wait_between_recipients: Callable[[], bool] | None = None,
     wait_after_rate_limit: Callable[[float, str], bool] | None = None,
+    smtp_mailbox_id: str | None = None,
+    owner_username: str | None = None,
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     sent_recipients: list[str] = []
@@ -3734,6 +3760,9 @@ def _send_with_transport(
                     mail_template_path=mail_template_path,
                     body_override=body_override,
                     sender_email=sender_email,
+                    smtp_mailbox_id=smtp_mailbox_id,
+                    owner_username=owner_username,
+                    job_id=job_id,
                 )
         except Exception as exc:
             attempts.append({"recipient": recipient, "status": "error", "error": _safe_text(exc) or f"{transport} error"})
@@ -4019,6 +4048,8 @@ def run_sender(
     recipient_strategy: str | None = None,
     job_id: str | None = None,
     preserve_sender_state: bool = False,
+    smtp_mailbox_id: str | None = None,
+    owner_username: str | None = None,
     _sender_lock_acquired: bool = False,
 ) -> dict[str, Any]:
     if not _sender_lock_acquired:
@@ -4040,6 +4071,8 @@ def run_sender(
                 recipient_strategy=recipient_strategy,
                 job_id=job_id,
                 preserve_sender_state=preserve_sender_state,
+                smtp_mailbox_id=smtp_mailbox_id,
+                owner_username=owner_username,
                 _sender_lock_acquired=True,
             )
 
@@ -4076,6 +4109,8 @@ def run_sender(
     effective_subject_template = _safe_text(subject_template)
     effective_sender_email = _safe_text(sender_email or state.get("sender_email"))
     effective_campaign_name = _safe_text(campaign_name or state.get("campaign_name"))
+    effective_smtp_mailbox_id = _safe_text(smtp_mailbox_id or state.get("smtp_mailbox_id"))
+    effective_owner_username = _safe_text(owner_username or state.get("owner_username"))
     effective_target_recipient = _safe_text(target_recipient or state.get("target_recipient"))
     if effective_work_type != DEFAULT_WORK_TYPE and effective_subject_template == DEFAULT_MAIL_SUBJECT:
         effective_subject_template = ""
@@ -4139,6 +4174,8 @@ def run_sender(
             "subject_template": effective_subject_template,
             "sender_email": effective_sender_email,
             "campaign_name": effective_campaign_name,
+            "smtp_mailbox_id": effective_smtp_mailbox_id,
+            "owner_username": effective_owner_username,
             "target_recipient": effective_target_recipient,
         }
     )
@@ -4672,6 +4709,8 @@ def run_sender(
                             attachment_mode=effective_attachment_mode,
                             sender_email=effective_sender_email,
                             wait_after_rate_limit=mailopost_rate_limit_delay,
+                            smtp_mailbox_id=effective_smtp_mailbox_id,
+                            owner_username=effective_owner_username,
                         )
 
                     if (
@@ -4717,6 +4756,8 @@ def run_sender(
                             sender_email=effective_sender_email,
                             wait_between_recipients=smtp_recipient_delay,
                             wait_after_rate_limit=mailopost_rate_limit_delay,
+                            smtp_mailbox_id=effective_smtp_mailbox_id,
+                            owner_username=effective_owner_username,
                         )
                     send_result = _merge_send_result_with_preflight_attempts(send_result, preflight_attempts)
                     if effective_send_mode == "consent_request":
