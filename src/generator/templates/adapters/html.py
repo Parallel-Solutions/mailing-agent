@@ -95,13 +95,35 @@ class HtmlTemplateAdapter(TemplateAdapter):
         fit_script.string = """
 (() => {
   const fits = (el) => {
-    const p = el.parentElement;
-    return !p || (p.scrollWidth <= p.clientWidth + 1 && p.scrollHeight <= p.clientHeight + 1);
+    return el.scrollWidth <= el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1;
   };
+  for (const box of document.querySelectorAll('[data-adaptive-container]')) {
+    const initial = parseFloat(getComputedStyle(box).fontSize) || 12;
+    const minimum = parseFloat(box.dataset.minFontSize) || Math.max(6, initial * 0.68);
+    let low = minimum;
+    let high = initial;
+    box.style.fontSize = `${high}px`;
+    if (!fits(box)) {
+      for (let index = 0; index < 14; index += 1) {
+        const middle = (low + high) / 2;
+        box.style.fontSize = `${middle}px`;
+        if (fits(box)) low = middle; else high = middle;
+      }
+      box.style.fontSize = `${low}px`;
+    }
+    box.dataset.adaptiveFontSize = parseFloat(box.style.fontSize).toFixed(2);
+  }
   for (const el of document.querySelectorAll('[data-adaptive-field]')) {
+    if (el.closest('[data-adaptive-container]')) {
+      el.dataset.adaptiveFontSize = parseFloat(getComputedStyle(el).fontSize).toFixed(2);
+      continue;
+    }
     const initial = parseFloat(getComputedStyle(el).fontSize) || 12;
     let size = initial;
-    while (!fits(el) && size > 6) { size -= 0.2; el.style.fontSize = `${size}px`; }
+    const parent = el.parentElement;
+    while (parent && (parent.scrollWidth > parent.clientWidth + 1 || parent.scrollHeight > parent.clientHeight + 1) && size > 6) {
+      size -= 0.2; el.style.fontSize = `${size}px`;
+    }
     el.dataset.adaptiveFontSize = size.toFixed(1);
   }
 })();

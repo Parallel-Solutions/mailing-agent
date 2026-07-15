@@ -111,6 +111,9 @@ def _pdf_layout_issues(pdf_path: Path) -> list[dict[str, Any]]:
         return [{"type": "layout_check_failed", "message": f"{type(exc).__name__}: {exc}"}]
     return issues
 
+# The active checker uses the permissively licensed PDFium engine.
+from .pdf_layout_check import pdf_layout_issues as _pdf_layout_issues
+
 def certify_template(store: AdaptiveTemplateStore, package: TemplatePackage, *, activate: bool = False) -> CertificationResult:
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     checks: list[dict[str, Any]] = [

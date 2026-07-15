@@ -859,38 +859,11 @@ def _compile_pdf_semantic(
     output_path: Path,
     reference_context: dict[str, Any],
 ) -> AutoCompileResult:
-    """Compile an ordinary PDF into an adaptive, style-preserving HTML template.
+    """Compile an ordinary PDF to immutable artwork plus adaptive text layers."""
 
-    AcroForm PDFs are handled by ``PdfAcroFormAdapter`` before automatic
-    compilation reaches this function. An ordinary PDF is therefore treated
-    as a visual source from which we recover a semantic document layout.
-    """
+    from .pdf_overlay_compiler import build_pdf_overlay_html
 
-    fitz = _fitz_module()
-    try:
-        with fitz.open(source_path) as document:
-            regions = _find_pdf_regions(document, reference_context)
-    except Exception as exc:
-        raise TemplateCompileError("Не удалось открыть PDF или прочитать его текстовый слой") from exc
-    if not regions:
-        raise TemplateCompileError(
-            "Сервис не смог безопасно определить изменяемые данные PDF. "
-            "Загрузите таблицу с данными до шаблона или PDF с примером получателя."
-        )
-
-    field_counts: dict[str, int] = {}
-    strategies: dict[str, int] = {}
-    for item in regions:
-        field_counts[item.field_name] = field_counts.get(item.field_name, 0) + 1
-        strategies[item.strategy] = strategies.get(item.strategy, 0) + 1
-
-    from .pdf_semantic import build_semantic_pdf_html
-
-    html, semantic_report = build_semantic_pdf_html(
-        source_path,
-        reference_context,
-        field_names=sorted(field_counts),
-    )
+    html, overlay_report = build_pdf_overlay_html(source_path, reference_context)
     output_path.write_text(html, encoding="utf-8")
     return AutoCompileResult(
         output_path,
@@ -898,10 +871,10 @@ def _compile_pdf_semantic(
             "mode": "automatic",
             "format": "pdf",
             "compiled_format": "html",
-            "fields": field_counts,
-            "strategies": strategies,
+            "fields": overlay_report["fields"],
+            "strategies": overlay_report["strategies"],
             "reference_context_used": bool(reference_context),
-            "semantic_layout": semantic_report,
+            "visual_overlay": overlay_report,
         },
     )
 
