@@ -2209,7 +2209,25 @@ def generate_documents_for_row(
     if "kp" in requested_kinds and KP_ADAPTIVE_TEMPLATE_ENGINE:
         from src.generator.templates.store import AdaptiveTemplateStore
 
-        use_adaptive_kp = AdaptiveTemplateStore(templates_dir or TEMPLATES_DIR, "kp").load_active() is not None
+        adaptive_store = AdaptiveTemplateStore(templates_dir or TEMPLATES_DIR, "kp")
+        adaptive_state = adaptive_store.activation_state()
+        if adaptive_state["latest_template_id"]:
+            if not adaptive_state["ready"]:
+                certification_status = adaptive_state["certification_status"]
+                certification_error = adaptive_state["certification_error"]
+                message = (
+                    "Последний загруженный шаблон КП не активирован: "
+                    f"статус проверки {certification_status}."
+                )
+                if certification_error:
+                    message += f" {certification_error}"
+                raise ValueError(message)
+            use_adaptive_kp = True
+        elif templates_dir is not None and kp_template_path.exists():
+            raise ValueError(
+                "Загруженный шаблон КП не подготовлен адаптивным движком. "
+                "Повторно загрузите шаблон и дождитесь завершения проверки."
+            )
 
     if "kp" in requested_kinds and use_adaptive_kp:
         from src.generator.templates.renderer import render_active_template

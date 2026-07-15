@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from src.infra.db import session_scope
@@ -109,20 +109,36 @@ def enqueue_task(
         return TaskRecord.from_model(row), True
 
 
-def claim_next_task(*, task_type: str, worker_id: str, lease_seconds: int) -> TaskRecord | None:
+def claim_next_task(
+    *,
+    task_type: str | None,
+    worker_id: str,
+    lease_seconds: int,
+    task_type_prefixes: tuple[str, ...] = (),
+) -> TaskRecord | None:
     safe_type = str(task_type or "").strip()
+    safe_prefixes = tuple(
+        prefix for item in task_type_prefixes if (prefix := str(item or "").strip())
+    )
     safe_worker = str(worker_id or "").strip()
-    if not safe_type or not safe_worker:
+    if (not safe_type and not safe_prefixes) or not safe_worker:
         return None
     lease = max(30, int(lease_seconds or 60))
     now = _now()
     expires = now + timedelta(seconds=lease)
 
     with session_scope() as session:
+        type_filters = []
+        if safe_type:
+            type_filters.append(BackgroundTask.task_type == safe_type)
+        type_filters.extend(
+            BackgroundTask.task_type.startswith(prefix, autoescape=True)
+            for prefix in safe_prefixes
+        )
         row = session.execute(
             select(BackgroundTask)
             .where(
-                BackgroundTask.task_type == safe_type,
+                or_(*type_filters),
                 BackgroundTask.status == "queued",
             )
             .order_by(BackgroundTask.priority.desc(), BackgroundTask.created_at.asc())
@@ -300,14 +316,30 @@ def get_queue_snapshot(*, task_type: str = "sender", job_id: str | None = None) 
     }
 
 
-def reconcile_expired_leases(*, task_type: str = "sender") -> int:
+def reconcile_expired_leases(
+    *,
+    task_type: str | None = "sender",
+    task_type_prefixes: tuple[str, ...] = (),
+) -> int:
     safe_type = str(task_type or "").strip()
+    safe_prefixes = tuple(
+        prefix for item in task_type_prefixes if (prefix := str(item or "").strip())
+    )
+    if not safe_type and not safe_prefixes:
+        return 0
     now = _now()
     count = 0
     with session_scope() as session:
+        type_filters = []
+        if safe_type:
+            type_filters.append(BackgroundTask.task_type == safe_type)
+        type_filters.extend(
+            BackgroundTask.task_type.startswith(prefix, autoescape=True)
+            for prefix in safe_prefixes
+        )
         rows = session.execute(
             select(BackgroundTask).where(
-                BackgroundTask.task_type == safe_type,
+                or_(*type_filters),
                 BackgroundTask.status == "running",
                 BackgroundTask.lease_expires_at.is_not(None),
                 BackgroundTask.lease_expires_at < now,

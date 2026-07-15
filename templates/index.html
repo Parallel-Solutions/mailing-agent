@@ -6276,7 +6276,8 @@
         const payload = data.result || data;
         const version = (payload.versions || []).find(item => item.template_id === templateId);
         const status = version && version.certification ? version.certification.status : 'pending';
-        if (status === 'passed') {
+        const isActive = Boolean(version && version.active && payload.active_template_id === templateId);
+        if (status === 'passed' && isActive) {
           btn.innerHTML = '<span class="file-icon">✓</span> ' + (filename || label);
           btn.classList.add('uploaded');
           showToast(label + ' проверен и готов к работе');
