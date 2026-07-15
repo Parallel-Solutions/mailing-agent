@@ -17,6 +17,13 @@ _FIELD_TOKEN_RE = re.compile(r"(?<![A-Z0-9_])([A-Z][A-Z0-9_]{2,})(?![A-Z0-9_])")
 _OUTGOING_NUMBER_RE = re.compile(r"(?P<number>\d{1,8})\s*[-–—]?\s*\u041a\u041f", re.IGNORECASE)
 _OUTGOING_DATE_RE = re.compile(r"\u041a\u041f\s+\u043e\u0442\s+(?P<date>\d{2}\.\d{2}\.\d{4})", re.IGNORECASE)
 _BROKEN_WORD_FIELD_RE = re.compile(r"Error!\s+Unknown document(?: property name\.)?", re.IGNORECASE)
+_GREETING_RE = re.compile(
+    "\u0423\u0432\u0430\u0436\u0430\u0435\u043c(?:\u044b\u0439|\u0430\u044f)"
+    r"\s*\(\u0430\u044f\)\s+HEAD_FIO\s*!",
+    re.IGNORECASE,
+)
+
+
 
 _TOKEN_FIELDS = {
     "ADM": "ADM_NAME_1",
@@ -151,11 +158,21 @@ def _find_candidates(text: str, context: dict[str, Any]) -> tuple[list[_Candidat
     ):
         add(match.start(), match.end(), ("MUN_R_SCOPE_FRAGMENT",), "{{MUN_R_SCOPE_FRAGMENT}}", "legacy_district_scope", 1.0)
 
+    for match in _GREETING_RE.finditer(normalized):
+        add(
+            match.start(),
+            match.end(),
+            ("HEAD_GREETING",),
+            "{{HEAD_GREETING}}",
+            "legacy_greeting_marker",
+            1.02,
+        )
+
     number_matches = list(_OUTGOING_NUMBER_RE.finditer(normalized))
     date_matches = list(_OUTGOING_DATE_RE.finditer(normalized))
     for number_match in number_matches:
         date_match = next(
-            (item for item in date_matches if number_match.end() <= item.start() <= number_match.end() + 250),
+            (item for item in date_matches if number_match.start() <= item.start() <= number_match.end() + 250),
             None,
         )
         if date_match is None:
@@ -174,12 +191,13 @@ def _find_candidates(text: str, context: dict[str, Any]) -> tuple[list[_Candidat
             "№ {{OUTGOING_NUMBER}}-КП от {{DATE}}", "combined_outgoing_line", 1.01,
         )
 
-    for match in _OUTGOING_NUMBER_RE.finditer(normalized):
-        start, end = match.span("number")
-        add(start, end, ("OUTGOING_NUMBER",), "{{OUTGOING_NUMBER}}", "outgoing_number", 1.0)
-    for match in _OUTGOING_DATE_RE.finditer(normalized):
-        start, end = match.span("date")
-        add(start, end, ("DATE",), "{{DATE}}", "outgoing_date", 1.0)
+    if not any(item.strategy == "combined_outgoing_line" for item in candidates):
+        for match in _OUTGOING_NUMBER_RE.finditer(normalized):
+            start, end = match.span("number")
+            add(start, end, ("OUTGOING_NUMBER",), "{{OUTGOING_NUMBER}}", "outgoing_number", 1.0)
+        for match in _OUTGOING_DATE_RE.finditer(normalized):
+            start, end = match.span("date")
+            add(start, end, ("DATE",), "{{DATE}}", "outgoing_date", 1.0)
 
     for match in _BROKEN_WORD_FIELD_RE.finditer(normalized):
         cleanup_ranges.append(_to_source_span(match.start(), match.end(), mapping))
@@ -242,6 +260,27 @@ def _find_candidates(text: str, context: dict[str, Any]) -> tuple[list[_Candidat
     return grouped, cleanup_ranges
 
 
+def _effective_font_size(reported_size: float, object_height: float, char_height: float) -> float:
+    """Recover the visual font size when PDFium reports a transformed size.
+
+    Some PDF producers encode text with a one-point font and scale the text
+    matrix afterwards. PDFium then reports 1 from get_font_size() although the
+    visible glyphs are ten or fourteen points high. In that case the glyph
+    geometry is the reliable source. Arial-like fonts occupy roughly 74
+    percent of their em square, hence the 1.35 conversion factor.
+    """
+
+    safe_reported = max(0.0, float(reported_size or 0.0))
+    object_height = max(0.0, float(object_height or 0.0))
+    glyph_height = object_height or max(0.0, float(char_height or 0.0)) * 0.75
+    geometry_size = glyph_height * 1.35
+    if glyph_height > 0 and (
+        safe_reported < 4.0 or safe_reported < glyph_height * 0.55
+    ):
+        return max(5.5, geometry_size)
+    return max(5.5, safe_reported or geometry_size)
+
+
 def _object_style(page: Any, raw: Any, first_box: tuple[float, float, float, float]) -> tuple[str, float, int, str]:
     left, bottom, right, top = first_box
     best: tuple[float, Any] | None = None
@@ -268,9 +307,15 @@ def _object_style(page: Any, raw: Any, first_box: tuple[float, float, float, flo
     except Exception:
         family, weight = "Arial", 400
     try:
-        size = float(obj.get_font_size() or (top - bottom))
+        obj_left, obj_bottom, obj_right, obj_top = obj.get_bounds()
+        object_height = max(0.0, float(obj_top) - float(obj_bottom))
     except Exception:
-        size = max(7.0, top - bottom)
+        object_height = 0.0
+    try:
+        reported_size = float(obj.get_font_size() or 0.0)
+    except Exception:
+        reported_size = 0.0
+    size = _effective_font_size(reported_size, object_height, top - bottom)
     red, green, blue, alpha = c_uint(0), c_uint(0), c_uint(0), c_uint(255)
     color = "#000000"
     try:
@@ -278,7 +323,7 @@ def _object_style(page: Any, raw: Any, first_box: tuple[float, float, float, flo
             color = f"#{red.value:02x}{green.value:02x}{blue.value:02x}"
     except Exception:
         pass
-    return family, max(5.5, size), weight, color
+    return family, size, weight, color
 
 
 def _line_groups(boxes: list[tuple[float, float, float, float]], font_size: float) -> list[list[tuple[float, float, float, float]]]:

@@ -290,6 +290,31 @@ def build_short_fio(fio: str) -> str:
     return f"{''.join(initials)} {surname}"
 
 
+
+def build_head_greeting(fio: object) -> str:
+    parts = [part for part in str(fio or "").split() if part]
+    if not parts:
+        return ""
+    if len(parts) >= 3:
+        name = f"{parts[1]} {parts[2]}"
+        patronymic = parts[2].lower()
+    else:
+        name = " ".join(parts)
+        patronymic = parts[-1].lower()
+
+    female_suffixes = (
+        "\u0432\u043d\u0430",
+        "\u0447\u043d\u0430",
+        "\u0448\u043d\u0430",
+    )
+    if patronymic.endswith(female_suffixes):
+        prefix = "\u0423\u0432\u0430\u0436\u0430\u0435\u043c\u0430\u044f"
+    elif patronymic.endswith(("\u0438\u0447", "\u043e\u0433\u043b\u044b")):
+        prefix = "\u0423\u0432\u0430\u0436\u0430\u0435\u043c\u044b\u0439"
+    else:
+        prefix = "\u0423\u0432\u0430\u0436\u0430\u0435\u043c\u044b\u0439(\u0430\u044f)"
+    return f"{prefix} {name}!"
+
 def build_population_with_unit(value) -> str:
     raw = str(value).strip()
     if not raw:
@@ -365,6 +390,7 @@ def build_document_context(row: dict, outgoing_number: int, work_type: str | Non
         "REQUISITES_OKTMO": oktmo,
         "REQUISITES": build_requisites(row),
         "HEAD_FIO_SHORT": build_short_fio(row.get("HEAD_FIO", "")),
+        "HEAD_GREETING": build_head_greeting(row.get("HEAD_FIO")),
         "OUTGOING_NUMBER": outgoing_number,
         "CONTRACT_NUMBER": outgoing_number,
         "DATE": datetime.now().strftime("%d.%m.%Y"),
