@@ -9,7 +9,8 @@ import sys
 import time
 
 from src.bitrix_board.config import load_config
-from src.bitrix_board.dispatcher import run_dispatcher
+from src.bitrix_board.dispatcher import BoardDispatcher, run_dispatcher
+from src.bitrix_board.bitrix_client import create_bitrix_client
 from src.bitrix_board.store import BoardStore
 
 
@@ -47,9 +48,10 @@ def _print_status() -> int:
             if not tasks:
                 print("  (empty)")
             for task in tasks:
+                cursor_agent = (task.report_json or {}).get("cursor_agent_id") or "-"
                 print(
                     f"  - [{task.task_id}] {task.title} | state={task.state.value}"
-                    f" | branch={task.branch or '-'} | pid={task.agent_pid or '-'}"
+                    f" | branch={task.branch or '-'} | agent={cursor_agent}"
                 )
             print()
         return 0
@@ -123,6 +125,62 @@ def _interactive_params() -> tuple[str, str, str, int]:
     return project, source_stage, target_stage, concurrency
 
 
+def _print_agents() -> int:
+    config = load_config()
+    store = BoardStore(config.db_path)
+    try:
+        run = store.get_latest_run()
+        if run is None:
+            print("No board runs found.")
+            return 0
+        print(f"Run #{run.id} — Cursor agents")
+        print("Open Cursor → Agents to inspect cloud/local SDK agents by ID.\n")
+        for task in store.list_tasks(run.id):
+            report = task.report_json or {}
+            meta_path = report.get("cursor_meta_path")
+            agent_id = report.get("cursor_agent_id") or "-"
+            ui_title = task.title
+            status = "-"
+            if meta_path:
+                from pathlib import Path
+                from src.bitrix_board.agent_runner import _read_meta
+
+                meta = _read_meta(Path(meta_path))
+                agent_id = meta.get("cursor_agent_id") or agent_id
+                ui_title = meta.get("ui_title") or ui_title
+                status = meta.get("status") or "-"
+            print(f"[{task.task_id}] {ui_title}")
+            print(f"  state: {task.state.value} | sdk: {status} | agent_id: {agent_id}")
+            if meta_path:
+                print(f"  meta: {meta_path}")
+            if task.log_path:
+                print(f"  log:  {task.log_path}")
+            print()
+        return 0
+    finally:
+        store.close()
+
+
+def _submit_answer(task_id: int, answer_text: str) -> int:
+    config = load_config()
+    store = BoardStore(config.db_path)
+    bitrix = create_bitrix_client(config)
+    try:
+        run = store.get_latest_run()
+        if run is None:
+            print("No board runs found.", file=sys.stderr)
+            return 1
+        dispatcher = BoardDispatcher(config, store, bitrix)
+        if not dispatcher.submit_answer(run.id, task_id, answer_text):
+            print(f"Could not submit answer for task {task_id}.", file=sys.stderr)
+            return 1
+        print(f"Answer recorded for task {task_id}.")
+        return 0
+    finally:
+        bitrix.close()
+        store.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Bitrix24 board dispatcher")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -138,14 +196,40 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("stop", help="Request graceful stop")
     subparsers.add_parser("resume", help="Resume the latest run")
 
+    answer_parser = subparsers.add_parser("answer", help="Submit an answer for a waiting task")
+    answer_parser.add_argument("--task-id", type=int, required=True)
+    answer_parser.add_argument("--text", required=True)
+
+    subparsers.add_parser("agents", help="List Cursor SDK agent IDs for the current run")
+
+    launch_parser = subparsers.add_parser(
+        "launch-chats",
+        help="Stop the dispatcher and open visible Cursor chats for active tasks",
+    )
+    launch_parser.add_argument("--task-id", action="append", type=int, dest="task_ids")
+    launch_parser.add_argument("--limit", type=int, default=3)
+
     args = parser.parse_args(argv)
 
     if args.command == "status":
         return _print_status()
+    if args.command == "agents":
+        return _print_agents()
+    if args.command == "launch-chats":
+        from src.bitrix_board.ui_launcher import launch_ui_chats
+
+        try:
+            launch_ui_chats(task_ids=args.task_ids, limit=args.limit)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return 0
     if args.command == "stop":
         return _request_stop()
     if args.command == "resume":
         return _resume_run()
+    if args.command == "answer":
+        return _submit_answer(args.task_id, args.text)
 
     project = args.project
     source_stage = args.source_stage

@@ -34,6 +34,12 @@ class BoardConfig:
     default_group_id: int | None
     repo_group_map: dict[str, int]
     dispatcher_pid_path: Path
+    plan_stage_name: str | None
+    agent_backend: str
+    agent_runtime: str
+    cursor_api_key: str | None
+    agent_model: str
+    cloud_repo_url: str | None
 
 
 def _parse_webhook_base(raw: str) -> WebhookConfig:
@@ -122,6 +128,34 @@ def _resolve_agent_bin() -> str:
     return "agent"
 
 
+def _detect_cloud_repo_url(repo_root: Path) -> str | None:
+    explicit = os.environ.get("BITRIX_BOARD_CLOUD_REPO_URL", "").strip()
+    if explicit:
+        return explicit
+    result = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    if raw.startswith("git@"):
+        host, path = raw.split(":", 1)
+        host = host.removeprefix("git@")
+        url = f"https://{host}/{path}"
+        if url.endswith(".git"):
+            return url[:-4]
+        return url
+    if raw.endswith(".git"):
+        return raw[:-4]
+    return raw
+
+
 def load_config() -> BoardConfig:
     repo_root = _detect_repo_root()
     load_dotenv(repo_root / ".env.bitrix-board", override=False)
@@ -153,4 +187,10 @@ def load_config() -> BoardConfig:
         default_group_id=default_group_id,
         repo_group_map=_load_repo_group_map(),
         dispatcher_pid_path=repo_root / ".bitrix-board" / "dispatcher.pid",
+        plan_stage_name=os.environ.get("BITRIX_PLAN_STAGE_NAME", "").strip() or None,
+        agent_backend=os.environ.get("BITRIX_BOARD_AGENT_BACKEND", "sdk").strip().lower() or "sdk",
+        agent_runtime=os.environ.get("BITRIX_BOARD_AGENT_RUNTIME", "local").strip().lower() or "local",
+        cursor_api_key=os.environ.get("CURSOR_API_KEY", "").strip() or None,
+        agent_model=os.environ.get("BITRIX_BOARD_AGENT_MODEL", "composer-2.5").strip() or "composer-2.5",
+        cloud_repo_url=_detect_cloud_repo_url(repo_root),
     )

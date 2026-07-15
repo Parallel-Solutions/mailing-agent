@@ -1,8 +1,8 @@
 #Requires -Version 5.1
 param(
-    [string]$Project = "",
-    [string]$SourceStage = "",
-    [string]$TargetStage = "",
+    [string]$Project = "mailing-agent",
+    [string]$SourceStage = "готово для обработки ии",
+    [string]$TargetStage = "прошел ревью",
     [int]$Concurrency = 3
 )
 

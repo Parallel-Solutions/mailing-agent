@@ -119,7 +119,7 @@ class SmtpMailboxApiTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(
             create_smtp_router(
-                check_auth=lambda: Principal(username=self.owner, is_admin=False),
+                check_auth=lambda: Principal(username=self.owner, tenant_id="tenant-a", role="user"),
             )
         )
         return TestClient(app)

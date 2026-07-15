@@ -31,6 +31,12 @@ def _config_for(tmp: Path) -> BoardConfig:
         default_group_id=None,
         repo_group_map={},
         dispatcher_pid_path=tmp / "dispatcher.pid",
+        plan_stage_name="план сформирован",
+        agent_backend="sdk",
+        agent_runtime="local",
+        cursor_api_key=None,
+        agent_model="composer-2.5",
+        cloud_repo_url=None,
     )
 
 

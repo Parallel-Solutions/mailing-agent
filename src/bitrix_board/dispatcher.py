@@ -5,12 +5,13 @@ import logging
 import os
 import signal
 import time
+from pathlib import Path
 from typing import Any
 
 from src.bitrix_board.agent_runner import (
     AI_QUESTION_PREFIX,
     format_questions_message,
-    is_process_alive,
+    is_agent_running,
     load_agent_result,
     spawn_agent,
 )
@@ -31,7 +32,7 @@ from src.bitrix_board.prompts import (
     build_plan_prompt,
     build_review_prompt,
 )
-from src.bitrix_board.states import TaskState
+from src.bitrix_board.states import ACTIVE_SLOT_STATES, TaskState
 from src.bitrix_board.store import BoardRun, BoardStore, BoardTask
 from src.bitrix_board.worktree import (
     ensure_worktree,
@@ -52,6 +53,43 @@ class BoardDispatcher:
         self.bitrix = bitrix
         self._last_poll_at = 0.0
         self._stop = False
+
+    def _print_run_summary(self, run_id: int) -> None:
+        summary = self.store.status_summary(run_id)
+        tasks = self.store.list_tasks(run_id)
+        lines = [
+            "=== Сводка обработки очереди ===",
+            f"Завершено: {len(summary['completed'])}",
+            f"Ожидает ответа: {len(summary['waiting_for_answer'])}",
+            f"Заблокировано: {len(summary['blocked'])}",
+            f"Ошибки: {len(summary['failed'])}",
+            "",
+            "Ветки:",
+        ]
+        for task in tasks:
+            lines.append(f"- №{task.task_id}: {task.branch or '-'} ({task.state.value})")
+        review_stage_tasks = [
+            task for task in tasks if task.state == TaskState.COMPLETED
+        ]
+        lines.extend(["", f"В колонке «{self.store.get_run(run_id).target_stage}»:"])
+        if review_stage_tasks:
+            for task in review_stage_tasks:
+                lines.append(f"- №{task.task_id}: {task.title}")
+        else:
+            lines.append("  (пока нет)")
+        message = "\n".join(lines)
+        logger.info(message)
+        print(message, flush=True)
+
+    def _state_path(self, task: BoardTask) -> Path | None:
+        if not task.state_path:
+            return None
+        return Path(task.state_path)
+
+    def _worktree_path(self, task: BoardTask) -> Path | None:
+        if not task.worktree_path:
+            return None
+        return Path(task.worktree_path)
 
     def request_stop(self) -> None:
         self._stop = True
@@ -101,6 +139,7 @@ class BoardDispatcher:
                 tasks = self.store.list_tasks(run_id)
                 if all(task.state in {TaskState.COMPLETED, TaskState.BLOCKED, TaskState.FAILED} for task in tasks):
                     logger.info("Run %s completed", run_id)
+                    self._print_run_summary(run_id)
                     break
 
                 time.sleep(2)
@@ -113,6 +152,10 @@ class BoardDispatcher:
         run = self.store.get_run(run_id)
         if run.stop_requested:
             return
+
+        for task in self.store.list_tasks(run_id):
+            if task.state in ACTIVE_SLOT_STATES:
+                self._advance_task(run, task)
 
         while True:
             active = self.store.count_active_slots(run_id)
@@ -130,7 +173,7 @@ class BoardDispatcher:
             self._advance_task(run, task)
 
     def _advance_task(self, run: BoardRun, task: BoardTask) -> None:
-        if task.agent_pid and is_process_alive(task.agent_pid):
+        if self._is_task_agent_running(task):
             return
 
         if task.state == TaskState.QUEUED:
@@ -189,6 +232,20 @@ class BoardDispatcher:
                 agent_pid=None,
             )
 
+    def _is_task_agent_running(self, task: BoardTask) -> bool:
+        return is_agent_running(task.report_json, task.log_path, task.agent_pid)
+
+    def _agent_report_patch(self, task: BoardTask, spawned, *, phase: str) -> dict[str, Any]:
+        patch = {
+            **(task.report_json or {}),
+            "_agent_phase": phase,
+        }
+        if spawned.meta_path:
+            patch["cursor_meta_path"] = str(spawned.meta_path)
+        if spawned.cursor_agent_id:
+            patch["cursor_agent_id"] = spawned.cursor_agent_id
+        return patch
+
     def _spawn_planning(self, run: BoardRun, task: BoardTask) -> None:
         if not task.worktree_path:
             self.store.update_task(task.id, state=TaskState.PREPARING, agent_pid=None)
@@ -211,16 +268,18 @@ class BoardDispatcher:
         )
         spawned = spawn_agent(
             self.config,
-            worktree=task.worktree_path,  # type: ignore[arg-type]
+            worktree=self._worktree_path(task),  # type: ignore[arg-type]
             prompt=prompt,
             phase="planning",
             mode="plan",
+            task_id=task.task_id,
+            title=task.title,
         )
         self.store.update_task(
             task.id,
             agent_pid=spawned.pid,
             log_path=str(spawned.log_path),
-            report_json={**(task.report_json or {}), "_agent_phase": "planning"},
+            report_json=self._agent_report_patch(task, spawned, phase="planning"),
         )
 
     def _handle_planning_result(self, run: BoardRun, task: BoardTask, result) -> None:
@@ -234,7 +293,7 @@ class BoardDispatcher:
         }
         if task.state_path:
             save_task_state(
-                task.state_path,  # type: ignore[arg-type]
+                self._state_path(task),  # type: ignore[arg-type]
                 {"phase": "planning", "plan": plan_payload, "parsed": parsed},
             )
 
@@ -269,6 +328,48 @@ class BoardDispatcher:
             questions_json=None,
             agent_pid=None,
         )
+        if self.config.plan_stage_name:
+            try:
+                move_task_to_stage(self.bitrix, task.task_id, self.config.plan_stage_name)
+            except Exception:
+                logger.exception(
+                    "Failed to move task %s to plan stage %s",
+                    task.task_id,
+                    self.config.plan_stage_name,
+                )
+
+    def submit_answer(self, run_id: int, task_id: int, answer_text: str) -> bool:
+        task = self.store.get_task_by_bitrix_id(run_id, task_id)
+        if task is None:
+            return False
+        if task.state != TaskState.WAITING_FOR_ANSWER:
+            return False
+        text = answer_text.strip()
+        if not text:
+            return False
+        combined = list(task.clarifications_json or [])
+        combined.append(
+            {
+                "message_id": f"main-chat:{time.time()}",
+                "author_id": "main-chat",
+                "author_name": "User",
+                "date": None,
+                "text": text,
+            }
+        )
+        questions = (task.questions_json or {}).get("questions") or []
+        if questions and len(combined) < len(questions):
+            remaining = questions[len(combined) :]
+            self._send_questions(task, [str(q) for q in remaining])
+            self.store.update_task(task.id, clarifications_json=combined)
+            return True
+        self.store.update_task(
+            task.id,
+            state=TaskState.READY_TO_RESUME,
+            clarifications_json=combined,
+            agent_pid=None,
+        )
+        return True
 
     def _spawn_implementation(self, run: BoardRun, task: BoardTask) -> None:
         if not task.worktree_path or not task.plan_json:
@@ -291,16 +392,18 @@ class BoardDispatcher:
         )
         spawned = spawn_agent(
             self.config,
-            worktree=task.worktree_path,  # type: ignore[arg-type]
+            worktree=self._worktree_path(task),  # type: ignore[arg-type]
             prompt=prompt,
             phase="implement" if task.state != TaskState.REWORKING else "rework",
             force=True,
+            task_id=task.task_id,
+            title=task.title,
         )
         self.store.update_task(
             task.id,
             agent_pid=spawned.pid,
             log_path=str(spawned.log_path),
-            report_json={**(task.report_json or {}), "_agent_phase": "implement"},
+            report_json=self._agent_report_patch(task, spawned, phase="implement"),
         )
 
     def _handle_implementation_result(self, run: BoardRun, task: BoardTask, result) -> None:
@@ -314,9 +417,10 @@ class BoardDispatcher:
             "commits": parsed.get("commits") or [],
         }
         if task.state_path:
+            state_file = self._state_path(task)
             save_task_state(
-                task.state_path,  # type: ignore[arg-type]
-                load_task_state(task.state_path) | {"phase": "implement", "implementation": implementation},
+                state_file,  # type: ignore[arg-type]
+                load_task_state(state_file) | {"phase": "implement", "implementation": implementation},  # type: ignore[arg-type]
             )
 
         if result.exit_code != 0 and str(parsed.get("status", "")).lower() != "done":
@@ -342,7 +446,7 @@ class BoardDispatcher:
             return
 
         bitrix_task = get_task(self.bitrix, task.task_id)
-        diff_summary = git_diff_summary(task.worktree_path)  # type: ignore[arg-type]
+        diff_summary = git_diff_summary(self._worktree_path(task))  # type: ignore[arg-type]
         prompt = build_review_prompt(
             task=bitrix_task,
             plan=task.plan_json,
@@ -351,16 +455,18 @@ class BoardDispatcher:
         )
         spawned = spawn_agent(
             self.config,
-            worktree=task.worktree_path,  # type: ignore[arg-type]
+            worktree=self._worktree_path(task),  # type: ignore[arg-type]
             prompt=prompt,
             phase=f"review-{task.review_cycle + 1}",
             mode="ask",
+            task_id=task.task_id,
+            title=task.title,
         )
         self.store.update_task(
             task.id,
             agent_pid=spawned.pid,
             log_path=str(spawned.log_path),
-            report_json={**(task.report_json or {}), "_agent_phase": "review"},
+            report_json=self._agent_report_patch(task, spawned, phase="review"),
         )
 
     def _handle_review_result(self, run: BoardRun, task: BoardTask, result) -> None:
@@ -412,6 +518,17 @@ class BoardDispatcher:
         )
         add_task_message(self.bitrix, task.task_id, report)
         move_task_to_stage(self.bitrix, task.task_id, run.target_stage)
+        plan = task.plan_json or {}
+        completion_message = (
+            f"Задача №{task.task_id} завершена.\n"
+            f"Результат:\n{implementation.get('summary') or plan.get('expected_outcome') or 'см. отчёт'}\n"
+            f"Ветка:\n{task.branch or ''}\n"
+            f"Тесты:\n{implementation.get('test_results') or 'не указано'}\n"
+            f"Сборка:\n{implementation.get('build_results') or 'не указано'}\n"
+            f"Ревью:\nпройдено"
+        )
+        logger.info("Task completed:\n%s", completion_message)
+        print(completion_message, flush=True)
         self.store.update_task(
             task.id,
             state=TaskState.COMPLETED,
@@ -424,6 +541,15 @@ class BoardDispatcher:
         message_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
         if task.last_question_hash == message_hash:
             return
+        dispatcher_message = (
+            f"Задача Bitrix24 №{task.task_id}: {task.title}\n"
+            f"Для продолжения необходимо уточнить:\n"
+            + "\n".join(f"{index}. {question}" for index, question in enumerate(questions, start=1))
+            + "\n\nОтветьте в основном чате Cursor, начиная сообщение с:\n"
+            f"Ответ по задаче {task.task_id}:"
+        )
+        logger.warning("Clarification required:\n%s", dispatcher_message)
+        print(dispatcher_message, flush=True)
         message_id = add_task_message(self.bitrix, task.task_id, message)
         self.store.update_task(
             task.id,
@@ -494,9 +620,9 @@ class BoardDispatcher:
         run = self.store.get_run(run_id)
         tasks = self.store.list_tasks(run_id)
         for task in tasks:
-            if not task.agent_pid:
+            if self._is_task_agent_running(task):
                 continue
-            if is_process_alive(task.agent_pid):
+            if not task.agent_pid and not (task.report_json or {}).get("cursor_meta_path"):
                 continue
 
             from pathlib import Path
@@ -559,6 +685,12 @@ def run_dispatcher(
             logger.info("Created run %s with %s tasks", run.id, len(run.snapshot_task_ids))
 
         dispatcher = BoardDispatcher(config, store, bitrix)
+
+        if config.agent_backend == "sdk" and not config.cursor_api_key:
+            logger.warning(
+                "CURSOR_API_KEY is not set. SDK agents are disabled; using CLI fallback. "
+                "Add CURSOR_API_KEY to .env.bitrix-board for visible Cursor Agents."
+            )
 
         def _handle_signal(signum: int, frame: object) -> None:
             logger.info("Received signal %s, stopping dispatcher", signum)
