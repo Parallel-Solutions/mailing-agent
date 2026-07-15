@@ -1850,6 +1850,12 @@ def _append_sent_mail_log(
         from src.jobs.job_docs import append_event
 
         append_event(job_id, "sent_mail_log", record)
+        try:
+            from src.generator.delivery.send_guard import record_sent
+
+            record_sent()
+        except Exception:
+            pass
     except Exception as exc:
         return (
             "Письмо отправлено, но не удалось записать его в журнал: "
@@ -1901,6 +1907,29 @@ def _build_provider_idempotency_key(
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
     return f"mailing-agent:{payload['provider']}:{digest}"
+
+
+def _filter_suppressed_recipients(
+    recipients: list[str],
+    *,
+    preflight_attempts: list[dict[str, Any]],
+) -> list[str]:
+    from src.generator.delivery.suppression_store import is_suppressed
+
+    allowed: list[str] = []
+    for recipient in recipients:
+        suppressed, reason = is_suppressed(recipient)
+        if suppressed:
+            preflight_attempts.append(
+                {
+                    "recipient": recipient,
+                    "status": "error",
+                    "error": f"Адрес в стоп-листе ({reason or 'suppressed'}).",
+                }
+            )
+            continue
+        allowed.append(recipient)
+    return allowed
 
 
 def _load_sent_mail_recipients(
@@ -2690,16 +2719,25 @@ def _run_rusender_request(request: Request, *, timeout: float) -> str:
         try:
             _wait_rusender_api_slot()
             with urlopen(request, timeout=timeout) as response:
+                from src.generator.delivery.send_guard import record_api_request
+
+                record_api_request(success=True)
                 return response.read().decode("utf-8", errors="replace")
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             exc.raw_body = raw  # type: ignore[attr-defined]
+            from src.generator.delivery.send_guard import record_api_request
+
+            record_api_request(success=not _is_retryable_rusender_exception(exc))
             if attempt < RUSENDER_RETRY_ATTEMPTS and _is_retryable_rusender_exception(exc):
                 _sleep_sender_retry(RUSENDER_RETRY_BASE_SECONDS * attempt)
                 last_error = exc
                 continue
             raise
         except Exception as exc:
+            from src.generator.delivery.send_guard import record_api_request
+
+            record_api_request(success=False)
             if attempt < RUSENDER_RETRY_ATTEMPTS and _is_retryable_rusender_exception(exc):
                 _sleep_sender_retry(RUSENDER_RETRY_BASE_SECONDS * attempt)
                 last_error = exc
@@ -3569,6 +3607,17 @@ def _send_with_transport(
                 break
         attempted_recipients += 1
         try:
+            from src.generator.delivery.domain_rate_limiter import wait_for_domain_slot
+
+            if not wait_for_domain_slot(recipient):
+                attempts.append(
+                    {
+                        "recipient": recipient,
+                        "status": "error",
+                        "error": "Отправка остановлена во время ожидания лимита по домену.",
+                    }
+                )
+                break
             warning = None
             provider: dict[str, Any] = {}
             if transport == "unisender":
@@ -3957,6 +4006,10 @@ def run_sender(
 
     job_paths = resolve_job_paths(job_id)
     data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
+    if not dry_run:
+        from src.generator.delivery.send_guard import assert_sending_allowed
+
+        assert_sending_allowed()
     output_dir = None if job_paths.uses_legacy_layout else job_paths.output_dir
     job_template_docx_path = job_paths.templates_dir / "mail_template.docx"
     job_template_txt_path = job_paths.templates_dir / "mail_template.txt"
@@ -4488,6 +4541,14 @@ def run_sender(
                     for recipient in fallback_recipients
                     if _mail_key(recipient) not in already_logged
                 ]
+                recipients_to_send = _filter_suppressed_recipients(
+                    recipients_to_send,
+                    preflight_attempts=preflight_attempts,
+                )
+                fallback_recipients_to_send = _filter_suppressed_recipients(
+                    fallback_recipients_to_send,
+                    preflight_attempts=preflight_attempts,
+                )
                 attachments_to_send = [] if effective_send_mode == "consent_request" else attachments
                 has_deferred_fallback_recipients = (
                     effective_recipient_strategy == RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK

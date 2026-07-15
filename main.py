@@ -41,11 +41,13 @@ from src.web.sender_service import (
     configure_sender_service,
     prime_sender_checking_state,
     prime_sender_running_state,
+    prime_sender_queued_state,
     run_sender_background,
 )
 from fastapi import Cookie, Depends, FastAPI, HTTPException, UploadFile, status
 import shutil
 import threading
+from typing import Any
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from time import perf_counter
@@ -94,6 +96,9 @@ async def app_startup():
     bootstrap_auth_store(settings)
     _start_consent_materials_recovery_thread()
     _start_stats_cache_warm_thread()
+    from src.workers.queue_worker import start_queue_worker
+
+    start_queue_worker(project_root=PROJECT_ROOT)
     return None
 
 
@@ -103,6 +108,9 @@ async def app_shutdown():
     from src.generator.delivery.manager_stats import stop_stats_cache_warm_loop
 
     stop_stats_cache_warm_loop()
+    from src.workers.queue_worker import stop_queue_worker
+
+    stop_queue_worker()
     return None
 
 
@@ -631,20 +639,19 @@ def _start_sender_thread_if_absent(
     kwargs: dict | None = None,
     name: str | None = None,
     before_start=None,
-) -> tuple[threading.Thread, bool]:
-    return _start_background_worker_process(
-        job_id,
-        task="sender",
-        kwargs=kwargs,
-        name=name,
-        registry=_sender_threads,
-        registry_lock=_sender_threads_lock,
-        key_factory=_sender_job_key,
-        unregister=_unregister_sender_thread,
-        max_workers=max(1, int(settings.sender_worker_max_processes or 1)),
-        timeout_seconds=max(0, int(settings.sender_worker_timeout_seconds or 0)),
-        before_start=before_start,
+) -> tuple[dict[str, Any], bool]:
+    if before_start is not None:
+        before_start()
+    owner = read_job_owner(job_id)
+    owner_username = str(owner.get("owner_username") or "")
+    from src.workers.queue_worker import enqueue_sender_task
+
+    queue_result = enqueue_sender_task(
+        job_id=job_id,
+        owner_username=owner_username,
+        kwargs=dict(kwargs or {}),
     )
+    return queue_result, bool(queue_result.get("created"))
 
 
 def _start_documents_thread_if_absent(
@@ -1274,6 +1281,7 @@ app.include_router(
         clear_sender_stop_request=clear_sender_stop_request,
         prime_sender_checking_state=prime_sender_checking_state,
         prime_sender_running_state=prime_sender_running_state,
+        prime_sender_queued_state=prime_sender_queued_state,
         start_sender_thread_if_absent=_start_sender_thread_if_absent,
         run_sender_background=run_sender_background,
         sender_job_key=_sender_job_key,

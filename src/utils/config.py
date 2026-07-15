@@ -32,6 +32,25 @@ class Settings(BaseSettings):
     app_users: str = ""
     app_admin_tenant_id: str = "admin"
     app_session_ttl_days: int = 7
+    app_allow_registration: bool = False
+
+    background_queue_poll_seconds: float = 1.0
+    background_queue_lease_seconds: int = 7200
+    background_queue_heartbeat_seconds: int = 30
+    background_queue_retry_base_seconds: int = 60
+    background_queue_max_attempts: int = 3
+    background_queue_shutdown_grace_seconds: int = 30
+
+    sender_domain_limits_json: str = (
+        '{"gmail.com":60,"mail.ru":40,"yandex.ru":40,"outlook.com":40,"other":30}'
+    )
+    sender_domain_limit_window_seconds: int = 3600
+
+    send_guard_window_seconds: int = 3600
+    send_guard_complaint_rate_threshold: float = 0.001
+    send_guard_api_error_rate_threshold: float = 0.05
+    send_guard_min_samples: int = 20
+    suppression_soft_bounce_ttl_days: int = 7
 
     # PostgreSQL
     database_url: str = "postgresql+psycopg://mailing:mailing@postgres:5432/mailing"
