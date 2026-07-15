@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 
 from src.infra.db import session_scope
-from src.infra.models import JobDoc, JobEvent, JobOwner
+from src.infra.models import EventStreamCounter, JobDoc, JobEvent, JobOwner
 from src.jobs.storage import normalize_job_id
 
 
@@ -92,24 +94,50 @@ def write_owner(job_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
     return read_owner(normalized)
 
 
-def append_event(job_id: str | None, stream: str, payload: dict[str, Any]) -> None:
-    storage_job_id = _storage_job_id(job_id)
-    with session_scope() as session:
-        current_seq = session.execute(
-            select(func.coalesce(func.max(JobEvent.seq), 0)).where(
-                JobEvent.job_id == storage_job_id,
-                JobEvent.stream == stream,
-            )
-        ).scalar_one()
-        session.add(
-            JobEvent(
-                job_id=storage_job_id,
-                stream=stream,
-                seq=int(current_seq) + 1,
-                payload=payload,
-                created_at=datetime.now(timezone.utc),
-            )
+def _next_event_seq(session: Any, storage_job_id: str, stream: str) -> int:
+    statement = (
+        pg_insert(EventStreamCounter)
+        .values(job_id=storage_job_id, stream=stream, last_seq=1)
+        .on_conflict_do_update(
+            index_elements=[EventStreamCounter.job_id, EventStreamCounter.stream],
+            set_={
+                "last_seq": EventStreamCounter.last_seq + 1,
+                "updated_at": func.now(),
+            },
         )
+        .returning(EventStreamCounter.last_seq)
+    )
+    return int(session.execute(statement).scalar_one())
+
+
+def append_event(
+    job_id: str | None,
+    stream: str,
+    payload: dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+) -> int | None:
+    storage_job_id = _storage_job_id(job_id)
+    normalized_key = str(idempotency_key or "").strip() or None
+    try:
+        with session_scope() as session:
+            seq = _next_event_seq(session, storage_job_id, stream)
+            session.add(
+                JobEvent(
+                    job_id=storage_job_id,
+                    stream=stream,
+                    seq=seq,
+                    payload=payload,
+                    idempotency_key=normalized_key,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+            session.flush()
+        return seq
+    except IntegrityError:
+        if normalized_key is not None:
+            return None
+        raise
 
 
 def read_events(job_id: str | None, stream: str) -> list[dict[str, Any]]:
@@ -132,12 +160,49 @@ def clear_events(job_id: str | None, stream: str) -> None:
                 JobEvent.stream == stream,
             )
         )
+        session.execute(
+            delete(EventStreamCounter).where(
+                EventStreamCounter.job_id == storage_job_id,
+                EventStreamCounter.stream == stream,
+            )
+        )
 
 
 def replace_events(job_id: str | None, stream: str, payloads: list[dict[str, Any]]) -> None:
-    clear_events(job_id, stream)
-    for payload in payloads:
-        append_event(job_id, stream, payload)
+    storage_job_id = _storage_job_id(job_id)
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        session.execute(
+            delete(JobEvent).where(
+                JobEvent.job_id == storage_job_id,
+                JobEvent.stream == stream,
+            )
+        )
+        session.execute(
+            delete(EventStreamCounter).where(
+                EventStreamCounter.job_id == storage_job_id,
+                EventStreamCounter.stream == stream,
+            )
+        )
+        for seq, payload in enumerate(payloads, start=1):
+            session.add(
+                JobEvent(
+                    job_id=storage_job_id,
+                    stream=stream,
+                    seq=seq,
+                    payload=payload,
+                    created_at=now,
+                )
+            )
+        if payloads:
+            session.add(
+                EventStreamCounter(
+                    job_id=storage_job_id,
+                    stream=stream,
+                    last_seq=len(payloads),
+                    updated_at=now,
+                )
+            )
 
 
 def read_sent_mail_log(job_id: str | None) -> list[dict[str, Any]]:

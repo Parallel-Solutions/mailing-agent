@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 
 from src.jobs.access import JobAccessDenied, authorize_job_access
 from src.jobs.audit import append_audit_event
@@ -168,7 +169,7 @@ def create_sender_router(
             logger.exception("delivery_fallback_schedule_failed", provider=provider, jobs=jobs)
 
     @router.post("/api/sender/run")
-    async def sender_run(payload: SenderRunRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def sender_run(payload: SenderRunRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         payload = payload or SenderRunRequest()
         dry_run = payload.dry_run
         limit = payload.limit
@@ -270,7 +271,7 @@ def create_sender_router(
         }
 
     @router.get("/api/sender/queue")
-    async def sender_queue(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def sender_queue(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         from src.workers.task_queue import get_queue_snapshot
         from src.generator.delivery.send_guard import get_send_guard_status
@@ -280,7 +281,7 @@ def create_sender_router(
         return {"status": "ok", "result": snapshot}
 
     @router.post("/api/sender/resume")
-    async def sender_resume(principal: object = Depends(check_auth)):
+    def sender_resume(principal: object = Depends(check_auth)):
         from src.jobs.access import coerce_principal
         from src.generator.delivery.send_guard import get_send_guard_status, resume_sending
 
@@ -291,7 +292,7 @@ def create_sender_router(
         return {"status": "ok", "result": get_send_guard_status()}
 
     @router.get("/api/sender/suppression")
-    async def sender_suppression_list(
+    def sender_suppression_list(
         limit: int = 200,
         offset: int = 0,
         q: str = "",
@@ -302,7 +303,7 @@ def create_sender_router(
         return {"status": "ok", "result": list_suppressions(limit=limit, offset=offset, q=q)}
 
     @router.post("/api/sender/suppression")
-    async def sender_suppression_add(payload: dict = Body(default={}), principal: object = Depends(check_auth)):
+    def sender_suppression_add(payload: dict = Body(default={}), principal: object = Depends(check_auth)):
         from src.jobs.access import coerce_principal
         from src.generator.delivery.suppression_store import upsert_suppression
 
@@ -317,7 +318,7 @@ def create_sender_router(
         return {"status": "ok", "result": {"email": email, "reason": reason}}
 
     @router.delete("/api/sender/suppression")
-    async def sender_suppression_remove(email: str = "", principal: object = Depends(check_auth)):
+    def sender_suppression_remove(email: str = "", principal: object = Depends(check_auth)):
         from src.jobs.access import coerce_principal
         from src.generator.delivery.suppression_store import remove_suppression
 
@@ -330,13 +331,13 @@ def create_sender_router(
         return {"status": "ok", "result": {"removed": removed, "email": email}}
 
     @router.get("/api/sender/domain-stats")
-    async def sender_domain_stats(principal: object = Depends(check_auth)):
+    def sender_domain_stats(principal: object = Depends(check_auth)):
         from src.generator.delivery.domain_rate_limiter import get_domain_stats
 
         return {"status": "ok", "result": get_domain_stats()}
 
     @router.get("/api/sender/webhook-status")
-    async def sender_webhook_status(principal: object = Depends(check_auth)):
+    def sender_webhook_status(principal: object = Depends(check_auth)):
         from src.generator.delivery.rusender_events import _unmatched_events_path
 
         unmatched_path = _unmatched_events_path()
@@ -358,12 +359,12 @@ def create_sender_router(
         }
 
     @router.get("/api/sender/status")
-    async def sender_status(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def sender_status(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         return {"status": "ok", "result": compact_sender_status(get_sender_status(job_id))}
 
     @router.get("/api/sender/unisender-history")
-    async def sender_unisender_history(
+    def sender_unisender_history(
         job_id: str | None = None,
         limit: int = 50,
         refresh: bool = False,
@@ -376,7 +377,7 @@ def create_sender_router(
         }
 
     @router.get("/api/sender/analytics")
-    async def sender_analytics(
+    def sender_analytics(
         job_id: str | None = None,
         refresh: bool = False,
         refresh_wait: bool = False,
@@ -393,7 +394,7 @@ def create_sender_router(
         }
 
     @router.get("/api/consents/sales-requests")
-    async def consent_sales_requests(
+    def consent_sales_requests(
         job_id: str | None = None,
         include_all: bool = False,
         principal: object = Depends(check_auth),
@@ -407,7 +408,7 @@ def create_sender_router(
         return {"status": "ok", "result": result}
 
     @router.get("/api/webhooks/unisender-go")
-    async def unisender_go_webhook_health():
+    def unisender_go_webhook_health():
         token_configured = bool(resolve_webhook_token())
         result = {
             "message": "UniSender Go webhook endpoint is ready",
@@ -418,7 +419,7 @@ def create_sender_router(
         return ok_response(result, **result)
 
     @router.post("/api/webhooks/unisender-go")
-    async def unisender_go_webhook(request: Request):
+    def unisender_go_webhook(request: Request):
         if not resolve_webhook_token():
             raise HTTPException(
                 status_code=503,
@@ -430,7 +431,7 @@ def create_sender_router(
         )
 
     @router.get("/api/webhooks/unisender-go/{token}")
-    async def unisender_go_webhook_token_health(token: str):
+    def unisender_go_webhook_token_health(token: str):
         ensure_webhook_token(token)
         result = {"message": "UniSender Go token webhook endpoint is ready"}
         return ok_response(result, **result)
@@ -440,15 +441,15 @@ def create_sender_router(
         ensure_webhook_token(token)
         payload = await read_webhook_json(request, "UniSender Go")
         try:
-            result = append_unisender_go_events(payload)
-            _schedule_delivery_fallbacks(result, provider="unisender")
+            result = await run_in_threadpool(append_unisender_go_events, payload)
+            await run_in_threadpool(_schedule_delivery_fallbacks, result, provider="unisender")
         except Exception as exc:
             logger.exception("unisender_go_webhook_save_failed")
             raise internal_server_error("Не удалось сохранить webhook UniSender Go.") from exc
         return {"status": "ok", "result": result}
 
     @router.get("/api/webhooks/rusender")
-    async def rusender_webhook_health():
+    def rusender_webhook_health():
         token_configured = bool(resolve_rusender_webhook_token())
         result = {
             "message": "RuSender webhook endpoint is ready",
@@ -469,7 +470,7 @@ def create_sender_router(
         return ok_response(result, **result)
 
     @router.post("/api/webhooks/rusender")
-    async def rusender_webhook(request: Request):
+    def rusender_webhook(request: Request):
         if not resolve_rusender_webhook_token():
             raise HTTPException(
                 status_code=503,
@@ -481,7 +482,7 @@ def create_sender_router(
         )
 
     @router.get("/api/webhooks/rusender/{token}")
-    async def rusender_webhook_token_health(token: str):
+    def rusender_webhook_token_health(token: str):
         ensure_rusender_webhook_token(token)
         result = {"message": "RuSender token webhook endpoint is ready"}
         return ok_response(result, **result)
@@ -491,15 +492,15 @@ def create_sender_router(
         ensure_rusender_webhook_token(token)
         payload = await read_webhook_json(request, "RuSender")
         try:
-            result = append_rusender_events(payload)
-            _schedule_delivery_fallbacks(result, provider="rusender")
+            result = await run_in_threadpool(append_rusender_events, payload)
+            await run_in_threadpool(_schedule_delivery_fallbacks, result, provider="rusender")
         except Exception as exc:
             logger.exception("rusender_webhook_save_failed")
             raise internal_server_error("Не удалось сохранить webhook RuSender.") from exc
         return {"status": "ok", "result": result}
 
     @router.get("/api/webhooks/mailopost")
-    async def mailopost_webhook_health():
+    def mailopost_webhook_health():
         token_configured = bool(resolve_mailopost_webhook_token())
         result = {
             "message": "MailoPost webhook endpoint is ready",
@@ -521,7 +522,7 @@ def create_sender_router(
         return ok_response(result, **result)
 
     @router.post("/api/webhooks/mailopost")
-    async def mailopost_webhook(request: Request):
+    def mailopost_webhook(request: Request):
         if not resolve_mailopost_webhook_token():
             raise HTTPException(
                 status_code=503,
@@ -533,7 +534,7 @@ def create_sender_router(
         )
 
     @router.get("/api/webhooks/mailopost/{token}")
-    async def mailopost_webhook_token_health(token: str):
+    def mailopost_webhook_token_health(token: str):
         ensure_mailopost_webhook_token(token)
         result = {"message": "MailoPost token webhook endpoint is ready"}
         return ok_response(result, **result)
@@ -543,14 +544,14 @@ def create_sender_router(
         ensure_mailopost_webhook_token(token)
         payload = await read_webhook_json(request, "MailoPost")
         try:
-            result = append_mailopost_events(payload)
-            _schedule_delivery_fallbacks(result, provider="mailopost")
+            result = await run_in_threadpool(append_mailopost_events, payload)
+            await run_in_threadpool(_schedule_delivery_fallbacks, result, provider="mailopost")
         except Exception as exc:
             logger.exception("mailopost_webhook_save_failed")
             raise internal_server_error("Не удалось сохранить webhook MailoPost.") from exc
         return {"status": "ok", "result": result}
     @router.post("/api/sender/stop")
-    async def sender_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def sender_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         job_id = None if payload is None else payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
         result = request_sender_stop(job_id=job_id)
@@ -558,7 +559,7 @@ def create_sender_router(
         return {"status": "ok", "result": compact_sender_status(result)}
 
     @router.post("/api/sender/preview")
-    async def sender_preview(payload: LimitRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def sender_preview(payload: LimitRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         limit = None if payload is None else payload.limit
         job_id = None if payload is None else payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
@@ -566,7 +567,7 @@ def create_sender_router(
         return {"status": "ok", "result": result}
 
     @router.post("/api/sender/chat")
-    async def sender_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
+    def sender_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
         message = payload.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="Пустое сообщение")

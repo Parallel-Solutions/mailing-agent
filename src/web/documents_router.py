@@ -51,7 +51,7 @@ def create_documents_router(
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @router.post("/api/documents/start")
-    async def documents_start(payload: DocumentsStartRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def documents_start(payload: DocumentsStartRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         payload = payload or DocumentsStartRequest()
         job_id = payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
@@ -160,7 +160,7 @@ def create_documents_router(
         return {"status": "ok", "result": result}
 
     @router.get("/api/documents/status")
-    async def documents_status(
+    def documents_status(
         job_id: str | None = None,
         document_mode: str | None = None,
         principal: object = Depends(check_auth),
@@ -169,7 +169,7 @@ def create_documents_router(
         return {"status": "ok", "result": compact_documents_status(job_id, document_mode)}
 
     @router.get("/api/documents/template-analysis")
-    async def documents_template_analysis(
+    def documents_template_analysis(
         job_id: str | None = None,
         document_mode: str | None = None,
         principal: object = Depends(check_auth),
@@ -181,7 +181,7 @@ def create_documents_router(
         return ok_response(result, **result)
 
     @router.post("/api/documents/template-preview")
-    async def documents_template_preview(payload: TemplatePreviewRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def documents_template_preview(payload: TemplatePreviewRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         payload = payload or TemplatePreviewRequest()
         job_id = payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
@@ -212,7 +212,7 @@ def create_documents_router(
         return ok_response(result, **result)
 
     @router.get("/api/documents/template-preview/file")
-    async def documents_template_preview_file(
+    def documents_template_preview_file(
         job_id: str | None = None,
         kind: str = "pdf",
         principal: object = Depends(check_auth),
@@ -241,7 +241,7 @@ def create_documents_router(
         return FileResponse(path, media_type=media_type, filename=path.name, headers=headers)
 
     @router.post("/api/documents/stop")
-    async def documents_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def documents_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         job_id = None if payload is None else payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
         generator_state = get_generator_status(job_id)
@@ -254,7 +254,7 @@ def create_documents_router(
         return {"status": "ok", "result": compact_documents_status(job_id)}
 
     @router.post("/api/documents/chat")
-    async def documents_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
+    def documents_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
         message = payload.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="Пустое сообщение")

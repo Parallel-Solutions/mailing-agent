@@ -33,7 +33,8 @@ def _job_id_from_status_path(status_path: str, jobs_dir: Path) -> str | None:
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Некорректный status_path worker-процесса.") from exc
     parts = relative_path.parts
-    return parts[0] if parts else None
+    job_id = parts[0] if parts else None
+    return None if job_id == "__legacy__" else job_id
 
 
 def create_workers_router(
@@ -52,7 +53,7 @@ def create_workers_router(
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @router.get("/api/workers/status")
-    async def workers_status(limit: int = 100, principal: object = Depends(check_auth)):
+    def workers_status(limit: int = 100, principal: object = Depends(check_auth)):
         safe_limit = max(1, min(int(limit or 100), 500))
         visible_workers = [
             status
@@ -67,7 +68,7 @@ def create_workers_router(
         }
 
     @router.post("/api/workers/stop")
-    async def workers_stop(payload: WorkerStopRequest = Body(...), principal: object = Depends(check_auth)):
+    def workers_stop(payload: WorkerStopRequest = Body(...), principal: object = Depends(check_auth)):
         status_path = _normalize_worker_status_path(payload.status_path, jobs_dir)
         if not status_path:
             raise HTTPException(status_code=400, detail="Не указан status_path активного worker-процесса.")

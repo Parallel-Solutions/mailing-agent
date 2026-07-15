@@ -26,6 +26,7 @@ def create_philologist_router(
     build_philologist_plan: Callable[[str | None], dict],
     chat_with_philologist: Callable[..., dict],
     ensure_user_inprocess_limit: Callable[[str | None], None] | None = None,
+    start_philologist_task: Callable[..., tuple[Any, bool]] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -36,7 +37,7 @@ def create_philologist_router(
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @router.post("/api/philologist/run")
-    async def philologist_run(payload: PhilologistRunRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def philologist_run(payload: PhilologistRunRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         payload = payload or PhilologistRunRequest()
         ai_enabled = payload.ai_enabled
         job_id = payload.job_id
@@ -58,24 +59,34 @@ def create_philologist_router(
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         clear_philologist_stop_request(job_id)
         primed_state = prime_philologist_running_state(job_id, mode or "fast")
-        philologist_thread = threading.Thread(
-            target=run_philologist_background,
-            kwargs={"ai_enabled": ai_enabled, "job_id": job_id, "mode": mode},
-            daemon=True,
-            name=f"philologist-{philologist_job_key(job_id)}",
-        )
-        register_philologist_thread(job_id, philologist_thread)
-        philologist_thread.start()
+        if start_philologist_task is not None:
+            _, started = start_philologist_task(
+                job_id,
+                ai_enabled=ai_enabled,
+                mode=mode,
+                name=f"philologist-{philologist_job_key(job_id)}",
+            )
+            if not started:
+                return {"status": "ok", "result": compact_philologist_status(get_philologist_status(job_id))}
+        else:
+            philologist_thread = threading.Thread(
+                target=run_philologist_background,
+                kwargs={"ai_enabled": ai_enabled, "job_id": job_id, "mode": mode},
+                daemon=True,
+                name=f"philologist-{philologist_job_key(job_id)}",
+            )
+            register_philologist_thread(job_id, philologist_thread)
+            philologist_thread.start()
         append_audit_event(action="philologist.start", principal=principal, job_id=job_id, details={"mode": mode or "fast"})
         return {"status": "ok", "result": primed_state}
 
     @router.get("/api/philologist/status")
-    async def philologist_status(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def philologist_status(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         return {"status": "ok", "result": compact_philologist_status(get_philologist_status(job_id))}
 
     @router.post("/api/philologist/stop")
-    async def philologist_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def philologist_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         job_id = None if payload is None else payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
         result = request_philologist_stop(job_id)
@@ -83,12 +94,12 @@ def create_philologist_router(
         return {"status": "ok", "result": compact_philologist_status(result)}
 
     @router.get("/api/philologist/plan")
-    async def philologist_plan(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def philologist_plan(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         return {"status": "ok", "result": build_philologist_plan(job_id)}
 
     @router.post("/api/philologist/chat")
-    async def philologist_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
+    def philologist_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
         message = payload.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="Пустое сообщение")

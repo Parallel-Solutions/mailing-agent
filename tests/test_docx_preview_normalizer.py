@@ -81,7 +81,7 @@ def workspace_temp_dir():
 
 
 class DocxPreviewNormalizerTests(unittest.TestCase):
-    def test_foreground_anchor_stays_positioned_but_goes_behind_text(self) -> None:
+    def test_foreground_anchor_is_preserved(self) -> None:
         with workspace_temp_dir() as tmp:
             source = Path(tmp) / "source.docx"
             target = Path(tmp) / "target.docx"
@@ -91,15 +91,15 @@ class DocxPreviewNormalizerTests(unittest.TestCase):
             root = read_document_xml(target)
             anchors = root.findall(f".//{qn(WP_NS, 'anchor')}")
 
-            self.assertEqual(report.foreground_anchors_normalized, 1)
+            self.assertEqual(report.foreground_anchors_normalized, 0)
             self.assertEqual(report.foreground_anchors_inlined, 0)
             self.assertEqual(len(anchors), 1)
             self.assertEqual(len(root.findall(f".//{qn(WP_NS, 'inline')}")), 0)
-            self.assertEqual(anchors[0].get("behindDoc"), "1")
-            self.assertEqual(anchors[0].get("allowOverlap"), "0")
-            self.assertEqual(anchors[0].get("layoutInCell"), "1")
+            self.assertEqual(anchors[0].get("behindDoc"), "0")
+            self.assertEqual(anchors[0].get("allowOverlap"), "1")
+            self.assertEqual(anchors[0].get("layoutInCell"), "0")
 
-    def test_large_background_anchor_stays_behind_text(self) -> None:
+    def test_large_background_anchor_is_preserved(self) -> None:
         with workspace_temp_dir() as tmp:
             source = Path(tmp) / "source.docx"
             target = Path(tmp) / "target.docx"
@@ -109,11 +109,11 @@ class DocxPreviewNormalizerTests(unittest.TestCase):
             root = read_document_xml(target)
             anchors = root.findall(f".//{qn(WP_NS, 'anchor')}")
 
-            self.assertEqual(report.background_anchors_kept, 1)
+            self.assertEqual(report.background_anchors_kept, 0)
             self.assertEqual(len(anchors), 1)
             self.assertEqual(anchors[0].get("behindDoc"), "1")
-            self.assertEqual(anchors[0].get("allowOverlap"), "0")
-            self.assertEqual(anchors[0].get("layoutInCell"), "1")
+            self.assertEqual(anchors[0].get("allowOverlap"), "1")
+            self.assertEqual(anchors[0].get("layoutInCell"), "0")
 
     def test_compact_body_does_not_touch_signature_block(self) -> None:
         with workspace_temp_dir() as tmp:

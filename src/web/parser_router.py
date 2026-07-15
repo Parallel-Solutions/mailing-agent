@@ -36,7 +36,7 @@ def create_parser_router(
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @router.post("/api/parser/chat-v2")
-    async def parser_chat_v2(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
+    def parser_chat_v2(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
         message = payload.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="Пустое сообщение")
@@ -45,7 +45,7 @@ def create_parser_router(
         return chat(message, job_id=job_id)
 
     @router.post("/api/parser/start")
-    async def parser_start(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def parser_start(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         job_id = None if payload is None else payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
         existing_thread = get_parser_thread(job_id)
@@ -67,19 +67,19 @@ def create_parser_router(
         return {"status": "ok", "result": get_parser_status(job_id), "accepted": True, "started": started}
 
     @router.get("/api/parser/memory")
-    async def parser_memory(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def parser_memory(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         return get_memory(job_id=job_id)
 
     @router.post("/api/parser/memory/clear")
-    async def parser_memory_clear(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def parser_memory_clear(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         job_id = None if payload is None else payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
         clear_memory(job_id=job_id)
         return {"status": "ok"}
 
     @router.post("/api/parser/prompt")
-    async def parser_prompt(payload: PromptRequest = Body(...), principal: object = Depends(check_auth)):
+    def parser_prompt(payload: PromptRequest = Body(...), principal: object = Depends(check_auth)):
         prompt = payload.prompt.strip()
         if not prompt:
             raise HTTPException(status_code=400, detail="Пустой промпт")
@@ -89,7 +89,7 @@ def create_parser_router(
         return {"status": "ok"}
 
     @router.post("/api/parser/run")
-    async def parser_run(payload: LimitRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def parser_run(payload: LimitRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         limit = None if payload is None else payload.limit
         job_id = None if payload is None else payload.job_id
         ensure_job_access(job_id, principal, allow_missing=True)
@@ -112,12 +112,12 @@ def create_parser_router(
         return {"status": "ok", "result": get_parser_status(job_id), "accepted": True, "started": started}
 
     @router.get("/api/parser/status")
-    async def parser_status(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def parser_status(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         return {"status": "ok", "result": get_parser_status(job_id)}
 
     @router.post("/api/parser/merge-rmz")
-    async def merge_rmz(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+    def merge_rmz(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
         from src.parser.rmz_merger import run_merge
 
         job_id = None if payload is None else payload.job_id
@@ -159,7 +159,7 @@ def create_parser_router(
         if not message:
             raise HTTPException(status_code=400, detail="Пустое сообщение")
         job_id = payload.job_id
-        ensure_job_access(job_id, principal, allow_missing=True)
+        await run_in_threadpool(ensure_job_access, job_id, principal, allow_missing=True)
 
         result = await run_in_threadpool(chat, message, job_id=job_id)
         result_file = result.get("result_file")
@@ -169,7 +169,7 @@ def create_parser_router(
                     verify_municipality_names_in_workbook,
                 )
 
-                verification = verify_municipality_names_in_workbook(Path(result_file))
+                verification = await run_in_threadpool(verify_municipality_names_in_workbook, Path(result_file))
                 result["municipality_name_verification"] = verification
                 summary = format_municipality_verification_for_chat(verification, max_samples=20)
                 if summary:
@@ -180,7 +180,7 @@ def create_parser_router(
         return {"status": "ok", **result}
 
     @router.get("/api/parser/progress")
-    async def parser_progress(job_id: str | None = None, principal: object = Depends(check_auth)):
+    def parser_progress(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         job_key = str(job_id or "").strip()
         if not job_key:

@@ -439,7 +439,7 @@ def build_docx_jobs(results: list[dict]) -> list[dict[str, Any]]:
                 {
                     "staged_docx": generated_files[staged_key],
                     "final_docx": generated_files[final_docx_key],
-                    "final_pdf": generated_files[final_pdf_key],
+                    "final_pdf": generated_files.get(final_pdf_key),
                     "result_index": result["result_index"],
                     "file_kind": job_key,
                     "requires_pdf": job_key == "kp",
@@ -511,7 +511,7 @@ def _finalize_generated_jobs(
 
         batch_pdf = pdf_map.get(staged_docx) if job_requires_pdf else None
         pdf_created = bool(batch_pdf and batch_pdf.exists())
-        if pdf_created:
+        if pdf_created and final_pdf is not None:
             final_pdf.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(batch_pdf), str(final_pdf))
 
@@ -519,9 +519,9 @@ def _finalize_generated_jobs(
         result_files = result_entry.setdefault("files", {})
         if final_docx.exists():
             result_files[f"{job['file_kind']}_final_docx"] = str(final_docx)
-        if not job_requires_pdf and final_pdf.exists():
+        if not job_requires_pdf and final_pdf is not None and final_pdf.exists():
             final_pdf.unlink()
-        if job_requires_pdf and final_pdf.exists():
+        if job_requires_pdf and final_pdf is not None and final_pdf.exists():
             if _reject_invalid_kp_pdf(final_pdf, result_entry, file_kind=job["file_kind"]):
                 result_files[f"{job['file_kind']}_final_pdf"] = str(final_pdf)
         elif job_requires_pdf and final_docx.exists():
@@ -615,7 +615,7 @@ def finalize_generated_files(
             result_entry = results[job["result_index"]]
             result_files = result_entry.setdefault("files", {})
             result_files[f"{job['file_kind']}_final_docx"] = str(final_docx)
-            if job_requires_pdf and final_pdf.exists():
+            if job_requires_pdf and final_pdf is not None and final_pdf.exists():
                 result_files[f"{job['file_kind']}_final_pdf"] = str(final_pdf)
             continue
         if staged_docx.exists():

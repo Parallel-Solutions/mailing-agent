@@ -64,6 +64,78 @@ class HtmlKPTests(unittest.TestCase):
         self.assertIn("z-index: 1", html)
         self.assertLess(html.index("kp-background"), html.index("kp-content"))
 
+    def test_build_kp_html_exposes_overflow_to_page_count_validation(self) -> None:
+        context = build_document_context(self._row(), 101)
+
+        html = html_kp.build_kp_html(context)
+
+        self.assertIn("min-height: 297mm", html)
+        self.assertIn("height: auto", html)
+        self.assertIn("overflow: visible", html)
+        self.assertNotIn("height: 297mm;\n    overflow: hidden", html)
+
+    def test_html_kp_has_readable_minimum_density_fallback(self) -> None:
+        minimum = html_kp.HTML_KP_DENSITIES[-1]
+
+        self.assertEqual(minimum.name, "minimum")
+        self.assertGreaterEqual(minimum.font_size_pt, 8.5)
+        self.assertGreaterEqual(minimum.table_font_size_pt, 8.0)
+
+    def test_adaptive_density_expands_above_template_font_and_descends(self) -> None:
+        with patch.object(
+            html_kp,
+            "analyze_docx_style_profile",
+            return_value={"body_font_size_pt": 11.6},
+        ):
+            densities = html_kp._adaptive_density_candidates(None)
+
+        self.assertEqual(densities[0].font_size_pt, 13.6)
+        self.assertEqual(densities[1].font_size_pt, 13.4)
+        self.assertEqual(densities[-1].name, "minimum")
+        self.assertTrue(all(
+            left.font_size_pt > right.font_size_pt
+            for left, right in zip(densities, densities[1:])
+        ))
+
+    def test_template_images_are_assigned_to_semantic_slots(self) -> None:
+        contact = "\u0418\u0441\u043f. \u041a\u0440\u0430\u0448\u0435\u043d\u0438\u043d\u043d\u0438\u043a\u043e\u0432  \u0442\u0435\u043b. +7 921 409-45-61  ks@parresh.ru"
+        assets = [
+            html_kp.DocxImageAsset("phone", 3.1, 3.4, False, "word/document.xml", contact),
+            html_kp.DocxImageAsset("email", 3.2, 2.2, False, "word/document.xml", contact),
+            html_kp.DocxImageAsset("stamp", 45.5, 51.6, False, "word/document.xml"),
+            html_kp.DocxImageAsset("decoration", 119.0, 80.0, True, "word/document.xml"),
+            html_kp.DocxImageAsset("logo", 98.0, 12.4, False, "word/header1.xml"),
+        ]
+
+        classified = html_kp._classify_template_assets(assets)
+
+        self.assertEqual(classified.logo, "logo")
+        self.assertEqual(classified.phone_icon, "phone")
+        self.assertEqual(classified.email_icon, "email")
+        self.assertEqual(classified.stamp, "stamp")
+        self.assertEqual(classified.decorations, ("decoration",))
+        self.assertEqual(len(classified.contact_lines), 3)
+
+    def test_stamp_is_rendered_inside_signature_after_validity_date(self) -> None:
+        context = build_document_context(self._row(), 101)
+        assets = html_kp.HtmlKPTemplateAssets(
+            logo="logo",
+            phone_icon="phone",
+            email_icon="email",
+            stamp="stamp",
+            decorations=("decoration",),
+            contact_lines=("executor", "tel. +7 921 409-45-61", "ks@parresh.ru"),
+        )
+
+        with patch.object(html_kp, "_extract_docx_template_assets", return_value=assets):
+            rendered = html_kp.build_kp_html(context)
+
+        self.assertIn('class="kp-logo"', rendered)
+        self.assertIn('class="kp-contact-icon"', rendered)
+        self.assertIn('class="kp-stamp"', rendered)
+        self.assertIn('class="kp-decoration kp-decoration-1"', rendered)
+        self.assertLess(rendered.index('class="kp-validity"'), rendered.index('class="kp-stamp-slot"'))
+
     def test_build_kp_html_uses_template_style_profile(self) -> None:
         context = build_document_context(self._row(), 101)
         template_path = self.tmp_dir / "template.docx"
@@ -77,6 +149,56 @@ class HtmlKPTests(unittest.TestCase):
 
         self.assertIn('--kp-font-family: "Courier New"', html)
         self.assertIn("--kp-primary-color: #0C2238", html)
+
+    def test_neutral_body_color_is_not_used_as_template_primary_color(self) -> None:
+        with patch.object(
+            html_kp,
+            "analyze_docx_style_profile",
+            return_value={"font_family": "Tahoma", "primary_color": "#595959"},
+        ):
+            css = html_kp._template_css_vars(None)
+
+        self.assertIn("--kp-primary-color: #232E50", css)
+        self.assertIn("--kp-muted-color: #595959", css)
+
+    def test_build_kp_html_preserves_template_colors_and_bold_fragments(self) -> None:
+        context = build_document_context(self._row(), 101)
+        context["KP_PRICE_RUBLES"] = "150000"
+        assets = html_kp.HtmlKPTemplateAssets(
+            company_lines=("Company legal name", "Company short name", "Company address"),
+        )
+
+        with patch.object(html_kp, "_extract_docx_template_assets", return_value=assets):
+            rendered = html_kp.build_kp_html(context)
+
+        self.assertIn("--kp-muted-color: #595959", rendered)
+        self.assertIn("--kp-table-header-bg: #D9D9D9", rendered)
+        self.assertIn("color: #404040", rendered)
+        self.assertIn("color: var(--kp-primary-color); font-weight: 400", rendered)
+        self.assertIn("font-size: clamp(8.2pt, calc(var(--kp-font-size) - 3.5pt), 9.5pt)", rendered)
+        self.assertNotIn("font-size: 7.6pt", rendered)
+        self.assertIn(f"<strong>{context['WORK_TITLE']}</strong>", rendered)
+        self.assertIn("<strong>150 000</strong>", rendered)
+        self.assertNotIn("<strong>Company legal name</strong>", rendered)
+
+    def test_variable_blocks_have_independent_browser_fitting(self) -> None:
+        context = build_document_context(self._row(), 101)
+        assets = html_kp.HtmlKPTemplateAssets(
+            contact_lines=("executor", "tel. +7 921 409-45-61", "ks@parresh.ru"),
+        )
+
+        with patch.object(html_kp, "_extract_docx_template_assets", return_value=assets):
+            rendered = html_kp.build_kp_html(context)
+
+        self.assertIn('class="kp-recipient" data-fit-lines="3"', rendered)
+        self.assertIn('class="kp-intro" data-fit-lines="5"', rendered)
+        self.assertIn('class="kp-included-services" data-fit-lines="5"', rendered)
+        self.assertIn('class="kp-work-title" data-fit-lines="4"', rendered)
+        self.assertIn('class="kp-price-note" data-fit-lines="3"', rendered)
+        self.assertIn('class="kp-contact-row" data-fit-lines="1"', rendered)
+        self.assertIn('querySelectorAll("[data-fit-lines]")', rendered)
+        self.assertIn('element.style.fontSize = currentPt.toFixed(2) + "pt"', rendered)
+        self.assertNotIn('}`n  [data-fit-lines]', rendered)
 
     def test_html_conversion_uses_separate_gotenberg_html_urls(self) -> None:
         output_path = self.tmp_dir / "html.pdf"
@@ -123,6 +245,7 @@ class HtmlKPTests(unittest.TestCase):
         self.assertEqual(calls[0]["endpoint"], "http://html/forms/chromium/convert/html")
         self.assertEqual(calls[0]["filename"], "index.html")
         self.assertEqual(calls[0]["data"].get("printBackground"), "true")
+        self.assertEqual(calls[0]["data"].get("preferCssPageSize"), "true")
 
     def test_render_html_kp_pdf_retries_until_one_page(self) -> None:
         context = build_document_context(self._row(), 101)
@@ -148,6 +271,8 @@ class HtmlKPTests(unittest.TestCase):
         self.assertEqual(result, output_path)
         self.assertTrue(output_path.exists())
         self.assertEqual(len(attempts), 2)
+        self.assertIn("--kp-font-size: 14.0pt", attempts[0])
+        self.assertIn("--kp-font-size: 13.8pt", attempts[1])
         self.assertFalse(any(output_path.parent.glob("kp.html_try_*.pdf")))
 
     @unittest.skipIf(document_builder is None, f"document_builder dependencies unavailable: {DOCUMENT_BUILDER_IMPORT_ERROR}")

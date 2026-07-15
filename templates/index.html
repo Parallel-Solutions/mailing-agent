@@ -2961,8 +2961,8 @@
           </button>
         </div>
         <div class="field template-field" id="settings-kp-template-field">
-          <label>Шаблон КП (.docx/.pdf)</label>
-          <input type="file" id="upload-kp-input" accept=".docx,.pdf" style="display:none" onchange="uploadTemplate(this, 'kp-btn', 'Шаблон КП', 'kp')">
+          <label>Шаблон КП (.docx/.pdf/.html)</label>
+          <input type="file" id="upload-kp-input" accept=".docx,.pdf,.html,.htm" style="display:none" onchange="uploadTemplate(this, 'kp-btn', 'Шаблон КП', 'kp')">
           <button class="file-btn" id="kp-btn" data-process-lock="true" data-default-label="Выбрать файл" onclick="document.getElementById('upload-kp-input').click()">
             <span class="file-icon">📎</span> Выбрать файл
           </button>
@@ -6266,6 +6266,39 @@
     input.value = '';
   }
 
+  async function monitorAdaptiveTemplate(templateId, btn, filename, label) {
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      try {
+        const res = await fetchWithTimeout(apiUrl('/api/templates/adaptive/status?template_kind=kp'), {}, 15000);
+        if (!res.ok) continue;
+        const data = await readJsonOrText(res);
+        const payload = data.result || data;
+        const version = (payload.versions || []).find(item => item.template_id === templateId);
+        const status = version && version.certification ? version.certification.status : 'pending';
+        if (status === 'passed') {
+          btn.innerHTML = '<span class="file-icon">✓</span> ' + (filename || label);
+          btn.classList.add('uploaded');
+          showToast(label + ' проверен и готов к работе');
+          await refreshModuleReadiness();
+          saveUiState();
+          return;
+        }
+        if (status === 'failed') {
+          btn.innerHTML = '<span class="file-icon">⚠</span> Проверка не пройдена';
+          btn.classList.remove('uploaded');
+          const reason = version.certification.error || 'шаблон не помещается на одну страницу';
+          showToast(label + ': ' + reason);
+          saveUiState();
+          return;
+        }
+      } catch (error) {
+        // Queue state is durable; a transient polling error is safe to retry.
+      }
+    }
+    btn.innerHTML = '<span class="file-icon">⏳</span> Проверка продолжается';
+    showToast(label + ' загружен; проверка продолжается в фоне');
+  }
   async function uploadTemplate(input, btnId, label, templateKind) {
     const file = input.files[0];
     if (!file) return;
@@ -6282,10 +6315,19 @@
       if (res.ok) {
         if (data.job_id) setCurrentJobId(data.job_id);
         documentsPreviewGate = null;
-        btn.innerHTML = '<span class="file-icon">✓</span> ' + (file.name || label);
-        btn.classList.add('uploaded');
+        const adaptiveTemplate = data.adaptive_template || (data.result && data.result.adaptive_template);
+        const adaptiveTask = data.adaptive_task || (data.result && data.result.adaptive_task);
+        if (adaptiveTemplate && adaptiveTask) {
+          btn.innerHTML = '<span class="file-icon">⏳</span> Проверка шаблона...';
+          btn.classList.remove('uploaded');
+          showToast(label + ' загружен, проверяем три варианта в фоне');
+          void monitorAdaptiveTemplate(adaptiveTemplate.template_id, btn, file.name, label);
+        } else {
+          btn.innerHTML = '<span class="file-icon">✓</span> ' + (file.name || label);
+          btn.classList.add('uploaded');
+          showToast(label + ' загружен успешно');
+        }
         updateSettingsChecklist();
-        showToast(label + ' загружен успешно');
         await refreshModuleReadiness();
         saveUiState();
       } else {

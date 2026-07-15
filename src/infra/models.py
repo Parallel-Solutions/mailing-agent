@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -81,11 +81,32 @@ class JobEvent(Base):
     stream: Mapped[str] = mapped_column(String(128), nullable=False)
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
-        Index("idx_job_events_job_stream_seq", "job_id", "stream", "seq"),
+        Index("uq_job_events_job_stream_seq", "job_id", "stream", "seq", unique=True),
+        Index(
+            "uq_job_events_idempotency_key",
+            "job_id",
+            "stream",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
     )
+
+
+class EventStreamCounter(Base):
+    __tablename__ = "event_stream_counters"
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    stream: Mapped[str] = mapped_column(String(128), primary_key=True)
+    last_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
 
 
 class Client(Base):

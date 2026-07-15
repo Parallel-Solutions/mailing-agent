@@ -164,9 +164,39 @@ class WorkTypeProfileTests(unittest.TestCase):
             work_type=WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES,
         )
 
-        self.assertIn("территориальных зон", body)
+        self.assertIn("на разработку описания местоположения границ территориальных зон", body)
+        self.assertIn("по разработке описания местоположения границ территориальных зон", body)
+        self.assertNotIn("разработку территориальные зоны", body)
         self.assertNotIn("МНГП", body)
         self.assertNotIn("местных нормативов", body)
+
+    def test_consent_body_uses_updated_first_letter_and_variables(self) -> None:
+        body = sender_agent._build_consent_request_body(
+            self._row(),
+            consent_url="https://example.test/consent",
+            attachment_mode="kp",
+        )
+
+        self.assertTrue(body.startswith("В открытых источниках мы нашли контакт"))
+        self.assertIn(
+            "на разработку МНГП для территории Усть-Кутского муниципального района Иркутской области",
+            body,
+        )
+        self.assertIn("«Направить предложение по разработке МНГП» https://example.test/consent", body)
+        self.assertIn("вы не даете согласие на рекламную рассылку", body)
+        self.assertIn("дополнительных уведомлений по данному вопросу не последует", body)
+        self.assertNotIn("Здравствуйте!", body)
+        self.assertNotIn("уже подготовило", body)
+
+    def test_updated_consent_action_is_rendered_as_html_button(self) -> None:
+        html = sender_agent._htmlify_mail_body(
+            "«Направить предложение по разработке МНГП» https://example.test/consent",
+            include_unsubscribe=False,
+        )
+
+        self.assertIn('href="https://example.test/consent"', html)
+        self.assertIn(">Направить предложение по разработке МНГП</a>", html)
+        self.assertNotIn("просто даёте нам знать", html)
 
     def test_territorial_zone_kp_preserves_signature_contact_row(self) -> None:
         doc = Document()

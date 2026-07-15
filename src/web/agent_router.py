@@ -23,7 +23,7 @@ def create_agent_router(
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @router.post("/api/agent-memory/approve-inflection")
-    async def approve_inflection_memory(payload: InflectionApprovalRequest = Body(...), principal: object = Depends(check_auth)):
+    def approve_inflection_memory(payload: InflectionApprovalRequest = Body(...), principal: object = Depends(check_auth)):
         ensure_admin(principal)
         try:
             result = upsert_override(
@@ -37,17 +37,17 @@ def create_agent_router(
         return {"status": "ok", "result": result}
 
     @router.get("/api/orchestrator/status")
-    async def orchestrator_status(session_id: str | None = None, principal: object = Depends(check_auth)):
+    def orchestrator_status(session_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_admin(principal)
         raise HTTPException(status_code=404, detail="Оркестратор отключён в этой ветке.")
 
     @router.get("/api/autonomous-worker/status")
-    async def autonomous_worker_status(principal: object = Depends(check_auth)):
+    def autonomous_worker_status(principal: object = Depends(check_auth)):
         ensure_admin(principal)
         return {"status": "ok", "result": get_autonomous_worker_state()}
 
     @router.post("/api/orchestrator/chat")
-    async def orchestrator_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
+    def orchestrator_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
         ensure_admin(principal)
         raise HTTPException(status_code=404, detail="Оркестратор отключён в этой ветке.")
 

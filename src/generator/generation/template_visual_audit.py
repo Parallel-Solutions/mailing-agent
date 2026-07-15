@@ -244,16 +244,17 @@ def extract_docx_structure(docx_path: Path) -> dict[str, Any]:
 
 def render_pdf_first_page_to_png_data_url(pdf_path: Path) -> str:
     try:
-        import fitz  # type: ignore
+        import pypdfium2 as pdfium
     except Exception:
         return ""
     try:
-        document = fitz.open(str(pdf_path))
-        if document.page_count < 1:
+        document = pdfium.PdfDocument(pdf_path)
+        if len(document) < 1:
             return ""
-        page = document.load_page(0)
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
-        payload = pixmap.tobytes("png")
+        image = document[0].render(scale=1.6).to_pil().convert("RGB")
+        buffer = __import__("io").BytesIO()
+        image.save(buffer, format="PNG", optimize=True)
+        payload = buffer.getvalue()
         return "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
     except Exception:
         return ""

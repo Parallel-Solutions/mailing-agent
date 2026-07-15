@@ -377,4 +377,7 @@ def build_document_context(row: dict, outgoing_number: int, work_type: str | Non
         else str(context.get("MUN_NAME_1", "")).strip()
     )
     context["WORK_SCOPE_FRAGMENT"] = build_work_scope_fragment(context)
+    context["MUN_R_SCOPE_FRAGMENT"] = ensure_official_district_wording(
+        f"{context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
+    )
     return context
