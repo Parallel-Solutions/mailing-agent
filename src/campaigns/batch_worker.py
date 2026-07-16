@@ -1,4 +1,4 @@
-"""Execute a campaign batch: send emails via SMTP mailbox with idempotency."""
+"""Execute a campaign batch through the selected delivery connection."""
 
 from __future__ import annotations
 
@@ -31,12 +31,7 @@ def _render_body(template_html: str, recipient: CampaignRecipient, campaign: Cam
     }
     for key, value in replacements.items():
         html = html.replace(key, value or "")
-    text = (
-        html.replace("<br>", "\n")
-        .replace("<br/>", "\n")
-        .replace("<p>", "")
-        .replace("</p>", "\n")
-    )
+    text = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<p>", "").replace("</p>", "\n")
     return html, text
 
 
@@ -55,13 +50,7 @@ def _load_email_template(campaign: Campaign) -> tuple[str, str]:
 
 
 def _send_smtp_message(
-    *,
-    mailbox_id: str,
-    owner_username: str,
-    to_email: str,
-    subject: str,
-    html: str,
-    text: str,
+    *, mailbox_id: str, owner_username: str, to_email: str, subject: str, html: str, text: str
 ) -> str:
     from src.generator.delivery.smtp_mailboxes import resolve_smtp_credentials
 
@@ -91,6 +80,70 @@ def _send_smtp_message(
     return f"smtp:{to_email}:{int(_now().timestamp())}"
 
 
+def _send_delivery_message(
+    *,
+    connection_id: str,
+    owner_username: str,
+    to_email: str,
+    subject: str,
+    html: str,
+    text: str,
+    job_id: str | None = None,
+    row_id: str = "",
+) -> str:
+    """Send one message using the saved per-user connection."""
+    from src.campaigns.connection_service import resolve_connection
+
+    connection = resolve_connection(connection_id, owner_username)
+    if connection.transport == "smtp":
+        return _send_smtp_message(
+            mailbox_id=connection.id,
+            owner_username=owner_username,
+            to_email=to_email,
+            subject=subject,
+            html=html,
+            text=text,
+        )
+
+    row = {"ID": row_id or f"test-{int(_now().timestamp())}", "EMAIL": to_email}
+    if connection.transport == "rusender":
+        from src.generator.delivery.sender_agent import _send_via_rusender
+
+        result = _send_via_rusender(
+            row,
+            to_email,
+            [],
+            subject,
+            body_override=text,
+            job_id=job_id,
+            sender_email=connection.email,
+            credential_api_key=connection.secret,
+            credential_sender_name=connection.sender_name,
+            credential_api_base_url=connection.api_base_url,
+        )
+    elif connection.transport == "mailopost":
+        from src.generator.delivery.sender_agent import _send_via_mailopost
+
+        result = _send_via_mailopost(
+            row,
+            to_email,
+            [],
+            subject,
+            body_override=text,
+            job_id=job_id,
+            sender_email=connection.email,
+            credential_api_token=connection.secret,
+            credential_sender_name=connection.sender_name,
+            credential_api_base_url=connection.api_base_url,
+        )
+    else:
+        raise RuntimeError(f"Неподдерживаемый способ отправки: {connection.transport}")
+    message_id = str(result.get("message_id") or result.get("uuid") or "")
+    if not message_id:
+        raise RuntimeError(f"{connection.transport} не вернул идентификатор письма.")
+    return f"{connection.transport}:{message_id}"
+
+
 def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
     campaign_id = str(kwargs.get("campaign_id") or "")
     batch_id = str(kwargs.get("batch_id") or "")
@@ -118,10 +171,17 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
         session.flush()
 
         recipient_ids = list(batch.recipient_ids or [])
-        mailbox_id = str(kwargs.get("smtp_mailbox_id") or camp.smtp_mailbox_id or "")
+        connection_id = str(kwargs.get("smtp_mailbox_id") or camp.smtp_mailbox_id or "")
         owner = camp.owner_username
         subject_template, body_html_template = _load_email_template(camp)
         job_id = camp.job_id
+
+    from src.campaigns.connection_service import resolve_connection
+
+    if not connection_id:
+        raise RuntimeError("Не выбрано подключение отправителя.")
+    connection = resolve_connection(connection_id, owner)
+    transport = connection.transport
 
     sent = 0
     errors = 0
@@ -140,15 +200,11 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                 batch.status = "cancelled"
                 session.flush()
                 return {"status": "cancelled", "sent": sent, "errors": errors}
-
             if recipient.send_status == "sent":
                 continue
 
             accepted = record_delivery_attempt(
-                campaign_id=campaign_id,
-                recipient_id=int(recipient_id),
-                batch_id=batch_id,
-                status="sending",
+                campaign_id=campaign_id, recipient_id=int(recipient_id), batch_id=batch_id, status="sending"
             )
             if not accepted and recipient.send_status == "sent":
                 continue
@@ -156,9 +212,6 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
             html, text = _render_body(body_html_template, recipient, camp)
             subject = subject_template.replace("{{company}}", recipient.company or "")
             try:
-                if not mailbox_id:
-                    raise RuntimeError("SMTP mailbox is not configured")
-                # Consent request path: create consent token when scenario requires it
                 if str(kwargs.get("send_mode") or "") == "consent_request" and job_id:
                     try:
                         from src.generator.delivery.consent_store import prepare_consent_request
@@ -172,11 +225,11 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                                 "Email": recipient.email,
                             },
                             recipient=recipient.email,
-                            transport="smtp",
+                            transport=transport,
                             attachment_mode=camp.document_mode or "kp",
                             subject_template=subject,
                             campaign_name=camp.name,
-                            sender_email=None,
+                            sender_email=connection.email,
                         )
                         token = str((consent or {}).get("token") or "")
                         if token:
@@ -184,18 +237,20 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
 
                             base = str(getattr(settings, "public_base_url", "") or "http://localhost:9806").rstrip("/")
                             link = f"{base}/consent/confirm/{token}"
-                            html = f"{html}<p><a href=\"{link}\">Подтвердить согласие</a></p>"
+                            html = f'{html}<p><a href="{link}">Подтвердить согласие</a></p>'
                             text = f"{text}\n\nПодтвердить согласие: {link}"
                     except Exception as consent_exc:
                         logger.warning("campaign_consent_prepare_failed", error=str(consent_exc))
 
-                message_id = _send_smtp_message(
-                    mailbox_id=mailbox_id,
+                message_id = _send_delivery_message(
+                    connection_id=connection_id,
                     owner_username=owner,
                     to_email=recipient.email,
                     subject=subject,
                     html=html,
                     text=text,
+                    job_id=job_id,
+                    row_id=str(recipient.id),
                 )
                 recipient.send_status = "sent"
                 recipient.last_error = None
@@ -228,12 +283,13 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                                     else recipient.id
                                 ),
                                 "status": "sent",
-                                "transport": "smtp",
+                                "transport": transport,
                                 "campaign_name": camp.name,
                                 "campaign_id": campaign_id,
                                 "sent_at": _now().isoformat(),
                                 "subject": subject,
                                 "send_mode": "materials",
+                                "provider_message_id": message_id,
                             },
                         )
                     except Exception:

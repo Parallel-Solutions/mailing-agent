@@ -609,8 +609,13 @@ def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_ad
             errors.append("Укажите название рассылки")
         if not (camp.mail_subject or "").strip():
             errors.append("Укажите тему письма")
-        if not camp.smtp_mailbox_id and camp.transport == "smtp":
-            errors.append("Выберите отправителя (SMTP-подключение)")
+        from src.campaigns.connection_service import validate_connection_choice
+
+        connection_error = validate_connection_choice(
+            camp.smtp_mailbox_id, camp.owner_username, camp.transport
+        )
+        if connection_error:
+            errors.append(connection_error)
         active = session.scalar(
             select(func.count())
             .select_from(CampaignRecipient)

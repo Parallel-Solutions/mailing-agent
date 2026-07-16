@@ -5,14 +5,25 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
+from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
+from docx import Document
+from pypdf import PdfReader
 from sqlalchemy import select
 
 from src.infra.db import session_scope
 from src.infra.models import MailTemplate, TemplateVersion
+from src.infra.object_store import delete as delete_object
+from src.infra.object_store import get_bytes, put_bytes
 
 VARIABLE_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+FILE_TEMPLATE_EXTENSIONS = {
+    "kp": {".docx", ".pdf", ".html", ".htm"},
+    "contract": {".docx"},
+}
 
 
 def _now() -> datetime:
@@ -34,6 +45,46 @@ def _extract_variables(text: str) -> list[dict[str, Any]]:
         for name in names
     ]
 
+
+def _decode_text(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _file_text(filename: str, data: bytes) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix in {".html", ".htm"}:
+        return _decode_text(data)
+    if suffix == ".docx":
+        document = Document(BytesIO(data))
+        chunks = [paragraph.text for paragraph in document.paragraphs]
+        for table in document.tables:
+            for row in table.rows:
+                chunks.extend(cell.text for cell in row.cells)
+        for section in document.sections:
+            chunks.extend(paragraph.text for paragraph in section.header.paragraphs)
+            chunks.extend(paragraph.text for paragraph in section.footer.paragraphs)
+        return "\n".join(chunks)
+    if suffix == ".pdf":
+        reader = PdfReader(BytesIO(data))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    return ""
+
+
+def _validate_file_template_type(template_type: str, filename: str) -> str:
+    normalized_type = str(template_type or "").strip().lower()
+    allowed = FILE_TEMPLATE_EXTENSIONS.get(normalized_type)
+    if not allowed:
+        raise ValueError("Файловая загрузка доступна только для КП и договоров")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in allowed:
+        formats = ", ".join(sorted(allowed))
+        raise ValueError(f"Для этого типа шаблона доступны форматы: {formats}")
+    return normalized_type
 
 def template_to_dict(row: MailTemplate, version: TemplateVersion | None = None) -> dict[str, Any]:
     payload = {
@@ -107,6 +158,131 @@ def create_template(
         session.flush()
         return template_to_dict(tmpl, session.get(TemplateVersion, version_id))
 
+
+def upload_file_version(
+    owner_username: str,
+    *,
+    name: str,
+    template_type: str,
+    filename: str,
+    data: bytes,
+    content_type: str | None = None,
+    template_id: str | None = None,
+) -> dict[str, Any]:
+    safe_filename = Path(filename).name
+    normalized_type = _validate_file_template_type(template_type, safe_filename)
+    if not data:
+        raise ValueError("Файл шаблона пуст")
+
+    version_id = _new_id()
+    resolved_template_id = template_id or _new_id()
+    storage_key = f"template-library/{resolved_template_id}/{version_id}/{safe_filename}"
+    try:
+        variables = _extract_variables(_file_text(safe_filename, data))
+    except Exception as exc:
+        raise ValueError("Не удалось прочитать содержимое шаблона") from exc
+    put_bytes(storage_key, data, content_type=content_type)
+
+    try:
+        with session_scope() as session:
+            if template_id:
+                tmpl = session.get(MailTemplate, template_id)
+                if tmpl is None or tmpl.owner_username != owner_username:
+                    raise FileNotFoundError("Шаблон не найден")
+                if tmpl.template_type != normalized_type:
+                    raise ValueError("Тип загружаемого файла не совпадает с типом шаблона")
+                current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
+                version_number = (current.version_number + 1) if current else 1
+                if name:
+                    tmpl.name = name
+            else:
+                version_number = 1
+                tmpl = MailTemplate(
+                    id=resolved_template_id,
+                    owner_username=owner_username,
+                    name=name or Path(safe_filename).stem or "Шаблон",
+                    template_type=normalized_type,
+                    status="ready",
+                    active_version_id=version_id,
+                    tags=[],
+                )
+                session.add(tmpl)
+
+            version = TemplateVersion(
+                id=version_id,
+                template_id=resolved_template_id,
+                version_number=version_number,
+                subject="",
+                body_html="",
+                body_text="",
+                variables=variables,
+                storage_key=storage_key,
+                filename=safe_filename,
+                created_by=owner_username,
+            )
+            session.add(version)
+            tmpl.active_version_id = version_id
+            tmpl.status = "ready"
+            tmpl.archived = False
+            tmpl.updated_at = _now()
+            session.flush()
+            return template_to_dict(tmpl, version)
+    except BaseException:
+        delete_object(storage_key)
+        raise
+
+
+def get_template_file(template_id: str, owner_username: str) -> dict[str, Any] | None:
+    with session_scope() as session:
+        tmpl = session.get(MailTemplate, template_id)
+        if tmpl is None or tmpl.owner_username != owner_username or not tmpl.active_version_id:
+            return None
+        version = session.get(TemplateVersion, tmpl.active_version_id)
+        if version is None or not version.storage_key or not version.filename:
+            return None
+        storage_key = version.storage_key
+        filename = version.filename
+        template_type = tmpl.template_type
+    return {
+        "content": get_bytes(storage_key),
+        "filename": filename,
+        "template_type": template_type,
+        "storage_key": storage_key,
+    }
+
+
+def build_file_preview(template_id: str, owner_username: str) -> dict[str, Any] | None:
+    item = get_template_file(template_id, owner_username)
+    if item is None:
+        return None
+    data = item["content"]
+    filename = str(item["filename"])
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf":
+        return {"content": data, "filename": f"{Path(filename).stem}.pdf", "media_type": "application/pdf"}
+
+    with TemporaryDirectory(prefix="template-preview-") as temp_dir:
+        root = Path(temp_dir)
+        preview_path = root / "preview.pdf"
+        if suffix == ".docx":
+            source_path = root / filename
+            source_path.write_bytes(data)
+            from src.generator.generation.template_preview import _convert_preview_docx_to_pdf
+
+            converted = _convert_preview_docx_to_pdf(source_path, root / "converted")
+        elif suffix in {".html", ".htm"}:
+            from src.generator.generation.pdf_converter import convert_html_to_pdf
+
+            converted = convert_html_to_pdf(_decode_text(data), preview_path, filename=filename)
+        else:
+            converted = None
+        if converted is None or not converted.exists():
+            raise RuntimeError("Не удалось сформировать PDF-предпросмотр шаблона")
+        return {
+            "content": converted.read_bytes(),
+            "filename": f"{Path(filename).stem}.pdf",
+            "media_type": "application/pdf",
+        }
 
 def list_templates(
     owner_username: str,
@@ -189,6 +365,20 @@ def duplicate_template(template_id: str, owner_username: str) -> dict[str, Any] 
     if not source:
         return None
     version = source.get("version") or {}
+    storage_key = str(version.get("storage_key") or "")
+    filename = str(version.get("filename") or "")
+    if storage_key and filename:
+        file_item = get_template_file(template_id, owner_username)
+        if file_item is None:
+            return None
+        return upload_file_version(
+            owner_username,
+            name=f"{source['name']} (копия)",
+            template_type=source["template_type"],
+            filename=filename,
+            data=file_item["content"],
+            content_type=None,
+        )
     return create_template(
         owner_username,
         name=f"{source['name']} (копия)",
