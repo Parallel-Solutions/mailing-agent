@@ -21,7 +21,8 @@ services:
   app:
     environment:
       USE_LEGACY_UI: "0"
-      SEED_DEMO_DATA_ON_STARTUP: "1"
+      # Off when local DB holds imported test-stand stats; seed re-adds SMTP demo rows and shifts KPI.
+      SEED_DEMO_DATA_ON_STARTUP: "0"
       APP_ALLOW_REGISTRATION: "1"
       PUBLIC_BASE_URL: http://localhost:9806
       SENDER_TRANSPORT: smtp

@@ -24,7 +24,7 @@ test.describe('Infrastructure smoke @smoke', () => {
     await expect(page.getByPlaceholder('Логин')).toBeVisible();
 
     await page.goto('/');
-    await expect(page.getByText('Дашборд').first()).toBeVisible();
+    await expect(page.getByTestId('statistics-page')).toBeVisible();
     await expect(page.locator('body')).not.toBeEmpty();
 
     const me = await request.get(`${API_URL}/api/auth/me`);

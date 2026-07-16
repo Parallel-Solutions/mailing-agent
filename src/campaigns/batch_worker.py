@@ -219,13 +219,21 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                             "sent_mail_log",
                             {
                                 "email": recipient.email,
+                                "recipient": recipient.email,
                                 "organization": recipient.company,
+                                "mun_name": recipient.company,
+                                "row_id": str(
+                                    (recipient.row_index + 1)
+                                    if recipient.row_index is not None
+                                    else recipient.id
+                                ),
                                 "status": "sent",
                                 "transport": "smtp",
                                 "campaign_name": camp.name,
                                 "campaign_id": campaign_id,
                                 "sent_at": _now().isoformat(),
                                 "subject": subject,
+                                "send_mode": "materials",
                             },
                         )
                     except Exception:

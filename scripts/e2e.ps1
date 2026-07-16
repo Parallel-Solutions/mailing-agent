@@ -11,8 +11,10 @@ Set-StrictMode -Version Latest
 $Root = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $Root
 
+# Separate compose project so E2E never rewrites local dev app (mailing on :9806).
 $Compose = @(
   'docker', 'compose',
+  '-p', 'mailing-agent-e2e',
   '-f', 'docker-compose.yml',
   '-f', 'docker-compose.e2e.yml',
   '--env-file', '.env.e2e'
@@ -37,8 +39,9 @@ function Ensure-EnvFile {
 }
 
 function Invoke-Compose {
-  param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-  & @Compose @Args
+  # Explicit array: PowerShell must not bind -d/-T as common parameters.
+  param([Parameter(Mandatory = $true)][string[]]$ComposeArgs)
+  & @Compose @ComposeArgs
   if ($LASTEXITCODE -ne 0) {
     throw "docker compose failed with exit code $LASTEXITCODE"
   }
@@ -52,9 +55,9 @@ function Show-ReportHint {
 
 function Show-FailureLogs {
   Write-Host "---- recent app logs ----" -ForegroundColor Yellow
-  try { Invoke-Compose logs --no-color --tail 80 app } catch { Write-Host $_ }
+  try { Invoke-Compose -ComposeArgs @('logs', '--no-color', '--tail', '80', 'app') } catch { Write-Host $_ }
   Write-Host "---- recent mailpit logs ----" -ForegroundColor Yellow
-  try { Invoke-Compose logs --no-color --tail 40 mailpit } catch { Write-Host $_ }
+  try { Invoke-Compose -ComposeArgs @('logs', '--no-color', '--tail', '40', 'mailpit') } catch { Write-Host $_ }
 }
 
 function Ensure-Dirs {
@@ -70,15 +73,16 @@ function Ensure-Dirs {
   }
 }
 
-function Cmd-Build { Invoke-Compose --profile playwright build playwright }
-function Cmd-Up { Invoke-Compose up -d --build }
-function Cmd-Down { Invoke-Compose --profile playwright down }
-function Cmd-Clean { Invoke-Compose --profile playwright down -v --remove-orphans }
+function Cmd-Build { Invoke-Compose -ComposeArgs @('--profile', 'playwright', 'build', 'playwright') }
+function Cmd-Up { Invoke-Compose -ComposeArgs @('up', '--detach', '--build') }
+function Cmd-Down { Invoke-Compose -ComposeArgs @('--profile', 'playwright', 'down') }
+function Cmd-Clean { Invoke-Compose -ComposeArgs @('--profile', 'playwright', 'down', '-v', '--remove-orphans') }
 
 function Cmd-Test {
   param([string[]]$PwArgs)
   try {
-    Invoke-Compose --profile playwright run --rm --build playwright @PwArgs
+    $composeArgs = @('--profile', 'playwright', 'run', '--rm', '--build', 'playwright') + @($PwArgs)
+    Invoke-Compose -ComposeArgs $composeArgs
   } catch {
     Show-FailureLogs
     Show-ReportHint
@@ -104,9 +108,9 @@ function Cmd-Full {
   Write-Host "== waiting for health ==" -ForegroundColor Green
   $deadline = (Get-Date).AddMinutes(5)
   do {
-    $json = docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e ps --format json 2>$null
     Start-Sleep -Seconds 3
-    $appHealthy = docker inspect --format='{{.State.Health.Status}}' (docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e ps -q app) 2>$null
+    $appId = & @Compose @('ps', '-q', 'app') 2>$null
+    $appHealthy = if ($appId) { docker inspect --format='{{.State.Health.Status}}' $appId 2>$null } else { '' }
     if ($appHealthy -eq 'healthy') { break }
   } while ((Get-Date) -lt $deadline)
   if ($appHealthy -ne 'healthy') {

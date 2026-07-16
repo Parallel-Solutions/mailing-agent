@@ -15,12 +15,89 @@ from sqlalchemy import select
 
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignBatch, CampaignRecipient
+from src.jobs.job_docs import append_event, read_sent_mail_log
 from src.security.user_store import UserStoreError, create_user, get_user_record
 from src.utils.config import settings
 from src.utils.logger import logger
 
 DEMO_USERNAME = "demo"
 DEMO_PASSWORD = "demo-pass-123"
+
+
+def _ensure_campaign_sent_mail_log(campaign_id: str) -> int:
+    """Write sent_mail_log events for seeded sent/failed recipients (idempotent)."""
+    with session_scope() as session:
+        camp = session.get(Campaign, campaign_id)
+        if camp is None:
+            return 0
+        job_id = str(camp.job_id or "").strip()
+        if not job_id:
+            return 0
+        campaign_name = str(camp.name or "")
+        subject = str(camp.mail_subject or "")
+        recipients = list(
+            session.scalars(
+                select(CampaignRecipient)
+                .where(CampaignRecipient.campaign_id == campaign_id)
+                .order_by(CampaignRecipient.row_index)
+            ).all()
+        )
+        payload_rows: list[dict[str, Any]] = []
+        for rec in recipients:
+            status = str(rec.send_status or "").strip().lower()
+            if status not in {"sent", "failed"}:
+                continue
+            email = str(rec.email or "").strip()
+            if not email:
+                continue
+            row_id = str(rec.row_index + 1 if rec.row_index is not None else rec.id)
+            record: dict[str, Any] = {
+                "sent_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "transport": "smtp",
+                "row_id": row_id,
+                "mun_name": str(rec.company or ""),
+                "recipient": email,
+                "email": email,
+                "organization": str(rec.company or ""),
+                "subject": subject,
+                "campaign_name": campaign_name,
+                "campaign_id": campaign_id,
+                "status": status,
+                "send_mode": "materials",
+                "attachments": [],
+                "attachment_paths": [],
+            }
+            if status == "failed":
+                err = str(rec.last_error or "SMTP rejected").strip() or "SMTP rejected"
+                record["warning"] = err
+                record["error"] = err
+            payload_rows.append(record)
+
+    if not payload_rows:
+        return 0
+    if read_sent_mail_log(job_id):
+        return 0
+    written = 0
+    for record in payload_rows:
+        append_event(
+            job_id,
+            "sent_mail_log",
+            record,
+            idempotency_key=f"seed:{campaign_id}:{record['recipient']}:{record['status']}",
+        )
+        written += 1
+    return written
+
+
+def _backfill_sent_mail_logs_for_user(username: str) -> int:
+    """Ensure demo campaigns with sent/failed recipients appear in statistics."""
+    listed = service.list_campaigns(username, limit=200)
+    total = 0
+    for item in listed.get("items") or []:
+        campaign_id = str(item.get("id") or "").strip()
+        if campaign_id:
+            total += _ensure_campaign_sent_mail_log(campaign_id)
+    return total
 
 
 def ensure_demo_user() -> str:
@@ -92,8 +169,20 @@ def _seed_for_user(username: str, *, force: bool = False) -> dict[str, Any]:
 
     existing = service.list_campaigns(username, limit=5)
     if existing["total"] > 0 and not force:
-        logger.info("seed_demo_data_skipped", reason="campaigns_already_exist", username=username, total=existing["total"])
-        return {"skipped": True, "username": username, "mailpit_mailbox_id": mailpit_id}
+        backfilled = _backfill_sent_mail_logs_for_user(username)
+        logger.info(
+            "seed_demo_data_skipped",
+            reason="campaigns_already_exist",
+            username=username,
+            total=existing["total"],
+            sent_mail_log_backfilled=backfilled,
+        )
+        return {
+            "skipped": True,
+            "username": username,
+            "mailpit_mailbox_id": mailpit_id,
+            "sent_mail_log_backfilled": backfilled,
+        }
 
     email_tmpl = template_service.create_template(
         username,
@@ -254,6 +343,7 @@ def _seed_for_user(username: str, *, force: bool = False) -> dict[str, Any]:
             select(CampaignRecipient).where(CampaignRecipient.campaign_id == completed["id"])
         ).all():
             rec.send_status = "sent"
+    _ensure_campaign_sent_mail_log(completed["id"])
 
     errored = service.create_campaign(
         username,
@@ -287,6 +377,7 @@ def _seed_for_user(username: str, *, force: bool = False) -> dict[str, Any]:
             recs[0].last_error = "SMTP rejected"
             if len(recs) > 1:
                 recs[1].send_status = "sent"
+    _ensure_campaign_sent_mail_log(errored["id"])
 
     running = service.create_campaign(
         username,
@@ -346,6 +437,7 @@ def _seed_for_user(username: str, *, force: bool = False) -> dict[str, Any]:
                 )
             )
 
+    backfilled = _backfill_sent_mail_logs_for_user(username)
     result = {
         "username": username,
         "mailpit_mailbox_id": mailpit_id,
@@ -362,8 +454,9 @@ def _seed_for_user(username: str, *, force: bool = False) -> dict[str, Any]:
             "errored": errored["id"],
             "running": running["id"],
         },
+        "sent_mail_log_backfilled": backfilled,
     }
-    logger.info("seed_demo_data_completed", username=username)
+    logger.info("seed_demo_data_completed", username=username, sent_mail_log_backfilled=backfilled)
     return result
 
 

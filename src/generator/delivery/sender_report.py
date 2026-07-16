@@ -594,14 +594,51 @@ def unisender_delivery_report_has_data(job_id: str | None = None) -> bool:
     return sender_delivery_report_has_data(job_id)
 
 
-def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dict[str, Any]], str]:
-    items = _load_delivery_log_items(job_id)
+def _initial_log_provider_status(item: dict[str, Any]) -> str:
+    """Resolve the best initial delivery status from a sent_mail_log item.
+
+    SMTP has no delivery webhooks, so the log ``status`` (sent/failed) is final.
+    Provider APIs keep ``provider.status`` (usually accepted) until webhooks arrive.
+    """
+
+    provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
+    provider_status = _safe_text(provider.get("status"))
+    item_status = _normalize_provider_status(_safe_text(item.get("status")))
+    transport = _provider_name(item).lower()
+
+    if transport == "smtp":
+        if item_status in {"sent", "success", "ok", "delivered", "ok_delivered"}:
+            return "delivered"
+        if item_status in {"failed", "error", "rejected", "not_delivered", "bounced"}:
+            return "failed"
+        if provider_status:
+            return provider_status
+        return item_status or "accepted"
+
+    return provider_status or item_status or "accepted"
+
+
+def _build_delivery_rows(
+    job_id: str | None,
+    *,
+    refresh: bool,
+    for_statistics: bool = False,
+) -> tuple[list[dict[str, Any]], str]:
+    items = _load_delivery_log_items(job_id, for_statistics=for_statistics)
     current_data_roles = _current_data_recipient_roles(job_id)
     refresh_messages: list[str] = []
     if refresh:
         go_refresh_error = _refresh_unisender_go_event_dump(job_id, items)
         if go_refresh_error:
             refresh_messages.append(go_refresh_error)
+        try:
+            from src.generator.delivery.provider_status_sync import refresh_provider_events_for_job
+
+            provider_refresh_note = refresh_provider_events_for_job(job_id, items)
+            if provider_refresh_note:
+                refresh_messages.append(provider_refresh_note)
+        except Exception as exc:
+            refresh_messages.append(_safe_text(exc) or "не удалось обновить статусы RuSender/MailoPost")
     go_events = _latest_unisender_go_events(job_id)
     rusender_events = _latest_rusender_events(job_id)
     mailopost_events = _latest_mailopost_events(job_id)
@@ -626,6 +663,8 @@ def _build_delivery_rows(job_id: str | None, *, refresh: bool) -> tuple[list[dic
     for item in items:
         provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
         message_id = _message_id(item)
+        # Test stand (pr-29) uses provider.status only; keep SMTP helper for unit tests
+        # and future deploy, but do not change dashboard KPI vs current test.
         accepted_status = _safe_text(provider.get("status")) or "accepted"
         provider_status = accepted_status
         checked_at = _safe_text(provider.get("checked_at"))
@@ -952,12 +991,16 @@ def _save_delivery_status_cache(job_id: str | None, statuses: dict[str, dict[str
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _load_delivery_log_items(job_id: str | None) -> list[dict[str, Any]]:
+def _load_delivery_log_items(job_id: str | None, *, for_statistics: bool = False) -> list[dict[str, Any]]:
     items = [
         item
         for item in _load_sent_mail_log_items(job_id)
         if _safe_text(item.get("transport")) in {"unisender", "rusender", "smtp", "mailopost"}
     ]
+    if for_statistics:
+        # Manager statistics must show the full mailing history, not only the
+        # currently selected sender-state / send_run snapshot.
+        return _dedupe_latest_log_items(items)
     items = _filter_items_by_current_sender_state(job_id, items)
     items = _filter_items_by_current_data(job_id, items)
     send_run_id, send_run_started_at = _current_send_scope(job_id)
@@ -1880,7 +1923,12 @@ def _delivery_outcome(status: str) -> str:
         return "Предупреждение"
     if normalized in UNISENDER_GO_SOFT_ERROR_STATUSES:
         return "Временная ошибка"
-    if normalized in UNISENDER_GO_HARD_ERROR_STATUSES or normalized.startswith("err_") or normalized.startswith("skip_"):
+    if (
+        normalized in UNISENDER_GO_HARD_ERROR_STATUSES
+        or normalized in {"failed", "error", "rejected", "not_delivered"}
+        or normalized.startswith("err_")
+        or normalized.startswith("skip_")
+    ):
         return "Ошибка"
     return "В обработке"
 

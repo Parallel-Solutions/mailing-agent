@@ -1,10 +1,22 @@
 # Ручное тестирование CampaignFlow
 
+## Режим: локально = prod-like
+
+Ручная проверка UI всегда через **`dev.ps1`** → БД **`mailing`** (как в проде/на тесте).
+
+| Режим | Команда | БД |
+|-------|---------|-----|
+| Локальная ручная проверка | `.\scripts\dev.ps1 start` | `mailing` |
+| Playwright E2E | `.\scripts\e2e.ps1 …` (проект `mailing-agent-e2e`) | `mailing_e2e` |
+| Unit/integration | `docker compose -f docker-compose.test.yml run --rm test` | `mailing_test` |
+
+Не используйте e2e overlay / `mailing_e2e` для ручного тестирования. E2E не должен переписывать app на `:9806`.
+
 ## Требования
 
 - Docker Desktop
 - PowerShell
-- Порты 9806 и 8025 свободны
+- Порты 9806 и 8025 свободны (E2E использует 19806 / 18025)
 
 ## Запуск
 

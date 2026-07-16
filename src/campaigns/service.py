@@ -93,15 +93,12 @@ def create_campaign(owner_username: str, data: dict[str, Any] | None = None) -> 
     campaign_id = _new_id()
     with session_scope() as session:
         job_id = f"job-{campaign_id.replace('-', '')[:12]}"
-        try:
-            from src.jobs.access import assign_job_owner
-            from src.jobs.storage import resolve_job_paths
-            from src.security.auth import Principal
+        from src.jobs.access import assign_job_owner
+        from src.jobs.storage import resolve_job_paths
+        from src.security.auth import Principal
 
-            resolve_job_paths(job_id).ensure_dirs()
-            assign_job_owner(job_id, Principal(owner_username, "default", "user"), overwrite=True)
-        except Exception:
-            pass
+        resolve_job_paths(job_id).ensure_dirs()
+        assign_job_owner(job_id, Principal(owner_username, "default", "user"), overwrite=True)
 
         row = Campaign(
             id=campaign_id,
@@ -765,6 +762,17 @@ def launch_campaign(
         camp.total_count = len(recipient_ids)
         camp.updated_at = _now()
         session.flush()
+
+        # Heal missing JobOwner so statistics scoping matches Campaign ownership.
+        if camp.job_id:
+            from src.jobs.access import assign_job_owner
+            from src.security.auth import Principal
+
+            assign_job_owner(
+                camp.job_id,
+                Principal(camp.owner_username, "default", "user"),
+                overwrite=False,
+            )
 
         return {
             "campaign": campaign_to_dict(camp),

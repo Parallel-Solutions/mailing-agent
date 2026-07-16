@@ -67,19 +67,16 @@ def create_statistics_router(
     def _principal_name(principal: object) -> str:
         return coerce_principal(principal).username
 
-    def _list_user_mailing_jobs(principal: object, *, limit: int = 200) -> list[str]:
+    def _list_mailing_jobs_for_stats(principal: object) -> list[str]:
         # Statistics only make sense for jobs that actually sent mail. Resolve the
         # candidate list from the database (a single grouped query, already ordered
-        # by most recent activity) instead of walking the jobs directory on disk,
-        # which used to `rglob` every file of every job on every request.
-        visible: list[str] = []
-        for job_id in list_job_ids_with_sent_mail():
-            if not job_is_visible(job_id, principal):
-                continue
-            visible.append(job_id)
-            if len(visible) >= limit:
-                break
-        return visible
+        # by most recent activity) instead of walking the jobs directory on disk.
+        # Admins see the full set; regular users only jobs they own (job_is_visible).
+        actor = coerce_principal(principal)
+        job_ids = list_job_ids_with_sent_mail()
+        if actor.is_admin:
+            return job_ids
+        return [job_id for job_id in job_ids if job_is_visible(job_id, principal)]
 
     def _resolve_job_ids(
         principal: object,
@@ -91,7 +88,7 @@ def create_statistics_router(
         if selected:
             ensure_job_access(selected, principal, allow_missing=False)
             return (selected,)
-        return tuple(_list_user_mailing_jobs(principal))
+        return tuple(_list_mailing_jobs_for_stats(principal))
 
     def _build_filters(
         principal: object,

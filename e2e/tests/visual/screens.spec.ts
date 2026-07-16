@@ -48,10 +48,10 @@ test.describe('Visual regression @visual', () => {
     await expectStableScreenshot(page, 'login.png');
   });
 
-  test('dashboard and main routes @visual', async ({ page }) => {
+  test('statistics home and main routes @visual', async ({ page }) => {
     await openAppAuthed(page);
-    await expect(page.getByText('Дашборд').first()).toBeVisible();
-    await expectStableScreenshot(page, 'dashboard.png');
+    await expect(page.getByTestId('statistics-page')).toBeVisible();
+    await expectStableScreenshot(page, 'statistics.png');
 
     for (const route of ['/campaigns', '/templates', '/audiences', '/connections', '/profile']) {
       await page.goto(route);

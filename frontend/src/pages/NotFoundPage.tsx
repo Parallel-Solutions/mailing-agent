@@ -6,10 +6,10 @@ export function NotFoundPage() {
     <Result
       status="404"
       title="Страница не найдена"
-      subTitle="Проверьте адрес или вернитесь на дашборд"
+      subTitle="Проверьте адрес или вернитесь на главную"
       extra={
         <Link to="/">
-          <Button type="primary">На дашборд</Button>
+          <Button type="primary">На главную</Button>
         </Link>
       }
     />

@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { attachGuard, openAppAuthed } from '../fixtures/ui';
 
 const MENU = [
-  { path: '/', name: 'Дашборд' },
+  { path: '/', name: 'Статистика отправок' },
   { path: '/campaigns/new', name: 'Создать рассылку' },
   { path: '/campaigns', name: 'Рассылки' },
   { path: '/templates', name: 'Шаблоны и документы' },
@@ -12,10 +12,15 @@ const MENU = [
 ] as const;
 
 test.describe('Navigation @smoke', () => {
-  test('dashboard is home and menu routes open @smoke', async ({ page }) => {
+  test('statistics is home and menu routes open @smoke', async ({ page }) => {
     const guard = await openAppAuthed(page);
     await expect(page).toHaveURL(/\/$/);
-    await expect(page.getByText('Дашборд').first()).toBeVisible();
+    await expect(page.getByTestId('statistics-page')).toBeVisible();
+    await expect(page.getByText('Статистика отправок').first()).toBeVisible();
+
+    await page.goto('/statistics', { waitUntil: 'domcontentloaded' });
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId('statistics-page')).toBeVisible();
 
     for (const item of MENU) {
       await page.goto(item.path, { waitUntil: 'domcontentloaded' });
@@ -41,4 +46,3 @@ test.describe('Navigation @smoke', () => {
     guard.assertClean('login route');
   });
 });
-
