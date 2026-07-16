@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     app_admin_tenant_id: str = "admin"
     app_session_ttl_days: int = 7
     app_allow_registration: bool = False
+    use_legacy_ui: bool = False
+    frontend_dist_dir: str = ""
+    seed_demo_data_on_startup: bool = False
 
     sender_domain_limits_json: str = (
         '{"gmail.com":60,"mail.ru":40,"yandex.ru":40,"outlook.com":40,"other":30}'

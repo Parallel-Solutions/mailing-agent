@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>CampaignFlow - Profile &amp; Settings</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed": "#dee4db",
+                        "error": "#ba1a1a",
+                        "surface-container": "#edeeea",
+                        "primary-fixed": "#cee9dd",
+                        "tertiary": "#254b5b",
+                        "on-primary": "#ffffff",
+                        "on-primary-fixed": "#082019",
+                        "on-error": "#ffffff",
+                        "on-secondary": "#ffffff",
+                        "surface-dim": "#d9dbd7",
+                        "surface-bright": "#f8faf6",
+                        "on-tertiary-fixed-variant": "#254b5c",
+                        "background": "#f8faf6",
+                        "tertiary-fixed-dim": "#a6cce0",
+                        "primary-container": "#4b635a",
+                        "secondary-container": "#dbe2d8",
+                        "surface-variant": "#e1e3df",
+                        "surface-container-lowest": "#ffffff",
+                        "on-primary-container": "#c3ded2",
+                        "secondary": "#596059",
+                        "on-secondary-container": "#5d645d",
+                        "error-container": "#ffdad6",
+                        "inverse-surface": "#2e312f",
+                        "inverse-primary": "#b2ccc1",
+                        "surface-container-highest": "#e1e3df",
+                        "surface-tint": "#4b635a",
+                        "on-error-container": "#93000a",
+                        "surface-container-high": "#e7e9e5",
+                        "tertiary-container": "#3e6374",
+                        "on-secondary-fixed-variant": "#424942",
+                        "surface-container-low": "#f2f4f0",
+                        "on-surface": "#191c1a",
+                        "outline-variant": "#c2c8c4",
+                        "secondary-fixed-dim": "#c2c8bf",
+                        "surface": "#f8faf6",
+                        "on-background": "#191c1a",
+                        "outline": "#727875",
+                        "on-tertiary-fixed": "#001f2a",
+                        "on-surface-variant": "#424845",
+                        "tertiary-fixed": "#c2e8fc",
+                        "primary": "#344b43",
+                        "on-tertiary-container": "#b8def2",
+                        "inverse-on-surface": "#eff1ed",
+                        "on-secondary-fixed": "#171d17",
+                        "on-primary-fixed-variant": "#344b43",
+                        "on-tertiary": "#ffffff",
+                        "primary-fixed-dim": "#b2ccc1"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "xl": "32px",
+                        "margin-mobile": "16px",
+                        "base": "4px",
+                        "gutter": "24px",
+                        "xs": "4px",
+                        "md": "16px",
+                        "margin-desktop": "32px",
+                        "sm": "8px",
+                        "lg": "24px"
+                    },
+                    "fontFamily": {
+                        "body-lg": ["Inter"],
+                        "label-md": ["Inter"],
+                        "display-lg": ["Inter"],
+                        "title-lg": ["Inter"],
+                        "headline-lg": ["Inter"],
+                        "body-md": ["Inter"],
+                        "label-lg": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-lg": ["16px", {"lineHeight": "24px", "letterSpacing": "0.5px", "fontWeight": "400"}],
+                        "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.5px", "fontWeight": "500"}],
+                        "display-lg": ["57px", {"lineHeight": "64px", "letterSpacing": "-0.25px", "fontWeight": "400"}],
+                        "title-lg": ["22px", {"lineHeight": "28px", "letterSpacing": "0px", "fontWeight": "500"}],
+                        "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "0px", "fontWeight": "600"}],
+                        "body-md": ["14px", {"lineHeight": "20px", "letterSpacing": "0.25px", "fontWeight": "400"}],
+                        "label-lg": ["14px", {"lineHeight": "20px", "letterSpacing": "0.1px", "fontWeight": "500"}]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; background-color: #f8faf6; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .active-tab-indicator {
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background-color: #344b43;
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(225, 227, 225, 0.5);
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background">
+<!-- Sidebar Navigation Shell -->
+<aside class="fixed left-0 top-0 h-full flex flex-col p-md z-50 bg-surface-container-low border-r border-outline-variant w-[280px] hidden md:flex">
+<div class="flex items-center gap-3 px-2 mb-8">
+<div class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined">analytics</span>
+</div>
+<div>
+<h1 class="font-title-lg text-title-lg font-bold text-primary">Marketing Suite</h1>
+<p class="font-body-md text-body-md text-on-surface-variant">Enterprise Tier</p>
+</div>
+</div>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all font-label-lg text-label-lg" href="#">
+<span class="material-symbols-outlined">dashboard</span> Dashboard
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all font-label-lg text-label-lg" href="#">
+<span class="material-symbols-outlined">add_circle</span> Create Campaign
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all font-label-lg text-label-lg" href="#">
+<span class="material-symbols-outlined">send</span> Campaigns
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all font-label-lg text-label-lg" href="#">
+<span class="material-symbols-outlined">description</span> Templates
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all font-label-lg text-label-lg" href="#">
+<span class="material-symbols-outlined">group</span> Audience
+            </a>
+<div class="h-px bg-outline-variant my-4 mx-4"></div>
+<a class="flex items-center gap-3 px-4 py-3 bg-primary-container text-on-primary-container rounded-xl transition-all translate-x-1 font-label-lg text-label-lg" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">person</span> Profile
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all font-label-lg text-label-lg" href="#">
+<span class="material-symbols-outlined">settings</span> Settings
+            </a>
+</nav>
+<button class="mt-auto bg-primary text-on-primary py-4 px-6 rounded-full font-label-lg text-label-lg flex items-center justify-center gap-2 shadow-lg hover:scale-[1.02] transition-transform">
+<span class="material-symbols-outlined">add</span> New Campaign
+        </button>
+</aside>
+<!-- Main Content Area -->
+<main class="md:ml-[280px] min-h-screen">
+<!-- Top Bar Navigation -->
+<header class="flex justify-between items-center w-full px-margin-desktop h-16 z-40 bg-surface border-b border-outline-variant sticky top-0">
+<div class="flex items-center gap-8">
+<span class="font-headline-lg text-headline-lg font-bold text-primary">CampaignFlow</span>
+<nav class="hidden lg:flex gap-6">
+<a class="font-label-lg text-label-lg text-on-surface-variant hover:text-primary transition-colors" href="#">Dashboard</a>
+<a class="font-label-lg text-label-lg text-on-surface-variant hover:text-primary transition-colors" href="#">Campaigns</a>
+<a class="font-label-lg text-label-lg text-on-surface-variant hover:text-primary transition-colors" href="#">Audience</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="relative hidden sm:block">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
+<input class="bg-surface-container-low border-none rounded-full pl-10 pr-4 py-2 w-64 focus:ring-2 focus:ring-primary text-body-md" placeholder="Search resources..." type="text"/>
+</div>
+<button class="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="w-10 h-10 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined">help</span>
+</button>
+<div class="w-10 h-10 rounded-full overflow-hidden border border-outline-variant">
+<img class="w-full h-full object-cover" data-alt="A professional headshot of a smiling female marketing director in her late 30s, wearing a smart casual blazer. The background is a clean, bright office setting with soft natural light, following a modern corporate aesthetic. The overall mood is approachable, professional, and reliable, utilizing a soft color palette consistent with the sage and mint theme." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCc4WoSvq8hnKjpYBqP4f8BbN43WOSkuhAjRU54UYqMzZvifaauL8W5vuYih5yixzO1Q-AHz3Z9j_6kebZUWW5K-_A-W9NnFjbXlQZbXDdMOKqJeXUWCGvt4K2IoRLOtDFPcaPV-nyFfX_O7sxNASwIJzS5rJyiwwUx65XBeh5wKIf7WF8pChN4n12kSXlRyYasDQZsAVBVILEdkhQYfGU8Vrtk6XFaFOeHZUvePyZJTSkIO5edzdT9-g"/>
+</div>
+</div>
+</header>
+<!-- Profile Content -->
+<div class="p-margin-desktop max-w-6xl mx-auto space-y-xl">
+<!-- Header Section -->
+<div class="space-y-4">
+<h2 class="font-headline-lg text-headline-lg text-on-surface">Account Settings</h2>
+<div class="flex border-b border-outline-variant gap-8 overflow-x-auto scrollbar-hide">
+<button class="relative py-4 font-label-lg text-label-lg text-primary whitespace-nowrap">
+                        Personal Profile
+                        <div class="active-tab-indicator"></div>
+</button>
+<button class="py-4 font-label-lg text-label-lg text-on-surface-variant hover:text-on-surface whitespace-nowrap transition-colors" onclick="scrollToSection('connections')">Connections</button>
+<button class="py-4 font-label-lg text-label-lg text-on-surface-variant hover:text-on-surface whitespace-nowrap transition-colors" onclick="scrollToSection('notifications')">Notifications</button>
+<button class="py-4 font-label-lg text-label-lg text-on-surface-variant hover:text-on-surface whitespace-nowrap transition-colors" onclick="scrollToSection('defaults')">Defaults</button>
+</div>
+</div>
+<!-- Bento Layout Content -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-lg">
+<!-- Profile Section (4/12) -->
+<section class="lg:col-span-4 glass-card p-xl rounded-xl space-y-lg shadow-sm" id="profile">
+<div class="flex flex-col items-center text-center space-y-md">
+<div class="relative group">
+<div class="w-32 h-32 rounded-full overflow-hidden border-4 border-surface-container-high">
+<img class="w-full h-full object-cover" data-alt="A professional and friendly marketing manager in a clean corporate environment. The image is bright with high-key lighting, capturing a sense of reliable efficiency. The subject is well-lit with soft shadows, fitting the MD3 tonal layering design principle. Colors are balanced and neutral with a focus on professional clarity." src="https://lh3.googleusercontent.com/aida-public/AB6AXuC2RV0xvuuHZ4LKIoZHTiIHaRq87F-ctKrXUg7O6XGzXpiCVL2qh1MKTzhWNaXOAi_TE9YDZeadkGPA8yls5g5h4Y7s_fTC2yV1Eas3JLyJoAbhfuXJ6fmA3gFEC2oDbCbY-8TlaAT7xcj6lswZo1Yt1GjElaXWL-mgtrgYfdhQ0gHxU6QBKvxmsXSJqDMRNgBuo6THyogZviPQiv0pZI20MJP2J0na69mTMSEZP03UYZgz1btC_oyNFw"/>
+</div>
+<button class="absolute bottom-0 right-0 bg-primary text-on-primary p-2 rounded-full shadow-md hover:scale-110 transition-transform">
+<span class="material-symbols-outlined text-sm">edit</span>
+</button>
+</div>
+<div class="space-y-1">
+<h3 class="font-title-lg text-title-lg text-on-surface">Sarah Jenkins</h3>
+<p class="font-body-md text-body-md text-on-surface-variant">sarah.jenkins@ecoflow.io</p>
+</div>
+</div>
+<div class="space-y-md pt-lg border-t border-outline-variant">
+<div class="flex flex-col gap-1">
+<label class="font-label-md text-label-md text-on-surface-variant">Position</label>
+<p class="font-body-lg text-body-lg text-on-surface">Senior Campaign Lead</p>
+</div>
+<div class="flex flex-col gap-1">
+<label class="font-label-md text-label-md text-on-surface-variant">Company</label>
+<p class="font-body-lg text-body-lg text-on-surface">EcoFlow Marketing Solutions</p>
+</div>
+<button class="w-full mt-4 py-3 border border-outline text-primary rounded-xl font-label-lg text-label-lg hover:bg-surface-container-low transition-colors">
+                            Update Profile
+                        </button>
+</div>
+</section>
+<!-- Connections & Defaults (8/12) -->
+<div class="lg:col-span-8 space-y-lg">
+<!-- Connections Section -->
+<section class="glass-card p-xl rounded-xl shadow-sm space-y-md" id="connections">
+<div class="flex justify-between items-center mb-4">
+<div>
+<h3 class="font-title-lg text-title-lg text-on-surface">Connected SMTPs</h3>
+<p class="font-body-md text-body-md text-on-surface-variant">Manage your outreach email accounts.</p>
+</div>
+<button class="flex items-center gap-2 bg-primary text-on-primary px-4 py-2 rounded-xl font-label-lg text-label-lg hover:opacity-90 transition-opacity">
+<span class="material-symbols-outlined text-base">add</span> Add Account
+                            </button>
+</div>
+<div class="space-y-sm">
+<!-- Connection Item 1 -->
+<div class="flex items-center justify-between p-md bg-surface-container-low rounded-xl border border-outline-variant hover:border-primary transition-colors group">
+<div class="flex items-center gap-md">
+<div class="w-10 h-10 bg-white rounded-lg flex items-center justify-center shadow-sm">
+<span class="material-symbols-outlined text-blue-500">mail</span>
+</div>
+<div>
+<p class="font-label-lg text-label-lg text-on-surface">outreach@ecoflow.io</p>
+<p class="font-body-md text-body-md text-on-surface-variant">G-Suite SMTP • Daily limit: 500</p>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<span class="px-3 py-1 bg-primary-fixed text-on-primary-fixed-variant rounded-full text-xs font-medium flex items-center gap-1">
+<span class="w-2 h-2 bg-primary rounded-full"></span> Active
+                                    </span>
+<button class="text-primary font-label-md text-label-md hover:underline decoration-2 underline-offset-4">Test Connection</button>
+<button class="w-8 h-8 flex items-center justify-center text-on-surface-variant hover:text-error transition-colors">
+<span class="material-symbols-outlined">delete</span>
+</button>
+</div>
+</div>
+<!-- Connection Item 2 -->
+<div class="flex items-center justify-between p-md bg-surface-container-low rounded-xl border border-outline-variant hover:border-primary transition-colors group">
+<div class="flex items-center gap-md">
+<div class="w-10 h-10 bg-white rounded-lg flex items-center justify-center shadow-sm">
+<span class="material-symbols-outlined text-orange-500">alternate_email</span>
+</div>
+<div>
+<p class="font-label-lg text-label-lg text-on-surface">sarah.j@outlook.com</p>
+<p class="font-body-md text-body-md text-on-surface-variant">Outlook SMTP • Daily limit: 300</p>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<span class="px-3 py-1 bg-surface-container-highest text-on-surface-variant rounded-full text-xs font-medium flex items-center gap-1">
+<span class="w-2 h-2 bg-outline rounded-full"></span> Draft
+                                    </span>
+<button class="text-primary font-label-md text-label-md hover:underline decoration-2 underline-offset-4">Finish Setup</button>
+<button class="w-8 h-8 flex items-center justify-center text-on-surface-variant hover:text-error transition-colors">
+<span class="material-symbols-outlined">delete</span>
+</button>
+</div>
+</div>
+</div>
+</section>
+<!-- Default Settings -->
+<section class="glass-card p-xl rounded-xl shadow-sm space-y-md" id="defaults">
+<h3 class="font-title-lg text-title-lg text-on-surface">Global Campaign Defaults</h3>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-lg pt-2">
+<div class="space-y-2">
+<label class="font-label-md text-label-md text-on-surface-variant">Default Sending Interval (Minutes)</label>
+<div class="flex items-center gap-3">
+<input class="w-full h-2 bg-secondary-container rounded-lg appearance-none cursor-pointer accent-primary" max="60" min="1" type="range" value="15"/>
+<span class="font-label-lg text-label-lg text-on-surface min-w-[40px]">15m</span>
+</div>
+<p class="text-[11px] text-on-surface-variant">Recommended: 10-20m to avoid spam filters.</p>
+</div>
+<div class="space-y-2">
+<label class="font-label-md text-label-md text-on-surface-variant">Timezone</label>
+<select class="w-full bg-surface-container-low border border-outline-variant rounded-xl py-2 px-4 text-body-md focus:ring-primary focus:border-primary">
+<option>London (GMT+0)</option>
+<option selected="">New York (EST -5)</option>
+<option>Tokyo (JST +9)</option>
+<option>San Francisco (PST -8)</option>
+</select>
+</div>
+</div>
+<div class="space-y-2 pt-2">
+<label class="font-label-md text-label-md text-on-surface-variant">Default Email Signature</label>
+<div class="border border-outline-variant rounded-xl bg-surface-container-low overflow-hidden">
+<div class="bg-surface-variant p-2 flex gap-2 border-b border-outline-variant">
+<button class="p-1 hover:bg-surface-container rounded transition-colors"><span class="material-symbols-outlined text-sm">format_bold</span></button>
+<button class="p-1 hover:bg-surface-container rounded transition-colors"><span class="material-symbols-outlined text-sm">format_italic</span></button>
+<button class="p-1 hover:bg-surface-container rounded transition-colors"><span class="material-symbols-outlined text-sm">link</span></button>
+</div>
+<textarea class="w-full border-none bg-transparent p-4 text-body-md focus:ring-0" placeholder="Best regards,
+Sarah Jenkins
+Senior Campaign Lead | EcoFlow" rows="4">Best regards,
+Sarah Jenkins
+Senior Campaign Lead | EcoFlow Marketing</textarea>
+</div>
+</div>
+<div class="flex justify-end pt-4">
+<button class="bg-primary text-on-primary px-8 py-3 rounded-xl font-label-lg text-label-lg hover:shadow-lg transition-all active:scale-95">
+                                Save Global Changes
+                            </button>
+</div>
+</section>
+</div>
+</div>
+</div>
+<!-- Footer / Feedback Micro-interaction -->
+<div class="fixed bottom-margin-desktop right-margin-desktop z-50">
+<button class="w-14 h-14 bg-tertiary-container text-on-tertiary-container rounded-full shadow-xl flex items-center justify-center hover:scale-110 transition-all" id="feedback-btn">
+<span class="material-symbols-outlined">chat_bubble</span>
+</button>
+</div>
+</main>
+<!-- Mobile Navigation Shell -->
+<div class="fixed bottom-0 left-0 right-0 bg-surface border-t border-outline-variant flex justify-around items-center h-16 md:hidden z-50">
+<button class="flex flex-col items-center gap-1 text-on-surface-variant">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="text-[10px] font-medium">Home</span>
+</button>
+<button class="flex flex-col items-center gap-1 text-on-surface-variant">
+<span class="material-symbols-outlined">send</span>
+<span class="text-[10px] font-medium">Campaigns</span>
+</button>
+<button class="flex flex-col items-center gap-1 text-primary">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">person</span>
+<span class="text-[10px] font-medium">Profile</span>
+</button>
+<button class="flex flex-col items-center gap-1 text-on-surface-variant">
+<span class="material-symbols-outlined">settings</span>
+<span class="text-[10px] font-medium">Settings</span>
+</button>
+</div>
+<script>
+        function scrollToSection(id) {
+            const element = document.getElementById(id);
+            if (element) {
+                element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+
+        // Micro-interactions
+        const feedbackBtn = document.getElementById('feedback-btn');
+        feedbackBtn.addEventListener('click', () => {
+            feedbackBtn.classList.add('animate-ping');
+            setTimeout(() => {
+                feedbackBtn.classList.remove('animate-ping');
+                alert('Support panel opening...');
+            }, 500);
+        });
+
+        // Tonal shifting on scroll
+        window.addEventListener('scroll', () => {
+            const header = document.querySelector('header');
+            if (window.scrollY > 20) {
+                header.classList.add('bg-white', 'shadow-sm');
+                header.classList.remove('bg-surface');
+            } else {
+                header.classList.remove('bg-white', 'shadow-sm');
+                header.classList.add('bg-surface');
+            }
+        });
+    </script>
+</body></html>

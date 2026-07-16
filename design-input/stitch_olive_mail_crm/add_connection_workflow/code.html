@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>CampaignFlow - Add Connection</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed": "#dee4db",
+                        "error": "#ba1a1a",
+                        "surface-container": "#edeeea",
+                        "primary-fixed": "#cee9dd",
+                        "tertiary": "#254b5b",
+                        "on-primary": "#ffffff",
+                        "on-primary-fixed": "#082019",
+                        "on-error": "#ffffff",
+                        "on-secondary": "#ffffff",
+                        "surface-dim": "#d9dbd7",
+                        "surface-bright": "#f8faf6",
+                        "on-tertiary-fixed-variant": "#254b5c",
+                        "background": "#f8faf6",
+                        "tertiary-fixed-dim": "#a6cce0",
+                        "primary-container": "#4b635a",
+                        "secondary-container": "#dbe2d8",
+                        "surface-variant": "#e1e3df",
+                        "surface-container-lowest": "#ffffff",
+                        "on-primary-container": "#c3ded2",
+                        "secondary": "#596059",
+                        "on-secondary-container": "#5d645d",
+                        "error-container": "#ffdad6",
+                        "inverse-surface": "#2e312f",
+                        "inverse-primary": "#b2ccc1",
+                        "surface-container-highest": "#e1e3df",
+                        "surface-tint": "#4b635a",
+                        "on-error-container": "#93000a",
+                        "surface-container-high": "#e7e9e5",
+                        "tertiary-container": "#3e6374",
+                        "on-secondary-fixed-variant": "#424942",
+                        "surface-container-low": "#f2f4f0",
+                        "on-surface": "#191c1a",
+                        "outline-variant": "#c2c8c4",
+                        "secondary-fixed-dim": "#c2c8bf",
+                        "surface": "#f8faf6",
+                        "on-background": "#191c1a",
+                        "outline": "#727875",
+                        "on-tertiary-fixed": "#001f2a",
+                        "on-surface-variant": "#424845",
+                        "tertiary-fixed": "#c2e8fc",
+                        "primary": "#344b43",
+                        "on-tertiary-container": "#b8def2",
+                        "inverse-on-surface": "#eff1ed",
+                        "on-secondary-fixed": "#171d17",
+                        "on-primary-fixed-variant": "#344b43",
+                        "on-tertiary": "#ffffff",
+                        "primary-fixed-dim": "#b2ccc1"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "xl": "32px",
+                        "margin-mobile": "16px",
+                        "base": "4px",
+                        "gutter": "24px",
+                        "xs": "4px",
+                        "md": "16px",
+                        "margin-desktop": "32px",
+                        "sm": "8px",
+                        "lg": "24px"
+                    },
+                    "fontFamily": {
+                        "body-lg": ["Inter"],
+                        "label-md": ["Inter"],
+                        "display-lg": ["Inter"],
+                        "title-lg": ["Inter"],
+                        "headline-lg": ["Inter"],
+                        "body-md": ["Inter"],
+                        "label-lg": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-lg": ["16px", {"lineHeight": "24px", "letterSpacing": "0.5px", "fontWeight": "400"}],
+                        "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.5px", "fontWeight": "500"}],
+                        "display-lg": ["57px", {"lineHeight": "64px", "letterSpacing": "-0.25px", "fontWeight": "400"}],
+                        "title-lg": ["22px", {"lineHeight": "28px", "letterSpacing": "0px", "fontWeight": "500"}],
+                        "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "0px", "fontWeight": "600"}],
+                        "body-md": ["14px", {"lineHeight": "20px", "letterSpacing": "0.25px", "fontWeight": "400"}],
+                        "label-lg": ["14px", {"lineHeight": "20px", "letterSpacing": "0.1px", "fontWeight": "500"}]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .connection-drawer {
+            transform: translateX(100%);
+            transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .connection-drawer.open {
+            transform: translateX(0);
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #c2c8c4;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md overflow-hidden h-screen">
+<!-- Global Layout -->
+<div class="flex h-full w-full">
+<!-- SideNavBar (Predicted Component) -->
+<aside class="fixed left-0 top-0 h-full flex flex-col p-md z-50 bg-surface-container-low border-r border-outline-variant w-[280px] hidden md:flex">
+<div class="flex items-center gap-sm mb-xl px-sm">
+<div class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined">send</span>
+</div>
+<div>
+<h1 class="font-title-lg text-title-lg font-bold text-primary">Marketing Suite</h1>
+<p class="font-label-md text-label-md text-on-surface-variant">Enterprise Tier</p>
+</div>
+</div>
+<button class="mb-lg w-full bg-primary-container text-on-primary-container rounded-xl py-3 px-4 flex items-center justify-center gap-2 font-label-lg hover:brightness-110 transition-all">
+<span class="material-symbols-outlined">add_circle</span>
+                New Campaign
+            </button>
+<nav class="flex flex-col gap-1 overflow-y-auto custom-scrollbar">
+<!-- Highlighted Settings as per intent -->
+<a class="flex items-center gap-md p-md text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="font-label-lg">Dashboard</span>
+</a>
+<a class="flex items-center gap-md p-md text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">send</span>
+<span class="font-label-lg">Campaigns</span>
+</a>
+<a class="flex items-center gap-md p-md text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">group</span>
+<span class="font-label-lg">Audience</span>
+</a>
+<a class="flex items-center gap-md p-md bg-primary-container text-on-primary-container rounded-xl transition-all translate-x-1" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-label-lg">Settings</span>
+</a>
+</nav>
+<div class="mt-auto pt-md border-t border-outline-variant">
+<div class="flex items-center gap-md p-sm">
+<div class="w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-on-secondary-container">person</span>
+</div>
+<div class="flex flex-col">
+<span class="font-label-lg text-on-surface">Alex Rivera</span>
+<span class="font-label-md text-on-surface-variant text-xs">Admin Account</span>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="flex-1 md:ml-[280px] h-full relative">
+<!-- TopNavBar (Predicted Component) -->
+<header class="flex justify-between items-center w-full px-margin-desktop h-16 z-40 bg-surface border-b border-outline-variant">
+<div class="flex items-center gap-lg">
+<span class="font-headline-lg text-headline-lg font-bold text-primary">CampaignFlow</span>
+<div class="hidden lg:flex items-center bg-surface-container rounded-full px-4 py-1.5 w-64 border border-outline-variant">
+<span class="material-symbols-outlined text-on-surface-variant text-sm mr-2">search</span>
+<input class="bg-transparent border-none focus:ring-0 text-body-md w-full" placeholder="Search resources..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<button class="p-2 hover:bg-surface-container rounded-full transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant">notifications</span>
+</button>
+<button class="p-2 hover:bg-surface-container rounded-full transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant">help</span>
+</button>
+<div class="w-8 h-8 rounded-full bg-tertiary-container text-on-tertiary-container flex items-center justify-center font-bold text-xs cursor-pointer">
+                        AR
+                    </div>
+</div>
+</header>
+<!-- Dashboard Background State -->
+<div class="p-xl overflow-y-auto h-[calc(100vh-64px)]">
+<div class="mb-xl flex justify-between items-end">
+<div>
+<h2 class="font-headline-lg text-headline-lg text-on-surface">Email Connections</h2>
+<p class="font-body-md text-on-surface-variant">Manage your sending domains and service providers.</p>
+</div>
+<button class="bg-primary text-on-primary rounded-xl px-6 py-2.5 flex items-center gap-2 font-label-lg hover:opacity-90 shadow-sm transition-all" onclick="toggleDrawer()">
+<span class="material-symbols-outlined">add</span>
+                        Add Connection
+                    </button>
+</div>
+<!-- Bento Grid of connections -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-lg">
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg flex flex-col gap-md relative overflow-hidden">
+<div class="flex justify-between items-start">
+<div class="w-12 h-12 rounded-lg bg-surface-container flex items-center justify-center">
+<span class="material-symbols-outlined text-primary">mail</span>
+</div>
+<span class="bg-secondary-container text-on-secondary-container text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded">Active</span>
+</div>
+<div>
+<h3 class="font-title-lg text-on-surface">Marketing Primary</h3>
+<p class="font-body-md text-on-surface-variant">smtp.gmail.com • alex@brand.com</p>
+</div>
+<div class="mt-4 flex gap-2">
+<button class="text-primary font-label-lg hover:underline decoration-2 underline-offset-4">Edit</button>
+<button class="text-on-surface-variant font-label-lg hover:text-error transition-colors">Disconnect</button>
+</div>
+</div>
+<div class="bg-surface-container border border-dashed border-outline rounded-xl p-lg flex flex-col items-center justify-center text-center gap-md cursor-pointer hover:bg-surface-variant transition-all" onclick="toggleDrawer()">
+<div class="w-12 h-12 rounded-full border-2 border-dashed border-outline flex items-center justify-center">
+<span class="material-symbols-outlined text-outline">add</span>
+</div>
+<div>
+<p class="font-title-lg text-on-surface">New Connection</p>
+<p class="font-body-md text-on-surface-variant">Link another email service</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Focus Panel: Add Connection Workflow -->
+<div class="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] opacity-0 pointer-events-none transition-opacity duration-300" id="drawerOverlay" onclick="toggleDrawer()"></div>
+<div class="connection-drawer fixed right-0 top-0 h-full w-full max-w-[520px] bg-surface-container-lowest shadow-2xl z-[70] flex flex-col border-l border-outline-variant" id="connectionDrawer">
+<!-- Header -->
+<div class="p-xl border-b border-outline-variant flex items-center justify-between bg-surface-container-low">
+<div>
+<h2 class="font-headline-lg text-headline-lg text-on-surface">Add Connection</h2>
+<p class="font-body-md text-on-surface-variant">Choose your provider to get started</p>
+</div>
+<button class="w-10 h-10 flex items-center justify-center rounded-full hover:bg-surface-variant transition-colors" onclick="toggleDrawer()">
+<span class="material-symbols-outlined">close</span>
+</button>
+</div>
+<!-- Workflow Steps -->
+<div class="flex-1 overflow-y-auto custom-scrollbar p-xl">
+<!-- Provider Selection -->
+<div class="space-y-lg" id="step1">
+<label class="font-label-lg text-primary block mb-md uppercase tracking-widest text-[10px]">Select Provider</label>
+<div class="grid grid-cols-1 gap-md">
+<!-- Gmail -->
+<div class="group p-lg border border-outline-variant rounded-xl flex items-center gap-lg hover:border-primary hover:bg-primary/5 cursor-pointer transition-all" onclick="selectProvider('gmail')">
+<div class="w-12 h-12 bg-white border border-outline-variant rounded-lg flex items-center justify-center shadow-sm">
+<div class="w-6 h-6" data-alt="A clean, minimalist 2D graphic logo of Gmail with its signature red and white envelope styling on a plain white studio background. Professional corporate icon design." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuBF5jwXkoey7IG0cCK5OmAqe9GYeSv8UIjkcQ0VVvwz8qHwBVbBHSKA4za53DRkjav_HOwJSJuo2HqzQDfZdYA-8ivaHy_Z6Vo0kdNmj-JczCguF5oeq1h5PM7pbus2WCdr_wmZD2Ua30AX2nMWYcNCvQktjaD0rKr_Q30j7Skr-Xu2uhXv86sFX-RuxNhZ_iORlUGdMtW2Mfw27j3vwGMab0cM5Or-QgVJ8-t3Xoh6xsspyI3VCbJByQ')"></div>
+</div>
+<div class="flex-1">
+<h4 class="font-title-lg text-on-surface group-hover:text-primary transition-colors">Gmail / Google Workspace</h4>
+<p class="font-body-md text-on-surface-variant">Quick Oauth2 connection</p>
+</div>
+<span class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-all">chevron_right</span>
+</div>
+<!-- Outlook -->
+<div class="group p-lg border border-outline-variant rounded-xl flex items-center gap-lg hover:border-primary hover:bg-primary/5 cursor-pointer transition-all" onclick="selectProvider('outlook')">
+<div class="w-12 h-12 bg-white border border-outline-variant rounded-lg flex items-center justify-center shadow-sm">
+<div class="w-6 h-6" data-alt="A clean, minimalist 2D graphic logo of Microsoft Outlook with its signature blue palette and letter envelope styling on a plain white studio background. Professional corporate icon design." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuBmbg9lOM5U1uxd5f0_eEZJMLzSb8QTi1s73mgF72T-2A6tWPK_WeparcL-zDIk5uk07SOy2LFZiV6Jl84Cl6RNY4Yq-P0RSCjfaiQ_wXR9u5rMpsbFdPtFQ-gwaxnGWIGPsZjQc6ZCRnTY_ok3hFUDCdWG39rVTx-0Aa0AK8qYnmzwRrpwUdc-_yquck3MmAZiYcmTdRRFOKEmEBJUE7QoAhptdxrPFBkWjFghEPhOAmyvlL_t_LAtGQ')"></div>
+</div>
+<div class="flex-1">
+<h4 class="font-title-lg text-on-surface group-hover:text-primary transition-colors">Outlook / Microsoft 365</h4>
+<p class="font-body-md text-on-surface-variant">Connect via Microsoft account</p>
+</div>
+<span class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-all">chevron_right</span>
+</div>
+<!-- Custom SMTP -->
+<div class="group p-lg border border-outline-variant rounded-xl flex items-center gap-lg hover:border-primary hover:bg-primary/5 cursor-pointer transition-all" onclick="selectProvider('smtp')">
+<div class="w-12 h-12 bg-surface-container rounded-lg flex items-center justify-center shadow-sm">
+<span class="material-symbols-outlined text-primary">settings_ethernet</span>
+</div>
+<div class="flex-1">
+<h4 class="font-title-lg text-on-surface group-hover:text-primary transition-colors">Custom SMTP</h4>
+<p class="font-body-md text-on-surface-variant">For SendGrid, AWS SES, or Private Servers</p>
+</div>
+<span class="material-symbols-outlined text-outline-variant group-hover:text-primary transition-all">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- SMTP Form (Hidden by default) -->
+<div class="hidden space-y-xl animate-in fade-in slide-in-from-right-4 duration-500" id="smtpForm">
+<button class="flex items-center gap-2 text-primary font-label-lg hover:underline mb-md" onclick="backToStep1()">
+<span class="material-symbols-outlined text-sm">arrow_back</span>
+                            Change Provider
+                        </button>
+<div class="space-y-lg">
+<div class="grid grid-cols-2 gap-lg">
+<div class="flex flex-col gap-sm">
+<label class="font-label-lg text-on-surface">SMTP Host</label>
+<input class="bg-surface-container-low border-b-2 border-outline focus:border-primary focus:ring-0 rounded-t-lg px-4 py-3 text-body-md outline-none" placeholder="smtp.example.com" type="text"/>
+</div>
+<div class="flex flex-col gap-sm">
+<label class="font-label-lg text-on-surface">Port</label>
+<input class="bg-surface-container-low border-b-2 border-outline focus:border-primary focus:ring-0 rounded-t-lg px-4 py-3 text-body-md outline-none" placeholder="587" type="text"/>
+</div>
+</div>
+<div class="flex flex-col gap-sm">
+<label class="font-label-lg text-on-surface">Encryption</label>
+<div class="flex gap-md">
+<label class="flex-1 border border-outline-variant p-3 rounded-xl flex items-center justify-center gap-2 cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5 transition-all">
+<input checked="" class="text-primary focus:ring-primary" name="encryption" type="radio" value="tls"/>
+<span class="font-label-lg">TLS / STARTTLS</span>
+</label>
+<label class="flex-1 border border-outline-variant p-3 rounded-xl flex items-center justify-center gap-2 cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5 transition-all">
+<input class="text-primary focus:ring-primary" name="encryption" type="radio" value="ssl"/>
+<span class="font-label-lg">SSL</span>
+</label>
+</div>
+</div>
+<div class="flex flex-col gap-sm">
+<label class="font-label-lg text-on-surface">Username</label>
+<input class="bg-surface-container-low border-b-2 border-outline focus:border-primary focus:ring-0 rounded-t-lg px-4 py-3 text-body-md outline-none" placeholder="username@example.com" type="text"/>
+</div>
+<div class="flex flex-col gap-sm">
+<label class="font-label-lg text-on-surface">Password</label>
+<div class="relative">
+<input class="w-full bg-surface-container-low border-b-2 border-outline focus:border-primary focus:ring-0 rounded-t-lg px-4 py-3 text-body-md outline-none" type="password" value="********"/>
+<button class="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant">
+<span class="material-symbols-outlined text-lg">visibility</span>
+</button>
+</div>
+</div>
+<div class="flex flex-col gap-sm">
+<label class="font-label-lg text-on-surface">Sender Display Name</label>
+<input class="bg-surface-container-low border-b-2 border-outline focus:border-primary focus:ring-0 rounded-t-lg px-4 py-3 text-body-md outline-none" placeholder="e.g. John Doe" type="text"/>
+<p class="text-[11px] text-on-surface-variant px-1">This name appears in your recipient's inbox.</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Footer Actions -->
+<div class="p-xl border-t border-outline-variant bg-surface-container-low">
+<div class="hidden flex flex-col gap-md" id="smtpActions">
+<button class="w-full h-12 bg-surface-container-highest text-primary border border-primary/20 rounded-pill font-label-lg flex items-center justify-center gap-2 hover:bg-primary/10 transition-all" id="testBtn" onclick="testConnection()">
+<span class="material-symbols-outlined" id="testIcon">network_check</span>
+<span id="testText">Test Connection</span>
+</button>
+<button class="w-full h-12 bg-primary text-on-primary rounded-pill font-label-lg shadow-lg hover:opacity-90 disabled:opacity-50 transition-all">
+                            Save Connection
+                        </button>
+</div>
+<div class="flex flex-col gap-md" id="defaultActions">
+<p class="text-center font-body-md text-on-surface-variant">Connections are encrypted and stored securely.</p>
+</div>
+<div class="hidden mt-md p-md rounded-xl bg-primary-container text-on-primary-container flex items-center gap-md animate-in slide-in-from-bottom-2" id="testResult">
+<span class="material-symbols-outlined">check_circle</span>
+<div class="flex-1">
+<p class="font-label-lg">Connection Successful</p>
+<p class="text-xs opacity-80">Verified SMTP handshake with smtp.example.com</p>
+</div>
+<button class="material-symbols-outlined text-sm" onclick="hideResult()">close</button>
+</div>
+</div>
+</div>
+</main>
+</div>
+<script>
+        const drawer = document.getElementById('connectionDrawer');
+        const overlay = document.getElementById('drawerOverlay');
+        const step1 = document.getElementById('step1');
+        const smtpForm = document.getElementById('smtpForm');
+        const smtpActions = document.getElementById('smtpActions');
+        const defaultActions = document.getElementById('defaultActions');
+
+        function toggleDrawer() {
+            drawer.classList.toggle('open');
+            if (drawer.classList.contains('open')) {
+                overlay.classList.remove('pointer-events-none', 'opacity-0');
+            } else {
+                overlay.classList.add('pointer-events-none', 'opacity-0');
+                // Reset state on close
+                setTimeout(() => {
+                    backToStep1();
+                    hideResult();
+                }, 400);
+            }
+        }
+
+        function selectProvider(type) {
+            if (type === 'smtp') {
+                step1.classList.add('hidden');
+                smtpForm.classList.remove('hidden');
+                smtpActions.classList.remove('hidden');
+                defaultActions.classList.add('hidden');
+            } else {
+                // Mocking OAuth flow
+                alert(`Redirecting to ${type} OAuth...`);
+            }
+        }
+
+        function backToStep1() {
+            step1.classList.remove('hidden');
+            smtpForm.classList.add('hidden');
+            smtpActions.classList.add('hidden');
+            defaultActions.classList.remove('hidden');
+        }
+
+        function testConnection() {
+            const btn = document.getElementById('testBtn');
+            const icon = document.getElementById('testIcon');
+            const text = document.getElementById('testText');
+            
+            // Loading state
+            btn.disabled = true;
+            icon.innerText = 'sync';
+            icon.classList.add('animate-spin');
+            text.innerText = 'Testing...';
+
+            setTimeout(() => {
+                // Success state
+                icon.innerText = 'check_circle';
+                icon.classList.remove('animate-spin');
+                text.innerText = 'Verified';
+                btn.classList.replace('text-primary', 'text-success');
+                
+                document.getElementById('testResult').classList.remove('hidden');
+                
+                setTimeout(() => {
+                    btn.disabled = false;
+                    icon.innerText = 'network_check';
+                    text.innerText = 'Test Connection';
+                }, 3000);
+            }, 2000);
+        }
+
+        function hideResult() {
+            document.getElementById('testResult').classList.add('hidden');
+        }
+
+        // Initialize view
+        document.addEventListener('DOMContentLoaded', () => {
+            // Auto open for visual impact in demo if needed
+            // toggleDrawer();
+        });
+    </script>
+</body></html>

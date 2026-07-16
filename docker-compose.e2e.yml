@@ -1,0 +1,144 @@
+# Overlay for Playwright E2E. Does not replace docker-compose.yml.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e run --rm playwright
+
+services:
+  mailpit:
+    image: axllent/mailpit:v1.30.4
+    restart: unless-stopped
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    expose:
+      - "1025"
+      - "8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8025/api/v1/info >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  app:
+    # Chromium treats bare hostname "app" like the .app TLD (HTTPS-only).
+    # Alias "web" is used as E2E_BASE_URL for Playwright browsers.
+    networks:
+      default:
+        aliases:
+          - web
+    env_file:
+      - .env.docker
+      - .env.e2e
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 9806
+      DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing_e2e
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: mailing-agent
+      PUBLIC_BASE_URL: http://web:9806
+      SENDER_TRANSPORT: smtp
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USE_SSL: "0"
+      SMTP_USE_STARTTLS: "0"
+      SMTP_ALLOW_REAL_SEND: "1"
+      SMTP_SAVE_SENT_COPY: "0"
+      SMTP_SENDER_EMAIL: ${E2E_SMTP_SENDER_EMAIL:-e2e-sender@example.test}
+      SMTP_SENDER_PASSWORD: ${E2E_SMTP_SENDER_PASSWORD:-mailpit-e2e}
+      SENDER_DELAY_SECONDS: "1"
+      SENDER_DELAY_MIN_SECONDS: "0"
+      SENDER_DELAY_MAX_SECONDS: "0"
+      KP_GENERATION_ENGINE: template
+      PHILOLOGIST_AUTO_RUN_ENABLED: "0"
+      INTER_AGENT_HANDOFFS_ENABLED: "0"
+      APP_ALLOW_REGISTRATION: "1"
+      USE_LEGACY_UI: "0"
+      SEED_DEMO_DATA_ON_STARTUP: "1"
+      # Keep queue enabled so campaign batch tasks run in worker for new UI.
+      BACKGROUND_QUEUE_ENABLED: "true"
+      SMTP_CREDENTIALS_KEY: ${SMTP_CREDENTIALS_KEY:-KMhHbRYezchgJCwbtKxIw97zOrwo5UJI1glFM5moTp8=}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      gotenberg:
+        condition: service_healthy
+      gotenberg-2:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+
+  worker:
+    env_file:
+      - .env.docker
+      - .env.e2e
+    environment:
+      DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing_e2e
+      BACKGROUND_QUEUE_ENABLED: "true"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USE_SSL: "0"
+      SMTP_USE_STARTTLS: "0"
+      SMTP_ALLOW_REAL_SEND: "1"
+      SMTP_CREDENTIALS_KEY: ${SMTP_CREDENTIALS_KEY:-KMhHbRYezchgJCwbtKxIw97zOrwo5UJI1glFM5moTp8=}
+    depends_on:
+      app:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+
+  playwright:
+    build:
+      context: ./e2e
+      dockerfile: Dockerfile
+    image: mailing-agent-playwright:local
+    profiles: ["playwright"]
+    init: true
+    ipc: host
+    working_dir: /e2e
+    environment:
+      CI: "1"
+      E2E_BASE_URL: ${E2E_BASE_URL:-http://web:9806}
+      E2E_API_URL: ${E2E_API_URL:-http://web:9806}
+      MAILPIT_API_URL: ${MAILPIT_API_URL:-http://mailpit:8025}
+      E2E_USERNAME: ${E2E_USERNAME:-admin}
+      E2E_PASSWORD: ${E2E_PASSWORD:-change-me}
+      E2E_SMTP_SENDER_EMAIL: ${E2E_SMTP_SENDER_EMAIL:-e2e-sender@example.test}
+      E2E_SMTP_SENDER_PASSWORD: ${E2E_SMTP_SENDER_PASSWORD:-mailpit-e2e}
+      E2E_SMTP_HOST: mailpit
+      E2E_SMTP_PORT: "1025"
+      RUN_LIVE_EMAIL_TESTS: ${RUN_LIVE_EMAIL_TESTS:-0}
+      TZ: Europe/Moscow
+    volumes:
+      - ./artifacts/playwright/report:/artifacts/report
+      - ./artifacts/playwright/results:/artifacts/results
+      - ./artifacts/playwright/screenshots:/artifacts/screenshots
+      - ./artifacts/playwright/videos:/artifacts/videos
+      - ./artifacts/playwright/traces:/artifacts/traces
+      - ./artifacts/playwright/auth:/artifacts/auth
+      - ./tests/e2e/fixtures:/fixtures:ro
+      - ./fixtures/manual:/work/fixtures/manual:ro
+      # Persist visual baselines written with --update-snapshots
+      - ./e2e/tests:/e2e/tests
+      - ./e2e/scripts:/e2e/scripts:ro
+      - ./e2e/playwright.config.ts:/e2e/playwright.config.ts:ro
+    depends_on:
+      app:
+        condition: service_healthy
+      worker:
+        condition: service_started
+      mailpit:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    entrypoint: ["node", "scripts/wait-for-services.mjs"]
+    command: ["npx", "playwright", "test"]

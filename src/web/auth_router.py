@@ -43,19 +43,36 @@ def create_auth_router(
     check_auth: Any,
     login_template_path,
     register_template_path,
+    spa_index_path=None,
 ) -> APIRouter:
     router = APIRouter()
     ttl_days = max(1, int(getattr(settings_obj, "app_session_ttl_days", 7) or 7))
+    use_legacy_ui = bool(getattr(settings_obj, "use_legacy_ui", False))
+
+    def _auth_html(legacy_path) -> HTMLResponse:
+        from pathlib import Path
+
+        spa_path = Path(spa_index_path) if spa_index_path else None
+        if not use_legacy_ui and spa_path is not None and spa_path.exists():
+            return HTMLResponse(
+                content=spa_path.read_text(encoding="utf-8"),
+                headers={
+                    "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
+        return HTMLResponse(content=legacy_path.read_text(encoding="utf-8"))
 
     @router.get("/login", response_class=HTMLResponse)
     def login_page():
-        return login_template_path.read_text(encoding="utf-8")
+        return _auth_html(login_template_path)
 
     @router.get("/register", response_class=HTMLResponse)
     async def register_page():
         if not bool(getattr(settings_obj, "app_allow_registration", False)):
             raise HTTPException(status_code=403, detail="Регистрация отключена. Обратитесь к администратору.")
-        return register_template_path.read_text(encoding="utf-8")
+        return _auth_html(register_template_path)
 
     @router.post("/api/auth/register")
     async def auth_register(payload: AuthRegisterRequest, response: Response):

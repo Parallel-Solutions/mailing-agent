@@ -126,7 +126,7 @@ class SmtpMailboxApiTests(unittest.TestCase):
 
     def test_api_does_not_return_password(self) -> None:
         client = self._client()
-        with patch("src.web.smtp_router.send_test_email", return_value=None):
+        with patch("src.web.smtp_router.verify_and_mark_mailbox", return_value=None):
             response = client.post(
                 "/api/smtp/mailboxes",
                 json={
@@ -211,21 +211,20 @@ class SmtpMailboxApiTests(unittest.TestCase):
 
     def test_api_test_connection_with_mailbox_id(self) -> None:
         client = self._client()
-        with patch("src.web.smtp_router.send_test_email", return_value=None):
-            create_response = client.post(
-                "/api/smtp/mailboxes",
-                json={
-                    "provider": "gmail",
-                    "email": "api@example.com",
-                    "password": "api-secret",
-                    "make_default": True,
-                    "send_test": False,
-                },
-            )
+        create_response = client.post(
+            "/api/smtp/mailboxes",
+            json={
+                "provider": "gmail",
+                "email": "api@example.com",
+                "password": "api-secret",
+                "make_default": True,
+                "send_test": False,
+            },
+        )
         self.assertEqual(create_response.status_code, 200, create_response.text)
         mailbox_id = create_response.json()["result"]["mailbox"]["id"]
 
-        with patch("src.web.smtp_router.verify_smtp_credentials", return_value=None):
+        with patch("src.web.smtp_router.verify_and_mark_mailbox", return_value=None):
             response = client.post(
                 "/api/smtp/test",
                 json={

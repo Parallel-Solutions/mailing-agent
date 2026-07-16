@@ -394,6 +394,11 @@ def run_payload(payload: dict[str, Any]) -> None:
     if task == "template_compile" or task.startswith("template_compile:"):
         _run_template_compile(kwargs)
         return
+    if task == "sender_batch":
+        from src.campaigns.batch_worker import run_sender_batch
+
+        run_sender_batch(kwargs)
+        return
     raise ValueError(f"unknown worker task: {task}")
 
 

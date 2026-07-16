@@ -1,0 +1,21 @@
+{
+  "name": "mailing-agent-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Isolated Playwright E2E package for mailing-agent (Docker-only browsers)",
+  "scripts": {
+    "test": "playwright test",
+    "test:chromium": "playwright test --project=chromium",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:email": "playwright test --grep @email",
+    "test:visual": "playwright test --grep @visual",
+    "test:headed": "xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' playwright test --headed --project=chromium",
+    "test:debug": "xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' playwright test --debug --project=chromium",
+    "update-snapshots": "playwright test --grep @visual --update-snapshots --project=chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@types/node": "^22.15.30",
+    "typescript": "^5.8.3"
+  }
+}

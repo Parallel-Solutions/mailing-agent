@@ -10,7 +10,13 @@ from fastapi.responses import FileResponse
 
 from src.generator.generation.document_builder import DOCUMENT_MODE_BOTH, DOCUMENT_RENDERER_VERSION, normalize_document_mode
 from src.generator.generation.template_analysis import build_template_analysis_context, save_template_analysis_context
-from src.generator.generation.template_preview import build_template_preview, is_template_preview_approved, resolve_template_preview_file
+from src.generator.generation.template_preview import (
+    build_template_preview,
+    is_template_preview_approved,
+    load_template_preview_state,
+    mark_template_preview_approval,
+    resolve_template_preview_file,
+)
 from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 from src.jobs import resolve_job_paths
 from src.jobs.access import JobAccessDenied, authorize_job_access
@@ -102,10 +108,29 @@ def create_documents_router(
             document_mode=document_mode,
             work_type=work_type,
         ):
-            raise HTTPException(
-                status_code=409,
-                detail="Сначала соберите пример документа в чате и подтвердите, что шаблон выглядит правильно.",
-            )
+            # Frontend sends template_analysis_confirmed after the user accepts the preview.
+            if payload.template_analysis_confirmed:
+                preview_state = load_template_preview_state(job_id)
+                preview_ready = str(preview_state.get("status") or "") == "ready"
+                preview_mode_ok = normalize_document_mode(preview_state.get("document_mode") or "") == document_mode
+                preview_work_ok = normalize_work_type(preview_state.get("work_type") or "") == work_type
+                if preview_ready and preview_mode_ok and preview_work_ok:
+                    mark_template_preview_approval(
+                        job_id,
+                        approved=True,
+                        reason="template_analysis_confirmed",
+                        actor="api",
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Сначала соберите пример документа в чате и подтвердите, что шаблон выглядит правильно.",
+                    )
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Сначала соберите пример документа в чате и подтвердите, что шаблон выглядит правильно.",
+                )
         if str(generator_state.get("status") or "") == "completed":
             if generator_is_current and str(philologist_state.get("status") or "") != "completed":
                 clear_philologist_stop_request(job_id)

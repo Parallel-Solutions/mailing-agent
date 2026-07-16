@@ -1,3 +1,10 @@
+FROM node:22-bookworm AS frontend-build
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -58,6 +65,7 @@ RUN .venv/bin/python -m playwright install chromium
 RUN uv pip install --python .venv/bin/python "pypdf>=6.0.0" "pymupdf>=1.26.0"
 
 COPY . .
+COPY --from=frontend-build /frontend/dist /app/frontend/dist
 RUN mkdir -p /app/storage /app/logs /app/data /app/tmp
 
 EXPOSE 9806

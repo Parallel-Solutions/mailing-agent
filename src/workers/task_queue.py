@@ -79,19 +79,20 @@ def enqueue_task(
     max_workers: int = 0,
     user_max_workers: int = 0,
     available_at: datetime | None = None,
+    active_key: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     safe_task_type = str(task_type or "").strip()
     if not safe_task_type:
         raise ValueError("task_type is required")
     storage_job_id = _storage_job_id(job_id)
     safe_owner = str(owner_username or "").strip()
-    active_key = _active_key(safe_task_type, storage_job_id)
+    resolved_active_key = str(active_key or "").strip() or _active_key(safe_task_type, storage_job_id)
     safe_idempotency_key = str(idempotency_key or "").strip() or None
 
     try:
         with session_scope() as session:
             existing = session.execute(
-                select(BackgroundTask).where(BackgroundTask.active_key == active_key)
+                select(BackgroundTask).where(BackgroundTask.active_key == resolved_active_key)
             ).scalar_one_or_none()
             if existing is not None:
                 return _as_dict(existing), False
@@ -139,7 +140,7 @@ def enqueue_task(
                 max_attempts=max(1, int(max_attempts)),
                 available_at=available_at.astimezone(timezone.utc) if available_at is not None else _now(),
                 idempotency_key=safe_idempotency_key,
-                active_key=active_key,
+                active_key=resolved_active_key,
             )
             session.add(task)
             session.flush()
@@ -148,7 +149,7 @@ def enqueue_task(
         with session_scope() as session:
             existing = session.execute(
                 select(BackgroundTask).where(
-                    (BackgroundTask.active_key == active_key)
+                    (BackgroundTask.active_key == resolved_active_key)
                     | (
                         (BackgroundTask.idempotency_key == safe_idempotency_key)
                         if safe_idempotency_key is not None

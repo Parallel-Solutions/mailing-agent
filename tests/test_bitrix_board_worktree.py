@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -38,6 +39,8 @@ def _config_for(repo_root: Path, worktrees_dir: Path) -> BoardConfig:
 
 class WorktreeTests(unittest.TestCase):
     def setUp(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is not available in this environment")
         self.tmp = tempfile.TemporaryDirectory()
         self.repo_root = Path(self.tmp.name) / "repo"
         self.worktrees_dir = Path(self.tmp.name) / "worktrees"

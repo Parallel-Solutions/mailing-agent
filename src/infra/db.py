@@ -102,4 +102,18 @@ def init_db() -> None:
     ensure_database_exists()
     alembic_cfg = Config("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
-    command.upgrade(alembic_cfg, "head")
+    try:
+        command.upgrade(alembic_cfg, "head")
+    except Exception as exc:
+        message = str(exc)
+        if "Can't locate revision" not in message:
+            raise
+        # Recover DBs stamped with orphaned revision ids from older branches.
+        with engine.begin() as connection:
+            users_table = connection.execute(text("SELECT to_regclass('public.users')")).scalar()
+            if not users_table:
+                raise
+            smtp_table = connection.execute(text("SELECT to_regclass('public.smtp_mailboxes')")).scalar()
+            stamp_to = "0005_smtp_mailbox_oauth" if smtp_table else "0002_durable_events_and_tasks"
+            connection.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": stamp_to})
+        command.upgrade(alembic_cfg, "head")

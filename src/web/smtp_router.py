@@ -100,6 +100,7 @@ class SmtpMailboxTestRequest(BaseModel):
     use_starttls: bool | None = None
     mailbox_id: str | None = None
     send_test_email_to: str | None = None
+    include_sample_attachment: bool = False
     auth_method: str = "password"
     oauth_provider: str | None = None
     oauth_tokens: dict[str, Any] | None = None
@@ -482,6 +483,7 @@ def create_smtp_router(*, check_auth: Callable[..., object]) -> APIRouter:
                     mailbox_id=payload.mailbox_id,
                     send_test=True,
                     recipient=payload.send_test_email_to,
+                    include_sample_attachment=bool(payload.include_sample_attachment),
                 )
             else:
                 verify_and_mark_mailbox(credentials, mailbox_id=payload.mailbox_id, send_test=False)

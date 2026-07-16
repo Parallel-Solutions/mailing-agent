@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 
 PUBLIC_ASSETS_DIR = Path("src/generator/assets")
@@ -19,6 +19,24 @@ NO_CACHE_HEADERS = {
 
 def create_public_router() -> APIRouter:
     router = APIRouter()
+
+    @router.get("/health")
+    def health():
+        """Liveness/readiness for Docker and E2E wait scripts. No secrets."""
+        try:
+            from src.infra.db import check_db_connection
+
+            check_db_connection()
+        except Exception as exc:  # noqa: BLE001 - surface generic readiness failure
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "database": "down",
+                    "detail": str(exc.__class__.__name__),
+                },
+            )
+        return {"status": "ok", "database": "up"}
 
     @router.get("/public/mail-signature.png")
     def public_mail_signature():

@@ -1,0 +1,21 @@
+{
+  "name": "mailing-agent",
+  "private": true,
+  "description": "Root scripts for Docker Playwright E2E (browsers run only inside Docker)",
+  "scripts": {
+    "e2e:build": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright build playwright",
+    "e2e:up": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e up -d --build",
+    "e2e:test": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm --build playwright",
+    "e2e:test:chromium": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --project=chromium",
+    "e2e:test:smoke": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep \"@smoke\"",
+    "e2e:test:email": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep \"@email\"",
+    "e2e:test:visual": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep \"@visual\" --project=chromium",
+    "e2e:update-snapshots": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep \"@visual\" --project=chromium --update-snapshots",
+    "e2e:test:headed": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npm run test:headed",
+    "e2e:test:debug": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm -e PWDEBUG=1 playwright npm run test:debug",
+    "e2e:report": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm --no-deps --entrypoint \"\" playwright npx playwright show-report /artifacts/report --host 0.0.0.0 --port 9323",
+    "e2e:down": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright down",
+    "e2e:clean": "docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright down -v --remove-orphans",
+    "e2e:full": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/e2e.ps1 full"
+  }
+}

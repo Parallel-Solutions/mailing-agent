@@ -1,0 +1,50 @@
+# Local manual-testing overlay: Mailpit + demo seed + worker enabled for batch sending.
+services:
+  mailpit:
+    image: axllent/mailpit:v1.30.4
+    restart: unless-stopped
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    expose:
+      - "1025"
+      - "8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8025/api/v1/info >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  app:
+    environment:
+      USE_LEGACY_UI: "0"
+      SEED_DEMO_DATA_ON_STARTUP: "1"
+      APP_ALLOW_REGISTRATION: "1"
+      PUBLIC_BASE_URL: http://localhost:9806
+      SENDER_TRANSPORT: smtp
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USE_SSL: "0"
+      SMTP_USE_STARTTLS: "0"
+      SMTP_ALLOW_REAL_SEND: "1"
+      BACKGROUND_QUEUE_ENABLED: "true"
+      SMTP_CREDENTIALS_KEY: ${SMTP_CREDENTIALS_KEY:-KMhHbRYezchgJCwbtKxIw97zOrwo5UJI1glFM5moTp8=}
+    depends_on:
+      mailpit:
+        condition: service_healthy
+
+  worker:
+    environment:
+      BACKGROUND_QUEUE_ENABLED: "true"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USE_SSL: "0"
+      SMTP_USE_STARTTLS: "0"
+      SMTP_ALLOW_REAL_SEND: "1"
+      SMTP_CREDENTIALS_KEY: ${SMTP_CREDENTIALS_KEY:-KMhHbRYezchgJCwbtKxIw97zOrwo5UJI1glFM5moTp8=}
+    depends_on:
+      mailpit:
+        condition: service_healthy

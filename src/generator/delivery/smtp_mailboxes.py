@@ -510,7 +510,12 @@ def verify_smtp_credentials(credentials: ResolvedSmtpCredentials) -> None:
             server.close()
 
 
-def send_test_email(credentials: ResolvedSmtpCredentials, *, recipient: str | None = None) -> None:
+def send_test_email(
+    credentials: ResolvedSmtpCredentials,
+    *,
+    recipient: str | None = None,
+    include_sample_attachment: bool = False,
+) -> None:
     target = _safe_text(recipient) or credentials.email
     message = EmailMessage()
     sender_label = credentials.sender_name or credentials.email
@@ -518,6 +523,18 @@ def send_test_email(credentials: ResolvedSmtpCredentials, *, recipient: str | No
     message["From"] = f"{sender_label} <{credentials.email}>" if sender_label else credentials.email
     message["To"] = target
     message.set_content("Тестовое письмо от mailing-agent. SMTP-подключение работает.")
+    if include_sample_attachment:
+        # Minimal valid-looking PDF bytes for SMTP attachment checks (Mailpit / clients).
+        sample_pdf = (
+            b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+            b"mailing-agent-e2e-sample-attachment\n"
+        )
+        message.add_attachment(
+            sample_pdf,
+            maintype="application",
+            subtype="pdf",
+            filename="e2e-sample.pdf",
+        )
     server = _open_smtp_connection(credentials)
     try:
         server.send_message(message)
@@ -534,10 +551,15 @@ def verify_and_mark_mailbox(
     mailbox_id: str | None = None,
     send_test: bool = False,
     recipient: str | None = None,
+    include_sample_attachment: bool = False,
 ) -> None:
     try:
         if send_test:
-            send_test_email(credentials, recipient=recipient)
+            send_test_email(
+                credentials,
+                recipient=recipient,
+                include_sample_attachment=include_sample_attachment,
+            )
         else:
             verify_smtp_credentials(credentials)
     except smtplib.SMTPAuthenticationError as exc:

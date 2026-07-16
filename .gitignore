@@ -11,6 +11,20 @@ wheels/
 .env
 .env.local
 .env.docker
+.env.e2e
+.env.e2e.local
+.env.playwright.local
+
+# Playwright Docker artifacts (baselines under e2e/tests stay tracked)
+artifacts/playwright/report/
+artifacts/playwright/results/
+artifacts/playwright/screenshots/
+artifacts/playwright/videos/
+artifacts/playwright/traces/
+artifacts/playwright/auth/
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
 
 data/
 logs/

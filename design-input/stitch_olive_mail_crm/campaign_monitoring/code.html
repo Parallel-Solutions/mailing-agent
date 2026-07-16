@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>CampaignFlow - Active Mailing Details</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "secondary-fixed": "#dee4db",
+                    "error": "#ba1a1a",
+                    "surface-container": "#edeeea",
+                    "primary-fixed": "#cee9dd",
+                    "tertiary": "#254b5b",
+                    "on-primary": "#ffffff",
+                    "on-primary-fixed": "#082019",
+                    "on-error": "#ffffff",
+                    "on-secondary": "#ffffff",
+                    "surface-dim": "#d9dbd7",
+                    "surface-bright": "#f8faf6",
+                    "on-tertiary-fixed-variant": "#254b5c",
+                    "background": "#f8faf6",
+                    "tertiary-fixed-dim": "#a6cce0",
+                    "primary-container": "#4b635a",
+                    "secondary-container": "#dbe2d8",
+                    "surface-variant": "#e1e3df",
+                    "surface-container-lowest": "#ffffff",
+                    "on-primary-container": "#c3ded2",
+                    "secondary": "#596059",
+                    "on-secondary-container": "#5d645d",
+                    "error-container": "#ffdad6",
+                    "inverse-surface": "#2e312f",
+                    "inverse-primary": "#b2ccc1",
+                    "surface-container-highest": "#e1e3df",
+                    "surface-tint": "#4b635a",
+                    "on-error-container": "#93000a",
+                    "surface-container-high": "#e7e9e5",
+                    "tertiary-container": "#3e6374",
+                    "on-secondary-fixed-variant": "#424942",
+                    "surface-container-low": "#f2f4f0",
+                    "on-surface": "#191c1a",
+                    "outline-variant": "#c2c8c4",
+                    "secondary-fixed-dim": "#c2c8bf",
+                    "surface": "#f8faf6",
+                    "on-background": "#191c1a",
+                    "outline": "#727875",
+                    "on-tertiary-fixed": "#001f2a",
+                    "on-surface-variant": "#424845",
+                    "tertiary-fixed": "#c2e8fc",
+                    "primary": "#344b43",
+                    "on-tertiary-container": "#b8def2",
+                    "inverse-on-surface": "#eff1ed",
+                    "on-secondary-fixed": "#171d17",
+                    "on-primary-fixed-variant": "#344b43",
+                    "on-tertiary": "#ffffff",
+                    "primary-fixed-dim": "#b2ccc1"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "xl": "32px",
+                    "margin-mobile": "16px",
+                    "base": "4px",
+                    "gutter": "24px",
+                    "xs": "4px",
+                    "md": "16px",
+                    "margin-desktop": "32px",
+                    "sm": "8px",
+                    "lg": "24px"
+            },
+            "fontFamily": {
+                    "body-lg": ["Inter"],
+                    "label-md": ["Inter"],
+                    "display-lg": ["Inter"],
+                    "title-lg": ["Inter"],
+                    "headline-lg": ["Inter"],
+                    "body-md": ["Inter"],
+                    "headline-lg-mobile": ["Inter"],
+                    "label-lg": ["Inter"]
+            },
+            "fontSize": {
+                    "body-lg": ["16px", {"lineHeight": "24px", "letterSpacing": "0.5px", "fontWeight": "400"}],
+                    "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.5px", "fontWeight": "500"}],
+                    "display-lg": ["57px", {"lineHeight": "64px", "letterSpacing": "-0.25px", "fontWeight": "400"}],
+                    "title-lg": ["22px", {"lineHeight": "28px", "letterSpacing": "0px", "fontWeight": "500"}],
+                    "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "0px", "fontWeight": "600"}],
+                    "body-md": ["14px", {"lineHeight": "20px", "letterSpacing": "0.25px", "fontWeight": "400"}],
+                    "headline-lg-mobile": ["28px", {"lineHeight": "36px", "letterSpacing": "0px", "fontWeight": "600"}],
+                    "label-lg": ["14px", {"lineHeight": "20px", "letterSpacing": "0.1px", "fontWeight": "500"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .progress-gradient {
+            background: linear-gradient(90deg, #4b635a 0%, #b2ccc1 100%);
+        }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #c2c8c4; border-radius: 10px; }
+    </style>
+</head>
+<body class="bg-background text-on-surface selection:bg-primary-fixed selection:text-on-primary-fixed">
+<!-- Sidebar (As specified in JSON) -->
+<aside class="fixed left-0 top-0 h-full flex flex-col p-md z-50 bg-surface-container-low border-r border-outline-variant w-[280px] hidden md:flex">
+<div class="mb-xl flex items-center gap-sm">
+<div class="w-10 h-10 bg-primary rounded-xl flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined">campaign</span>
+</div>
+<div>
+<h1 class="font-title-lg text-title-lg font-bold text-primary">Marketing Suite</h1>
+<p class="text-on-surface-variant font-label-md text-label-md">Enterprise Tier</p>
+</div>
+</div>
+<button class="mb-lg w-full py-md px-lg bg-primary text-on-primary rounded-full font-label-lg text-label-lg flex items-center justify-center gap-sm hover:opacity-90 transition-all">
+<span class="material-symbols-outlined">add_circle</span>
+            New Campaign
+        </button>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant font-label-lg text-label-lg rounded-xl hover:bg-surface-variant transition-all" href="#">
+<span class="material-symbols-outlined">dashboard</span> Dashboard
+            </a>
+<a class="flex items-center gap-md px-md py-sm bg-primary-container text-on-primary-container font-label-lg text-label-lg rounded-xl translate-x-1 transition-transform" href="#">
+<span class="material-symbols-outlined">send</span> Campaigns
+            </a>
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant font-label-lg text-label-lg rounded-xl hover:bg-surface-variant transition-all" href="#">
+<span class="material-symbols-outlined">description</span> Templates
+            </a>
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant font-label-lg text-label-lg rounded-xl hover:bg-surface-variant transition-all" href="#">
+<span class="material-symbols-outlined">group</span> Audience
+            </a>
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant font-label-lg text-label-lg rounded-xl hover:bg-surface-variant transition-all" href="#">
+<span class="material-symbols-outlined">person</span> Profile
+            </a>
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant font-label-lg text-label-lg rounded-xl hover:bg-surface-variant transition-all" href="#">
+<span class="material-symbols-outlined">settings</span> Settings
+            </a>
+</nav>
+</aside>
+<!-- Main Content Area -->
+<main class="md:ml-[280px] min-h-screen flex flex-col pb-xl">
+<!-- TopNavBar (As specified in JSON) -->
+<header class="flex justify-between items-center w-full px-margin-desktop h-16 z-40 bg-surface border-b border-outline-variant sticky top-0">
+<div class="flex items-center gap-lg">
+<div class="font-headline-lg text-headline-lg font-bold text-primary">CampaignFlow</div>
+<div class="h-6 w-px bg-outline-variant"></div>
+<nav class="hidden lg:flex items-center gap-xl">
+<a class="font-label-lg text-label-lg text-on-surface-variant hover:text-primary transition-colors" href="#">Dashboard</a>
+<a class="font-label-lg text-label-lg text-primary border-b-2 border-primary pb-1" href="#">Campaigns</a>
+<a class="font-label-lg text-label-lg text-on-surface-variant hover:text-primary transition-colors" href="#">Audience</a>
+</nav>
+</div>
+<div class="flex items-center gap-md">
+<div class="relative hidden sm:block">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
+<input class="pl-10 pr-4 py-2 bg-surface-container-low border-none rounded-full text-body-md font-body-md focus:ring-1 focus:ring-primary w-64 transition-all" placeholder="Search data..." type="text"/>
+</div>
+<button class="p-2 hover:bg-surface-container rounded-full transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant">notifications</span>
+</button>
+<button class="p-2 hover:bg-surface-container rounded-full transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant">help</span>
+</button>
+<div class="w-8 h-8 rounded-full bg-secondary-container border border-outline-variant overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="A professional high-resolution headshot of a corporate marketing manager in a well-lit office setting. The style is modern and clean, with soft directional lighting that complements the light-mode UI aesthetic. The background is slightly blurred to maintain focus on the subject, reflecting a sense of reliability and professional expertise." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCti23sdECYb9oYW2TgPfttQ0e3JlIuuX4rdOgihN0p_YB5usDlAiMYXTyEliPEmI7di4h2UTviybiJciQKe_qDqv2qYrCmQuPWv11Dl7doLg3HpD_BP5S2cLtilhFsio9EB2Th1izvMOMI1pjOEgAI8vi9AS13hpIu7iVmqjygjV-Ktdruk1snyC0oEPxTZ9os74GXK_UW_63IJQ4vRtvNoOm_dpFnl5VTymyGOGaRmrSx9lxaXh0rlQ"/>
+</div>
+</div>
+</header>
+<div class="px-margin-desktop mt-xl">
+<!-- Breadcrumbs & Title -->
+<div class="flex items-center gap-sm mb-base text-on-surface-variant font-label-md text-label-md">
+<span>Campaigns</span>
+<span class="material-symbols-outlined text-[14px]">chevron_right</span>
+<span class="text-primary font-medium">Summer Blast 2024</span>
+</div>
+<div class="flex justify-between items-end mb-lg">
+<div>
+<h2 class="font-headline-lg text-headline-lg text-on-surface flex items-center gap-md">
+                        Summer Blast 2024
+                        <span class="px-md py-1 bg-primary-fixed text-on-primary-fixed text-label-md font-label-md rounded-full flex items-center gap-1">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+                            ACTIVE
+                        </span>
+</h2>
+</div>
+<div class="text-right">
+<p class="text-on-surface-variant font-label-md text-label-md">Current Phase</p>
+<p class="text-on-surface font-title-lg text-title-lg font-semibold">Bulk Dispatch Sequence</p>
+</div>
+</div>
+<!-- Bento Layout Container -->
+<div class="grid grid-cols-12 gap-lg items-start">
+<!-- Left Main Content (8 cols) -->
+<div class="col-span-12 lg:col-span-8 space-y-lg">
+<!-- Summary Stats Card -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg grid grid-cols-1 sm:grid-cols-3 gap-lg">
+<div class="flex flex-col">
+<span class="text-on-surface-variant font-label-md text-label-md">Dispatch Progress</span>
+<div class="flex items-end gap-sm mt-1">
+<span class="text-display-lg text-[48px] font-bold leading-tight">65%</span>
+<span class="text-primary mb-2 font-medium">↑ 12% vs last hr</span>
+</div>
+<div class="w-full h-2 bg-surface-container rounded-full mt-lg overflow-hidden">
+<div class="h-full progress-gradient w-[65%] rounded-full"></div>
+</div>
+</div>
+<div class="flex flex-col border-l border-outline-variant pl-lg">
+<span class="text-on-surface-variant font-label-md text-label-md">Sent / Total</span>
+<div class="mt-1">
+<span class="text-headline-lg text-headline-lg font-bold">162,500</span>
+<span class="text-on-surface-variant text-title-lg">/ 250,000</span>
+</div>
+<div class="mt-lg flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary text-sm">schedule</span>
+<span class="text-body-md font-body-md text-on-surface-variant">Est. 4h 12m remaining</span>
+</div>
+</div>
+<div class="flex flex-col border-l border-outline-variant pl-lg">
+<span class="text-on-surface-variant font-label-md text-label-md">Started On</span>
+<div class="mt-1">
+<span class="text-headline-lg text-headline-lg font-bold">June 12</span>
+<span class="text-on-surface-variant text-title-lg">08:00 AM</span>
+</div>
+<div class="mt-lg flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary text-sm">calendar_month</span>
+<span class="text-body-md font-body-md text-on-surface-variant">Created by Admin</span>
+</div>
+</div>
+</div>
+<!-- Main Status Chart -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg">
+<div class="flex justify-between items-center mb-xl">
+<h3 class="font-title-lg text-title-lg font-bold text-on-surface">Delivery Performance</h3>
+<div class="flex gap-md">
+<div class="flex items-center gap-sm text-label-md">
+<span class="w-3 h-3 rounded-full bg-primary"></span> Sent
+                                </div>
+<div class="flex items-center gap-sm text-label-md">
+<span class="w-3 h-3 rounded-full bg-tertiary-container"></span> Opened
+                                </div>
+<div class="flex items-center gap-sm text-label-md text-error">
+<span class="w-3 h-3 rounded-full bg-error"></span> Failed
+                                </div>
+</div>
+</div>
+<!-- Mock Chart Area -->
+<div class="w-full h-80 relative flex items-end justify-between px-2 overflow-hidden border-b border-l border-outline-variant pt-lg">
+<!-- Animated Placeholder for Chart-like feeling -->
+<div class="absolute inset-0 opacity-5 pointer-events-none">
+
+</div>
+<!-- Static Mock Bars -->
+<div class="w-[8%] bg-surface-container h-1/4 rounded-t-sm flex flex-col justify-end overflow-hidden">
+<div class="h-full bg-primary opacity-20"></div>
+</div>
+<div class="w-[8%] bg-surface-container h-1/3 rounded-t-sm flex flex-col justify-end overflow-hidden">
+<div class="h-full bg-primary opacity-40"></div>
+</div>
+<div class="w-[8%] bg-surface-container h-2/5 rounded-t-sm flex flex-col justify-end overflow-hidden">
+<div class="h-full bg-primary opacity-60"></div>
+</div>
+<div class="w-[8%] bg-surface-container h-3/5 rounded-t-sm flex flex-col justify-end overflow-hidden">
+<div class="h-full bg-primary opacity-80"></div>
+</div>
+<div class="w-[8%] bg-surface-container h-4/5 rounded-t-sm flex flex-col justify-end overflow-hidden">
+<div class="h-full bg-primary"></div>
+</div>
+<div class="w-[8%] bg-surface-container h-3/4 rounded-t-sm flex flex-col justify-end overflow-hidden">
+<div class="h-full bg-primary"></div>
+</div>
+<div class="w-[8%] bg-surface-container h-1/2 rounded-t-sm flex flex-col justify-end overflow-hidden">
+<div class="h-full bg-primary opacity-90"></div>
+</div>
+<div class="w-[8%] bg-surface-container h-2/3 rounded-t-sm flex flex-col justify-end overflow-hidden">
+<div class="h-full bg-primary opacity-80"></div>
+</div>
+<div class="w-[8%] bg-surface-container h-5/6 rounded-t-sm flex flex-col justify-end overflow-hidden">
+<div class="h-full bg-primary"></div>
+</div>
+<div class="w-[8%] bg-surface-container h-2/3 rounded-t-sm flex flex-col justify-end overflow-hidden">
+<div class="h-full bg-primary opacity-50 animate-pulse"></div>
+</div>
+</div>
+<div class="flex justify-between mt-sm text-label-md text-on-surface-variant font-label-md">
+<span>08:00 AM</span>
+<span>10:00 AM</span>
+<span>12:00 PM</span>
+<span>02:00 PM</span>
+<span>04:00 PM (Now)</span>
+</div>
+</div>
+<!-- Tabs Section -->
+<div class="mt-xl">
+<div class="flex border-b border-outline-variant gap-xl mb-lg">
+<button class="pb-md border-b-2 border-primary text-primary font-label-lg text-label-lg flex items-center gap-sm">
+<span class="material-symbols-outlined text-[20px]">bolt</span> Live Queue
+                            </button>
+<button class="pb-md text-on-surface-variant font-label-lg text-label-lg hover:text-primary transition-colors flex items-center gap-sm">
+<span class="material-symbols-outlined text-[20px]">list_alt</span> Logs
+                            </button>
+<button class="pb-md text-on-surface-variant font-label-lg text-label-lg hover:text-primary transition-colors flex items-center gap-sm">
+<span class="material-symbols-outlined text-[20px]">insights</span> Analytics
+                            </button>
+<button class="pb-md text-on-surface-variant font-label-lg text-label-lg hover:text-primary transition-colors flex items-center gap-sm">
+<span class="material-symbols-outlined text-[20px]">settings</span> Settings
+                            </button>
+</div>
+<!-- Recipients Table -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden">
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface-container-low border-b border-outline-variant">
+<th class="px-lg py-md font-label-lg text-label-lg text-on-surface-variant">Recipient</th>
+<th class="px-lg py-md font-label-lg text-label-lg text-on-surface-variant">Status</th>
+<th class="px-lg py-md font-label-lg text-label-lg text-on-surface-variant">Delivery</th>
+<th class="px-lg py-md font-label-lg text-label-lg text-on-surface-variant">Read</th>
+<th class="px-lg py-md font-label-lg text-label-lg text-on-surface-variant">Device</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant">
+<tr class="hover:bg-surface-container-low transition-colors">
+<td class="px-lg py-md">
+<div class="flex flex-col">
+<span class="text-body-md font-semibold">alex.rivera@gmail.com</span>
+<span class="text-label-md text-on-surface-variant">User ID: #88219</span>
+</div>
+</td>
+<td class="px-lg py-md">
+<span class="px-sm py-1 bg-primary-fixed text-on-primary-fixed text-[12px] font-medium rounded-full">DELIVERED</span>
+</td>
+<td class="px-lg py-md text-body-md">2m ago</td>
+<td class="px-lg py-md">
+<span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1;">check_circle</span>
+</td>
+<td class="px-lg py-md text-on-surface-variant"><span class="material-symbols-outlined">smartphone</span></td>
+</tr>
+<tr class="bg-surface-container-lowest hover:bg-surface-container-low transition-colors">
+<td class="px-lg py-md">
+<div class="flex flex-col">
+<span class="text-body-md font-semibold">sarah_j@outlook.com</span>
+<span class="text-label-md text-on-surface-variant">User ID: #88301</span>
+</div>
+</td>
+<td class="px-lg py-md">
+<span class="px-sm py-1 bg-tertiary-fixed text-on-tertiary-fixed text-[12px] font-medium rounded-full">SENDING...</span>
+</td>
+<td class="px-lg py-md text-body-md">Just now</td>
+<td class="px-lg py-md text-on-surface-variant">—</td>
+<td class="px-lg py-md text-on-surface-variant"><span class="material-symbols-outlined">desktop_windows</span></td>
+</tr>
+<tr class="hover:bg-surface-container-low transition-colors">
+<td class="px-lg py-md">
+<div class="flex flex-col">
+<span class="text-body-md font-semibold">m.chen84@corp.io</span>
+<span class="text-label-md text-on-surface-variant">User ID: #88412</span>
+</div>
+</td>
+<td class="px-lg py-md">
+<span class="px-sm py-1 bg-error-container text-on-error-container text-[12px] font-medium rounded-full">BOUNCED</span>
+</td>
+<td class="px-lg py-md text-body-md">15m ago</td>
+<td class="px-lg py-md text-on-surface-variant">—</td>
+<td class="px-lg py-md text-on-surface-variant"><span class="material-symbols-outlined">help</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="px-lg py-md bg-surface-container-low flex justify-between items-center">
+<span class="text-label-md text-on-surface-variant">Showing 1-10 of 162,500 records</span>
+<div class="flex gap-sm">
+<button class="p-1 rounded hover:bg-outline-variant transition-colors"><span class="material-symbols-outlined">navigate_before</span></button>
+<button class="p-1 rounded hover:bg-outline-variant transition-colors"><span class="material-symbols-outlined">navigate_next</span></button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Sidebar Column (4 cols) -->
+<div class="col-span-12 lg:col-span-4 space-y-lg">
+<!-- Controls Card -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg sticky top-24 shadow-sm">
+<h3 class="font-title-lg text-title-lg font-bold text-on-surface mb-lg">Dispatch Controls</h3>
+<div class="space-y-md">
+<div class="p-md bg-surface-container-low rounded-xl border border-outline-variant flex items-center justify-between">
+<div class="flex items-center gap-md">
+<div class="w-10 h-10 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined">pause</span>
+</div>
+<div>
+<p class="font-label-lg text-label-lg">Pause Campaign</p>
+<p class="text-label-md text-on-surface-variant">Temporarily halt all outgoing mail</p>
+</div>
+</div>
+<button class="p-2 hover:bg-outline-variant rounded-full transition-all">
+<span class="material-symbols-outlined">chevron_right</span>
+</button>
+</div>
+<div class="p-md bg-error-container/30 rounded-xl border border-error-container flex items-center justify-between">
+<div class="flex items-center gap-md">
+<div class="w-10 h-10 rounded-full bg-error text-on-error flex items-center justify-center">
+<span class="material-symbols-outlined">stop</span>
+</div>
+<div>
+<p class="font-label-lg text-label-lg text-error">Terminate Process</p>
+<p class="text-label-md text-on-error-container">Irreversibly stop the campaign</p>
+</div>
+</div>
+<button class="p-2 hover:bg-error-container rounded-full transition-all text-error">
+<span class="material-symbols-outlined">delete_forever</span>
+</button>
+</div>
+<div class="pt-lg border-t border-outline-variant">
+<div class="flex items-center justify-between mb-sm">
+<span class="text-on-surface-variant font-label-md text-label-md uppercase tracking-wider">Scheduled Window</span>
+<button class="text-primary font-label-md text-label-md hover:underline">Modify</button>
+</div>
+<div class="flex items-center gap-md text-on-surface font-body-md">
+<span class="material-symbols-outlined text-primary">event_repeat</span>
+                                    Mon-Fri, 08:00 — 18:00
+                                </div>
+<p class="mt-md text-label-md text-on-surface-variant leading-relaxed">
+                                    Campaign is currently utilizing 75% of assigned SMTP bandwidth to ensure high IP reputation.
+                                </p>
+</div>
+<button class="w-full mt-lg py-md bg-secondary text-on-secondary rounded-xl font-label-lg text-label-lg hover:shadow-md transition-all">
+                                Download Snapshot (.CSV)
+                            </button>
+</div>
+</div>
+<!-- Health Check Mini Card -->
+<div class="bg-surface-container border border-outline-variant rounded-xl p-lg">
+<h4 class="font-label-lg text-label-lg font-bold mb-md uppercase tracking-widest text-on-surface-variant">System Health</h4>
+<div class="space-y-md">
+<div class="flex justify-between items-center">
+<span class="text-body-md">SMTP Latency</span>
+<span class="font-semibold text-primary">42ms</span>
+</div>
+<div class="flex justify-between items-center">
+<span class="text-body-md">Spam Score</span>
+<span class="font-semibold text-primary">0.02 / 10</span>
+</div>
+<div class="flex justify-between items-center">
+<span class="text-body-md">Queue Depth</span>
+<span class="font-semibold">87,500</span>
+</div>
+</div>
+<div class="mt-lg p-md bg-surface-container-highest rounded-lg flex items-start gap-sm">
+<span class="material-symbols-outlined text-primary text-[20px]">verified</span>
+<p class="text-label-md text-on-surface-variant">All 4 sending nodes are performing within optimal parameters.</p>
+</div>
+</div>
+<!-- Visual Accent Card -->
+<div class="relative h-48 rounded-xl overflow-hidden border border-outline-variant group">
+<div class="absolute inset-0 bg-cover bg-center transition-transform duration-500 group-hover:scale-110" data-alt="An abstract visualization of digital data flowing through a network, utilizing a refined color palette of sage green and mint. The composition is sleek and professional, with light bokeh effects and clean geometric lines suggesting speed and connectivity in a modern corporate SaaS environment." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuCmhwxdcsrHj2U_hu83xK8LFwaay0duPY97EWT_PD32uVYyekwvE4T1jjbRtx9DyX9SK0F5yJrYH_sQHbf4D8vR4UV4qorKzF4D0TOCZIeXWe5IHMM5BATXh2EeiA6GzTFgclLOuJLefJ3YxBT7x91XKPFmsEM4y_2s7JDbBQ5_Z_UZ3NM-8VSC4qqHUDwO9F95tgFT26iH4cha4fbVR8EAtxzgIR_sKw_ccW7xthjeRl7Cf-2hdyZ-Lg')"></div>
+<div class="absolute inset-0 bg-gradient-to-t from-primary/80 to-transparent flex flex-col justify-end p-lg">
+<p class="text-on-primary font-label-lg text-label-lg uppercase font-bold tracking-widest">Network View</p>
+<p class="text-primary-fixed text-body-md">Real-time global delivery map</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- Mobile Navigation Shell (As specified in JSON for smaller screens) -->
+<nav class="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-surface border-t border-outline-variant flex justify-around items-center z-50">
+<button class="flex flex-col items-center gap-1 text-on-surface-variant">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="text-[10px] font-label-md">Home</span>
+</button>
+<button class="flex flex-col items-center gap-1 text-primary">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">send</span>
+<span class="text-[10px] font-label-md">Campaigns</span>
+</button>
+<button class="flex flex-col items-center gap-1 text-on-surface-variant">
+<span class="material-symbols-outlined">group</span>
+<span class="text-[10px] font-label-md">Audience</span>
+</button>
+<button class="flex flex-col items-center gap-1 text-on-surface-variant">
+<span class="material-symbols-outlined">settings</span>
+<span class="text-[10px] font-label-md">Settings</span>
+</button>
+</nav>
+<script>
+        // Simple micro-interaction for the table rows
+        document.querySelectorAll('tbody tr').forEach(row => {
+            row.addEventListener('click', () => {
+                row.classList.toggle('bg-primary/5');
+            });
+        });
+    </script>
+</body></html>

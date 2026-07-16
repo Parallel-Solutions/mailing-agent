@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>CampaignFlow | Enterprise Marketing Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed": "#dee4db",
+                        "error": "#ba1a1a",
+                        "surface-container": "#edeeea",
+                        "primary-fixed": "#cee9dd",
+                        "tertiary": "#254b5b",
+                        "on-primary": "#ffffff",
+                        "on-primary-fixed": "#082019",
+                        "on-error": "#ffffff",
+                        "on-secondary": "#ffffff",
+                        "surface-dim": "#d9dbd7",
+                        "surface-bright": "#f8faf6",
+                        "on-tertiary-fixed-variant": "#254b5c",
+                        "background": "#f8faf6",
+                        "tertiary-fixed-dim": "#a6cce0",
+                        "primary-container": "#4b635a",
+                        "secondary-container": "#dbe2d8",
+                        "surface-variant": "#e1e3df",
+                        "surface-container-lowest": "#ffffff",
+                        "on-primary-container": "#c3ded2",
+                        "secondary": "#596059",
+                        "on-secondary-container": "#5d645d",
+                        "error-container": "#ffdad6",
+                        "inverse-surface": "#2e312f",
+                        "inverse-primary": "#b2ccc1",
+                        "surface-container-highest": "#e1e3df",
+                        "surface-tint": "#4b635a",
+                        "on-error-container": "#93000a",
+                        "surface-container-high": "#e7e9e5",
+                        "tertiary-container": "#3e6374",
+                        "on-secondary-fixed-variant": "#424942",
+                        "surface-container-low": "#f2f4f0",
+                        "on-surface": "#191c1a",
+                        "outline-variant": "#c2c8c4",
+                        "secondary-fixed-dim": "#c2c8bf",
+                        "surface": "#f8faf6",
+                        "on-background": "#191c1a",
+                        "outline": "#727875",
+                        "on-tertiary-fixed": "#001f2a",
+                        "on-surface-variant": "#424845",
+                        "tertiary-fixed": "#c2e8fc",
+                        "primary": "#344b43",
+                        "on-tertiary-container": "#b8def2",
+                        "inverse-on-surface": "#eff1ed",
+                        "on-secondary-fixed": "#171d17",
+                        "on-primary-fixed-variant": "#344b43",
+                        "on-tertiary": "#ffffff",
+                        "primary-fixed-dim": "#b2ccc1"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "xl": "32px",
+                        "margin-mobile": "16px",
+                        "base": "4px",
+                        "gutter": "24px",
+                        "xs": "4px",
+                        "md": "16px",
+                        "margin-desktop": "32px",
+                        "sm": "8px",
+                        "lg": "24px"
+                    },
+                    "fontFamily": {
+                        "body-lg": ["Inter"],
+                        "label-md": ["Inter"],
+                        "display-lg": ["Inter"],
+                        "title-lg": ["Inter"],
+                        "headline-lg": ["Inter"],
+                        "body-md": ["Inter"],
+                        "label-lg": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-lg": ["16px", {"lineHeight": "24px", "letterSpacing": "0.5px", "fontWeight": "400"}],
+                        "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.5px", "fontWeight": "500"}],
+                        "display-lg": ["57px", {"lineHeight": "64px", "letterSpacing": "-0.25px", "fontWeight": "400"}],
+                        "title-lg": ["22px", {"lineHeight": "28px", "letterSpacing": "0px", "fontWeight": "500"}],
+                        "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "0px", "fontWeight": "600"}],
+                        "body-md": ["14px", {"lineHeight": "20px", "letterSpacing": "0.25px", "fontWeight": "400"}],
+                        "label-lg": ["14px", {"lineHeight": "20px", "letterSpacing": "0.1px", "fontWeight": "500"}]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #F8FAF9;
+            color: #191c1a;
+        }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .sidebar-active {
+            transition: transform 0.2s ease-in-out;
+        }
+        .sidebar-active:active {
+            transform: translateX(4px);
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(8px);
+            border: 1px solid #E1E3E1;
+        }
+        .tonal-elevation-1 {
+            background-color: #FFFFFF;
+            border: 1px solid #E1E3E1;
+        }
+        .tonal-elevation-2:hover {
+            box-shadow: 0px 2px 6px rgba(75, 99, 90, 0.08);
+        }
+        .progress-bar-animate {
+            width: 45%;
+            animation: pulse-width 4s infinite ease-in-out;
+        }
+        @keyframes pulse-width {
+            0%, 100% { width: 45%; }
+            50% { width: 52%; }
+        }
+    </style>
+</head>
+<body class="bg-background overflow-x-hidden">
+<!-- SideNavBar (Authority Source: JSON) -->
+<aside class="fixed left-0 top-0 h-full flex flex-col p-md z-50 bg-surface-container-low border-r border-outline-variant w-[280px] hidden md:flex">
+<div class="mb-xl flex items-center gap-md">
+<div class="w-10 h-10 rounded-xl bg-primary-container flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined">rocket_launch</span>
+</div>
+<div>
+<h2 class="font-title-lg text-title-lg font-bold text-primary">Marketing Suite</h2>
+<p class="text-on-surface-variant font-label-md text-label-md">Enterprise Tier</p>
+</div>
+</div>
+<button class="mb-xl w-full bg-primary text-on-primary rounded-xl py-3 flex items-center justify-center gap-2 font-label-lg text-label-lg sidebar-active">
+<span class="material-symbols-outlined">add</span>
+            New Campaign
+        </button>
+<nav class="flex-1 flex flex-col gap-1">
+<!-- Active State determined by "Dashboard" -->
+<a class="flex items-center gap-md p-3 bg-primary-container text-on-primary-container rounded-xl translate-x-1 transition-transform" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="font-label-lg text-label-lg">Dashboard</span>
+</a>
+<a class="flex items-center gap-md p-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">add_circle</span>
+<span class="font-label-lg text-label-lg">Create Campaign</span>
+</a>
+<a class="flex items-center gap-md p-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">send</span>
+<span class="font-label-lg text-label-lg">Campaigns</span>
+</a>
+<a class="flex items-center gap-md p-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">description</span>
+<span class="font-label-lg text-label-lg">Templates</span>
+</a>
+<a class="flex items-center gap-md p-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">group</span>
+<span class="font-label-lg text-label-lg">Audience</span>
+</a>
+<div class="mt-auto border-t border-outline-variant pt-md flex flex-col gap-1">
+<a class="flex items-center gap-md p-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">person</span>
+<span class="font-label-lg text-label-lg">Profile</span>
+</a>
+<a class="flex items-center gap-md p-3 text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-label-lg text-label-lg">Settings</span>
+</a>
+</div>
+</nav>
+</aside>
+<!-- Main Content Canvas -->
+<main class="md:ml-[280px] min-h-screen">
+<!-- TopAppBar (Authority Source: JSON) -->
+<header class="flex justify-between items-center w-full px-margin-desktop h-16 z-40 bg-surface border-b border-outline-variant sticky top-0">
+<div class="flex items-center gap-xl">
+<h1 class="font-headline-lg text-headline-lg font-bold text-primary">CampaignFlow</h1>
+<div class="hidden lg:flex items-center bg-surface-container rounded-full px-md py-2 w-96">
+<span class="material-symbols-outlined text-outline">search</span>
+<input class="bg-transparent border-none focus:ring-0 text-body-md font-body-md w-full ml-2" placeholder="Search data, subscribers..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<button class="p-2 hover:bg-surface-container rounded-full transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="p-2 hover:bg-surface-container rounded-full transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined">help</span>
+</button>
+<div class="h-8 w-[1px] bg-outline-variant mx-2"></div>
+<div class="flex items-center gap-sm">
+<div class="w-8 h-8 rounded-full bg-secondary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-secondary">account_circle</span>
+</div>
+<span class="font-label-lg text-label-lg text-on-surface">Admin User</span>
+</div>
+</div>
+</header>
+<!-- Dashboard Body -->
+<div class="p-margin-desktop max-w-[1600px] mx-auto space-y-xl">
+<!-- Dashboard Header Section -->
+<section class="flex flex-col md:flex-row justify-between items-start md:items-center gap-md">
+<div>
+<h2 class="font-headline-lg text-headline-lg text-on-surface">Dashboard</h2>
+<p class="text-on-surface-variant font-body-md text-body-md">Real-time performance across all marketing channels.</p>
+</div>
+<button class="bg-primary text-on-primary px-lg py-3 rounded-xl flex items-center gap-2 shadow-sm font-label-lg text-label-lg hover:brightness-110 transition-all">
+<span class="material-symbols-outlined">add</span>
+                    Create Campaign
+                </button>
+</section>
+<!-- KPI Row: Bento Grid Style -->
+<section class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-md">
+<div class="tonal-elevation-1 rounded-xl p-md flex flex-col justify-between hover:border-primary-container transition-all">
+<span class="text-on-surface-variant font-label-md text-label-md">Active</span>
+<span class="text-headline-lg font-headline-lg text-primary">12</span>
+<div class="flex items-center text-primary text-xs font-medium gap-1">
+<span class="material-symbols-outlined text-[14px]">trending_up</span> 8%
+                    </div>
+</div>
+<div class="tonal-elevation-1 rounded-xl p-md flex flex-col justify-between hover:border-primary-container transition-all">
+<span class="text-on-surface-variant font-label-md text-label-md">Sent Today</span>
+<span class="text-headline-lg font-headline-lg text-primary">45.2k</span>
+<div class="flex items-center text-primary text-xs font-medium gap-1">
+<span class="material-symbols-outlined text-[14px]">trending_up</span> 12%
+                    </div>
+</div>
+<div class="tonal-elevation-1 rounded-xl p-md flex flex-col justify-between hover:border-primary-container transition-all">
+<span class="text-on-surface-variant font-label-md text-label-md">Delivered %</span>
+<span class="text-headline-lg font-headline-lg text-primary">99.2</span>
+<div class="flex items-center text-primary text-xs font-medium gap-1">
+<span class="material-symbols-outlined text-[14px]">check_circle</span> Stable
+                    </div>
+</div>
+<div class="tonal-elevation-1 rounded-xl p-md flex flex-col justify-between border-error/20 hover:border-error transition-all">
+<span class="text-on-surface-variant font-label-md text-label-md">Errors</span>
+<span class="text-headline-lg font-headline-lg text-error">42</span>
+<div class="flex items-center text-error text-xs font-medium gap-1">
+<span class="material-symbols-outlined text-[14px]">error</span> +14%
+                    </div>
+</div>
+<div class="tonal-elevation-1 rounded-xl p-md flex flex-col justify-between hover:border-primary-container transition-all">
+<span class="text-on-surface-variant font-label-md text-label-md">Open Rate</span>
+<span class="text-headline-lg font-headline-lg text-primary">24%</span>
+<div class="flex items-center text-primary text-xs font-medium gap-1">
+<span class="material-symbols-outlined text-[14px]">trending_up</span> 2%
+                    </div>
+</div>
+<div class="tonal-elevation-1 rounded-xl p-md flex flex-col justify-between hover:border-primary-container transition-all">
+<span class="text-on-surface-variant font-label-md text-label-md">Clicks</span>
+<span class="text-headline-lg font-headline-lg text-primary">3,812</span>
+<div class="flex items-center text-primary text-xs font-medium gap-1">
+<span class="material-symbols-outlined text-[14px]">mouse</span> High
+                    </div>
+</div>
+<div class="tonal-elevation-1 rounded-xl p-md flex flex-col justify-between hover:border-primary-container transition-all">
+<span class="text-on-surface-variant font-label-md text-label-md">Conversions</span>
+<span class="text-headline-lg font-headline-lg text-primary">142</span>
+<div class="flex items-center text-primary text-xs font-medium gap-1">
+<span class="material-symbols-outlined text-[14px]">ads_click</span> +5%
+                    </div>
+</div>
+</section>
+<!-- Middle Charts Row -->
+<section class="grid grid-cols-1 lg:grid-cols-3 gap-lg">
+<!-- Activity Chart -->
+<div class="lg:col-span-2 tonal-elevation-1 rounded-xl p-lg space-y-lg">
+<div class="flex justify-between items-center">
+<h3 class="font-title-lg text-title-lg text-on-surface">Sending Activity</h3>
+<div class="flex bg-surface-container rounded-lg p-1">
+<button class="px-md py-1 bg-white rounded-md text-label-md font-label-md shadow-sm">24h</button>
+<button class="px-md py-1 text-on-surface-variant text-label-md font-label-md hover:text-on-surface">7d</button>
+</div>
+</div>
+<div class="relative h-64 w-full bg-surface-container-low rounded-lg overflow-hidden flex items-end">
+<!-- Simulated Chart Bars -->
+<div class="flex-1 flex items-end justify-around h-full px-md pb-4">
+<div class="w-8 bg-primary/20 rounded-t-sm h-[40%]"></div>
+<div class="w-8 bg-primary/30 rounded-t-sm h-[60%]"></div>
+<div class="w-8 bg-primary/40 rounded-t-sm h-[50%]"></div>
+<div class="w-8 bg-primary/60 rounded-t-sm h-[80%]"></div>
+<div class="w-8 bg-primary/50 rounded-t-sm h-[70%]"></div>
+<div class="w-8 bg-primary/30 rounded-t-sm h-[45%]"></div>
+<div class="w-8 bg-primary/80 rounded-t-sm h-[95%]"></div>
+<div class="w-8 bg-primary/70 rounded-t-sm h-[85%]"></div>
+<div class="w-8 bg-primary/40 rounded-t-sm h-[55%]"></div>
+<div class="w-8 bg-primary/20 rounded-t-sm h-[30%]"></div>
+</div>
+<div class="absolute inset-0 flex flex-col justify-between p-4 pointer-events-none opacity-20">
+<div class="border-b border-outline"></div>
+<div class="border-b border-outline"></div>
+<div class="border-b border-outline"></div>
+</div>
+</div>
+</div>
+<!-- Conversion Funnel -->
+<div class="tonal-elevation-1 rounded-xl p-lg space-y-lg">
+<h3 class="font-title-lg text-title-lg text-on-surface">Conversion Funnel</h3>
+<div class="space-y-md">
+<div class="relative">
+<div class="flex justify-between mb-1">
+<span class="font-label-lg text-label-lg">Sent</span>
+<span class="font-label-lg text-label-lg">100%</span>
+</div>
+<div class="h-4 w-full bg-primary-container rounded-full"></div>
+</div>
+<div class="relative">
+<div class="flex justify-between mb-1">
+<span class="font-label-lg text-label-lg">Delivered</span>
+<span class="font-label-lg text-label-lg">99.2%</span>
+</div>
+<div class="h-4 w-[99.2%] bg-primary rounded-full"></div>
+</div>
+<div class="relative">
+<div class="flex justify-between mb-1">
+<span class="font-label-lg text-label-lg">Opened</span>
+<span class="font-label-lg text-label-lg">24.5%</span>
+</div>
+<div class="h-4 w-[24.5%] bg-primary/70 rounded-full"></div>
+</div>
+<div class="relative">
+<div class="flex justify-between mb-1">
+<span class="font-label-lg text-label-lg">Clicked</span>
+<span class="font-label-lg text-label-lg">8.2%</span>
+</div>
+<div class="h-4 w-[8.2%] bg-primary/50 rounded-full"></div>
+</div>
+<div class="relative">
+<div class="flex justify-between mb-1">
+<span class="font-label-lg text-label-lg">Agreed</span>
+<span class="font-label-lg text-label-lg">1.4%</span>
+</div>
+<div class="h-4 w-[1.4%] bg-primary/30 rounded-full"></div>
+</div>
+</div>
+</div>
+</section>
+<!-- Bottom Row: Attention & Queue -->
+<section class="grid grid-cols-1 lg:grid-cols-2 gap-lg">
+<!-- Needs Attention Block -->
+<div class="tonal-elevation-1 rounded-xl p-lg border-l-4 border-error overflow-hidden">
+<div class="flex items-center gap-md mb-lg">
+<span class="material-symbols-outlined text-error" style="font-variation-settings: 'FILL' 1;">warning</span>
+<h3 class="font-title-lg text-title-lg text-on-surface">Needs Attention</h3>
+</div>
+<div class="space-y-md">
+<div class="flex items-start gap-md p-md bg-error-container rounded-lg">
+<span class="material-symbols-outlined text-on-error-container">mail_lock</span>
+<div>
+<p class="font-label-lg text-label-lg text-on-error-container">SMTP Connection Refused</p>
+<p class="font-body-md text-body-md text-on-error-container/80">3 campaigns are currently paused due to server timeout on Node 4.</p>
+</div>
+</div>
+<div class="flex items-center justify-between p-md border border-outline-variant rounded-lg">
+<div class="flex items-center gap-md">
+<span class="material-symbols-outlined text-on-surface-variant">report</span>
+<span class="font-body-md text-body-md">12 Hard Bounces in Campaign "Spring Launch"</span>
+</div>
+<button class="text-primary font-label-lg text-label-lg hover:underline">Review</button>
+</div>
+<div class="flex items-center justify-between p-md border border-outline-variant rounded-lg">
+<div class="flex items-center gap-md">
+<span class="material-symbols-outlined text-on-surface-variant">cancel</span>
+<span class="font-body-md text-body-md">Campaign "Follow Up X" Stopped by Admin</span>
+</div>
+<button class="text-primary font-label-lg text-label-lg hover:underline">Resume</button>
+</div>
+</div>
+</div>
+<!-- Sending Queue Widget -->
+<div class="tonal-elevation-1 rounded-xl p-lg bg-primary-container text-on-primary-container relative overflow-hidden">
+<div class="absolute top-0 right-0 w-32 h-32 opacity-10 pointer-events-none">
+<span class="material-symbols-outlined text-[128px]" style="font-variation-settings: 'FILL' 1;">forward_to_inbox</span>
+</div>
+<div class="flex justify-between items-start mb-lg relative z-10">
+<div>
+<h3 class="font-title-lg text-title-lg text-on-primary">Sending Queue</h3>
+<div class="flex items-center gap-2 mt-1">
+<span class="w-2 h-2 rounded-full bg-primary-fixed-dim animate-pulse"></span>
+<span class="font-label-md text-label-md text-on-primary-container/80">Live Transmission Active</span>
+</div>
+</div>
+<div class="flex items-center gap-sm">
+<button class="p-2 bg-on-primary/10 rounded-lg hover:bg-on-primary/20 transition-colors">
+<span class="material-symbols-outlined">pause</span>
+</button>
+<button class="p-2 bg-on-primary/10 rounded-lg hover:bg-on-primary/20 transition-colors">
+<span class="material-symbols-outlined">play_arrow</span>
+</button>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-lg relative z-10 mb-lg">
+<div class="space-y-1">
+<p class="text-label-md font-label-md text-on-primary-container/70">Currently Sending</p>
+<p class="text-headline-lg font-headline-lg">124</p>
+</div>
+<div class="space-y-1">
+<p class="text-label-md font-label-md text-on-primary-container/70">In Queue</p>
+<p class="text-headline-lg font-headline-lg">1,450</p>
+</div>
+</div>
+<div class="space-y-md relative z-10">
+<div class="space-y-2">
+<div class="flex justify-between text-label-md font-label-md">
+<span>Campaign Progression</span>
+<span>45% Complete</span>
+</div>
+<div class="h-2 w-full bg-on-primary/20 rounded-full overflow-hidden">
+<div class="h-full bg-primary-fixed-dim progress-bar-animate"></div>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-md pt-2">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]">timer</span>
+<p class="text-body-md font-body-md">50 emails in 15m</p>
+</div>
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]">speed</span>
+<p class="text-body-md font-body-md">200 emails/hr</p>
+</div>
+</div>
+<button class="w-full bg-white text-primary rounded-xl py-3 mt-md font-label-lg text-label-lg shadow-md hover:bg-surface-container transition-all">
+                            View Active Campaign Details
+                        </button>
+</div>
+</div>
+</section>
+<!-- Bottom Table: Recent Campaigns -->
+<section class="tonal-elevation-1 rounded-xl overflow-hidden">
+<div class="p-lg border-b border-outline-variant flex justify-between items-center">
+<h3 class="font-title-lg text-title-lg text-on-surface">Recent Campaigns</h3>
+<button class="text-primary font-label-lg text-label-lg hover:underline flex items-center gap-1">
+                        View All <span class="material-symbols-outlined text-[16px]">chevron_right</span>
+</button>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface-container-low text-on-surface-variant font-label-md text-label-md">
+<th class="px-lg py-4">Campaign Name</th>
+<th class="px-lg py-4">Status</th>
+<th class="px-lg py-4">Delivery Rate</th>
+<th class="px-lg py-4">Open Rate</th>
+<th class="px-lg py-4">Date Created</th>
+<th class="px-lg py-4 text-right">Actions</th>
+</tr>
+</thead>
+<tbody class="text-body-md font-body-md text-on-surface divide-y divide-outline-variant">
+<tr class="hover:bg-surface-container-lowest transition-colors">
+<td class="px-lg py-4 font-medium">Summer Special Wave 2</td>
+<td class="px-lg py-4">
+<span class="px-3 py-1 bg-primary-fixed text-on-primary-fixed-variant rounded-full text-xs font-semibold">Running</span>
+</td>
+<td class="px-lg py-4">98.4%</td>
+<td class="px-lg py-4">22.1%</td>
+<td class="px-lg py-4 text-on-surface-variant">Oct 24, 2023</td>
+<td class="px-lg py-4 text-right">
+<button class="p-2 hover:bg-surface-container rounded-lg text-outline">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-lowest transition-colors bg-surface-container-low/30">
+<td class="px-lg py-4 font-medium">Early Access Invitations</td>
+<td class="px-lg py-4">
+<span class="px-3 py-1 bg-secondary-container text-on-secondary-container rounded-full text-xs font-semibold">Scheduled</span>
+</td>
+<td class="px-lg py-4">--</td>
+<td class="px-lg py-4">--</td>
+<td class="px-lg py-4 text-on-surface-variant">Oct 23, 2023</td>
+<td class="px-lg py-4 text-right">
+<button class="p-2 hover:bg-surface-container rounded-lg text-outline">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-lowest transition-colors">
+<td class="px-lg py-4 font-medium">Retention Flow - Global</td>
+<td class="px-lg py-4">
+<span class="px-3 py-1 bg-surface-variant text-on-surface-variant rounded-full text-xs font-semibold">Draft</span>
+</td>
+<td class="px-lg py-4">--</td>
+<td class="px-lg py-4">--</td>
+<td class="px-lg py-4 text-on-surface-variant">Oct 22, 2023</td>
+<td class="px-lg py-4 text-right">
+<button class="p-2 hover:bg-surface-container rounded-lg text-outline">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-lowest transition-colors bg-surface-container-low/30">
+<td class="px-lg py-4 font-medium">Monthly Newsletter v12</td>
+<td class="px-lg py-4">
+<span class="px-3 py-1 bg-tertiary-container text-on-tertiary-container rounded-full text-xs font-semibold">Completed</span>
+</td>
+<td class="px-lg py-4">99.9%</td>
+<td class="px-lg py-4">34.2%</td>
+<td class="px-lg py-4 text-on-surface-variant">Oct 20, 2023</td>
+<td class="px-lg py-4 text-right">
+<button class="p-2 hover:bg-surface-container rounded-lg text-outline">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</div>
+</main>
+<script>
+        // Simple interactive micro-interaction for sidebar expansion logic (can be extended)
+        document.addEventListener('DOMContentLoaded', () => {
+            const cards = document.querySelectorAll('.tonal-elevation-1');
+            cards.forEach(card => {
+                card.addEventListener('mouseenter', () => {
+                    card.classList.add('tonal-elevation-2');
+                });
+                card.addEventListener('mouseleave', () => {
+                    card.classList.remove('tonal-elevation-2');
+                });
+            });
+        });
+    </script>
+</body></html>

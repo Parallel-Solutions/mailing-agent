@@ -290,3 +290,241 @@ class SmtpMailbox(Base):
         Index("idx_smtp_mailboxes_owner", "owner_username"),
         Index("idx_smtp_mailboxes_owner_default", "owner_username", "is_default"),
     )
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    username: Mapped[str] = mapped_column(String(32), ForeignKey("users.username", ondelete="CASCADE"), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    company: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    job_title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    signature: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Europe/Moscow")
+    mailing_defaults: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    notifications: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Audience(Base):
+    __tablename__ = "audiences"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="manual")
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    quality_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (Index("idx_audiences_owner", "owner_username"),)
+
+
+class AudienceMember(Base):
+    __tablename__ = "audience_members"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    audience_id: Mapped[str] = mapped_column(String(36), ForeignKey("audiences.id", ondelete="CASCADE"), nullable=False)
+    company: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    contact_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    email_fallback: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    region: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    validation_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    extra: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    excluded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_audience_members_audience", "audience_id"),
+        Index("idx_audience_members_email", "audience_id", "email"),
+    )
+
+
+class MailTemplate(Base):
+    __tablename__ = "mail_templates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    template_type: Mapped[str] = mapped_column(String(32), nullable=False)  # email | kp | contract
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    active_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_mail_templates_owner_type", "owner_username", "template_type"),
+    )
+
+
+class TemplateVersion(Base):
+    __tablename__ = "template_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    template_id: Mapped[str] = mapped_column(String(36), ForeignKey("mail_templates.id", ondelete="CASCADE"), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    subject: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    body_html: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    body_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    variables: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_template_versions_template", "template_id", "version_number", unique=True),
+    )
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    work_type: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    document_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="kp")  # kp | contract | both
+    mail_subject: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    send_scenario: Mapped[str] = mapped_column(String(64), nullable=False, default="consent_then_materials")
+    tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    internal_comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    smtp_mailbox_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    transport: Mapped[str] = mapped_column(String(32), nullable=False, default="smtp")
+    email_template_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    kp_template_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    contract_template_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    audience_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    draft_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    launched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_campaigns_owner_status", "owner_username", "status"),
+        Index("idx_campaigns_job_id", "job_id"),
+    )
+
+
+class CampaignRecipient(Base):
+    __tablename__ = "campaign_recipients"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[str] = mapped_column(String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
+    row_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    company: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    contact_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    email_fallback: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    region: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    validation_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    extra: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    excluded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    send_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_campaign_recipients_campaign", "campaign_id", "row_index", unique=True),
+        Index("idx_campaign_recipients_email", "campaign_id", "email"),
+    )
+
+
+class CampaignSchedule(Base):
+    __tablename__ = "campaign_schedules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, unique=True)
+    send_immediately: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Europe/Moscow")
+    weekdays: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)  # 0=Mon .. 6=Sun
+    time_windows: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)  # [{start,end}]
+    batch_size: Mapped[int] = mapped_column(Integer, nullable=False, default=25)
+    interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    pause_between_messages_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_per_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    on_error: Mapped[str] = mapped_column(String(32), nullable=False, default="retry")  # retry | skip | pause
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    preview: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CampaignBatch(Base):
+    __tablename__ = "campaign_batches"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
+    batch_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recipient_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_campaign_batches_campaign", "campaign_id", "batch_index", unique=True),
+        Index("idx_campaign_batches_status", "campaign_id", "status"),
+    )
+
+
+class DeliveryAttempt(Base):
+    __tablename__ = "delivery_attempts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    recipient_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("uq_delivery_attempts_idempotency", "idempotency_key", unique=True),
+        Index("idx_delivery_attempts_campaign", "campaign_id", "recipient_id"),
+    )

@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>CampaignFlow | Templates & Documents Library</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "secondary-fixed": "#dee4db",
+                    "error": "#ba1a1a",
+                    "surface-container": "#edeeea",
+                    "primary-fixed": "#cee9dd",
+                    "tertiary": "#254b5b",
+                    "on-primary": "#ffffff",
+                    "on-primary-fixed": "#082019",
+                    "on-error": "#ffffff",
+                    "on-secondary": "#ffffff",
+                    "surface-dim": "#d9dbd7",
+                    "surface-bright": "#f8faf6",
+                    "on-tertiary-fixed-variant": "#254b5c",
+                    "background": "#f8faf6",
+                    "tertiary-fixed-dim": "#a6cce0",
+                    "primary-container": "#4b635a",
+                    "secondary-container": "#dbe2d8",
+                    "surface-variant": "#e1e3df",
+                    "surface-container-lowest": "#ffffff",
+                    "on-primary-container": "#c3ded2",
+                    "secondary": "#596059",
+                    "on-secondary-container": "#5d645d",
+                    "error-container": "#ffdad6",
+                    "inverse-surface": "#2e312f",
+                    "inverse-primary": "#b2ccc1",
+                    "surface-container-highest": "#e1e3df",
+                    "surface-tint": "#4b635a",
+                    "on-error-container": "#93000a",
+                    "surface-container-high": "#e7e9e5",
+                    "tertiary-container": "#3e6374",
+                    "on-secondary-fixed-variant": "#424942",
+                    "surface-container-low": "#f2f4f0",
+                    "on-surface": "#191c1a",
+                    "outline-variant": "#c2c8c4",
+                    "secondary-fixed-dim": "#c2c8bf",
+                    "surface": "#f8faf6",
+                    "on-background": "#191c1a",
+                    "outline": "#727875",
+                    "on-tertiary-fixed": "#001f2a",
+                    "on-surface-variant": "#424845",
+                    "tertiary-fixed": "#c2e8fc",
+                    "primary": "#344b43",
+                    "on-tertiary-container": "#b8def2",
+                    "inverse-on-surface": "#eff1ed",
+                    "on-secondary-fixed": "#171d17",
+                    "on-primary-fixed-variant": "#344b43",
+                    "on-tertiary": "#ffffff",
+                    "primary-fixed-dim": "#b2ccc1"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "xl": "32px",
+                    "margin-mobile": "16px",
+                    "base": "4px",
+                    "gutter": "24px",
+                    "xs": "4px",
+                    "md": "16px",
+                    "margin-desktop": "32px",
+                    "sm": "8px",
+                    "lg": "24px"
+            },
+            "fontFamily": {
+                    "body-lg": ["Inter"],
+                    "label-md": ["Inter"],
+                    "display-lg": ["Inter"],
+                    "title-lg": ["Inter"],
+                    "headline-lg": ["Inter"],
+                    "body-md": ["Inter"],
+                    "label-lg": ["Inter"]
+            },
+            "fontSize": {
+                    "body-lg": ["16px", {"lineHeight": "24px", "letterSpacing": "0.5px", "fontWeight": "400"}],
+                    "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.5px", "fontWeight": "500"}],
+                    "display-lg": ["57px", {"lineHeight": "64px", "letterSpacing": "-0.25px", "fontWeight": "400"}],
+                    "title-lg": ["22px", {"lineHeight": "28px", "letterSpacing": "0px", "fontWeight": "500"}],
+                    "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "0px", "fontWeight": "600"}],
+                    "body-md": ["14px", {"lineHeight": "20px", "letterSpacing": "0.25px", "fontWeight": "400"}],
+                    "label-lg": ["14px", {"lineHeight": "20px", "letterSpacing": "0.1px", "fontWeight": "500"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #c2c8c4; border-radius: 10px; }
+        .glass-header {
+            backdrop-filter: blur(12px);
+            background: rgba(248, 250, 246, 0.8);
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md selection:bg-primary-fixed selection:text-on-primary-fixed">
+<!-- Sidebar Navigation Shell -->
+<aside class="fixed left-0 top-0 h-full flex flex-col p-md z-50 bg-surface-container-low border-r border-outline-variant w-[280px]">
+<div class="flex items-center gap-sm mb-xl px-sm">
+<div class="w-10 h-10 bg-primary rounded-xl flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">auto_awesome</span>
+</div>
+<div>
+<h1 class="font-title-lg text-title-lg font-bold text-primary">Marketing Suite</h1>
+<p class="font-label-md text-label-md text-on-surface-variant">Enterprise Tier</p>
+</div>
+</div>
+<button class="mb-xl w-full py-md bg-primary-container text-on-primary-container rounded-xl flex items-center justify-center gap-sm font-label-lg transition-transform hover:scale-[1.02] active:scale-95 shadow-sm">
+<span class="material-symbols-outlined">add_circle</span>
+            New Campaign
+        </button>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-md px-md py-sm font-label-lg text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+                Dashboard
+            </a>
+<a class="flex items-center gap-md px-md py-sm font-label-lg text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">add_circle</span>
+                Create Campaign
+            </a>
+<a class="flex items-center gap-md px-md py-sm font-label-lg text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">send</span>
+                Campaigns
+            </a>
+<a class="flex items-center gap-md px-md py-sm font-label-lg bg-primary-container text-on-primary-container rounded-xl transition-transform translate-x-1" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">description</span>
+                Templates
+            </a>
+<a class="flex items-center gap-md px-md py-sm font-label-lg text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">group</span>
+                Audience
+            </a>
+<a class="flex items-center gap-md px-md py-sm font-label-lg text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">person</span>
+                Profile
+            </a>
+<a class="flex items-center gap-md px-md py-sm font-label-lg text-on-surface-variant hover:bg-surface-variant rounded-xl transition-all" href="#">
+<span class="material-symbols-outlined">settings</span>
+                Settings
+            </a>
+</nav>
+<div class="mt-auto p-md bg-surface-variant rounded-xl">
+<div class="flex items-center gap-sm mb-xs">
+<span class="material-symbols-outlined text-primary">verified</span>
+<span class="font-label-lg text-on-surface">Pro Usage</span>
+</div>
+<div class="w-full bg-outline-variant h-1 rounded-full overflow-hidden">
+<div class="bg-primary h-full w-3/4"></div>
+</div>
+<p class="mt-xs font-label-md text-on-surface-variant">750 / 1000 Templates</p>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="ml-[280px] min-h-screen">
+<!-- Top App Bar -->
+<header class="glass-header sticky top-0 z-40 h-16 flex items-center justify-between px-margin-desktop border-b border-outline-variant">
+<div class="flex items-center gap-lg">
+<h2 class="font-headline-lg text-headline-lg font-bold text-primary">Templates</h2>
+<div class="relative group">
+<span class="absolute left-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-on-surface-variant">search</span>
+<input class="pl-10 pr-4 py-2 bg-surface-container rounded-full border-none focus:ring-2 focus:ring-primary w-64 transition-all" placeholder="Search templates..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<button class="p-2 hover:bg-surface-container rounded-full transition-colors relative">
+<span class="material-symbols-outlined text-on-surface-variant">notifications</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-error rounded-full"></span>
+</button>
+<button class="p-2 hover:bg-surface-container rounded-full transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant">help</span>
+</button>
+<div class="w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center text-secondary border border-outline-variant">
+<span class="material-symbols-outlined">account_circle</span>
+</div>
+</div>
+</header>
+<!-- Tool Bar & Filters -->
+<section class="p-margin-desktop">
+<div class="flex flex-col md:flex-row md:items-end justify-between gap-lg mb-xl">
+<div class="space-y-md">
+<div class="flex items-center gap-sm">
+<span class="px-3 py-1 bg-primary-fixed text-on-primary-fixed rounded-full font-label-md">Library Active</span>
+<span class="text-on-surface-variant">•</span>
+<span class="font-label-md text-on-surface-variant">142 Items</span>
+</div>
+<div class="flex flex-wrap gap-sm">
+<div class="bg-surface-container px-4 py-2 rounded-xl flex items-center gap-sm cursor-pointer hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-md">filter_list</span>
+<span class="font-label-lg">Type: All</span>
+<span class="material-symbols-outlined text-md">expand_more</span>
+</div>
+<div class="bg-surface-container px-4 py-2 rounded-xl flex items-center gap-sm cursor-pointer hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-md">calendar_today</span>
+<span class="font-label-lg">Date: Last 30 days</span>
+</div>
+<div class="bg-surface-container px-4 py-2 rounded-xl flex items-center gap-sm cursor-pointer hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-md">sell</span>
+<span class="font-label-lg">Tags: Marketing</span>
+</div>
+</div>
+</div>
+<div class="flex gap-md">
+<div class="bg-surface-container p-1 rounded-xl flex border border-outline-variant">
+<button class="px-3 py-1 bg-surface-container-lowest shadow-sm rounded-lg text-primary">
+<span class="material-symbols-outlined">grid_view</span>
+</button>
+<button class="px-3 py-1 text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined">list</span>
+</button>
+</div>
+<button class="bg-primary text-on-primary px-lg py-2 rounded-full font-label-lg flex items-center gap-sm hover:opacity-90 transition-all active:scale-95">
+<span class="material-symbols-outlined">auto_fix_high</span>
+                        AI Generate
+                    </button>
+</div>
+</div>
+<!-- Bento Grid of Templates -->
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-xl">
+<!-- Template Card 1 -->
+<div class="group relative bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden hover:shadow-lg transition-all duration-300 flex flex-col">
+<div class="h-48 overflow-hidden relative border-b border-outline-variant">
+<img class="w-full h-full object-cover transition-transform group-hover:scale-110" data-alt="A clean, minimalist user interface design preview of a professional welcome email. The layout features soft pastel green accents, elegant serif typography, and balanced white space, reflecting a modern corporate B2B aesthetic. The lighting is soft and even, highlighting the clear call-to-action button in a primary sage green color." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAxRGaA10Pl8UbiITC2uDyI8B81pfmiem6hdhSztgFQ4NFokeudQGwwzDi-XjmU5mu8CGQCpm8gMnDQymjQobTUC8mxCJFcYLP8B7Df-MhzDjpp3sNsFnJXUcRTSJNJAYHsJtkKblT627c8Xp9ckUVobCikhW48SnU8AziQ8NMbmR_UH1AZxyLNctv3PGMIFDU0ube2lqNxGcopN3XOaFTqpaw11ibxucNFGycYr9ZBkOkrzvCVWCkagQ"/>
+<div class="absolute top-sm right-sm flex gap-xs">
+<span class="bg-primary-fixed/90 backdrop-blur-sm text-on-primary-fixed px-3 py-1 rounded-full font-label-md">Email</span>
+</div>
+</div>
+<div class="p-lg flex-1">
+<div class="flex justify-between items-start mb-sm">
+<h3 class="font-title-lg text-title-lg text-on-surface group-hover:text-primary transition-colors">Welcome Series v2</h3>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer hover:text-primary">more_vert</span>
+</div>
+<p class="font-body-md text-on-surface-variant mb-md">Standard onboarding sequence for new enterprise tier customers.</p>
+<div class="flex items-center gap-xl">
+<div>
+<p class="font-label-md text-on-surface-variant uppercase tracking-wider">Success Rate</p>
+<p class="font-title-lg text-primary font-bold">84%</p>
+</div>
+<div>
+<p class="font-label-md text-on-surface-variant uppercase tracking-wider">Last Used</p>
+<p class="font-body-md text-on-surface">2 hrs ago</p>
+</div>
+</div>
+</div>
+<div class="p-md bg-surface-container-low border-t border-outline-variant flex gap-sm">
+<span class="px-2 py-1 bg-secondary-container text-on-secondary-container rounded-lg font-label-md">#onboarding</span>
+<span class="px-2 py-1 bg-secondary-container text-on-secondary-container rounded-lg font-label-md">#b2b</span>
+</div>
+</div>
+<!-- Template Card 2 (Contract) -->
+<div class="group relative bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden hover:shadow-lg transition-all duration-300 flex flex-col">
+<div class="h-48 overflow-hidden relative border-b border-outline-variant bg-surface-dim">
+<div class="absolute inset-0 flex items-center justify-center p-xl">
+<div class="w-full h-full border-4 border-dashed border-outline-variant rounded-lg flex flex-col items-center justify-center bg-surface-container-low/50">
+<span class="material-symbols-outlined text-4xl text-on-surface-variant mb-sm" style="font-variation-settings: 'opsz' 48;">description</span>
+<span class="font-label-lg text-on-surface-variant">Confidential NDA Preview</span>
+</div>
+</div>
+<div class="absolute top-sm right-sm flex gap-xs">
+<span class="bg-tertiary-fixed/90 backdrop-blur-sm text-on-tertiary-fixed px-3 py-1 rounded-full font-label-md">Contract</span>
+</div>
+</div>
+<div class="p-lg flex-1">
+<div class="flex justify-between items-start mb-sm">
+<h3 class="font-title-lg text-title-lg text-on-surface group-hover:text-primary transition-colors">Standard NDA</h3>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer hover:text-primary">more_vert</span>
+</div>
+<p class="font-body-md text-on-surface-variant mb-md">Mutual non-disclosure agreement for preliminary partnership talks.</p>
+<div class="flex items-center gap-xl">
+<div>
+<p class="font-label-md text-on-surface-variant uppercase tracking-wider">Success Rate</p>
+<p class="font-title-lg text-primary font-bold">100%</p>
+</div>
+<div>
+<p class="font-label-md text-on-surface-variant uppercase tracking-wider">Last Used</p>
+<p class="font-body-md text-on-surface">Yesterday</p>
+</div>
+</div>
+</div>
+<div class="p-md bg-surface-container-low border-t border-outline-variant flex gap-sm">
+<span class="px-2 py-1 bg-secondary-container text-on-secondary-container rounded-lg font-label-md">#legal</span>
+<span class="px-2 py-1 bg-secondary-container text-on-secondary-container rounded-lg font-label-md">#security</span>
+</div>
+</div>
+<!-- Template Card 3 (CP) -->
+<div class="group relative bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden hover:shadow-lg transition-all duration-300 flex flex-col">
+<div class="h-48 overflow-hidden relative border-b border-outline-variant">
+<img class="w-full h-full object-cover transition-transform group-hover:scale-110" data-alt="A professional campaign proposal layout on a tablet device, showcasing a sophisticated grid-based marketing strategy. The aesthetic is clean and corporate, using a palette of sage green, soft whites, and charcoal grays. The scene is set in a brightly lit, modern office environment with blurred botanical elements in the background to provide a sense of calm and productivity." src="https://lh3.googleusercontent.com/aida-public/AB6AXuB4uMIL9q2Ysr5GZs-1mX67sRL_c1xivF8JvpmzSWLPsohfQzWqPnX21fVw7bGd1ITfjy__hl1_vXzJIKFNbpntQ6brs-jOmnmx9RuTDEEjw4yGcWde0u_QFBxByk2_CwFGMBqprnC2Pcoh7iS0zZZTaE8cwiowXirwLnrFg-htOAwoYdpQcTGWoW4FbV437x0LB12YWcCoHpkZiQ_aJpBRQPmCG92OIXZqY1xjEe9wpZqg5ROqiwrBEw"/>
+<div class="absolute top-sm right-sm flex gap-xs">
+<span class="bg-secondary-fixed/90 backdrop-blur-sm text-on-secondary-fixed px-3 py-1 rounded-full font-label-md">CP</span>
+</div>
+</div>
+<div class="p-lg flex-1">
+<div class="flex justify-between items-start mb-sm">
+<h3 class="font-title-lg text-title-lg text-on-surface group-hover:text-primary transition-colors">Summer Launch CP</h3>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer hover:text-primary">more_vert</span>
+</div>
+<p class="font-body-md text-on-surface-variant mb-md">Comprehensive campaign proposal for seasonal product releases.</p>
+<div class="flex items-center gap-xl">
+<div>
+<p class="font-label-md text-on-surface-variant uppercase tracking-wider">Success Rate</p>
+<p class="font-title-lg text-primary font-bold">62%</p>
+</div>
+<div>
+<p class="font-label-md text-on-surface-variant uppercase tracking-wider">Last Used</p>
+<p class="font-body-md text-on-surface">May 12, 2024</p>
+</div>
+</div>
+</div>
+<div class="p-md bg-surface-container-low border-t border-outline-variant flex gap-sm">
+<span class="px-2 py-1 bg-secondary-container text-on-secondary-container rounded-lg font-label-md">#marketing</span>
+<span class="px-2 py-1 bg-secondary-container text-on-secondary-container rounded-lg font-label-md">#launch</span>
+</div>
+</div>
+<!-- Template Card 4 (Newsletter) -->
+<div class="group relative bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden hover:shadow-lg transition-all duration-300 flex flex-col">
+<div class="h-48 overflow-hidden relative border-b border-outline-variant">
+<img class="w-full h-full object-cover transition-transform group-hover:scale-110" data-alt="A macro shot of a sleek newsletter template displaying colorful charts and professional typographic layouts. The design uses high-quality imagery, a soft sage green primary color, and clean lines. The environment is a bright, high-key studio setting that emphasizes clarity and data transparency, fitting a modern B2B SaaS platform." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAaU1Xftm0rnBdMTFrfFxTHO5giIoaNWMRvs-ahcopjkoMQSCHN044l1hsdRncwpE3oaCMvzsATNghApYQO79eNZcq8Zn98wfXskjtbLOKAZq2ikprtgLrMLgq1dV-dVy3orjzQqjUFCLkNh4dUawc3L1xsq9qqaSOXFkHpe_P08__FpgXNYbKwnFk05HsfnbCrdZWPbjgShh2GI9ePrlhyUlz7o1wb0Bc1VVml8_NhuLgZGgX3gwOgGw"/>
+<div class="absolute top-sm right-sm flex gap-xs">
+<span class="bg-primary-fixed/90 backdrop-blur-sm text-on-primary-fixed px-3 py-1 rounded-full font-label-md">Email</span>
+</div>
+</div>
+<div class="p-lg flex-1">
+<div class="flex justify-between items-start mb-sm">
+<h3 class="font-title-lg text-title-lg text-on-surface group-hover:text-primary transition-colors">Monthly Insights</h3>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer hover:text-primary">more_vert</span>
+</div>
+<p class="font-body-md text-on-surface-variant mb-md">Data-driven newsletter layout with dynamic chart widgets.</p>
+<div class="flex items-center gap-xl">
+<div>
+<p class="font-label-md text-on-surface-variant uppercase tracking-wider">Success Rate</p>
+<p class="font-title-lg text-primary font-bold">71%</p>
+</div>
+<div>
+<p class="font-label-md text-on-surface-variant uppercase tracking-wider">Last Used</p>
+<p class="font-body-md text-on-surface">3 days ago</p>
+</div>
+</div>
+</div>
+<div class="p-md bg-surface-container-low border-t border-outline-variant flex gap-sm">
+<span class="px-2 py-1 bg-secondary-container text-on-secondary-container rounded-lg font-label-md">#retention</span>
+<span class="px-2 py-1 bg-secondary-container text-on-secondary-container rounded-lg font-label-md">#analytics</span>
+</div>
+</div>
+<!-- Add New Empty State Card -->
+<div class="group border-2 border-dashed border-outline-variant rounded-xl flex flex-col items-center justify-center p-xl hover:border-primary hover:bg-surface-container-low transition-all cursor-pointer min-h-[380px]">
+<div class="w-16 h-16 bg-surface-container rounded-full flex items-center justify-center text-on-surface-variant mb-md group-hover:bg-primary-fixed group-hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-3xl">add</span>
+</div>
+<h3 class="font-title-lg text-on-surface group-hover:text-primary">Create New Template</h3>
+<p class="font-body-md text-on-surface-variant text-center mt-sm">Start from scratch or use our<br/>AI generation tool.</p>
+</div>
+</div>
+</section>
+<!-- Bulk Action Toast (Floating) -->
+<div class="fixed bottom-margin-desktop left-1/2 -translate-x-1/2 bg-inverse-surface text-inverse-on-surface px-lg py-md rounded-2xl flex items-center gap-lg shadow-xl translate-y-32 transition-transform duration-500 z-50" id="selection-toast">
+<span class="font-label-lg">3 Templates Selected</span>
+<div class="h-6 w-[1px] bg-outline"></div>
+<div class="flex gap-md">
+<button class="flex items-center gap-sm hover:text-primary-fixed transition-colors">
+<span class="material-symbols-outlined text-md">archive</span>
+                    Archive
+                </button>
+<button class="flex items-center gap-sm hover:text-primary-fixed transition-colors">
+<span class="material-symbols-outlined text-md">content_copy</span>
+                    Duplicate
+                </button>
+<button class="flex items-center gap-sm text-error hover:opacity-80 transition-colors">
+<span class="material-symbols-outlined text-md">delete</span>
+                    Delete
+                </button>
+</div>
+<button class="ml-md hover:bg-white/10 p-1 rounded-full transition-colors" onclick="toggleToast()">
+<span class="material-symbols-outlined">close</span>
+</button>
+</div>
+</main>
+<script>
+        // Micro-interaction for the toast notification
+        let isToastVisible = false;
+        function toggleToast() {
+            const toast = document.getElementById('selection-toast');
+            isToastVisible = !isToastVisible;
+            if(isToastVisible) {
+                toast.style.transform = 'translateX(-50%) translateY(0)';
+            } else {
+                toast.style.transform = 'translateX(-50%) translateY(128px)';
+            }
+        }
+
+        // Simulate item selection
+        document.querySelectorAll('.group.relative').forEach(card => {
+            card.addEventListener('click', () => {
+                card.classList.toggle('ring-2');
+                card.classList.toggle('ring-primary');
+                if(!isToastVisible) toggleToast();
+            });
+        });
+
+        // Search bar interaction
+        const searchInput = document.querySelector('input[type="text"]');
+        searchInput.addEventListener('focus', () => {
+            searchInput.parentElement.classList.add('w-96');
+            searchInput.parentElement.classList.remove('w-64');
+        });
+        searchInput.addEventListener('blur', () => {
+            if(searchInput.value === '') {
+                searchInput.parentElement.classList.add('w-64');
+                searchInput.parentElement.classList.remove('w-96');
+            }
+        });
+    </script>
+</body></html>

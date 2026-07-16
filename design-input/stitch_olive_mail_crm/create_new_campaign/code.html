@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Create Campaign | CampaignFlow</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed": "#dee4db",
+                        "error": "#ba1a1a",
+                        "surface-container": "#edeeea",
+                        "primary-fixed": "#cee9dd",
+                        "tertiary": "#254b5b",
+                        "on-primary": "#ffffff",
+                        "on-primary-fixed": "#082019",
+                        "on-error": "#ffffff",
+                        "on-secondary": "#ffffff",
+                        "surface-dim": "#d9dbd7",
+                        "surface-bright": "#f8faf6",
+                        "on-tertiary-fixed-variant": "#254b5c",
+                        "background": "#f8faf6",
+                        "tertiary-fixed-dim": "#a6cce0",
+                        "primary-container": "#4b635a",
+                        "secondary-container": "#dbe2d8",
+                        "surface-variant": "#e1e3df",
+                        "surface-container-lowest": "#ffffff",
+                        "on-primary-container": "#c3ded2",
+                        "secondary": "#596059",
+                        "on-secondary-container": "#5d645d",
+                        "error-container": "#ffdad6",
+                        "inverse-surface": "#2e312f",
+                        "inverse-primary": "#b2ccc1",
+                        "surface-container-highest": "#e1e3df",
+                        "surface-tint": "#4b635a",
+                        "on-error-container": "#93000a",
+                        "surface-container-high": "#e7e9e5",
+                        "tertiary-container": "#3e6374",
+                        "on-secondary-fixed-variant": "#424942",
+                        "surface-container-low": "#f2f4f0",
+                        "on-surface": "#191c1a",
+                        "outline-variant": "#c2c8c4",
+                        "secondary-fixed-dim": "#c2c8bf",
+                        "surface": "#f8faf6",
+                        "on-background": "#191c1a",
+                        "outline": "#727875",
+                        "on-tertiary-fixed": "#001f2a",
+                        "on-surface-variant": "#424845",
+                        "tertiary-fixed": "#c2e8fc",
+                        "primary": "#344b43",
+                        "on-tertiary-container": "#b8def2",
+                        "inverse-on-surface": "#eff1ed",
+                        "on-secondary-fixed": "#171d17",
+                        "on-primary-fixed-variant": "#344b43",
+                        "on-tertiary": "#ffffff",
+                        "primary-fixed-dim": "#b2ccc1"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "xl": "32px",
+                        "margin-mobile": "16px",
+                        "base": "4px",
+                        "gutter": "24px",
+                        "xs": "4px",
+                        "md": "16px",
+                        "margin-desktop": "32px",
+                        "sm": "8px",
+                        "lg": "24px"
+                    },
+                    "fontFamily": {
+                        "body-lg": ["Inter"],
+                        "label-md": ["Inter"],
+                        "display-lg": ["Inter"],
+                        "title-lg": ["Inter"],
+                        "headline-lg": ["Inter"],
+                        "body-md": ["Inter"],
+                        "label-lg": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-lg": ["16px", {"lineHeight": "24px", "letterSpacing": "0.5px", "fontWeight": "400"}],
+                        "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.5px", "fontWeight": "500"}],
+                        "display-lg": ["57px", {"lineHeight": "64px", "letterSpacing": "-0.25px", "fontWeight": "400"}],
+                        "title-lg": ["22px", {"lineHeight": "28px", "letterSpacing": "0px", "fontWeight": "500"}],
+                        "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "0px", "fontWeight": "600"}],
+                        "body-md": ["14px", {"lineHeight": "20px", "letterSpacing": "0.25px", "fontWeight": "400"}],
+                        "label-lg": ["14px", {"lineHeight": "20px", "letterSpacing": "0.1px", "fontWeight": "500"}]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body {
+            background-color: #f8faf6;
+            color: #191c1a;
+        }
+        .bento-grid {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: 24px;
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(8px);
+            border: 1px solid #e1e3df;
+        }
+        .zebra-row:nth-child(even) {
+            background-color: #f8faf6;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-bottom-width: 2px;
+            border-color: #4b635a;
+        }
+        .scheduler-bar {
+            transition: height 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="font-body-md text-body-md overflow-x-hidden">
+<!-- Side Navigation -->
+<aside class="fixed left-0 top-0 h-full flex flex-col p-md z-50 bg-surface-container-low border-r border-outline-variant w-[280px] hidden md:flex">
+<div class="mb-xl px-sm">
+<h1 class="font-title-lg text-title-lg font-bold text-primary">Marketing Suite</h1>
+<p class="text-on-surface-variant font-label-md">Enterprise Tier</p>
+</div>
+<nav class="flex flex-col gap-1 flex-1">
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all rounded-xl" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="font-label-lg">Dashboard</span>
+</a>
+<a class="flex items-center gap-md px-md py-sm bg-primary-container text-on-primary-container rounded-xl translate-x-1 transition-transform" href="#">
+<span class="material-symbols-outlined">add_circle</span>
+<span class="font-label-lg">Create Campaign</span>
+</a>
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all rounded-xl" href="#">
+<span class="material-symbols-outlined">send</span>
+<span class="font-label-lg">Campaigns</span>
+</a>
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all rounded-xl" href="#">
+<span class="material-symbols-outlined">description</span>
+<span class="font-label-lg">Templates</span>
+</a>
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all rounded-xl" href="#">
+<span class="material-symbols-outlined">group</span>
+<span class="font-label-lg">Audience</span>
+</a>
+</nav>
+<div class="mt-auto flex flex-col gap-1 border-t border-outline-variant pt-md">
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all rounded-xl" href="#">
+<span class="material-symbols-outlined">person</span>
+<span class="font-label-lg">Profile</span>
+</a>
+<a class="flex items-center gap-md px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all rounded-xl" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-label-lg">Settings</span>
+</a>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="md:ml-[280px] min-h-screen pb-32">
+<!-- Top Bar -->
+<header class="flex justify-between items-center w-full px-margin-desktop h-16 z-40 bg-surface border-b border-outline-variant">
+<div class="flex items-center gap-md">
+<h2 class="font-headline-lg text-headline-lg font-bold text-primary">New Campaign</h2>
+</div>
+<div class="flex items-center gap-lg">
+<div class="relative group">
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer">notifications</span>
+<span class="absolute top-0 right-0 w-2 h-2 bg-error rounded-full"></span>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer">help</span>
+<div class="w-8 h-8 rounded-full bg-secondary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-on-secondary-container">account_circle</span>
+</div>
+</div>
+</header>
+<!-- Form Container -->
+<div class="max-w-6xl mx-auto px-margin-desktop py-xl space-y-xl">
+<!-- Section A: Basic Info -->
+<section class="space-y-lg">
+<div class="flex items-center gap-sm">
+<span class="bg-primary-container text-on-primary-container w-8 h-8 rounded-full flex items-center justify-center font-bold">1</span>
+<h3 class="font-title-lg text-title-lg">Basic Information</h3>
+</div>
+<div class="bento-grid">
+<div class="col-span-12 md:col-span-6 glass-card p-lg rounded-xl">
+<label class="block font-label-lg text-on-surface-variant mb-xs">Campaign Name</label>
+<input class="w-full bg-surface-container-low border-b border-outline p-sm focus:bg-white transition-colors text-body-lg" placeholder="e.g. Q4 Growth Acceleration" type="text"/>
+</div>
+<div class="col-span-12 md:col-span-6 glass-card p-lg rounded-xl">
+<label class="block font-label-lg text-on-surface-variant mb-xs">Campaign Type</label>
+<div class="flex gap-md mt-sm">
+<label class="flex items-center gap-sm cursor-pointer group">
+<input checked="" class="text-primary focus:ring-primary w-5 h-5" name="camp_type" type="radio"/>
+<span class="font-body-lg">Offer</span>
+</label>
+<label class="flex items-center gap-sm cursor-pointer group">
+<input class="text-primary focus:ring-primary w-5 h-5" name="camp_type" type="radio"/>
+<span class="font-body-lg">Contract</span>
+</label>
+</div>
+</div>
+<div class="col-span-12 glass-card p-lg rounded-xl">
+<label class="block font-label-lg text-on-surface-variant mb-xs">Subject Line</label>
+<div class="relative">
+<input class="w-full bg-surface-container-low border-b border-outline p-sm pr-20 focus:bg-white transition-colors text-body-lg" placeholder="Enter your compelling subject line..." type="text"/>
+<button class="absolute right-2 top-2 px-sm py-1 bg-secondary-container text-on-secondary-container rounded-lg font-label-md flex items-center gap-xs">
+<span class="material-symbols-outlined text-[18px]">auto_awesome</span>
+                                Optimize
+                            </button>
+</div>
+</div>
+</div>
+</section>
+<!-- Section B: Sender/Connection -->
+<section class="space-y-lg">
+<div class="flex items-center gap-sm">
+<span class="bg-primary-container text-on-primary-container w-8 h-8 rounded-full flex items-center justify-center font-bold">2</span>
+<h3 class="font-title-lg text-title-lg">Sender Connection</h3>
+</div>
+<div class="glass-card p-lg rounded-xl">
+<div class="flex gap-lg border-b border-outline-variant mb-lg">
+<button class="pb-md border-b-2 border-primary text-primary font-label-lg" onclick="toggleSender('saved')">Use Saved Account</button>
+<button class="pb-md border-b-2 border-transparent text-on-surface-variant hover:text-primary font-label-lg" onclick="toggleSender('new')">Connect New</button>
+</div>
+<div class="space-y-md" id="sender-saved">
+<label class="block font-label-lg text-on-surface-variant mb-xs">Select Connected Email</label>
+<select class="w-full bg-surface-container-low border-b border-outline p-sm rounded-t-lg">
+<option>marketing@enterprise.com (Google Workspace)</option>
+<option>sales-outbound@company.co (Outlook 365)</option>
+<option>alex.m@marketing-ops.net (Custom SMTP)</option>
+</select>
+</div>
+<div class="hidden space-y-lg" id="sender-new">
+<div class="grid grid-cols-1 md:grid-cols-2 gap-lg">
+<div>
+<label class="block font-label-lg text-on-surface-variant mb-xs">Email Address</label>
+<input class="w-full bg-surface-container-low border-b border-outline p-sm" placeholder="email@example.com" type="email"/>
+</div>
+<div>
+<label class="block font-label-lg text-on-surface-variant mb-xs">App Password</label>
+<input class="w-full bg-surface-container-low border-b border-outline p-sm" placeholder="••••••••" type="password"/>
+</div>
+</div>
+<details class="group">
+<summary class="flex items-center gap-sm cursor-pointer text-primary font-label-lg list-none">
+<span class="material-symbols-outlined group-open:rotate-180 transition-transform">expand_more</span>
+                                Manual SMTP Settings (Optional)
+                            </summary>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-lg mt-lg p-md bg-surface-container rounded-xl">
+<div>
+<label class="block font-label-md text-on-surface-variant mb-xs">Host</label>
+<input class="w-full bg-white border-b border-outline p-sm text-sm" placeholder="smtp.provider.com" type="text"/>
+</div>
+<div>
+<label class="block font-label-md text-on-surface-variant mb-xs">Port</label>
+<input class="w-full bg-white border-b border-outline p-sm text-sm" placeholder="587" type="text"/>
+</div>
+<div>
+<label class="block font-label-md text-on-surface-variant mb-xs">Security</label>
+<select class="w-full bg-white border-b border-outline p-sm text-sm">
+<option>STARTTLS</option>
+<option>SSL/TLS</option>
+<option>None</option>
+</select>
+</div>
+</div>
+</details>
+</div>
+</div>
+</section>
+<!-- Section C: Documents -->
+<section class="space-y-lg">
+<div class="flex items-center gap-sm">
+<span class="bg-primary-container text-on-primary-container w-8 h-8 rounded-full flex items-center justify-center font-bold">3</span>
+<h3 class="font-title-lg text-title-lg">Campaign Documents</h3>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-lg">
+<!-- Template Card -->
+<div class="glass-card p-md rounded-xl flex flex-col h-full border-l-4 border-l-primary">
+<div class="flex justify-between items-start mb-md">
+<span class="material-symbols-outlined text-primary text-[32px]">mail</span>
+<span class="px-sm py-1 bg-primary-fixed text-on-primary-fixed-variant rounded-full font-label-md">Ready</span>
+</div>
+<h4 class="font-label-lg text-on-surface mb-xs">Email Template</h4>
+<p class="text-on-surface-variant text-body-md mb-lg">Custom HTML with dynamic merge tags.</p>
+<div class="mt-auto flex gap-sm">
+<button class="flex-1 py-2 rounded-xl border border-outline font-label-md hover:bg-surface-variant transition-colors">Preview</button>
+<button class="flex-1 py-2 rounded-xl bg-primary text-on-primary font-label-md hover:opacity-90 transition-all">Edit</button>
+</div>
+</div>
+<!-- CP Card -->
+<div class="glass-card p-md rounded-xl flex flex-col h-full border-l-4 border-l-error">
+<div class="flex justify-between items-start mb-md">
+<span class="material-symbols-outlined text-error text-[32px]">description</span>
+<span class="px-sm py-1 bg-error-container text-on-error-container rounded-full font-label-md">Incomplete</span>
+</div>
+<h4 class="font-label-lg text-on-surface mb-xs">Commercial Proposal</h4>
+<p class="text-on-surface-variant text-body-md mb-lg">PDF attachment with pricing breakdown.</p>
+<div class="mt-auto flex gap-sm">
+<button class="flex-1 py-2 rounded-xl border border-outline font-label-md hover:bg-surface-variant transition-colors">Preview</button>
+<button class="flex-1 py-2 rounded-xl bg-primary text-on-primary font-label-md hover:opacity-90 transition-all">Edit</button>
+</div>
+</div>
+<!-- Contract Card -->
+<div class="glass-card p-md rounded-xl flex flex-col h-full border-l-4 border-l-primary">
+<div class="flex justify-between items-start mb-md">
+<span class="material-symbols-outlined text-primary text-[32px]">draw</span>
+<span class="px-sm py-1 bg-primary-fixed text-on-primary-fixed-variant rounded-full font-label-md">Ready</span>
+</div>
+<h4 class="font-label-lg text-on-surface mb-xs">Master Contract</h4>
+<p class="text-on-surface-variant text-body-md mb-lg">DocuSign integrated legal draft.</p>
+<div class="mt-auto flex gap-sm">
+<button class="flex-1 py-2 rounded-xl border border-outline font-label-md hover:bg-surface-variant transition-colors">Preview</button>
+<button class="flex-1 py-2 rounded-xl bg-primary text-on-primary font-label-md hover:opacity-90 transition-all">Edit</button>
+</div>
+</div>
+</div>
+</section>
+<!-- Section D: Audience -->
+<section class="space-y-lg">
+<div class="flex items-center gap-sm">
+<span class="bg-primary-container text-on-primary-container w-8 h-8 rounded-full flex items-center justify-center font-bold">4</span>
+<h3 class="font-title-lg text-title-lg">Audience Selection</h3>
+</div>
+<div class="glass-card rounded-xl overflow-hidden">
+<div class="p-lg border-b border-outline-variant flex flex-col md:flex-row gap-lg justify-between">
+<div class="flex gap-md">
+<button class="px-lg py-sm rounded-xl bg-surface-container border border-outline-variant font-label-lg flex items-center gap-sm hover:bg-secondary-container transition-all">
+<span class="material-symbols-outlined">upload_file</span> Upload CSV/Excel
+                            </button>
+<button class="px-lg py-sm rounded-xl bg-surface-container border border-outline-variant font-label-lg flex items-center gap-sm hover:bg-secondary-container transition-all">
+<span class="material-symbols-outlined">database</span> Pick from Database
+                            </button>
+</div>
+<button class="px-lg py-sm rounded-xl bg-primary text-on-primary font-label-lg flex items-center gap-sm hover:shadow-lg transition-all scale-100 active:scale-95">
+<span class="material-symbols-outlined">auto_awesome</span> Generate with AI
+                        </button>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left">
+<thead>
+<tr class="bg-surface-container-high text-on-surface-variant font-label-md">
+<th class="px-lg py-md">Recipient Name</th>
+<th class="px-lg py-md">Email Address</th>
+<th class="px-lg py-md">Company</th>
+<th class="px-lg py-md">Data Quality</th>
+<th class="px-lg py-md">Action</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant">
+<tr class="zebra-row">
+<td class="px-lg py-md font-body-md">Marcus Holloway</td>
+<td class="px-lg py-md font-body-md text-on-surface-variant">m.holloway@ctos.com</td>
+<td class="px-lg py-md font-body-md text-on-surface-variant">ctOS Tech</td>
+<td class="px-lg py-md"><span class="px-sm py-1 bg-primary-fixed text-on-primary-fixed-variant rounded-full text-xs font-bold uppercase tracking-wider">High</span></td>
+<td class="px-lg py-md text-primary cursor-pointer"><span class="material-symbols-outlined">edit</span></td>
+</tr>
+<tr class="zebra-row">
+<td class="px-lg py-md font-body-md">Sarah Jenkins</td>
+<td class="px-lg py-md font-body-md text-on-surface-variant">sarah.j@global-it.io</td>
+<td class="px-lg py-md font-body-md text-on-surface-variant">Global IT</td>
+<td class="px-lg py-md"><span class="px-sm py-1 bg-secondary-container text-on-secondary-container rounded-full text-xs font-bold uppercase tracking-wider">Medium</span></td>
+<td class="px-lg py-md text-primary cursor-pointer"><span class="material-symbols-outlined">edit</span></td>
+</tr>
+<tr class="zebra-row">
+<td class="px-lg py-md font-body-md">David Chen</td>
+<td class="px-lg py-md font-body-md text-on-surface-variant">d.chen@apex-mktg.com</td>
+<td class="px-lg py-md font-body-md text-on-surface-variant">Apex Marketing</td>
+<td class="px-lg py-md"><span class="px-sm py-1 bg-primary-fixed text-on-primary-fixed-variant rounded-full text-xs font-bold uppercase tracking-wider">High</span></td>
+<td class="px-lg py-md text-primary cursor-pointer"><span class="material-symbols-outlined">edit</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+<!-- Section E: Sending Schedule -->
+<section class="space-y-lg">
+<div class="flex items-center gap-sm">
+<span class="bg-primary-container text-on-primary-container w-8 h-8 rounded-full flex items-center justify-center font-bold">5</span>
+<h3 class="font-title-lg text-title-lg">Sending Schedule</h3>
+</div>
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-lg">
+<div class="lg:col-span-1 glass-card p-lg rounded-xl space-y-lg">
+<div class="space-y-sm">
+<label class="font-label-lg text-on-surface-variant">Launch Strategy</label>
+<div class="grid grid-cols-2 p-1 bg-surface-container rounded-xl">
+<button class="py-2 rounded-lg bg-white shadow-sm font-label-md text-primary">Send Now</button>
+<button class="py-2 rounded-lg text-on-surface-variant font-label-md">Schedule</button>
+</div>
+</div>
+<div class="space-y-md">
+<div>
+<label class="block font-label-md text-on-surface-variant mb-xs">Start Date</label>
+<input class="w-full bg-surface-container-low border-b border-outline p-sm" type="date"/>
+</div>
+<div>
+<label class="block font-label-md text-on-surface-variant mb-xs">Send Interval</label>
+<select class="w-full bg-surface-container-low border-b border-outline p-sm">
+<option>Every 15 mins</option>
+<option>Every 30 mins</option>
+<option>Every hour</option>
+</select>
+</div>
+<div>
+<label class="block font-label-md text-on-surface-variant mb-xs">Batch Size (Emails/Interval)</label>
+<input class="w-full bg-surface-container-low border-b border-outline p-sm" type="number" value="50"/>
+</div>
+</div>
+</div>
+<div class="lg:col-span-2 glass-card p-lg rounded-xl">
+<h4 class="font-label-lg text-on-surface mb-lg">Visual Timeline Preview</h4>
+<div class="relative h-64 flex items-end gap-2 border-b border-l border-outline-variant px-md pb-md">
+<!-- Visualizing sending volume over time -->
+<div class="scheduler-bar flex-1 bg-primary-container rounded-t-lg opacity-40 hover:opacity-100 transition-opacity" style="height: 20%;"></div>
+<div class="scheduler-bar flex-1 bg-primary-container rounded-t-lg opacity-40 hover:opacity-100 transition-opacity" style="height: 45%;"></div>
+<div class="scheduler-bar flex-1 bg-primary-container rounded-t-lg opacity-40 hover:opacity-100 transition-opacity" style="height: 70%;"></div>
+<div class="scheduler-bar flex-1 bg-primary-container rounded-t-lg opacity-100 transition-opacity" style="height: 100%;">
+<div class="absolute -top-12 left-1/2 -translate-x-1/2 bg-inverse-surface text-inverse-on-surface px-md py-1 rounded text-xs whitespace-nowrap">
+                                    Peak: 200 emails/hr
+                                </div>
+</div>
+<div class="scheduler-bar flex-1 bg-primary-container rounded-t-lg opacity-40 hover:opacity-100 transition-opacity" style="height: 85%;"></div>
+<div class="scheduler-bar flex-1 bg-primary-container rounded-t-lg opacity-40 hover:opacity-100 transition-opacity" style="height: 60%;"></div>
+<div class="scheduler-bar flex-1 bg-primary-container rounded-t-lg opacity-40 hover:opacity-100 transition-opacity" style="height: 40%;"></div>
+<div class="scheduler-bar flex-1 bg-primary-container rounded-t-lg opacity-40 hover:opacity-100 transition-opacity" style="height: 25%;"></div>
+</div>
+<div class="flex justify-between mt-md font-label-md text-on-surface-variant">
+<span>09:00 AM</span>
+<span>12:00 PM</span>
+<span>03:00 PM</span>
+<span>06:00 PM</span>
+<span>09:00 PM</span>
+</div>
+<div class="mt-xl p-md bg-secondary-fixed rounded-xl flex items-center gap-md">
+<span class="material-symbols-outlined text-on-secondary-fixed">info</span>
+<p class="text-on-secondary-fixed font-body-md">Campaign will complete in <strong>4 hours and 15 minutes</strong> based on your current settings.</p>
+</div>
+</div>
+</div>
+</section>
+</div>
+</main>
+<!-- Footer: Sticky Launch Bar -->
+<footer class="fixed bottom-0 left-0 md:left-[280px] right-0 bg-white/90 backdrop-blur-md border-t border-outline-variant px-margin-desktop py-md z-40">
+<div class="max-w-6xl mx-auto flex items-center justify-between">
+<div class="flex items-center gap-lg">
+<button class="px-lg py-sm rounded-xl border border-outline font-label-lg hover:bg-surface-variant transition-all">
+                    Save Draft
+                </button>
+<div class="hidden sm:flex items-center gap-sm text-on-surface-variant">
+<span class="material-symbols-outlined text-[18px]">history</span>
+<span class="text-xs">Autosaved 2m ago</span>
+</div>
+</div>
+<div class="flex items-center gap-xl">
+<div class="text-right hidden sm:block">
+<div class="text-on-surface font-label-lg">1,248 Recipients</div>
+<div class="text-on-surface-variant text-xs">Approx. 4h duration</div>
+</div>
+<button class="px-xl py-lg rounded-xl bg-primary-container text-on-primary-container font-headline-lg flex items-center gap-md shadow-lg hover:scale-[1.02] active:scale-98 transition-all">
+                    Launch Campaign
+                    <span class="material-symbols-outlined">rocket_launch</span>
+</button>
+</div>
+</div>
+</footer>
+<script>
+        function toggleSender(mode) {
+            const savedDiv = document.getElementById('sender-saved');
+            const newDiv = document.getElementById('sender-new');
+            const buttons = document.querySelectorAll('#sender-new').previousElementSibling?.querySelectorAll('button') || [];
+            
+            if (mode === 'saved') {
+                savedDiv.classList.remove('hidden');
+                newDiv.classList.add('hidden');
+            } else {
+                savedDiv.classList.add('hidden');
+                newDiv.classList.remove('hidden');
+            }
+        }
+
+        // Simple animation logic for the scheduler bars
+        document.querySelectorAll('.scheduler-bar').forEach((bar, index) => {
+            bar.style.transitionDelay = `${index * 50}ms`;
+        });
+    </script>
+</body></html>

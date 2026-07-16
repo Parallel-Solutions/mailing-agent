@@ -1,4 +1,5 @@
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import zipfile
 from src.security.auth import principal_from_user_record
@@ -36,6 +37,7 @@ from src.web.sender_router import create_sender_router
 from src.web.statistics_router import create_statistics_router
 from src.web.smtp_router import create_smtp_router
 from src.web.auth_router import create_auth_router
+from src.web.v1_router import create_v1_router
 from src.web.workers_router import create_workers_router
 from src.web.sender_service import (
     compact_sender_status,
@@ -97,6 +99,20 @@ async def app_startup():
     await run_in_threadpool(init_db)
     await run_in_threadpool(ensure_bucket)
     await run_in_threadpool(bootstrap_auth_store, settings)
+    # Demo seed is intentionally NOT run during startup — it can exceed healthcheck
+    # start_period. Use `scripts/dev.ps1 start|seed` or SEED after the app is healthy.
+    if bool(getattr(settings, "seed_demo_data_on_startup", False)):
+        import threading
+
+        def _seed_bg() -> None:
+            try:
+                from src.campaigns.seed import seed_demo_data
+
+                seed_demo_data(force=False)
+            except Exception:
+                logger.exception("seed_demo_data_on_startup_failed")
+
+        threading.Thread(target=_seed_bg, name="seed-demo-data", daemon=True).start()
     _start_consent_materials_recovery_thread()
     _start_stats_cache_warm_thread()
     from src.workers.queue_worker import start_queue_worker
@@ -1106,8 +1122,45 @@ def _prime_philologist_running_state(job_id: str | None, mode: str | None) -> di
     return state
 
 
+FRONTEND_DIST = Path(
+    str(getattr(settings, "frontend_dist_dir", "") or "").strip()
+    or (PROJECT_ROOT / "frontend" / "dist")
+)
+USE_LEGACY_UI = bool(getattr(settings, "use_legacy_ui", False))
+
+
+def _spa_index_response() -> HTMLResponse | FileResponse | RedirectResponse:
+    index_file = FRONTEND_DIST / "index.html"
+    if index_file.exists() and not USE_LEGACY_UI:
+        return FileResponse(
+            index_file,
+            headers={
+                "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+    html = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
+    username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
+    if not username or get_user_record(username) is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return _spa_index_response()
+
+
+@app.get("/legacy", response_class=HTMLResponse)
+def legacy_index(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
     username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
     if not username or get_user_record(username) is None:
         return RedirectResponse(url="/login", status_code=303)
@@ -1124,9 +1177,7 @@ def index(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_
 
 @app.get("/statistics")
 def statistics_page(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
-    # The manager statistics UI is now embedded into the main application shell
-    # (screen #s-statistics in index.html). This route is kept only so older
-    # bookmarks/links keep working and land on the embedded section.
+    # Manager statistics live on the new Dashboard (`/`) and in the legacy embed.
     username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
     if not username or get_user_record(username) is None:
         return RedirectResponse(url="/login", status_code=303)
@@ -1327,8 +1378,10 @@ app.include_router(
         check_auth=check_auth,
         login_template_path=TEMPLATES_DIR / "login.html",
         register_template_path=TEMPLATES_DIR / "register.html",
+        spa_index_path=FRONTEND_DIST / "index.html",
     )
 )
+app.include_router(create_v1_router(check_auth=check_auth))
 app.include_router(jobs_controller.router)
 app.include_router(create_consent_router())
 app.include_router(
@@ -1502,6 +1555,36 @@ app.include_router(
     )
 )
 
+
+
+# Serve built React SPA assets when present (same origin as API on :9806).
+_assets_dir = FRONTEND_DIST / "assets"
+if _assets_dir.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="frontend-assets")
+
+
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+def spa_fallback(full_path: str, session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
+    """SPA client-side routes; keep API/public/consent/legacy paths untouched."""
+    blocked_prefixes = (
+        "api/",
+        "public/",
+        "consent/",
+        "login",
+        "register",
+        "legacy",
+        "health",
+        "assets/",
+        "docs",
+        "openapi.json",
+        "redoc",
+    )
+    if full_path.startswith(blocked_prefixes) or full_path in {"health", "docs", "redoc", "openapi.json"}:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if USE_LEGACY_UI or not (FRONTEND_DIST / "index.html").exists():
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Auth pages are served by auth_router; app shell requires session except public SPA shells.
+    return _spa_index_response()
 
 
 if __name__ == "__main__":

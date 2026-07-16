@@ -61,6 +61,12 @@ services:
       S3_BUCKET: mailing-agent
     volumes:
       - ./.test-runtime:/app/.test-runtime
+      # Keep unit tests in sync with the working tree (image COPY can lag).
+      # src is RW because parser_new logger may create log files under src/.
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./migrations:/app/migrations
+      - ./main.py:/app/main.py
     command:
       ["/bin/sh", "-c", "uv sync --frozen --extra dev --no-install-project && .venv/bin/python -m tests"]
 
