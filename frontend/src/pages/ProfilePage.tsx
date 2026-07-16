@@ -1,5 +1,5 @@
-import { ProForm, ProFormText, ProFormTextArea } from '@ant-design/pro-components';
-import { App, Tabs } from 'antd';
+import { ProForm, ProFormSwitch, ProFormText, ProFormTextArea } from '@ant-design/pro-components';
+import { App, Tabs, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { profileApi } from '@/api/profile';
 import { ConnectionsPage } from './ConnectionsPage';
@@ -28,7 +28,7 @@ export function ProfilePage() {
                 void queryClient.invalidateQueries({ queryKey: ['profile'] });
               }}
             >
-              <ProFormText name="display_name" label="Имя" />
+              <ProFormText name="display_name" label="Имя отправителя" />
               <ProFormText name="email" label="Email" />
               <ProFormText name="company" label="Компания" />
               <ProFormText name="job_title" label="Должность" />
@@ -42,7 +42,10 @@ export function ProfilePage() {
           key: 'security',
           label: 'Безопасность',
           children: (
-            <p>Смена пароля выполняется администратором или через регистрацию нового пользователя в локальном окружении.</p>
+            <Typography.Paragraph type="secondary">
+              Смена пароля в этом интерфейсе недоступна. В локальном окружении создайте нового пользователя
+              через регистрацию или обратитесь к администратору.
+            </Typography.Paragraph>
           ),
         },
         {
@@ -75,8 +78,8 @@ export function ProfilePage() {
                 void queryClient.invalidateQueries({ queryKey: ['profile'] });
               }}
             >
-              <ProFormText name="email_on_complete" label="Письмо при завершении (true/false)" />
-              <ProFormText name="email_on_error" label="Письмо при ошибке (true/false)" />
+              <ProFormSwitch name="email_on_complete" label="Письмо при завершении рассылки" />
+              <ProFormSwitch name="email_on_error" label="Письмо при ошибке отправки" />
             </ProForm>
           ),
         },

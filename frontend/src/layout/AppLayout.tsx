@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons';
 import type { ProLayoutProps } from '@ant-design/pro-components';
 import { PageContainer, ProLayout } from '@ant-design/pro-components';
-import { Dropdown, Typography } from 'antd';
+import { Dropdown } from 'antd';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { tokens } from '@/theme/tokens';
@@ -17,7 +17,7 @@ import { tokens } from '@/theme/tokens';
 const route: ProLayoutProps['route'] = {
   path: '/',
   routes: [
-    { path: '/', name: 'Статистика отправок', icon: <BarChartOutlined /> },
+    { path: '/', name: 'Статистика', icon: <BarChartOutlined /> },
     { path: '/campaigns/new', name: 'Создать рассылку', icon: <PlusCircleOutlined /> },
     { path: '/campaigns', name: 'Рассылки', icon: <UnorderedListOutlined /> },
     { path: '/templates', name: 'Шаблоны и документы', icon: <MailOutlined /> },
@@ -72,11 +72,7 @@ export function AppLayout() {
           </Dropdown>
         ),
       }}
-      actionsRender={() => [
-        <Typography.Text key="brand" type="secondary">
-          Enterprise
-        </Typography.Text>,
-      ]}
+      actionsRender={() => []}
     >
       <PageContainer>
         <Outlet />

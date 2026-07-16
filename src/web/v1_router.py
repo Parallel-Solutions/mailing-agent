@@ -17,7 +17,9 @@ from src.campaigns import (
     pdf_overlay_service,
     profile_service,
     service,
+    template_ai,
     template_service,
+    template_starters,
     work_type_service,
 )
 from src.campaigns.schedule_planner import plan_batches
@@ -180,6 +182,11 @@ class ConnectionCreateBody(BaseModel):
     use_ssl: bool | None = None
     use_starttls: bool | None = None
     make_default: bool = False
+    auth_method: str = "password"
+    oauth_provider: str = ""
+    oauth_tokens: dict[str, object] | None = None
+    max_per_hour: int = 0
+    max_per_day: int = 0
 
 
 class ConnectionUpdateBody(BaseModel):
@@ -194,6 +201,8 @@ class ConnectionUpdateBody(BaseModel):
     port: int | None = None
     use_ssl: bool | None = None
     use_starttls: bool | None = None
+    max_per_hour: int | None = None
+    max_per_day: int | None = None
 
 
 def _ok(result: Any) -> dict[str, Any]:
@@ -617,10 +626,10 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         principal: object = Depends(check_auth),
     ):
         actor = _actor(principal)
-        normalized_type = template_type.strip().lower()
+        normalized_type = template_service.normalize_file_template_type(template_type)
         allowed = template_service.FILE_TEMPLATE_EXTENSIONS.get(normalized_type)
         if not allowed:
-            raise HTTPException(status_code=400, detail="Файл можно загрузить только для КП или договора")
+            raise HTTPException(status_code=400, detail="Файл можно загрузить только для документов")
         original_name = validate_uploaded_file(
             file,
             allowed_extensions=tuple(sorted(allowed)),
@@ -642,6 +651,62 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _ok(item)
+
+    @router.get("/templates/starters")
+    def get_template_starters(
+        principal: object = Depends(check_auth),
+        template_type: str | None = None,
+    ):
+        _actor(principal)
+        return _ok(template_starters.list_starters(template_type=template_type))
+
+    @router.post("/templates/starters/{starter_id}/use")
+    def post_template_starter_use(starter_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            item = template_starters.use_starter(actor.username, starter_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _ok(item)
+
+    @router.get("/templates/models")
+    def get_template_models(principal: object = Depends(check_auth)):
+        _actor(principal)
+        return _ok(template_ai.list_models())
+
+    @router.post("/templates/generate")
+    async def post_template_generate(
+        template_type: str = Form(...),
+        prompt: str = Form(default=""),
+        model: str = Form(default=""),
+        files: list[UploadFile] | None = File(default=None),
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        attachments: list[tuple[str, bytes]] = []
+        for upload in files or []:
+            if not upload.filename:
+                continue
+            original_name = validate_uploaded_file(
+                upload,
+                allowed_extensions=(".docx", ".pdf", ".html", ".htm", ".txt"),
+                max_bytes=settings.upload_template_max_bytes,
+                human_name="вложения шаблона",
+            )
+            attachments.append((original_name, await upload.read()))
+        try:
+            item = template_ai.generate_template(
+                actor.username,
+                template_type=template_type,
+                prompt=prompt,
+                model=model,
+                files=attachments,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return _ok(item)
 
     @router.get("/templates/{template_id}/file")

@@ -50,6 +50,16 @@ def _safe_text(value: Any) -> str:
     return str(value).strip()
 
 
+def normalize_smtp_secret(value: Any) -> str:
+    """Normalize SMTP app passwords / secrets (strip all whitespace).
+
+    Google app passwords are often pasted as ``xxxx xxxx xxxx xxxx``; SMTP login
+    accepts them with or without spaces, but we store and authenticate on the
+    compact 16-character form.
+    """
+    return "".join(_safe_text(value).split())
+
+
 def _public_mailbox(row: SmtpMailbox) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -66,6 +76,8 @@ def _public_mailbox(row: SmtpMailbox) -> dict[str, Any]:
         "status": row.status,
         "last_error": row.last_error or "",
         "is_default": bool(row.is_default),
+        "max_per_hour": int(row.max_per_hour or 0),
+        "max_per_day": int(row.max_per_day or 0),
         "created_at": row.created_at.isoformat(timespec="seconds") if row.created_at else "",
         "updated_at": row.updated_at.isoformat(timespec="seconds") if row.updated_at else "",
     }
@@ -193,6 +205,8 @@ def create_mailbox(
     oauth_provider: str | None = None,
     oauth_tokens: OAuthTokens | None = None,
     smtp_username: str | None = None,
+    max_per_hour: int = 0,
+    max_per_day: int = 0,
 ) -> dict[str, Any]:
     preset = resolve_provider_settings(
         provider,
@@ -213,9 +227,10 @@ def create_mailbox(
         password_encrypted = ""
         oauth_tokens_encrypted = encrypt_oauth_tokens(oauth_tokens)
     else:
-        if not _safe_text(password):
+        safe_password = normalize_smtp_secret(password)
+        if not safe_password:
             raise ValueError("Укажите пароль или токен приложения.")
-        password_encrypted = encrypt_secret(password)
+        password_encrypted = encrypt_secret(safe_password)
         oauth_tokens_encrypted = None
         safe_oauth_provider = None
     now = _now()
@@ -245,6 +260,8 @@ def create_mailbox(
             status="active",
             last_error=None,
             is_default=should_default,
+            max_per_hour=max(0, int(max_per_hour or 0)),
+            max_per_day=max(0, int(max_per_day or 0)),
             created_at=now,
             updated_at=now,
         )
@@ -269,6 +286,8 @@ def update_mailbox(
     oauth_provider: str | None = None,
     oauth_tokens: OAuthTokens | None = None,
     smtp_username: str | None = None,
+    max_per_hour: int | None = None,
+    max_per_day: int | None = None,
 ) -> dict[str, Any]:
     with session_scope() as session:
         row = session.get(SmtpMailbox, mailbox_id)
@@ -295,7 +314,10 @@ def update_mailbox(
             row.oauth_tokens_encrypted = encrypt_oauth_tokens(oauth_tokens)
             row.auth_method = "oauth"
         if password:
-            row.password_encrypted = encrypt_secret(password)
+            safe_password = normalize_smtp_secret(password)
+            if not safe_password:
+                raise ValueError("Укажите пароль или токен приложения.")
+            row.password_encrypted = encrypt_secret(safe_password)
             row.auth_method = "password"
             row.oauth_provider = None
             row.oauth_tokens_encrypted = None
@@ -303,6 +325,10 @@ def update_mailbox(
             row.sender_name = _safe_text(sender_name)
         if smtp_username is not None:
             row.smtp_username = _safe_text(smtp_username) or row.email
+        if max_per_hour is not None:
+            row.max_per_hour = max(0, int(max_per_hour))
+        if max_per_day is not None:
+            row.max_per_day = max(0, int(max_per_day))
         row.provider = preset.id
         row.host = preset.host
         row.port = preset.port
@@ -449,29 +475,47 @@ def _ensure_fresh_oauth_credentials(
 
 def humanize_smtp_error(exc: Exception) -> str:
     if isinstance(exc, smtplib.SMTPAuthenticationError):
-        return "Неверный логин или пароль SMTP. Проверьте пароль приложения и настройки провайдера."
+        return (
+            "Неверный логин или пароль SMTP. "
+            "Для Gmail нужен пароль приложения (не обычный пароль Google), "
+            "его можно вставить без пробелов: https://myaccount.google.com/apppasswords"
+        )
     if isinstance(exc, smtplib.SMTPConnectError):
         return "Не удалось подключиться к SMTP-серверу. Проверьте host, порт и шифрование."
     if isinstance(exc, CredentialVaultError):
         return str(exc)
     if isinstance(exc, (TimeoutError,)):
-        return "SMTP-сервер не ответил вовремя. Проверьте сеть и доступность портов 465/587."
+        return (
+            "SMTP-сервер не ответил вовремя. "
+            "Проверьте сеть и исходящий доступ к портам 465/587 "
+            "(часто блокирует провайдер или файрвол — и с хоста, и из контейнера)."
+        )
     if isinstance(exc, OSError):
         text = _safe_text(exc).lower()
         if "network is unreachable" in text or getattr(exc, "errno", None) == 101:
             return (
-                "Нет доступа к SMTP-серверу из контейнера. "
-                "Проверьте файрвол и VPN: порты 465 и 587 должны быть открыты наружу."
+                "Нет доступа к SMTP-серверу (порты 465/587). "
+                "Проверьте файрвол, VPN и блокировку исходящего SMTP у провайдера — "
+                "в том числе с хоста, не только из контейнера."
             )
         if "timed out" in text:
-            return "SMTP-сервер не ответил вовремя. Проверьте сеть и доступность портов 465/587."
+            return (
+                "SMTP-сервер не ответил вовремя. "
+                "Проверьте сеть и исходящий доступ к портам 465/587 "
+                "(часто блокирует провайдер или файрвол — и с хоста, и из контейнера)."
+            )
     text = _safe_text(exc)
     if "timed out" in text.lower():
-        return "SMTP-сервер не ответил вовремя. Проверьте сеть и доступность портов 465/587."
+        return (
+            "SMTP-сервер не ответил вовремя. "
+            "Проверьте сеть и исходящий доступ к портам 465/587 "
+            "(часто блокирует провайдер или файрвол — и с хоста, и из контейнера)."
+        )
     if "network is unreachable" in text.lower():
         return (
-            "Нет доступа к SMTP-серверу из контейнера. "
-            "Проверьте файрвол и VPN: порты 465 и 587 должны быть открыты наружу."
+            "Нет доступа к SMTP-серверу (порты 465/587). "
+            "Проверьте файрвол, VPN и блокировку исходящего SMTP у провайдера — "
+            "в том числе с хоста, не только из контейнера."
         )
     return text or "Не удалось проверить SMTP-подключение."
 
@@ -485,7 +529,7 @@ def _login_smtp(server: smtplib.SMTP, credentials: ResolvedSmtpCredentials) -> N
             detail = response.decode("utf-8", errors="replace") if isinstance(response, bytes) else str(response)
             raise smtplib.SMTPAuthenticationError(code, detail)
         return
-    server.login(username, credentials.password)
+    server.login(username, normalize_smtp_secret(credentials.password))
 
 
 def _open_smtp_connection(credentials: ResolvedSmtpCredentials) -> smtplib.SMTP:

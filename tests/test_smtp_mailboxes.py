@@ -278,6 +278,16 @@ class SenderAgentSmtpMailboxTests(unittest.TestCase):
         mock_server.send_message.assert_called_once_with(message)
 
 
+class NormalizeSmtpSecretTests(unittest.TestCase):
+    def test_strips_all_whitespace(self) -> None:
+        from src.generator.delivery.smtp_mailboxes import normalize_smtp_secret
+
+        self.assertEqual(normalize_smtp_secret("abcd efgh ijkl mnop"), "abcdefghijklmnop")
+        self.assertEqual(normalize_smtp_secret("  ab cd\tef  "), "abcdef")
+        self.assertEqual(normalize_smtp_secret(""), "")
+        self.assertEqual(normalize_smtp_secret(None), "")
+
+
 class HumanizeSmtpErrorTests(unittest.TestCase):
     def test_network_unreachable_oserror(self) -> None:
         from src.generator.delivery.smtp_mailboxes import humanize_smtp_error
@@ -285,12 +295,23 @@ class HumanizeSmtpErrorTests(unittest.TestCase):
         message = humanize_smtp_error(OSError(101, "Network is unreachable"))
         self.assertIn("Нет доступа к SMTP-серверу", message)
         self.assertIn("465", message)
+        self.assertIn("хоста", message)
 
     def test_timeout_error(self) -> None:
         from src.generator.delivery.smtp_mailboxes import humanize_smtp_error
 
         message = humanize_smtp_error(TimeoutError("timed out"))
         self.assertIn("не ответил вовремя", message)
+        self.assertIn("провайдер", message)
+
+    def test_auth_error_mentions_gmail_app_password(self) -> None:
+        import smtplib
+
+        from src.generator.delivery.smtp_mailboxes import humanize_smtp_error
+
+        message = humanize_smtp_error(smtplib.SMTPAuthenticationError(535, b"auth failed"))
+        self.assertIn("пароль приложения", message)
+        self.assertIn("apppasswords", message)
 
 
 if __name__ == "__main__":

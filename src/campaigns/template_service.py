@@ -1,4 +1,4 @@
-"""Mail / KP / contract templates with versions."""
+"""Mail / document templates with versions."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Any
 
 from docx import Document
 from pypdf import PdfReader
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from src.infra.db import session_scope
 from src.infra.models import MailTemplate, TemplateVersion
@@ -21,10 +21,25 @@ from src.infra.object_store import delete as delete_object
 from src.infra.object_store import get_bytes, put_bytes
 
 VARIABLE_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
-FILE_TEMPLATE_EXTENSIONS = {
-    "kp": {".docx", ".pdf"},
-    "contract": {".docx"},
+FILE_TEMPLATE_TYPE_ALIASES = {
+    "kp": "document",
+    "contract": "document",
 }
+FILE_TEMPLATE_EXTENSIONS = {
+    "document": {".docx", ".pdf", ".html", ".htm"},
+}
+LEGACY_DOCUMENT_TYPES = ("kp", "contract")
+
+
+def normalize_file_template_type(template_type: str) -> str:
+    normalized = str(template_type or "").strip().lower()
+    return FILE_TEMPLATE_TYPE_ALIASES.get(normalized, normalized)
+
+
+def normalize_template_type_filter(template_type: str | None) -> str | None:
+    if not template_type:
+        return None
+    return normalize_file_template_type(template_type)
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -57,7 +72,7 @@ def _decode_text(data: bytes) -> str:
 
 def _file_text(filename: str, data: bytes) -> str:
     suffix = Path(filename).suffix.lower()
-    if suffix in {".html", ".htm"}:
+    if suffix in {".html", ".htm", ".txt"}:
         return _decode_text(data)
     if suffix == ".docx":
         document = Document(BytesIO(data))
@@ -76,15 +91,19 @@ def _file_text(filename: str, data: bytes) -> str:
 
 
 def _validate_file_template_type(template_type: str, filename: str) -> str:
-    normalized_type = str(template_type or "").strip().lower()
+    normalized_type = normalize_file_template_type(template_type)
     allowed = FILE_TEMPLATE_EXTENSIONS.get(normalized_type)
     if not allowed:
-        raise ValueError("Файловая загрузка доступна только для КП и договоров")
+        raise ValueError("Файловая загрузка доступна только для документов")
     suffix = Path(filename).suffix.lower()
     if suffix not in allowed:
         formats = ", ".join(sorted(allowed))
         raise ValueError(f"Для этого типа шаблона доступны форматы: {formats}")
     return normalized_type
+
+
+def _template_types_compatible(existing: str, incoming: str) -> bool:
+    return normalize_file_template_type(existing) == normalize_file_template_type(incoming)
 
 def template_to_dict(row: MailTemplate, version: TemplateVersion | None = None) -> dict[str, Any]:
     payload = {
@@ -237,8 +256,10 @@ def upload_file_version(
                 tmpl = session.get(MailTemplate, template_id)
                 if tmpl is None or tmpl.owner_username != owner_username:
                     raise FileNotFoundError("Шаблон не найден")
-                if tmpl.template_type != normalized_type:
+                if not _template_types_compatible(tmpl.template_type, normalized_type):
                     raise ValueError("Тип загружаемого файла не совпадает с типом шаблона")
+                if tmpl.template_type in LEGACY_DOCUMENT_TYPES:
+                    tmpl.template_type = "document"
                 current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
                 version_number = (current.version_number + 1) if current else 1
                 if name:
@@ -536,8 +557,16 @@ def list_templates(
         stmt = select(MailTemplate).where(MailTemplate.owner_username == owner_username)
         if not include_archived:
             stmt = stmt.where(MailTemplate.archived.is_(False))
-        if template_type:
-            stmt = stmt.where(MailTemplate.template_type == template_type)
+        normalized_filter = normalize_template_type_filter(template_type)
+        if normalized_filter == "document":
+            stmt = stmt.where(
+                or_(
+                    MailTemplate.template_type == "document",
+                    MailTemplate.template_type.in_(LEGACY_DOCUMENT_TYPES),
+                )
+            )
+        elif normalized_filter:
+            stmt = stmt.where(MailTemplate.template_type == normalized_filter)
         if q:
             stmt = stmt.where(MailTemplate.name.ilike(f"%{q.strip()}%"))
         rows = session.scalars(stmt.order_by(MailTemplate.updated_at.desc())).all()

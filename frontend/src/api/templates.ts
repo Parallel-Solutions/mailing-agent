@@ -5,6 +5,21 @@ export type OfficeEditorConfig = {
   editor_url: string;
   config: Record<string, unknown>;
 };
+
+export type TemplateStarter = {
+  id: string;
+  name: string;
+  template_type: string;
+  preview_html: string;
+  subject?: string | null;
+};
+
+export type TemplateAiModel = {
+  id: string;
+  label: string;
+  default?: boolean;
+};
+
 export const templatesApi = {
   list: (params?: { template_type?: string; q?: string }) => {
     const q = new URLSearchParams();
@@ -24,7 +39,7 @@ export const templatesApi = {
   }) => api.post<Template>('/api/v1/templates', body),
   uploadFile: (
     file: File,
-    template_type: 'kp' | 'contract',
+    template_type: 'document',
     options?: { name?: string; template_id?: string },
   ) => {
     const form = new FormData();
@@ -33,6 +48,30 @@ export const templatesApi = {
     if (options?.name) form.append('name', options.name);
     if (options?.template_id) form.append('template_id', options.template_id);
     return apiRequest<Template>('/api/v1/templates/upload', { method: 'POST', body: form });
+  },
+  starters: (template_type?: string) => {
+    const q = new URLSearchParams();
+    if (template_type) q.set('template_type', template_type);
+    const suffix = q.toString() ? `?${q}` : '';
+    return api.get<TemplateStarter[]>(`/api/v1/templates/starters${suffix}`);
+  },
+  useStarter: (starterId: string) =>
+    api.post<Template>(`/api/v1/templates/starters/${starterId}/use`),
+  models: () => api.get<TemplateAiModel[]>('/api/v1/templates/models'),
+  generate: (body: {
+    template_type: 'email' | 'document';
+    prompt?: string;
+    model?: string;
+    files?: File[];
+  }) => {
+    const form = new FormData();
+    form.append('template_type', body.template_type);
+    form.append('prompt', body.prompt || '');
+    form.append('model', body.model || '');
+    for (const file of body.files || []) {
+      form.append('files', file);
+    }
+    return apiRequest<Template>('/api/v1/templates/generate', { method: 'POST', body: form });
   },
   fileUrl: (id: string) => `/api/v1/templates/${id}/file`,
   deliveryFileUrl: (id: string) => `/api/v1/templates/${id}/delivery-file`,

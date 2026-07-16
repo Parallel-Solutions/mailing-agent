@@ -158,6 +158,32 @@ class DurableTaskQueueTests(unittest.TestCase):
         self.assertEqual(snapshot["total_active"], 2)
         self.assertEqual(snapshot["job_queue_position"], 2)
 
+    def test_get_task_payload_unwraps_nested_sender_kwargs(self) -> None:
+        from src.workers.task_queue import get_task_payload
+
+        queued, _ = enqueue_task(
+            task_type="sender",
+            job_id="job-nested-kwargs",
+            payload={"kwargs": {"job_id": "job-nested-kwargs", "dry_run": True, "attachment_mode": "kp"}},
+        )
+        payload = get_task_payload(queued["id"])
+        self.assertEqual(payload["task"], "sender")
+        self.assertEqual(payload["kwargs"]["job_id"], "job-nested-kwargs")
+        self.assertTrue(payload["kwargs"]["dry_run"])
+        self.assertEqual(payload["kwargs"]["attachment_mode"], "kp")
+
+    def test_get_task_payload_keeps_flat_kwargs(self) -> None:
+        from src.workers.task_queue import get_task_payload
+
+        queued, _ = enqueue_task(
+            task_type="sender",
+            job_id="job-flat-kwargs",
+            payload={"job_id": "job-flat-kwargs", "dry_run": True},
+        )
+        payload = get_task_payload(queued["id"])
+        self.assertEqual(payload["kwargs"]["job_id"], "job-flat-kwargs")
+        self.assertTrue(payload["kwargs"]["dry_run"])
+
     def test_future_available_at_is_not_claimed_until_due(self) -> None:
         future = datetime.now(timezone.utc) + timedelta(hours=2)
         queued, created = enqueue_task(

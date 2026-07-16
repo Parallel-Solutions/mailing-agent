@@ -22,15 +22,8 @@ export function ActiveSendingCard() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['active-sending'] }),
   });
 
-  if (isLoading) {
-    return <ProCard loading title="Активная отправка" data-testid="active-sending-card" />;
-  }
-  if (!data) {
-    return (
-      <ProCard title="Активная отправка" bordered data-testid="active-sending-card">
-        <Typography.Text type="secondary">Сейчас нет активных рассылок</Typography.Text>
-      </ProCard>
-    );
+  if (isLoading || !data) {
+    return null;
   }
 
   return (
@@ -38,6 +31,7 @@ export function ActiveSendingCard() {
       title={data.name}
       bordered
       data-testid="active-sending-card"
+      style={{ marginBottom: 16 }}
       extra={<Link to={`/campaigns/${data.campaign_id}`}>Открыть</Link>}
     >
       <Progress percent={data.progress} status={data.status === 'paused' ? 'exception' : 'active'} />

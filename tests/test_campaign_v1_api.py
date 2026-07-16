@@ -88,6 +88,39 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(paused.status_code, 200)
         self.assertEqual(paused.json()["result"]["status"], "paused")
 
+    def test_replace_recipients_twice_does_not_500(self) -> None:
+        created = self.client.post("/api/v1/campaigns", json={"name": "Reimport Campaign"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+        payload = {
+            "recipients": [
+                {"company": "A", "contact_name": "A", "email": "a@example.com"},
+                {"company": "B", "contact_name": "B", "email": "b@example.com"},
+            ]
+        }
+
+        first = self.client.put(f"/api/v1/campaigns/{campaign_id}/recipients", json=payload)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["result"]["total"], 2)
+
+        second = self.client.put(f"/api/v1/campaigns/{campaign_id}/recipients", json=payload)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(second.json()["result"]["total"], 2)
+
+        csv_body = "company,contact_name,email\nC,C,c@example.com\nD,D,d@example.com\n"
+        imported = self.client.post(
+            f"/api/v1/campaigns/{campaign_id}/recipients/import",
+            files={"file": ("recipients.csv", csv_body.encode("utf-8"), "text/csv")},
+        )
+        self.assertEqual(imported.status_code, 200, imported.text)
+        self.assertEqual(imported.json()["result"]["import"]["total"], 2)
+
+        reimported = self.client.post(
+            f"/api/v1/campaigns/{campaign_id}/recipients/import",
+            files={"file": ("recipients.csv", csv_body.encode("utf-8"), "text/csv")},
+        )
+        self.assertEqual(reimported.status_code, 200, reimported.text)
+        self.assertEqual(reimported.json()["result"]["import"]["total"], 2)
 
     def test_create_list_and_test_provider_connections(self) -> None:
         rusender = self.client.post(
@@ -266,7 +299,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         ):
             created = self.client.post(
                 "/api/v1/templates/upload",
-                data={"template_type": "kp", "name": "Own KP"},
+                data={"template_type": "document", "name": "Own document"},
                 files={
                     "file": (
                         "offer.docx",
@@ -277,7 +310,7 @@ class CampaignV1ApiTests(unittest.TestCase):
             )
         self.assertEqual(created.status_code, 200, created.text)
         template = created.json()["result"]
-        self.assertEqual(template["template_type"], "kp")
+        self.assertEqual(template["template_type"], "document")
         self.assertEqual(template["version"]["filename"], "offer.docx")
         self.assertEqual(template["version"]["rendered_pdf_filename"], "offer.pdf")
         self.assertEqual(
@@ -292,13 +325,27 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(delivery_download.status_code, 200, delivery_download.text)
         self.assertEqual(delivery_download.content, delivery_pdf)
 
+        legacy = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "kp", "name": "Legacy alias"},
+            files={
+                "file": (
+                    "legacy.docx",
+                    source_payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(legacy.status_code, 200, legacy.text)
+        self.assertEqual(legacy.json()["result"]["template_type"], "document")
+
         replacement_pdf = PdfWriter()
         replacement_pdf.add_blank_page(width=595, height=842)
         replacement = BytesIO()
         replacement_pdf.write(replacement)
         updated = self.client.post(
             "/api/v1/templates/upload",
-            data={"template_type": "kp", "template_id": template["id"]},
+            data={"template_type": "document", "template_id": template["id"]},
             files={"file": ("offer-v2.pdf", replacement.getvalue(), "application/pdf")},
         )
         self.assertEqual(updated.status_code, 200, updated.text)
@@ -329,8 +376,74 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(contract.status_code, 200, contract.text)
         contract_template = contract.json()["result"]
+        self.assertEqual(contract_template["template_type"], "document")
         self.assertEqual(contract_template["version"]["filename"], "contract.docx")
         self.assertIsNone(contract_template["version"]["rendered_pdf_filename"])
+
+    def test_template_starters_and_models(self) -> None:
+        models = self.client.get("/api/v1/templates/models")
+        self.assertEqual(models.status_code, 200, models.text)
+        model_ids = {item["id"] for item in models.json()["result"]}
+        self.assertIn("gpt-4o-mini", model_ids)
+
+        starters = self.client.get("/api/v1/templates/starters", params={"template_type": "email"})
+        self.assertEqual(starters.status_code, 200, starters.text)
+        email_starters = starters.json()["result"]
+        self.assertGreaterEqual(len(email_starters), 3)
+        used = self.client.post(f"/api/v1/templates/starters/{email_starters[0]['id']}/use")
+        self.assertEqual(used.status_code, 200, used.text)
+        self.assertEqual(used.json()["result"]["template_type"], "email")
+
+        doc_starters = self.client.get("/api/v1/templates/starters", params={"template_type": "document"})
+        self.assertEqual(doc_starters.status_code, 200, doc_starters.text)
+        doc_used = self.client.post(f"/api/v1/templates/starters/{doc_starters.json()['result'][0]['id']}/use")
+        self.assertEqual(doc_used.status_code, 200, doc_used.text)
+        self.assertEqual(doc_used.json()["result"]["template_type"], "document")
+
+    def test_generate_template_files_only_and_ai(self) -> None:
+        html = b"<p>Hello {{contact_name}} from {{company}}</p>"
+        created = self.client.post(
+            "/api/v1/templates/generate",
+            data={"template_type": "email", "prompt": ""},
+            files={"files": ("mail.html", html, "text/html")},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(created.json()["result"]["template_type"], "email")
+        self.assertIn("{{company}}", created.json()["result"]["version"]["body_html"])
+
+        with patch("src.campaigns.template_ai._call_llm") as mock_llm:
+            mock_llm.return_value = {
+                "name": "AI Letter",
+                "subject": "Hi {{company}}",
+                "body_html": "<p>Hello {{contact_name}}</p>",
+            }
+            ai = self.client.post(
+                "/api/v1/templates/generate",
+                data={
+                    "template_type": "email",
+                    "prompt": "Сделай короткое письмо",
+                    "model": "gpt-4o-mini",
+                },
+            )
+        self.assertEqual(ai.status_code, 200, ai.text)
+        self.assertEqual(ai.json()["result"]["name"], "AI Letter")
+        mock_llm.assert_called_once()
+
+    def test_generate_template_llm_failure_returns_503(self) -> None:
+        with patch("src.campaigns.template_ai._build_client") as mock_client:
+            mock_client.return_value.chat.completions.create.side_effect = RuntimeError(
+                "Error code: 400 - no healthy deployments for this model"
+            )
+            response = self.client.post(
+                "/api/v1/templates/generate",
+                data={
+                    "template_type": "email",
+                    "prompt": "Сделай короткое письмо",
+                    "model": "gpt-4o-mini",
+                },
+            )
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertIn("недоступна", response.json()["detail"].lower())
 
 if __name__ == "__main__":
     unittest.main()

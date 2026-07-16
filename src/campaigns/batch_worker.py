@@ -52,9 +52,15 @@ def _load_email_template(campaign: Campaign) -> tuple[str, str]:
 def _send_smtp_message(
     *, mailbox_id: str, owner_username: str, to_email: str, subject: str, html: str, text: str
 ) -> str:
+    from dataclasses import replace
+
+    from src.campaigns.connection_service import _profile_sender_name
     from src.generator.delivery.smtp_mailboxes import resolve_smtp_credentials
 
     creds = resolve_smtp_credentials(mailbox_id=mailbox_id, owner_username=owner_username)
+    sender_name = _profile_sender_name(owner_username, creds.sender_name)
+    if sender_name != creds.sender_name:
+        creds = replace(creds, sender_name=sender_name)
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"{creds.sender_name} <{creds.email}>" if creds.sender_name else creds.email

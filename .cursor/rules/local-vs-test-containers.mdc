@@ -16,7 +16,7 @@ Use the production-like stack only:
 Equivalent compose: `docker-compose.yml` + `docker-compose.dev.yml`.
 
 - Database: **`mailing`** on volume **`pgdata`**
-- UI: http://localhost:9806
+- UI: http://localhost:9806 (React CampaignFlow only; do **not** manual-test `/legacy` — see `no-legacy-ui` rule)
 - Do **not** use the e2e overlay or `mailing_e2e` for hands-on local testing
 
 ## Frontend UI changes require image rebuild

@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     app_admin_tenant_id: str = "admin"
     app_session_ttl_days: int = 7
     app_allow_registration: bool = False
+    # JSON map: {"<mcp-token>": "<username>"} for Authorization: Bearer MCP auth.
+    mailing_agent_mcp_tokens: str = ""
     use_legacy_ui: bool = False
     frontend_dist_dir: str = ""
     seed_demo_data_on_startup: bool = False
@@ -75,6 +77,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.vsellm.ru/v1"
+    template_ai_models: str = "gpt-4o-mini,gpt-4.1"
     case_agent_model: str = "gpt-4o"
     enable_case_agent: bool = True
     case_agent_mode: str = "auto_fix"

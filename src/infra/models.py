@@ -283,6 +283,8 @@ class SmtpMailbox(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    max_per_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

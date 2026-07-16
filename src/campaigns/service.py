@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from src.campaigns.schedule_planner import plan_batches
 from src.infra.db import session_scope
@@ -19,6 +19,7 @@ from src.infra.models import (
     CampaignRecipient,
     CampaignSchedule,
     DeliveryAttempt,
+    SmtpMailbox,
 )
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
@@ -40,6 +41,34 @@ def _now() -> datetime:
 
 def _new_id() -> str:
     return str(uuid.uuid4())
+
+
+def _min_positive(*values: int) -> int:
+    """Return the tightest positive limit; 0 means unlimited."""
+    positives = [int(value) for value in values if int(value or 0) > 0]
+    return min(positives) if positives else 0
+
+
+def _connection_rate_limits(session: Any, mailbox_id: str | None) -> tuple[int, int]:
+    if not mailbox_id:
+        return 0, 0
+    row = session.get(SmtpMailbox, mailbox_id)
+    if row is None:
+        return 0, 0
+    return int(row.max_per_hour or 0), int(row.max_per_day or 0)
+
+
+def _effective_rate_limits(
+    *,
+    schedule_max_per_hour: int,
+    schedule_max_per_day: int,
+    connection_max_per_hour: int,
+    connection_max_per_day: int,
+) -> tuple[int, int]:
+    return (
+        _min_positive(schedule_max_per_hour, connection_max_per_hour),
+        _min_positive(schedule_max_per_day, connection_max_per_day),
+    )
 
 
 def _validate_email(value: str) -> str:
@@ -346,10 +375,12 @@ def replace_recipients(
         if camp.status not in {"draft", "paused", "scheduled"}:
             raise ValueError("Cannot replace recipients for campaign in status " + camp.status)
 
-        for old in session.scalars(
-            select(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign_id)
-        ).all():
-            session.delete(old)
+        # Bulk delete + flush before inserts so re-import does not collide on
+        # unique (campaign_id, row_index) when UOW would emit INSERT before DELETE.
+        session.execute(
+            delete(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign_id)
+        )
+        session.flush()
         seen_emails: set[str] = set()
         added = 0
         duplicates = 0
@@ -473,7 +504,24 @@ def parse_recipients_xlsx(content: bytes) -> list[dict[str, Any]]:
     wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
-    headers = [str(c or "").strip().lower() for c in next(rows_iter, [])]
+    first = [str(c or "").strip().lower() for c in next(rows_iter, [])]
+    second = [str(c or "").strip().lower() for c in next(rows_iter, [])]
+
+    def _is_mo_tech_header(headers: list[str]) -> bool:
+        keys = set(headers)
+        return "email_osn" in keys or ("mun_name" in keys and "sub_rf" in keys)
+
+    # Parser MO template: row1 human labels, row2 technical keys (EMAIL_OSN, …).
+    if _is_mo_tech_header(second):
+        headers = second
+        data_rows: list[tuple[Any, ...]] = list(rows_iter)
+    elif _is_mo_tech_header(first):
+        headers = first
+        data_rows = [tuple(second)] + list(rows_iter) if any(second) else list(rows_iter)
+    else:
+        headers = first
+        data_rows = [tuple(second)] + list(rows_iter) if any(second) else list(rows_iter)
+
     mapping = {h: i for i, h in enumerate(headers)}
 
     def cell(row: tuple[Any, ...], *names: str) -> str:
@@ -484,20 +532,49 @@ def parse_recipients_xlsx(content: bytes) -> list[dict[str, Any]]:
         return ""
 
     result: list[dict[str, Any]] = []
-    for row in rows_iter:
+    for row in data_rows:
         if not row:
             continue
-        email = cell(row, "email", "e-mail", "почта")
-        company = cell(row, "company", "компания", "organization")
+        email = cell(
+            row,
+            "email",
+            "e-mail",
+            "почта",
+            "email_osn",
+            "эл. адрес (основной)",
+        )
+        company = cell(
+            row,
+            "company",
+            "компания",
+            "organization",
+            "adm_name",
+            "mun_name",
+            "полное название администрации",
+            "муниципальное образование",
+        )
         if not email and not company:
             continue
         result.append(
             {
                 "company": company,
-                "contact_name": cell(row, "contact", "contact_name", "контакт"),
+                "contact_name": cell(
+                    row,
+                    "contact",
+                    "contact_name",
+                    "контакт",
+                    "head_fio",
+                    "глава мо",
+                ),
                 "email": email,
-                "email_fallback": cell(row, "email_fallback", "email2"),
-                "region": cell(row, "region", "регион"),
+                "email_fallback": cell(
+                    row,
+                    "email_fallback",
+                    "email2",
+                    "email_dop",
+                    "эл. адрес (доп)",
+                ),
+                "region": cell(row, "region", "регион", "sub_rf", "субъект рф"),
                 "source": "xlsx",
             }
         )
@@ -549,6 +626,13 @@ def upsert_schedule(
                 CampaignRecipient.excluded.is_(False),
             )
         ) or 0
+        conn_hour, conn_day = _connection_rate_limits(session, camp.smtp_mailbox_id)
+        max_per_hour, max_per_day = _effective_rate_limits(
+            schedule_max_per_hour=schedule.max_per_hour,
+            schedule_max_per_day=schedule.max_per_day,
+            connection_max_per_hour=conn_hour,
+            connection_max_per_day=conn_day,
+        )
         preview = plan_batches(
             recipient_count=int(active_count),
             batch_size=schedule.batch_size,
@@ -558,8 +642,8 @@ def upsert_schedule(
             timezone_name=schedule.timezone,
             weekdays=list(schedule.weekdays or []),
             time_windows=list(schedule.time_windows or []),
-            max_per_hour=schedule.max_per_hour,
-            max_per_day=schedule.max_per_day,
+            max_per_hour=max_per_hour,
+            max_per_day=max_per_day,
         )
         schedule.preview = preview
         schedule.updated_at = _now()
@@ -681,7 +765,17 @@ def launch_campaign(
             .order_by(CampaignRecipient.row_index)
         ).all()
         recipient_ids = [r.id for r in recipients]
-        # force_now bypasses calendar windows so "Запустить сейчас" is immediate.
+        conn_hour, conn_day = _connection_rate_limits(session, camp.smtp_mailbox_id)
+        # force_now bypasses calendar windows / schedule pacing so "Запустить сейчас"
+        # is immediate, but connection mailbox limits still apply.
+        schedule_hour = 0 if force_now else schedule.max_per_hour
+        schedule_day = 0 if force_now else schedule.max_per_day
+        max_per_hour, max_per_day = _effective_rate_limits(
+            schedule_max_per_hour=schedule_hour,
+            schedule_max_per_day=schedule_day,
+            connection_max_per_hour=conn_hour,
+            connection_max_per_day=conn_day,
+        )
         preview = plan_batches(
             recipient_count=len(recipient_ids),
             batch_size=schedule.batch_size,
@@ -691,8 +785,8 @@ def launch_campaign(
             timezone_name=schedule.timezone,
             weekdays=[] if force_now else list(schedule.weekdays or []),
             time_windows=[] if force_now else list(schedule.time_windows or []),
-            max_per_hour=0 if force_now else schedule.max_per_hour,
-            max_per_day=0 if force_now else schedule.max_per_day,
+            max_per_hour=max_per_hour,
+            max_per_day=max_per_day,
         )
         schedule.preview = preview
 
@@ -939,43 +1033,47 @@ def active_sending(owner_username: str, *, is_admin: bool = False) -> dict[str, 
         stmt = select(Campaign).where(Campaign.status.in_(["running", "scheduled", "paused"]))
         if not is_admin:
             stmt = stmt.where(Campaign.owner_username == owner_username)
-        camp = session.scalars(stmt.order_by(Campaign.updated_at.desc()).limit(1)).first()
-        if camp is None:
-            return None
-        schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == camp.id))
-        next_batch = session.scalars(
-            select(CampaignBatch)
-            .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "pending")
-            .order_by(CampaignBatch.scheduled_at)
-            .limit(1)
-        ).first()
-        running_batch = session.scalars(
-            select(CampaignBatch)
-            .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "running")
-            .limit(1)
-        ).first()
-        queued = session.scalar(
-            select(func.count())
-            .select_from(CampaignBatch)
-            .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "pending")
-        ) or 0
-        return {
-            "campaign_id": camp.id,
-            "name": camp.name,
-            "status": camp.status,
-            "sent_count": camp.sent_count,
-            "total_count": camp.total_count,
-            "remaining": max(0, camp.total_count - camp.sent_count),
-            "queued_batches": int(queued),
-            "sending_now": running_batch.size if running_batch else 0,
-            "next_batch_size": next_batch.size if next_batch else 0,
-            "next_batch_at": next_batch.scheduled_at.isoformat() if next_batch else None,
-            "batch_size": schedule.batch_size if schedule else 0,
-            "interval_seconds": schedule.interval_seconds if schedule else 0,
-            "max_per_hour": schedule.max_per_hour if schedule else 0,
-            "max_per_day": schedule.max_per_day if schedule else 0,
-            "progress": round(100.0 * camp.sent_count / camp.total_count, 1) if camp.total_count else 0.0,
-        }
+        camps = session.scalars(stmt.order_by(Campaign.updated_at.desc())).all()
+        for camp in camps:
+            schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == camp.id))
+            next_batch = session.scalars(
+                select(CampaignBatch)
+                .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "pending")
+                .order_by(CampaignBatch.scheduled_at)
+                .limit(1)
+            ).first()
+            running_batch = session.scalars(
+                select(CampaignBatch)
+                .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "running")
+                .limit(1)
+            ).first()
+            queued = session.scalar(
+                select(func.count())
+                .select_from(CampaignBatch)
+                .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "pending")
+            ) or 0
+            remaining = max(0, camp.total_count - camp.sent_count)
+            # Finished / stuck-paused campaigns with nothing left to send stay out of the dashboard card.
+            if remaining == 0 and int(queued) == 0 and running_batch is None:
+                continue
+            return {
+                "campaign_id": camp.id,
+                "name": camp.name,
+                "status": camp.status,
+                "sent_count": camp.sent_count,
+                "total_count": camp.total_count,
+                "remaining": remaining,
+                "queued_batches": int(queued),
+                "sending_now": running_batch.size if running_batch else 0,
+                "next_batch_size": next_batch.size if next_batch else 0,
+                "next_batch_at": next_batch.scheduled_at.isoformat() if next_batch else None,
+                "batch_size": schedule.batch_size if schedule else 0,
+                "interval_seconds": schedule.interval_seconds if schedule else 0,
+                "max_per_hour": schedule.max_per_hour if schedule else 0,
+                "max_per_day": schedule.max_per_day if schedule else 0,
+                "progress": round(100.0 * camp.sent_count / camp.total_count, 1) if camp.total_count else 0.0,
+            }
+        return None
 
 
 def record_delivery_attempt(

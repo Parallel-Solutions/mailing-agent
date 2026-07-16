@@ -1,0 +1,23 @@
+---
+description: Legacy UI is deprecated — do not test or extend it; plan to remove
+alwaysApply: true
+---
+
+# Legacy UI — do not test
+
+The legacy wizard at `/legacy` (`templates/index.html`, `src/web/static/documents_ui.js`, related legacy fixtures) is **deprecated**.
+
+## Do
+
+- Test and fix the **React SPA** (CampaignFlow) and its APIs (`/api/v1/*`, campaign/document flows as wired in the new UI).
+- Treat document generation and mailing paths that still only exist behind legacy as **known debt** — note in reports, do not expand manual/E2E coverage of `/legacy`.
+- Prefer removing or shrinking legacy surface over adding features to it.
+
+## Do not
+
+- Manual QA walkthroughs of `/legacy`
+- New Playwright/e2e/visual coverage aimed at the legacy wizard
+- New features or UX polish in legacy templates/JS
+- Telling the user to “check in legacy” as the primary path
+
+When legacy must be mentioned (e.g. explaining an architectural gap), say it is scheduled for removal and point to the React path instead.

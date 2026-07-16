@@ -184,12 +184,16 @@ export type DeliveryConnection = {
   host?: string;
   port?: number | null;
   api_base_url?: string;
+  auth_method?: string;
+  oauth_provider?: string;
   status: string;
   is_default?: boolean;
   last_error?: string | null;
   use_ssl?: boolean | null;
   use_starttls?: boolean | null;
   has_secret?: boolean;
+  max_per_hour?: number;
+  max_per_day?: number;
 };
 
 export type SmtpMailbox = DeliveryConnection;

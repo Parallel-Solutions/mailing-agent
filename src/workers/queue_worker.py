@@ -273,7 +273,9 @@ def enqueue_sender_task(
         task_type="sender",
         job_id=job_id,
         owner_username=owner_username,
-        payload={"kwargs": dict(kwargs or {})},
+        # Flat kwargs — get_task_payload wraps payload as worker kwargs.
+        # Nested {"kwargs": {...}} made dry_run/job_id invisible to _run_sender.
+        payload=dict(kwargs or {}),
         max_workers=max(1, int(settings.sender_worker_max_processes or 1)),
         max_attempts=max(1, int(settings.background_queue_max_attempts or 3)),
         available_at=safe_available_at,

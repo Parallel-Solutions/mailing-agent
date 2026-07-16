@@ -104,7 +104,7 @@ def build_fallback_setup_action(context: dict[str, Any]) -> SetupAction:
                 message_ru="Не удалось войти. Для Gmail используйте пароль приложения или OAuth.",
                 instructions=[
                     "Откройте https://myaccount.google.com/apppasswords",
-                    "Создайте пароль приложения «Почта» и вставьте его в поле пароля.",
+                    "Создайте пароль приложения «Почта» и вставьте его без пробелов (16 символов).",
                     *probe_note,
                 ],
                 oauth_provider="google" if google_oauth else None,
@@ -141,8 +141,8 @@ def build_fallback_setup_action(context: dict[str, Any]) -> SetupAction:
             action="show_oauth" if google_oauth else "show_app_password",
             message_ru="Gmail готов к подключению. Рекомендуем OAuth или пароль приложения.",
             instructions=[
-                "Нажмите «Войти через Google» или создайте пароль приложения.",
-                "Обычный пароль Google чаще всего не подходит для SMTP.",
+                "Нажмите «Войти через Google» или создайте пароль приложения: https://myaccount.google.com/apppasswords",
+                "Обычный пароль Google не подходит; пароль приложения можно вставить без пробелов.",
                 *probe_note,
             ],
             oauth_provider="google" if google_oauth else None,

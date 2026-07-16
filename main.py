@@ -4,7 +4,8 @@ from pathlib import Path
 import zipfile
 from src.security.auth import principal_from_user_record
 from src.security.auth_bootstrap import bootstrap_auth_store
-from src.security.session_store import SESSION_COOKIE_NAME, get_session_username
+from src.security.bearer_auth import resolve_request_username
+from src.security.session_store import SESSION_COOKIE_NAME
 from src.security.user_store import get_user_record
 from src.utils.logger import logger
 from src.utils.config import SecurityConfigurationError, require_configured_app_password, settings
@@ -48,7 +49,7 @@ from src.web.sender_service import (
     prime_sender_scheduled_state,
     run_sender_background,
 )
-from fastapi import Cookie, Depends, FastAPI, HTTPException, UploadFile, status
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 import shutil
 import threading
@@ -163,7 +164,10 @@ def _run_consent_materials_recovery_loop() -> None:
             logger.exception("consent_materials_recovery_failed", error=str(exc))
         _consent_materials_recovery_stop_event.wait(poll_seconds)
 
-def check_auth(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
+def check_auth(
+    session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+    authorization: str | None = Header(default=None),
+):
     try:
         require_configured_app_password(settings)
     except SecurityConfigurationError as exc:
@@ -173,7 +177,12 @@ def check_auth(session_token: str | None = Cookie(default=None, alias=SESSION_CO
             detail="Сервис не настроен: APP_PASSWORD не задан.",
         ) from exc
 
-    username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
+    username = resolve_request_username(
+        session_token=session_token,
+        authorization=authorization,
+        settings_obj=settings,
+    )
+
     if not username:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

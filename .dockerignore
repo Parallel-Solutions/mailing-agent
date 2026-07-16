@@ -5,6 +5,7 @@ __pycache__
 .pytest_cache
 .mypy_cache
 .ruff_cache
+.test-runtime
 
 .env
 .env.local
@@ -16,6 +17,12 @@ build
 dist
 wheels
 *.egg-info
+
+# Local dumps / imports — not needed in image (was ~800MB+ of context)
+artifacts
+e2e
+design-input
+service_docs
 
 logs
 storage
@@ -30,5 +37,7 @@ pytest-cache-files-*
 *.sqlite3
 *.db-shm
 *.db-wal
+*.dump
+*.tar.gz
 
 src/parser_new/output
