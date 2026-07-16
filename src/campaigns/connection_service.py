@@ -1,0 +1,371 @@
+"""User-owned delivery connections for SMTP, RuSender and MailoPost.
+
+API-provider credentials reuse the encrypted secret storage of ``smtp_mailboxes``
+for backwards compatibility with existing campaign records.  The public API
+never exposes encrypted credentials.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+from sqlalchemy import select, update
+
+from src.generator.delivery.smtp_mailboxes import (
+    ResolvedSmtpCredentials,
+    create_mailbox,
+    delete_mailbox,
+    humanize_smtp_error,
+    mark_mailbox_status,
+    resolve_smtp_credentials,
+    update_mailbox,
+    verify_and_mark_mailbox,
+    verify_smtp_credentials,
+)
+from src.infra.db import session_scope
+from src.infra.models import SmtpMailbox
+from src.security.credential_vault import decrypt_secret, encrypt_secret
+from src.utils.config import settings
+
+
+API_PROVIDERS = {"rusender", "mailopost"}
+SUPPORTED_TRANSPORTS = {"smtp", *API_PROVIDERS}
+MAILRU_HOST = "smtp.mail.ru"
+MAILRU_PORT = 465
+
+
+@dataclass(frozen=True)
+class ResolvedConnection:
+    id: str
+    transport: str
+    email: str
+    sender_name: str
+    secret: str
+    api_base_url: str
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _safe_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_mailru_email(value: Any) -> str:
+    email = _safe_text(value).lower()
+    local_part, separator, domain = email.rpartition("@")
+    if not separator or not local_part or not domain or email.count("@") != 1 or any(char.isspace() for char in email):
+        raise ValueError("Укажите корректный email почтового ящика.")
+    return email
+
+
+def _verify_mailru_credentials(
+    *,
+    email: Any,
+    password: Any,
+    sender_name: Any = "",
+) -> None:
+    safe_email = _normalize_mailru_email(email)
+    safe_password = _safe_text(password)
+    if not safe_password:
+        raise ValueError("Укажите пароль для внешнего приложения Почты Mail.")
+    credentials = ResolvedSmtpCredentials(
+        email=safe_email,
+        password=safe_password,
+        host=MAILRU_HOST,
+        port=MAILRU_PORT,
+        use_ssl=True,
+        use_starttls=False,
+        sender_name=_safe_text(sender_name),
+        smtp_username=safe_email,
+    )
+    try:
+        verify_smtp_credentials(credentials)
+    except Exception as exc:
+        message = humanize_smtp_error(exc)
+        raise ValueError(
+            "Почта Mail не приняла данные подключения. "
+            "Используйте пароль для внешнего приложения и проверьте, что доступ по SMTP включён. "
+            f"{message}"
+        ) from exc
+
+
+def connection_transport(row: SmtpMailbox) -> str:
+    provider = _safe_text(row.provider).lower()
+    return provider if provider in API_PROVIDERS else "smtp"
+
+
+def _public_connection(row: SmtpMailbox) -> dict[str, Any]:
+    transport = connection_transport(row)
+    return {
+        "id": row.id,
+        "transport": transport,
+        "provider": transport if transport != "smtp" else row.provider,
+        "email": row.email,
+        "sender_name": row.sender_name or "",
+        "host": row.host if transport == "smtp" else "",
+        "port": row.port if transport == "smtp" else None,
+        "use_ssl": bool(row.use_ssl) if transport == "smtp" else None,
+        "use_starttls": bool(row.use_starttls) if transport == "smtp" else None,
+        "api_base_url": row.host if transport in API_PROVIDERS else "",
+        "status": row.status,
+        "last_error": row.last_error or "",
+        "is_default": bool(row.is_default),
+        "has_secret": bool(row.password_encrypted),
+        "created_at": row.created_at.isoformat(timespec="seconds") if row.created_at else "",
+        "updated_at": row.updated_at.isoformat(timespec="seconds") if row.updated_at else "",
+    }
+
+
+def list_connections(owner_username: str) -> list[dict[str, Any]]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(SmtpMailbox)
+            .where(SmtpMailbox.owner_username == owner_username)
+            .order_by(SmtpMailbox.is_default.desc(), SmtpMailbox.created_at.asc())
+        ).scalars().all()
+        return [_public_connection(row) for row in rows]
+
+
+def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, Any]:
+    transport = _safe_text(data.get("transport") or "smtp").lower()
+    if transport not in SUPPORTED_TRANSPORTS:
+        raise ValueError("Поддерживаются SMTP, RuSender и MailoPost.")
+    if transport == "smtp":
+        provider = _safe_text(data.get("provider") or "custom").lower()
+        if provider == "mailru":
+            email = _normalize_mailru_email(data.get("email"))
+            password = _safe_text(data.get("password"))
+            _verify_mailru_credentials(
+                email=email,
+                password=password,
+                sender_name=data.get("sender_name"),
+            )
+            mailbox = create_mailbox(
+                owner_username=owner_username,
+                provider="mailru",
+                email=email,
+                password=password,
+                sender_name=_safe_text(data.get("sender_name")),
+                make_default=bool(data.get("make_default")),
+                smtp_username=email,
+            )
+            mailbox["transport"] = "smtp"
+            return mailbox
+        mailbox = create_mailbox(
+            owner_username=owner_username,
+            provider=provider,
+            email=_safe_text(data.get("email")),
+            password=_safe_text(data.get("password")),
+            sender_name=_safe_text(data.get("sender_name")),
+            host=_safe_text(data.get("host")),
+            port=data.get("port"),
+            use_ssl=data.get("use_ssl"),
+            use_starttls=data.get("use_starttls"),
+            make_default=bool(data.get("make_default")),
+            smtp_username=_safe_text(data.get("smtp_username")) or None,
+        )
+        mailbox["transport"] = "smtp"
+        return mailbox
+
+    email = _safe_text(data.get("email")).lower()
+    token = _safe_text(data.get("api_token"))
+    if not email or "@" not in email:
+        raise ValueError("Укажите подтверждённый email отправителя.")
+    if not token:
+        raise ValueError("Укажите API-токен провайдера.")
+    default_base = (
+        settings.rusender_api_base_url if transport == "rusender" else settings.mailopost_api_base_url
+    )
+    api_base_url = _safe_text(data.get("api_base_url") or default_base).rstrip("/")
+    if not api_base_url.startswith(("https://", "http://")):
+        raise ValueError("Адрес API должен начинаться с https:// или http://.")
+
+    now = _now()
+    with session_scope() as session:
+        existing = session.execute(
+            select(SmtpMailbox).where(SmtpMailbox.owner_username == owner_username).limit(1)
+        ).scalar_one_or_none()
+        make_default = bool(data.get("make_default")) or existing is None
+        if make_default:
+            session.execute(
+                update(SmtpMailbox)
+                .where(SmtpMailbox.owner_username == owner_username, SmtpMailbox.is_default.is_(True))
+                .values(is_default=False, updated_at=now)
+            )
+        row = SmtpMailbox(
+            id=str(uuid4()),
+            owner_username=owner_username,
+            provider=transport,
+            email=email,
+            sender_name=_safe_text(data.get("sender_name")),
+            host=api_base_url,
+            port=443,
+            use_ssl=True,
+            use_starttls=False,
+            auth_method="token",
+            smtp_username=None,
+            password_encrypted=encrypt_secret(token),
+            status="active",
+            last_error=None,
+            is_default=make_default,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(row)
+        session.flush()
+        return _public_connection(row)
+
+
+def update_connection(connection_id: str, owner_username: str, data: dict[str, Any]) -> dict[str, Any]:
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection_id)
+        if row is None or row.owner_username != owner_username:
+            raise LookupError("Подключение не найдено.")
+        transport = connection_transport(row)
+        provider = row.provider
+
+    requested_transport = _safe_text(data.get("transport") or transport).lower()
+    if requested_transport != transport:
+        raise ValueError("Тип существующего подключения изменить нельзя. Создайте новое подключение.")
+
+    if transport == "smtp":
+        if _safe_text(provider).lower() == "mailru":
+            with session_scope() as session:
+                row = session.get(SmtpMailbox, connection_id)
+                if row is None or row.owner_username != owner_username:
+                    raise LookupError("Подключение не найдено.")
+                current_email = row.email
+                current_password = decrypt_secret(row.password_encrypted)
+                current_sender_name = row.sender_name or ""
+            email = _normalize_mailru_email(data.get("email") or current_email)
+            password = _safe_text(data.get("password")) or current_password
+            if "email" in data or _safe_text(data.get("password")):
+                _verify_mailru_credentials(
+                    email=email,
+                    password=password,
+                    sender_name=data.get("sender_name") or current_sender_name,
+                )
+            mailbox = update_mailbox(
+                connection_id,
+                owner_username=owner_username,
+                provider="mailru",
+                email=email,
+                password=_safe_text(data.get("password")) or None,
+                sender_name=data.get("sender_name"),
+                host=MAILRU_HOST,
+                port=MAILRU_PORT,
+                use_ssl=True,
+                use_starttls=False,
+                smtp_username=email,
+            )
+            mailbox["transport"] = "smtp"
+            return mailbox
+        mailbox = update_mailbox(
+            connection_id,
+            owner_username=owner_username,
+            provider=provider,
+            email=data.get("email"),
+            password=_safe_text(data.get("password")) or None,
+            sender_name=data.get("sender_name"),
+            host=data.get("host"),
+            port=data.get("port"),
+            use_ssl=data.get("use_ssl"),
+            use_starttls=data.get("use_starttls"),
+            smtp_username=data.get("smtp_username"),
+        )
+        mailbox["transport"] = "smtp"
+        return mailbox
+
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection_id)
+        if row is None or row.owner_username != owner_username:
+            raise LookupError("Подключение не найдено.")
+        if "email" in data:
+            email = _safe_text(data.get("email")).lower()
+            if not email or "@" not in email:
+                raise ValueError("Укажите подтверждённый email отправителя.")
+            row.email = email
+        if "sender_name" in data:
+            row.sender_name = _safe_text(data.get("sender_name"))
+        if "api_base_url" in data:
+            api_base_url = _safe_text(data.get("api_base_url")).rstrip("/")
+            if not api_base_url.startswith(("https://", "http://")):
+                raise ValueError("Адрес API должен начинаться с https:// или http://.")
+            row.host = api_base_url
+        api_token = _safe_text(data.get("api_token"))
+        if api_token:
+            row.password_encrypted = encrypt_secret(api_token)
+        row.status = "active"
+        row.last_error = None
+        row.updated_at = _now()
+        session.flush()
+        return _public_connection(row)
+
+
+def delete_connection(connection_id: str, owner_username: str) -> None:
+    delete_mailbox(connection_id, owner_username=owner_username)
+
+
+def resolve_connection(connection_id: str, owner_username: str) -> ResolvedConnection:
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection_id)
+        if row is None or row.owner_username != owner_username:
+            raise LookupError("Подключение не найдено.")
+        transport = connection_transport(row)
+        if transport == "smtp":
+            return ResolvedConnection(row.id, transport, row.email, row.sender_name or "", "", "")
+        return ResolvedConnection(
+            id=row.id,
+            transport=transport,
+            email=row.email,
+            sender_name=row.sender_name or "",
+            secret=decrypt_secret(row.password_encrypted),
+            api_base_url=row.host,
+        )
+
+
+def validate_connection_choice(connection_id: str | None, owner_username: str, transport: str) -> str | None:
+    if not connection_id:
+        return "Выберите подключение отправителя"
+    try:
+        connection = resolve_connection(connection_id, owner_username)
+    except LookupError:
+        return "Выбранное подключение не найдено"
+    normalized = _safe_text(transport or connection.transport).lower()
+    if normalized != connection.transport:
+        return "Тип подключения не совпадает с выбранным способом отправки"
+    return None
+
+
+def test_connection(connection_id: str, owner_username: str) -> dict[str, Any]:
+    connection = resolve_connection(connection_id, owner_username)
+    try:
+        if connection.transport == "smtp":
+            credentials = resolve_smtp_credentials(mailbox_id=connection.id, owner_username=owner_username)
+            verify_and_mark_mailbox(credentials, mailbox_id=connection.id, send_test=False)
+            message = "SMTP-подключение успешно проверено."
+        else:
+            from src.campaigns.batch_worker import _send_delivery_message
+
+            _send_delivery_message(
+                connection_id=connection.id,
+                owner_username=owner_username,
+                to_email=connection.email,
+                subject="Проверка подключения CampaignFlow",
+                html="<p>Подключение успешно. Это тестовое письмо CampaignFlow.</p>",
+                text="Подключение успешно. Это тестовое письмо CampaignFlow.",
+            )
+            message = f"{connection.transport} проверен: тестовое письмо отправлено на {connection.email}."
+        mark_mailbox_status(connection.id, status="active", last_error="")
+        return {"status": "ok", "message": message}
+    except Exception as exc:
+        error_message = humanize_smtp_error(exc) if connection.transport == "smtp" else str(exc)
+        mark_mailbox_status(connection.id, status="auth_failed", last_error=error_message)
+        if connection.transport == "smtp":
+            raise ValueError(error_message) from exc
+        raise

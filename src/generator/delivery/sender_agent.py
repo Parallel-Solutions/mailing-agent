@@ -2744,15 +2744,15 @@ def _build_unisender_classic_url(path: str) -> str:
     return f"{base_url}/{path.lstrip('/')}"
 
 
-def _build_rusender_url(path: str) -> str:
-    base_url = _safe_text(settings.rusender_api_base_url).rstrip("/")
+def _build_rusender_url(path: str, api_base_url: str | None = None) -> str:
+    base_url = _safe_text(api_base_url or settings.rusender_api_base_url).rstrip("/")
     if not base_url:
         base_url = "https://api.rusender.ru/api/v1"
     return f"{base_url}/{path.lstrip('/')}"
 
 
-def _build_mailopost_url(path: str) -> str:
-    base_url = _safe_text(settings.mailopost_api_base_url).rstrip("/")
+def _build_mailopost_url(path: str, api_base_url: str | None = None) -> str:
+    base_url = _safe_text(api_base_url or settings.mailopost_api_base_url).rstrip("/")
     if not base_url:
         base_url = "https://api.mailopost.ru/v1"
     return f"{base_url}/{path.lstrip('/')}"
@@ -2923,10 +2923,13 @@ def _send_via_rusender(
     send_mode: str = "",
     attachment_mode: str = "",
     sender_email: str | None = None,
+    credential_api_key: str | None = None,
+    credential_sender_name: str | None = None,
+    credential_api_base_url: str | None = None,
 ) -> dict[str, Any]:
-    api_key = _safe_text(settings.rusender_api_key)
+    api_key = _safe_text(credential_api_key or settings.rusender_api_key)
     sender_email = _resolve_sender_email(sender_email, settings.rusender_sender_email, settings.smtp_sender_email)
-    sender_name = _safe_text(settings.rusender_sender_name) or "ООО «ПР»"
+    sender_name = _safe_text(credential_sender_name or settings.rusender_sender_name) or "ООО «ПР»"
     if not api_key:
         raise RuntimeError("Не указан API-ключ RuSender.")
     if not sender_email:
@@ -2968,7 +2971,7 @@ def _send_via_rusender(
         payload["mail"]["attachments"] = encoded_attachments
 
     request = Request(
-        _build_rusender_url(RUSENDER_SEND_PATH),
+        _build_rusender_url(RUSENDER_SEND_PATH, credential_api_base_url),
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         method="POST",
         headers={
@@ -3053,9 +3056,11 @@ def _mailopost_smtp_headers(
     }
 
 
-def _build_mailopost_json_request(*, api_token: str, payload: dict[str, Any]) -> Request:
+def _build_mailopost_json_request(
+    *, api_token: str, payload: dict[str, Any], api_base_url: str | None = None
+) -> Request:
     return Request(
-        _build_mailopost_url(MAILOPOST_SEND_PATH),
+        _build_mailopost_url(MAILOPOST_SEND_PATH, api_base_url),
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         method="POST",
         headers={
@@ -3071,6 +3076,7 @@ def _build_mailopost_multipart_request(
     api_token: str,
     fields: dict[str, Any],
     attachments: list[str],
+    api_base_url: str | None = None,
 ) -> Request:
     boundary = f"----mailing-agent-{secrets.token_hex(16)}"
     parts: list[bytes] = []
@@ -3113,7 +3119,7 @@ def _build_mailopost_multipart_request(
 
     parts.append(f"--{boundary}--\r\n".encode("utf-8"))
     return Request(
-        _build_mailopost_url(MAILOPOST_SEND_PATH),
+        _build_mailopost_url(MAILOPOST_SEND_PATH, api_base_url),
         data=b"".join(parts),
         method="POST",
         headers={
@@ -3137,10 +3143,13 @@ def _send_via_mailopost(
     send_mode: str = "",
     attachment_mode: str = "",
     sender_email: str | None = None,
+    credential_api_token: str | None = None,
+    credential_sender_name: str | None = None,
+    credential_api_base_url: str | None = None,
 ) -> dict[str, Any]:
-    api_token = _safe_text(settings.mailopost_api_token)
+    api_token = _safe_text(credential_api_token or settings.mailopost_api_token)
     sender_email = _resolve_sender_email(sender_email, settings.mailopost_sender_email, settings.smtp_sender_email)
-    sender_name = _safe_text(settings.mailopost_sender_name) or "ООО «ПР»"
+    sender_name = _safe_text(credential_sender_name or settings.mailopost_sender_name) or "ООО «ПР»"
     if not api_token:
         raise RuntimeError("Не указан API-токен MailoPost.")
     if not sender_email:
@@ -3168,9 +3177,18 @@ def _send_via_mailopost(
         "smtp_headers": _mailopost_smtp_headers(row, idempotency_key=idempotency_key, recipient=recipient, job_id=job_id),
     }
     request = (
-        _build_mailopost_multipart_request(api_token=api_token, fields=common_payload, attachments=attachments)
+        _build_mailopost_multipart_request(
+            api_token=api_token,
+            fields=common_payload,
+            attachments=attachments,
+            api_base_url=credential_api_base_url,
+        )
         if attachments
-        else _build_mailopost_json_request(api_token=api_token, payload=common_payload)
+        else _build_mailopost_json_request(
+            api_token=api_token,
+            payload=common_payload,
+            api_base_url=credential_api_base_url,
+        )
     )
     try:
         raw = _run_mailopost_request(request, timeout=60)
