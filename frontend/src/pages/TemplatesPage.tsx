@@ -1,13 +1,23 @@
-import { DownloadOutlined, EyeOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
+import {
+  InboxOutlined,
+  CopyOutlined,
+  DownloadOutlined,
+  EditOutlined,
+  EllipsisOutlined,
+  EyeOutlined,
+  FilePdfOutlined,
+  PlusOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
 import { ProCard } from '@ant-design/pro-components';
-import { App, Button, Drawer, Input, Space, Tabs, Tag, Typography, Upload } from 'antd';
-import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Placeholder from '@tiptap/extension-placeholder';
+import { App, Button, Dropdown, Space, Tabs, Tag, Tooltip, Typography, Upload } from 'antd';
+import type { MenuProps } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { templatesApi } from '@/api/templates';
 import type { Template } from '@/api/types';
+import './TemplatesPage.css';
 
 type FileTemplateType = 'kp' | 'contract';
 
@@ -16,17 +26,31 @@ function TemplateFileUpload({
   templateId,
   label = 'Загрузить свой шаблон',
   primary = false,
+  compact = false,
   onUploaded,
 }: {
   type: FileTemplateType;
   templateId?: string;
   label?: string;
   primary?: boolean;
+  compact?: boolean;
   onUploaded: (template: Template) => void;
 }) {
   const { message } = App.useApp();
   const [uploading, setUploading] = useState(false);
-  const accept = type === 'kp' ? '.docx,.pdf,.html,.htm' : '.docx';
+  const accept = type === 'kp' ? '.docx,.pdf' : '.docx';
+
+  const button = (
+    <Button
+      type={primary ? 'primary' : 'default'}
+      icon={<UploadOutlined />}
+      loading={uploading}
+      aria-label={label}
+      title={compact ? label : undefined}
+    >
+      {compact ? null : label}
+    </Button>
+  );
 
   return (
     <Upload
@@ -48,227 +72,190 @@ function TemplateFileUpload({
         }
       }}
     >
-      <Button type={primary ? 'primary' : 'link'} icon={<UploadOutlined />} loading={uploading}>
-        {label}
-      </Button>
+      {compact ? <Tooltip title={label}>{button}</Tooltip> : button}
     </Upload>
   );
 }
 
-function TemplateEditorDrawer({
-  open,
+function TemplateCard({
   template,
-  onClose,
+  type,
+  onRefresh,
 }: {
-  open: boolean;
-  template: Template | null;
-  onClose: () => void;
+  template: Template;
+  type: 'email' | FileTemplateType;
+  onRefresh: () => void;
 }) {
   const { message } = App.useApp();
-  const queryClient = useQueryClient();
-  const [name, setName] = useState(template?.name || '');
-  const [subject, setSubject] = useState(template?.version?.subject || '');
-  const editor = useEditor({
-    extensions: [StarterKit, Placeholder.configure({ placeholder: 'Текст шаблона…' })],
-    content: template?.version?.body_html || '<p></p>',
-  });
+  const navigate = useNavigate();
+  const isFileTemplate = type !== 'email';
+  const variables = template.version?.variables || [];
+  const filename = template.version?.filename || '';
+  const hasFile = Boolean(filename);
+  const extension = filename.split('.').pop()?.toUpperCase();
 
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      if (!template) return;
-      return templatesApi.save(template.id, {
-        name,
-        subject,
-        body_html: editor?.getHTML() || '',
+  const openEditor = () => navigate(`/templates/${template.id}/edit`);
+  const preview = async () => {
+    if (isFileTemplate) {
+      window.open(templatesApi.previewFileUrl(template.id), '_blank', 'noopener,noreferrer');
+      return;
+    }
+    const result = await templatesApi.preview(template.id);
+    message.info(result.subject);
+  };
+
+  const moreItems: MenuProps['items'] = [];
+  if (isFileTemplate && hasFile) {
+    moreItems.push({
+      key: 'source',
+      icon: <DownloadOutlined />,
+      label: type === 'kp' ? 'Скачать исходник' : 'Скачать DOCX',
+      onClick: () => window.open(templatesApi.fileUrl(template.id), '_blank', 'noopener,noreferrer'),
+    });
+    if (type === 'kp') {
+      moreItems.push({
+        key: 'delivery',
+        icon: <FilePdfOutlined />,
+        label: 'PDF для отправки',
+        onClick: () => window.open(templatesApi.deliveryFileUrl(template.id), '_blank', 'noopener,noreferrer'),
       });
+    }
+    moreItems.push({ type: 'divider' });
+  }
+  moreItems.push(
+    {
+      key: 'duplicate',
+      icon: <CopyOutlined />,
+      label: 'Создать копию',
+      onClick: async () => {
+        await templatesApi.duplicate(template.id);
+        onRefresh();
+      },
     },
-    onSuccess: () => {
-      message.success('Шаблон сохранён');
-      void queryClient.invalidateQueries({ queryKey: ['templates'] });
-      onClose();
+    {
+      key: 'archive',
+      icon: <InboxOutlined />,
+      label: 'Переместить в архив',
+      danger: true,
+      onClick: async () => {
+        await templatesApi.archive(template.id);
+        onRefresh();
+      },
     },
-  });
+  );
 
   return (
-    <Drawer
-      width={920}
-      open={open}
-      onClose={onClose}
-      title="Редактор шаблона письма"
-      extra={
-        <Space>
-          <Button onClick={() => editor?.chain().focus().insertContent('{{company}}').run()}>
-            + company
-          </Button>
-          <Button onClick={() => editor?.chain().focus().insertContent('{{contact_name}}').run()}>
-            + contact_name
-          </Button>
-          <Button type="primary" loading={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
-            Сохранить
-          </Button>
-        </Space>
-      }
-    >
-      <Space direction="vertical" style={{ width: '100%' }} size="middle">
-        <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Название" />
-        <Input value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="Тема" />
-        <div style={{ border: '1px solid #DEE2E6', borderRadius: 8, padding: 12, minHeight: 280 }}>
-          <EditorContent editor={editor} />
+    <ProCard className="template-library-card" bordered>
+      <div className="template-card-layout">
+        <div className="template-card-header">
+          <Typography.Title level={5} ellipsis={{ rows: 2 }} title={template.name}>
+            {template.name}
+          </Typography.Title>
+          <Space size={6} wrap>
+            <Tag color={isFileTemplate && !hasFile ? 'orange' : template.status === 'ready' ? 'green' : 'gold'}>
+              {isFileTemplate && !hasFile ? 'Требуется файл' : template.status === 'ready' ? 'Готов' : template.status}
+            </Tag>
+            {extension && <Tag>{extension}</Tag>}
+          </Space>
         </div>
-        <Typography.Text type="secondary">
-          Переменные: {'{{company}}'}, {'{{contact_name}}'}, {'{{email}}'}, {'{{region}}'}
-        </Typography.Text>
-      </Space>
-    </Drawer>
+
+        <div className="template-card-content">
+          {isFileTemplate ? (
+            <>
+              <Typography.Text className="template-card-filename" ellipsis={{ tooltip: filename }}>
+                {filename || 'Файл ещё не загружен'}
+              </Typography.Text>
+              <Typography.Text type="secondary">Версия {template.version?.version_number || 1}</Typography.Text>
+              <div className="template-card-variables">
+                {variables.length > 0 ? (
+                  <>
+                    {variables.slice(0, 2).map((variable) => <Tag key={variable.name}>{`{{${variable.name}}}`}</Tag>)}
+                    {variables.length > 2 && <Tag>+{variables.length - 2}</Tag>}
+                  </>
+                ) : (
+                  <Typography.Text type="secondary">Переменные не найдены</Typography.Text>
+                )}
+              </div>
+            </>
+          ) : (
+            <Typography.Paragraph type="secondary" ellipsis={{ rows: 3 }}>
+              {template.version?.subject || template.status}
+            </Typography.Paragraph>
+          )}
+        </div>
+
+        <div className="template-card-actions">
+          <Button type="primary" icon={<EditOutlined />} onClick={openEditor}>
+            {isFileTemplate ? 'Редактор' : 'Редактировать'}
+          </Button>
+          <Tooltip title="Предпросмотр">
+            <Button icon={<EyeOutlined />} disabled={isFileTemplate && !hasFile} aria-label="Предпросмотр" onClick={() => void preview()} />
+          </Tooltip>
+          {isFileTemplate && (
+            <TemplateFileUpload
+              type={type}
+              templateId={template.id}
+              label={hasFile ? 'Загрузить новую версию' : 'Загрузить файл'}
+              compact
+              onUploaded={onRefresh}
+            />
+          )}
+          <Dropdown menu={{ items: moreItems }} trigger={['click']} placement="bottomRight">
+            <Tooltip title="Другие действия">
+              <Button icon={<EllipsisOutlined />} aria-label="Другие действия" />
+            </Tooltip>
+          </Dropdown>
+        </div>
+      </div>
+    </ProCard>
   );
 }
 
 function TemplateGrid({ type }: { type: 'email' | FileTemplateType }) {
-  const { message } = App.useApp();
   const queryClient = useQueryClient();
-  const [editing, setEditing] = useState<Template | null>(null);
+  const navigate = useNavigate();
   const isFileTemplate = type !== 'email';
   const { data, isLoading } = useQuery({
     queryKey: ['templates', type],
     queryFn: () => templatesApi.list({ template_type: type }),
   });
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['templates', type] });
+  const refresh = () => { void queryClient.invalidateQueries({ queryKey: ['templates', type] }); };
   const createMutation = useMutation({
-    mutationFn: () =>
-      templatesApi.create({
-        name: 'Новый шаблон письма',
-        template_type: 'email',
-        subject: 'Тема письма',
-        body_html: '<p>Здравствуйте, {{contact_name}}!</p><p>Компания: {{company}}</p>',
-      }),
+    mutationFn: () => templatesApi.create({
+      name: 'Новый шаблон письма',
+      template_type: 'email',
+      subject: 'Тема письма',
+      body_html: '<p>Здравствуйте, {{contact_name}}!</p><p>Компания: {{company}}</p>',
+    }),
     onSuccess: (template) => {
-      void refresh();
-      setEditing(template);
+      refresh();
+      navigate(`/templates/${template.id}/edit`);
     },
   });
 
   return (
     <>
-      <Space style={{ marginBottom: 16 }} wrap>
+      <div className="template-library-toolbar">
         {isFileTemplate ? (
-          <TemplateFileUpload type={type} primary onUploaded={() => void refresh()} />
+          <TemplateFileUpload type={type} primary onUploaded={refresh} />
         ) : (
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            loading={createMutation.isPending}
-            onClick={() => createMutation.mutate()}
-          >
+          <Button type="primary" icon={<PlusOutlined />} loading={createMutation.isPending} onClick={() => createMutation.mutate()}>
             Создать письмо
           </Button>
         )}
         {isFileTemplate && (
           <Typography.Text type="secondary">
-            {type === 'kp' ? 'Форматы: DOCX, PDF, HTML' : 'Формат: DOCX'}
+            {type === 'kp' ? 'КП: исходник DOCX или PDF · отправка PDF' : 'Документы: исходник и результат DOCX'}
           </Typography.Text>
         )}
-      </Space>
-
-      <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
-        {(data || []).map((template) => {
-          const variables = template.version?.variables || [];
-          const hasFile = Boolean(template.version?.filename);
-          const actions = isFileTemplate
-            ? [
-                ...(hasFile
-                  ? [
-                      <a
-                        key="preview"
-                        onClick={() =>
-                          window.open(templatesApi.previewFileUrl(template.id), '_blank', 'noopener,noreferrer')
-                        }
-                      >
-                        <EyeOutlined /> Предпросмотр
-                      </a>,
-                      <a key="download" href={templatesApi.fileUrl(template.id)}>
-                        <DownloadOutlined /> Скачать
-                      </a>,
-                    ]
-                  : []),
-                <TemplateFileUpload
-                  key="version"
-                  type={type}
-                  templateId={template.id}
-                  label={hasFile ? 'Новая версия' : 'Загрузить файл'}
-                  onUploaded={() => void refresh()}
-                />,
-              ]
-            : [
-                <a key="edit" onClick={() => setEditing(template)}>Редактировать</a>,
-                <a
-                  key="preview"
-                  onClick={async () => {
-                    const preview = await templatesApi.preview(template.id);
-                    message.info(preview.subject);
-                  }}
-                >
-                  Предпросмотр
-                </a>,
-              ];
-
-          actions.push(
-            <a
-              key="duplicate"
-              onClick={async () => {
-                await templatesApi.duplicate(template.id);
-                void refresh();
-              }}
-            >
-              Копия
-            </a>,
-            <a
-              key="archive"
-              onClick={async () => {
-                await templatesApi.archive(template.id);
-                void refresh();
-              }}
-            >
-              Архив
-            </a>,
-          );
-
-          return (
-            <ProCard key={template.id} loading={isLoading} title={template.name} bordered actions={actions}>
-              <Space direction="vertical" size="small" style={{ width: '100%' }}>
-                <Tag color={isFileTemplate && !hasFile ? 'orange' : template.status === 'ready' ? 'green' : 'gold'}>
-                  {isFileTemplate && !hasFile
-                    ? 'Требуется файл'
-                    : template.status === 'ready' ? 'Готов' : template.status}
-                </Tag>
-                {isFileTemplate ? (
-                  <>
-                    <Typography.Text>{template.version?.filename || 'Файл не загружен'}</Typography.Text>
-                    <Typography.Text type="secondary">
-                      Версия {template.version?.version_number || 1}
-                    </Typography.Text>
-                    <div>
-                      {variables.length > 0 ? (
-                        variables.map((variable) => <Tag key={variable.name}>{`{{${variable.name}}}`}</Tag>)
-                      ) : (
-                        <Typography.Text type="secondary">Переменные не найдены</Typography.Text>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <Typography.Paragraph ellipsis={{ rows: 3 }}>
-                    {template.version?.subject || template.status}
-                  </Typography.Paragraph>
-                )}
-              </Space>
-            </ProCard>
-          );
-        })}
       </div>
 
-      {!isFileTemplate && (
-        <TemplateEditorDrawer open={Boolean(editing)} template={editing} onClose={() => setEditing(null)} />
-      )}
+      <div className="template-library-grid" aria-busy={isLoading}>
+        {(data || []).map((template) => (
+          <TemplateCard key={template.id} template={template} type={type} onRefresh={refresh} />
+        ))}
+      </div>
     </>
   );
 }

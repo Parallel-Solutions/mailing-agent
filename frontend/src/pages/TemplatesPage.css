@@ -1,0 +1,113 @@
+.template-library-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.template-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.template-library-card {
+  height: 100%;
+  overflow: hidden;
+  border-color: #e1e6e3;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(25, 28, 29, .04);
+  transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease;
+}
+
+.template-library-card:hover {
+  border-color: #b8cbc0;
+  box-shadow: 0 8px 24px rgba(25, 28, 29, .08);
+  transform: translateY(-1px);
+}
+
+.template-library-card .ant-pro-card-body {
+  height: 100%;
+  padding: 18px;
+}
+
+.template-card-layout {
+  display: grid;
+  grid-template-rows: auto minmax(92px, 1fr) auto;
+  gap: 14px;
+  height: 100%;
+  min-height: 238px;
+}
+
+.template-card-header {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.template-card-header .ant-typography {
+  min-height: 48px;
+  margin: 0;
+  color: #202623;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.template-card-content {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.template-card-filename {
+  display: block;
+  max-width: 100%;
+  color: #3c4540;
+}
+
+.template-card-variables {
+  min-height: 26px;
+  margin-top: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.template-card-variables .ant-tag {
+  max-width: 116px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.template-card-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid #edf0ee;
+}
+
+.template-card-actions .ant-btn {
+  min-width: 36px;
+}
+
+.template-card-actions .ant-upload-wrapper,
+.template-card-actions .ant-upload-select {
+  display: block;
+}
+
+@media (max-width: 760px) {
+  .template-library-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .template-library-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

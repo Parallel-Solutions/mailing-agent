@@ -1,0 +1,804 @@
+.template-editor-page {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding-bottom: 26px;
+}
+
+.template-editor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.template-editor-fields {
+  display: grid;
+  grid-template-columns: minmax(240px, .8fr) minmax(320px, 1.2fr);
+  gap: 16px;
+}
+
+.template-editor-fields label {
+  display: grid;
+  gap: 7px;
+}
+
+.template-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+
+.template-editor-main,
+.template-editor-aside {
+  min-width: 0;
+}
+
+.template-editor-aside {
+  display: grid;
+  gap: 12px;
+}
+
+.template-editor-surface,
+.template-side-panel {
+  border-color: #dee2e6;
+  box-shadow: none;
+}
+
+.template-editor-toolbar {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 10px;
+  border-bottom: 1px solid #dee2e6;
+  background: #fbfcfb;
+}
+
+.template-email-canvas {
+  min-height: 480px;
+  padding: 32px 40px;
+  background: #fff;
+}
+
+.template-email-canvas .ProseMirror {
+  max-width: 720px;
+  min-height: 410px;
+  margin: 0 auto;
+  color: #191c1d;
+  font-size: 15px;
+  line-height: 1.65;
+  outline: none;
+}
+
+.template-variable-list,
+.template-check-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.template-variable-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  background: #fff;
+  color: #191c1d;
+  text-align: left;
+  cursor: pointer;
+}
+
+.template-variable-row:hover {
+  border-color: #2d6a4f;
+  background: #f4faf6;
+}
+
+.template-variable-row > span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.template-variable-row code {
+  overflow: hidden;
+  color: #0f5238;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+}
+
+.template-variable-row small {
+  color: #68716c;
+}
+
+.template-variable-add {
+  color: #2d6a4f;
+  font-size: 20px;
+}
+
+.template-check-list span {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #404943;
+  font-size: 13px;
+}
+
+.template-check-list .anticon,
+.editor-statusbar .anticon {
+  color: #2d6a4f;
+}
+
+.template-email-preview {
+  border: 1px solid #dee2e6;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.template-email-preview iframe {
+  display: block;
+  width: 100%;
+  height: 540px;
+  border: 0;
+  background: #fff;
+}
+
+/* KP visual HTML editor */
+.kp-editor-page {
+  gap: 12px;
+}
+
+.kp-ribbon {
+  overflow: hidden;
+  border: 1px solid #dfe4e1;
+  border-radius: 10px 10px 0 0;
+  background: #fff;
+}
+
+.kp-ribbon-tabs {
+  display: flex;
+  align-items: end;
+  gap: 3px;
+  height: 38px;
+  padding: 0 12px;
+  border-bottom: 1px solid #e5e9e7;
+  background: #f8faf9;
+}
+
+.kp-ribbon-tabs button {
+  height: 38px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #5f6863;
+  cursor: pointer;
+}
+
+.kp-ribbon-tabs button.active {
+  border-bottom-color: #2d6a4f;
+  color: #174d38;
+  font-weight: 600;
+}
+
+.kp-ribbon-tools {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 12px;
+  overflow-x: auto;
+}
+
+.kp-workspace {
+  min-height: 830px;
+  display: grid;
+  grid-template-columns: 150px minmax(630px, 1fr) 300px;
+  overflow: hidden;
+  border: 1px solid #dfe4e1;
+  border-top: 0;
+  background: #e9eeeb;
+}
+
+.kp-pages-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 15px 12px;
+  border-right: 1px solid #d4dcd7;
+  background: #f8faf9;
+}
+
+.kp-panel-title {
+  color: #414a45;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.kp-page-thumb {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  padding: 7px;
+  border: 2px solid #2d6a4f;
+  border-radius: 7px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.kp-page-thumb > span {
+  position: absolute;
+  left: -6px;
+  top: -8px;
+  min-width: 21px;
+  padding: 2px 5px;
+  border-radius: 10px;
+  background: #2d6a4f;
+  color: #fff;
+  font-size: 11px;
+}
+
+.kp-page-mini {
+  min-height: 126px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(#fff 0 18%, #edf5f0 18% 20%, #fff 20% 100%);
+  color: #2d6a4f;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.kp-stage {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  min-width: 0;
+  padding: 34px 28px 50px;
+  overflow: auto;
+  background: #dfe6e2;
+}
+
+.kp-ruler.horizontal {
+  width: min(100%, 794px);
+  height: 22px;
+  border: 1px solid #cbd4cf;
+  background: repeating-linear-gradient(90deg, #fff 0, #fff 19px, #9da8a2 20px, #fff 21px);
+  box-shadow: 0 2px 3px rgba(25, 28, 29, .06);
+}
+
+.kp-canvas-frame {
+  display: block;
+  width: 794px;
+  max-width: 100%;
+  height: 1123px;
+  border: 0;
+  background: #fff;
+  box-shadow: 0 10px 34px rgba(25, 28, 29, .16);
+}
+
+.kp-inspector,
+.docx-inspector {
+  align-content: start;
+  padding: 12px;
+  border-left: 1px solid #d4dcd7;
+  background: #f7f9f8;
+  overflow-y: auto;
+}
+
+.kp-settings {
+  display: grid;
+  gap: 12px;
+}
+
+.kp-settings span {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.editor-statusbar {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 14px;
+  border: 1px solid #dfe4e1;
+  border-radius: 0 0 8px 8px;
+  background: #fff;
+  color: #68716c;
+  font-size: 12px;
+}
+
+.editor-statusbar span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kp-pdf-preview {
+  display: block;
+  width: 100%;
+  height: 76vh;
+  border: 0;
+  background: #303030;
+}
+
+/* Original PDF source: the page is shown without HTML reconstruction. */
+.pdf-source-workspace {
+  min-height: 780px;
+  display: grid;
+  grid-template-columns: minmax(640px, 1fr) 300px;
+  overflow: hidden;
+  border: 1px solid #dfe4e1;
+  border-radius: 10px 10px 0 0;
+  background: #30343a;
+}
+
+.pdf-source-shell {
+  min-width: 0;
+  min-height: 780px;
+  padding: 12px;
+}
+
+.pdf-source-shell iframe {
+  display: block;
+  width: 100%;
+  height: 780px;
+  border: 0;
+  background: #fff;
+}
+
+/* DOCX editor */
+.docx-commandbar {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+  border: 1px solid #dfe4e1;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.docx-workspace {
+  min-height: 780px;
+  display: grid;
+  grid-template-columns: minmax(720px, 1fr) 300px;
+  overflow: hidden;
+  border: 1px solid #dfe4e1;
+  border-radius: 10px 10px 0 0;
+  background: #eef2ef;
+}
+
+.docx-editor-shell {
+  min-width: 0;
+  min-height: 780px;
+  background: #fff;
+}
+
+.onlyoffice-editor {
+  width: 100%;
+  height: 780px;
+}
+
+@media (max-width: 1280px) {
+  .kp-workspace {
+    grid-template-columns: 120px minmax(580px, 1fr) 270px;
+  }
+
+  .docx-workspace,
+  .pdf-source-workspace {
+    grid-template-columns: minmax(650px, 1fr) 270px;
+  }
+
+  .kp-canvas-frame {
+    max-width: none;
+    zoom: .72;
+  }
+
+  .kp-ruler.horizontal {
+    width: 572px;
+  }
+}
+
+@media (max-width: 1050px) {
+  .template-editor-grid,
+  .template-editor-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .kp-workspace,
+  .docx-workspace,
+  .pdf-source-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .kp-pages-panel {
+    display: none;
+  }
+
+  .kp-inspector,
+  .docx-inspector {
+    border-left: 0;
+    border-top: 1px solid #d4dcd7;
+  }
+
+  .kp-canvas-frame {
+    zoom: .82;
+  }
+
+  .kp-ruler.horizontal {
+    width: 651px;
+  }
+}
+
+@media (max-width: 700px) {
+  .template-editor-heading,
+  .docx-commandbar,
+  .editor-statusbar {
+    display: grid;
+  }
+
+  .kp-stage {
+    padding: 18px 8px;
+  }
+
+  .kp-canvas-frame {
+    zoom: .66;
+  }
+
+  .kp-ruler.horizontal {
+    width: 524px;
+  }
+
+  .kp-ribbon-tools {
+    flex-wrap: nowrap;
+  }
+}
+/* Non-destructive PDF field editor */
+.pdf-overlay-workspace {
+  min-height: 860px;
+  display: grid;
+  grid-template-columns: 138px minmax(660px, 1fr) 310px;
+  overflow: hidden;
+  border: 1px solid #dfe4e1;
+  border-radius: 10px 10px 0 0;
+  background: #e8eeea;
+}
+
+.pdf-overlay-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 12px;
+  border-right: 1px solid #d4dcd7;
+  background: #f8faf9;
+}
+
+.pdf-page-thumb {
+  position: relative;
+  padding: 7px;
+  border: 1px solid #d4dcd7;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.pdf-page-thumb.active {
+  border: 2px solid #2d6a4f;
+  box-shadow: 0 0 0 3px rgba(45, 106, 79, .1);
+}
+
+.pdf-page-thumb img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.pdf-page-thumb > span {
+  position: absolute;
+  left: -7px;
+  top: -8px;
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 11px;
+  background: #2d6a4f;
+  color: #fff;
+  font-size: 11px;
+}
+
+.pdf-overlay-stage {
+  min-width: 0;
+  padding: 16px 28px 44px;
+  overflow: auto;
+  background: #dfe6e2;
+}
+
+.pdf-overlay-hint {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  width: fit-content;
+  margin: 0 auto 12px;
+  padding: 7px 13px;
+  border: 1px solid #b6d5c3;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .95);
+  color: #245c43;
+  font-size: 12px;
+  box-shadow: 0 4px 16px rgba(25, 28, 29, .08);
+}
+
+.pdf-overlay-sheet {
+  position: relative;
+  margin: 0 auto;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 12px 38px rgba(25, 28, 29, .2);
+}
+
+.pdf-overlay-sheet > img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+}
+
+.pdf-overlay-input {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 0;
+  border: 1px dashed rgba(45, 106, 79, .7);
+  border-radius: 2px;
+  outline: 0;
+  line-height: 1;
+  font-family: Arial, "DejaVu Sans", sans-serif;
+}
+
+.pdf-overlay-input:hover {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, .14);
+}
+
+.pdf-overlay-input.selected {
+  z-index: 3;
+  border: 2px solid #1677ff;
+  box-shadow: 0 0 0 4px rgba(22, 119, 255, .18);
+}
+
+.pdf-overlay-inspector {
+  align-content: start;
+  max-height: 860px;
+  padding: 12px;
+  overflow-y: auto;
+  border-left: 1px solid #d4dcd7;
+  background: #f7f9f8;
+}
+
+.pdf-field-list,
+.pdf-field-settings {
+  display: grid;
+  gap: 9px;
+}
+
+.pdf-field-list button {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #dce3df;
+  border-radius: 8px;
+  background: #fff;
+  color: #27302b;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pdf-field-list button:hover,
+.pdf-field-list button.active {
+  border-color: #2d6a4f;
+  background: #f2f9f4;
+}
+
+.pdf-field-list button > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pdf-field-list code {
+  color: #2d6a4f;
+  font-size: 10px;
+}
+
+.pdf-field-list small {
+  overflow: hidden;
+  color: #69736d;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-field-settings label {
+  display: grid;
+  gap: 6px;
+  color: #4d5751;
+  font-size: 12px;
+}
+
+@media (max-width: 1280px) {
+  .pdf-overlay-workspace {
+    grid-template-columns: 100px minmax(540px, 1fr) 270px;
+  }
+}
+
+@media (max-width: 1050px) {
+  .pdf-overlay-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .pdf-overlay-pages {
+    display: none;
+  }
+
+  .pdf-overlay-inspector {
+    max-height: none;
+    border-left: 0;
+    border-top: 1px solid #d4dcd7;
+  }
+}
+.pdf-field-list button > span > strong {
+  min-width: 0;
+}
+
+.pdf-field-list button code {
+  max-width: 112px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Focused DOCX editor: text, images and template fields only. */
+.focused-document-editor {
+  gap: 12px;
+}
+
+.focused-editor-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid #dfe5e1;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(25, 28, 29, .04);
+}
+
+.focused-editor-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.focused-editor-file > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.focused-editor-file .ant-typography {
+  max-width: min(520px, 48vw);
+}
+
+.focused-editor-file small {
+  color: #77807b;
+  font-size: 12px;
+}
+
+.focused-docx-workspace {
+  --document-editor-height: clamp(680px, calc(100vh - 260px), 900px);
+  min-height: calc(var(--document-editor-height) + 20px);
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid #d6dfda;
+  border-radius: 10px 10px 0 0;
+  background: #e8eeea;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .7);
+}
+
+.focused-docx-workspace .docx-editor-shell {
+  height: var(--document-editor-height);
+  min-height: var(--document-editor-height);
+  overflow: hidden;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(25, 28, 29, .1);
+}
+
+.focused-docx-workspace .onlyoffice-editor {
+  height: 100% !important;
+  min-height: 100%;
+  transform: none;
+}
+
+.focused-docx-workspace .onlyoffice-editor > iframe {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.docx-variable-picker {
+  display: grid;
+  gap: 10px;
+  width: 360px;
+  max-width: calc(100vw - 48px);
+}
+
+.docx-variable-picker-list {
+  display: grid;
+  gap: 6px;
+  max-height: 330px;
+  padding-right: 3px;
+  overflow-y: auto;
+}
+
+.docx-variable-picker-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #dfe5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #303834;
+  text-align: left;
+  cursor: pointer;
+}
+
+.docx-variable-picker-list button:hover {
+  border-color: #2d6a4f;
+  background: #f2f8f4;
+}
+
+.docx-variable-picker-list button > span {
+  display: grid;
+  gap: 2px;
+}
+
+.docx-variable-picker-list small {
+  color: #77807b;
+}
+
+.docx-variable-picker-list code {
+  flex: 0 0 auto;
+  color: #236348;
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .focused-editor-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .focused-editor-file .ant-typography {
+    max-width: 78vw;
+  }
+}

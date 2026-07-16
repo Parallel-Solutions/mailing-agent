@@ -384,6 +384,9 @@ class TemplateVersion(Base):
     variables: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    rendered_pdf_storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    rendered_pdf_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    editor_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_by: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

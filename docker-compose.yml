@@ -29,6 +29,9 @@ services:
       USER_INPROCESS_MAX_TASKS: ${USER_INPROCESS_MAX_TASKS:-1}
       BACKGROUND_QUEUE_ENABLED: "true"
       KP_ADAPTIVE_TEMPLATE_ENGINE: ${KP_ADAPTIVE_TEMPLATE_ENGINE:-1}
+      ONLYOFFICE_EDITOR_PUBLIC_URL: ${ONLYOFFICE_EDITOR_PUBLIC_URL:-http://localhost:8080}
+      ONLYOFFICE_APP_INTERNAL_URL: ${ONLYOFFICE_APP_INTERNAL_URL:-http://app:9806}
+      ONLYOFFICE_EDITOR_TOKEN_SECRET: ${ONLYOFFICE_EDITOR_TOKEN_SECRET:-campaignflow-local-editor-secret}
     ports:
       - "${APP_PUBLIC_PORT:-9806}:9806"
     volumes:
@@ -87,6 +90,21 @@ services:
       app:
         condition: service_healthy
 
+
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: "false"
+      ALLOW_PRIVATE_IP_ADDRESS: "true"
+    ports:
+      - "${ONLYOFFICE_PUBLIC_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
 
   postgres:
     image: postgres:16

@@ -104,6 +104,30 @@ export type Batch = {
   error?: string | null;
 };
 
+export type PdfEditorField = {
+  id: string;
+  page: number;
+  variable: string;
+  label: string;
+  source_text: string;
+  value: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text_x: number;
+  baseline: number;
+  font_size: number;
+  bold: boolean;
+  text_color: string;
+  background: string;
+};
+
+export type PdfEditorState = {
+  page_count: number;
+  pages: { index: number; width: number; height: number }[];
+  fields: PdfEditorField[];
+};
 export type Template = {
   id: string;
   name: string;
@@ -119,6 +143,13 @@ export type Template = {
     version_number?: number;
     storage_key?: string | null;
     filename?: string | null;
+    rendered_pdf_storage_key?: string | null;
+    rendered_pdf_filename?: string | null;
+    editor_state?: PdfEditorState | null;
+    artifacts?: {
+      source?: { filename?: string | null; storage_key?: string | null } | null;
+      delivery_pdf?: { filename?: string | null; storage_key?: string | null } | null;
+    };
     created_at?: string | null;
   };
 };

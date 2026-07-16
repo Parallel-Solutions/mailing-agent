@@ -1,6 +1,10 @@
 import { api, apiRequest } from './client';
-import type { Template } from './types';
+import type { PdfEditorField, PdfEditorState, Template } from './types';
 
+export type OfficeEditorConfig = {
+  editor_url: string;
+  config: Record<string, unknown>;
+};
 export const templatesApi = {
   list: (params?: { template_type?: string; q?: string }) => {
     const q = new URLSearchParams();
@@ -31,7 +35,32 @@ export const templatesApi = {
     return apiRequest<Template>('/api/v1/templates/upload', { method: 'POST', body: form });
   },
   fileUrl: (id: string) => `/api/v1/templates/${id}/file`,
+  deliveryFileUrl: (id: string) => `/api/v1/templates/${id}/delivery-file`,
   previewFileUrl: (id: string) => `/api/v1/templates/${id}/preview-file`,
+  officeConfig: (id: string) => api.get<OfficeEditorConfig>(`/api/v1/templates/${id}/office-config`),
+  pdfEditor: (id: string) => api.get<PdfEditorState>(`/api/v1/templates/${id}/pdf-editor`),
+  pdfEditorPageUrl: (id: string, page: number) => `/api/v1/templates/${id}/pdf-editor/pages/${page}`,
+  savePdfEditor: (id: string, fields: Pick<PdfEditorField, 'id' | 'value' | 'font_size'>[]) =>
+    api.patch<Template>(`/api/v1/templates/${id}/pdf-editor`, { fields }),
+  previewKpPdf: async (id: string, body_html: string) => {
+    const response = await fetch(`/api/v1/templates/${id}/kp-preview-file`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body_html }),
+    });
+    if (!response.ok) {
+      let detail = 'Не удалось собрать PDF';
+      try {
+        const payload = (await response.json()) as { detail?: string };
+        detail = payload.detail || detail;
+      } catch {
+        // Keep the generic message for non-JSON errors.
+      }
+      throw new Error(detail);
+    }
+    return response.blob();
+  },
   save: (
     id: string,
     body: {
