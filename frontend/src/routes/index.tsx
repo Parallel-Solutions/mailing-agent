@@ -21,6 +21,9 @@ const CampaignDetailPage = lazy(() =>
 const TemplatesPage = lazy(() =>
   import('@/pages/TemplatesPage').then((m) => ({ default: m.TemplatesPage })),
 );
+const TemplateEditorPage = lazy(() =>
+  import('@/pages/TemplateEditorPage').then((m) => ({ default: m.TemplateEditorPage })),
+);
 const AudiencesPage = lazy(() =>
   import('@/pages/AudiencesPage').then((m) => ({ default: m.AudiencesPage })),
 );
@@ -83,6 +86,14 @@ export function AppRoutes() {
             element={
               <Lazy>
                 <TemplatesPage />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/templates/:id/edit"
+            element={
+              <Lazy>
+                <TemplateEditorPage />
               </Lazy>
             }
           />

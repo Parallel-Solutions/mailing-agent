@@ -13,6 +13,8 @@ from pydantic import BaseModel, Field
 from src.campaigns import (
     audience_service,
     connection_service,
+    document_editor_service,
+    pdf_overlay_service,
     profile_service,
     service,
     template_service,
@@ -131,6 +133,19 @@ class TemplateSaveBody(BaseModel):
     body_text: str | None = None
     variables: list[dict[str, Any]] | None = None
 
+
+class KpPreviewBody(BaseModel):
+    body_html: str
+
+
+class PdfOverlayFieldBody(BaseModel):
+    id: str
+    value: str = ""
+    font_size: float | None = None
+
+
+class PdfOverlaySaveBody(BaseModel):
+    fields: list[PdfOverlayFieldBody] = Field(default_factory=list)
 
 class AudienceCreateBody(BaseModel):
     name: str
@@ -594,7 +609,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         )
 
     @router.post("/templates/upload")
-    async def post_template_upload(
+    def post_template_upload(
         file: UploadFile = File(...),
         template_type: str = Form(...),
         name: str = Form(default=""),
@@ -612,7 +627,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             max_bytes=settings.upload_template_max_bytes,
             human_name="шаблона документа",
         )
-        data = await file.read()
+        data = file.file.read()
         try:
             item = template_service.upload_file_version(
                 actor.username,
@@ -637,6 +652,17 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise HTTPException(status_code=404, detail="Файл шаблона не найден")
         return _binary_response(item, disposition="attachment")
 
+    @router.get("/templates/{template_id}/delivery-file")
+    def get_template_delivery_file(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            item = template_service.get_template_delivery_file(template_id, actor.username)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="PDF для отправки не найден")
+        return _binary_response(item, disposition="attachment")
+
     @router.get("/templates/{template_id}/preview-file")
     def get_template_preview_file(template_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
@@ -647,6 +673,88 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         if item is None:
             raise HTTPException(status_code=404, detail="Файл шаблона не найден")
         return _binary_response(item, disposition="inline")
+
+    @router.get("/templates/{template_id}/pdf-editor")
+    def get_pdf_editor(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(pdf_overlay_service.get_editor_state(template_id, actor.username))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.get("/templates/{template_id}/pdf-editor/pages/{page_index}")
+    def get_pdf_editor_page(template_id: str, page_index: int, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            item = pdf_overlay_service.render_source_page(template_id, actor.username, page_index)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _binary_response(item, disposition="inline")
+
+    @router.patch("/templates/{template_id}/pdf-editor")
+    def patch_pdf_editor(template_id: str, body: PdfOverlaySaveBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            item = pdf_overlay_service.save_editor_state(
+                template_id,
+                actor.username,
+                [field.model_dump(exclude_none=True) for field in body.fields],
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _ok(item)
+    @router.post("/templates/{template_id}/kp-preview-file")
+    def post_kp_preview_file(
+        template_id: str,
+        body: KpPreviewBody,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            item = template_service.build_kp_pdf_preview(
+                template_id,
+                actor.username,
+                body_html=body.body_html,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _binary_response(item, disposition="inline")
+
+    @router.get("/templates/{template_id}/office-config")
+    def get_office_config(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(document_editor_service.editor_config(template_id, actor.username))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.get("/templates/{template_id}/office-source")
+    def get_office_source(template_id: str, token: str = Query(...)):
+        try:
+            item = document_editor_service.source_file(template_id, token)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _binary_response(item, disposition="inline")
+
+    @router.post("/templates/{template_id}/office-callback")
+    def post_office_callback(template_id: str, payload: dict[str, Any], token: str = Query(...)):
+        try:
+            return document_editor_service.handle_callback(template_id, token, payload)
+        except PermissionError:
+            return {"error": 1}
+
     @router.get("/templates/{template_id}")
     def get_template(template_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
@@ -658,15 +766,29 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.patch("/templates/{template_id}")
     def patch_template(template_id: str, body: TemplateSaveBody, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = template_service.save_version(
-            template_id,
-            actor.username,
-            subject=body.subject,
-            body_html=body.body_html,
-            body_text=body.body_text,
-            variables=body.variables,
-            name=body.name,
-        )
+        current = template_service.get_template(template_id, actor.username)
+        if current and current.get("template_type") == "kp" and body.body_html is not None:
+            try:
+                item = template_service.save_kp_html_version(
+                    template_id,
+                    actor.username,
+                    body_html=body.body_html,
+                    name=body.name,
+                )
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except (ValueError, RuntimeError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            item = template_service.save_version(
+                template_id,
+                actor.username,
+                subject=body.subject,
+                body_html=body.body_html,
+                body_text=body.body_text,
+                variables=body.variables,
+                name=body.name,
+            )
         if not item:
             raise HTTPException(status_code=404, detail="Шаблон не найден")
         return _ok(item)

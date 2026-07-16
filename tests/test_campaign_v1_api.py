@@ -8,6 +8,7 @@ from cryptography.fernet import Fernet
 from docx import Document
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 from unittest.mock import patch
 
 from src.security.auth import Principal
@@ -254,54 +255,82 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(duplicate.status_code, 400)
 
     def test_upload_file_template_and_download_active_version(self) -> None:
-        document = Document()
-        document.add_paragraph("Offer for {{company}} and {{contact_name}}")
-        payload = BytesIO()
-        document.save(payload)
-
-        created = self.client.post(
-            "/api/v1/templates/upload",
-            data={"template_type": "kp", "name": "Own KP"},
-            files={
-                "file": (
-                    "offer.docx",
-                    payload.getvalue(),
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-            },
-        )
+        source_docx = Document()
+        source_docx.add_paragraph("Offer for {{company}} and {{contact_name}}")
+        source_payload = BytesIO()
+        source_docx.save(source_payload)
+        delivery_pdf = b"%PDF-1.4 delivery copy"
+        with patch(
+            "src.campaigns.template_service._build_kp_pdf_artifact",
+            return_value=(delivery_pdf, "offer.pdf"),
+        ):
+            created = self.client.post(
+                "/api/v1/templates/upload",
+                data={"template_type": "kp", "name": "Own KP"},
+                files={
+                    "file": (
+                        "offer.docx",
+                        source_payload.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                },
+            )
         self.assertEqual(created.status_code, 200, created.text)
         template = created.json()["result"]
         self.assertEqual(template["template_type"], "kp")
         self.assertEqual(template["version"]["filename"], "offer.docx")
+        self.assertEqual(template["version"]["rendered_pdf_filename"], "offer.pdf")
         self.assertEqual(
             {item["name"] for item in template["version"]["variables"]},
             {"company", "contact_name"},
         )
 
-        replacement_document = Document()
-        replacement_document.add_paragraph("Updated offer for {{email}}")
+        source_download = self.client.get(f"/api/v1/templates/{template['id']}/file")
+        self.assertEqual(source_download.status_code, 200, source_download.text)
+        self.assertEqual(source_download.content, source_payload.getvalue())
+        delivery_download = self.client.get(f"/api/v1/templates/{template['id']}/delivery-file")
+        self.assertEqual(delivery_download.status_code, 200, delivery_download.text)
+        self.assertEqual(delivery_download.content, delivery_pdf)
+
+        replacement_pdf = PdfWriter()
+        replacement_pdf.add_blank_page(width=595, height=842)
         replacement = BytesIO()
-        replacement_document.save(replacement)
+        replacement_pdf.write(replacement)
         updated = self.client.post(
             "/api/v1/templates/upload",
             data={"template_type": "kp", "template_id": template["id"]},
-            files={
-                "file": (
-                    "offer-v2.docx",
-                    replacement.getvalue(),
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-            },
+            files={"file": ("offer-v2.pdf", replacement.getvalue(), "application/pdf")},
         )
         self.assertEqual(updated.status_code, 200, updated.text)
         active = updated.json()["result"]
         self.assertEqual(active["version"]["version_number"], 2)
-        self.assertEqual(active["version"]["filename"], "offer-v2.docx")
+        self.assertEqual(active["version"]["filename"], "offer-v2.pdf")
+        self.assertEqual(active["version"]["rendered_pdf_filename"], "offer-v2.pdf")
         downloaded = self.client.get(f"/api/v1/templates/{template['id']}/file")
         self.assertEqual(downloaded.status_code, 200, downloaded.text)
         self.assertEqual(downloaded.content, replacement.getvalue())
-        self.assertIn("offer-v2.docx", downloaded.headers["content-disposition"])
+        preview = self.client.get(f"/api/v1/templates/{template['id']}/preview-file")
+        self.assertEqual(preview.content, replacement.getvalue())
+
+        document = Document()
+        document.add_paragraph("Contract for {{company}} and {{contact_name}}")
+        document_payload = BytesIO()
+        document.save(document_payload)
+        contract = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "contract", "name": "Own document"},
+            files={
+                "file": (
+                    "contract.docx",
+                    document_payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(contract.status_code, 200, contract.text)
+        contract_template = contract.json()["result"]
+        self.assertEqual(contract_template["version"]["filename"], "contract.docx")
+        self.assertIsNone(contract_template["version"]["rendered_pdf_filename"])
 
 if __name__ == "__main__":
     unittest.main()

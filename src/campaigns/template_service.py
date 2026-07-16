@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
+from html import escape
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,10 +22,9 @@ from src.infra.object_store import get_bytes, put_bytes
 
 VARIABLE_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 FILE_TEMPLATE_EXTENSIONS = {
-    "kp": {".docx", ".pdf", ".html", ".htm"},
+    "kp": {".docx", ".pdf"},
     "contract": {".docx"},
 }
-
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -114,6 +114,16 @@ def version_to_dict(row: TemplateVersion) -> dict[str, Any]:
         "variables": list(row.variables or []),
         "storage_key": row.storage_key,
         "filename": row.filename,
+        "rendered_pdf_storage_key": row.rendered_pdf_storage_key,
+        "rendered_pdf_filename": row.rendered_pdf_filename,
+        "editor_state": row.editor_state,
+        "artifacts": {
+            "source": {"filename": row.filename, "storage_key": row.storage_key} if row.filename else None,
+            "delivery_pdf": {
+                "filename": row.rendered_pdf_filename,
+                "storage_key": row.rendered_pdf_storage_key,
+            } if row.rendered_pdf_filename else None,
+        },
         "created_by": row.created_by,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
@@ -159,6 +169,24 @@ def create_template(
         return template_to_dict(tmpl, session.get(TemplateVersion, version_id))
 
 
+def _build_kp_pdf_artifact(filename: str, data: bytes) -> tuple[bytes, str]:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf":
+        return data, f"{Path(filename).stem}.pdf"
+    if suffix != ".docx":
+        raise ValueError("Исходником КП должен быть DOCX или PDF")
+    with TemporaryDirectory(prefix="kp-template-pdf-") as temp_dir:
+        root = Path(temp_dir)
+        source_path = root / Path(filename).name
+        source_path.write_bytes(data)
+        from src.generator.generation.template_preview import _convert_preview_docx_to_pdf
+
+        converted = _convert_preview_docx_to_pdf(source_path, root / "converted")
+        if converted is None or not converted.exists():
+            raise RuntimeError("Не удалось создать PDF-копию исходного DOCX")
+        return converted.read_bytes(), f"{Path(filename).stem}.pdf"
+
+
 def upload_file_version(
     owner_username: str,
     *,
@@ -174,16 +202,36 @@ def upload_file_version(
     if not data:
         raise ValueError("Файл шаблона пуст")
 
-    version_id = _new_id()
-    resolved_template_id = template_id or _new_id()
-    storage_key = f"template-library/{resolved_template_id}/{version_id}/{safe_filename}"
     try:
         variables = _extract_variables(_file_text(safe_filename, data))
+        rendered_pdf_data: bytes | None = None
+        rendered_pdf_filename: str | None = None
+        if normalized_type == "kp":
+            rendered_pdf_data, rendered_pdf_filename = _build_kp_pdf_artifact(safe_filename, data)
+    except (ValueError, RuntimeError):
+        raise
     except Exception as exc:
         raise ValueError("Не удалось прочитать содержимое шаблона") from exc
-    put_bytes(storage_key, data, content_type=content_type)
 
+    version_id = _new_id()
+    resolved_template_id = template_id or _new_id()
+    storage_key = f"template-library/{resolved_template_id}/{version_id}/source/{safe_filename}"
+    rendered_pdf_storage_key = None
+    if rendered_pdf_data is not None and rendered_pdf_filename:
+        rendered_pdf_storage_key = (
+            storage_key
+            if Path(safe_filename).suffix.lower() == ".pdf"
+            else f"template-library/{resolved_template_id}/{version_id}/delivery/{rendered_pdf_filename}"
+        )
+
+    stored_keys: list[str] = []
     try:
+        put_bytes(storage_key, data, content_type=content_type)
+        stored_keys.append(storage_key)
+        if rendered_pdf_storage_key and rendered_pdf_storage_key != storage_key and rendered_pdf_data is not None:
+            put_bytes(rendered_pdf_storage_key, rendered_pdf_data, content_type="application/pdf")
+            stored_keys.append(rendered_pdf_storage_key)
+
         with session_scope() as session:
             if template_id:
                 tmpl = session.get(MailTemplate, template_id)
@@ -218,6 +266,8 @@ def upload_file_version(
                 variables=variables,
                 storage_key=storage_key,
                 filename=safe_filename,
+                rendered_pdf_storage_key=rendered_pdf_storage_key,
+                rendered_pdf_filename=rendered_pdf_filename,
                 created_by=owner_username,
             )
             session.add(version)
@@ -228,7 +278,8 @@ def upload_file_version(
             session.flush()
             return template_to_dict(tmpl, version)
     except BaseException:
-        delete_object(storage_key)
+        for key in reversed(stored_keys):
+            delete_object(key)
         raise
 
 
@@ -251,7 +302,196 @@ def get_template_file(template_id: str, owner_username: str) -> dict[str, Any] |
     }
 
 
+def get_template_delivery_file(template_id: str, owner_username: str) -> dict[str, Any] | None:
+    with session_scope() as session:
+        tmpl = session.get(MailTemplate, template_id)
+        if tmpl is None or tmpl.owner_username != owner_username or not tmpl.active_version_id:
+            return None
+        version = session.get(TemplateVersion, tmpl.active_version_id)
+        if version is None:
+            return None
+        version_id = version.id
+        rendered_key = version.rendered_pdf_storage_key
+        rendered_name = version.rendered_pdf_filename
+        source_key = version.storage_key
+        source_name = version.filename
+        template_type = tmpl.template_type
+    if rendered_key and rendered_name:
+        return {
+            "content": get_bytes(rendered_key),
+            "filename": rendered_name,
+            "media_type": "application/pdf",
+            "template_type": template_type,
+        }
+    if template_type != "kp" or not source_key or not source_name:
+        return None
+
+    source_data = get_bytes(source_key)
+    suffix = Path(source_name).suffix.lower()
+    if suffix == ".pdf":
+        pdf_data = source_data
+        pdf_name = f"{Path(source_name).stem}.pdf"
+        pdf_key = source_key
+    elif suffix == ".docx":
+        pdf_data, pdf_name = _build_kp_pdf_artifact(source_name, source_data)
+        pdf_key = f"template-library/{template_id}/{version_id}/delivery/{pdf_name}"
+        put_bytes(pdf_key, pdf_data, content_type="application/pdf")
+    else:
+        return None
+
+    with session_scope() as session:
+        current = session.get(TemplateVersion, version_id)
+        if current is not None and current.template_id == template_id:
+            current.rendered_pdf_storage_key = pdf_key
+            current.rendered_pdf_filename = pdf_name
+            session.flush()
+    return {
+        "content": pdf_data,
+        "filename": pdf_name,
+        "media_type": "application/pdf",
+        "template_type": template_type,
+    }
+
+
+def get_template_version_file(template_id: str, version_id: str, owner_username: str) -> dict[str, Any]:
+    with session_scope() as session:
+        tmpl = session.get(MailTemplate, template_id)
+        if tmpl is None or tmpl.owner_username != owner_username:
+            raise FileNotFoundError("Шаблон не найден")
+        version = session.get(TemplateVersion, version_id)
+        if version is None or version.template_id != template_id or not version.storage_key or not version.filename:
+            raise FileNotFoundError("Версия документа не найдена")
+        storage_key = version.storage_key
+        filename = version.filename
+    return {
+        "content": get_bytes(storage_key),
+        "filename": filename,
+        "media_type": (
+            "application/pdf"
+            if Path(filename).suffix.lower() == ".pdf"
+            else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+    }
+
+
+def _render_kp_html_pdf_bytes(body_html: str, *, sample_values: bool) -> bytes:
+    html = str(body_html or "").strip()
+    if not html:
+        raise ValueError("В шаблоне КП отсутствует редактируемый макет")
+    if sample_values:
+        from src.generator.templates.certification import certification_context
+
+        names = tuple(sorted(set(VARIABLE_RE.findall(html))))
+        values = certification_context(names, "normal")
+        html = VARIABLE_RE.sub(lambda match: escape(values.get(match.group(1), match.group(0))), html)
+    with TemporaryDirectory(prefix="kp-editor-render-") as temp_dir:
+        output_path = Path(temp_dir) / "preview.pdf"
+        from src.generator.generation.pdf_converter import convert_html_to_pdf
+
+        converted = convert_html_to_pdf(html, output_path, filename="index.html")
+        if converted is None or not converted.exists():
+            raise RuntimeError("Не удалось собрать PDF из макета КП")
+        return converted.read_bytes()
+
+
+def build_kp_pdf_preview(
+    template_id: str,
+    owner_username: str,
+    *,
+    body_html: str | None = None,
+) -> dict[str, Any]:
+    template = get_template(template_id, owner_username)
+    if not template or template.get("template_type") != "kp":
+        raise FileNotFoundError("Шаблон КП не найден")
+    version = template.get("version") or {}
+    html = body_html if body_html is not None else str(version.get("body_html") or "")
+    return {
+        "content": _render_kp_html_pdf_bytes(html, sample_values=True),
+        "filename": f"{template['name']}_preview.pdf",
+        "media_type": "application/pdf",
+    }
+
+
+def save_kp_html_version(
+    template_id: str,
+    owner_username: str,
+    *,
+    body_html: str,
+    name: str | None = None,
+) -> dict[str, Any]:
+    template = get_template(template_id, owner_username)
+    if not template or template.get("template_type") != "kp":
+        raise FileNotFoundError("Шаблон КП не найден")
+    html = str(body_html or "").strip()
+    if not html:
+        raise ValueError("Макет КП не может быть пустым")
+    pdf_data = _render_kp_html_pdf_bytes(html, sample_values=False)
+    version_id = _new_id()
+    filename = f"{Path(name or template['name']).stem}.pdf"
+    storage_key = f"template-library/{template_id}/{version_id}/{filename}"
+    put_bytes(storage_key, pdf_data, content_type="application/pdf")
+    try:
+        with session_scope() as session:
+            tmpl = session.get(MailTemplate, template_id)
+            if tmpl is None or tmpl.owner_username != owner_username or tmpl.template_type != "kp":
+                raise FileNotFoundError("Шаблон КП не найден")
+            current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
+            version = TemplateVersion(
+                id=version_id,
+                template_id=template_id,
+                version_number=(current.version_number + 1) if current else 1,
+                subject="",
+                body_html=html,
+                body_text="",
+                variables=_extract_variables(html),
+                storage_key=storage_key,
+                filename=filename,
+                rendered_pdf_storage_key=storage_key,
+                rendered_pdf_filename=filename,
+                created_by=owner_username,
+            )
+            session.add(version)
+            tmpl.active_version_id = version_id
+            tmpl.status = "ready"
+            tmpl.archived = False
+            if name is not None:
+                tmpl.name = name
+            tmpl.updated_at = _now()
+            session.flush()
+            return template_to_dict(tmpl, version)
+    except BaseException:
+        delete_object(storage_key)
+        raise
+
+
+def save_docx_editor_version(template_id: str, owner_username: str, data: bytes) -> dict[str, Any]:
+    template = get_template(template_id, owner_username)
+    if not template or template.get("template_type") not in {"kp", "contract"}:
+        raise FileNotFoundError("Шаблон документа не найден")
+    version = template.get("version") or {}
+    filename = str(version.get("filename") or f"{template['name']}.docx")
+    if not filename.lower().endswith(".docx"):
+        raise ValueError("Редактируемый исходник должен иметь формат DOCX")
+    Document(BytesIO(data))
+    if version.get("storage_key") and get_bytes(str(version["storage_key"])) == data:
+        return template
+    return upload_file_version(
+        owner_username,
+        name=str(template["name"]),
+        template_type=str(template["template_type"]),
+        filename=filename,
+        data=data,
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        template_id=template_id,
+    )
+
+
 def build_file_preview(template_id: str, owner_username: str) -> dict[str, Any] | None:
+    template = get_template(template_id, owner_username)
+    if template and template.get("template_type") == "kp":
+        delivery = get_template_delivery_file(template_id, owner_username)
+        if delivery is not None:
+            return delivery
     item = get_template_file(template_id, owner_username)
     if item is None:
         return None
@@ -283,6 +523,7 @@ def build_file_preview(template_id: str, owner_username: str) -> dict[str, Any] 
             "filename": f"{Path(filename).stem}.pdf",
             "media_type": "application/pdf",
         }
+
 
 def list_templates(
     owner_username: str,
@@ -348,6 +589,9 @@ def save_version(
                 variables=vars_list,
                 storage_key=current.storage_key if current else None,
                 filename=current.filename if current else None,
+                rendered_pdf_storage_key=current.rendered_pdf_storage_key if current else None,
+                rendered_pdf_filename=current.rendered_pdf_filename if current else None,
+                editor_state=current.editor_state if current else None,
                 created_by=owner_username,
             )
         )
