@@ -1,6 +1,6 @@
-import { UploadOutlined } from '@ant-design/icons';
+import { PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import { ProCard, ProForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProFormTextArea } from '@ant-design/pro-components';
-import { App, Button, Col, Collapse, Form, Row, Space, Steps, Table, Tag, Typography, Upload } from 'antd';
+import { App, Button, Col, Collapse, Divider, Form, Modal, Row, Space, Steps, Table, Tag, Typography, Upload } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -8,6 +8,7 @@ import { campaignsApi } from '@/api/campaigns';
 import { connectionsApi } from '@/api/connections';
 import { templatesApi } from '@/api/templates';
 import { audiencesApi } from '@/api/audiences';
+import { workTypesApi, type WorkTypeOption } from '@/api/workTypes';
 import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 import { validateCampaignBasics } from '@/utils/validators';
 import { computeLocalSchedulePreview } from '@/utils/schedulePreview';
@@ -25,6 +26,8 @@ export function CampaignNewPage() {
   const [senderForm] = Form.useForm();
   const [docsForm] = Form.useForm();
   const [scheduleForm] = Form.useForm();
+  const [workTypeForm] = Form.useForm();
+  const [workTypeModalOpen, setWorkTypeModalOpen] = useState(false);
   const debounceRef = useRef<number | null>(null);
   const hydratedIdRef = useRef<string | null>(null);
 
@@ -63,7 +66,11 @@ export function CampaignNewPage() {
     hydratedIdRef.current = id;
   }, [id, draft.id, draft.name, draft.mail_subject, draft.smtp_mailbox_id, draft, basicsForm, senderForm, docsForm]);
 
-  const mailboxesQuery = useQuery({ queryKey: ['mailboxes'], queryFn: () => connectionsApi.list() });
+  const mailboxesQuery = useQuery({ queryKey: ['connections'], queryFn: () => connectionsApi.list() });
+  const workTypesQuery = useQuery({
+    queryKey: ['work-types'],
+    queryFn: () => workTypesApi.list(),
+  });
   const templatesQuery = useQuery({
     queryKey: ['templates-email'],
     queryFn: () => templatesApi.list({ template_type: 'email' }),
@@ -117,6 +124,29 @@ export function CampaignNewPage() {
     }, 700);
   };
 
+  const createWorkTypeMutation = useMutation({
+    mutationFn: (values: { name: string; mail_subject: string }) => workTypesApi.create(values),
+    onSuccess: (item) => {
+      queryClient.setQueryData<WorkTypeOption[]>(['work-types'], (current = []) => [
+        ...current,
+        item,
+      ]);
+      const values = {
+        ...basicsForm.getFieldsValue(),
+        work_type: item.key,
+        mail_subject: item.mail_subject,
+      };
+      basicsForm.setFieldsValue(values);
+      autosave(values);
+      setWorkTypeModalOpen(false);
+      workTypeForm.resetFields();
+      message.success('Вид работ добавлен и выбран');
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : 'Не удалось добавить вид работ');
+    },
+  });
+
   const schedule = scheduleQuery.data;
 
   useEffect(() => {
@@ -136,6 +166,18 @@ export function CampaignNewPage() {
       }),
     [recipientsQuery.data?.total, schedule],
   );
+
+  const workTypeOptions = useMemo(() => {
+    const items = workTypesQuery.data || [];
+    const options = items.map((item) => ({ label: item.name, value: item.key }));
+    if (draft.work_type && !items.some((item) => item.key === draft.work_type)) {
+      options.unshift({
+        label: `${draft.work_type} (ранее введённое значение)`,
+        value: draft.work_type,
+      });
+    }
+    return options;
+  }, [draft.work_type, workTypesQuery.data]);
 
   const readinessErrors = [
     ...validateCampaignBasics(draft),
@@ -161,8 +203,14 @@ export function CampaignNewPage() {
           />
 
           <Collapse
-            activeKey={[String(step)]}
-            onChange={(keys) => setStep(Number((keys as string[])[0] || 0))}
+            accordion
+            activeKey={String(step)}
+            onChange={(key) => {
+              const nextKey = Array.isArray(key) ? key[0] : key;
+              if (nextKey !== undefined && nextKey !== '') {
+                setStep(Number(nextKey));
+              }
+            }}
             items={[
               {
                 key: '0',
@@ -172,10 +220,50 @@ export function CampaignNewPage() {
                     form={basicsForm}
                     submitter={false}
                     initialValues={draft}
-                    onValuesChange={(_, values) => autosave(values)}
+                    onValuesChange={(changed, values) => {
+                      if (Object.prototype.hasOwnProperty.call(changed, 'work_type')) {
+                        const selected = workTypesQuery.data?.find(
+                          (item) => item.key === values.work_type,
+                        );
+                        if (selected) {
+                          const nextValues = {
+                            ...values,
+                            mail_subject: selected.mail_subject,
+                          };
+                          basicsForm.setFieldValue('mail_subject', selected.mail_subject);
+                          autosave(nextValues);
+                          return;
+                        }
+                      }
+                      autosave(values);
+                    }}
                   >
                     <ProFormText name="name" label="Название" rules={[{ required: true }]} />
-                    <ProFormText name="work_type" label="Вид работ" />
+                    <ProFormSelect
+                      name="work_type"
+                      label="Вид работ"
+                      options={workTypeOptions}
+                      fieldProps={{
+                        showSearch: true,
+                        optionFilterProp: 'label',
+                        loading: workTypesQuery.isLoading,
+                        popupRender: (menu) => (
+                          <>
+                            {menu}
+                            <Divider style={{ margin: '8px 0' }} />
+                            <Button
+                              type="text"
+                              block
+                              icon={<PlusOutlined />}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => setWorkTypeModalOpen(true)}
+                            >
+                              Добавить вид работ
+                            </Button>
+                          </>
+                        ),
+                      }}
+                    />
                     <ProFormSelect
                       name="document_mode"
                       label="Тип документов"
@@ -211,18 +299,28 @@ export function CampaignNewPage() {
                   >
                     <ProFormSelect
                       name="smtp_mailbox_id"
-                      label="Подключённый ящик"
+                      label="Подключение отправителя"
+                      placeholder="Выберите SMTP, RuSender или MailoPost"
                       options={(mailboxesQuery.data || []).map((m) => ({
-                        label: `${m.email}${m.is_default ? ' (по умолчанию)' : ''}`,
+                        label: `${m.transport === 'smtp' ? 'SMTP' : m.transport === 'rusender' ? 'RuSender' : 'MailoPost'} · ${m.email}${m.is_default ? ' (по умолчанию)' : ''}`,
                         value: m.id,
                       }))}
+                      fieldProps={{
+                        onChange: (value: string) => {
+                          const connection = (mailboxesQuery.data || []).find((item) => item.id === value);
+                          if (!connection) return;
+                          senderForm.setFieldValue('transport', connection.transport);
+                          autosave({ smtp_mailbox_id: value, transport: connection.transport });
+                        },
+                      }}
+                      rules={[{ required: true, message: 'Выберите подключение отправителя' }]}
                     />
                     <ProFormSelect
                       name="transport"
-                      label="Транспорт"
+                      label="Способ отправки"
+                      disabled
                       options={[
                         { label: 'SMTP', value: 'smtp' },
-                        { label: 'UniSender', value: 'unisender' },
                         { label: 'RuSender', value: 'rusender' },
                         { label: 'MailoPost', value: 'mailopost' },
                       ]}
@@ -542,7 +640,11 @@ export function CampaignNewPage() {
             <Typography.Text>Получателей: {recipientsQuery.data?.total || 0}</Typography.Text>
             <Typography.Text>Исключено: {validateQuery.data?.excluded_recipients || 0}</Typography.Text>
             <Typography.Text>Пакетов (прогноз): {preview.batchCount}</Typography.Text>
-            <Typography.Text>Отправитель: {draft.smtp_mailbox_id || 'не выбран'}</Typography.Text>
+            <Typography.Text>
+              Отправитель:{' '}
+              {(mailboxesQuery.data || []).find((item) => item.id === draft.smtp_mailbox_id)?.email ||
+                'не выбран'}
+            </Typography.Text>
             <Typography.Text>Тема: {draft.mail_subject || '—'}</Typography.Text>
             {readinessErrors.length === 0 ? (
               <Tag color="green">Готово к запуску</Tag>
@@ -552,6 +654,42 @@ export function CampaignNewPage() {
           </Space>
         </ProCard>
       </Col>
+      <Modal
+        title="Новый вид работ"
+        open={workTypeModalOpen}
+        confirmLoading={createWorkTypeMutation.isPending}
+        okText="Добавить"
+        cancelText="Отмена"
+        destroyOnHidden
+        onCancel={() => {
+          setWorkTypeModalOpen(false);
+          workTypeForm.resetFields();
+        }}
+        onOk={async () => {
+          try {
+            const values = await workTypeForm.validateFields();
+            createWorkTypeMutation.mutate(values);
+          } catch {
+            // Ant Design displays validation errors next to the fields.
+          }
+        }}
+      >
+        <Typography.Paragraph type="secondary">
+          Тема будет автоматически подставляться при выборе этого вида работ.
+        </Typography.Paragraph>
+        <ProForm form={workTypeForm} submitter={false} layout="vertical">
+          <ProFormText
+            name="name"
+            label="Название вида работ"
+            rules={[{ required: true, message: 'Укажите название' }]}
+          />
+          <ProFormText
+            name="mail_subject"
+            label="Тема письма по умолчанию"
+            rules={[{ required: true, message: 'Укажите тему письма' }]}
+          />
+        </ProForm>
+      </Modal>
     </Row>
   );
 }

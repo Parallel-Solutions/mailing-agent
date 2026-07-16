@@ -144,14 +144,21 @@ export type Profile = {
   notifications: Record<string, unknown>;
 };
 
-export type SmtpMailbox = {
+export type DeliveryConnection = {
   id: string;
+  transport: 'smtp' | 'rusender' | 'mailopost';
   email: string;
   sender_name?: string;
   provider?: string;
   host?: string;
-  port?: number;
-  status?: string;
+  port?: number | null;
+  api_base_url?: string;
+  status: string;
   is_default?: boolean;
   last_error?: string | null;
+  use_ssl?: boolean | null;
+  use_starttls?: boolean | null;
+  has_secret?: boolean;
 };
+
+export type SmtpMailbox = DeliveryConnection;

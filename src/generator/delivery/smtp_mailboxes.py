@@ -152,7 +152,10 @@ def list_mailboxes(owner_username: str) -> list[dict[str, Any]]:
     with session_scope() as session:
         rows = session.execute(
             select(SmtpMailbox)
-            .where(SmtpMailbox.owner_username == owner_username)
+            .where(
+                SmtpMailbox.owner_username == owner_username,
+                SmtpMailbox.provider.notin_(["rusender", "mailopost"]),
+            )
             .order_by(SmtpMailbox.is_default.desc(), SmtpMailbox.created_at.asc())
         ).scalars().all()
         return [_public_mailbox(row) for row in rows]

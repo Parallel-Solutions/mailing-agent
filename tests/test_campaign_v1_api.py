@@ -88,6 +88,171 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(paused.json()["result"]["status"], "paused")
 
 
+    def test_create_list_and_test_provider_connections(self) -> None:
+        rusender = self.client.post(
+            "/api/v1/connections",
+            json={
+                "transport": "rusender",
+                "email": "verified@example.com",
+                "sender_name": "Sales",
+                "api_token": "rs_ck_secret",
+            },
+        )
+        self.assertEqual(rusender.status_code, 200, rusender.text)
+        rusender_item = rusender.json()["result"]
+        self.assertEqual(rusender_item["transport"], "rusender")
+        self.assertNotIn("api_token", rusender_item)
+        self.assertNotIn("password_encrypted", rusender_item)
+
+        mailopost = self.client.post(
+            "/api/v1/connections",
+            json={
+                "transport": "mailopost",
+                "email": "mailopost@example.com",
+                "api_token": "mailopost-secret",
+            },
+        )
+        self.assertEqual(mailopost.status_code, 200, mailopost.text)
+        self.assertEqual(mailopost.json()["result"]["transport"], "mailopost")
+
+        listed = self.client.get("/api/v1/connections")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual({item["transport"] for item in listed.json()["result"]}, {"rusender", "mailopost"})
+        self.assertTrue(all("api_token" not in item for item in listed.json()["result"]))
+
+        updated = self.client.patch(
+            f"/api/v1/connections/{rusender_item['id']}",
+            json={
+                "transport": "rusender",
+                "email": "updated@example.com",
+                "sender_name": "Updated Sales",
+                "api_token": "",
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["result"]["email"], "updated@example.com")
+        self.assertEqual(updated.json()["result"]["sender_name"], "Updated Sales")
+
+        with patch(
+            "src.generator.delivery.sender_agent._send_via_rusender",
+            return_value={"message_id": "message-1"},
+        ) as sender:
+            checked = self.client.post(f"/api/v1/connections/{rusender_item['id']}/test")
+        self.assertEqual(checked.status_code, 200, checked.text)
+        self.assertIn("тестовое письмо", checked.json()["result"]["message"])
+        self.assertEqual(sender.call_args.kwargs["credential_api_key"], "rs_ck_secret")
+        self.assertEqual(sender.call_args.kwargs["sender_email"], "updated@example.com")
+
+        deleted = self.client.delete(f"/api/v1/connections/{mailopost.json()['result']['id']}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+
+
+    def test_mailru_connection_is_verified_and_uses_fixed_settings(self) -> None:
+        with patch("src.campaigns.connection_service.verify_smtp_credentials") as verify:
+            created = self.client.post(
+                "/api/v1/connections",
+                json={
+                    "transport": "smtp",
+                    "provider": "mailru",
+                    "email": "Sender@Mail.ru",
+                    "sender_name": "Sales",
+                    "password": "external-app-password",
+                    "host": "untrusted.example",
+                    "port": 25,
+                },
+            )
+
+        self.assertEqual(created.status_code, 200, created.text)
+        item = created.json()["result"]
+        self.assertEqual(item["provider"], "mailru")
+        self.assertEqual(item["email"], "sender@mail.ru")
+        self.assertEqual(item["host"], "smtp.mail.ru")
+        self.assertEqual(item["port"], 465)
+        self.assertTrue(item["use_ssl"])
+        self.assertFalse(item["use_starttls"])
+        credentials = verify.call_args.args[0]
+        self.assertEqual(credentials.smtp_username, "sender@mail.ru")
+        self.assertEqual(credentials.host, "smtp.mail.ru")
+        self.assertEqual(credentials.port, 465)
+
+        with patch("src.campaigns.connection_service.verify_smtp_credentials") as reverify:
+            updated = self.client.patch(
+                f"/api/v1/connections/{item['id']}",
+                json={
+                    "transport": "smtp",
+                    "email": "updated@inbox.ru",
+                    "password": "new-external-app-password",
+                },
+            )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["result"]["email"], "updated@inbox.ru")
+        self.assertEqual(reverify.call_args.args[0].smtp_username, "updated@inbox.ru")
+
+    def test_mailru_connection_accepts_custom_email_domain(self) -> None:
+        with patch("src.campaigns.connection_service.verify_smtp_credentials") as verify:
+            response = self.client.post(
+                "/api/v1/connections",
+                json={
+                    "transport": "smtp",
+                    "provider": "mailru",
+                    "email": "personal.offer@parresh.ru",
+                    "password": "external-app-password",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()["result"]
+        self.assertEqual(item["email"], "personal.offer@parresh.ru")
+        self.assertEqual(item["host"], "smtp.mail.ru")
+        self.assertEqual(verify.call_args.args[0].smtp_username, "personal.offer@parresh.ru")
+
+    def test_mailru_connection_does_not_save_invalid_credentials(self) -> None:
+        import smtplib
+
+        error = smtplib.SMTPAuthenticationError(535, b"Authentication failed")
+        with patch("src.campaigns.connection_service.verify_smtp_credentials", side_effect=error):
+            response = self.client.post(
+                "/api/v1/connections",
+                json={
+                    "transport": "smtp",
+                    "provider": "mailru",
+                    "email": "sender@bk.ru",
+                    "password": "wrong-password",
+                },
+            )
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("пароль для внешнего приложения", response.json()["detail"])
+        self.assertEqual(self.client.get("/api/v1/connections").json()["result"], [])
+
+    def test_work_types_list_create_and_reject_duplicate(self) -> None:
+        listed = self.client.get("/api/v1/work-types")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        system_items = listed.json()["result"]
+        self.assertGreaterEqual(len(system_items), 5)
+        self.assertTrue(all(item["mail_subject"] for item in system_items))
+        self.assertTrue(all(item["is_system"] for item in system_items))
+
+        created = self.client.post(
+            "/api/v1/work-types",
+            json={
+                "name": "Градостроительный аудит",
+                "mail_subject": "Предложение по градостроительному аудиту",
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        item = created.json()["result"]
+        self.assertFalse(item["is_system"])
+        self.assertTrue(item["key"].startswith("custom_"))
+
+        repeated = self.client.get("/api/v1/work-types")
+        self.assertIn(item, repeated.json()["result"])
+        duplicate = self.client.post(
+            "/api/v1/work-types",
+            json={"name": "градостроительный аудит", "mail_subject": "Другая тема"},
+        )
+        self.assertEqual(duplicate.status_code, 400)
+
     def test_upload_file_template_and_download_active_version(self) -> None:
         document = Document()
         document.add_paragraph("Offer for {{company}} and {{contact_name}}")

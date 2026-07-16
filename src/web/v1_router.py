@@ -10,7 +10,14 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 
-from src.campaigns import audience_service, profile_service, service, template_service
+from src.campaigns import (
+    audience_service,
+    connection_service,
+    profile_service,
+    service,
+    template_service,
+    work_type_service,
+)
 from src.campaigns.schedule_planner import plan_batches
 from src.jobs.access import coerce_principal
 from src.security.auth import Principal
@@ -139,6 +146,41 @@ class TestEmailBody(BaseModel):
     smtp_mailbox_id: str | None = None
 
 
+class WorkTypeCreateBody(BaseModel):
+    name: str
+    mail_subject: str
+
+
+class ConnectionCreateBody(BaseModel):
+    transport: str
+    email: str
+    sender_name: str = ""
+    api_token: str = ""
+    api_base_url: str = ""
+    provider: str = "custom"
+    password: str = ""
+    smtp_username: str = ""
+    host: str = ""
+    port: int | None = None
+    use_ssl: bool | None = None
+    use_starttls: bool | None = None
+    make_default: bool = False
+
+
+class ConnectionUpdateBody(BaseModel):
+    transport: str | None = None
+    email: str | None = None
+    sender_name: str | None = None
+    api_token: str | None = None
+    api_base_url: str | None = None
+    password: str | None = None
+    smtp_username: str | None = None
+    host: str | None = None
+    port: int | None = None
+    use_ssl: bool | None = None
+    use_starttls: bool | None = None
+
+
 def _ok(result: Any) -> dict[str, Any]:
     return {"status": "ok", "result": result}
 
@@ -163,6 +205,57 @@ def _binary_response(item: dict[str, Any], *, disposition: str) -> Response:
 def create_v1_router(*, check_auth: Any) -> APIRouter:
     router = APIRouter(prefix="/api/v1", tags=["v1"])
 
+    # --- Delivery connections ---
+    @router.get("/connections")
+    def get_connections(principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        return _ok(connection_service.list_connections(actor.username))
+
+    @router.post("/connections")
+    def post_connection(body: ConnectionCreateBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(connection_service.create_connection(actor.username, body.model_dump()))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Не удалось сохранить подключение: {exc}") from exc
+
+    @router.patch("/connections/{connection_id}")
+    def patch_connection(
+        connection_id: str,
+        body: ConnectionUpdateBody,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(connection_service.update_connection(
+                connection_id, actor.username, body.model_dump(exclude_none=True)
+            ))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.delete("/connections/{connection_id}")
+    def delete_connection(connection_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            connection_service.delete_connection(connection_id, actor.username)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _ok({"deleted": True})
+
+    @router.post("/connections/{connection_id}/test")
+    def test_connection(connection_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(connection_service.test_connection(connection_id, actor.username))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Проверка подключения не пройдена: {exc}") from exc
+
     # --- Profile ---
     @router.get("/profile")
     def get_profile(principal: object = Depends(check_auth)):
@@ -173,6 +266,26 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def patch_profile(body: ProfileUpdateBody, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         return _ok(profile_service.update_profile(actor.username, body.model_dump(exclude_none=True)))
+
+    # --- Work types ---
+    @router.get("/work-types")
+    def get_work_types(principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        return _ok(work_type_service.list_work_types(actor.username))
+
+    @router.post("/work-types")
+    def post_work_type(body: WorkTypeCreateBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                work_type_service.create_work_type(
+                    actor.username,
+                    name=body.name,
+                    mail_subject=body.mail_subject,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # --- Campaigns ---
     @router.get("/campaigns/active-sending")
@@ -433,21 +546,23 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         camp = service.get_campaign(campaign_id, actor.username, is_admin=actor.is_admin)
         if not camp:
             raise HTTPException(status_code=404, detail="Рассылка не найдена")
-        mailbox_id = body.smtp_mailbox_id or camp.get("smtp_mailbox_id")
-        if not mailbox_id:
-            raise HTTPException(status_code=400, detail="Не выбран SMTP mailbox")
-        from src.campaigns.batch_worker import _send_smtp_message
+        connection_id = body.smtp_mailbox_id or camp.get("smtp_mailbox_id")
+        if not connection_id:
+            raise HTTPException(status_code=400, detail="Не выбрано подключение отправителя")
+        from src.campaigns.batch_worker import _send_delivery_message
 
         subject = camp.get("mail_subject") or camp.get("name") or "Тестовое письмо"
         html = str((camp.get("draft_payload") or {}).get("email_body") or f"<p>Тест: {camp.get('name')}</p>")
         try:
-            message_id = _send_smtp_message(
-                mailbox_id=mailbox_id,
+            message_id = _send_delivery_message(
+                connection_id=connection_id,
                 owner_username=actor.username,
                 to_email=body.to_email,
                 subject=f"[TEST] {subject}",
                 html=html,
                 text=html,
+                job_id=camp.get("job_id"),
+                row_id="campaign-test",
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Не удалось отправить: {exc}") from exc
