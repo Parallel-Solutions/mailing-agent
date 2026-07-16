@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import mimetypes
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from src.campaigns import audience_service, profile_service, service, template_service
 from src.campaigns.schedule_planner import plan_batches
 from src.jobs.access import coerce_principal
 from src.security.auth import Principal
+from src.utils.config import settings
+from src.web.upload_validation import validate_uploaded_file
 
 
 class CampaignCreateBody(BaseModel):
@@ -140,6 +145,19 @@ def _ok(result: Any) -> dict[str, Any]:
 
 def _actor(principal: object) -> Principal:
     return coerce_principal(principal)
+
+
+def _binary_response(item: dict[str, Any], *, disposition: str) -> Response:
+    filename = str(item["filename"])
+    media_type = str(item.get("media_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream")
+    return Response(
+        content=item["content"],
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 def create_v1_router(*, check_auth: Any) -> APIRouter:
@@ -460,6 +478,60 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         )
 
+    @router.post("/templates/upload")
+    async def post_template_upload(
+        file: UploadFile = File(...),
+        template_type: str = Form(...),
+        name: str = Form(default=""),
+        template_id: str | None = Form(default=None),
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        normalized_type = template_type.strip().lower()
+        allowed = template_service.FILE_TEMPLATE_EXTENSIONS.get(normalized_type)
+        if not allowed:
+            raise HTTPException(status_code=400, detail="Файл можно загрузить только для КП или договора")
+        original_name = validate_uploaded_file(
+            file,
+            allowed_extensions=tuple(sorted(allowed)),
+            max_bytes=settings.upload_template_max_bytes,
+            human_name="шаблона документа",
+        )
+        data = await file.read()
+        try:
+            item = template_service.upload_file_version(
+                actor.username,
+                name=name.strip() or Path(original_name).stem,
+                template_type=normalized_type,
+                filename=original_name,
+                data=data,
+                content_type=file.content_type,
+                template_id=template_id,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _ok(item)
+
+    @router.get("/templates/{template_id}/file")
+    def get_template_file(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        item = template_service.get_template_file(template_id, actor.username)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Файл шаблона не найден")
+        return _binary_response(item, disposition="attachment")
+
+    @router.get("/templates/{template_id}/preview-file")
+    def get_template_preview_file(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            item = template_service.build_file_preview(template_id, actor.username)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="Файл шаблона не найден")
+        return _binary_response(item, disposition="inline")
     @router.get("/templates/{template_id}")
     def get_template(template_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)

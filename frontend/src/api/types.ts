@@ -116,6 +116,10 @@ export type Template = {
     body_html: string;
     body_text: string;
     variables: { name: string; source: string; label: string }[];
+    version_number?: number;
+    storage_key?: string | null;
+    filename?: string | null;
+    created_at?: string | null;
   };
 };
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from io import BytesIO
 
 from cryptography.fernet import Fernet
+from docx import Document
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from unittest.mock import patch
@@ -85,6 +87,56 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(paused.status_code, 200)
         self.assertEqual(paused.json()["result"]["status"], "paused")
 
+
+    def test_upload_file_template_and_download_active_version(self) -> None:
+        document = Document()
+        document.add_paragraph("Offer for {{company}} and {{contact_name}}")
+        payload = BytesIO()
+        document.save(payload)
+
+        created = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "kp", "name": "Own KP"},
+            files={
+                "file": (
+                    "offer.docx",
+                    payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        template = created.json()["result"]
+        self.assertEqual(template["template_type"], "kp")
+        self.assertEqual(template["version"]["filename"], "offer.docx")
+        self.assertEqual(
+            {item["name"] for item in template["version"]["variables"]},
+            {"company", "contact_name"},
+        )
+
+        replacement_document = Document()
+        replacement_document.add_paragraph("Updated offer for {{email}}")
+        replacement = BytesIO()
+        replacement_document.save(replacement)
+        updated = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "kp", "template_id": template["id"]},
+            files={
+                "file": (
+                    "offer-v2.docx",
+                    replacement.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        active = updated.json()["result"]
+        self.assertEqual(active["version"]["version_number"], 2)
+        self.assertEqual(active["version"]["filename"], "offer-v2.docx")
+        downloaded = self.client.get(f"/api/v1/templates/{template['id']}/file")
+        self.assertEqual(downloaded.status_code, 200, downloaded.text)
+        self.assertEqual(downloaded.content, replacement.getvalue())
+        self.assertIn("offer-v2.docx", downloaded.headers["content-disposition"])
 
 if __name__ == "__main__":
     unittest.main()

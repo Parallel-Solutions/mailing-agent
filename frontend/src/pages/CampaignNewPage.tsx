@@ -1,3 +1,4 @@
+import { UploadOutlined } from '@ant-design/icons';
 import { ProCard, ProForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProFormTextArea } from '@ant-design/pro-components';
 import { App, Button, Col, Collapse, Form, Row, Space, Steps, Table, Tag, Typography, Upload } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -66,6 +67,14 @@ export function CampaignNewPage() {
   const templatesQuery = useQuery({
     queryKey: ['templates-email'],
     queryFn: () => templatesApi.list({ template_type: 'email' }),
+  });
+  const kpTemplatesQuery = useQuery({
+    queryKey: ['templates', 'kp'],
+    queryFn: () => templatesApi.list({ template_type: 'kp' }),
+  });
+  const contractTemplatesQuery = useQuery({
+    queryKey: ['templates', 'contract'],
+    queryFn: () => templatesApi.list({ template_type: 'contract' }),
   });
   const audiencesQuery = useQuery({ queryKey: ['audiences'], queryFn: () => audiencesApi.list() });
   const recipientsQuery = useQuery({
@@ -235,15 +244,124 @@ export function CampaignNewPage() {
                     <ProFormSelect
                       name="email_template_id"
                       label="Шаблон письма"
-                      options={(templatesQuery.data || []).map((t) => ({ label: t.name, value: t.id }))}
+                      options={(templatesQuery.data || []).map((template) => ({ label: template.name, value: template.id }))}
                     />
                     <ProFormTextArea
                       name="email_body"
                       label="Текст письма (можно сохранить в черновик)"
                       fieldProps={{
-                        onChange: (e) => autosave({ draft_payload: { email_body: e.target.value } }),
+                        onChange: (event) => autosave({ draft_payload: { email_body: event.target.value } }),
                       }}
                     />
+
+                    {draft.document_mode !== 'contract' && (
+                      <ProCard title="Коммерческое предложение" bordered size="small">
+                        <ProFormSelect
+                          name="kp_template_id"
+                          label="Шаблон КП"
+                          options={(kpTemplatesQuery.data || []).filter((template) => template.version?.filename).map((template) => ({
+                            label: template.version?.filename
+                              ? `${template.name} — ${template.version.filename}`
+                              : template.name,
+                            value: template.id,
+                          }))}
+                        />
+                        <Space wrap>
+                          <Upload
+                            accept=".docx,.pdf,.html,.htm"
+                            maxCount={1}
+                            showUploadList={false}
+                            customRequest={async ({ file, onSuccess, onError }) => {
+                              try {
+                                const uploaded = await templatesApi.uploadFile(file as File, 'kp');
+                                docsForm.setFieldValue('kp_template_id', uploaded.id);
+                                await persist({ kp_template_id: uploaded.id });
+                                void queryClient.invalidateQueries({ queryKey: ['templates', 'kp'] });
+                                message.success('Шаблон КП загружен и выбран');
+                                onSuccess?.(uploaded);
+                              } catch (error) {
+                                message.error(error instanceof Error ? error.message : 'Не удалось загрузить шаблон КП');
+                                onError?.(error as Error);
+                              }
+                            }}
+                          >
+                            <Button icon={<UploadOutlined />}>Загрузить свой шаблон КП</Button>
+                          </Upload>
+                          {draft.kp_template_id && (
+                            <Button
+                              onClick={() =>
+                                window.open(
+                                  templatesApi.previewFileUrl(String(draft.kp_template_id)),
+                                  '_blank',
+                                  'noopener,noreferrer',
+                                )
+                              }
+                            >
+                              Предпросмотр
+                            </Button>
+                          )}
+                        </Space>
+                        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+                          Поддерживаются DOCX, PDF и HTML. Загруженный файл сохранится в библиотеке.
+                        </Typography.Paragraph>
+                      </ProCard>
+                    )}
+
+                    {draft.document_mode !== 'kp' && (
+                      <ProCard title="Договор" bordered size="small">
+                        <ProFormSelect
+                          name="contract_template_id"
+                          label="Шаблон договора"
+                          options={(contractTemplatesQuery.data || []).filter((template) => template.version?.filename).map((template) => ({
+                            label: template.version?.filename
+                              ? `${template.name} — ${template.version.filename}`
+                              : template.name,
+                            value: template.id,
+                          }))}
+                        />
+                        <Space wrap>
+                          <Upload
+                            accept=".docx"
+                            maxCount={1}
+                            showUploadList={false}
+                            customRequest={async ({ file, onSuccess, onError }) => {
+                              try {
+                                const uploaded = await templatesApi.uploadFile(file as File, 'contract');
+                                docsForm.setFieldValue('contract_template_id', uploaded.id);
+                                await persist({ contract_template_id: uploaded.id });
+                                void queryClient.invalidateQueries({ queryKey: ['templates', 'contract'] });
+                                message.success('Шаблон договора загружен и выбран');
+                                onSuccess?.(uploaded);
+                              } catch (error) {
+                                message.error(
+                                  error instanceof Error ? error.message : 'Не удалось загрузить шаблон договора',
+                                );
+                                onError?.(error as Error);
+                              }
+                            }}
+                          >
+                            <Button icon={<UploadOutlined />}>Загрузить свой шаблон договора</Button>
+                          </Upload>
+                          {draft.contract_template_id && (
+                            <Button
+                              onClick={() =>
+                                window.open(
+                                  templatesApi.previewFileUrl(String(draft.contract_template_id)),
+                                  '_blank',
+                                  'noopener,noreferrer',
+                                )
+                              }
+                            >
+                              Предпросмотр
+                            </Button>
+                          )}
+                        </Space>
+                        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+                          Для договора поддерживается формат DOCX.
+                        </Typography.Paragraph>
+                      </ProCard>
+                    )}
+
                     <Button onClick={() => navigate('/templates')}>Открыть библиотеку шаблонов</Button>
                   </ProForm>
                 ),

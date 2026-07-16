@@ -1,4 +1,4 @@
-import { api } from './client';
+import { api, apiRequest } from './client';
 import type { Template } from './types';
 
 export const templatesApi = {
@@ -18,6 +18,20 @@ export const templatesApi = {
     body_text?: string;
     tags?: string[];
   }) => api.post<Template>('/api/v1/templates', body),
+  uploadFile: (
+    file: File,
+    template_type: 'kp' | 'contract',
+    options?: { name?: string; template_id?: string },
+  ) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('template_type', template_type);
+    if (options?.name) form.append('name', options.name);
+    if (options?.template_id) form.append('template_id', options.template_id);
+    return apiRequest<Template>('/api/v1/templates/upload', { method: 'POST', body: form });
+  },
+  fileUrl: (id: string) => `/api/v1/templates/${id}/file`,
+  previewFileUrl: (id: string) => `/api/v1/templates/${id}/preview-file`,
   save: (
     id: string,
     body: {
