@@ -573,7 +573,8 @@ def _company_view(company_entry: dict[str, Any] | None, row_id: str, fallback_or
 
 
 def _build_delivery_rows_for_job(job_id: str, *, refresh: bool) -> list[dict[str, Any]]:
-    delivery_rows, _ = _build_delivery_rows(job_id, refresh=refresh)
+    # Match test-stand aggregation (send_run / sender-state filters), not full history.
+    delivery_rows, _ = _build_delivery_rows(job_id, refresh=refresh, for_statistics=False)
     latest_actions = latest_action_by_recipient(job_id)
     company_data = _load_company_data_for_job(job_id)
     rows: list[dict[str, Any]] = []

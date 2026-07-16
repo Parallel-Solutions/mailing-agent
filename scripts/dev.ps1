@@ -9,7 +9,8 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
 function Invoke-DevCompose {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ComposeArgs)
+    # Pass compose args as an explicit array so PowerShell does not bind -d/-T as common params.
+    param([Parameter(Mandatory = $true)][string[]]$ComposeArgs)
     & docker compose -f docker-compose.yml -f docker-compose.dev.yml @ComposeArgs
     if ($LASTEXITCODE -ne 0) {
         throw "docker compose failed with exit code $LASTEXITCODE"
@@ -42,27 +43,27 @@ function Show-Access {
 
 switch ($Command) {
     "start" {
-        Invoke-DevCompose up -d --build
+        Invoke-DevCompose -ComposeArgs @('up', '--detach', '--build')
         Wait-Health
-        Invoke-DevCompose exec -T app .venv/bin/python -c "from src.campaigns.seed import seed_demo_data; print(seed_demo_data(force=False))"
+        Invoke-DevCompose -ComposeArgs @('exec', '-T', 'app', '.venv/bin/python', '-c', 'from src.campaigns.seed import seed_demo_data; print(seed_demo_data(force=False))')
         Show-Access
     }
     "reset" {
-        Invoke-DevCompose down -v --remove-orphans
-        Invoke-DevCompose up -d --build --force-recreate
+        Invoke-DevCompose -ComposeArgs @('down', '-v', '--remove-orphans')
+        Invoke-DevCompose -ComposeArgs @('up', '--detach', '--build', '--force-recreate')
         Wait-Health
-        Invoke-DevCompose exec -T app .venv/bin/python -c "from src.campaigns.seed import seed_demo_data; print(seed_demo_data(force=True))"
+        Invoke-DevCompose -ComposeArgs @('exec', '-T', 'app', '.venv/bin/python', '-c', 'from src.campaigns.seed import seed_demo_data; print(seed_demo_data(force=True))')
         Show-Access
     }
     "stop" {
-        Invoke-DevCompose down
+        Invoke-DevCompose -ComposeArgs @('down')
     }
     "seed" {
-        Invoke-DevCompose exec -T app .venv/bin/python -c "from src.campaigns.seed import seed_demo_data; print(seed_demo_data(force=True))"
+        Invoke-DevCompose -ComposeArgs @('exec', '-T', 'app', '.venv/bin/python', '-c', 'from src.campaigns.seed import seed_demo_data; print(seed_demo_data(force=True))')
         Show-Access
     }
     "status" {
-        Invoke-DevCompose ps
+        Invoke-DevCompose -ComposeArgs @('ps')
         Show-Access
     }
 }

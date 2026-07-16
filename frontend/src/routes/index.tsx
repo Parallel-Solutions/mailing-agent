@@ -6,8 +6,8 @@ import { ProtectedRoute } from '@/routes/ProtectedRoute';
 import { LoginPage } from '@/pages/LoginPage';
 import { RegisterPage } from '@/pages/RegisterPage';
 
-const DashboardPage = lazy(() =>
-  import('@/pages/DashboardPage').then((m) => ({ default: m.DashboardPage })),
+const StatisticsPage = lazy(() =>
+  import('@/features/statistics/StatisticsPage').then((m) => ({ default: m.StatisticsPage })),
 );
 const CampaignsListPage = lazy(() =>
   import('@/pages/CampaignsListPage').then((m) => ({ default: m.CampaignsListPage })),
@@ -52,10 +52,11 @@ export function AppRoutes() {
             path="/"
             element={
               <Lazy>
-                <DashboardPage />
+                <StatisticsPage />
               </Lazy>
             }
           />
+          <Route path="/statistics" element={<Navigate to="/" replace />} />
           <Route
             path="/campaigns"
             element={

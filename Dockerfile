@@ -1,4 +1,5 @@
 FROM node:22-bookworm AS frontend-build
+ENV NODE_OPTIONS=--max-old-space-size=3072
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install

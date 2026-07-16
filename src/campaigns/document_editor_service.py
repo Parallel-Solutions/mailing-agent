@@ -134,7 +134,7 @@ def source_file(template_id: str, token: str) -> dict[str, Any]:
     )
 
 
-async def handle_callback(template_id: str, token: str, payload: dict[str, Any]) -> dict[str, int]:
+def handle_callback(template_id: str, token: str, payload: dict[str, Any]) -> dict[str, int]:
     claims = _decode_token(token, template_id)
     status = int(payload.get("status") or 0)
     if status not in {2, 6}:
@@ -143,8 +143,8 @@ async def handle_callback(template_id: str, token: str, payload: dict[str, Any])
     if not download_url:
         return {"error": 1}
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10)) as client:
-            response = await client.get(download_url)
+        with httpx.Client(timeout=httpx.Timeout(120, connect=10)) as client:
+            response = client.get(download_url)
             response.raise_for_status()
         template_service.save_docx_editor_version(
             template_id,

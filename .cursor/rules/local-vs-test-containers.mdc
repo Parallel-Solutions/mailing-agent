@@ -1,0 +1,55 @@
+---
+description: Local manual testing uses prod-like compose (mailing); e2e/test stacks only for automated tests; rebuild app after frontend UI changes
+alwaysApply: true
+---
+
+# Local vs test containers
+
+## Local manual testing / UI development
+
+Use the production-like stack only:
+
+```powershell
+.\scripts\dev.ps1 start
+```
+
+Equivalent compose: `docker-compose.yml` + `docker-compose.dev.yml`.
+
+- Database: **`mailing`** on volume **`pgdata`**
+- UI: http://localhost:9806
+- Do **not** use the e2e overlay or `mailing_e2e` for hands-on local testing
+
+## Frontend UI changes require image rebuild
+
+`frontend/` is **not** mounted into the `app` container. The React UI is built in the Dockerfile (`frontend-build` → `/app/frontend/dist`). Edits under `frontend/` (and E2E that only matter after a new UI build) are **invisible** on http://localhost:9806 until `app` is rebuilt.
+
+**Mandatory:** after any change that affects the served UI (`frontend/**`, or Dockerfile frontend stage), before telling the user to check the browser or ending the turn as “done”:
+
+1. Rebuild and recreate `app` (do **not** use `down -v` / `reset`):
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --detach --build app
+```
+
+Equivalent: `.\scripts\dev.ps1 start` (also rebuilds).
+
+2. Wait until http://localhost:9806/health is OK.
+3. Only then confirm the UI is live (user may need a hard refresh).
+
+Python under `./src` is volume-mounted and does **not** need this rebuild. Skipping the rebuild after frontend edits is a bug in the agent workflow.
+
+## Automated tests only
+
+| Mode | Command | DB / volumes |
+|------|---------|----------------|
+| Playwright E2E | `.\scripts\e2e.ps1 …` / `npm run e2e:*` | Compose project **`mailing-agent-e2e`**, DB **`mailing_e2e`**, host ports from `.env.e2e` (default app **19806**, Mailpit **18025**) |
+| Unit/integration | `docker compose -f docker-compose.test.yml run --rm test` | DB **`mailing_test`**, volume **`pgdata-test`** |
+
+Never leave the default project’s `app` on `:9806` with `DATABASE_URL=…/mailing_e2e`. After E2E, run `npm run e2e:down` (or `.\scripts\e2e.ps1 down`). Local UI stays on `dev.ps1` / `mailing`.
+
+## Safety
+
+- Do not run `docker compose down -v` (or `dev.ps1 reset` / `e2e:clean`) on the local project unless the user explicitly asks — that wipes `pgdata`.
+- Do not point local manual testing at `mailing_e2e` or `mailing_test`.
+- Do not use `cp .env.e2e.example .env.docker` for local UI work; that file is for E2E / live-send matrix, not the default local stack.
+- When local `mailing` holds imported test-stand statistics, keep `SEED_DEMO_DATA_ON_STARTUP=0` in `docker-compose.dev.yml` — demo seed re-adds SMTP rows and shifts KPI away from the test stand.

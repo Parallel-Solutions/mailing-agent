@@ -60,10 +60,10 @@ switch ($Command) {
         Run-Step "5. playwright smoke" { npm run e2e:test:smoke }
         Run-Step "6. playwright chromium full" { npm run e2e:test:chromium }
         Run-Step "7. playwright firefox smoke" {
-            docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep "@smoke" --project=firefox-smoke
+            docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep "@smoke" --project=firefox-smoke
         }
         Run-Step "8. playwright webkit smoke" {
-            docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep "@smoke" --project=webkit-smoke
+            docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep "@smoke" --project=webkit-smoke
         }
         Run-Step "9. email mailpit" { npm run e2e:test:email }
         Run-Step "10. visual" { npm run e2e:test:visual }

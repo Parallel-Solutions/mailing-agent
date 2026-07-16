@@ -1,6 +1,6 @@
 import {
+  BarChartOutlined,
   ClusterOutlined,
-  DashboardOutlined,
   MailOutlined,
   PlusCircleOutlined,
   TeamOutlined,
@@ -17,7 +17,7 @@ import { tokens } from '@/theme/tokens';
 const route: ProLayoutProps['route'] = {
   path: '/',
   routes: [
-    { path: '/', name: 'Дашборд', icon: <DashboardOutlined /> },
+    { path: '/', name: 'Статистика отправок', icon: <BarChartOutlined /> },
     { path: '/campaigns/new', name: 'Создать рассылку', icon: <PlusCircleOutlined /> },
     { path: '/campaigns', name: 'Рассылки', icon: <UnorderedListOutlined /> },
     { path: '/templates', name: 'Шаблоны и документы', icon: <MailOutlined /> },

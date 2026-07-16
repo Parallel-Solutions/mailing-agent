@@ -44,7 +44,7 @@ test.describe('SMTP through Mailpit @email', () => {
 
     // UI still healthy after send
     await page.goto('/');
-    await expect(page.getByText('Дашборд').first()).toBeVisible();
+    await expect(page.getByTestId('statistics-page')).toBeVisible();
     guard.assertClean('smtp mailpit');
   });
 });

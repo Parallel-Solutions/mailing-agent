@@ -66,6 +66,9 @@ services:
       - ./src:/app/src
       - ./tests:/app/tests
       - ./migrations:/app/migrations
+      - ./scripts:/app/scripts
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ./main.py:/app/main.py
     command:
       ["/bin/sh", "-c", "uv sync --frozen --extra dev --no-install-project && .venv/bin/python -m tests"]

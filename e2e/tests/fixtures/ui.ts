@@ -47,7 +47,7 @@ export async function openAppAuthed(page: Page): Promise<ConsoleGuard> {
     allowHttp4xxUrls: ['/api/auth/me'],
   });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await page.getByText('Дашборд').first().waitFor({ state: 'visible', timeout: 30_000 });
+  await page.getByTestId('statistics-page').waitFor({ state: 'visible', timeout: 30_000 });
   return guard;
 }
 

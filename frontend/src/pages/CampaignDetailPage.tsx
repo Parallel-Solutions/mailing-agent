@@ -176,7 +176,16 @@ export function CampaignDetailPage() {
               <ProCard bordered>
                 <p>Отправлено: {camp?.sent_count}</p>
                 <p>Ошибки: {camp?.error_count}</p>
-                <Link to="/">Открыть менеджерскую статистику</Link>
+                <Link
+                  to={{
+                    pathname: '/',
+                    search: camp?.job_id
+                      ? `?tab=campaign-analytics&campaign=${encodeURIComponent(String(camp.job_id))}`
+                      : '',
+                  }}
+                >
+                  Открыть статистику отправок
+                </Link>
               </ProCard>
             ),
           },

@@ -17,13 +17,13 @@ test.describe('Authentication', () => {
     await expect(page.getByText('CampaignFlow')).toBeVisible();
 
     await loginViaUi(page, USERNAME, PASSWORD);
-    await expect(page.getByText('Дашборд').first()).toBeVisible();
+    await expect(page.getByTestId('statistics-page')).toBeVisible();
 
     const cookies = await context.cookies();
     expect(cookies.some((c) => c.name === 'mailing_agent_session')).toBeTruthy();
 
     await page.reload();
-    await expect(page.getByText('Дашборд').first()).toBeVisible();
+    await expect(page.getByTestId('statistics-page')).toBeVisible();
 
     // Avatar title lives in the sider (ProLayout side mode), not always in the top header.
     await page.getByText(USERNAME, { exact: true }).first().click();
@@ -34,7 +34,7 @@ test.describe('Authentication', () => {
     expect([401, 403]).toContain(afterLogout.status());
 
     await loginViaUi(page, USERNAME, PASSWORD);
-    await expect(page.getByText('Дашборд').first()).toBeVisible();
+    await expect(page.getByTestId('statistics-page')).toBeVisible();
 
     guard.assertClean('auth flow');
   });

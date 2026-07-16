@@ -609,7 +609,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         )
 
     @router.post("/templates/upload")
-    async def post_template_upload(
+    def post_template_upload(
         file: UploadFile = File(...),
         template_type: str = Form(...),
         name: str = Form(default=""),
@@ -627,7 +627,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             max_bytes=settings.upload_template_max_bytes,
             human_name="шаблона документа",
         )
-        data = await file.read()
+        data = file.file.read()
         try:
             item = template_service.upload_file_version(
                 actor.username,
@@ -749,9 +749,9 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         return _binary_response(item, disposition="inline")
 
     @router.post("/templates/{template_id}/office-callback")
-    async def post_office_callback(template_id: str, payload: dict[str, Any], token: str = Query(...)):
+    def post_office_callback(template_id: str, payload: dict[str, Any], token: str = Query(...)):
         try:
-            return await document_editor_service.handle_callback(template_id, token, payload)
+            return document_editor_service.handle_callback(template_id, token, payload)
         except PermissionError:
             return {"error": 1}
 

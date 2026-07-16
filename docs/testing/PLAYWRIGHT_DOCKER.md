@@ -1,19 +1,29 @@
 # Playwright in Docker — mailing-agent
 
+## Scope vs local manual testing
+
+| Mode | How to start | Compose project | DB | Host UI |
+|------|--------------|-----------------|----|---------|
+| Local manual / UI | `.\scripts\dev.ps1 start` | `mailing-agent` (directory default) | `mailing` | http://localhost:9806 |
+| Playwright E2E | `.\scripts\e2e.ps1 …` / `npm run e2e:*` | **`mailing-agent-e2e`** | `mailing_e2e` | http://localhost:19806 (see `.env.e2e`) |
+| Unit/integration | `docker compose -f docker-compose.test.yml run --rm test` | test stack | `mailing_test` | n/a |
+
+E2E must **not** rewrite the local `app` on `:9806`. Scripts pass `-p mailing-agent-e2e` and use non-conflicting host ports (`APP_PUBLIC_PORT=19806`, `MAILPIT_UI_PORT=18025`).
+
 ## Architecture
 
 ```mermaid
 flowchart LR
   playwright[playwright container]
-  app[app :9806]
+  app[app :9806 internal]
   worker[worker]
   postgres[(postgres mailing_e2e)]
-  mailpit[mailpit SMTP 1025 / UI 8025]
+  mailpit[mailpit SMTP 1025 / host UI 18025]
   minio[minio]
   redis[redis]
   gotenberg[gotenberg]
 
-  playwright -->|HTTP http://app:9806| app
+  playwright -->|HTTP http://web:9806| app
   playwright -->|HTTP http://mailpit:8025| mailpit
   app --> postgres
   app --> mailpit
@@ -93,16 +103,19 @@ npm equivalents: `npm run e2e:test`, `e2e:test:chromium`, `e2e:test:smoke`, …
 
 ## Mailpit
 
-- UI (host): http://localhost:8025
+- UI (host, e2e project): http://localhost:18025 (from `MAILPIT_UI_PORT` in `.env.e2e`)
 - API (Docker): http://mailpit:8025
 - SMTP (Docker): mailpit:1025
+- Local manual stack still uses http://localhost:8025 via `dev.ps1`
 
 ## Test DB rules
 
-- E2E overlay sets `DATABASE_URL` → database **`mailing_e2e`** on the same Postgres service.
+- Compose project **`mailing-agent-e2e`** isolates volumes from local `dev.ps1` (`mailing` / `pgdata`).
+- E2E overlay sets `DATABASE_URL` → database **`mailing_e2e`**.
 - Production database `mailing` is not used by the Playwright overlay.
 - App startup runs Alembic migrations into `mailing_e2e`.
 - Do not point E2E at a production database URL.
+- After E2E, `.\scripts\e2e.ps1 down` (or `npm run e2e:down`). Local UI stays on `.\scripts\dev.ps1 start`.
 
 ## Secrets
 

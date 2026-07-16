@@ -1175,15 +1175,6 @@ def legacy_index(session_token: str | None = Cookie(default=None, alias=SESSION_
     )
 
 
-@app.get("/statistics")
-def statistics_page(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
-    # Manager statistics live on the new Dashboard (`/`) and in the legacy embed.
-    username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
-    if not username or get_user_record(username) is None:
-        return RedirectResponse(url="/login", status_code=303)
-    return RedirectResponse(url="/", status_code=307)
-
-
 @app.get("/api/status")
 def app_status(principal: object = Depends(check_auth)):
     return {"status": "ok", "message": "Сервер работает"}

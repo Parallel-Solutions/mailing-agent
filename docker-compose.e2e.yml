@@ -1,7 +1,8 @@
 # Overlay for Playwright E2E. Does not replace docker-compose.yml.
-# Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e up -d --build
-#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e run --rm playwright
+# Always use a separate compose project so local dev (mailing on :9806) is not rewritten:
+#   docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e up -d --build
+#   docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e run --rm playwright
+# Host ports: APP_PUBLIC_PORT / MAILPIT_UI_PORT from .env.e2e (defaults in .env.e2e.example: 19806 / 18025).
 
 services:
   mailpit:
