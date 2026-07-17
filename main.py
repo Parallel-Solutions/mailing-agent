@@ -5,7 +5,7 @@ import zipfile
 from src.security.auth import principal_from_user_record
 from src.security.auth_bootstrap import bootstrap_auth_store
 from src.security.bearer_auth import resolve_request_username
-from src.security.session_store import SESSION_COOKIE_NAME
+from src.security.session_store import SESSION_COOKIE_NAME, get_session_username
 from src.security.user_store import get_user_record
 from src.utils.logger import logger
 from src.utils.config import SecurityConfigurationError, require_configured_app_password, settings
@@ -18,6 +18,7 @@ from src.workers.process_manager import (
 )
 from src.web.agent_router import create_agent_router
 from src.web.consent_router import create_consent_router, recover_pending_materials_dispatches
+from src.web.chain_router import create_chain_router
 from src.web.documents_router import create_documents_router
 from src.web.documents_service import (
     compact_documents_status,
@@ -1384,6 +1385,7 @@ app.include_router(
 app.include_router(create_v1_router(check_auth=check_auth))
 app.include_router(jobs_controller.router)
 app.include_router(create_consent_router())
+app.include_router(create_chain_router())
 app.include_router(
     create_workers_router(
         check_auth=check_auth,

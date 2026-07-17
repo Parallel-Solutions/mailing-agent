@@ -10,6 +10,7 @@ from typing import Any
 
 import fitz
 
+from src.campaigns import template_service
 from src.infra.db import session_scope
 from src.infra.models import MailTemplate, TemplateVersion
 from src.infra.object_store import delete as delete_object
@@ -108,11 +109,19 @@ def analyze_pdf(data: bytes) -> dict[str, Any]:
     return {"page_count": len(pages), "pages": pages, "fields": fields}
 
 
+def _is_pdf_document_template(template_type: str) -> bool:
+    return template_service.normalize_file_template_type(template_type) == "document"
+
+
 def _owned_pdf_version(template_id: str, owner_username: str) -> tuple[MailTemplate, TemplateVersion]:
     with session_scope() as session:
         template = session.get(MailTemplate, template_id)
-        if template is None or template.owner_username != owner_username or template.template_type != "kp":
-            raise FileNotFoundError("Шаблон КП не найден")
+        if (
+            template is None
+            or template.owner_username != owner_username
+            or not _is_pdf_document_template(template.template_type)
+        ):
+            raise FileNotFoundError("Шаблон документа не найден")
         version = session.get(TemplateVersion, template.active_version_id) if template.active_version_id else None
         if version is None or not version.storage_key or not str(version.filename or "").lower().endswith(".pdf"):
             raise ValueError("Редактор полей доступен только для PDF-исходника")
@@ -218,7 +227,7 @@ def save_editor_state(template_id: str, owner_username: str, fields: list[dict[s
             owned = session.get(MailTemplate, template_id)
             active = session.get(TemplateVersion, owned.active_version_id) if owned and owned.active_version_id else None
             if owned is None or owned.owner_username != owner_username or active is None:
-                raise FileNotFoundError("Шаблон КП не найден")
+                raise FileNotFoundError("Шаблон документа не найден")
             version = TemplateVersion(
                 id=version_id,
                 template_id=template_id,

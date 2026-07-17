@@ -23,6 +23,8 @@
     "@tiptap/starter-kit": "^3.27.4",
     "antd": "^5.29.3",
     "dayjs": "^1.11.21",
+    "grapesjs": "^0.23.2",
+    "grapesjs-preset-newsletter": "^1.0.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.18.1",

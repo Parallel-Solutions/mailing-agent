@@ -1,5 +1,5 @@
 import { api, apiRequest } from './client';
-import type { PdfEditorField, PdfEditorState, Template } from './types';
+import type { EmailEditorState, PdfEditorField, PdfEditorState, Template } from './types';
 
 export type OfficeEditorConfig = {
   editor_url: string;
@@ -12,6 +12,7 @@ export type TemplateStarter = {
   template_type: string;
   preview_html: string;
   subject?: string | null;
+  email_format?: 'simple' | 'visual';
 };
 
 export type TemplateAiModel = {
@@ -36,6 +37,7 @@ export const templatesApi = {
     body_html?: string;
     body_text?: string;
     tags?: string[];
+    editor_state?: EmailEditorState;
   }) => api.post<Template>('/api/v1/templates', body),
   uploadFile: (
     file: File,
@@ -108,8 +110,32 @@ export const templatesApi = {
       body_html?: string;
       body_text?: string;
       variables?: { name: string; source: string; label: string }[];
+      editor_state?: EmailEditorState;
     },
   ) => api.patch<Template>(`/api/v1/templates/${id}`, body),
+  uploadAsset: async (templateId: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    const response = await fetch(`/api/v1/templates/${templateId}/assets`, {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!response.ok) {
+      let detail = 'Не удалось загрузить изображение';
+      try {
+        const payload = (await response.json()) as { detail?: string };
+        detail = payload.detail || detail;
+      } catch {
+        // Keep generic message.
+      }
+      throw new Error(detail);
+    }
+    const payload = (await response.json()) as { result?: { data?: Array<{ src?: string }> } };
+    const src = payload.result?.data?.[0]?.src;
+    if (!src) throw new Error('Сервер не вернул URL изображения');
+    return src;
+  },
   duplicate: (id: string) => api.post<Template>(`/api/v1/templates/${id}/duplicate`),
   archive: (id: string) => api.post<Template>(`/api/v1/templates/${id}/archive`),
   versions: (id: string) => api.get(`/api/v1/templates/${id}/versions`),

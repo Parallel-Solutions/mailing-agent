@@ -18,6 +18,7 @@ import { useNavigate } from 'react-router-dom';
 import { templatesApi } from '@/api/templates';
 import type { Template } from '@/api/types';
 import { AddTemplateWizard } from '@/features/templates/AddTemplateWizard';
+import { getEmailFormat } from '@/features/templates/emailTemplateUtils';
 import './TemplatesPage.css';
 
 type TemplateKind = 'email' | 'document';
@@ -94,6 +95,7 @@ function TemplateCard({
   const hasFile = Boolean(filename);
   const extension = filename.split('.').pop()?.toUpperCase();
   const hasDeliveryPdf = Boolean(template.version?.rendered_pdf_filename);
+  const emailFormat = !isFileTemplate ? getEmailFormat(template) : null;
 
   const openEditor = () => navigate(`/templates/${template.id}/edit`);
   const preview = async () => {
@@ -156,6 +158,7 @@ function TemplateCard({
             <Tag color={isFileTemplate && !hasFile ? 'orange' : template.status === 'ready' ? 'green' : 'gold'}>
               {isFileTemplate && !hasFile ? 'Требуется файл' : template.status === 'ready' ? 'Готов' : template.status}
             </Tag>
+            {emailFormat && <Tag color={emailFormat === 'visual' ? 'blue' : 'default'}>{emailFormat === 'visual' ? 'HTML' : 'Текст'}</Tag>}
             {extension && <Tag>{extension}</Tag>}
           </Space>
         </div>

@@ -18,6 +18,12 @@ const CampaignNewPage = lazy(() =>
 const CampaignDetailPage = lazy(() =>
   import('@/pages/CampaignDetailPage').then((m) => ({ default: m.CampaignDetailPage })),
 );
+const EmailChainBuilderPage = lazy(() =>
+  import('@/pages/EmailChainBuilderPage').then((m) => ({ default: m.EmailChainBuilderPage })),
+);
+const ChainsPage = lazy(() =>
+  import('@/pages/ChainsPage').then((m) => ({ default: m.ChainsPage })),
+);
 const TemplatesPage = lazy(() =>
   import('@/pages/TemplatesPage').then((m) => ({ default: m.TemplatesPage })),
 );
@@ -74,6 +80,22 @@ export function AppRoutes() {
             }
           />
           <Route
+            path="/chains/:id"
+            element={
+              <Lazy>
+                <EmailChainBuilderPage />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/campaigns/:id/chain"
+            element={
+              <Lazy>
+                <EmailChainBuilderPage legacyCampaign />
+              </Lazy>
+            }
+          />
+          <Route
             path="/campaigns/:id"
             element={
               <Lazy>
@@ -86,6 +108,14 @@ export function AppRoutes() {
             element={
               <Lazy>
                 <TemplatesPage />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/chains"
+            element={
+              <Lazy>
+                <ChainsPage />
               </Lazy>
             }
           />

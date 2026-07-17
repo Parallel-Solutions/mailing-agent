@@ -53,9 +53,15 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { templatesApi } from '@/api/templates';
 import type { OfficeEditorConfig } from '@/api/templates';
 import type { PdfEditorField, Template } from '@/api/types';
+import { VisualEmailEditor } from '@/features/templates/VisualEmailEditor';
+import { getEmailFormat } from '@/features/templates/emailTemplateUtils';
 import './TemplateEditorPage.css';
 
 const { Text, Title } = Typography;
+
+function isDocumentTemplateType(templateType: string): boolean {
+  return templateType === 'document' || templateType === 'kp' || templateType === 'contract';
+}
 
 type EditorVariable = { name: string; label: string; source: string };
 type CanvasController = {
@@ -401,7 +407,7 @@ function KpTemplateEditor({ template }: { template: Template }) {
   );
 }
 
-function KpPdfSourceEditor({ template }: { template: Template }) {
+function PdfOverlayEditor({ template }: { template: Template }) {
   const { message } = App.useApp();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -608,7 +614,7 @@ function DocxTemplateEditor({ template }: { template: Template }) {
   const [uploading, setUploading] = useState(false);
   const filename = template.version?.filename || '';
   const hasDocx = filename.toLowerCase().endsWith('.docx');
-  const isKp = template.template_type === 'kp';
+  const buildsDeliveryPdf = isDocumentTemplateType(template.template_type);
   const variables = template.version?.variables?.length ? template.version.variables : DOCUMENT_VARIABLES;
   const filteredVariables = variables.filter((variable) => `${variable.name} ${variable.label}`.toLowerCase().includes(variableQuery.toLowerCase()));
   const officeQuery = useQuery({ queryKey: ['office-config', template.id, template.version?.id], queryFn: () => templatesApi.officeConfig(template.id), enabled: hasDocx, retry: false });
@@ -616,8 +622,8 @@ function DocxTemplateEditor({ template }: { template: Template }) {
     <Upload accept=".docx" maxCount={1} showUploadList={false} customRequest={async ({ file, onSuccess, onError }) => {
       setUploading(true);
       try {
-        await templatesApi.uploadFile(file as File, isKp ? 'kp' : 'contract', { template_id: template.id });
-        message.success(isKp ? 'DOCX и PDF-версия КП сохранены' : 'Новая версия DOCX загружена');
+        await templatesApi.uploadFile(file as File, 'document', { template_id: template.id });
+        message.success(buildsDeliveryPdf ? 'DOCX и PDF-версия сохранены' : 'Новая версия DOCX загружена');
         await queryClient.invalidateQueries({ queryKey: ['template', template.id] });
         await queryClient.invalidateQueries({ queryKey: ['office-config', template.id] });
         onSuccess?.({});
@@ -652,7 +658,7 @@ function DocxTemplateEditor({ template }: { template: Template }) {
         template={template}
         dirty={dirty}
         saving={false}
-        format={isKp ? 'PDF' : 'DOCX'}
+        format={buildsDeliveryPdf ? 'PDF' : 'DOCX'}
         saveLabel="Автосохранение"
         saveDisabled
         onBack={() => navigate('/templates')}
@@ -670,13 +676,13 @@ function DocxTemplateEditor({ template }: { template: Template }) {
             <Button icon={<CopyOutlined />}>Вставить поле</Button>
           </Popover>
           <Tooltip title="Скачать исходный DOCX"><Button href={templatesApi.fileUrl(template.id)} icon={<DownloadOutlined />} aria-label="Скачать исходный DOCX" /></Tooltip>
-          {isKp && <Tooltip title="Скачать PDF для отправки"><Button href={templatesApi.deliveryFileUrl(template.id)} icon={<FilePdfOutlined />} aria-label="Скачать PDF для отправки" /></Tooltip>}
+          {buildsDeliveryPdf && <Tooltip title="Скачать PDF для отправки"><Button href={templatesApi.deliveryFileUrl(template.id)} icon={<FilePdfOutlined />} aria-label="Скачать PDF для отправки" /></Tooltip>}
           {upload}
         </Space>
       </div>
 
       {!hasDocx ? (
-        <Alert type="warning" showIcon message="Для редактирования нужен DOCX" description={<Space direction="vertical"><Text>Загрузите исходник — оформление сохранится, а для КП система отдельно создаст PDF.</Text>{upload}</Space>} />
+        <Alert type="warning" showIcon message="Для редактирования нужен DOCX" description={<Space direction="vertical"><Text>Загрузите исходник — оформление сохранится, система отдельно создаст PDF для отправки.</Text>{upload}</Space>} />
       ) : (
         <div className="focused-docx-workspace">
           <main className="docx-editor-shell">
@@ -688,11 +694,35 @@ function DocxTemplateEditor({ template }: { template: Template }) {
       )}
       <div className="editor-statusbar">
         <span><PictureOutlined />Текст и изображения</span>
-        <span><CheckCircleFilled />{isKp ? 'Исходный DOCX и PDF-копия сохраняются отдельно' : 'Исходный DOCX сохраняется новой версией'}</span>
+        <span><CheckCircleFilled />{buildsDeliveryPdf ? 'Исходный DOCX и PDF-копия сохраняются отдельно' : 'Исходный DOCX сохраняется новой версией'}</span>
         <span>{dirty ? 'Сохраняем…' : 'Сохранено'}</span>
       </div>
     </div>
   );
+}
+
+function resolveTemplateEditor(template: Template) {
+  if (template.template_type === 'email') {
+    if (getEmailFormat(template) === 'visual') {
+      return <VisualEmailEditor key={template.version?.id} template={template} />;
+    }
+    return <EmailTemplateEditor key={template.version?.id} template={template} />;
+  }
+
+  const filename = template.version?.filename?.toLowerCase() || '';
+  if (filename.endsWith('.docx')) {
+    return <DocxTemplateEditor key={template.version?.id} template={template} />;
+  }
+  if (filename.endsWith('.pdf')) {
+    return <PdfOverlayEditor key={template.version?.id} template={template} />;
+  }
+  if (template.template_type === 'kp' && template.version?.body_html) {
+    return <KpTemplateEditor key={template.version?.id} template={template} />;
+  }
+  if (isDocumentTemplateType(template.template_type)) {
+    return <DocxTemplateEditor key={template.version?.id} template={template} />;
+  }
+  return <DocxTemplateEditor key={template.version?.id} template={template} />;
 }
 
 export function TemplateEditorPage() {
@@ -701,12 +731,5 @@ export function TemplateEditorPage() {
   const { data: template, isLoading, isError } = useQuery({ queryKey: ['template', id], queryFn: () => templatesApi.get(id), enabled: Boolean(id) });
   if (isLoading) return <Skeleton active paragraph={{ rows: 12 }} />;
   if (isError || !template) return <Empty description="Шаблон не найден"><Button onClick={() => navigate('/templates')}>Вернуться к шаблонам</Button></Empty>;
-  if (template.template_type === 'email') return <EmailTemplateEditor key={template.version?.id} template={template} />;
-  if (template.template_type === 'kp') {
-    const filename = template.version?.filename?.toLowerCase() || '';
-    if (filename.endsWith('.docx')) return <DocxTemplateEditor key={template.version?.id} template={template} />;
-    if (filename.endsWith('.pdf')) return <KpPdfSourceEditor key={template.version?.id} template={template} />;
-    if (template.version?.body_html) return <KpTemplateEditor key={template.version?.id} template={template} />;
-  }
-  return <DocxTemplateEditor key={template.version?.id} template={template} />;
+  return resolveTemplateEditor(template);
 }

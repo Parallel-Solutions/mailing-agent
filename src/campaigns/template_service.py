@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from urllib.parse import quote
 
 from docx import Document
 from pypdf import PdfReader
@@ -90,6 +91,10 @@ def _file_text(filename: str, data: bytes) -> str:
     return ""
 
 
+def _is_file_document_template(template_type: str) -> bool:
+    return normalize_file_template_type(template_type) == "document"
+
+
 def _validate_file_template_type(template_type: str, filename: str) -> str:
     normalized_type = normalize_file_template_type(template_type)
     allowed = FILE_TEMPLATE_EXTENSIONS.get(normalized_type)
@@ -157,6 +162,7 @@ def create_template(
     body_html: str = "",
     body_text: str = "",
     tags: list[str] | None = None,
+    editor_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     template_id = _new_id()
     version_id = _new_id()
@@ -181,11 +187,76 @@ def create_template(
                 body_html=body_html,
                 body_text=body_text,
                 variables=_extract_variables(combined),
+                editor_state=editor_state,
                 created_by=owner_username,
             )
         )
         session.flush()
         return template_to_dict(tmpl, session.get(TemplateVersion, version_id))
+
+
+EMAIL_ASSET_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+EMAIL_ASSET_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+def _template_asset_storage_key(template_id: str, asset_id: str) -> str:
+    return f"template-library/{template_id}/assets/{asset_id}"
+
+
+def upload_template_asset(
+    template_id: str,
+    owner_username: str,
+    *,
+    filename: str,
+    data: bytes,
+    content_type: str | None = None,
+) -> dict[str, str] | None:
+    safe_filename = Path(filename).name
+    suffix = Path(safe_filename).suffix.lower()
+    if suffix not in EMAIL_ASSET_EXTENSIONS:
+        raise ValueError("Для письма можно загрузить только изображение JPG, PNG, GIF или WEBP")
+    if not data:
+        raise ValueError("Файл изображения пуст")
+
+    with session_scope() as session:
+        tmpl = session.get(MailTemplate, template_id)
+        if tmpl is None or tmpl.owner_username != owner_username:
+            return None
+        if tmpl.template_type != "email":
+            raise ValueError("Изображения можно загружать только для email-шаблонов")
+
+    asset_id = f"{_new_id()}-{safe_filename}"
+    storage_key = _template_asset_storage_key(template_id, asset_id)
+    resolved_content_type = content_type or EMAIL_ASSET_CONTENT_TYPES.get(suffix, "application/octet-stream")
+    put_bytes(storage_key, data, content_type=resolved_content_type)
+    return {
+        "asset_id": asset_id,
+        "url": f"/api/v1/templates/{template_id}/assets/{quote(asset_id, safe='')}",
+    }
+
+
+def get_template_asset(template_id: str, asset_id: str, owner_username: str) -> dict[str, Any] | None:
+    safe_asset_id = Path(asset_id).name
+    if not safe_asset_id or safe_asset_id != asset_id:
+        return None
+    with session_scope() as session:
+        tmpl = session.get(MailTemplate, template_id)
+        if tmpl is None or tmpl.owner_username != owner_username:
+            return None
+    storage_key = _template_asset_storage_key(template_id, safe_asset_id)
+    try:
+        data = get_bytes(storage_key)
+    except Exception:
+        return None
+    suffix = Path(safe_asset_id).suffix.lower()
+    content_type = EMAIL_ASSET_CONTENT_TYPES.get(suffix, "application/octet-stream")
+    return {"content": data, "content_type": content_type}
 
 
 def _build_kp_pdf_artifact(filename: str, data: bytes) -> tuple[bytes, str]:
@@ -225,12 +296,22 @@ def upload_file_version(
         variables = _extract_variables(_file_text(safe_filename, data))
         rendered_pdf_data: bytes | None = None
         rendered_pdf_filename: str | None = None
-        if normalized_type == "kp":
+        suffix = Path(safe_filename).suffix.lower()
+        if _is_file_document_template(normalized_type) and suffix == ".docx":
             rendered_pdf_data, rendered_pdf_filename = _build_kp_pdf_artifact(safe_filename, data)
+        elif _is_file_document_template(normalized_type) and suffix == ".pdf":
+            rendered_pdf_data = data
+            rendered_pdf_filename = f"{Path(safe_filename).stem}.pdf"
     except (ValueError, RuntimeError):
         raise
     except Exception as exc:
         raise ValueError("Не удалось прочитать содержимое шаблона") from exc
+
+    editor_state = None
+    if _is_file_document_template(normalized_type) and suffix == ".pdf":
+        from src.campaigns.pdf_overlay_service import analyze_pdf
+
+        editor_state = analyze_pdf(data)
 
     version_id = _new_id()
     resolved_template_id = template_id or _new_id()
@@ -289,6 +370,7 @@ def upload_file_version(
                 filename=safe_filename,
                 rendered_pdf_storage_key=rendered_pdf_storage_key,
                 rendered_pdf_filename=rendered_pdf_filename,
+                editor_state=editor_state,
                 created_by=owner_username,
             )
             session.add(version)
@@ -344,7 +426,7 @@ def get_template_delivery_file(template_id: str, owner_username: str) -> dict[st
             "media_type": "application/pdf",
             "template_type": template_type,
         }
-    if template_type != "kp" or not source_key or not source_name:
+    if not _is_file_document_template(template_type) or not source_key or not source_name:
         return None
 
     source_data = get_bytes(source_key)
@@ -509,7 +591,7 @@ def save_docx_editor_version(template_id: str, owner_username: str, data: bytes)
 
 def build_file_preview(template_id: str, owner_username: str) -> dict[str, Any] | None:
     template = get_template(template_id, owner_username)
-    if template and template.get("template_type") == "kp":
+    if template and _is_file_document_template(str(template.get("template_type") or "")):
         delivery = get_template_delivery_file(template_id, owner_username)
         if delivery is not None:
             return delivery
@@ -595,6 +677,7 @@ def save_version(
     body_text: str | None = None,
     variables: list[dict[str, Any]] | None = None,
     name: str | None = None,
+    editor_state: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
@@ -606,6 +689,7 @@ def save_version(
         html = body_html if body_html is not None else (current.body_html if current else "")
         text = body_text if body_text is not None else (current.body_text if current else "")
         vars_list = variables if variables is not None else _extract_variables(f"{subj}\n{html}\n{text}")
+        resolved_editor_state = editor_state if editor_state is not None else (current.editor_state if current else None)
         version_id = _new_id()
         session.add(
             TemplateVersion(
@@ -620,7 +704,7 @@ def save_version(
                 filename=current.filename if current else None,
                 rendered_pdf_storage_key=current.rendered_pdf_storage_key if current else None,
                 rendered_pdf_filename=current.rendered_pdf_filename if current else None,
-                editor_state=current.editor_state if current else None,
+                editor_state=resolved_editor_state,
                 created_by=owner_username,
             )
         )
@@ -660,6 +744,7 @@ def duplicate_template(template_id: str, owner_username: str) -> dict[str, Any] 
         body_html=str(version.get("body_html") or ""),
         body_text=str(version.get("body_text") or ""),
         tags=list(source.get("tags") or []),
+        editor_state=version.get("editor_state") if isinstance(version.get("editor_state"), dict) else None,
     )
 
 
@@ -704,4 +789,7 @@ def preview_template(template_id: str, owner_username: str, sample: dict[str, An
     for key, value in sample.items():
         html = html.replace("{{" + key + "}}", str(value))
         subject = subject.replace("{{" + key + "}}", str(value))
+    from src.campaigns.chain_template_utils import substitute_chain_buttons_preview
+
+    html = substitute_chain_buttons_preview(html)
     return {"subject": subject, "body_html": html, "sample": sample}

@@ -4,10 +4,35 @@ import type {
   Batch,
   Campaign,
   CampaignList,
+  EmailChain,
+  EmailChainState,
+  EmailChainStats,
   Recipient,
   Schedule,
   SchedulePreview,
 } from './types';
+
+export type TemplateVariableItem = {
+  name: string;
+  label?: string;
+  source?: string;
+};
+
+export type VariableMappingSuggestResult = {
+  status: 'complete' | 'needs_review';
+  template_variables: TemplateVariableItem[];
+  recipient_columns: string[];
+  suggested_mapping: Record<string, string>;
+  unmapped: string[];
+};
+
+export type VariableMappingState = {
+  mapping_confirmed: boolean;
+  mapping_confirmed_at?: string | null;
+  variable_mapping: Record<string, string>;
+  recipient_columns: string[];
+  template_variables: TemplateVariableItem[];
+};
 
 export const campaignsApi = {
   list: (params?: { status?: string; q?: string; limit?: number; offset?: number }) => {
@@ -59,6 +84,7 @@ export const campaignsApi = {
       warnings: string[];
       active_recipients: number;
       excluded_recipients: number;
+      mapping_confirmed?: boolean;
     }>(`/api/v1/campaigns/${id}/validate`),
   launch: (id: string, forceNow = false) =>
     api.post(`/api/v1/campaigns/${id}/launch?force_now=${forceNow}`),
@@ -70,4 +96,22 @@ export const campaignsApi = {
     api.post(`/api/v1/campaigns/${id}/batches/${batchId}/cancel`),
   testEmail: (id: string, to_email: string, smtp_mailbox_id?: string) =>
     api.post(`/api/v1/campaigns/${id}/test-email`, { to_email, smtp_mailbox_id }),
+  suggestVariableMapping: (id: string, model?: string) =>
+    api.post<VariableMappingSuggestResult>(`/api/v1/campaigns/${id}/variable-mapping/suggest`, {
+      model,
+    }),
+  saveVariableMapping: (id: string, mapping: Record<string, string>) =>
+    api.put<{ mapping_confirmed: boolean; variable_mapping: Record<string, string> }>(
+      `/api/v1/campaigns/${id}/variable-mapping`,
+      { mapping },
+    ),
+  getVariableMapping: (id: string) =>
+    api.get<VariableMappingState>(`/api/v1/campaigns/${id}/variable-mapping`),
+  getEmailChain: (id: string) => api.get<EmailChainState>(`/api/v1/campaigns/${id}/email-chain`),
+  putEmailChain: (id: string, chain: EmailChain) =>
+    api.put<EmailChainState>(`/api/v1/campaigns/${id}/email-chain`, chain),
+  publishEmailChain: (id: string) =>
+    api.post<EmailChainState & { campaign_id: string }>(`/api/v1/campaigns/${id}/email-chain/publish`),
+  getEmailChainStats: (id: string) =>
+    api.get<EmailChainStats>(`/api/v1/campaigns/${id}/email-chain/stats`),
 };

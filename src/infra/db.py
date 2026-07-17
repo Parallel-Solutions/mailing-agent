@@ -97,6 +97,74 @@ def check_db_connection() -> None:
         connection.execute(text("SELECT 1"))
 
 
+_LEGACY_ORPHAN_REVISIONS = {
+    # Old image heads from before template PDF/editor migrations were inserted.
+    "0007_smtp_mailbox_rate_limits": "0009_smtp_mailbox_rate_limits",
+    "0008_document_template_type": "0010_document_template_type",
+}
+
+
+def _template_version_column_names(connection) -> set[str]:
+    rows = connection.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'template_versions'"
+        )
+    )
+    return {str(row[0]) for row in rows}
+
+
+def _sync_missing_template_version_columns(connection) -> None:
+    columns = _template_version_column_names(connection)
+    if "rendered_pdf_storage_key" not in columns:
+        connection.execute(
+            text("ALTER TABLE template_versions ADD COLUMN rendered_pdf_storage_key VARCHAR(512)")
+        )
+    if "rendered_pdf_filename" not in columns:
+        connection.execute(
+            text("ALTER TABLE template_versions ADD COLUMN rendered_pdf_filename VARCHAR(255)")
+        )
+    if "editor_state" not in columns:
+        connection.execute(text("ALTER TABLE template_versions ADD COLUMN editor_state JSONB"))
+
+
+def _recover_orphaned_alembic_revision(connection) -> str | None:
+    current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    if current in _LEGACY_ORPHAN_REVISIONS:
+        _sync_missing_template_version_columns(connection)
+        stamp_to = _LEGACY_ORPHAN_REVISIONS[str(current)]
+        connection.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": stamp_to})
+        return stamp_to
+    return None
+
+
+def _has_table(connection, name: str) -> bool:
+    return (
+        connection.execute(text("SELECT to_regclass(:name)"), {"name": f"public.{name}"}).scalar()
+        is not None
+    )
+
+
+def _detect_schema_revision(connection) -> str | None:
+    """Best-effort stamp when alembic_version lags behind the real schema."""
+    if _has_table(connection, "email_chains"):
+        return "0014_standalone_email_chains"
+    if _has_table(connection, "campaign_chain_consent_events"):
+        return "0013_chain_consent_events"
+    if _has_table(connection, "campaign_chain_tokens"):
+        return "0012_email_chain"
+    columns = _template_version_column_names(connection)
+    if "editor_state" in columns or "rendered_pdf_storage_key" in columns:
+        return "0011_template_version_cols"
+    if _has_table(connection, "mail_templates"):
+        return "0006_campaign_flow_domain"
+    if _has_table(connection, "smtp_mailboxes"):
+        return "0005_smtp_mailbox_oauth"
+    if _has_table(connection, "users"):
+        return "0002_durable_events_and_tasks"
+    return None
+
+
 def init_db() -> None:
     """Ensure target database exists and apply Alembic migrations to head."""
     ensure_database_exists()
@@ -106,14 +174,29 @@ def init_db() -> None:
         command.upgrade(alembic_cfg, "head")
     except Exception as exc:
         message = str(exc)
-        if "Can't locate revision" not in message:
+        recoverable = (
+            "Can't locate revision" in message
+            or "DuplicateTable" in message
+            or "already exists" in message
+        )
+        if not recoverable:
             raise
         # Recover DBs stamped with orphaned revision ids from older branches.
         with engine.begin() as connection:
             users_table = connection.execute(text("SELECT to_regclass('public.users')")).scalar()
             if not users_table:
                 raise
-            smtp_table = connection.execute(text("SELECT to_regclass('public.smtp_mailboxes')")).scalar()
-            stamp_to = "0005_smtp_mailbox_oauth" if smtp_table else "0002_durable_events_and_tasks"
-            connection.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": stamp_to})
+            if _recover_orphaned_alembic_revision(connection) is not None:
+                command.upgrade(alembic_cfg, "head")
+                return
+            detected = _detect_schema_revision(connection)
+            if detected:
+                connection.execute(
+                    text("UPDATE alembic_version SET version_num = :rev"),
+                    {"rev": detected},
+                )
+            else:
+                smtp_table = connection.execute(text("SELECT to_regclass('public.smtp_mailboxes')")).scalar()
+                stamp_to = "0005_smtp_mailbox_oauth" if smtp_table else "0002_durable_events_and_tasks"
+                connection.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": stamp_to})
         command.upgrade(alembic_cfg, "head")

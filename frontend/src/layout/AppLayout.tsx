@@ -1,4 +1,5 @@
 import {
+  ApartmentOutlined,
   BarChartOutlined,
   ClusterOutlined,
   MailOutlined,
@@ -21,6 +22,7 @@ const route: ProLayoutProps['route'] = {
     { path: '/campaigns/new', name: 'Создать рассылку', icon: <PlusCircleOutlined /> },
     { path: '/campaigns', name: 'Рассылки', icon: <UnorderedListOutlined /> },
     { path: '/templates', name: 'Шаблоны и документы', icon: <MailOutlined /> },
+    { path: '/chains', name: 'Конструктор цепочек', icon: <ApartmentOutlined /> },
     { path: '/audiences', name: 'База получателей', icon: <TeamOutlined /> },
     { path: '/connections', name: 'Подключения', icon: <ClusterOutlined /> },
     { path: '/profile', name: 'Профиль', icon: <UserOutlined /> },
@@ -32,6 +34,9 @@ export function AppLayout() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const menuPathname = /^\/campaigns\/[^/]+\/chain$/.test(location.pathname)
+    ? '/chains'
+    : location.pathname;
 
   return (
     <ProLayout
@@ -40,7 +45,7 @@ export function AppLayout() {
       fixSiderbar
       fixedHeader
       breakpoint="lg"
-      location={{ pathname: location.pathname }}
+      location={{ pathname: menuPathname }}
       route={route}
       token={{
         bgLayout: tokens.background,

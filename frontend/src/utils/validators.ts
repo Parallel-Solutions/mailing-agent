@@ -18,7 +18,7 @@ export function validateCampaignBasics(input: {
   }
   if (
     input.send_scenario &&
-    !['consent_then_materials', 'materials_now'].includes(input.send_scenario)
+    !['consent_then_materials', 'materials_now', 'email_chain'].includes(input.send_scenario)
   ) {
     errors.push('Некорректный сценарий отправки');
   }

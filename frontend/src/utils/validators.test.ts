@@ -14,6 +14,9 @@ describe('validators', () => {
       validateCampaignBasics({ name: 'A', mail_subject: 'S', send_scenario: 'materials_now' }),
     ).toEqual([]);
     expect(
+      validateCampaignBasics({ name: 'A', mail_subject: 'S', send_scenario: 'email_chain' }),
+    ).toEqual([]);
+    expect(
       validateCampaignBasics({ name: 'A', mail_subject: 'S', send_scenario: 'immediate_now' }),
     ).toContain('Некорректный сценарий отправки');
   });

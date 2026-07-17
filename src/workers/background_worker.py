@@ -399,6 +399,11 @@ def run_payload(payload: dict[str, Any]) -> None:
 
         run_sender_batch(kwargs)
         return
+    if task == "chain_followup":
+        from src.campaigns.chain_send_service import run_chain_followup
+
+        run_chain_followup(kwargs)
+        return
     raise ValueError(f"unknown worker task: {task}")
 
 

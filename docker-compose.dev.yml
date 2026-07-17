@@ -19,6 +19,8 @@ services:
       start_period: 5s
 
   app:
+    volumes:
+      - ./migrations:/app/migrations:ro
     environment:
       USE_LEGACY_UI: "0"
       # Off when local DB holds imported test-stand stats; seed re-adds SMTP demo rows and shifts KPI.
@@ -40,6 +42,10 @@ services:
         condition: service_healthy
 
   worker:
+    volumes:
+      - ./src:/app/src
+      - ./main.py:/app/main.py:ro
+      - ./migrations:/app/migrations:ro
     environment:
       BACKGROUND_QUEUE_ENABLED: "true"
       SMTP_HOST: mailpit
