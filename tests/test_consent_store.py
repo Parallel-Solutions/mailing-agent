@@ -33,6 +33,22 @@ class ConsentStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         reset_test_database()
 
+    def test_prepare_fails_when_token_is_not_persisted(self) -> None:
+        with _workspace_temp_dir() as tmpdir:
+            consent_path = Path(tmpdir) / "job-persist-check" / "state" / "consents.json"
+            with (
+                patch.object(consent_store, "_consent_path", return_value=consent_path),
+                patch.object(consent_store, "_save_records", return_value=None),
+                patch.object(consent_store.settings, "public_base_url", "https://example.test"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "not persisted"):
+                    consent_store.prepare_consent_request(
+                        job_id="job-persist-check",
+                        row={"ID": 42},
+                        recipient="user@example.com",
+                        transport="smtp",
+                    )
+
     def test_prepare_and_confirm_consent(self) -> None:
         with _workspace_temp_dir() as tmpdir:
             consent_path = Path(tmpdir) / "job-1" / "state" / "consents.json"

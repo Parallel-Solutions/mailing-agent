@@ -6,6 +6,8 @@ import { campaignsApi } from '@/api/campaigns';
 import { templatesApi } from '@/api/templates';
 import type { Campaign, DocumentTemplatePreview } from '@/api/types';
 
+const ACTIVE_GENERATION_STATUSES = new Set(['queued', 'retry', 'running', 'waiting_review']);
+
 type Props = {
   campaignId?: string | null;
   campaign: Partial<Campaign>;
@@ -18,6 +20,7 @@ export function CampaignGenerationStep({ campaignId, campaign }: Props) {
   const [documentMode, setDocumentMode] = useState(campaign.document_mode || 'kp');
   const [kpTemplateId, setKpTemplateId] = useState<string | null>(campaign.kp_template_id || null);
   const [contractTemplateId, setContractTemplateId] = useState<string | null>(campaign.contract_template_id || null);
+  const [isAwaitingGeneration, setIsAwaitingGeneration] = useState(false);
 
   useEffect(() => {
     setDocumentMode(campaign.document_mode || 'kp');
@@ -60,15 +63,28 @@ export function CampaignGenerationStep({ campaignId, campaign }: Props) {
     enabled: Boolean(campaignId),
     refetchInterval: (query) => {
       const status = query.state.data?.documents?.status;
-      return status === 'running' || status === 'waiting_review' ? 2_000 : false;
+      const ready = Boolean(
+        query.state.data?.ready
+        || (query.state.data?.documents?.output_ready && !query.state.data?.stale),
+      );
+      return !ready && (isAwaitingGeneration || ACTIVE_GENERATION_STATUSES.has(status || '')) ? 2_000 : false;
     },
   });
   const generation = generationQuery.data;
+  const documentsReady = Boolean(
+    generation?.ready
+    || (generation?.documents?.output_ready && !generation?.stale),
+  );
 
   useEffect(() => {
-    if (!generation?.ready || !campaignId) return;
+    if (!documentsReady || !campaignId) return;
+    setIsAwaitingGeneration(false);
     void queryClient.invalidateQueries({ queryKey: ['campaign-validate', campaignId] });
-  }, [campaignId, generation?.ready, queryClient]);
+  }, [campaignId, documentsReady, queryClient]);
+
+  useEffect(() => {
+    if (generation?.documents?.status === 'error') setIsAwaitingGeneration(false);
+  }, [generation?.documents?.status]);
 
   const prepareMutation = useMutation({
     mutationFn: () => campaignsApi.prepareGeneration(campaignId!),
@@ -104,24 +120,42 @@ export function CampaignGenerationStep({ campaignId, campaign }: Props) {
         template_analysis_confirmed: true,
         mode: 'fast',
       }),
+    onMutate: () => setIsAwaitingGeneration(true),
     onSuccess: async () => {
       message.success('Формирование документов запущено');
       await queryClient.invalidateQueries({ queryKey: ['campaign-generation', campaignId] });
       await generationQuery.refetch();
     },
-    onError: (error) => message.error(error instanceof Error ? error.message : 'Не удалось запустить формирование'),
+    onError: async (error) => {
+      const refreshed = await generationQuery.refetch();
+      const refreshedGeneration = refreshed.data;
+      const refreshedReady = Boolean(
+        refreshedGeneration?.ready
+        || (refreshedGeneration?.documents?.output_ready && !refreshedGeneration?.stale),
+      );
+      if (refreshedReady) {
+        setIsAwaitingGeneration(false);
+        message.success('Документы уже сформированы и готовы к отправке');
+        await queryClient.invalidateQueries({ queryKey: ['campaign-validate', campaignId] });
+        return;
+      }
+      setIsAwaitingGeneration(false);
+      message.error(error instanceof Error ? error.message : 'Не удалось запустить формирование');
+    },
   });
 
+  const documentStatus = generation?.documents?.status || '';
+  const isRunning = ACTIVE_GENERATION_STATUSES.has(documentStatus)
+    || (isAwaitingGeneration && !documentsReady && documentStatus !== 'error');
   const currentStage = useMemo(() => {
-    if (generation?.ready) return 3;
-    if (generation?.documents?.status === 'running' || generation?.documents?.status === 'waiting_review') return 2;
+    if (documentsReady) return 3;
+    if (isRunning) return 2;
     if (preview?.status === 'ready') return 2;
     if (generation?.prepared && !generation.stale) return 1;
     return 0;
-  }, [generation, preview]);
+  }, [documentsReady, generation, isRunning, preview]);
 
-  const progress = Number(generation?.documents?.progress_percent || (generation?.ready ? 100 : 0));
-  const isRunning = generation?.documents?.status === 'running' || generation?.documents?.status === 'waiting_review';
+  const progress = Number(generation?.documents?.progress_percent || (documentsReady ? 100 : 0));
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -228,12 +262,12 @@ export function CampaignGenerationStep({ campaignId, campaign }: Props) {
           description="После последней сборки изменились получатели, вид работ или шаблоны."
         />
       )}
-      {generation?.ready && (
+      {documentsReady && (
         <Alert
           showIcon
           type="success"
           message="Документы готовы к отправке"
-          description={`Сформировано файлов: ${generation.documents?.output_file_count || 'готовый комплект'}.`}
+          description={`Сформировано файлов: ${generation?.documents?.output_file_count || 'готовый комплект'}.`}
         />
       )}
       {isRunning && (
@@ -295,12 +329,12 @@ export function CampaignGenerationStep({ campaignId, campaign }: Props) {
         </Button>
         <Button
           type="primary"
-          icon={generation?.ready ? <CheckCircleOutlined /> : <FileDoneOutlined />}
+          icon={documentsReady ? <CheckCircleOutlined /> : <FileDoneOutlined />}
           loading={startMutation.isPending}
-          disabled={preview?.status !== 'ready' || isRunning || generation?.ready}
+          disabled={preview?.status !== 'ready' || isRunning || documentsReady}
           onClick={() => startMutation.mutate()}
         >
-          {generation?.ready ? 'Документы готовы' : 'Сформировать для всех получателей'}
+          {documentsReady ? 'Документы готовы' : 'Сформировать для всех получателей'}
         </Button>
         {generation?.manifest?.recipient_count !== undefined && (
           <Tag>Получателей: {generation.manifest.recipient_count}</Tag>

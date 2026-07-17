@@ -154,6 +154,7 @@ export type CampaignGeneration = {
     stage_text?: string;
     summary_text?: string;
     output_ready?: boolean;
+    restart_locked?: boolean;
     output_file_count?: number;
     error?: string;
   };
