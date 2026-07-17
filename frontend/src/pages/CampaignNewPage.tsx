@@ -14,6 +14,7 @@ import { campaignsApi } from '@/api/campaigns';
 import { connectionsApi } from '@/api/connections';
 import { audiencesApi } from '@/api/audiences';
 import { RecipientGenerateModal } from '@/features/campaigns/RecipientGenerateModal';
+import { ChainEmailPreviewModal } from '@/features/campaigns/ChainEmailPreviewModal';
 import { VariableMappingModal } from '@/features/campaigns/VariableMappingModal';
 import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 import { validateCampaignBasics } from '@/utils/validators';
@@ -22,7 +23,6 @@ import {
   scheduleToFormValues,
 } from '@/utils/scheduleForm';
 import { computeLocalSchedulePreview } from '@/utils/schedulePreview';
-import { CampaignGenerationStep } from '@/components/CampaignGenerationStep';
 
 export function CampaignNewPage() {
   const [params] = useSearchParams();
@@ -39,6 +39,7 @@ export function CampaignNewPage() {
   const [scheduleForm] = Form.useForm();
   const [generateModalOpen, setGenerateModalOpen] = useState(false);
   const [mappingModalOpen, setMappingModalOpen] = useState(false);
+  const [chainPreviewOpen, setChainPreviewOpen] = useState(false);
   const debounceRef = useRef<number | null>(null);
   const hydratedIdRef = useRef<string | null>(null);
 
@@ -104,6 +105,9 @@ export function CampaignNewPage() {
     enabled: Boolean(id),
     refetchInterval: 15_000,
   });
+
+  const isEmailChainScenario = draft.send_scenario === 'email_chain';
+  const recipientCount = recipientsQuery.data?.total || 0;
 
   const persist = async (patch: Record<string, unknown>) => {
     if (!id) return;
@@ -187,7 +191,6 @@ export function CampaignNewPage() {
               { title: 'Основное' },
               { title: 'Отправитель' },
               { title: 'Получатели' },
-              { title: 'Генерация' },
               { title: 'Расписание' },
               { title: 'Запуск' },
             ]}
@@ -353,11 +356,6 @@ export function CampaignNewPage() {
               },
               {
                 key: '3',
-                label: 'Генерация документов',
-                children: <CampaignGenerationStep campaignId={id} campaign={draft} />,
-              },
-              {
-                key: '4',
                 label: 'Расписание',
                 children: (
                   <ProForm
@@ -411,7 +409,7 @@ export function CampaignNewPage() {
                 ),
               },
               {
-                key: '5',
+                key: '4',
 
                 label: 'Проверка и запуск',
                 children: (
@@ -444,6 +442,14 @@ export function CampaignNewPage() {
                       >
                         Тестовое письмо
                       </Button>
+                      {isEmailChainScenario && linkedChainId ? (
+                        <Button
+                          disabled={recipientCount === 0}
+                          onClick={() => setChainPreviewOpen(true)}
+                        >
+                          Предпросмотр цепочки
+                        </Button>
+                      ) : null}
                       <Button
                         type="primary"
                         disabled={launchBlocked}
@@ -532,6 +538,13 @@ export function CampaignNewPage() {
             });
             message.success('Сопоставление переменных сохранено');
           }}
+        />
+      ) : null}
+      {id && isEmailChainScenario && linkedChainId ? (
+        <ChainEmailPreviewModal
+          open={chainPreviewOpen}
+          campaignId={id}
+          onClose={() => setChainPreviewOpen(false)}
         />
       ) : null}
     </Row>

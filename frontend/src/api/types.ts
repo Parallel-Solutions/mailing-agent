@@ -74,6 +74,32 @@ export type EmailChainStats = {
   };
 };
 
+export type EmailChainPreviewAttachment = {
+  template_id: string;
+  filename: string;
+  has_content: boolean;
+  error?: string;
+};
+
+export type EmailChainPreviewItem = {
+  node_id: string;
+  node_name: string;
+  subject: string;
+  body_html: string;
+  email_template_id?: string | null;
+  attachments: EmailChainPreviewAttachment[];
+};
+
+export type EmailChainPreviewResponse = {
+  recipient: {
+    id: number;
+    company?: string;
+    contact_name?: string;
+    email?: string;
+  };
+  items: EmailChainPreviewItem[];
+};
+
 export type CampaignList = { items: Campaign[]; total: number };
 
 export type ActiveSending = {
@@ -218,6 +244,7 @@ export type Template = {
   name: string;
   template_type: string;
   status: string;
+  is_template?: boolean;
   tags?: string[];
   version?: {
     id: string;

@@ -18,7 +18,6 @@ from src.campaigns.chain_template_utils import inject_chain_buttons
 from src.campaigns.service import record_delivery_attempt
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignChainToken, CampaignRecipient, MailTemplate, TemplateVersion
-from src.infra.object_store import get_bytes
 from src.utils.logger import logger
 
 
@@ -44,16 +43,28 @@ def _render_body(
     recipient: CampaignRecipient,
     campaign: Campaign,
     template_text: str = "",
+    *,
+    email_template_id: str | None = None,
 ) -> tuple[str, str]:
-    from src.campaigns.variable_match_service import render_template_text
+    from src.campaigns.template_render_service import render_email_template_text
 
     html = template_html or (
         f"<p>Здравствуйте, {recipient.contact_name or 'коллеги'}!</p>"
         f"<p>{campaign.description or campaign.name}</p>"
     )
-    html = render_template_text(html, recipient=recipient, campaign=campaign)
+    html = render_email_template_text(
+        html,
+        recipient=recipient,
+        campaign=campaign,
+        template_id=email_template_id,
+    )
     if template_text.strip():
-        text = render_template_text(template_text, recipient=recipient, campaign=campaign)
+        text = render_email_template_text(
+            template_text,
+            recipient=recipient,
+            campaign=campaign,
+            template_id=email_template_id,
+        )
     else:
         text = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<p>", "").replace("</p>", "\n")
     return html, text
@@ -61,32 +72,28 @@ def _render_body(
 
 def _resolve_document_attachments(
     document_template_ids: list[str],
+    *,
+    campaign: Campaign,
+    recipient: CampaignRecipient,
 ) -> list[tuple[str, bytes]]:
+    from src.campaigns.template_render_service import resolve_cached_attachment
+
     attachments: list[tuple[str, bytes]] = []
     if not document_template_ids:
         return attachments
-    with session_scope() as session:
-        for template_id in document_template_ids:
-            tmpl = session.get(MailTemplate, str(template_id))
-            if tmpl is None or not tmpl.active_version_id:
-                continue
-            version = session.get(TemplateVersion, tmpl.active_version_id)
-            if version is None:
-                continue
-            filename = version.rendered_pdf_filename or version.filename or f"{tmpl.name}.pdf"
-            data: bytes | None = None
-            if version.rendered_pdf_storage_key:
-                try:
-                    data = get_bytes(version.rendered_pdf_storage_key)
-                except Exception:
-                    data = None
-            if data is None and version.storage_key:
-                try:
-                    data = get_bytes(version.storage_key)
-                except Exception:
-                    data = None
-            if data:
-                attachments.append((filename, data))
+    owner = campaign.owner_username
+    job_id = campaign.job_id
+    for template_id in document_template_ids:
+        resolved = resolve_cached_attachment(
+            template_id=str(template_id),
+            recipient_id=int(recipient.id),
+            job_id=job_id,
+            owner_username=owner,
+            campaign=campaign,
+            recipient=recipient,
+        )
+        if resolved:
+            attachments.append(resolved)
     return attachments
 
 
@@ -123,10 +130,22 @@ def send_chain_node_email(
         job_id = camp.job_id
 
         subject_template, body_html_template, body_text_template = _load_node_email_template(node, camp)
-        html, text = _render_body(body_html_template, recipient, camp, body_text_template)
-        from src.campaigns.variable_match_service import render_template_text
+        email_template_id = str(node.get("email_template_id") or "") or None
+        html, text = _render_body(
+            body_html_template,
+            recipient,
+            camp,
+            body_text_template,
+            email_template_id=email_template_id,
+        )
+        from src.campaigns.template_render_service import render_email_template_text
 
-        subject = render_template_text(subject_template, recipient=recipient, campaign=camp)
+        subject = render_email_template_text(
+            subject_template,
+            recipient=recipient,
+            campaign=camp,
+            template_id=email_template_id,
+        )
 
         edges = outgoing_edges(chain, node_id)
         node_by_id = {n["id"]: n for n in chain.get("nodes") or []}
@@ -147,7 +166,11 @@ def send_chain_node_email(
             for edge, row in zip(edges, token_rows, strict=True)
         ]
         html, text = inject_chain_buttons(html, text, buttons)
-        attachments = _resolve_document_attachments(list(node.get("document_template_ids") or []))
+        attachments = _resolve_document_attachments(
+            list(node.get("document_template_ids") or []),
+            campaign=camp,
+            recipient=recipient,
+        )
 
         if batch_id:
             record_delivery_attempt(

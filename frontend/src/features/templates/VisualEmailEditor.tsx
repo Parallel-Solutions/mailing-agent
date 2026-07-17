@@ -11,6 +11,7 @@ import { App, Alert, Breadcrumb, Button, Card, Input, Modal, Space, Tag, Typogra
 import type { Editor } from 'grapesjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { PersonalizationSetting } from '@/features/templates/PersonalizationSetting';
 import { templatesApi } from '@/api/templates';
 import type { EmailEditorState, Template } from '@/api/types';
 import { EMAIL_VARIABLES, SAMPLE_EMAIL_VALUES } from './emailConstants';
@@ -274,6 +275,7 @@ export function VisualEmailEditor({ template }: Props) {
           <div ref={containerRef} hidden={Boolean(initError)} />
         </main>
         <aside className="template-editor-aside">
+          <PersonalizationSetting template={template} />
           <Alert
             type="info"
             showIcon

@@ -263,6 +263,110 @@ def _compact_status(job_id: str, document_mode: str) -> dict[str, Any]:
         }
 
 
+def _recipient_documents_ready(
+    recipient_id: int | str,
+    *,
+    job_id: str,
+    document_mode: str,
+) -> bool:
+    from src.generator.delivery.sender_agent import _resolve_output_folder, _resolve_pdf_attachments
+
+    row_id = str(recipient_id)
+    output_dir = resolve_job_paths(job_id).output_dir
+    folder, folder_error = _resolve_output_folder(row_id, output_dir=output_dir)
+    if folder_error:
+        return False
+    _, attachment_error = _resolve_pdf_attachments(folder, attachment_mode=document_mode)
+    return attachment_error is None
+
+
+def ensure_campaign_workspace(
+    campaign_id: str,
+    owner_username: str,
+    *,
+    is_admin: bool = False,
+) -> str:
+    """Sync data.xlsx, template files, and manifest before send-time generation."""
+    result = prepare_campaign_generation(campaign_id, owner_username, is_admin=is_admin)
+    return str(result.get("job_id") or "")
+
+
+def ensure_recipient_documents(
+    *,
+    campaign_id: str,
+    recipient_id: int,
+    owner_username: str,
+    job_id: str,
+    document_mode: str | None = None,
+    work_type: str | None = None,
+    is_admin: bool = False,
+) -> None:
+    """Generate personalized documents for one recipient if output is missing."""
+    campaign, _ = _load_campaign_rows(campaign_id, owner_username, is_admin=is_admin)
+    effective_mode = normalize_document_mode(document_mode or campaign.document_mode)
+    effective_work_type = work_type if work_type is not None else (campaign.work_type or None)
+    row_id = str(recipient_id)
+
+    if _recipient_documents_ready(recipient_id, job_id=job_id, document_mode=effective_mode):
+        return
+
+    from src.generator.generation.generator_agent import run_generator_agent
+
+    generator_result = run_generator_agent(
+        row_ids=[row_id],
+        job_id=job_id,
+        document_mode=effective_mode,
+        work_type=effective_work_type,
+        auto_run_philologist=True,
+    )
+    status = str(generator_result.get("status") or "")
+    if status != "completed":
+        summary = str(generator_result.get("summary_text") or "Не удалось сформировать документы")
+        raise RuntimeError(summary)
+
+    row_result = next(
+        (item for item in (generator_result.get("results") or []) if str(item.get("id")) == row_id),
+        None,
+    )
+    if row_result and str(row_result.get("status") or "") == "error":
+        raise RuntimeError(str(row_result.get("error") or "Не удалось сформировать документы"))
+
+    if not _recipient_documents_ready(recipient_id, job_id=job_id, document_mode=effective_mode):
+        raise RuntimeError(f"Документы для получателя {recipient_id} не готовы после генерации")
+
+
+def ensure_recipient_documents_for_job(
+    *,
+    job_id: str,
+    row_id: str,
+    owner_username: str | None = None,
+    attachment_mode: str | None = None,
+    work_type: str | None = None,
+) -> None:
+    """Resolve campaign by job_id and ensure documents exist before materials send."""
+    with session_scope() as session:
+        campaign = session.scalar(
+            select(Campaign)
+            .where(Campaign.job_id == job_id)
+            .order_by(Campaign.updated_at.desc())
+            .limit(1)
+        )
+        if campaign is None:
+            raise RuntimeError(f"Рассылка для job_id={job_id} не найдена")
+        session.expunge(campaign)
+
+    owner = owner_username or campaign.owner_username
+    ensure_campaign_workspace(campaign.id, owner)
+    ensure_recipient_documents(
+        campaign_id=campaign.id,
+        recipient_id=int(row_id),
+        owner_username=owner,
+        job_id=job_id,
+        document_mode=attachment_mode or campaign.document_mode,
+        work_type=work_type or campaign.work_type,
+    )
+
+
 def generation_status(
     campaign_id: str,
     owner_username: str,
