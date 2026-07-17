@@ -244,6 +244,28 @@ def recover_pending_materials_dispatches(job_id: str | None = None, *, limit: in
     return result
 
 
+def _campaign_delivery_settings(job_id: str) -> tuple[str | None, str | None, str | None]:
+    """Recover delivery settings for consent records created before connection metadata was stored."""
+    from sqlalchemy import select
+
+    from src.infra.db import session_scope
+    from src.infra.models import Campaign
+
+    with session_scope() as session:
+        campaign = session.scalar(
+            select(Campaign)
+            .where(Campaign.job_id == job_id)
+            .order_by(Campaign.updated_at.desc())
+            .limit(1)
+        )
+        if campaign is None:
+            return None, None, None
+        connection_id = _safe_text(campaign.smtp_mailbox_id) or None
+        owner_username = _safe_text(campaign.owner_username) or None
+        transport = _safe_text(campaign.transport) or None
+        return connection_id, owner_username, transport
+
+
 def _dispatch_materials_after_consent(record: dict, *, mark_started: bool = False) -> dict:
     from src.generator.delivery.sender_agent import run_sender
 
@@ -257,6 +279,14 @@ def _dispatch_materials_after_consent(record: dict, *, mark_started: bool = Fals
     campaign_name = str(record.get("campaign_name") or "").strip() or None
     target_recipient = str(record.get("recipient") or "").strip() or None
     recipient_strategy = str(record.get("recipient_strategy") or "").strip() or None
+    connection_id = str(record.get("connection_id") or "").strip() or None
+    owner_username = str(record.get("owner_username") or "").strip() or None
+    if job_id and (not connection_id or not owner_username):
+        fallback_connection_id, fallback_owner_username, fallback_transport = _campaign_delivery_settings(job_id)
+        connection_id = connection_id or fallback_connection_id
+        owner_username = owner_username or fallback_owner_username
+        if connection_id and fallback_transport:
+            transport = fallback_transport
     if not row_id:
         return {"status": "skipped", "summary_text": "row_id is empty", "sent_rows": 0, "error_rows": 1, "rows": []}
 
@@ -315,6 +345,8 @@ def _dispatch_materials_after_consent(record: dict, *, mark_started: bool = Fals
             work_type=work_type,
             job_id=job_id,
             preserve_sender_state=True,
+            smtp_mailbox_id=connection_id,
+            owner_username=owner_username,
         )
         mark_materials_dispatch_result(
             job_id=job_id,
