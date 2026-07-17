@@ -51,6 +51,16 @@ def delete_doc(job_id: str | None, name: str) -> None:
             session.delete(row)
 
 
+def list_job_ids_with_doc(name: str) -> list[str]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(JobDoc.job_id)
+            .where(JobDoc.name == name)
+            .order_by(JobDoc.updated_at.desc())
+        ).scalars().all()
+    return [str(job_id) for job_id in rows if str(job_id or "").strip()]
+
+
 def read_owner(job_id: str | None) -> dict[str, Any]:
     normalized = normalize_job_id(job_id)
     if not normalized:

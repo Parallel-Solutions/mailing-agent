@@ -329,15 +329,14 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                             owner_username=owner,
                         )
                         token = str((consent or {}).get("token") or "")
-                        if token:
-                            from src.utils.config import settings
-
-                            base = str(getattr(settings, "public_base_url", "") or "http://localhost:9806").rstrip("/")
-                            link = f"{base}/consent/confirm/{token}"
-                            html = f'{html}<p><a href="{link}">Подтвердить согласие</a></p>'
-                            text = f"{text}\n\nПодтвердить согласие: {link}"
+                        link = str((consent or {}).get("consent_url") or "")
+                        if not token or not link:
+                            raise RuntimeError("Consent request was not persisted and has no public URL.")
+                        html = f'{html}<p><a href="{link}">Подтвердить согласие</a></p>'
+                        text = f"{text}\n\nПодтвердить согласие: {link}"
                     except Exception as consent_exc:
                         logger.warning("campaign_consent_prepare_failed", error=str(consent_exc))
+                        raise RuntimeError(f"Consent request preparation failed: {consent_exc}") from consent_exc
 
                 attachments: list[tuple[str, bytes]] = []
                 if send_mode == "materials" and job_id:
