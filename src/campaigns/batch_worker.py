@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import mimetypes
 import smtplib
 import time
 from datetime import datetime, timezone
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -50,7 +52,14 @@ def _load_email_template(campaign: Campaign) -> tuple[str, str]:
 
 
 def _send_smtp_message(
-    *, mailbox_id: str, owner_username: str, to_email: str, subject: str, html: str, text: str
+    *,
+    mailbox_id: str,
+    owner_username: str,
+    to_email: str,
+    subject: str,
+    html: str,
+    text: str,
+    attachments: list[str] | None = None,
 ) -> str:
     from src.generator.delivery.smtp_mailboxes import resolve_smtp_credentials
 
@@ -61,6 +70,11 @@ def _send_smtp_message(
     msg["To"] = to_email
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
+    for raw_path in attachments or []:
+        path = Path(raw_path)
+        content_type, _ = mimetypes.guess_type(path.name)
+        maintype, subtype = (content_type or "application/octet-stream").split("/", 1)
+        msg.add_attachment(path.read_bytes(), maintype=maintype, subtype=subtype, filename=path.name)
 
     if creds.use_ssl:
         server: Any = smtplib.SMTP_SSL(creds.host, creds.port, timeout=60)
@@ -90,6 +104,7 @@ def _send_delivery_message(
     text: str,
     job_id: str | None = None,
     row_id: str = "",
+    attachments: list[str] | None = None,
 ) -> str:
     """Send one message using the saved per-user connection."""
     from src.campaigns.connection_service import resolve_connection
@@ -103,6 +118,7 @@ def _send_delivery_message(
             subject=subject,
             html=html,
             text=text,
+            attachments=attachments,
         )
 
     row = {"ID": row_id or f"test-{int(_now().timestamp())}", "EMAIL": to_email}
@@ -112,7 +128,7 @@ def _send_delivery_message(
         result = _send_via_rusender(
             row,
             to_email,
-            [],
+            attachments or [],
             subject,
             body_override=text,
             job_id=job_id,
@@ -127,7 +143,7 @@ def _send_delivery_message(
         result = _send_via_mailopost(
             row,
             to_email,
-            [],
+            attachments or [],
             subject,
             body_override=text,
             job_id=job_id,
@@ -242,6 +258,28 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     except Exception as consent_exc:
                         logger.warning("campaign_consent_prepare_failed", error=str(consent_exc))
 
+                attachments: list[str] = []
+                if str(kwargs.get("send_mode") or "") == "materials" and job_id:
+                    from src.generator.delivery.sender_agent import (
+                        _resolve_output_folder,
+                        _resolve_pdf_attachments,
+                    )
+                    from src.jobs.storage import resolve_job_paths
+
+                    output_dir = resolve_job_paths(job_id).output_dir
+                    folder, folder_error = _resolve_output_folder(
+                        recipient.id,
+                        output_dir=output_dir,
+                    )
+                    if folder_error:
+                        raise RuntimeError(folder_error)
+                    attachments, attachment_error = _resolve_pdf_attachments(
+                        folder,
+                        attachment_mode=camp.document_mode or "kp",
+                    )
+                    if attachment_error:
+                        raise RuntimeError(attachment_error)
+
                 message_id = _send_delivery_message(
                     connection_id=connection_id,
                     owner_username=owner,
@@ -251,6 +289,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     text=text,
                     job_id=job_id,
                     row_id=str(recipient.id),
+                    attachments=attachments,
                 )
                 recipient.send_status = "sent"
                 recipient.last_error = None

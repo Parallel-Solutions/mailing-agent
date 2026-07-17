@@ -14,6 +14,7 @@ from src.campaigns import (
     audience_service,
     connection_service,
     document_editor_service,
+    generation_service,
     pdf_overlay_service,
     profile_service,
     service,
@@ -497,6 +498,38 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def get_validate(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         return _ok(service.validate_campaign_for_launch(campaign_id, actor.username, is_admin=actor.is_admin))
+
+    @router.get("/campaigns/{campaign_id}/generation")
+    def get_campaign_generation(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                generation_service.generation_status(
+                    campaign_id,
+                    actor.username,
+                    is_admin=actor.is_admin,
+                )
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/campaigns/{campaign_id}/generation/prepare")
+    def post_campaign_generation_prepare(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                generation_service.prepare_campaign_generation(
+                    campaign_id,
+                    actor.username,
+                    is_admin=actor.is_admin,
+                )
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/campaigns/{campaign_id}/launch")
     def post_launch(

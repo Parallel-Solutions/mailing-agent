@@ -92,6 +92,39 @@ export type SchedulePreview = {
   next_send_at?: string | null;
 };
 
+export type CampaignGeneration = {
+  campaign_id?: string;
+  job_id?: string;
+  document_mode?: string;
+  work_type?: string;
+  prepared: boolean;
+  stale: boolean;
+  ready: boolean;
+  status: string;
+  manifest?: {
+    recipient_count?: number;
+    prepared_at?: string;
+    templates?: { kind: string; filename: string; stored_as: string }[];
+  };
+  documents?: {
+    status?: string;
+    progress_percent?: number;
+    stage_text?: string;
+    summary_text?: string;
+    output_ready?: boolean;
+    output_file_count?: number;
+    error?: string;
+  };
+};
+
+export type DocumentTemplatePreview = {
+  status: string;
+  pdf_url?: string;
+  docx_url?: string;
+  row_label?: string;
+  failed_message?: string;
+};
+
 export type Batch = {
   id: string;
   batch_index: number;

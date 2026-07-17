@@ -3,7 +3,9 @@ import type {
   ActiveSending,
   Batch,
   Campaign,
+  CampaignGeneration,
   CampaignList,
+  DocumentTemplatePreview,
   Recipient,
   Schedule,
   SchedulePreview,
@@ -52,6 +54,19 @@ export const campaignsApi = {
     api.put<Schedule>(`/api/v1/campaigns/${id}/schedule`, body),
   previewSchedule: (body: Record<string, unknown>) =>
     api.post<SchedulePreview>('/api/v1/schedule/preview', body),
+  generation: (id: string) =>
+    api.get<CampaignGeneration>(`/api/v1/campaigns/${id}/generation`),
+  prepareGeneration: (id: string) =>
+    api.post<CampaignGeneration>(`/api/v1/campaigns/${id}/generation/prepare`),
+  previewDocuments: (body: { job_id: string; document_mode: string; work_type?: string }) =>
+    api.post<DocumentTemplatePreview>('/api/documents/template-preview', body),
+  startDocuments: (body: {
+    job_id: string;
+    document_mode: string;
+    work_type?: string;
+    template_analysis_confirmed: boolean;
+    mode?: string;
+  }) => api.post<Record<string, unknown>>('/api/documents/start', body),
   validate: (id: string) =>
     api.get<{
       ok: boolean;

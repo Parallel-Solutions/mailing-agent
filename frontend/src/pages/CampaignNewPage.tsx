@@ -12,6 +12,7 @@ import { workTypesApi, type WorkTypeOption } from '@/api/workTypes';
 import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 import { validateCampaignBasics } from '@/utils/validators';
 import { computeLocalSchedulePreview } from '@/utils/schedulePreview';
+import { CampaignGenerationStep } from '@/components/CampaignGenerationStep';
 
 export function CampaignNewPage() {
   const [params] = useSearchParams();
@@ -196,6 +197,7 @@ export function CampaignNewPage() {
               { title: 'Отправитель' },
               { title: 'Документы' },
               { title: 'Получатели' },
+              { title: 'Генерация' },
               { title: 'Расписание' },
               { title: 'Запуск' },
             ]}
@@ -529,6 +531,11 @@ export function CampaignNewPage() {
               },
               {
                 key: '4',
+                label: 'Генерация документов',
+                children: <CampaignGenerationStep campaignId={id} campaign={draft} />,
+              },
+              {
+                key: '5',
                 label: 'Расписание',
                 children: (
                   <ProForm
@@ -563,7 +570,7 @@ export function CampaignNewPage() {
                 ),
               },
               {
-                key: '5',
+                key: '6',
                 label: 'Проверка и запуск',
                 children: (
                   <Space direction="vertical">
