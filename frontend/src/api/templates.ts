@@ -117,6 +117,7 @@ export const templatesApi = {
       body_text?: string;
       variables?: { name: string; source: string; label: string }[];
       editor_state?: EmailEditorState;
+      is_template?: boolean;
     },
   ) => api.patch<Template>(`/api/v1/templates/${id}`, body),
   uploadAsset: async (templateId: string, file: File) => {

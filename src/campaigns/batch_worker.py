@@ -227,6 +227,12 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
     connection = resolve_connection(connection_id, owner)
     transport = connection.transport
 
+    send_mode = str(kwargs.get("send_mode") or "")
+    if send_mode == "materials" and job_id:
+        from src.campaigns.generation_service import ensure_campaign_workspace
+
+        ensure_campaign_workspace(campaign_id, owner)
+
     sent = 0
     errors = 0
     for recipient_id in recipient_ids:
@@ -335,12 +341,21 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
 
                 attachments: list[tuple[str, bytes]] = []
                 if send_mode == "materials" and job_id:
+                    from src.campaigns.generation_service import ensure_recipient_documents
                     from src.generator.delivery.sender_agent import (
                         _resolve_output_folder,
                         _resolve_pdf_attachments,
                     )
                     from src.jobs.storage import resolve_job_paths
 
+                    ensure_recipient_documents(
+                        campaign_id=campaign_id,
+                        recipient_id=int(recipient.id),
+                        owner_username=owner,
+                        job_id=job_id,
+                        document_mode=camp.document_mode or "kp",
+                        work_type=camp.work_type,
+                    )
                     folder, folder_error = _resolve_output_folder(
                         recipient.id,
                         output_dir=resolve_job_paths(job_id).output_dir,
@@ -458,3 +473,15 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
         session.flush()
 
     return {"status": "completed", "sent": sent, "errors": errors}
+
+
+def run_campaign_pre_generate(kwargs: dict[str, Any]) -> dict[str, Any]:
+    from src.campaigns.template_render_service import pre_generate_batch_templates
+
+    campaign_id = str(kwargs.get("campaign_id") or "")
+    recipient_ids = [int(item) for item in (kwargs.get("recipient_ids") or [])]
+    result = pre_generate_batch_templates(
+        campaign_id=campaign_id,
+        recipient_ids=recipient_ids,
+    )
+    return {"status": "ok", **result}

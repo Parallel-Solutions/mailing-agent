@@ -184,24 +184,6 @@ export function CampaignDetailPage() {
             ),
           },
           {
-            key: 'documents',
-            label: 'Документы',
-            children: (
-              <ProCard bordered title="Шаблоны рассылки">
-                <Typography.Paragraph type="secondary">
-                  Здесь показаны выбранные шаблоны. Массовая генерация КП/договоров (DOCX/PDF) выполняется
-                  в мастере{' '}
-                  <a href="/legacy" target="_blank" rel="noreferrer">
-                    /legacy
-                  </a>
-                  ; запуск кампании отправляет письмо без автоматической подготовки PDF.
-                </Typography.Paragraph>
-                <p>Письмо: {camp?.email_template_id || '—'}</p>
-                <p>Документ: {camp?.kp_template_id || camp?.contract_template_id || '—'}</p>
-              </ProCard>
-            ),
-          },
-          {
             key: 'stats',
             label: 'Статистика',
             children: (

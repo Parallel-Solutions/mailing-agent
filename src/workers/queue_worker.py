@@ -52,7 +52,7 @@ def _terminate_process(process: subprocess.Popen[Any]) -> None:
 def _task_timeout_seconds(task_type: str) -> int:
     if task_type == "documents":
         return max(0, int(settings.documents_worker_timeout_seconds or 0))
-    if task_type in {"sender", "sender_batch", "chain_followup"}:
+    if task_type in {"sender", "sender_batch", "chain_followup", "campaign_pre_generate"}:
         return max(0, int(settings.sender_worker_timeout_seconds or 0))
     return 0
 

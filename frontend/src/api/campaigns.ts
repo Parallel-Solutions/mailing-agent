@@ -7,6 +7,7 @@ import type {
   CampaignList,
   DocumentTemplatePreview,
   EmailChain,
+  EmailChainPreviewResponse,
   EmailChainState,
   EmailChainStats,
 
@@ -130,4 +131,8 @@ export const campaignsApi = {
     api.post<EmailChainState & { campaign_id: string }>(`/api/v1/campaigns/${id}/email-chain/publish`),
   getEmailChainStats: (id: string) =>
     api.get<EmailChainStats>(`/api/v1/campaigns/${id}/email-chain/stats`),
+  previewEmailChain: (id: string) =>
+    api.post<EmailChainPreviewResponse>(`/api/v1/campaigns/${id}/email-chain/preview`),
+  previewEmailChainAttachmentUrl: (id: string, recipientId: number, templateId: string) =>
+    `/api/v1/campaigns/${id}/email-chain/preview/attachment?recipient_id=${recipientId}&template_id=${encodeURIComponent(templateId)}`,
 };
