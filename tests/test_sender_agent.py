@@ -1049,6 +1049,48 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertIn("/consent/one@example.com", sent_bodies["one@example.com"])
         self.assertIn("/consent/two@example.com", sent_bodies["two@example.com"])
 
+    def test_saved_connection_credentials_are_used_for_api_providers(self) -> None:
+        cases = [
+            ("rusender", "_send_via_rusender", "credential_api_key"),
+            ("mailopost", "_send_via_mailopost", "credential_api_token"),
+        ]
+        for transport, sender_name, secret_argument in cases:
+            with self.subTest(transport=transport):
+                connection = SimpleNamespace(
+                    transport=transport,
+                    email="saved-sender@example.com",
+                    secret="saved-secret",
+                    sender_name="Saved sender",
+                    api_base_url="https://provider.example.test",
+                )
+                with (
+                    patch(
+                        "src.campaigns.connection_service.resolve_connection",
+                        return_value=connection,
+                    ),
+                    patch.object(
+                        sender_agent,
+                        sender_name,
+                        return_value={"message_id": "provider-message-1"},
+                    ) as send_mock,
+                ):
+                    result = sender_agent._send_with_transport(
+                        {"ID": "1", "MUN_NAME": "Test municipality"},
+                        ["user@example.com"],
+                        [],
+                        "Subject",
+                        transport=transport,
+                        smtp_mailbox_id="connection-1",
+                        owner_username="admin",
+                    )
+
+                self.assertEqual(result["recipients"], ["user@example.com"])
+                kwargs = send_mock.call_args.kwargs
+                self.assertEqual(kwargs[secret_argument], "saved-secret")
+                self.assertEqual(kwargs["credential_sender_name"], "Saved sender")
+                self.assertEqual(kwargs["credential_api_base_url"], "https://provider.example.test")
+                self.assertEqual(kwargs["sender_email"], "saved-sender@example.com")
+
     def test_smtp_transport_waits_between_each_recipient(self) -> None:
         sent: list[str] = []
         wait_calls: list[str] = []

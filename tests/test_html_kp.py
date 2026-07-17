@@ -308,6 +308,44 @@ class HtmlKPTests(unittest.TestCase):
         self.assertNotIn("kp_final_docx", generated)
         self.assertTrue(generated["kp_pdf"].exists())
 
+    @unittest.skipIf(document_builder is None, f"document_builder dependencies unavailable: {DOCUMENT_BUILDER_IMPORT_ERROR}")
+    def test_uploaded_docx_takes_priority_over_html_engine(self) -> None:
+        row = self._row()
+        context = build_document_context(row, 101)
+        output_dir = self.tmp_dir / "output"
+        batch_dir = self.tmp_dir / "batch"
+        templates_dir = self.tmp_dir / "templates"
+        templates_dir.mkdir()
+        template_path = templates_dir / document_builder.KP_TEMPLATE_FILENAME
+        template_path.write_bytes(b"uploaded-docx")
+
+        def fake_render(template, replacements, output_path, render_context):
+            self.assertEqual(template, template_path)
+            self.assertIs(render_context, context)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"rendered-docx")
+            return output_path
+
+        with (
+            patch.object(document_builder, "KP_GENERATION_ENGINE", "html"),
+            patch.object(document_builder, "render_docx", side_effect=fake_render),
+            patch.object(document_builder, "render_html_kp_pdf") as html_render,
+        ):
+            generated = document_builder.generate_documents_for_row(
+                row,
+                context,
+                output_dir=output_dir,
+                batch_docx_dir=batch_dir,
+                templates_dir=templates_dir,
+                document_mode="kp",
+            )
+
+        self.assertIn("kp", generated)
+        self.assertIn("kp_final_docx", generated)
+        self.assertIn("kp_final_pdf", generated)
+        self.assertNotIn("kp_pdf", generated)
+        html_render.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

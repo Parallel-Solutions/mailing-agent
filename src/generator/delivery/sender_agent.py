@@ -937,6 +937,8 @@ def _send_consent_requests_with_transport(
     recipient_strategy: str | None = None,
     sender_email: str | None = None,
     campaign_name: str | None = None,
+    smtp_mailbox_id: str | None = None,
+    owner_username: str | None = None,
     wait_between_recipients: Callable[[], bool] | None = None,
     wait_after_rate_limit: Callable[[float, str], bool] | None = None,
 ) -> dict[str, Any]:
@@ -970,6 +972,8 @@ def _send_consent_requests_with_transport(
                 recipient_strategy=recipient_strategy,
                 sender_email=sender_email,
                 campaign_name=campaign_name,
+                connection_id=smtp_mailbox_id,
+                owner_username=owner_username,
             )
             consent_url = _safe_text(consent_record.get("consent_url"))
             consent_urls[recipient] = consent_url
@@ -993,6 +997,8 @@ def _send_consent_requests_with_transport(
                 attachment_mode=attachment_mode,
                 sender_email=sender_email,
                 wait_after_rate_limit=wait_after_rate_limit,
+                smtp_mailbox_id=smtp_mailbox_id,
+                owner_username=owner_username,
             )
         except Exception as exc:
             attempts.append(
@@ -3608,6 +3614,20 @@ def _send_with_transport(
     attempts: list[dict[str, Any]] = []
     sent_recipients: list[str] = []
     warnings: list[str] = []
+    saved_connection = None
+    if smtp_mailbox_id:
+        if not owner_username:
+            raise RuntimeError("Не определён владелец выбранного подключения отправителя.")
+        from src.campaigns.connection_service import resolve_connection
+
+        saved_connection = resolve_connection(smtp_mailbox_id, owner_username)
+        if saved_connection.transport != transport:
+            raise RuntimeError(
+                "Выбранное подключение не соответствует способу отправки "
+                f"{transport}."
+            )
+        sender_email = saved_connection.email
+
     if transport == "unisender" and _uses_unisender_go_api():
         try:
             provider = _send_via_unisender_go_bulk(
@@ -3727,6 +3747,9 @@ def _send_with_transport(
                     send_mode=send_mode,
                     attachment_mode=attachment_mode,
                     sender_email=sender_email,
+                    credential_sender_name=saved_connection.sender_name if saved_connection else None,
+                    credential_api_base_url=saved_connection.api_base_url if saved_connection else None,
+                    credential_api_key=saved_connection.secret if saved_connection else None,
                 )
             elif transport == "mailopost":
                 while True:
@@ -3743,6 +3766,9 @@ def _send_with_transport(
                             send_mode=send_mode,
                             attachment_mode=attachment_mode,
                             sender_email=sender_email,
+                            credential_api_token=saved_connection.secret if saved_connection else None,
+                            credential_sender_name=saved_connection.sender_name if saved_connection else None,
+                            credential_api_base_url=saved_connection.api_base_url if saved_connection else None,
                         )
                         break
                     except MailoPostRateLimitError as exc:
@@ -4709,6 +4735,8 @@ def run_sender(
                                 sender_email=effective_sender_email,
                                 campaign_name=effective_campaign_name,
                                 wait_after_rate_limit=mailopost_rate_limit_delay,
+                                smtp_mailbox_id=effective_smtp_mailbox_id,
+                                owner_username=effective_owner_username,
                             )
                         return _send_with_transport(
                             row,
@@ -4754,6 +4782,8 @@ def run_sender(
                             campaign_name=effective_campaign_name,
                             wait_after_rate_limit=mailopost_rate_limit_delay,
                             wait_between_recipients=smtp_recipient_delay,
+                            smtp_mailbox_id=effective_smtp_mailbox_id,
+                            owner_username=effective_owner_username,
                         )
                     else:
                         send_result = _send_with_transport(

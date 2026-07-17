@@ -51,10 +51,14 @@ class ConsentStoreTests(unittest.TestCase):
                     recipient="user@example.com",
                     transport="smtp",
                     sender_email="sender@example.com",
+                    connection_id="connection-1",
+                    owner_username="admin",
                 )
 
                 self.assertIn("/consent/confirm/", record["consent_url"])
                 self.assertEqual(record["sender_email"], "sender@example.com")
+                self.assertEqual(record["connection_id"], "connection-1")
+                self.assertEqual(record["owner_username"], "admin")
                 self.assertFalse(
                     consent_store.has_confirmed_consent(
                         job_id="job-1",
@@ -146,6 +150,8 @@ class ConsentStoreTests(unittest.TestCase):
             "recipient_strategy": "primary_then_fallback",
             "sender_email": "sender@example.com",
             "campaign_name": "main campaign",
+            "connection_id": "connection-1",
+            "owner_username": "admin",
         }
 
         def fake_run_sender(**kwargs):
@@ -165,6 +171,43 @@ class ConsentStoreTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0]["preserve_sender_state"])
         self.assertEqual(calls[0]["target_recipient"], "user@example.com")
+        self.assertEqual(calls[0]["smtp_mailbox_id"], "connection-1")
+        self.assertEqual(calls[0]["owner_username"], "admin")
+        mark_result.assert_called_once()
+
+    def test_materials_dispatch_recovers_connection_for_legacy_consent_record(self) -> None:
+        calls: list[dict] = []
+        record = {
+            "job_id": "job-legacy",
+            "row_id": "7",
+            "recipient": "legacy@example.com",
+            "transport": "smtp",
+            "attachment_mode": "kp",
+        }
+
+        def fake_run_sender(**kwargs):
+            calls.append(kwargs)
+            return {
+                "summary_text": "materials sent",
+                "sent_rows": 1,
+                "error_rows": 0,
+                "rows": [{"id": "7", "recipient": "legacy@example.com", "result": "sent"}],
+            }
+
+        with (
+            patch("src.generator.delivery.sender_agent.run_sender", side_effect=fake_run_sender),
+            patch.object(
+                consent_router,
+                "_campaign_delivery_settings",
+                return_value=("legacy-connection", "legacy-owner", "mailopost"),
+            ),
+            patch.object(consent_router, "mark_materials_dispatch_result") as mark_result,
+        ):
+            consent_router._dispatch_materials_after_consent(record)
+
+        self.assertEqual(calls[0]["smtp_mailbox_id"], "legacy-connection")
+        self.assertEqual(calls[0]["owner_username"], "legacy-owner")
+        self.assertEqual(calls[0]["transport"], "mailopost")
         mark_result.assert_called_once()
 
     def test_post_consent_confirms_once_and_repeated_post_does_not_dispatch_again(self) -> None:

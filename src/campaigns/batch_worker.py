@@ -319,6 +319,8 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                             subject_template=subject,
                             campaign_name=camp.name,
                             sender_email=connection.email,
+                            connection_id=connection.id,
+                            owner_username=owner,
                         )
                         token = str((consent or {}).get("token") or "")
                         if token:

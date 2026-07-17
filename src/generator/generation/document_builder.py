@@ -2200,7 +2200,11 @@ def generate_documents_for_row(
     kp_pdf_path = batch_docx_dir / build_staged_filename(row, "kp", extension=".pdf")
     contract_path = batch_docx_dir / build_staged_filename(row, "contract")
     requested_kinds = set(document_mode_kinds(document_mode))
-    use_html_kp = should_use_html_kp_renderer(KP_GENERATION_ENGINE)
+    # An uploaded DOCX/PDF is the source of truth for the commercial proposal
+    # layout. Rebuilding it as generic HTML loses floating-image geometry and
+    # can duplicate stamps/background decorations. Keep HTML only as a
+    # template-less fallback.
+    use_html_kp = should_use_html_kp_renderer(KP_GENERATION_ENGINE) and not kp_template_path.exists()
     use_structured_kp = should_use_structured_kp_renderer(kp_docx_template_path, context)
 
     generated_files: dict[str, Path] = {}
