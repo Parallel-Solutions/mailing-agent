@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Optional
 
 from src.jobs import resolve_job_paths
+import re
+from src.parser_new.tools.discovery_tool import discover_and_write, resolve_okved
 
 # Импорты из нашего нового агента
 from src.parser_new.agent.executor import run_agent_task
@@ -56,6 +58,20 @@ def _latest_batch_file() -> tuple[Optional[str], float]:
             latest, latest_mtime = str(p), mtime
     return latest, latest_mtime
 
+def _maybe_run_discovery(message: str) -> dict | None:
+    """Если запрос — 'класс коммерческих организаций по сфере+региону', собрать напрямую.
+    Иначе None → обычный путь агента (в т.ч. администрации МО)."""
+    text = message or ""
+    m_reg = re.search(r"регион[еа]?\s*[:\-]?\s*([^.\n]+)", text, re.IGNORECASE)
+    region = m_reg.group(1).strip() if m_reg else ""
+    m_what = re.search(r"найд[иёе]\w*\s+(.+?)\s+в\s+регион", text, re.IGNORECASE)
+    what = m_what.group(1).strip() if m_what else text
+    if not region or resolve_okved(what) is None:
+        return None  # не коммерческий класс (напр. МО) — пусть работает агент
+    m_vol = re.search(r"(\d{2,4})", text)
+    limit = min(int(m_vol.group(1)), 100) if m_vol else 25
+    return discover_and_write(query=what, region=region, limit=limit)
+
 def chat(message: str, job_id: Optional[str] = None) -> dict:
     """
     Диалог с агентом. Используется в /api/parser/chat.
@@ -76,12 +92,17 @@ def chat(message: str, job_id: Optional[str] = None) -> dict:
 
         _, before_mtime = _latest_batch_file()
 
-        result = run_agent_task(
-            task=message,
-            chat_history=[],
-            uploaded_file_path=uploaded_file,
-            mode="Автоматический",
-        )
+        disc = _maybe_run_discovery(message) if uploaded_file is None else None
+        if disc is not None:
+            reply_text = (f"Собрано организаций: {disc['count']}. Таблица готова."
+                          if disc.get("success") else f"Не удалось собрать: {disc.get('error')}")
+            success = bool(disc.get("success"))
+        else:
+            result = run_agent_task(
+                task=message, chat_history=[],
+                uploaded_file_path=uploaded_file, mode="Автоматический",
+            )
+            reply_text, success = result.text, result.success
 
         src_file, after_mtime = _latest_batch_file()
         file_was_created = src_file is not None and after_mtime > before_mtime
@@ -101,11 +122,7 @@ def chat(message: str, job_id: Optional[str] = None) -> dict:
             else:
                 result_file = src_file
 
-        return {
-            "reply": result.text,
-            "success": result.success,
-            "result_file": result_file,
-        }
+        return {"reply": reply_text, "success": success, "result_file": result_file}
     finally:
         progress.finish()
 
