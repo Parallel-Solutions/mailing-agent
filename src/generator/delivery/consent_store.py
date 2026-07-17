@@ -16,6 +16,7 @@ from docx import Document
 from src.jobs import normalize_job_id, resolve_job_paths
 from src.jobs.json_store import read_json, write_json_atomic
 from src.jobs.access import read_job_owner
+from src.jobs.job_docs import LEGACY_JOB_ID, list_job_ids_with_doc
 from src.utils.config import settings
 from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
 
@@ -372,6 +373,14 @@ def public_consent_url(token: str) -> str:
     return f"{base_url}/consent/confirm/{token}"
 
 
+def _require_persisted_consent(job_id: str | None, token: str) -> dict[str, Any]:
+    clean_token = _safe_text(token)
+    for record in _load_records(job_id):
+        if _safe_text(record.get("token")) == clean_token:
+            return dict(record)
+    raise RuntimeError("Consent request token was not persisted.")
+
+
 def _row_contact_snapshot(row: dict[str, Any]) -> dict[str, str]:
     return {
         "adm_name": _safe_text(row.get("ADM_NAME")),
@@ -444,7 +453,8 @@ def prepare_consent_request(
                 if effective_connection_id:
                     record["connection_id"] = effective_connection_id
             _save_records(job_id, records)
-            return dict(record, consent_url=public_consent_url(record["token"]))
+            persisted = _require_persisted_consent(job_id, record["token"])
+            return dict(persisted, consent_url=public_consent_url(record["token"]))
 
         token = secrets.token_urlsafe(24)
         record = {
@@ -473,7 +483,8 @@ def prepare_consent_request(
         }
         records.append(record)
         _save_records(job_id, records)
-        return dict(record, consent_url=public_consent_url(token))
+        persisted = _require_persisted_consent(job_id, token)
+        return dict(persisted, consent_url=public_consent_url(token))
 
 
 def mark_consent_request_sent(
@@ -591,7 +602,7 @@ def has_confirmed_consent(
 def get_consent_by_token(token: str) -> dict[str, Any] | None:
     clean_token = _safe_text(token)
     for job_dir in _iter_job_dirs():
-        job_id = job_dir.name if job_dir.name.startswith("job-") else None
+        job_id = None if job_dir == resolve_job_paths(None).root_dir else (normalize_job_id(job_dir.name) or None)
         for record in _load_records(job_id):
             if _safe_text(record.get("token")) != clean_token:
                 continue
@@ -607,7 +618,7 @@ def get_consent_by_token(token: str) -> dict[str, Any] | None:
 def confirm_consent(token: str, *, ip: str = "", user_agent: str = "") -> dict[str, Any] | None:
     clean_token = _safe_text(token)
     for job_dir in _iter_job_dirs():
-        job_id = job_dir.name if job_dir.name.startswith("job-") else None
+        job_id = None if job_dir == resolve_job_paths(None).root_dir else (normalize_job_id(job_dir.name) or None)
         with _locked_records(job_id):
             records = _load_records(job_id)
             for record in records:
@@ -673,4 +684,8 @@ def _iter_job_dirs() -> list[Path]:
     legacy_root = resolve_job_paths(None).root_dir
     if legacy_root.exists():
         candidates.append(legacy_root)
+    for storage_job_id in list_job_ids_with_doc("consents"):
+        candidate = legacy_root if storage_job_id == LEGACY_JOB_ID else jobs_root / storage_job_id
+        if candidate not in candidates:
+            candidates.append(candidate)
     return candidates
