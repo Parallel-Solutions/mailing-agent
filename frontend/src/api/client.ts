@@ -57,10 +57,11 @@ export async function apiRequest<T>(
 
 export const api = {
   get: <T>(path: string) => apiRequest<T>(path),
-  post: <T>(path: string, body?: unknown) =>
+  post: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
     apiRequest<T>(path, {
       method: 'POST',
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
     }),
   patch: <T>(path: string, body?: unknown) =>
     apiRequest<T>(path, {

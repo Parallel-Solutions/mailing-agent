@@ -12,13 +12,18 @@ from pydantic import BaseModel, Field
 
 from src.campaigns import (
     audience_service,
+    chain_service,
     connection_service,
     document_editor_service,
     generation_service,
+
     pdf_overlay_service,
     profile_service,
     service,
+    template_ai,
     template_service,
+    template_starters,
+    variable_match_service,
     work_type_service,
 )
 from src.campaigns.schedule_planner import plan_batches
@@ -57,6 +62,7 @@ class CampaignUpdateBody(BaseModel):
     kp_template_id: str | None = None
     contract_template_id: str | None = None
     audience_id: str | None = None
+    email_chain_id: str | None = None
     draft_payload: dict[str, Any] | None = None
 
 
@@ -77,6 +83,14 @@ class RecipientUpdateBody(BaseModel):
 
 class RecipientsDeleteBody(BaseModel):
     ids: list[int] = Field(default_factory=list)
+
+
+class VariableMappingSuggestBody(BaseModel):
+    model: str | None = None
+
+
+class VariableMappingSaveBody(BaseModel):
+    mapping: dict[str, str] = Field(default_factory=dict)
 
 
 class ScheduleBody(BaseModel):
@@ -107,6 +121,21 @@ class SchedulePreviewBody(BaseModel):
     max_per_day: int = 0
 
 
+class EmailChainBody(BaseModel):
+    version: int = 1
+    root_node_id: str
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChainCreateBody(BaseModel):
+    name: str | None = None
+
+
+class ChainUpdateBody(BaseModel):
+    name: str | None = None
+
+
 class ProfileUpdateBody(BaseModel):
     display_name: str | None = None
     email: str | None = None
@@ -125,6 +154,7 @@ class TemplateCreateBody(BaseModel):
     body_html: str = ""
     body_text: str = ""
     tags: list[str] | None = None
+    editor_state: dict[str, Any] | None = None
 
 
 class TemplateSaveBody(BaseModel):
@@ -133,6 +163,7 @@ class TemplateSaveBody(BaseModel):
     body_html: str | None = None
     body_text: str | None = None
     variables: list[dict[str, Any]] | None = None
+    editor_state: dict[str, Any] | None = None
 
 
 class KpPreviewBody(BaseModel):
@@ -181,6 +212,11 @@ class ConnectionCreateBody(BaseModel):
     use_ssl: bool | None = None
     use_starttls: bool | None = None
     make_default: bool = False
+    auth_method: str = "password"
+    oauth_provider: str = ""
+    oauth_tokens: dict[str, object] | None = None
+    max_per_hour: int = 0
+    max_per_day: int = 0
 
 
 class ConnectionUpdateBody(BaseModel):
@@ -195,6 +231,8 @@ class ConnectionUpdateBody(BaseModel):
     port: int | None = None
     use_ssl: bool | None = None
     use_starttls: bool | None = None
+    max_per_hour: int | None = None
+    max_per_day: int | None = None
 
 
 def _ok(result: Any) -> dict[str, Any]:
@@ -437,13 +475,17 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         filename = (file.filename or "").lower()
         try:
             if filename.endswith(".csv"):
-                rows = service.parse_recipients_csv(content)
+                rows, columns = service.parse_recipients_csv(content)
             elif filename.endswith(".xlsx") or filename.endswith(".xlsm"):
-                rows = service.parse_recipients_xlsx(content)
+                rows, columns = service.parse_recipients_xlsx(content)
             else:
                 raise HTTPException(status_code=400, detail="Поддерживаются CSV и XLSX")
             result = service.replace_recipients(
-                campaign_id, actor.username, rows, is_admin=actor.is_admin
+                campaign_id,
+                actor.username,
+                rows,
+                is_admin=actor.is_admin,
+                recipient_columns=columns,
             )
             return _ok({"import": result, "preview": rows[:20]})
         except PermissionError as exc:
@@ -528,6 +570,147 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/chains")
+    def get_chains(
+        principal: object = Depends(check_auth),
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ):
+        actor = _actor(principal)
+        return _ok(
+            chain_service.list_chains(actor.username, is_admin=actor.is_admin, limit=limit, offset=offset)
+        )
+
+    @router.post("/chains")
+    def post_chain(body: ChainCreateBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        return _ok(chain_service.create_chain(actor.username, name=body.name))
+
+    @router.get("/chains/{chain_id}")
+    def get_chain(chain_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(chain_service.load_chain(chain_id, actor.username, is_admin=actor.is_admin))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.put("/chains/{chain_id}")
+    def put_chain(chain_id: str, body: EmailChainBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                chain_service.save_chain(
+                    chain_id,
+                    actor.username,
+                    body.model_dump(),
+                    is_admin=actor.is_admin,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/chains/{chain_id}/publish")
+    def post_chain_publish(chain_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(chain_service.publish_chain(chain_id, actor.username, is_admin=actor.is_admin))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/campaigns/{campaign_id}/email-chain")
+    def get_email_chain(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(chain_service.load_email_chain(campaign_id, actor.username, is_admin=actor.is_admin))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.put("/campaigns/{campaign_id}/email-chain")
+    def put_email_chain(campaign_id: str, body: EmailChainBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                chain_service.save_email_chain(
+                    campaign_id,
+                    actor.username,
+                    body.model_dump(),
+                    is_admin=actor.is_admin,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/campaigns/{campaign_id}/email-chain/publish")
+    def post_email_chain_publish(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                chain_service.publish_email_chain(campaign_id, actor.username, is_admin=actor.is_admin)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/campaigns/{campaign_id}/email-chain/stats")
+    def get_email_chain_stats(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            chain_service.load_email_chain(campaign_id, actor.username, is_admin=actor.is_admin)
+            return _ok(chain_service.get_chain_click_stats(campaign_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get("/campaigns/{campaign_id}/variable-mapping")
+    def get_variable_mapping(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                variable_match_service.get_variable_mapping_state(
+                    campaign_id, actor.username, is_admin=actor.is_admin
+                )
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/campaigns/{campaign_id}/variable-mapping/suggest")
+    def post_variable_mapping_suggest(
+        campaign_id: str,
+        body: VariableMappingSuggestBody | None = None,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                variable_match_service.suggest_variable_mapping(
+                    campaign_id,
+                    actor.username,
+                    is_admin=actor.is_admin,
+                    model=(body.model if body else None) or "",
+                )
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.put("/campaigns/{campaign_id}/variable-mapping")
+    def put_variable_mapping(
+        campaign_id: str,
+        body: VariableMappingSaveBody,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                variable_match_service.save_variable_mapping(
+                    campaign_id,
+                    actor.username,
+                    body.mapping,
+                    is_admin=actor.is_admin,
+                )
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -638,6 +821,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 body_html=body.body_html,
                 body_text=body.body_text,
                 tags=body.tags,
+                editor_state=body.editor_state,
             )
         )
 
@@ -650,10 +834,10 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         principal: object = Depends(check_auth),
     ):
         actor = _actor(principal)
-        normalized_type = template_type.strip().lower()
+        normalized_type = template_service.normalize_file_template_type(template_type)
         allowed = template_service.FILE_TEMPLATE_EXTENSIONS.get(normalized_type)
         if not allowed:
-            raise HTTPException(status_code=400, detail="Файл можно загрузить только для КП или договора")
+            raise HTTPException(status_code=400, detail="Файл можно загрузить только для документов")
         original_name = validate_uploaded_file(
             file,
             allowed_extensions=tuple(sorted(allowed)),
@@ -675,6 +859,62 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _ok(item)
+
+    @router.get("/templates/starters")
+    def get_template_starters(
+        principal: object = Depends(check_auth),
+        template_type: str | None = None,
+    ):
+        _actor(principal)
+        return _ok(template_starters.list_starters(template_type=template_type))
+
+    @router.post("/templates/starters/{starter_id}/use")
+    def post_template_starter_use(starter_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            item = template_starters.use_starter(actor.username, starter_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _ok(item)
+
+    @router.get("/templates/models")
+    def get_template_models(principal: object = Depends(check_auth)):
+        _actor(principal)
+        return _ok(template_ai.list_models())
+
+    @router.post("/templates/generate")
+    def post_template_generate(
+        template_type: str = Form(...),
+        prompt: str = Form(default=""),
+        model: str = Form(default=""),
+        files: list[UploadFile] | None = File(default=None),
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        attachments: list[tuple[str, bytes]] = []
+        for upload in files or []:
+            if not upload.filename:
+                continue
+            original_name = validate_uploaded_file(
+                upload,
+                allowed_extensions=(".docx", ".pdf", ".html", ".htm", ".txt"),
+                max_bytes=settings.upload_template_max_bytes,
+                human_name="вложения шаблона",
+            )
+            attachments.append((original_name, upload.file.read()))
+        try:
+            item = template_ai.generate_template(
+                actor.username,
+                template_type=template_type,
+                prompt=prompt,
+                model=model,
+                files=attachments,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return _ok(item)
 
     @router.get("/templates/{template_id}/file")
@@ -821,10 +1061,51 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 body_text=body.body_text,
                 variables=body.variables,
                 name=body.name,
+                editor_state=body.editor_state,
+
             )
         if not item:
             raise HTTPException(status_code=404, detail="Шаблон не найден")
         return _ok(item)
+
+    @router.post("/templates/{template_id}/assets")
+    def post_template_asset(
+        template_id: str,
+        file: UploadFile = File(...),
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        filename = Path(file.filename or "").name
+        if not filename:
+            raise HTTPException(status_code=400, detail="Не удалось определить имя файла изображения.")
+        suffix = Path(filename).suffix.lower()
+        if suffix not in template_service.EMAIL_ASSET_EXTENSIONS:
+            allowed = ", ".join(sorted(template_service.EMAIL_ASSET_EXTENSIONS))
+            raise HTTPException(status_code=400, detail=f"Поддерживаются только изображения: {allowed}.")
+        data = file.file.read()
+        if len(data) > settings.upload_template_max_bytes:
+            raise HTTPException(status_code=400, detail="Файл изображения слишком большой.")
+        try:
+            item = template_service.upload_template_asset(
+                template_id,
+                actor.username,
+                filename=filename,
+                data=data,
+                content_type=file.content_type,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not item:
+            raise HTTPException(status_code=404, detail="Шаблон не найден")
+        return _ok({"data": [{"type": "image", "src": item["url"]}]})
+
+    @router.get("/templates/{template_id}/assets/{asset_id}")
+    def get_template_asset(template_id: str, asset_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        item = template_service.get_template_asset(template_id, asset_id, actor.username)
+        if not item:
+            raise HTTPException(status_code=404, detail="Изображение не найдено")
+        return Response(content=item["content"], media_type=item["content_type"])
 
     @router.post("/templates/{template_id}/duplicate")
     def post_template_duplicate(template_id: str, principal: object = Depends(check_auth)):
@@ -927,9 +1208,9 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         content = file.file.read()
         filename = (file.filename or "").lower()
         if filename.endswith(".csv"):
-            rows = service.parse_recipients_csv(content)
+            rows, _columns = service.parse_recipients_csv(content)
         elif filename.endswith(".xlsx") or filename.endswith(".xlsm"):
-            rows = service.parse_recipients_xlsx(content)
+            rows, _columns = service.parse_recipients_xlsx(content)
         else:
             raise HTTPException(status_code=400, detail="Поддерживаются CSV и XLSX")
         try:

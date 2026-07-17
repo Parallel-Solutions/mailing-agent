@@ -33,6 +33,14 @@ export function CampaignDetailPage() {
     enabled: Boolean(id),
   });
 
+  const camp = campaignQuery.data;
+
+  const chainStatsQuery = useQuery({
+    queryKey: ['email-chain-stats', id],
+    queryFn: () => campaignsApi.getEmailChainStats(id),
+    enabled: Boolean(id) && camp?.send_scenario === 'email_chain',
+  });
+
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['campaign', id] });
     void queryClient.invalidateQueries({ queryKey: ['campaign-batches', id] });
@@ -61,8 +69,6 @@ export function CampaignDetailPage() {
     },
   });
 
-  const camp = campaignQuery.data;
-
   return (
     <div>
       <Space style={{ marginBottom: 16 }} wrap>
@@ -71,6 +77,7 @@ export function CampaignDetailPage() {
         </Typography.Title>
         <Tag>{camp?.status}</Tag>
         <Link to={`/campaigns/new?id=${id}`}>Редактировать</Link>
+        <Link to={`/campaigns/${id}/chain`}>Настроить цепочку</Link>
         {camp?.status === 'paused' ? (
           <Button loading={resume.isPending} onClick={() => resume.mutate()}>
             Продолжить
@@ -102,6 +109,24 @@ export function CampaignDetailPage() {
                 </p>
                 <p>Сценарий: {camp?.send_scenario}</p>
                 <p>Job: {camp?.job_id}</p>
+                {camp?.send_scenario === 'email_chain' && (
+                  <div>
+                    <Typography.Text strong>Переходы по веткам: </Typography.Text>
+                    {(chainStatsQuery.data?.edges ?? []).map((edge) => (
+                      <div key={edge.edge_id}>
+                        {edge.edge_id}: {edge.clicks} / {edge.tokens}
+                      </div>
+                    ))}
+                    <div style={{ marginTop: 8 }}>
+                      <Typography.Text strong>Подписались: </Typography.Text>
+                      {chainStatsQuery.data?.consents?.subscribe?.count ?? 0}
+                    </div>
+                    <div>
+                      <Typography.Text strong>Отписались: </Typography.Text>
+                      {chainStatsQuery.data?.consents?.unsubscribe?.count ?? 0}
+                    </div>
+                  </div>
+                )}
               </ProCard>
             ),
           },
@@ -162,10 +187,17 @@ export function CampaignDetailPage() {
             key: 'documents',
             label: 'Документы',
             children: (
-              <ProCard bordered>
-                <p>Email template: {camp?.email_template_id || '—'}</p>
-                <p>КП template: {camp?.kp_template_id || '—'}</p>
-                <p>Договор template: {camp?.contract_template_id || '—'}</p>
+              <ProCard bordered title="Шаблоны рассылки">
+                <Typography.Paragraph type="secondary">
+                  Здесь показаны выбранные шаблоны. Массовая генерация КП/договоров (DOCX/PDF) выполняется
+                  в мастере{' '}
+                  <a href="/legacy" target="_blank" rel="noreferrer">
+                    /legacy
+                  </a>
+                  ; запуск кампании отправляет письмо без автоматической подготовки PDF.
+                </Typography.Paragraph>
+                <p>Письмо: {camp?.email_template_id || '—'}</p>
+                <p>Документ: {camp?.kp_template_id || camp?.contract_template_id || '—'}</p>
               </ProCard>
             ),
           },
@@ -207,8 +239,25 @@ export function CampaignDetailPage() {
             key: 'settings',
             label: 'Настройки',
             children: (
-              <ProCard bordered loading={scheduleQuery.isLoading}>
-                <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(scheduleQuery.data, null, 2)}</pre>
+              <ProCard bordered loading={scheduleQuery.isLoading} title="Расписание">
+                {scheduleQuery.data ? (
+                  <Space direction="vertical">
+                    <Typography.Text>
+                      Старт: {scheduleQuery.data.start_at || '—'}
+                    </Typography.Text>
+                    <Typography.Text>
+                      Размер пакета: {scheduleQuery.data.batch_size ?? '—'}
+                    </Typography.Text>
+                    <Typography.Text>
+                      Интервал: {scheduleQuery.data.interval_seconds ?? '—'} сек
+                    </Typography.Text>
+                    <Typography.Text type="secondary">
+                      Изменение расписания — в мастере создания или через API.
+                    </Typography.Text>
+                  </Space>
+                ) : (
+                  <Typography.Text type="secondary">Расписание не задано</Typography.Text>
+                )}
               </ProCard>
             ),
           },

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 import smtplib
+import tempfile
 import time
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -22,24 +23,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _render_body(template_html: str, recipient: CampaignRecipient, campaign: Campaign) -> tuple[str, str]:
-    html = template_html or f"<p>Здравствуйте, {recipient.contact_name or 'коллеги'}!</p><p>{campaign.description or campaign.name}</p>"
-    replacements = {
-        "{{company}}": recipient.company,
-        "{{contact_name}}": recipient.contact_name,
-        "{{email}}": recipient.email,
-        "{{campaign_name}}": campaign.name,
-        "{{region}}": recipient.region,
-    }
-    for key, value in replacements.items():
-        html = html.replace(key, value or "")
-    text = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<p>", "").replace("</p>", "\n")
+def _render_body(
+    template_html: str,
+    recipient: CampaignRecipient,
+    campaign: Campaign,
+    template_text: str = "",
+) -> tuple[str, str]:
+    from src.campaigns.variable_match_service import render_template_text
+
+    html = template_html or (
+        f"<p>Здравствуйте, {recipient.contact_name or 'коллеги'}!</p>"
+        f"<p>{campaign.description or campaign.name}</p>"
+    )
+    html = render_template_text(html, recipient=recipient, campaign=campaign)
+    if template_text.strip():
+        text = render_template_text(template_text, recipient=recipient, campaign=campaign)
+    else:
+        text = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<p>", "").replace("</p>", "\n")
     return html, text
 
 
-def _load_email_template(campaign: Campaign) -> tuple[str, str]:
+def _load_email_template(campaign: Campaign) -> tuple[str, str, str]:
     subject = campaign.mail_subject or campaign.name
     body_html = str((campaign.draft_payload or {}).get("email_body") or "")
+    body_text = str((campaign.draft_payload or {}).get("email_body_text") or "")
     if campaign.email_template_id:
         with session_scope() as session:
             tmpl = session.get(MailTemplate, campaign.email_template_id)
@@ -48,7 +55,8 @@ def _load_email_template(campaign: Campaign) -> tuple[str, str]:
                 if version:
                     subject = version.subject or subject
                     body_html = version.body_html or body_html
-    return subject, body_html
+                    body_text = version.body_text or body_text
+    return subject, body_html, body_text
 
 
 def _send_smtp_message(
@@ -59,22 +67,27 @@ def _send_smtp_message(
     subject: str,
     html: str,
     text: str,
-    attachments: list[str] | None = None,
+    attachments: list[tuple[str, bytes]] | None = None,
 ) -> str:
+    from dataclasses import replace
+
+    from src.campaigns.connection_service import _profile_sender_name
     from src.generator.delivery.smtp_mailboxes import resolve_smtp_credentials
 
     creds = resolve_smtp_credentials(mailbox_id=mailbox_id, owner_username=owner_username)
+    sender_name = _profile_sender_name(owner_username, creds.sender_name)
+    if sender_name != creds.sender_name:
+        creds = replace(creds, sender_name=sender_name)
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"{creds.sender_name} <{creds.email}>" if creds.sender_name else creds.email
     msg["To"] = to_email
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
-    for raw_path in attachments or []:
-        path = Path(raw_path)
-        content_type, _ = mimetypes.guess_type(path.name)
+    for filename, data in attachments or []:
+        content_type, _ = mimetypes.guess_type(filename)
         maintype, subtype = (content_type or "application/octet-stream").split("/", 1)
-        msg.add_attachment(path.read_bytes(), maintype=maintype, subtype=subtype, filename=path.name)
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
 
     if creds.use_ssl:
         server: Any = smtplib.SMTP_SSL(creds.host, creds.port, timeout=60)
@@ -104,60 +117,75 @@ def _send_delivery_message(
     text: str,
     job_id: str | None = None,
     row_id: str = "",
-    attachments: list[str] | None = None,
+    attachments: list[tuple[str, bytes]] | None = None,
 ) -> str:
     """Send one message using the saved per-user connection."""
     from src.campaigns.connection_service import resolve_connection
 
     connection = resolve_connection(connection_id, owner_username)
-    if connection.transport == "smtp":
-        return _send_smtp_message(
-            mailbox_id=connection.id,
-            owner_username=owner_username,
-            to_email=to_email,
-            subject=subject,
-            html=html,
-            text=text,
-            attachments=attachments,
-        )
+    attachment_paths: list[str] = []
+    temp_dir: tempfile.TemporaryDirectory[str] | None = None
+    if attachments:
+        import tempfile
 
-    row = {"ID": row_id or f"test-{int(_now().timestamp())}", "EMAIL": to_email}
-    if connection.transport == "rusender":
-        from src.generator.delivery.sender_agent import _send_via_rusender
+        temp_dir = tempfile.TemporaryDirectory(prefix="campaign-chain-")
+        for filename, data in attachments:
+            path = Path(temp_dir.name) / filename
+            path.write_bytes(data)
+            attachment_paths.append(str(path))
 
-        result = _send_via_rusender(
-            row,
-            to_email,
-            attachments or [],
-            subject,
-            body_override=text,
-            job_id=job_id,
-            sender_email=connection.email,
-            credential_api_key=connection.secret,
-            credential_sender_name=connection.sender_name,
-            credential_api_base_url=connection.api_base_url,
-        )
-    elif connection.transport == "mailopost":
-        from src.generator.delivery.sender_agent import _send_via_mailopost
+    try:
+        if connection.transport == "smtp":
+            return _send_smtp_message(
+                mailbox_id=connection.id,
+                owner_username=owner_username,
+                to_email=to_email,
+                subject=subject,
+                html=html,
+                text=text,
+                attachments=attachments,
+            )
 
-        result = _send_via_mailopost(
-            row,
-            to_email,
-            attachments or [],
-            subject,
-            body_override=text,
-            job_id=job_id,
-            sender_email=connection.email,
-            credential_api_token=connection.secret,
-            credential_sender_name=connection.sender_name,
-            credential_api_base_url=connection.api_base_url,
-        )
-    else:
-        raise RuntimeError(f"Неподдерживаемый способ отправки: {connection.transport}")
-    message_id = str(result.get("message_id") or result.get("uuid") or "")
-    if not message_id:
-        raise RuntimeError(f"{connection.transport} не вернул идентификатор письма.")
-    return f"{connection.transport}:{message_id}"
+        row = {"ID": row_id or f"test-{int(_now().timestamp())}", "EMAIL": to_email}
+        if connection.transport == "rusender":
+            from src.generator.delivery.sender_agent import _send_via_rusender
+
+            result = _send_via_rusender(
+                row,
+                to_email,
+                attachment_paths,
+                subject,
+                body_override=text,
+                job_id=job_id,
+                sender_email=connection.email,
+                credential_api_key=connection.secret,
+                credential_sender_name=connection.sender_name,
+                credential_api_base_url=connection.api_base_url,
+            )
+        elif connection.transport == "mailopost":
+            from src.generator.delivery.sender_agent import _send_via_mailopost
+
+            result = _send_via_mailopost(
+                row,
+                to_email,
+                attachment_paths,
+                subject,
+                body_override=text,
+                job_id=job_id,
+                sender_email=connection.email,
+                credential_api_token=connection.secret,
+                credential_sender_name=connection.sender_name,
+                credential_api_base_url=connection.api_base_url,
+            )
+        else:
+            raise RuntimeError(f"Неподдерживаемый способ отправки: {connection.transport}")
+        message_id = str(result.get("message_id") or result.get("uuid") or "")
+        if not message_id:
+            raise RuntimeError(f"{connection.transport} не вернул идентификатор письма.")
+        return f"{connection.transport}:{message_id}"
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
 
 
 def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -189,7 +217,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
         recipient_ids = list(batch.recipient_ids or [])
         connection_id = str(kwargs.get("smtp_mailbox_id") or camp.smtp_mailbox_id or "")
         owner = camp.owner_username
-        subject_template, body_html_template = _load_email_template(camp)
+        subject_template, body_html_template, body_text_template = _load_email_template(camp)
         job_id = camp.job_id
 
     from src.campaigns.connection_service import resolve_connection
@@ -216,7 +244,48 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                 batch.status = "cancelled"
                 session.flush()
                 return {"status": "cancelled", "sent": sent, "errors": errors}
-            if recipient.send_status == "sent":
+            if recipient.send_status in {"sent", "in_chain"}:
+                continue
+
+            send_mode = str(kwargs.get("send_mode") or "")
+            if send_mode == "chain_root":
+                from src.campaigns.chain_send_service import send_chain_node_email
+                from src.campaigns.chain_service import get_email_chain
+
+                chain = get_email_chain(camp)
+                root_id = str(chain.get("root_node_id") or "")
+                try:
+                    result = send_chain_node_email(
+                        campaign_id=campaign_id,
+                        recipient_id=int(recipient_id),
+                        node_id=root_id,
+                        batch_id=batch_id,
+                    )
+                    if result.get("status") == "skipped":
+                        recipient.send_status = "skipped"
+                        session.flush()
+                        continue
+                    batch.sent_count = int(batch.sent_count or 0) + 1
+                    camp.sent_count = int(camp.sent_count or 0) + 1
+                    sent += 1
+                except Exception as exc:
+                    errors += 1
+                    recipient.send_status = "failed"
+                    recipient.last_error = str(exc)
+                    batch.error_count = int(batch.error_count or 0) + 1
+                    camp.error_count = int(camp.error_count or 0) + 1
+                    logger.exception("campaign_chain_root_failed", campaign_id=campaign_id, recipient_id=recipient_id)
+                    if on_error == "pause":
+                        camp.status = "paused"
+                        batch.status = "paused"
+                        session.flush()
+                        return {"status": "paused", "sent": sent, "errors": errors}
+                    if on_error == "retry":
+                        session.flush()
+                        raise
+                session.flush()
+                if pause_ms > 0:
+                    time.sleep(pause_ms / 1000.0)
                 continue
 
             accepted = record_delivery_attempt(
@@ -225,8 +294,12 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
             if not accepted and recipient.send_status == "sent":
                 continue
 
-            html, text = _render_body(body_html_template, recipient, camp)
-            subject = subject_template.replace("{{company}}", recipient.company or "")
+            html, text = _render_body(body_html_template, recipient, camp, body_text_template)
+            from src.campaigns.chain_template_utils import strip_chain_button_placeholder
+            from src.campaigns.variable_match_service import render_template_text
+
+            html = strip_chain_button_placeholder(html)
+            subject = render_template_text(subject_template, recipient=recipient, campaign=camp)
             try:
                 if str(kwargs.get("send_mode") or "") == "consent_request" and job_id:
                     try:
@@ -258,27 +331,30 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     except Exception as consent_exc:
                         logger.warning("campaign_consent_prepare_failed", error=str(consent_exc))
 
-                attachments: list[str] = []
-                if str(kwargs.get("send_mode") or "") == "materials" and job_id:
+                attachments: list[tuple[str, bytes]] = []
+                if send_mode == "materials" and job_id:
                     from src.generator.delivery.sender_agent import (
                         _resolve_output_folder,
                         _resolve_pdf_attachments,
                     )
                     from src.jobs.storage import resolve_job_paths
 
-                    output_dir = resolve_job_paths(job_id).output_dir
                     folder, folder_error = _resolve_output_folder(
                         recipient.id,
-                        output_dir=output_dir,
+                        output_dir=resolve_job_paths(job_id).output_dir,
                     )
                     if folder_error:
                         raise RuntimeError(folder_error)
-                    attachments, attachment_error = _resolve_pdf_attachments(
+                    attachment_paths, attachment_error = _resolve_pdf_attachments(
                         folder,
                         attachment_mode=camp.document_mode or "kp",
                     )
                     if attachment_error:
                         raise RuntimeError(attachment_error)
+                    attachments = [
+                        (Path(raw_path).name, Path(raw_path).read_bytes())
+                        for raw_path in attachment_paths
+                    ]
 
                 message_id = _send_delivery_message(
                     connection_id=connection_id,

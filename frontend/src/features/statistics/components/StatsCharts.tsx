@@ -1,10 +1,25 @@
 import { Card, Col, Empty, Row } from 'antd';
 import { Column, Line, Pie } from '@ant-design/charts';
-import { asRecordArray } from '../utils';
+import { asRecordArray, fmt } from '../utils';
 
 const COLORS = ['#22c55e', '#8b5cf6', '#2563eb', '#ef4444', '#f59e0b', '#64748b'];
 
 type NamedCount = { label?: string; count?: number; provider?: string };
+
+const typeValueTooltip = (d: { type: string; value: number }) => ({
+  name: d.type,
+  value: fmt(d.value),
+});
+
+const labelValueTooltip = (d: { label: string; value: number }) => ({
+  name: d.label,
+  value: fmt(d.value),
+});
+
+const seriesTooltip = (d: { type: string; value: number; date?: string; provider?: string }) => ({
+  name: d.date ? `${d.date} — ${d.type}` : d.provider ? `${d.provider} — ${d.type}` : d.type,
+  value: fmt(d.value),
+});
 
 export function DashboardCharts({
   statuses,
@@ -32,6 +47,7 @@ export function DashboardCharts({
               radius={0.9}
               legend={{ position: 'bottom' }}
               color={COLORS}
+              tooltip={typeValueTooltip}
             />
           ) : (
             <Empty description="Нет данных" />
@@ -52,6 +68,7 @@ export function DashboardCharts({
               seriesField="label"
               legend={false}
               color="#2563eb"
+              tooltip={labelValueTooltip}
             />
           ) : (
             <Empty description="Нет данных" />
@@ -68,6 +85,7 @@ export function DashboardCharts({
               colorField="type"
               radius={0.9}
               color={['#5a9e1f', '#c9b98a']}
+              tooltip={typeValueTooltip}
             />
           ) : (
             <Empty description="Недостаточно данных для сравнения" />
@@ -115,7 +133,14 @@ export function AnalyticsCharts({
       <Col xs={24} lg={12}>
         <Card title="Динамика по дням" size="small">
           {dailyData.length ? (
-            <Line height={260} data={dailyData} xField="date" yField="value" seriesField="type" />
+            <Line
+              height={260}
+              data={dailyData}
+              xField="date"
+              yField="value"
+              seriesField="type"
+              tooltip={seriesTooltip}
+            />
           ) : (
             <Empty description="Нет данных" />
           )}
@@ -134,6 +159,7 @@ export function AnalyticsCharts({
               yField="label"
               color="#ef4444"
               legend={false}
+              tooltip={labelValueTooltip}
             />
           ) : (
             <Empty description="Нет данных" />
@@ -143,7 +169,15 @@ export function AnalyticsCharts({
       <Col xs={24} lg={6}>
         <Card title="Эффективность провайдеров" size="small">
           {effData.length ? (
-            <Column height={260} data={effData} xField="provider" yField="value" seriesField="type" isGroup />
+            <Column
+              height={260}
+              data={effData}
+              xField="provider"
+              yField="value"
+              seriesField="type"
+              isGroup
+              tooltip={seriesTooltip}
+            />
           ) : (
             <Empty description="Нет данных" />
           )}
@@ -167,6 +201,7 @@ export function ProblemsCharts({ reasons, domains }: { reasons: unknown; domains
               angleField="value"
               colorField="type"
               radius={0.9}
+              tooltip={typeValueTooltip}
             />
           ) : (
             <Empty description="Нет данных" />
@@ -186,6 +221,7 @@ export function ProblemsCharts({ reasons, domains }: { reasons: unknown; domains
               yField="label"
               color="#f97316"
               legend={false}
+              tooltip={labelValueTooltip}
             />
           ) : (
             <Empty description="Нет данных" />

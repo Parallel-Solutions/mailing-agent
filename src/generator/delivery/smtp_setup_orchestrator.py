@@ -11,6 +11,7 @@ from src.generator.delivery.smtp_mailboxes import (
     ResolvedSmtpCredentials,
     build_oauth_credentials,
     humanize_smtp_error,
+    normalize_smtp_secret,
     verify_smtp_credentials,
 )
 from src.generator.delivery.smtp_oauth import (
@@ -160,7 +161,7 @@ def verify_smtp_setup(
     )
 
     auth_method = "password"
-    safe_password = str(password or "")
+    safe_password = normalize_smtp_secret(password)
     safe_oauth_provider = str(oauth_provider or "").strip().lower() or None
     if oauth_tokens is not None and safe_oauth_provider:
         auth_method = "oauth"

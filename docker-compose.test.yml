@@ -70,8 +70,10 @@ services:
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
       - ./main.py:/app/main.py
+      - ./pyproject.toml:/app/pyproject.toml
+      - ./uv.lock:/app/uv.lock
     command:
-      ["/bin/sh", "-c", "uv sync --frozen --extra dev --no-install-project && .venv/bin/python -m tests"]
+      ["/bin/sh", "-c", "uv sync --frozen --extra dev --extra mcp --no-install-project && .venv/bin/python -m tests"]
 
 volumes:
   pgdata-test:

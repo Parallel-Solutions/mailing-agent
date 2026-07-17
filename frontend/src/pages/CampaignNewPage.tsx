@@ -1,22 +1,33 @@
-import { PlusOutlined, UploadOutlined } from '@ant-design/icons';
-import { ProCard, ProForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProFormTextArea } from '@ant-design/pro-components';
-import { App, Button, Col, Collapse, Divider, Form, Modal, Row, Space, Steps, Table, Tag, Typography, Upload } from 'antd';
+import {
+  ProCard,
+  ProForm,
+  ProFormDateTimePicker,
+  ProFormDigit,
+  ProFormSelect,
+  ProFormText,
+} from '@ant-design/pro-components';
+import { App, Button, Col, Collapse, Form, Row, Space, Steps, Table, Tag, Typography, Upload } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
 import { connectionsApi } from '@/api/connections';
-import { templatesApi } from '@/api/templates';
 import { audiencesApi } from '@/api/audiences';
-import { workTypesApi, type WorkTypeOption } from '@/api/workTypes';
+import { RecipientGenerateModal } from '@/features/campaigns/RecipientGenerateModal';
+import { VariableMappingModal } from '@/features/campaigns/VariableMappingModal';
 import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 import { validateCampaignBasics } from '@/utils/validators';
+import {
+  formValuesToSchedulePayload,
+  scheduleToFormValues,
+} from '@/utils/scheduleForm';
 import { computeLocalSchedulePreview } from '@/utils/schedulePreview';
 import { CampaignGenerationStep } from '@/components/CampaignGenerationStep';
 
 export function CampaignNewPage() {
   const [params] = useSearchParams();
   const existingId = params.get('id');
+  const emailChainIdParam = params.get('email_chain_id');
   const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
@@ -25,10 +36,9 @@ export function CampaignNewPage() {
   const [step, setStep] = useState(0);
   const [basicsForm] = Form.useForm();
   const [senderForm] = Form.useForm();
-  const [docsForm] = Form.useForm();
   const [scheduleForm] = Form.useForm();
-  const [workTypeForm] = Form.useForm();
-  const [workTypeModalOpen, setWorkTypeModalOpen] = useState(false);
+  const [generateModalOpen, setGenerateModalOpen] = useState(false);
+  const [mappingModalOpen, setMappingModalOpen] = useState(false);
   const debounceRef = useRef<number | null>(null);
   const hydratedIdRef = useRef<string | null>(null);
 
@@ -58,32 +68,25 @@ export function CampaignNewPage() {
   const id = existingId || campaignId;
 
   useEffect(() => {
+    if (!id || !emailChainIdParam) return;
+    void campaignsApi
+      .update(id, { send_scenario: 'email_chain', email_chain_id: emailChainIdParam })
+      .then((camp) => replaceDraft({ ...camp, ...(camp.draft_payload || {}) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, emailChainIdParam]);
+
+  const linkedChainId = emailChainIdParam || draft.email_chain_id;
+
+  useEffect(() => {
     if (!id) return;
     if (hydratedIdRef.current === id) return;
     if (!draft.id && draft.name === undefined) return;
     basicsForm.setFieldsValue(draft);
     senderForm.setFieldsValue(draft);
-    docsForm.setFieldsValue(draft);
     hydratedIdRef.current = id;
-  }, [id, draft.id, draft.name, draft.mail_subject, draft.smtp_mailbox_id, draft, basicsForm, senderForm, docsForm]);
+  }, [id, draft.id, draft.name, draft.mail_subject, draft.smtp_mailbox_id, draft, basicsForm, senderForm]);
 
   const mailboxesQuery = useQuery({ queryKey: ['connections'], queryFn: () => connectionsApi.list() });
-  const workTypesQuery = useQuery({
-    queryKey: ['work-types'],
-    queryFn: () => workTypesApi.list(),
-  });
-  const templatesQuery = useQuery({
-    queryKey: ['templates-email'],
-    queryFn: () => templatesApi.list({ template_type: 'email' }),
-  });
-  const kpTemplatesQuery = useQuery({
-    queryKey: ['templates', 'kp'],
-    queryFn: () => templatesApi.list({ template_type: 'kp' }),
-  });
-  const contractTemplatesQuery = useQuery({
-    queryKey: ['templates', 'contract'],
-    queryFn: () => templatesApi.list({ template_type: 'contract' }),
-  });
   const audiencesQuery = useQuery({ queryKey: ['audiences'], queryFn: () => audiencesApi.list() });
   const recipientsQuery = useQuery({
     queryKey: ['campaign-recipients', id],
@@ -125,65 +128,53 @@ export function CampaignNewPage() {
     }, 700);
   };
 
-  const createWorkTypeMutation = useMutation({
-    mutationFn: (values: { name: string; mail_subject: string }) => workTypesApi.create(values),
-    onSuccess: (item) => {
-      queryClient.setQueryData<WorkTypeOption[]>(['work-types'], (current = []) => [
-        ...current,
-        item,
-      ]);
-      const values = {
-        ...basicsForm.getFieldsValue(),
-        work_type: item.key,
-        mail_subject: item.mail_subject,
-      };
-      basicsForm.setFieldsValue(values);
-      autosave(values);
-      setWorkTypeModalOpen(false);
-      workTypeForm.resetFields();
-      message.success('Вид работ добавлен и выбран');
-    },
-    onError: (error) => {
-      message.error(error instanceof Error ? error.message : 'Не удалось добавить вид работ');
-    },
-  });
-
   const schedule = scheduleQuery.data;
+  const scheduleSyncedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (schedule) {
-      scheduleForm.setFieldsValue(schedule);
+    if (!schedule || !id) return;
+    if (scheduleSyncedIdRef.current && scheduleSyncedIdRef.current !== id) {
+      scheduleSyncedIdRef.current = null;
     }
-  }, [schedule, scheduleForm]);
-
-  const preview = useMemo(
-    () =>
-      computeLocalSchedulePreview({
-        recipientCount: recipientsQuery.data?.total || 0,
-        batchSize: schedule?.batch_size || 25,
-        intervalSeconds: schedule?.interval_seconds || 300,
-        maxPerHour: schedule?.max_per_hour,
-        maxPerDay: schedule?.max_per_day,
-      }),
-    [recipientsQuery.data?.total, schedule],
-  );
-
-  const workTypeOptions = useMemo(() => {
-    const items = workTypesQuery.data || [];
-    const options = items.map((item) => ({ label: item.name, value: item.key }));
-    if (draft.work_type && !items.some((item) => item.key === draft.work_type)) {
-      options.unshift({
-        label: `${draft.work_type} (ранее введённое значение)`,
-        value: draft.work_type,
-      });
+    const formValues = scheduleToFormValues(schedule);
+    scheduleForm.setFieldsValue(formValues);
+    const payload = formValuesToSchedulePayload(formValues);
+    if (!payload) return;
+    const needsSync =
+      schedule.send_immediately ||
+      !schedule.start_at ||
+      schedule.interval_seconds !== payload.interval_seconds;
+    if (!needsSync) {
+      scheduleSyncedIdRef.current = id;
+      return;
     }
-    return options;
-  }, [draft.work_type, workTypesQuery.data]);
+    if (scheduleSyncedIdRef.current === id) return;
+    scheduleSyncedIdRef.current = id;
+    void campaignsApi.putSchedule(id, payload).then(() => {
+      void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
+    });
+  }, [schedule, scheduleForm, id, queryClient]);
+
+  const watchedSchedule = Form.useWatch([], scheduleForm);
+  const schedulePreview = useMemo(() => {
+    const payload = formValuesToSchedulePayload(watchedSchedule || scheduleToFormValues(schedule));
+    return computeLocalSchedulePreview({
+      recipientCount: recipientsQuery.data?.total || 0,
+      batchSize: payload?.batch_size || schedule?.batch_size || 25,
+      intervalSeconds: payload?.interval_seconds || schedule?.interval_seconds || 3600,
+    });
+  }, [watchedSchedule, schedule, recipientsQuery.data?.total]);
+  const batchCountPreview = schedulePreview.batchCount;
 
   const readinessErrors = [
     ...validateCampaignBasics(draft),
     ...(validateQuery.data?.errors || []),
   ];
+  const mappingConfirmed = Boolean(
+    validateQuery.data?.mapping_confirmed ??
+      (draft.draft_payload as Record<string, unknown> | undefined)?.mapping_confirmed,
+  );
+  const launchBlocked = readinessErrors.length > 0;
 
   return (
     <Row gutter={16}>
@@ -195,7 +186,6 @@ export function CampaignNewPage() {
             items={[
               { title: 'Основное' },
               { title: 'Отправитель' },
-              { title: 'Документы' },
               { title: 'Получатели' },
               { title: 'Генерация' },
               { title: 'Расписание' },
@@ -222,70 +212,29 @@ export function CampaignNewPage() {
                     form={basicsForm}
                     submitter={false}
                     initialValues={draft}
-                    onValuesChange={(changed, values) => {
-                      if (Object.prototype.hasOwnProperty.call(changed, 'work_type')) {
-                        const selected = workTypesQuery.data?.find(
-                          (item) => item.key === values.work_type,
-                        );
-                        if (selected) {
-                          const nextValues = {
-                            ...values,
-                            mail_subject: selected.mail_subject,
-                          };
-                          basicsForm.setFieldValue('mail_subject', selected.mail_subject);
-                          autosave(nextValues);
-                          return;
-                        }
-                      }
-                      autosave(values);
-                    }}
+                    onValuesChange={(_, values) => autosave(values)}
                   >
                     <ProFormText name="name" label="Название" rules={[{ required: true }]} />
-                    <ProFormSelect
-                      name="work_type"
-                      label="Вид работ"
-                      options={workTypeOptions}
-                      fieldProps={{
-                        showSearch: true,
-                        optionFilterProp: 'label',
-                        loading: workTypesQuery.isLoading,
-                        popupRender: (menu) => (
-                          <>
-                            {menu}
-                            <Divider style={{ margin: '8px 0' }} />
-                            <Button
-                              type="text"
-                              block
-                              icon={<PlusOutlined />}
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => setWorkTypeModalOpen(true)}
-                            >
-                              Добавить вид работ
-                            </Button>
-                          </>
-                        ),
-                      }}
-                    />
-                    <ProFormSelect
-                      name="document_mode"
-                      label="Тип документов"
-                      options={[
-                        { label: 'Только КП', value: 'kp' },
-                        { label: 'КП и договор', value: 'both' },
-                        { label: 'Только договор', value: 'contract' },
-                      ]}
-                    />
                     <ProFormText name="mail_subject" label="Тема письма" rules={[{ required: true }]} />
-                    <ProFormTextArea name="description" label="Описание" />
                     <ProFormSelect
                       name="send_scenario"
                       label="Сценарий отправки"
                       options={[
                         { label: 'Запрос согласия и автоотправка материалов', value: 'consent_then_materials' },
                         { label: 'Немедленная отправка материалов', value: 'materials_now' },
+                        { label: 'Цепочка писем', value: 'email_chain' },
                       ]}
                     />
-                    <ProFormTextArea name="internal_comment" label="Внутренний комментарий" />
+                    {id && linkedChainId && (
+                      <Button type="link" onClick={() => navigate(`/chains/${linkedChainId}`)}>
+                        Настроить цепочку писем
+                      </Button>
+                    )}
+                    {id && !linkedChainId && (
+                      <Button type="link" onClick={() => navigate('/chains')}>
+                        Выбрать цепочку писем
+                      </Button>
+                    )}
                   </ProForm>
                 ),
               },
@@ -333,141 +282,6 @@ export function CampaignNewPage() {
               },
               {
                 key: '2',
-                label: 'Документы',
-                children: (
-                  <ProForm
-                    form={docsForm}
-                    submitter={false}
-                    initialValues={draft}
-                    onValuesChange={(_, values) => autosave(values)}
-                  >
-                    <ProFormSelect
-                      name="email_template_id"
-                      label="Шаблон письма"
-                      options={(templatesQuery.data || []).map((template) => ({ label: template.name, value: template.id }))}
-                    />
-                    <ProFormTextArea
-                      name="email_body"
-                      label="Текст письма (можно сохранить в черновик)"
-                      fieldProps={{
-                        onChange: (event) => autosave({ draft_payload: { email_body: event.target.value } }),
-                      }}
-                    />
-
-                    {draft.document_mode !== 'contract' && (
-                      <ProCard title="Коммерческое предложение" bordered size="small">
-                        <ProFormSelect
-                          name="kp_template_id"
-                          label="Шаблон КП"
-                          options={(kpTemplatesQuery.data || []).filter((template) => template.version?.filename).map((template) => ({
-                            label: template.version?.filename
-                              ? `${template.name} — ${template.version.filename}`
-                              : template.name,
-                            value: template.id,
-                          }))}
-                        />
-                        <Space wrap>
-                          <Upload
-                            accept=".docx,.pdf,.html,.htm"
-                            maxCount={1}
-                            showUploadList={false}
-                            customRequest={async ({ file, onSuccess, onError }) => {
-                              try {
-                                const uploaded = await templatesApi.uploadFile(file as File, 'kp');
-                                docsForm.setFieldValue('kp_template_id', uploaded.id);
-                                await persist({ kp_template_id: uploaded.id });
-                                void queryClient.invalidateQueries({ queryKey: ['templates', 'kp'] });
-                                message.success('Шаблон КП загружен и выбран');
-                                onSuccess?.(uploaded);
-                              } catch (error) {
-                                message.error(error instanceof Error ? error.message : 'Не удалось загрузить шаблон КП');
-                                onError?.(error as Error);
-                              }
-                            }}
-                          >
-                            <Button icon={<UploadOutlined />}>Загрузить свой шаблон КП</Button>
-                          </Upload>
-                          {draft.kp_template_id && (
-                            <Button
-                              onClick={() =>
-                                window.open(
-                                  templatesApi.previewFileUrl(String(draft.kp_template_id)),
-                                  '_blank',
-                                  'noopener,noreferrer',
-                                )
-                              }
-                            >
-                              Предпросмотр
-                            </Button>
-                          )}
-                        </Space>
-                        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-                          Поддерживаются DOCX, PDF и HTML. Загруженный файл сохранится в библиотеке.
-                        </Typography.Paragraph>
-                      </ProCard>
-                    )}
-
-                    {draft.document_mode !== 'kp' && (
-                      <ProCard title="Договор" bordered size="small">
-                        <ProFormSelect
-                          name="contract_template_id"
-                          label="Шаблон договора"
-                          options={(contractTemplatesQuery.data || []).filter((template) => template.version?.filename).map((template) => ({
-                            label: template.version?.filename
-                              ? `${template.name} — ${template.version.filename}`
-                              : template.name,
-                            value: template.id,
-                          }))}
-                        />
-                        <Space wrap>
-                          <Upload
-                            accept=".docx"
-                            maxCount={1}
-                            showUploadList={false}
-                            customRequest={async ({ file, onSuccess, onError }) => {
-                              try {
-                                const uploaded = await templatesApi.uploadFile(file as File, 'contract');
-                                docsForm.setFieldValue('contract_template_id', uploaded.id);
-                                await persist({ contract_template_id: uploaded.id });
-                                void queryClient.invalidateQueries({ queryKey: ['templates', 'contract'] });
-                                message.success('Шаблон договора загружен и выбран');
-                                onSuccess?.(uploaded);
-                              } catch (error) {
-                                message.error(
-                                  error instanceof Error ? error.message : 'Не удалось загрузить шаблон договора',
-                                );
-                                onError?.(error as Error);
-                              }
-                            }}
-                          >
-                            <Button icon={<UploadOutlined />}>Загрузить свой шаблон договора</Button>
-                          </Upload>
-                          {draft.contract_template_id && (
-                            <Button
-                              onClick={() =>
-                                window.open(
-                                  templatesApi.previewFileUrl(String(draft.contract_template_id)),
-                                  '_blank',
-                                  'noopener,noreferrer',
-                                )
-                              }
-                            >
-                              Предпросмотр
-                            </Button>
-                          )}
-                        </Space>
-                        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-                          Для договора поддерживается формат DOCX.
-                        </Typography.Paragraph>
-                      </ProCard>
-                    )}
-
-                    <Button onClick={() => navigate('/templates')}>Открыть библиотеку шаблонов</Button>
-                  </ProForm>
-                ),
-              },
-              {
-                key: '3',
                 label: 'Получатели',
                 children: (
                   <Space direction="vertical" style={{ width: '100%' }}>
@@ -488,23 +302,31 @@ export function CampaignNewPage() {
                         },
                       }}
                     />
-                    <Upload
-                      accept=".csv,.xlsx"
-                      showUploadList={false}
-                      customRequest={async ({ file, onSuccess, onError }) => {
-                        try {
-                          if (!id) return;
-                          await campaignsApi.importRecipients(id, file as File);
-                          void queryClient.invalidateQueries({ queryKey: ['campaign-recipients', id] });
-                          message.success('Импорт выполнен');
-                          onSuccess?.({});
-                        } catch (error) {
-                          onError?.(error as Error);
-                        }
-                      }}
-                    >
-                      <Button>Загрузить Excel / CSV</Button>
-                    </Upload>
+                    <Space wrap>
+                      <Upload
+                        accept=".csv,.xlsx"
+                        showUploadList={false}
+                        customRequest={async ({ file, onSuccess, onError }) => {
+                          try {
+                            if (!id) return;
+                            await campaignsApi.importRecipients(id, file as File);
+                            void queryClient.invalidateQueries({ queryKey: ['campaign-recipients', id] });
+                            message.success('Импорт выполнен');
+                            onSuccess?.({});
+                          } catch (error) {
+                            onError?.(error as Error);
+                          }
+                        }}
+                      >
+                        <Button>Загрузить Excel / CSV</Button>
+                      </Upload>
+                      <Button
+                        disabled={!id || !draft.job_id}
+                        onClick={() => setGenerateModalOpen(true)}
+                      >
+                        Сгенерировать список
+                      </Button>
+                    </Space>
                     <Table
                       rowKey="id"
                       size="small"
@@ -530,47 +352,67 @@ export function CampaignNewPage() {
                 ),
               },
               {
-                key: '4',
+                key: '3',
                 label: 'Генерация документов',
                 children: <CampaignGenerationStep campaignId={id} campaign={draft} />,
               },
               {
-                key: '5',
+                key: '4',
                 label: 'Расписание',
                 children: (
                   <ProForm
                     form={scheduleForm}
                     submitter={false}
-                    initialValues={schedule || { send_immediately: true, batch_size: 25, interval_seconds: 300 }}
+                    initialValues={scheduleToFormValues(schedule)}
                     onValuesChange={async (_, values) => {
                       if (!id) return;
-                      await campaignsApi.putSchedule(id, values);
+                      const payload = formValuesToSchedulePayload(values);
+                      if (!payload) return;
+                      await campaignsApi.putSchedule(id, payload);
                       void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
                     }}
                   >
-                    <ProFormSwitch name="send_immediately" label="Отправить сейчас" />
-                    <ProFormDigit name="batch_size" label="Размер пакета" min={1} />
-                    <ProFormDigit name="interval_seconds" label="Интервал между пакетами (сек)" min={0} />
-                    <ProFormDigit name="max_per_hour" label="Макс. в час (0 = без лимита)" min={0} />
-                    <ProFormDigit name="max_per_day" label="Макс. в день (0 = без лимита)" min={0} />
-                    <ProFormDigit name="pause_between_messages_ms" label="Пауза между письмами (мс)" min={0} />
-                    <ProFormSelect
-                      name="on_error"
-                      label="Поведение при ошибке"
-                      options={[
-                        { label: 'Повторить', value: 'retry' },
-                        { label: 'Пропустить', value: 'skip' },
-                        { label: 'Пауза', value: 'pause' },
-                      ]}
+                    <ProFormDigit name="batch_size" label="Размер пакета" min={1} fieldProps={{ precision: 0 }} />
+                    <ProFormDateTimePicker
+                      name="start_at"
+                      label="Дата и время старта"
+                      rules={[{ required: true, message: 'Укажите дату и время старта' }]}
+                      fieldProps={{ style: { width: '100%' }, format: 'DD.MM.YYYY HH:mm' }}
                     />
-                    <Typography.Paragraph>
-                      Прогноз: {preview.batchCount} пакетов, длительность ≈ {preview.estimatedDurationSeconds}с
-                    </Typography.Paragraph>
+                    <Form.Item label="Интервал между пакетами" required>
+                      <Space align="start">
+                        <ProFormDigit
+                          name="interval_value"
+                          min={1}
+                          width="sm"
+                          fieldProps={{ precision: 0 }}
+                          rules={[{ required: true, message: 'Укажите интервал' }]}
+                          formItemProps={{ style: { marginBottom: 0 } }}
+                        />
+                        <ProFormSelect
+                          name="interval_unit"
+                          width="sm"
+                          options={[
+                            { label: 'часы', value: 'hours' },
+                            { label: 'дни', value: 'days' },
+                          ]}
+                          rules={[{ required: true }]}
+                          formItemProps={{ style: { marginBottom: 0 } }}
+                        />
+                      </Space>
+                    </Form.Item>
+                    <Typography.Text>
+                      Прогноз: {schedulePreview.batchCount} пакетов
+                      {schedulePreview.estimatedDurationSeconds > 0
+                        ? `, длительность ≈ ${Math.round(schedulePreview.estimatedDurationSeconds / 3600)} ч`
+                        : ''}
+                    </Typography.Text>
                   </ProForm>
                 ),
               },
               {
-                key: '6',
+                key: '5',
+
                 label: 'Проверка и запуск',
                 children: (
                   <Space direction="vertical">
@@ -586,13 +428,10 @@ export function CampaignNewPage() {
                     ))}
                     <Space wrap>
                       <Button
-                        onClick={async () => {
-                          if (!id) return;
-                          await persist(draft);
-                          message.success('Черновик сохранён');
-                        }}
+                        type="primary"
+                        onClick={() => setMappingModalOpen(true)}
                       >
-                        Сохранить черновик
+                        Сохранить
                       </Button>
                       <Button
                         onClick={async () => {
@@ -607,7 +446,7 @@ export function CampaignNewPage() {
                       </Button>
                       <Button
                         type="primary"
-                        disabled={readinessErrors.length > 0}
+                        disabled={launchBlocked}
                         title={readinessErrors.join('; ') || undefined}
                         onClick={async () => {
                           if (!id) return;
@@ -619,7 +458,7 @@ export function CampaignNewPage() {
                         Запустить сейчас
                       </Button>
                       <Button
-                        disabled={readinessErrors.length > 0}
+                        disabled={launchBlocked}
                         onClick={async () => {
                           if (!id) return;
                           await campaignsApi.launch(id, false);
@@ -646,13 +485,21 @@ export function CampaignNewPage() {
           <Space direction="vertical">
             <Typography.Text>Получателей: {recipientsQuery.data?.total || 0}</Typography.Text>
             <Typography.Text>Исключено: {validateQuery.data?.excluded_recipients || 0}</Typography.Text>
-            <Typography.Text>Пакетов (прогноз): {preview.batchCount}</Typography.Text>
+            <Typography.Text>Пакетов (прогноз): {batchCountPreview}</Typography.Text>
             <Typography.Text>
               Отправитель:{' '}
               {(mailboxesQuery.data || []).find((item) => item.id === draft.smtp_mailbox_id)?.email ||
                 'не выбран'}
             </Typography.Text>
             <Typography.Text>Тема: {draft.mail_subject || '—'}</Typography.Text>
+            <Typography.Text>
+              Сопоставление переменных:{' '}
+              {mappingConfirmed ? (
+                <Tag color="green">подтверждено</Tag>
+              ) : (
+                <Tag color="gold">требуется</Tag>
+              )}
+            </Typography.Text>
             {readinessErrors.length === 0 ? (
               <Tag color="green">Готово к запуску</Tag>
             ) : (
@@ -661,42 +508,32 @@ export function CampaignNewPage() {
           </Space>
         </ProCard>
       </Col>
-      <Modal
-        title="Новый вид работ"
-        open={workTypeModalOpen}
-        confirmLoading={createWorkTypeMutation.isPending}
-        okText="Добавить"
-        cancelText="Отмена"
-        destroyOnHidden
-        onCancel={() => {
-          setWorkTypeModalOpen(false);
-          workTypeForm.resetFields();
-        }}
-        onOk={async () => {
-          try {
-            const values = await workTypeForm.validateFields();
-            createWorkTypeMutation.mutate(values);
-          } catch {
-            // Ant Design displays validation errors next to the fields.
-          }
-        }}
-      >
-        <Typography.Paragraph type="secondary">
-          Тема будет автоматически подставляться при выборе этого вида работ.
-        </Typography.Paragraph>
-        <ProForm form={workTypeForm} submitter={false} layout="vertical">
-          <ProFormText
-            name="name"
-            label="Название вида работ"
-            rules={[{ required: true, message: 'Укажите название' }]}
-          />
-          <ProFormText
-            name="mail_subject"
-            label="Тема письма по умолчанию"
-            rules={[{ required: true, message: 'Укажите тему письма' }]}
-          />
-        </ProForm>
-      </Modal>
+      {id && draft.job_id ? (
+        <RecipientGenerateModal
+          open={generateModalOpen}
+          campaignId={id}
+          jobId={draft.job_id}
+          onClose={() => setGenerateModalOpen(false)}
+          onImported={() => {
+            void queryClient.invalidateQueries({ queryKey: ['campaign-recipients', id] });
+            void queryClient.invalidateQueries({ queryKey: ['campaign-validate', id] });
+          }}
+        />
+      ) : null}
+      {id ? (
+        <VariableMappingModal
+          open={mappingModalOpen}
+          campaignId={id}
+          onClose={() => setMappingModalOpen(false)}
+          onConfirmed={() => {
+            void queryClient.invalidateQueries({ queryKey: ['campaign-validate', id] });
+            void campaignsApi.get(id).then((camp) => {
+              replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
+            });
+            message.success('Сопоставление переменных сохранено');
+          }}
+        />
+      ) : null}
     </Row>
   );
 }

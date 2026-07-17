@@ -283,6 +283,8 @@ class SmtpMailbox(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    max_per_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -416,6 +418,9 @@ class Campaign(Base):
     kp_template_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     contract_template_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     audience_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    email_chain_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("email_chains.id", ondelete="SET NULL"), nullable=True
+    )
     draft_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -432,6 +437,22 @@ class Campaign(Base):
         Index("idx_campaigns_owner_status", "owner_username", "status"),
         Index("idx_campaigns_job_id", "job_id"),
     )
+
+
+class EmailChainRecord(Base):
+    __tablename__ = "email_chains"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (Index("idx_email_chains_owner", "owner_username"),)
 
 
 class CampaignRecipient(Base):
@@ -507,6 +528,49 @@ class CampaignBatch(Base):
     __table_args__ = (
         Index("idx_campaign_batches_campaign", "campaign_id", "batch_index", unique=True),
         Index("idx_campaign_batches_status", "campaign_id", "status"),
+    )
+
+
+class CampaignChainConsentEvent(Base):
+    __tablename__ = "campaign_chain_consent_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
+    recipient_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    edge_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    token: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_chain_consent_campaign_action", "campaign_id", "action"),
+        Index("idx_chain_consent_email_action_expires", "email", "action", "expires_at"),
+        Index("idx_chain_consent_token", "token", unique=True),
+    )
+
+
+class CampaignChainToken(Base):
+    __tablename__ = "campaign_chain_tokens"
+
+    token: Mapped[str] = mapped_column(String(36), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
+    recipient_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    edge_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    send_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    clicked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_chain_tokens_campaign", "campaign_id"),
+        Index("idx_chain_tokens_recipient", "campaign_id", "recipient_id"),
+        Index("idx_chain_tokens_edge", "campaign_id", "edge_id"),
     )
 
 

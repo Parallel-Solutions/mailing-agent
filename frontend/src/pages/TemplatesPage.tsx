@@ -12,24 +12,24 @@ import {
 import { ProCard } from '@ant-design/pro-components';
 import { App, Button, Dropdown, Space, Tabs, Tag, Tooltip, Typography, Upload } from 'antd';
 import type { MenuProps } from 'antd';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { templatesApi } from '@/api/templates';
 import type { Template } from '@/api/types';
+import { AddTemplateWizard } from '@/features/templates/AddTemplateWizard';
+import { getEmailFormat } from '@/features/templates/emailTemplateUtils';
 import './TemplatesPage.css';
 
-type FileTemplateType = 'kp' | 'contract';
+type TemplateKind = 'email' | 'document';
 
 function TemplateFileUpload({
-  type,
   templateId,
   label = 'Загрузить свой шаблон',
   primary = false,
   compact = false,
   onUploaded,
 }: {
-  type: FileTemplateType;
   templateId?: string;
   label?: string;
   primary?: boolean;
@@ -38,7 +38,6 @@ function TemplateFileUpload({
 }) {
   const { message } = App.useApp();
   const [uploading, setUploading] = useState(false);
-  const accept = type === 'kp' ? '.docx,.pdf' : '.docx';
 
   const button = (
     <Button
@@ -54,13 +53,15 @@ function TemplateFileUpload({
 
   return (
     <Upload
-      accept={accept}
+      accept=".docx,.pdf,.html,.htm"
       maxCount={1}
       showUploadList={false}
       customRequest={async ({ file, onSuccess, onError }) => {
         setUploading(true);
         try {
-          const uploaded = await templatesApi.uploadFile(file as File, type, { template_id: templateId });
+          const uploaded = await templatesApi.uploadFile(file as File, 'document', {
+            template_id: templateId,
+          });
           message.success(templateId ? 'Новая версия загружена' : 'Шаблон загружен');
           onUploaded(uploaded);
           onSuccess?.(uploaded);
@@ -83,7 +84,7 @@ function TemplateCard({
   onRefresh,
 }: {
   template: Template;
-  type: 'email' | FileTemplateType;
+  type: TemplateKind;
   onRefresh: () => void;
 }) {
   const { message } = App.useApp();
@@ -93,6 +94,8 @@ function TemplateCard({
   const filename = template.version?.filename || '';
   const hasFile = Boolean(filename);
   const extension = filename.split('.').pop()?.toUpperCase();
+  const hasDeliveryPdf = Boolean(template.version?.rendered_pdf_filename);
+  const emailFormat = !isFileTemplate ? getEmailFormat(template) : null;
 
   const openEditor = () => navigate(`/templates/${template.id}/edit`);
   const preview = async () => {
@@ -109,10 +112,10 @@ function TemplateCard({
     moreItems.push({
       key: 'source',
       icon: <DownloadOutlined />,
-      label: type === 'kp' ? 'Скачать исходник' : 'Скачать DOCX',
+      label: 'Скачать исходник',
       onClick: () => window.open(templatesApi.fileUrl(template.id), '_blank', 'noopener,noreferrer'),
     });
-    if (type === 'kp') {
+    if (hasDeliveryPdf) {
       moreItems.push({
         key: 'delivery',
         icon: <FilePdfOutlined />,
@@ -155,6 +158,7 @@ function TemplateCard({
             <Tag color={isFileTemplate && !hasFile ? 'orange' : template.status === 'ready' ? 'green' : 'gold'}>
               {isFileTemplate && !hasFile ? 'Требуется файл' : template.status === 'ready' ? 'Готов' : template.status}
             </Tag>
+            {emailFormat && <Tag color={emailFormat === 'visual' ? 'blue' : 'default'}>{emailFormat === 'visual' ? 'HTML' : 'Текст'}</Tag>}
             {extension && <Tag>{extension}</Tag>}
           </Space>
         </div>
@@ -193,7 +197,6 @@ function TemplateCard({
           </Tooltip>
           {isFileTemplate && (
             <TemplateFileUpload
-              type={type}
               templateId={template.id}
               label={hasFile ? 'Загрузить новую версию' : 'Загрузить файл'}
               compact
@@ -211,43 +214,34 @@ function TemplateCard({
   );
 }
 
-function TemplateGrid({ type }: { type: 'email' | FileTemplateType }) {
+function TemplateGrid({ type }: { type: TemplateKind }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const isFileTemplate = type !== 'email';
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const isFileTemplate = type === 'document';
   const { data, isLoading } = useQuery({
     queryKey: ['templates', type],
     queryFn: () => templatesApi.list({ template_type: type }),
   });
 
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: ['templates', type] }); };
-  const createMutation = useMutation({
-    mutationFn: () => templatesApi.create({
-      name: 'Новый шаблон письма',
-      template_type: 'email',
-      subject: 'Тема письма',
-      body_html: '<p>Здравствуйте, {{contact_name}}!</p><p>Компания: {{company}}</p>',
-    }),
-    onSuccess: (template) => {
-      refresh();
-      navigate(`/templates/${template.id}/edit`);
-    },
-  });
+
+  const handleCreated = (template: Template) => {
+    refresh();
+    navigate(`/templates/${template.id}/edit`);
+  };
 
   return (
     <>
       <div className="template-library-toolbar">
-        {isFileTemplate ? (
-          <TemplateFileUpload type={type} primary onUploaded={refresh} />
-        ) : (
-          <Button type="primary" icon={<PlusOutlined />} loading={createMutation.isPending} onClick={() => createMutation.mutate()}>
-            Создать письмо
-          </Button>
-        )}
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setWizardOpen(true)}>
+          {isFileTemplate ? 'Добавить документ' : 'Добавить письмо'}
+        </Button>
         {isFileTemplate && (
-          <Typography.Text type="secondary">
-            {type === 'kp' ? 'КП: исходник DOCX или PDF · отправка PDF' : 'Документы: исходник и результат DOCX'}
-          </Typography.Text>
+          <>
+            <TemplateFileUpload primary onUploaded={refresh} />
+            <Typography.Text type="secondary">Форматы: DOCX, PDF, HTML</Typography.Text>
+          </>
         )}
       </div>
 
@@ -256,6 +250,13 @@ function TemplateGrid({ type }: { type: 'email' | FileTemplateType }) {
           <TemplateCard key={template.id} template={template} type={type} onRefresh={refresh} />
         ))}
       </div>
+
+      <AddTemplateWizard
+        open={wizardOpen}
+        templateType={type}
+        onClose={() => setWizardOpen(false)}
+        onCreated={handleCreated}
+      />
     </>
   );
 }
@@ -264,9 +265,8 @@ export function TemplatesPage() {
   return (
     <Tabs
       items={[
-        { key: 'email', label: 'Письма', children: <TemplateGrid type="email" /> },
-        { key: 'kp', label: 'Коммерческие предложения', children: <TemplateGrid type="kp" /> },
-        { key: 'contract', label: 'Договоры', children: <TemplateGrid type="contract" /> },
+        { key: 'email', label: 'Шаблон письма', children: <TemplateGrid type="email" /> },
+        { key: 'document', label: 'Документ', children: <TemplateGrid type="document" /> },
       ]}
     />
   );

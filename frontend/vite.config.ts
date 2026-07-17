@@ -19,6 +19,9 @@ export default defineConfig({
       '/register': { target: 'http://localhost:9806', changeOrigin: true },
     },
   },
+  optimizeDeps: {
+    include: ['grapesjs', 'grapesjs-preset-newsletter'],
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

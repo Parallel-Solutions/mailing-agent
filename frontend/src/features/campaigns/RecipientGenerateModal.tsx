@@ -1,0 +1,242 @@
+import { App, Button, Form, Input, Modal, Space, Typography } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { campaignsApi } from '@/api/campaigns';
+import { parserApi } from '@/api/parser';
+
+type Props = {
+  open: boolean;
+  campaignId: string;
+  jobId: string;
+  onClose: () => void;
+  onImported: () => void;
+};
+
+type SearchValues = {
+  what: string;
+  where: string;
+  volume?: string;
+  fields?: string;
+};
+
+const DEFAULT_FIELDS = 'email, телефон, адрес, ИНН, ФИО руководителя';
+
+function buildPrompt(values: SearchValues): string {
+  return [
+    `Найди ${values.what} в регионе: ${values.where}.`,
+    values.fields ? `Нужны данные: ${values.fields}.` : '',
+    values.volume ? `Объём: ${values.volume}.` : '',
+    'После сбора подготовь таблицу для скачивания.',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImported }: Props) {
+  const { message } = App.useApp();
+  const [form] = Form.useForm<SearchValues>();
+  const [phase, setPhase] = useState<'form' | 'running' | 'done'>('form');
+  const [logs, setLogs] = useState<string[]>([]);
+  const [running, setRunning] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const streamRef = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setPhase('form');
+    setLogs([]);
+    setRunning(false);
+    form.setFieldsValue({
+      what: '',
+      where: '',
+      volume: '',
+      fields: DEFAULT_FIELDS,
+    });
+  }, [open, form]);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      streamRef.current?.close();
+    };
+  }, []);
+
+  const appendLog = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setLogs((prev) => [...prev, trimmed]);
+  };
+
+  const cleanupRun = () => {
+    abortRef.current = null;
+    streamRef.current?.close();
+    streamRef.current = null;
+    setRunning(false);
+  };
+
+  const handleCancel = () => {
+    if (running) {
+      abortRef.current?.abort();
+      cleanupRun();
+    }
+    onClose();
+  };
+
+  const handleSubmit = async () => {
+    let values: SearchValues;
+    try {
+      values = await form.validateFields();
+    } catch {
+      return;
+    }
+
+    const what = values.what.trim();
+    const where = values.where.trim();
+    if (!what || !where) {
+      message.warning('Заполните, что и где нужно найти');
+      return;
+    }
+
+    const prompt = buildPrompt({
+      what,
+      where,
+      volume: values.volume?.trim(),
+      fields: values.fields?.trim(),
+    });
+
+    setPhase('running');
+    setRunning(true);
+    setLogs(['Запрос отправлен агенту…']);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 10 * 60 * 1000);
+
+    streamRef.current = parserApi.openProgressStream(jobId, (event) => {
+      if (event.text) appendLog(event.text);
+    });
+
+    try {
+      const result = await parserApi.chat(prompt, jobId, controller.signal);
+      if (result.reply) appendLog(result.reply);
+
+      if (result.result_file) {
+        try {
+          const file = await parserApi.downloadResult(jobId);
+          const imported = await campaignsApi.importRecipients(campaignId, file);
+          appendLog(`Импортировано получателей: ${imported.import?.total ?? 0}`);
+          message.success('Список получателей сформирован и загружен');
+          onImported();
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : 'Не удалось импортировать результат';
+          appendLog(detail);
+          message.error(detail);
+        }
+        setPhase('done');
+      } else {
+        message.info(result.reply || 'Агент ответил без готового файла. Уточните запрос или повторите.');
+        setPhase('done');
+      }
+    } catch (error) {
+      const aborted = error instanceof DOMException && error.name === 'AbortError';
+      appendLog(
+        aborted
+          ? 'Ожидание прервано. Если сбор ещё идёт на сервере, попробуйте скачать результат позже.'
+          : error instanceof Error
+            ? error.message
+            : 'Не удалось связаться с агентом таблицы',
+      );
+      message.error(aborted ? 'Генерация прервана' : 'Ошибка генерации списка');
+      setPhase('done');
+    } finally {
+      window.clearTimeout(timeout);
+      cleanupRun();
+    }
+  };
+
+  return (
+    <Modal
+      title={phase === 'form' ? 'Что нужно найти?' : 'Сбор списка получателей'}
+      open={open}
+      onCancel={handleCancel}
+      destroyOnHidden
+      width={560}
+      footer={
+        phase === 'form' ? (
+          <Space>
+            <Button onClick={handleCancel}>Отмена</Button>
+            <Button type="primary" onClick={() => void handleSubmit()}>
+              Сформировать и отправить
+            </Button>
+          </Space>
+        ) : (
+          <Space>
+            {running ? (
+              <Button danger onClick={() => abortRef.current?.abort()}>
+                Остановить ожидание
+              </Button>
+            ) : null}
+            <Button type="primary" disabled={running} onClick={onClose}>
+              Закрыть
+            </Button>
+          </Space>
+        )
+      }
+    >
+      {phase === 'form' ? (
+        <Form form={form} layout="vertical" initialValues={{ fields: DEFAULT_FIELDS }}>
+          <Form.Item
+            name="what"
+            label="Что ищем"
+            rules={[{ required: true, message: 'Укажите, что искать' }]}
+          >
+            <Input placeholder="Например: сельские поселения, администрации, организации" />
+          </Form.Item>
+          <Form.Item
+            name="where"
+            label="Где ищем"
+            rules={[{ required: true, message: 'Укажите регион или территорию' }]}
+          >
+            <Input placeholder="Например: Забайкальский край" />
+          </Form.Item>
+          <Form.Item label="Объём">
+            <Space.Compact style={{ width: '100%' }}>
+              <Form.Item name="volume" noStyle>
+                <Input placeholder="Например: 3000 записей, все районы, первые 500" />
+              </Form.Item>
+              <Button
+                onClick={() => form.setFieldValue('volume', 'всё, что есть')}
+              >
+                Искать всё
+              </Button>
+            </Space.Compact>
+          </Form.Item>
+          <Form.Item name="fields" label="Какие данные нужны">
+            <Input />
+          </Form.Item>
+        </Form>
+      ) : (
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            {running
+              ? 'Агент собирает данные через внешние сервисы. Это может занять несколько минут.'
+              : 'Сбор завершён.'}
+          </Typography.Text>
+          <div
+            style={{
+              maxHeight: 280,
+              overflow: 'auto',
+              background: '#fafafa',
+              border: '1px solid #f0f0f0',
+              borderRadius: 8,
+              padding: 12,
+              whiteSpace: 'pre-wrap',
+              fontSize: 13,
+            }}
+          >
+            {logs.length ? logs.join('\n\n') : 'Ожидание ответа…'}
+          </div>
+        </Space>
+      )}
+    </Modal>
+  );
+}

@@ -172,9 +172,20 @@ def get_task_payload(task_id: str) -> dict[str, Any]:
     task = get_task(task_id)
     if task is None:
         raise LookupError(f"background task {task_id} not found")
+    raw_payload = dict(task.get("payload") or {})
+    nested = raw_payload.get("kwargs")
+    # Backward compatible with older sender enqueue shape: {"kwargs": {...}}.
+    if (
+        isinstance(nested, dict)
+        and "job_id" not in raw_payload
+        and ("job_id" in nested or "dry_run" in nested or set(raw_payload.keys()) == {"kwargs"})
+    ):
+        kwargs = dict(nested)
+    else:
+        kwargs = raw_payload
     return {
         "task": task["task_type"],
-        "kwargs": dict(task.get("payload") or {}),
+        "kwargs": kwargs,
     }
 
 

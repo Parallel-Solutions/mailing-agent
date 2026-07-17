@@ -1,14 +1,23 @@
 import { PlusOutlined } from '@ant-design/icons';
 import { ModalForm, ProFormDigit, ProFormSelect, ProFormText, ProTable } from '@ant-design/pro-components';
-import { Alert, App, Button, Form, Input, Popconfirm, Space, Steps, Tag, Typography } from 'antd';
+import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { connectionsApi } from '@/api/connections';
 import type { SmtpSetupAnalysis, SmtpSetupSettings } from '@/api/connections';
 import type { DeliveryConnection } from '@/api/types';
+import {
+  MAILBOX_AUTH_KIND_OPTIONS,
+  authKindFromSetupAction,
+  isOAuthKindAvailable,
+  resolveOAuthProvider,
+  type AuthKind,
+} from '@/utils/connectionAuthKind';
 import { selectSmtpSetupSettings, smtpSetupSecurity } from '@/utils/smtpSetup';
 
 type ConnectionTransport = 'smtp' | 'rusender' | 'mailopost';
+type ApiTransport = 'rusender' | 'mailopost';
+type MethodKind = 'mailbox' | 'api_key';
 type SmtpSecurity = 'none' | 'tls' | 'starttls';
 type SmtpSetupStage = 'email' | 'credentials' | 'manual';
 
@@ -31,7 +40,10 @@ const SMTP_PROVIDER_LABELS: Record<string, string> = {
   custom: 'SMTP',
 };
 
-
+const API_BASE_URLS: Record<ApiTransport, string> = {
+  rusender: 'https://api.rusender.ru/api/v1',
+  mailopost: 'https://api.mailopost.ru/v1',
+};
 
 function connectionLabel(connection: DeliveryConnection) {
   if (connection.transport === 'smtp') {
@@ -46,6 +58,35 @@ function smtpSecurity(connection: DeliveryConnection): SmtpSecurity {
   return 'none';
 }
 
+function formatRateLimit(value?: number | null) {
+  return value && value > 0 ? String(value) : '∞';
+}
+
+function ConnectionRateLimitFields() {
+  return (
+    <>
+      <Alert
+        type="info"
+        showIcon
+        message="Лимиты отправки"
+        description="Ограничение для этого подключения действует во всех кампаниях. 0 или пусто — без лимита."
+        style={{ marginBottom: 16 }}
+      />
+      <ProFormDigit
+        name="max_per_hour"
+        label="Макс. писем в час"
+        fieldProps={{ min: 0, precision: 0 }}
+        extra="0 = без лимита"
+      />
+      <ProFormDigit
+        name="max_per_day"
+        label="Макс. писем в день"
+        fieldProps={{ min: 0, precision: 0 }}
+        extra="0 = без лимита"
+      />
+    </>
+  );
+}
 
 function EditConnectionAction({
   connection,
@@ -107,6 +148,7 @@ function EditConnectionAction({
     );
   };
   const isMail = connection.transport === 'smtp' && connection.provider === 'mailru';
+  const isOAuth = connection.transport === 'smtp' && connection.auth_method === 'oauth';
 
   return (
     <ModalForm
@@ -123,21 +165,26 @@ function EditConnectionAction({
       initialValues={{
         transport: connection.transport,
         email: connection.email,
-        sender_name: connection.sender_name,
         host: connection.host,
         port: connection.port,
         security: smtpSecurity(connection),
         api_base_url: connection.api_base_url,
         password: '',
         api_token: '',
+        max_per_hour: connection.max_per_hour ?? 0,
+        max_per_day: connection.max_per_day ?? 0,
       }}
       onFinish={async (values) => {
+        const rateLimits = {
+          max_per_hour: Number(values.max_per_hour) || 0,
+          max_per_day: Number(values.max_per_day) || 0,
+        };
         if (isMail) {
           await connectionsApi.update(connection.id, {
             transport: 'smtp',
             email: values.email,
-            sender_name: values.sender_name,
             ...(isSecretEditing ? { password: values.password } : {}),
+            ...rateLimits,
           });
         } else {
           const security = values.security as SmtpSecurity | undefined;
@@ -145,6 +192,8 @@ function EditConnectionAction({
             security: _security,
             password: _password,
             api_token: _apiToken,
+            max_per_hour: _maxPerHour,
+            max_per_day: _maxPerDay,
             ...connectionValues
           } = values;
           await connectionsApi.update(connection.id, {
@@ -152,12 +201,13 @@ function EditConnectionAction({
             transport: connection.transport,
             use_ssl: connection.transport === 'smtp' ? security === 'tls' : undefined,
             use_starttls: connection.transport === 'smtp' ? security === 'starttls' : undefined,
-            ...(isSecretEditing && connection.transport === 'smtp'
+            ...(isSecretEditing && connection.transport === 'smtp' && !isOAuth
               ? { password: values.password }
               : {}),
             ...(isSecretEditing && connection.transport !== 'smtp'
               ? { api_token: values.api_token }
               : {}),
+            ...rateLimits,
           });
         }
         message.success('Подключение обновлено');
@@ -176,10 +226,20 @@ function EditConnectionAction({
         label={connection.transport === 'smtp' ? 'Email почтового ящика' : 'Подтверждённый email отправителя'}
         rules={[{ required: true, type: 'email' }]}
       />
-      <ProFormText name="sender_name" label="Имя отправителя" />
 
       {connection.transport === 'smtp' ? (
-        isMail ? (
+        isOAuth ? (
+          <Alert
+            type="info"
+            showIcon
+            message="Подключение через OAuth 2.0"
+            description={
+              connection.oauth_provider === 'microsoft'
+                ? 'Авторизация Microsoft. Чтобы обновить доступ, удалите подключение и войдите заново.'
+                : 'Авторизация Google. Чтобы обновить доступ, удалите подключение и войдите заново.'
+            }
+          />
+        ) : isMail ? (
           <>
             {renderSecretEditor(
               'password',
@@ -205,31 +265,31 @@ function EditConnectionAction({
           </>
         ) : (
           <>
-          {renderSecretEditor(
-            'password',
-            isSecretEditing ? 'Новый пароль SMTP' : 'Пароль SMTP',
-            'Изменить пароль',
-          )}
-          <ProFormText name="host" label="SMTP-сервер" rules={[{ required: true }]} />
-          <ProFormSelect
-            name="security"
-            label="Защита соединения"
-            options={[
-              { label: 'Без шифрования', value: 'none' },
-              { label: 'TLS — обычно порт 465', value: 'tls' },
-              { label: 'STARTTLS — обычно порт 587', value: 'starttls' },
-            ]}
-            fieldProps={{
-              onChange: (value: SmtpSecurity) => editForm.setFieldValue('port', SECURITY_PORTS[value]),
-            }}
-            rules={[{ required: true }]}
-          />
-          <ProFormDigit
-            name="port"
-            label="Порт SMTP"
-            fieldProps={{ min: 1, max: 65535, precision: 0 }}
-            rules={[{ required: true }]}
-          />
+            {renderSecretEditor(
+              'password',
+              isSecretEditing ? 'Новый пароль SMTP' : 'Пароль SMTP',
+              'Изменить пароль',
+            )}
+            <ProFormText name="host" label="SMTP-сервер" rules={[{ required: true }]} />
+            <ProFormSelect
+              name="security"
+              label="Защита соединения"
+              options={[
+                { label: 'Без шифрования', value: 'none' },
+                { label: 'TLS — обычно порт 465', value: 'tls' },
+                { label: 'STARTTLS — обычно порт 587', value: 'starttls' },
+              ]}
+              fieldProps={{
+                onChange: (value: SmtpSecurity) => editForm.setFieldValue('port', SECURITY_PORTS[value]),
+              }}
+              rules={[{ required: true }]}
+            />
+            <ProFormDigit
+              name="port"
+              label="Порт SMTP"
+              fieldProps={{ min: 1, max: 65535, precision: 0 }}
+              rules={[{ required: true }]}
+            />
           </>
         )
       ) : (
@@ -248,6 +308,7 @@ function EditConnectionAction({
           />
         </>
       )}
+      <ConnectionRateLimitFields />
     </ModalForm>
   );
 }
@@ -256,12 +317,22 @@ export function ConnectionsPage() {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
-  const [transport, setTransport] = useState<ConnectionTransport>('smtp');
+  const [methodKind, setMethodKind] = useState<MethodKind | null>(null);
+  const [authKind, setAuthKind] = useState<AuthKind | null>(null);
+  const [recommendedAuthKind, setRecommendedAuthKind] = useState<AuthKind | null>(null);
+  const [apiTransport, setApiTransport] = useState<ApiTransport | null>(null);
   const [smtpSetupStage, setSmtpSetupStage] = useState<SmtpSetupStage>('email');
   const [smtpAnalysis, setSmtpAnalysis] = useState<SmtpSetupAnalysis | null>(null);
   const [smtpSetupSettings, setSmtpSetupSettings] = useState<SmtpSetupSettings | null>(null);
   const [smtpSetupError, setSmtpSetupError] = useState('');
   const [isAnalyzingSmtp, setIsAnalyzingSmtp] = useState(false);
+  const [isOAuthConnecting, setIsOAuthConnecting] = useState(false);
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [limitsStepConnectionId, setLimitsStepConnectionId] = useState<string | null>(null);
+
+  const refreshConnections = () => {
+    void queryClient.invalidateQueries({ queryKey: ['connections'] });
+  };
 
   const resetSmtpWizard = () => {
     setSmtpSetupStage('email');
@@ -269,6 +340,23 @@ export function ConnectionsPage() {
     setSmtpSetupSettings(null);
     setSmtpSetupError('');
     setIsAnalyzingSmtp(false);
+    setAuthKind(null);
+    setRecommendedAuthKind(null);
+    setIsOAuthConnecting(false);
+  };
+
+  const resetAddModal = () => {
+    setMethodKind(null);
+    setApiTransport(null);
+    setLimitsStepConnectionId(null);
+    resetSmtpWizard();
+    form.resetFields();
+  };
+
+  const enterLimitsStep = (connectionId: string) => {
+    setLimitsStepConnectionId(connectionId);
+    form.setFieldsValue({ max_per_hour: 0, max_per_day: 0 });
+    refreshConnections();
   };
 
   const applySmtpSettings = (settings: SmtpSetupSettings) => {
@@ -280,6 +368,19 @@ export function ConnectionsPage() {
     });
   };
 
+  const oauthAvailable = isOAuthKindAvailable({
+    oauthAvailable: smtpAnalysis?.oauth_available,
+    oauthProvider: smtpAnalysis?.action.oauth_provider,
+    email: form.getFieldValue('email') || smtpAnalysis?.email,
+    smtpProvider: smtpSetupSettings?.provider,
+  });
+
+  const oauthProvider = resolveOAuthProvider({
+    oauthProvider: smtpAnalysis?.action.oauth_provider,
+    email: form.getFieldValue('email') || smtpAnalysis?.email,
+    smtpProvider: smtpSetupSettings?.provider,
+  });
+
   const analyzeSmtpEmail = async () => {
     const values = await form.validateFields(['email']);
     const email = String(values.email || '').trim().toLowerCase();
@@ -289,10 +390,21 @@ export function ConnectionsPage() {
       const analysis = await connectionsApi.analyzeSmtp(email);
       setSmtpAnalysis(analysis);
       form.setFieldValue('smtp_username', email);
+      const recommendedKind = authKindFromSetupAction(analysis.action.action);
+      const oauthOk = isOAuthKindAvailable({
+        oauthAvailable: analysis.oauth_available,
+        oauthProvider: analysis.action.oauth_provider,
+        email,
+        smtpProvider: selectSmtpSetupSettings(analysis)?.provider,
+      });
+      const nextKind = recommendedKind === 'oauth' && !oauthOk ? 'app_password' : recommendedKind;
+      setRecommendedAuthKind(nextKind);
+      setAuthKind(nextKind);
+
       const recommended = selectSmtpSetupSettings(analysis);
       if (recommended?.host) {
         applySmtpSettings(recommended);
-        setSmtpSetupStage('credentials');
+        setSmtpSetupStage(analysis.action.action === 'show_manual' ? 'manual' : 'credentials');
       } else {
         const manualSettings: SmtpSetupSettings = {
           provider: 'custom',
@@ -304,6 +416,8 @@ export function ConnectionsPage() {
         applySmtpSettings(manualSettings);
         setSmtpSetupError('Автоматические настройки не найдены. Укажите данные SMTP-сервера вручную.');
         setSmtpSetupStage('manual');
+        setAuthKind('password');
+        setRecommendedAuthKind('password');
       }
     } catch (error) {
       const manualSettings: SmtpSetupSettings = {
@@ -321,18 +435,63 @@ export function ConnectionsPage() {
           : 'Не удалось определить провайдера. Укажите настройки вручную.',
       );
       setSmtpSetupStage('manual');
+      setAuthKind('password');
+      setRecommendedAuthKind('password');
     } finally {
       setIsAnalyzingSmtp(false);
     }
   };
+
+  const connectViaOAuth = async () => {
+    const email = String(form.getFieldValue('email') || '').trim().toLowerCase();
+    if (!email || !oauthProvider) {
+      message.error('OAuth недоступен для этого адреса.');
+      return;
+    }
+    setIsOAuthConnecting(true);
+    setSmtpSetupError('');
+    try {
+      const oauthResult = await connectionsApi.runOAuthPopup({
+        provider: oauthProvider,
+        email,
+        setup_session_id: smtpAnalysis?.setup_session_id || ('oauth-' + Date.now()),
+      });
+      const settings = smtpSetupSettings || {
+        provider: oauthProvider === 'google' ? 'gmail' : 'outlook',
+        host: oauthProvider === 'google' ? 'smtp.gmail.com' : 'smtp.office365.com',
+        port: 587,
+        use_ssl: false,
+        use_starttls: true,
+      };
+      const created = await connectionsApi.create({
+        transport: 'smtp',
+        provider: settings.provider || (oauthProvider === 'google' ? 'gmail' : 'outlook'),
+        email: oauthResult.email || email,
+        auth_method: 'oauth',
+        oauth_provider: oauthResult.provider || oauthProvider,
+        oauth_tokens: oauthResult.tokens,
+        smtp_username: oauthResult.email || email,
+        host: settings.host,
+        port: settings.port,
+        use_ssl: settings.use_ssl,
+        use_starttls: settings.use_starttls,
+        make_default: false,
+      });
+      message.success('Почтовый ящик подключён через OAuth');
+      enterLimitsStep(created.id);
+    } catch (error) {
+      setSmtpSetupError(
+        error instanceof Error ? error.message : 'Не удалось завершить OAuth.',
+      );
+    } finally {
+      setIsOAuthConnecting(false);
+    }
+  };
+
   const { data, isLoading } = useQuery({
     queryKey: ['connections'],
     queryFn: () => connectionsApi.list(),
   });
-
-  const refreshConnections = () => {
-    void queryClient.invalidateQueries({ queryKey: ['connections'] });
-  };
 
   const removeMutation = useMutation({
     mutationFn: (id: string) => connectionsApi.remove(id),
@@ -342,6 +501,16 @@ export function ConnectionsPage() {
     },
     onError: (error: Error) => message.error(error.message),
   });
+
+  const onMailboxEmailStep =
+    methodKind === 'mailbox' && (smtpSetupStage === 'email' || authKind === null);
+  const onLimitsStep = Boolean(limitsStepConnectionId);
+  const submitDisabled =
+    !onLimitsStep
+    && (methodKind === null
+      || (methodKind === 'mailbox'
+        && (onMailboxEmailStep || authKind === 'oauth' || isOAuthConnecting))
+      || (methodKind === 'api_key' && apiTransport === null));
 
   return (
     <ProTable<DeliveryConnection>
@@ -354,12 +523,47 @@ export function ConnectionsPage() {
           key="add"
           form={form}
           title="Добавить подключение"
-          modalProps={{ okText: 'Проверить и подключить', cancelText: 'Отмена', destroyOnHidden: true }}
+          open={addModalOpen}
+          modalProps={{
+            okText: onLimitsStep
+              ? 'Сохранить'
+              : methodKind === 'api_key'
+                ? 'Подключить'
+                : 'Проверить и подключить',
+            cancelText: 'Отмена',
+            destroyOnHidden: true,
+          }}
           submitter={{
-            searchConfig: { submitText: 'Проверить и подключить' },
+            searchConfig: {
+              submitText: onLimitsStep
+                ? 'Сохранить'
+                : methodKind === 'api_key'
+                  ? 'Подключить'
+                  : 'Проверить и подключить',
+            },
             submitButtonProps: {
-              disabled: transport === 'smtp' && smtpSetupStage === 'email',
-              loading: isAnalyzingSmtp,
+              disabled: submitDisabled,
+              loading: isAnalyzingSmtp || isOAuthConnecting,
+              style:
+                !onLimitsStep && methodKind === 'mailbox' && authKind === 'oauth'
+                  ? { display: 'none' }
+                  : undefined,
+            },
+            render: (_, dom) => {
+              if (!onLimitsStep) return dom;
+              return [
+                <Button
+                  key="skip"
+                  onClick={() => {
+                    message.success('Подключение сохранено без лимитов');
+                    setAddModalOpen(false);
+                    resetAddModal();
+                  }}
+                >
+                  Пропустить
+                </Button>,
+                ...dom,
+              ];
             },
           }}
           trigger={
@@ -368,138 +572,180 @@ export function ConnectionsPage() {
             </Button>
           }
           initialValues={{
-            transport: 'smtp',
+            method_kind: undefined,
             email: '',
-            sender_name: '',
             smtp_username: '',
             security: 'starttls',
             port: 587,
+            max_per_hour: 0,
+            max_per_day: 0,
           }}
           onOpenChange={(open) => {
-            if (!open) {
-              setTransport('smtp');
-              resetSmtpWizard();
-              form.resetFields();
-            }
+            setAddModalOpen(open);
+            if (!open) resetAddModal();
           }}
           onFinish={async (values) => {
-            if (transport === 'smtp') {
-              const security = (values.security || smtpSetupSecurity(
-                smtpSetupSettings || {
-                  provider: 'custom',
-                  host: '',
-                  port: 587,
-                  use_ssl: false,
-                  use_starttls: true,
-                },
-              )) as SmtpSecurity;
-              const attemptedSettings: SmtpSetupSettings = {
-                provider: smtpSetupStage === 'manual'
-                  ? 'custom'
-                  : (smtpSetupSettings?.provider || 'custom'),
-                host: String(values.host || smtpSetupSettings?.host || '').trim(),
-                port: Number(values.port || smtpSetupSettings?.port || SECURITY_PORTS[security]),
-                use_ssl: security === 'tls',
-                use_starttls: security === 'starttls',
-              };
-              if (!attemptedSettings.host) {
-                setSmtpSetupStage('manual');
-                setSmtpSetupError('Укажите SMTP-сервер.');
-                return false;
-              }
-
-              let verification;
-              try {
-                verification = await connectionsApi.verifySmtp({
-                  setup_session_id: smtpAnalysis?.setup_session_id || ('manual-' + Date.now()),
-                  email: values.email,
-                  password: values.password,
-                  provider: attemptedSettings.provider,
-                  host: attemptedSettings.host,
-                  port: attemptedSettings.port,
-                  use_ssl: attemptedSettings.use_ssl,
-                  use_starttls: attemptedSettings.use_starttls,
-                  smtp_username: values.smtp_username || values.email,
-                });
-              } catch (error) {
-                setSmtpSetupStage('manual');
-                setSmtpSetupError(
-                  error instanceof Error
-                    ? error.message
-                    : 'Не удалось проверить подключение. Проверьте настройки вручную.',
-                );
-                return false;
-              }
-
-              if (!verification.verified) {
-                if (verification.analysis) setSmtpAnalysis(verification.analysis);
-                setSmtpSetupStage('manual');
-                setSmtpSetupError(
-                  verification.error
-                    || 'Сервер найден, но подключение не прошло проверку. Проверьте логин, пароль и настройки SMTP.',
-                );
-                return false;
-              }
-
-              await connectionsApi.create({
-                transport: 'smtp',
-                provider: verification.settings.provider,
-                email: values.email,
-                sender_name: values.sender_name,
-                password: values.password,
-                smtp_username: values.smtp_username || values.email,
-                host: verification.settings.host,
-                port: verification.settings.port,
-                use_ssl: verification.settings.use_ssl,
-                use_starttls: verification.settings.use_starttls,
-                make_default: false,
+            if (limitsStepConnectionId) {
+              await connectionsApi.update(limitsStepConnectionId, {
+                max_per_hour: Number(values.max_per_hour) || 0,
+                max_per_day: Number(values.max_per_day) || 0,
               });
-            } else {
-              await connectionsApi.create({
-                ...values,
-                transport,
-                make_default: false,
-              });
+              message.success('Лимиты отправки сохранены');
+              refreshConnections();
+              resetAddModal();
+              return true;
             }
-            message.success(
-              (transport === 'smtp' ? 'Почтовый ящик' : PROVIDER_LABELS[transport]) + ' подключён',
-            );
-            refreshConnections();
-            resetSmtpWizard();
-            return true;
+
+            if (methodKind === 'api_key') {
+              if (!apiTransport) return false;
+              const created = await connectionsApi.create({
+                transport: apiTransport,
+                email: values.email,
+                api_token: values.api_token,
+                api_base_url: API_BASE_URLS[apiTransport],
+                make_default: false,
+              });
+              message.success(PROVIDER_LABELS[apiTransport] + ' подключён');
+              enterLimitsStep(created.id);
+              return false;
+            }
+
+            if (methodKind !== 'mailbox' || !authKind || authKind === 'oauth') return false;
+
+            const security = (values.security || smtpSetupSecurity(
+              smtpSetupSettings || {
+                provider: 'custom',
+                host: '',
+                port: 587,
+                use_ssl: false,
+                use_starttls: true,
+              },
+            )) as SmtpSecurity;
+            const attemptedSettings: SmtpSetupSettings = {
+              provider: smtpSetupStage === 'manual'
+                ? 'custom'
+                : (smtpSetupSettings?.provider || 'custom'),
+              host: String(values.host || smtpSetupSettings?.host || '').trim(),
+              port: Number(values.port || smtpSetupSettings?.port || SECURITY_PORTS[security]),
+              use_ssl: security === 'tls',
+              use_starttls: security === 'starttls',
+            };
+            if (!attemptedSettings.host) {
+              setSmtpSetupStage('manual');
+              setSmtpSetupError('Укажите SMTP-сервер.');
+              return false;
+            }
+
+            let verification;
+            try {
+              verification = await connectionsApi.verifySmtp({
+                setup_session_id: smtpAnalysis?.setup_session_id || ('manual-' + Date.now()),
+                email: values.email,
+                password: values.password,
+                provider: attemptedSettings.provider,
+                host: attemptedSettings.host,
+                port: attemptedSettings.port,
+                use_ssl: attemptedSettings.use_ssl,
+                use_starttls: attemptedSettings.use_starttls,
+                smtp_username: values.smtp_username || values.email,
+              });
+            } catch (error) {
+              setSmtpSetupStage('manual');
+              setSmtpSetupError(
+                error instanceof Error
+                  ? error.message
+                  : 'Не удалось проверить подключение. Проверьте настройки вручную.',
+              );
+              return false;
+            }
+
+            if (!verification.verified) {
+              if (verification.analysis) setSmtpAnalysis(verification.analysis);
+              setSmtpSetupStage('manual');
+              setSmtpSetupError(
+                verification.error
+                  || 'Сервер найден, но подключение не прошло проверку. Проверьте логин, пароль и настройки SMTP.',
+              );
+              return false;
+            }
+
+            const created = await connectionsApi.create({
+              transport: 'smtp',
+              provider: verification.settings.provider,
+              email: values.email,
+              password: values.password,
+              smtp_username: values.smtp_username || values.email,
+              host: verification.settings.host,
+              port: verification.settings.port,
+              use_ssl: verification.settings.use_ssl,
+              use_starttls: verification.settings.use_starttls,
+              make_default: false,
+            });
+            message.success('Почтовый ящик подключён');
+            enterLimitsStep(created.id);
+            return false;
           }}
         >
+          {onLimitsStep ? (
+            <>
+              {methodKind === 'mailbox' ? (
+                <Steps
+                  size="small"
+                  current={2}
+                  items={[
+                    { title: 'Почта' },
+                    { title: 'Тип и доступ' },
+                    { title: 'Лимиты' },
+                  ]}
+                  style={{ marginBottom: 24 }}
+                />
+              ) : null}
+              <Alert
+                type="success"
+                showIcon
+                message="Подключение создано"
+                description="Укажите лимиты отправки для этого ящика или пропустите шаг."
+                style={{ marginBottom: 16 }}
+              />
+              <ConnectionRateLimitFields />
+            </>
+          ) : (
+            <>
           <ProFormSelect
-            name="transport"
+            name="method_kind"
             label="Способ отправки"
             options={[
-              { label: 'Почтовый ящик — автоматическая настройка', value: 'smtp' },
-              { label: 'RuSender — по API-ключу', value: 'rusender' },
-              { label: 'MailoPost — по API-токену', value: 'mailopost' },
+              { label: 'Почтовый ящик', value: 'mailbox' },
+              { label: 'API-ключ', value: 'api_key' },
             ]}
             fieldProps={{
-              onChange: (value: ConnectionTransport) => {
-                setTransport(value);
+              allowClear: true,
+              placeholder: 'Выберите способ отправки',
+              onChange: (value: MethodKind | null) => {
+                setMethodKind(value || null);
+                setApiTransport(null);
                 resetSmtpWizard();
-                if (value === 'rusender') {
-                  form.setFieldsValue({ api_base_url: 'https://api.rusender.ru/api/v1' });
-                } else if (value === 'mailopost') {
-                  form.setFieldsValue({ api_base_url: 'https://api.mailopost.ru/v1' });
-                }
+                form.setFieldsValue({
+                  transport: undefined,
+                  email: '',
+                  password: undefined,
+                  api_token: undefined,
+                  api_base_url: undefined,
+                });
               },
             }}
-            rules={[{ required: true }]}
+            rules={[{ required: true, message: 'Выберите способ отправки' }]}
           />
 
-          {transport === 'smtp' ? (
+          {methodKind === 'mailbox' ? (
             <>
               <Steps
                 size="small"
-                current={smtpSetupStage === 'email' ? 0 : 1}
+                current={onMailboxEmailStep ? 0 : 1}
                 items={[
                   { title: 'Почта' },
-                  { title: 'Настройки и пароль' },
-                  { title: 'Подключено' },
+                  { title: 'Тип и доступ' },
+                  { title: 'Лимиты' },
                 ]}
                 style={{ marginBottom: 24 }}
               />
@@ -509,161 +755,272 @@ export function ConnectionsPage() {
                 rules={[{ required: true, type: 'email' }]}
                 fieldProps={{
                   onChange: () => {
-                    if (smtpSetupStage !== 'email') resetSmtpWizard();
+                    if (!onMailboxEmailStep) resetSmtpWizard();
                   },
                 }}
               />
-              <ProFormText name="sender_name" label="Имя отправителя" />
 
-              {smtpSetupStage === 'email' ? (
+              {onMailboxEmailStep ? (
                 <Space direction="vertical" size={12} style={{ width: '100%' }}>
                   <Alert
                     type="info"
                     showIcon
-                    message="Сначала найдём настройки почтового сервера"
-                    description="Определим провайдера по домену и MX-записям, проверим autoconfig и доступные SMTP-порты."
+                    message="Определим наиболее вероятный тип входа"
+                    description="По домену и MX-записям подскажем: обычный пароль, пароль приложения или OAuth. Тип можно будет сменить вручную."
                   />
                   <Button
                     type="primary"
                     loading={isAnalyzingSmtp}
                     onClick={() => void analyzeSmtpEmail()}
                   >
-                    Определить настройки
+                    Определить и продолжить
                   </Button>
                 </Space>
               ) : (
                 <>
+                  <Form.Item label="Тип входа" required style={{ marginBottom: 16 }}>
+                    <Radio.Group
+                      value={authKind || undefined}
+                      onChange={(event) => {
+                        setAuthKind(event.target.value as AuthKind);
+                        setSmtpSetupError('');
+                      }}
+                      style={{ width: '100%' }}
+                    >
+                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                        {MAILBOX_AUTH_KIND_OPTIONS.map((option) => {
+                          const oauthDisabled = option.value === 'oauth' && !oauthAvailable;
+                          return (
+                            <Radio
+                              key={option.value}
+                              value={option.value}
+                              disabled={oauthDisabled}
+                              style={{
+                                width: '100%',
+                                margin: 0,
+                                padding: '12px 14px',
+                                border: '1px solid var(--ant-color-border)',
+                                borderRadius: 8,
+                                background:
+                                  authKind === option.value
+                                    ? 'var(--ant-color-primary-bg)'
+                                    : undefined,
+                              }}
+                            >
+                              <Space direction="vertical" size={0}>
+                                <Space size={8}>
+                                  <Typography.Text strong>{option.label}</Typography.Text>
+                                  {recommendedAuthKind === option.value ? (
+                                    <Tag color="blue">Рекомендуем</Tag>
+                                  ) : null}
+                                  {oauthDisabled ? (
+                                    <Tag>Недоступно</Tag>
+                                  ) : null}
+                                </Space>
+                                <Typography.Text type="secondary">{option.description}</Typography.Text>
+                                {oauthDisabled ? (
+                                  <Typography.Text type="secondary">
+                                    OAuth для этого адреса не настроен на сервере или не поддерживается.
+                                  </Typography.Text>
+                                ) : null}
+                              </Space>
+                            </Radio>
+                          );
+                        })}
+                      </Space>
+                    </Radio.Group>
+                  </Form.Item>
+
                   {smtpSetupError ? (
                     <Alert
                       type="error"
                       showIcon
-                      message="Подключение не прошло проверку"
+                      message="Нужна дополнительная настройка"
                       description={smtpSetupError}
                       style={{ marginBottom: 16 }}
                     />
                   ) : null}
 
-                  {smtpSetupSettings?.host ? (
-                    <Alert
-                      type={smtpSetupStage === 'manual' ? 'warning' : 'success'}
-                      showIcon
-                      message={
-                        smtpSetupStage === 'manual'
-                          ? 'Проверьте настройки SMTP вручную'
-                          : 'Найден провайдер: '
+                  {authKind === 'oauth' ? (
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      {smtpAnalysis?.action.message_ru ? (
+                        <Alert
+                          type="info"
+                          showIcon
+                          message={smtpAnalysis.action.message_ru}
+                          description={smtpAnalysis.action.instructions.slice(0, 2).join(' ')}
+                        />
+                      ) : null}
+                      {smtpSetupSettings?.host ? (
+                        <Alert
+                          type="success"
+                          showIcon
+                          message={
+                            'Найден провайдер: '
                             + (SMTP_PROVIDER_LABELS[smtpSetupSettings.provider] || 'Почтовый сервер')
-                      }
-                      description={
-                        smtpSetupSettings.host + ':' + smtpSetupSettings.port + ' · '
-                        + (
-                          smtpSetupSettings.use_ssl
-                            ? 'SSL/TLS'
-                            : smtpSetupSettings.use_starttls
-                              ? 'STARTTLS'
-                              : 'без шифрования'
-                        )
-                      }
-                      style={{ marginBottom: 16 }}
-                    />
-                  ) : null}
-
-                  {smtpAnalysis?.action.message_ru ? (
-                    <Alert
-                      type="info"
-                      showIcon
-                      message={smtpAnalysis.action.message_ru}
-                      description={smtpAnalysis.action.instructions.slice(0, 2).join(' ')}
-                      style={{ marginBottom: 16 }}
-                    />
-                  ) : null}
-
-                  <ProFormText.Password
-                    name="password"
-                    label={
-                      smtpAnalysis?.action.action === 'show_app_password'
-                        ? 'Пароль приложения'
-                        : 'Пароль почтового ящика или приложения'
-                    }
-                    rules={[{ required: true }]}
-                    fieldProps={{ autoComplete: 'new-password' }}
-                  />
-
-                  {smtpSetupStage === 'manual' ? (
-                    <>
-                      <ProFormText
-                        name="smtp_username"
-                        label="Логин SMTP"
-                        tooltip="Обычно совпадает с полным адресом электронной почты."
-                        rules={[{ required: true }]}
-                      />
-                      <ProFormText
-                        name="host"
-                        label="SMTP-сервер"
-                        placeholder="Например, smtp.example.ru"
-                        rules={[{ required: true }]}
-                      />
-                      <ProFormSelect
-                        name="security"
-                        label="Защита соединения"
-                        options={[
-                          { label: 'SSL/TLS — обычно порт 465', value: 'tls' },
-                          { label: 'STARTTLS — обычно порт 587', value: 'starttls' },
-                          { label: 'Без шифрования — не рекомендуется', value: 'none' },
-                        ]}
-                        fieldProps={{
-                          onChange: (value: SmtpSecurity) => {
-                            form.setFieldValue('port', SECURITY_PORTS[value]);
-                          },
-                        }}
-                        rules={[{ required: true }]}
-                      />
-                      <ProFormDigit
-                        name="port"
-                        label="Порт SMTP"
-                        fieldProps={{ min: 1, max: 65535, precision: 0 }}
-                        rules={[{ required: true }]}
-                      />
+                          }
+                          description={
+                            smtpSetupSettings.host + ':' + smtpSetupSettings.port
+                          }
+                        />
+                      ) : null}
                       <Button
-                        type="link"
-                        onClick={() => void analyzeSmtpEmail()}
-                        loading={isAnalyzingSmtp}
+                        type="primary"
+                        loading={isOAuthConnecting}
+                        disabled={!oauthAvailable}
+                        onClick={() => void connectViaOAuth()}
                       >
-                        Попробовать автоматическую настройку снова
+                        {oauthProvider === 'microsoft'
+                          ? 'Войти через Microsoft'
+                          : 'Войти через Google'}
                       </Button>
+                    </Space>
+                  ) : null}
+
+                  {authKind === 'password' || authKind === 'app_password' ? (
+                    <>
+                      {smtpSetupSettings?.host ? (
+                        <Alert
+                          type={smtpSetupStage === 'manual' ? 'warning' : 'success'}
+                          showIcon
+                          message={
+                            smtpSetupStage === 'manual'
+                              ? 'Проверьте настройки SMTP вручную'
+                              : 'Найден провайдер: '
+                                + (SMTP_PROVIDER_LABELS[smtpSetupSettings.provider] || 'Почтовый сервер')
+                          }
+                          description={
+                            smtpSetupSettings.host + ':' + smtpSetupSettings.port + ' · '
+                            + (
+                              smtpSetupSettings.use_ssl
+                                ? 'SSL/TLS'
+                                : smtpSetupSettings.use_starttls
+                                  ? 'STARTTLS'
+                                  : 'без шифрования'
+                            )
+                          }
+                          style={{ marginBottom: 16 }}
+                        />
+                      ) : null}
+
+                      {smtpAnalysis?.action.message_ru ? (
+                        <Alert
+                          type="info"
+                          showIcon
+                          message={smtpAnalysis.action.message_ru}
+                          description={smtpAnalysis.action.instructions.slice(0, 2).join(' ')}
+                          style={{ marginBottom: 16 }}
+                        />
+                      ) : null}
+
+                      <ProFormText.Password
+                        name="password"
+                        label={
+                          authKind === 'app_password'
+                            ? 'Пароль приложения'
+                            : 'Пароль почтового ящика'
+                        }
+                        rules={[{ required: true }]}
+                        fieldProps={{ autoComplete: 'new-password' }}
+                      />
+
+                      {smtpSetupStage === 'manual' ? (
+                        <>
+                          <ProFormText
+                            name="smtp_username"
+                            label="Логин SMTP"
+                            tooltip="Обычно совпадает с полным адресом электронной почты."
+                            rules={[{ required: true }]}
+                          />
+                          <ProFormText
+                            name="host"
+                            label="SMTP-сервер"
+                            placeholder="Например, smtp.example.ru"
+                            rules={[{ required: true }]}
+                          />
+                          <ProFormSelect
+                            name="security"
+                            label="Защита соединения"
+                            options={[
+                              { label: 'SSL/TLS — обычно порт 465', value: 'tls' },
+                              { label: 'STARTTLS — обычно порт 587', value: 'starttls' },
+                              { label: 'Без шифрования — не рекомендуется', value: 'none' },
+                            ]}
+                            fieldProps={{
+                              onChange: (value: SmtpSecurity) => {
+                                form.setFieldValue('port', SECURITY_PORTS[value]);
+                              },
+                            }}
+                            rules={[{ required: true }]}
+                          />
+                          <ProFormDigit
+                            name="port"
+                            label="Порт SMTP"
+                            fieldProps={{ min: 1, max: 65535, precision: 0 }}
+                            rules={[{ required: true }]}
+                          />
+                          <Button
+                            type="link"
+                            onClick={() => void analyzeSmtpEmail()}
+                            loading={isAnalyzingSmtp}
+                          >
+                            Попробовать автоматическую настройку снова
+                          </Button>
+                        </>
+                      ) : (
+                        <Button type="link" onClick={() => setSmtpSetupStage('manual')}>
+                          Указать настройки вручную
+                        </Button>
+                      )}
                     </>
-                  ) : (
-                    <Button type="link" onClick={() => setSmtpSetupStage('manual')}>
-                      Указать настройки вручную
-                    </Button>
-                  )}
+                  ) : null}
                 </>
               )}
             </>
-          ) : (
+          ) : null}
+
+          {methodKind === 'api_key' ? (
             <>
-              <ProFormText
-                name="email"
-                label="Подтверждённый email отправителя"
-                rules={[{ required: true, type: 'email' }]}
+              <ProFormSelect
+                name="transport"
+                label="Провайдер"
+                options={[
+                  { label: 'RuSender', value: 'rusender' },
+                  { label: 'MailoPost', value: 'mailopost' },
+                ]}
+                fieldProps={{
+                  placeholder: 'Выберите провайдера',
+                  onChange: (value: ApiTransport) => {
+                    setApiTransport(value || null);
+                    if (value) {
+                      form.setFieldsValue({ api_base_url: API_BASE_URLS[value] });
+                    }
+                  },
+                }}
+                rules={[{ required: true, message: 'Выберите провайдера' }]}
               />
-              <ProFormText name="sender_name" label="Имя отправителя" />
-              <ProFormText.Password
-                name="api_token"
-                label={transport === 'rusender' ? 'API-ключ RuSender' : 'API-токен MailoPost'}
-                rules={[{ required: true }]}
-              />
-              <ProFormText
-                name="api_base_url"
-                label="Адрес API"
-                tooltip="Меняйте только при использовании отдельного или тестового API-сервера."
-                rules={[{ required: true, type: 'url' }]}
-              />
-              <Alert
-                type="info"
-                showIcon
-                message="Перед подключением подтвердите адрес отправителя у провайдера"
-                description="Токен хранится в зашифрованном виде и не отображается после сохранения. Кнопка «Проверить» отправит тестовое письмо на этот адрес."
-              />
+              {apiTransport ? (
+                <>
+                  <ProFormText.Password
+                    name="api_token"
+                    label={apiTransport === 'rusender' ? 'API-ключ RuSender' : 'API-токен MailoPost'}
+                    rules={[{ required: true }]}
+                  />
+                  <ProFormText
+                    name="email"
+                    label="Подтверждённый email отправителя"
+                    rules={[{ required: true, type: 'email' }]}
+                  />
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="Перед подключением подтвердите адрес отправителя у провайдера"
+                    description="Токен хранится в зашифрованном виде и не отображается после сохранения. Кнопка «Проверить» отправит тестовое письмо на этот адрес. Имя отправителя задаётся в настройках профиля."
+                  />
+                </>
+              ) : null}
+            </>
+          ) : null}
             </>
           )}
         </ModalForm>,
@@ -676,13 +1033,24 @@ export function ConnectionsPage() {
           render: (_, row) => <Tag color="blue">{connectionLabel(row)}</Tag>,
         },
         { title: 'Отправитель', dataIndex: 'email' },
-        { title: 'Имя', dataIndex: 'sender_name', render: (value) => value || '—' },
         {
           title: 'Параметры',
           render: (_, row) =>
             row.transport === 'smtp'
-              ? `${row.host}:${row.port} · ${row.use_ssl ? 'SSL/TLS' : row.use_starttls ? 'STARTTLS' : 'без шифрования'}`
+              ? `${row.host}:${row.port} · ${
+                row.auth_method === 'oauth'
+                  ? 'OAuth'
+                  : row.use_ssl
+                    ? 'SSL/TLS'
+                    : row.use_starttls
+                      ? 'STARTTLS'
+                      : 'без шифрования'
+              }`
               : row.api_base_url,
+        },
+        {
+          title: 'Лимит час/день',
+          render: (_, row) => `${formatRateLimit(row.max_per_hour)}/${formatRateLimit(row.max_per_day)}`,
         },
         {
           title: 'Статус',

@@ -1,10 +1,26 @@
 import { api, apiRequest } from './client';
-import type { PdfEditorField, PdfEditorState, Template } from './types';
+import type { EmailEditorState, PdfEditorField, PdfEditorState, Template } from './types';
 
 export type OfficeEditorConfig = {
   editor_url: string;
   config: Record<string, unknown>;
 };
+
+export type TemplateStarter = {
+  id: string;
+  name: string;
+  template_type: string;
+  preview_html: string;
+  subject?: string | null;
+  email_format?: 'simple' | 'visual';
+};
+
+export type TemplateAiModel = {
+  id: string;
+  label: string;
+  default?: boolean;
+};
+
 export const templatesApi = {
   list: (params?: { template_type?: string; q?: string }) => {
     const q = new URLSearchParams();
@@ -21,10 +37,11 @@ export const templatesApi = {
     body_html?: string;
     body_text?: string;
     tags?: string[];
+    editor_state?: EmailEditorState;
   }) => api.post<Template>('/api/v1/templates', body),
   uploadFile: (
     file: File,
-    template_type: 'kp' | 'contract',
+    template_type: 'document',
     options?: { name?: string; template_id?: string },
   ) => {
     const form = new FormData();
@@ -33,6 +50,30 @@ export const templatesApi = {
     if (options?.name) form.append('name', options.name);
     if (options?.template_id) form.append('template_id', options.template_id);
     return apiRequest<Template>('/api/v1/templates/upload', { method: 'POST', body: form });
+  },
+  starters: (template_type?: string) => {
+    const q = new URLSearchParams();
+    if (template_type) q.set('template_type', template_type);
+    const suffix = q.toString() ? `?${q}` : '';
+    return api.get<TemplateStarter[]>(`/api/v1/templates/starters${suffix}`);
+  },
+  useStarter: (starterId: string) =>
+    api.post<Template>(`/api/v1/templates/starters/${starterId}/use`),
+  models: () => api.get<TemplateAiModel[]>('/api/v1/templates/models'),
+  generate: (body: {
+    template_type: 'email' | 'document';
+    prompt?: string;
+    model?: string;
+    files?: File[];
+  }) => {
+    const form = new FormData();
+    form.append('template_type', body.template_type);
+    form.append('prompt', body.prompt || '');
+    form.append('model', body.model || '');
+    for (const file of body.files || []) {
+      form.append('files', file);
+    }
+    return apiRequest<Template>('/api/v1/templates/generate', { method: 'POST', body: form });
   },
   fileUrl: (id: string) => `/api/v1/templates/${id}/file`,
   deliveryFileUrl: (id: string) => `/api/v1/templates/${id}/delivery-file`,
@@ -69,8 +110,32 @@ export const templatesApi = {
       body_html?: string;
       body_text?: string;
       variables?: { name: string; source: string; label: string }[];
+      editor_state?: EmailEditorState;
     },
   ) => api.patch<Template>(`/api/v1/templates/${id}`, body),
+  uploadAsset: async (templateId: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    const response = await fetch(`/api/v1/templates/${templateId}/assets`, {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!response.ok) {
+      let detail = 'Не удалось загрузить изображение';
+      try {
+        const payload = (await response.json()) as { detail?: string };
+        detail = payload.detail || detail;
+      } catch {
+        // Keep generic message.
+      }
+      throw new Error(detail);
+    }
+    const payload = (await response.json()) as { result?: { data?: Array<{ src?: string }> } };
+    const src = payload.result?.data?.[0]?.src;
+    if (!src) throw new Error('Сервер не вернул URL изображения');
+    return src;
+  },
   duplicate: (id: string) => api.post<Template>(`/api/v1/templates/${id}/duplicate`),
   archive: (id: string) => api.post<Template>(`/api/v1/templates/${id}/archive`),
   versions: (id: string) => api.get(`/api/v1/templates/${id}/versions`),

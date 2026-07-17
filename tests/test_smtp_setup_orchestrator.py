@@ -337,7 +337,25 @@ class SmtpSetupOrchestratorTests(unittest.TestCase):
         self.assertGreater(kwargs["deadline"], 0)
 
 
+class VerifySmtpSetupPasswordTests(unittest.TestCase):
+    @patch("src.generator.delivery.smtp_setup_orchestrator.verify_smtp_credentials")
+    def test_verify_normalizes_app_password_whitespace(self, mock_verify) -> None:
+        from src.generator.delivery.smtp_setup_orchestrator import verify_smtp_setup
 
+        result = verify_smtp_setup(
+            setup_session_id="manual-test",
+            email="user@gmail.com",
+            password="abcd efgh ijkl mnop",
+            provider="gmail",
+            host="smtp.gmail.com",
+            port=587,
+            use_ssl=False,
+            use_starttls=True,
+        )
+
+        self.assertTrue(result["verified"])
+        credentials = mock_verify.call_args.args[0]
+        self.assertEqual(credentials.password, "abcdefghijklmnop")
 
 
 if __name__ == "__main__":

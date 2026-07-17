@@ -79,7 +79,15 @@ def _is_output_ready(
         return False
     if expected_documents <= 0:
         return output_file_count > 0
-    return output_docx_count >= expected_documents and output_pdf_count >= expected_pdf_documents
+    # KP finalize replaces DOCX with PDF; contracts stay as DOCX (no PDF expected).
+    # remaining_docx_expected = non-KP docs that must still be present as DOCX.
+    if expected_pdf_documents > 0:
+        remaining_docx_expected = max(0, expected_documents - expected_pdf_documents)
+        return (
+            output_pdf_count >= expected_pdf_documents
+            and output_docx_count >= remaining_docx_expected
+        )
+    return output_docx_count >= expected_documents
 
 def is_successful_documents_generation_locked(
     *,
@@ -214,7 +222,16 @@ def _recover_completed_generator_after_worker_exit(
     expected_pdf_documents = _safe_int(generator_state.get("total_rows")) * pdfs_per_row
     output_docx_count = _safe_int(readiness.get("output_docx_count"))
     output_pdf_count = _safe_int(readiness.get("output_pdf_count"))
-    if expected_documents <= 0 or output_docx_count < expected_documents or output_pdf_count < expected_pdf_documents:
+    remaining_docx_expected = (
+        max(0, expected_documents - expected_pdf_documents)
+        if expected_pdf_documents > 0
+        else expected_documents
+    )
+    if (
+        expected_documents <= 0
+        or output_docx_count < remaining_docx_expected
+        or output_pdf_count < expected_pdf_documents
+    ):
         return generator_state
 
     recovered_state = dict(generator_state)

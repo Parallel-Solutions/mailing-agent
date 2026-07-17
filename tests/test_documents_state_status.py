@@ -286,6 +286,51 @@ class DocumentsStateStatusTests(unittest.TestCase):
         event_texts = [event["text"] for event in result["ui"]["chat_events"]]
         self.assertIn("Результат собран. Можно скачать архив и перейти к проверке отправки.", event_texts)
 
+    def test_completed_kp_with_pdf_only_output_is_ready(self) -> None:
+        """After KP finalize DOCX are removed; PDFs alone must mark output ready."""
+        generator_state = {
+            "status": "completed",
+            "stage": "completed",
+            "document_mode": "kp",
+            "total_rows": 2,
+            "processed_rows": 2,
+            "staged_docx_count": 2,
+            "staged_pdf_count": 2,
+            "pdf_total": 2,
+            "pdf_processed": 2,
+            "output_file_count": 2,
+            "error_rows": 0,
+        }
+        philologist_state = {
+            "status": "completed",
+            "total_documents": 2,
+            "processed_documents": 2,
+        }
+        documents_service._deps.clear()
+        documents_service.configure_documents_service(
+            compact_generator_status=lambda state: state,
+            get_generator_status=lambda job_id: generator_state,
+            compact_philologist_status=lambda state: state,
+            get_philologist_status=lambda job_id, include_details=False: philologist_state,
+            get_documents_thread=lambda job_id: None,
+            get_generator_thread=lambda job_id: None,
+            get_philologist_thread=lambda job_id: None,
+            save_generator_state=lambda state, job_id: state,
+            save_philologist_state=lambda state, job_id: state,
+            build_job_readiness_result=lambda job_id, **kwargs: {
+                "generator_ready": True,
+                "generator_reason": "",
+                "output_docx_count": 0,
+                "output_pdf_count": 2,
+            },
+        )
+
+        result = documents_service.compact_documents_status("job-test", document_mode="kp")
+
+        self.assertTrue(result["output_ready"])
+        self.assertTrue(result["ui"]["actions"]["can_download_output"])
+        self.assertTrue(result["ui"]["actions"]["can_go_next"])
+
     def test_completed_state_with_missing_output_pdfs_disables_archive_actions(self) -> None:
         generator_state = {
             "status": "completed",

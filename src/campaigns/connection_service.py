@@ -20,11 +20,14 @@ from src.generator.delivery.smtp_mailboxes import (
     delete_mailbox,
     humanize_smtp_error,
     mark_mailbox_status,
+    normalize_smtp_secret,
     resolve_smtp_credentials,
     update_mailbox,
     verify_and_mark_mailbox,
     verify_smtp_credentials,
 )
+from src.generator.delivery.smtp_oauth import OAuthTokens
+from src.campaigns.profile_service import get_or_create_profile
 from src.infra.db import session_scope
 from src.infra.models import SmtpMailbox
 from src.security.credential_vault import decrypt_secret, encrypt_secret
@@ -55,6 +58,32 @@ def _safe_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _rate_limit_value(value: Any, *, default: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
+
+
+def _optional_rate_limit(data: dict[str, Any], key: str) -> int | None:
+    if key not in data or data.get(key) is None:
+        return None
+    return _rate_limit_value(data.get(key))
+
+
+def _profile_sender_name(owner_username: str, fallback: Any = "") -> str:
+    """Prefer the user's profile display name; fall back to stored connection name."""
+    try:
+        profile = get_or_create_profile(owner_username)
+        display_name = _safe_text(profile.get("display_name"))
+        if display_name:
+            return display_name
+    except Exception:
+        pass
+    return _safe_text(fallback)
+
+
 def _normalize_mailru_email(value: Any) -> str:
     email = _safe_text(value).lower()
     local_part, separator, domain = email.rpartition("@")
@@ -70,7 +99,7 @@ def _verify_mailru_credentials(
     sender_name: Any = "",
 ) -> None:
     safe_email = _normalize_mailru_email(email)
-    safe_password = _safe_text(password)
+    safe_password = normalize_smtp_secret(password)
     if not safe_password:
         raise ValueError("Укажите пароль для внешнего приложения Почты Mail.")
     credentials = ResolvedSmtpCredentials(
@@ -101,6 +130,7 @@ def connection_transport(row: SmtpMailbox) -> str:
 
 def _public_connection(row: SmtpMailbox) -> dict[str, Any]:
     transport = connection_transport(row)
+    auth_method = _safe_text(row.auth_method) or "password"
     return {
         "id": row.id,
         "transport": transport,
@@ -112,10 +142,14 @@ def _public_connection(row: SmtpMailbox) -> dict[str, Any]:
         "use_ssl": bool(row.use_ssl) if transport == "smtp" else None,
         "use_starttls": bool(row.use_starttls) if transport == "smtp" else None,
         "api_base_url": row.host if transport in API_PROVIDERS else "",
+        "auth_method": auth_method,
+        "oauth_provider": row.oauth_provider or "",
         "status": row.status,
         "last_error": row.last_error or "",
         "is_default": bool(row.is_default),
-        "has_secret": bool(row.password_encrypted),
+        "has_secret": bool(row.password_encrypted) or bool(row.oauth_tokens_encrypted),
+        "max_per_hour": int(row.max_per_hour or 0),
+        "max_per_day": int(row.max_per_day or 0),
         "created_at": row.created_at.isoformat(timespec="seconds") if row.created_at else "",
         "updated_at": row.updated_at.isoformat(timespec="seconds") if row.updated_at else "",
     }
@@ -135,24 +169,63 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
     transport = _safe_text(data.get("transport") or "smtp").lower()
     if transport not in SUPPORTED_TRANSPORTS:
         raise ValueError("Поддерживаются SMTP, RuSender и MailoPost.")
+    # Prefer an explicit payload value; otherwise take the user's profile display name.
+    sender_name = _safe_text(data.get("sender_name")) or _profile_sender_name(owner_username, "")
+    max_per_hour = _rate_limit_value(data.get("max_per_hour"))
+    max_per_day = _rate_limit_value(data.get("max_per_day"))
     if transport == "smtp":
         provider = _safe_text(data.get("provider") or "custom").lower()
+        auth_method = _safe_text(data.get("auth_method") or "password").lower() or "password"
+        if auth_method == "oauth":
+            oauth_provider = _safe_text(data.get("oauth_provider")).lower()
+            tokens_raw = data.get("oauth_tokens")
+            if oauth_provider not in {"google", "microsoft"}:
+                raise ValueError("Для OAuth укажите провайдера google или microsoft.")
+            if not isinstance(tokens_raw, dict):
+                raise ValueError("Для OAuth передайте oauth_tokens.")
+            oauth_tokens = OAuthTokens.from_dict(tokens_raw)
+            if not oauth_tokens.access_token:
+                raise ValueError("Для OAuth нужен access token.")
+            mailbox = create_mailbox(
+                owner_username=owner_username,
+                provider=provider,
+                email=_safe_text(data.get("email")),
+                sender_name=sender_name,
+                host=_safe_text(data.get("host")),
+                port=data.get("port"),
+                use_ssl=data.get("use_ssl"),
+                use_starttls=data.get("use_starttls"),
+                make_default=bool(data.get("make_default")),
+                auth_method="oauth",
+                oauth_provider=oauth_provider,
+                oauth_tokens=oauth_tokens,
+                smtp_username=_safe_text(data.get("smtp_username")) or None,
+                max_per_hour=max_per_hour,
+                max_per_day=max_per_day,
+            )
+            with session_scope() as session:
+                row = session.get(SmtpMailbox, mailbox["id"])
+                if row is None:
+                    raise LookupError("Подключение не найдено после создания.")
+                return _public_connection(row)
         if provider == "mailru":
             email = _normalize_mailru_email(data.get("email"))
             password = _safe_text(data.get("password"))
             _verify_mailru_credentials(
                 email=email,
                 password=password,
-                sender_name=data.get("sender_name"),
+                sender_name=sender_name,
             )
             mailbox = create_mailbox(
                 owner_username=owner_username,
                 provider="mailru",
                 email=email,
                 password=password,
-                sender_name=_safe_text(data.get("sender_name")),
+                sender_name=sender_name,
                 make_default=bool(data.get("make_default")),
                 smtp_username=email,
+                max_per_hour=max_per_hour,
+                max_per_day=max_per_day,
             )
             mailbox["transport"] = "smtp"
             return mailbox
@@ -160,14 +233,16 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
             owner_username=owner_username,
             provider=provider,
             email=_safe_text(data.get("email")),
-            password=_safe_text(data.get("password")),
-            sender_name=_safe_text(data.get("sender_name")),
+            password=normalize_smtp_secret(data.get("password")),
+            sender_name=sender_name,
             host=_safe_text(data.get("host")),
             port=data.get("port"),
             use_ssl=data.get("use_ssl"),
             use_starttls=data.get("use_starttls"),
             make_default=bool(data.get("make_default")),
             smtp_username=_safe_text(data.get("smtp_username")) or None,
+            max_per_hour=max_per_hour,
+            max_per_day=max_per_day,
         )
         mailbox["transport"] = "smtp"
         return mailbox
@@ -202,7 +277,7 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
             owner_username=owner_username,
             provider=transport,
             email=email,
-            sender_name=_safe_text(data.get("sender_name")),
+            sender_name=sender_name,
             host=api_base_url,
             port=443,
             use_ssl=True,
@@ -213,6 +288,8 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
             status="active",
             last_error=None,
             is_default=make_default,
+            max_per_hour=max_per_hour,
+            max_per_day=max_per_day,
             created_at=now,
             updated_at=now,
         )
@@ -262,6 +339,8 @@ def update_connection(connection_id: str, owner_username: str, data: dict[str, A
                 use_ssl=True,
                 use_starttls=False,
                 smtp_username=email,
+                max_per_hour=_optional_rate_limit(data, "max_per_hour"),
+                max_per_day=_optional_rate_limit(data, "max_per_day"),
             )
             mailbox["transport"] = "smtp"
             return mailbox
@@ -277,6 +356,8 @@ def update_connection(connection_id: str, owner_username: str, data: dict[str, A
             use_ssl=data.get("use_ssl"),
             use_starttls=data.get("use_starttls"),
             smtp_username=data.get("smtp_username"),
+            max_per_hour=_optional_rate_limit(data, "max_per_hour"),
+            max_per_day=_optional_rate_limit(data, "max_per_day"),
         )
         mailbox["transport"] = "smtp"
         return mailbox
@@ -300,6 +381,10 @@ def update_connection(connection_id: str, owner_username: str, data: dict[str, A
         api_token = _safe_text(data.get("api_token"))
         if api_token:
             row.password_encrypted = encrypt_secret(api_token)
+        if "max_per_hour" in data and data.get("max_per_hour") is not None:
+            row.max_per_hour = _rate_limit_value(data.get("max_per_hour"))
+        if "max_per_day" in data and data.get("max_per_day") is not None:
+            row.max_per_day = _rate_limit_value(data.get("max_per_day"))
         row.status = "active"
         row.last_error = None
         row.updated_at = _now()
@@ -317,13 +402,14 @@ def resolve_connection(connection_id: str, owner_username: str) -> ResolvedConne
         if row is None or row.owner_username != owner_username:
             raise LookupError("Подключение не найдено.")
         transport = connection_transport(row)
+        sender_name = _profile_sender_name(owner_username, row.sender_name)
         if transport == "smtp":
-            return ResolvedConnection(row.id, transport, row.email, row.sender_name or "", "", "")
+            return ResolvedConnection(row.id, transport, row.email, sender_name, "", "")
         return ResolvedConnection(
             id=row.id,
             transport=transport,
             email=row.email,
-            sender_name=row.sender_name or "",
+            sender_name=sender_name,
             secret=decrypt_secret(row.password_encrypted),
             api_base_url=row.host,
         )

@@ -1,0 +1,66 @@
+.visual-email-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: calc(100vh - 120px);
+}
+
+.visual-email-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  min-height: 720px;
+}
+
+.visual-email-editor-main {
+  min-height: 720px;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.visual-email-editor-main .gjs-editor {
+  height: 720px;
+}
+
+.visual-email-device-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #dee2e6;
+  background: #f8f9fa;
+}
+
+.visual-email-preview.desktop iframe {
+  width: 100%;
+  min-height: 520px;
+  border: 0;
+  background: #eef1f4;
+}
+
+.visual-email-preview.mobile {
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+.visual-email-preview.mobile iframe {
+  width: 100%;
+  min-height: 520px;
+  border: 0;
+  background: #eef1f4;
+}
+
+.gjs-editor .ma-chain-buttons-stub {
+  min-height: 56px;
+}
+
+.gjs-editor .ma-chain-buttons-stub-inner {
+  pointer-events: none;
+}
+
+@media (max-width: 1100px) {
+  .visual-email-editor-grid {
+    grid-template-columns: 1fr;
+  }
+}

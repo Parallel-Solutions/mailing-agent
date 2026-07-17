@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from src.campaigns.schedule_planner import plan_batches
 from src.infra.db import session_scope
@@ -19,9 +19,28 @@ from src.infra.models import (
     CampaignRecipient,
     CampaignSchedule,
     DeliveryAttempt,
+    SmtpMailbox,
 )
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+CORE_RECIPIENT_COLUMNS = ("company", "contact_name", "email", "email_fallback", "region")
+
+_CORE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "company": (
+        "company",
+        "компания",
+        "organization",
+        "adm_name",
+        "mun_name",
+        "полное название администрации",
+        "муниципальное образование",
+    ),
+    "contact_name": ("contact", "contact_name", "контакт", "head_fio", "глава мо"),
+    "email": ("email", "e-mail", "почта", "email_osn", "эл. адрес (основной)"),
+    "email_fallback": ("email_fallback", "email2", "email_dop", "эл. адрес (доп)"),
+    "region": ("region", "регион", "sub_rf", "субъект рф"),
+}
 
 CAMPAIGN_STATUSES = {
     "draft",
@@ -42,6 +61,34 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+def _min_positive(*values: int) -> int:
+    """Return the tightest positive limit; 0 means unlimited."""
+    positives = [int(value) for value in values if int(value or 0) > 0]
+    return min(positives) if positives else 0
+
+
+def _connection_rate_limits(session: Any, mailbox_id: str | None) -> tuple[int, int]:
+    if not mailbox_id:
+        return 0, 0
+    row = session.get(SmtpMailbox, mailbox_id)
+    if row is None:
+        return 0, 0
+    return int(row.max_per_hour or 0), int(row.max_per_day or 0)
+
+
+def _effective_rate_limits(
+    *,
+    schedule_max_per_hour: int,
+    schedule_max_per_day: int,
+    connection_max_per_hour: int,
+    connection_max_per_day: int,
+) -> tuple[int, int]:
+    return (
+        _min_positive(schedule_max_per_hour, connection_max_per_hour),
+        _min_positive(schedule_max_per_day, connection_max_per_day),
+    )
+
+
 def _validate_email(value: str) -> str:
     email = (value or "").strip().lower()
     if not email:
@@ -49,6 +96,25 @@ def _validate_email(value: str) -> str:
     if not EMAIL_RE.match(email):
         return "invalid"
     return "valid"
+
+
+def extract_recipient_columns(rows: list[dict[str, Any]]) -> list[str]:
+    columns: list[str] = list(CORE_RECIPIENT_COLUMNS)
+    seen = set(columns)
+    for row in rows:
+        for key in (row.get("extra") or {}).keys():
+            normalized = str(key or "").strip().lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                columns.append(normalized)
+    return columns
+
+
+def _invalidate_variable_mapping(camp: Campaign) -> None:
+    draft = dict(camp.draft_payload or {})
+    draft["mapping_confirmed"] = False
+    draft.pop("mapping_confirmed_at", None)
+    camp.draft_payload = draft
 
 
 def campaign_to_dict(row: Campaign, *, include_draft: bool = True) -> dict[str, Any]:
@@ -71,6 +137,7 @@ def campaign_to_dict(row: Campaign, *, include_draft: bool = True) -> dict[str, 
         "kp_template_id": row.kp_template_id,
         "contract_template_id": row.contract_template_id,
         "audience_id": row.audience_id,
+        "email_chain_id": row.email_chain_id,
         "sent_count": row.sent_count,
         "total_count": row.total_count,
         "error_count": row.error_count,
@@ -202,11 +269,14 @@ def update_campaign(
             "kp_template_id",
             "contract_template_id",
             "audience_id",
+            "email_chain_id",
         ):
             if field in data and data[field] is not None:
                 setattr(row, field, data[field])
         if "tags" in data:
             row.tags = list(data.get("tags") or [])
+        template_fields = ("email_template_id", "kp_template_id", "contract_template_id")
+        template_changed = any(field in data and data[field] is not None for field in template_fields)
         if "draft_payload" in data and isinstance(data["draft_payload"], dict):
             merged = dict(row.draft_payload or {})
             merged.update(data["draft_payload"])
@@ -217,6 +287,8 @@ def update_campaign(
             if key in data:
                 draft[key] = data[key]
         row.draft_payload = draft
+        if template_changed:
+            _invalidate_variable_mapping(row)
         row.updated_at = _now()
         session.flush()
         return campaign_to_dict(row)
@@ -338,6 +410,7 @@ def replace_recipients(
     recipients: list[dict[str, Any]],
     *,
     is_admin: bool = False,
+    recipient_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
@@ -346,10 +419,12 @@ def replace_recipients(
         if camp.status not in {"draft", "paused", "scheduled"}:
             raise ValueError("Cannot replace recipients for campaign in status " + camp.status)
 
-        for old in session.scalars(
-            select(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign_id)
-        ).all():
-            session.delete(old)
+        # Bulk delete + flush before inserts so re-import does not collide on
+        # unique (campaign_id, row_index) when UOW would emit INSERT before DELETE.
+        session.execute(
+            delete(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign_id)
+        )
+        session.flush()
         seen_emails: set[str] = set()
         added = 0
         duplicates = 0
@@ -381,12 +456,19 @@ def replace_recipients(
             )
             added += 1
         camp.total_count = added
+        columns = list(recipient_columns or extract_recipient_columns(recipients[:500]))
+        draft = dict(camp.draft_payload or {})
+        draft["recipient_columns"] = columns
+        draft["mapping_confirmed"] = False
+        draft.pop("mapping_confirmed_at", None)
+        camp.draft_payload = draft
         camp.updated_at = _now()
         session.flush()
         return {
             "total": added,
             "duplicates_skipped": duplicates,
             "invalid": invalid,
+            "recipient_columns": columns,
         }
 
 
@@ -448,60 +530,123 @@ def delete_recipients(
         return deleted
 
 
-def parse_recipients_csv(content: bytes) -> list[dict[str, Any]]:
+def parse_recipients_csv(content: bytes) -> tuple[list[dict[str, Any]], list[str]]:
     text = content.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
+    columns = [str(name or "").strip().lower() for name in (reader.fieldnames or []) if str(name or "").strip()]
     rows: list[dict[str, Any]] = []
     for raw in reader:
         normalized = {str(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+        used_keys: set[str] = set()
+
+        def pick(field: str) -> str:
+            for alias in _CORE_FIELD_ALIASES[field]:
+                if alias in normalized and normalized[alias]:
+                    used_keys.add(alias)
+                    return normalized[alias]
+            return ""
+
+        extra = {
+            key: value
+            for key, value in normalized.items()
+            if key and key not in used_keys and value
+        }
         rows.append(
             {
-                "company": normalized.get("company") or normalized.get("компания") or normalized.get("organization") or "",
-                "contact_name": normalized.get("contact") or normalized.get("contact_name") or normalized.get("контакт") or "",
-                "email": normalized.get("email") or normalized.get("e-mail") or normalized.get("почта") or "",
-                "email_fallback": normalized.get("email_fallback") or normalized.get("email2") or "",
-                "region": normalized.get("region") or normalized.get("регион") or "",
+                "company": pick("company"),
+                "contact_name": pick("contact_name"),
+                "email": pick("email"),
+                "email_fallback": pick("email_fallback"),
+                "region": pick("region"),
                 "source": "csv",
+                "extra": extra,
             }
         )
-    return rows
+    if not columns:
+        columns = extract_recipient_columns(rows)
+    return rows, columns
 
 
-def parse_recipients_xlsx(content: bytes) -> list[dict[str, Any]]:
+def parse_recipients_xlsx(content: bytes) -> tuple[list[dict[str, Any]], list[str]]:
     from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
-    headers = [str(c or "").strip().lower() for c in next(rows_iter, [])]
+    first = [str(c or "").strip().lower() for c in next(rows_iter, [])]
+    second = [str(c or "").strip().lower() for c in next(rows_iter, [])]
+
+    def _is_mo_tech_header(headers: list[str]) -> bool:
+        keys = set(headers)
+        return "email_osn" in keys or ("mun_name" in keys and "sub_rf" in keys)
+
+    # Parser MO template: row1 human labels, row2 technical keys (EMAIL_OSN, …).
+    if _is_mo_tech_header(second):
+        headers = second
+        data_rows: list[tuple[Any, ...]] = list(rows_iter)
+    elif _is_mo_tech_header(first):
+        headers = first
+        data_rows = [tuple(second)] + list(rows_iter) if any(second) else list(rows_iter)
+    else:
+        headers = first
+        data_rows = [tuple(second)] + list(rows_iter) if any(second) else list(rows_iter)
+
     mapping = {h: i for i, h in enumerate(headers)}
 
-    def cell(row: tuple[Any, ...], *names: str) -> str:
-        for name in names:
+    def cell(row: tuple[Any, ...], field: str) -> tuple[str, set[str]]:
+        used: set[str] = set()
+        for name in _CORE_FIELD_ALIASES[field]:
             idx = mapping.get(name)
             if idx is not None and idx < len(row):
-                return str(row[idx] or "").strip()
-        return ""
+                value = str(row[idx] or "").strip()
+                if value:
+                    used.add(name)
+                    return value, used
+        return "", used
 
     result: list[dict[str, Any]] = []
-    for row in rows_iter:
+    for row in data_rows:
         if not row:
             continue
-        email = cell(row, "email", "e-mail", "почта")
-        company = cell(row, "company", "компания", "organization")
+        used_headers: set[str] = set()
+        email, used = cell(row, "email")
+        used_headers |= used
+        company, used = cell(row, "company")
+        used_headers |= used
         if not email and not company:
             continue
+        contact_name, used = cell(row, "contact_name")
+        used_headers |= used
+        email_fallback, used = cell(row, "email_fallback")
+        used_headers |= used
+        region, used = cell(row, "region")
+        used_headers |= used
+        extra: dict[str, str] = {}
+        for header, idx in mapping.items():
+            if not header or header in used_headers or idx >= len(row):
+                continue
+            value = str(row[idx] or "").strip()
+            if value:
+                extra[header] = value
         result.append(
             {
                 "company": company,
-                "contact_name": cell(row, "contact", "contact_name", "контакт"),
+                "contact_name": contact_name,
                 "email": email,
-                "email_fallback": cell(row, "email_fallback", "email2"),
-                "region": cell(row, "region", "регион"),
+                "email_fallback": email_fallback,
+                "region": region,
                 "source": "xlsx",
+                "extra": extra,
             }
         )
-    return result
+    file_columns = [header for header in headers if header]
+    merged_columns = list(CORE_RECIPIENT_COLUMNS)
+    seen = set(merged_columns)
+    for column in file_columns + [key for row in result for key in (row.get("extra") or {})]:
+        if column and column not in seen:
+            seen.add(column)
+            merged_columns.append(column)
+    return result, merged_columns
 
 
 def upsert_schedule(
@@ -549,6 +694,13 @@ def upsert_schedule(
                 CampaignRecipient.excluded.is_(False),
             )
         ) or 0
+        conn_hour, conn_day = _connection_rate_limits(session, camp.smtp_mailbox_id)
+        max_per_hour, max_per_day = _effective_rate_limits(
+            schedule_max_per_hour=schedule.max_per_hour,
+            schedule_max_per_day=schedule.max_per_day,
+            connection_max_per_hour=conn_hour,
+            connection_max_per_day=conn_day,
+        )
         preview = plan_batches(
             recipient_count=int(active_count),
             batch_size=schedule.batch_size,
@@ -558,8 +710,8 @@ def upsert_schedule(
             timezone_name=schedule.timezone,
             weekdays=list(schedule.weekdays or []),
             time_windows=list(schedule.time_windows or []),
-            max_per_hour=schedule.max_per_hour,
-            max_per_day=schedule.max_per_day,
+            max_per_hour=max_per_hour,
+            max_per_day=max_per_day,
         )
         schedule.preview = preview
         schedule.updated_at = _now()
@@ -598,6 +750,14 @@ def get_schedule(campaign_id: str, owner_username: str, *, is_admin: bool = Fals
         return schedule_to_dict(schedule)
 
 
+def _resolve_send_mode(camp: Campaign) -> str:
+    if camp.send_scenario == "consent_then_materials":
+        return "consent_request"
+    if camp.send_scenario == "email_chain":
+        return "chain_root"
+    return "materials"
+
+
 def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
@@ -628,22 +788,38 @@ def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_ad
         ) or 0
         if active <= 0:
             errors.append("Нет получателей для отправки")
-        required_kinds = {
-            "kp": ("kp",),
-            "contract": ("contract",),
-            "both": ("kp", "contract"),
-        }.get(str(camp.document_mode or "kp").lower(), ("kp",))
-        if "kp" in required_kinds and not camp.kp_template_id:
-            errors.append("Выберите шаблон КП")
-        if "contract" in required_kinds and not camp.contract_template_id:
-            errors.append("Выберите шаблон договора")
-        if not camp.email_template_id and not (camp.draft_payload or {}).get("email_body"):
+
+        documents_required = camp.send_scenario != "email_chain"
+        if documents_required:
+            required_kinds = {
+                "kp": ("kp",),
+                "contract": ("contract",),
+                "both": ("kp", "contract"),
+            }.get(str(camp.document_mode or "kp").lower(), ("kp",))
+            if "kp" in required_kinds and not camp.kp_template_id:
+                errors.append("Выберите шаблон КП")
+            if "contract" in required_kinds and not camp.contract_template_id:
+                errors.append("Выберите шаблон договора")
+
+        if camp.send_scenario == "email_chain":
+            from src.campaigns.chain_service import get_email_chain, validate_chain
+
+            chain_validation = validate_chain(get_email_chain(camp), strict=True)
+            if not chain_validation["ok"]:
+                errors.extend(chain_validation["errors"])
+        elif not camp.email_template_id and not (camp.draft_payload or {}).get("email_body"):
             warnings.append("Шаблон письма не выбран — будет использован текст по умолчанию")
+
+        from src.campaigns.variable_match_service import mapping_validation_errors
+
+        errors.extend(mapping_validation_errors(camp))
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
+        draft = dict(camp.draft_payload or {})
         schedule_payload = schedule_to_dict(schedule) if schedule else None
         campaign_payload = campaign_to_dict(camp)
+        send_scenario = camp.send_scenario
 
-    if active > 0 and not any(
+    if send_scenario != "email_chain" and active > 0 and not any(
         message in errors
         for message in ("Выберите шаблон КП", "Выберите шаблон договора")
     ):
@@ -665,12 +841,11 @@ def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_ad
         "errors": errors,
         "warnings": warnings,
         "active_recipients": int(active),
+        "mapping_confirmed": bool(draft.get("mapping_confirmed")),
         "excluded_recipients": int(excluded),
         "schedule": schedule_payload,
         "campaign": campaign_payload,
     }
-
-
 def launch_campaign(
     campaign_id: str,
     owner_username: str,
@@ -708,7 +883,17 @@ def launch_campaign(
             .order_by(CampaignRecipient.row_index)
         ).all()
         recipient_ids = [r.id for r in recipients]
-        # force_now bypasses calendar windows so "Запустить сейчас" is immediate.
+        conn_hour, conn_day = _connection_rate_limits(session, camp.smtp_mailbox_id)
+        # force_now bypasses calendar windows / schedule pacing so "Запустить сейчас"
+        # is immediate, but connection mailbox limits still apply.
+        schedule_hour = 0 if force_now else schedule.max_per_hour
+        schedule_day = 0 if force_now else schedule.max_per_day
+        max_per_hour, max_per_day = _effective_rate_limits(
+            schedule_max_per_hour=schedule_hour,
+            schedule_max_per_day=schedule_day,
+            connection_max_per_hour=conn_hour,
+            connection_max_per_day=conn_day,
+        )
         preview = plan_batches(
             recipient_count=len(recipient_ids),
             batch_size=schedule.batch_size,
@@ -718,8 +903,8 @@ def launch_campaign(
             timezone_name=schedule.timezone,
             weekdays=[] if force_now else list(schedule.weekdays or []),
             time_windows=[] if force_now else list(schedule.time_windows or []),
-            max_per_hour=0 if force_now else schedule.max_per_hour,
-            max_per_day=0 if force_now else schedule.max_per_day,
+            max_per_hour=max_per_hour,
+            max_per_day=max_per_day,
         )
         schedule.preview = preview
 
@@ -756,11 +941,7 @@ def launch_campaign(
                     "smtp_mailbox_id": camp.smtp_mailbox_id,
                     "transport": camp.transport,
                     "mail_subject": camp.mail_subject,
-                    "send_mode": (
-                        "consent_request"
-                        if camp.send_scenario == "consent_then_materials"
-                        else "materials"
-                    ),
+                    "send_mode": _resolve_send_mode(camp),
                     "campaign_name": camp.name,
                     "pause_between_messages_ms": schedule.pause_between_messages_ms,
                     "max_retries": schedule.max_retries,
@@ -869,11 +1050,7 @@ def resume_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = F
                     "smtp_mailbox_id": camp.smtp_mailbox_id,
                     "transport": camp.transport,
                     "mail_subject": camp.mail_subject,
-                    "send_mode": (
-                        "consent_request"
-                        if camp.send_scenario == "consent_then_materials"
-                        else "materials"
-                    ),
+                    "send_mode": _resolve_send_mode(camp),
                     "campaign_name": camp.name,
                 },
                 available_at=scheduled_at,
@@ -966,43 +1143,47 @@ def active_sending(owner_username: str, *, is_admin: bool = False) -> dict[str, 
         stmt = select(Campaign).where(Campaign.status.in_(["running", "scheduled", "paused"]))
         if not is_admin:
             stmt = stmt.where(Campaign.owner_username == owner_username)
-        camp = session.scalars(stmt.order_by(Campaign.updated_at.desc()).limit(1)).first()
-        if camp is None:
-            return None
-        schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == camp.id))
-        next_batch = session.scalars(
-            select(CampaignBatch)
-            .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "pending")
-            .order_by(CampaignBatch.scheduled_at)
-            .limit(1)
-        ).first()
-        running_batch = session.scalars(
-            select(CampaignBatch)
-            .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "running")
-            .limit(1)
-        ).first()
-        queued = session.scalar(
-            select(func.count())
-            .select_from(CampaignBatch)
-            .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "pending")
-        ) or 0
-        return {
-            "campaign_id": camp.id,
-            "name": camp.name,
-            "status": camp.status,
-            "sent_count": camp.sent_count,
-            "total_count": camp.total_count,
-            "remaining": max(0, camp.total_count - camp.sent_count),
-            "queued_batches": int(queued),
-            "sending_now": running_batch.size if running_batch else 0,
-            "next_batch_size": next_batch.size if next_batch else 0,
-            "next_batch_at": next_batch.scheduled_at.isoformat() if next_batch else None,
-            "batch_size": schedule.batch_size if schedule else 0,
-            "interval_seconds": schedule.interval_seconds if schedule else 0,
-            "max_per_hour": schedule.max_per_hour if schedule else 0,
-            "max_per_day": schedule.max_per_day if schedule else 0,
-            "progress": round(100.0 * camp.sent_count / camp.total_count, 1) if camp.total_count else 0.0,
-        }
+        camps = session.scalars(stmt.order_by(Campaign.updated_at.desc())).all()
+        for camp in camps:
+            schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == camp.id))
+            next_batch = session.scalars(
+                select(CampaignBatch)
+                .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "pending")
+                .order_by(CampaignBatch.scheduled_at)
+                .limit(1)
+            ).first()
+            running_batch = session.scalars(
+                select(CampaignBatch)
+                .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "running")
+                .limit(1)
+            ).first()
+            queued = session.scalar(
+                select(func.count())
+                .select_from(CampaignBatch)
+                .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "pending")
+            ) or 0
+            remaining = max(0, camp.total_count - camp.sent_count)
+            # Finished / stuck-paused campaigns with nothing left to send stay out of the dashboard card.
+            if remaining == 0 and int(queued) == 0 and running_batch is None:
+                continue
+            return {
+                "campaign_id": camp.id,
+                "name": camp.name,
+                "status": camp.status,
+                "sent_count": camp.sent_count,
+                "total_count": camp.total_count,
+                "remaining": remaining,
+                "queued_batches": int(queued),
+                "sending_now": running_batch.size if running_batch else 0,
+                "next_batch_size": next_batch.size if next_batch else 0,
+                "next_batch_at": next_batch.scheduled_at.isoformat() if next_batch else None,
+                "batch_size": schedule.batch_size if schedule else 0,
+                "interval_seconds": schedule.interval_seconds if schedule else 0,
+                "max_per_hour": schedule.max_per_hour if schedule else 0,
+                "max_per_day": schedule.max_per_day if schedule else 0,
+                "progress": round(100.0 * camp.sent_count / camp.total_count, 1) if camp.total_count else 0.0,
+            }
+        return None
 
 
 def record_delivery_attempt(

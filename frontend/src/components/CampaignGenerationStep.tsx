@@ -1,8 +1,9 @@
-import { CheckCircleOutlined, EyeOutlined, FileDoneOutlined, SyncOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, EyeOutlined, FileDoneOutlined, SyncOutlined, UploadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, App, Button, Progress, Space, Steps, Tag, Typography } from 'antd';
+import { Alert, App, Button, Progress, Select, Space, Steps, Tag, Typography, Upload } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { campaignsApi } from '@/api/campaigns';
+import { templatesApi } from '@/api/templates';
 import type { Campaign, DocumentTemplatePreview } from '@/api/types';
 
 type Props = {
@@ -14,6 +15,44 @@ export function CampaignGenerationStep({ campaignId, campaign }: Props) {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [preview, setPreview] = useState<DocumentTemplatePreview | null>(null);
+  const [documentMode, setDocumentMode] = useState(campaign.document_mode || 'kp');
+  const [kpTemplateId, setKpTemplateId] = useState<string | null>(campaign.kp_template_id || null);
+  const [contractTemplateId, setContractTemplateId] = useState<string | null>(campaign.contract_template_id || null);
+
+  useEffect(() => {
+    setDocumentMode(campaign.document_mode || 'kp');
+    setKpTemplateId(campaign.kp_template_id || null);
+    setContractTemplateId(campaign.contract_template_id || null);
+  }, [campaign.document_mode, campaign.kp_template_id, campaign.contract_template_id]);
+
+  const documentTemplatesQuery = useQuery({
+    queryKey: ['templates', 'document'],
+    queryFn: () => templatesApi.list({ template_type: 'document' }),
+  });
+  const documentTemplates = documentTemplatesQuery.data || [];
+  const kpOptions = documentTemplates
+    .filter((template) => /\.(docx|pdf)$/i.test(template.version?.filename || ''))
+    .map((template) => ({
+      label: `${template.name}${template.version?.filename ? ` — ${template.version.filename}` : ''}`,
+      value: template.id,
+    }));
+  const contractOptions = documentTemplates
+    .filter((template) => /\.docx$/i.test(template.version?.filename || ''))
+    .map((template) => ({
+      label: `${template.name}${template.version?.filename ? ` — ${template.version.filename}` : ''}`,
+      value: template.id,
+    }));
+
+  const saveDocumentSettings = async (patch: Partial<Campaign>) => {
+    if (!campaignId) return;
+    await campaignsApi.update(campaignId, patch);
+    if (patch.document_mode) setDocumentMode(patch.document_mode);
+    if ('kp_template_id' in patch) setKpTemplateId(patch.kp_template_id || null);
+    if ('contract_template_id' in patch) setContractTemplateId(patch.contract_template_id || null);
+    setPreview(null);
+    await queryClient.invalidateQueries({ queryKey: ['campaign-generation', campaignId] });
+    await queryClient.invalidateQueries({ queryKey: ['campaign-validate', campaignId] });
+  };
 
   const generationQuery = useQuery({
     queryKey: ['campaign-generation', campaignId],
@@ -86,6 +125,85 @@ export function CampaignGenerationStep({ campaignId, campaign }: Props) {
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      {campaign.send_scenario === 'email_chain' && (
+        <Alert
+          showIcon
+          type="info"
+          message="Для цепочки генерация документов необязательна"
+          description="Если письма цепочки должны содержать КП или договор, выберите шаблоны ниже и сформируйте комплект."
+        />
+      )}
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Typography.Text strong>Какие документы формируем</Typography.Text>
+        <Select
+          value={documentMode}
+          style={{ width: '100%', maxWidth: 420 }}
+          options={[
+            { label: 'Только КП', value: 'kp' },
+            { label: 'КП и договор', value: 'both' },
+            { label: 'Только договор', value: 'contract' },
+          ]}
+          onChange={(value) => void saveDocumentSettings({ document_mode: value })}
+        />
+        {documentMode !== 'contract' && (
+          <Space wrap>
+            <Select
+              value={kpTemplateId || undefined}
+              loading={documentTemplatesQuery.isLoading}
+              placeholder="Выберите шаблон КП (DOCX или PDF)"
+              style={{ width: 420, maxWidth: '100%' }}
+              options={kpOptions}
+              onChange={(value) => void saveDocumentSettings({ kp_template_id: value })}
+            />
+            <Upload
+              accept=".docx,.pdf"
+              showUploadList={false}
+              customRequest={async ({ file, onSuccess, onError }) => {
+                try {
+                  const uploaded = await templatesApi.uploadFile(file as File, 'document');
+                  await saveDocumentSettings({ kp_template_id: uploaded.id });
+                  await queryClient.invalidateQueries({ queryKey: ['templates', 'document'] });
+                  message.success('Шаблон КП загружен и выбран');
+                  onSuccess?.(uploaded);
+                } catch (error) {
+                  onError?.(error as Error);
+                }
+              }}
+            >
+              <Button icon={<UploadOutlined />}>Загрузить шаблон КП</Button>
+            </Upload>
+          </Space>
+        )}
+        {documentMode !== 'kp' && (
+          <Space wrap>
+            <Select
+              value={contractTemplateId || undefined}
+              loading={documentTemplatesQuery.isLoading}
+              placeholder="Выберите шаблон договора (DOCX)"
+              style={{ width: 420, maxWidth: '100%' }}
+              options={contractOptions}
+              onChange={(value) => void saveDocumentSettings({ contract_template_id: value })}
+            />
+            <Upload
+              accept=".docx"
+              showUploadList={false}
+              customRequest={async ({ file, onSuccess, onError }) => {
+                try {
+                  const uploaded = await templatesApi.uploadFile(file as File, 'document');
+                  await saveDocumentSettings({ contract_template_id: uploaded.id });
+                  await queryClient.invalidateQueries({ queryKey: ['templates', 'document'] });
+                  message.success('Шаблон договора загружен и выбран');
+                  onSuccess?.(uploaded);
+                } catch (error) {
+                  onError?.(error as Error);
+                }
+              }}
+            >
+              <Button icon={<UploadOutlined />}>Загрузить шаблон договора</Button>
+            </Upload>
+          </Space>
+        )}
+      </Space>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
         Система подставит данные каждого получателя в выбранные шаблоны. КП будет подготовлено в PDF,
         договор — в DOCX. Исходники и результаты сохраняются отдельно.

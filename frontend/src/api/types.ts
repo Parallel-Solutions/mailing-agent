@@ -21,6 +21,7 @@ export type Campaign = {
   kp_template_id?: string | null;
   contract_template_id?: string | null;
   audience_id?: string | null;
+  email_chain_id?: string | null;
   job_id?: string | null;
   sent_count?: number;
   total_count?: number;
@@ -30,6 +31,47 @@ export type Campaign = {
   launched_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+};
+
+export type ChainNodeKind = 'email' | 'link';
+export type ChainLinkKind = 'custom' | 'unsubscribe' | 'subscribe';
+
+export type EmailChainNode = {
+  id: string;
+  name: string;
+  kind?: ChainNodeKind;
+  email_template_id?: string | null;
+  document_template_ids?: string[];
+  link_kind?: ChainLinkKind;
+  link_url?: string | null;
+};
+
+export type EmailChainEdge = {
+  id: string;
+  source_id: string;
+  target_id: string;
+  button_label: string;
+};
+
+export type EmailChain = {
+  version: number;
+  root_node_id: string;
+  nodes: EmailChainNode[];
+  edges: EmailChainEdge[];
+};
+
+export type EmailChainState = {
+  chain: EmailChain;
+  validation: { ok: boolean; errors: string[]; warnings: string[] };
+  published: boolean;
+};
+
+export type EmailChainStats = {
+  edges: { edge_id: string; tokens: number; clicks: number }[];
+  consents?: {
+    subscribe: { count: number };
+    unsubscribe: { count: number };
+  };
 };
 
 export type CampaignList = { items: Campaign[]; total: number };
@@ -161,6 +203,15 @@ export type PdfEditorState = {
   pages: { index: number; width: number; height: number }[];
   fields: PdfEditorField[];
 };
+
+export type EmailEditorState = {
+  email_format?: 'simple' | 'visual';
+  grapesjs_project?: Record<string, unknown>;
+  brand?: { primaryColor?: string; logoUrl?: string };
+  fields?: PdfEditorField[];
+};
+
+export type TemplateEditorState = PdfEditorState | EmailEditorState;
 export type Template = {
   id: string;
   name: string;
@@ -178,7 +229,8 @@ export type Template = {
     filename?: string | null;
     rendered_pdf_storage_key?: string | null;
     rendered_pdf_filename?: string | null;
-    editor_state?: PdfEditorState | null;
+    editor_state?: TemplateEditorState | null;
+
     artifacts?: {
       source?: { filename?: string | null; storage_key?: string | null } | null;
       delivery_pdf?: { filename?: string | null; storage_key?: string | null } | null;
@@ -217,12 +269,16 @@ export type DeliveryConnection = {
   host?: string;
   port?: number | null;
   api_base_url?: string;
+  auth_method?: string;
+  oauth_provider?: string;
   status: string;
   is_default?: boolean;
   last_error?: string | null;
   use_ssl?: boolean | null;
   use_starttls?: boolean | null;
   has_secret?: boolean;
+  max_per_hour?: number;
+  max_per_day?: number;
 };
 
 export type SmtpMailbox = DeliveryConnection;

@@ -52,7 +52,7 @@ def _terminate_process(process: subprocess.Popen[Any]) -> None:
 def _task_timeout_seconds(task_type: str) -> int:
     if task_type == "documents":
         return max(0, int(settings.documents_worker_timeout_seconds or 0))
-    if task_type in {"sender", "sender_batch"}:
+    if task_type in {"sender", "sender_batch", "chain_followup"}:
         return max(0, int(settings.sender_worker_timeout_seconds or 0))
     return 0
 
@@ -273,7 +273,9 @@ def enqueue_sender_task(
         task_type="sender",
         job_id=job_id,
         owner_username=owner_username,
-        payload={"kwargs": dict(kwargs or {})},
+        # Flat kwargs — get_task_payload wraps payload as worker kwargs.
+        # Nested {"kwargs": {...}} made dry_run/job_id invisible to _run_sender.
+        payload=dict(kwargs or {}),
         max_workers=max(1, int(settings.sender_worker_max_processes or 1)),
         max_attempts=max(1, int(settings.background_queue_max_attempts or 3)),
         available_at=safe_available_at,
