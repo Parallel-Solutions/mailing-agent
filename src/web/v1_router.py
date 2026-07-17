@@ -170,6 +170,11 @@ class KpPreviewBody(BaseModel):
     body_html: str
 
 
+class OfficeSaveBody(BaseModel):
+    version_id: str = Field(min_length=1, max_length=200)
+    document_key: str = Field(min_length=1, max_length=128)
+
+
 class PdfOverlayFieldBody(BaseModel):
     id: str
     value: str = ""
@@ -1027,6 +1032,26 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             return document_editor_service.handle_callback(template_id, token, payload)
         except PermissionError:
             return {"error": 1}
+
+    @router.post("/templates/{template_id}/office-save")
+    def post_office_save(template_id: str, body: OfficeSaveBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                document_editor_service.force_save(
+                    template_id,
+                    actor.username,
+                    body.version_id,
+                    body.document_key,
+                )
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
 
     @router.get("/templates/{template_id}")
     def get_template(template_id: str, principal: object = Depends(check_auth)):

@@ -3,6 +3,7 @@ import type { EmailEditorState, PdfEditorField, PdfEditorState, Template } from 
 
 export type OfficeEditorConfig = {
   editor_url: string;
+  document_key: string;
   config: Record<string, unknown>;
 };
 
@@ -79,6 +80,11 @@ export const templatesApi = {
   deliveryFileUrl: (id: string) => `/api/v1/templates/${id}/delivery-file`,
   previewFileUrl: (id: string) => `/api/v1/templates/${id}/preview-file`,
   officeConfig: (id: string) => api.get<OfficeEditorConfig>(`/api/v1/templates/${id}/office-config`),
+  forceSaveOffice: (id: string, versionId: string, documentKey: string) =>
+    api.post<{ accepted: boolean; key: string }>(`/api/v1/templates/${id}/office-save`, {
+      version_id: versionId,
+      document_key: documentKey,
+    }),
   pdfEditor: (id: string) => api.get<PdfEditorState>(`/api/v1/templates/${id}/pdf-editor`),
   pdfEditorPageUrl: (id: string, page: number) => `/api/v1/templates/${id}/pdf-editor/pages/${page}`,
   savePdfEditor: (id: string, fields: Pick<PdfEditorField, 'id' | 'value' | 'font_size'>[]) =>

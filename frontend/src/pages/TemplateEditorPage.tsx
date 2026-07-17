@@ -579,13 +579,23 @@ function OnlyOfficeEditor({ data, templateId, onDirty, onError }: {
       const config = {
         ...data.config,
         events: {
-          onDocumentStateChange: (event: { data?: boolean }) => onDirty(Boolean(event.data)),
+          // Fast mode synchronizes the editor's working copy in the background.
+          // A false event means the sync completed, not that our archived
+          // version was saved, so only the explicit app save clears dirty.
+          onDocumentStateChange: (event: { data?: boolean }) => {
+            if (event.data) onDirty(true);
+          },
           onError: (event: { data?: { errorDescription?: string } }) => onError(event.data?.errorDescription || 'Ошибка DOCX-редактора'),
         },
       } as Record<string, unknown>;
       instance = new window.DocsAPI.DocEditor(containerId, config);
     };
-    const src = `${data.editor_url}/web-apps/apps/api/documents/api.js`;
+    const editorUrl = new URL(data.editor_url, window.location.origin);
+    const localOnlyOfficeHosts = new Set(['localhost', '127.0.0.1', '0.0.0.0']);
+    if (localOnlyOfficeHosts.has(editorUrl.hostname) && !localOnlyOfficeHosts.has(window.location.hostname)) {
+      editorUrl.hostname = window.location.hostname;
+    }
+    const src = `${editorUrl.toString().replace(/\/$/, '')}/web-apps/apps/api/documents/api.js`;
     const existing = document.querySelector<HTMLScriptElement>(`script[data-onlyoffice-src="${src}"]`);
     if (window.DocsAPI) mount();
     else if (existing) existing.addEventListener('load', mount, { once: true });
@@ -611,6 +621,7 @@ function DocxTemplateEditor({ template }: { template: Template }) {
   const queryClient = useQueryClient();
   const [dirty, setDirty] = useState(false);
   const [variableQuery, setVariableQuery] = useState('');
+  const handleOfficeError = useCallback((value: string) => message.error(value), [message]);
   const [uploading, setUploading] = useState(false);
   const filename = template.version?.filename || '';
   const hasDocx = filename.toLowerCase().endsWith('.docx');
@@ -618,6 +629,32 @@ function DocxTemplateEditor({ template }: { template: Template }) {
   const variables = template.version?.variables?.length ? template.version.variables : DOCUMENT_VARIABLES;
   const filteredVariables = variables.filter((variable) => `${variable.name} ${variable.label}`.toLowerCase().includes(variableQuery.toLowerCase()));
   const officeQuery = useQuery({ queryKey: ['office-config', template.id, template.version?.id], queryFn: () => templatesApi.officeConfig(template.id), enabled: hasDocx, retry: false });
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const currentVersionId = template.version?.id || '';
+      await templatesApi.forceSaveOffice(
+        template.id,
+        currentVersionId,
+        officeQuery.data?.document_key || '',
+      );
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        const latest = await templatesApi.get(template.id);
+        if (latest.version?.id && latest.version.id !== currentVersionId) return latest;
+      }
+      throw new Error('ONLYOFFICE принял документ, но новая версия не появилась. Попробуйте сохранить ещё раз.');
+    },
+    onSuccess: (latest) => {
+      setDirty(false);
+      queryClient.setQueryData(['template', template.id], latest);
+      message.success(`Версия ${latest.version?.version_number || ''} сохранена`);
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : 'Не удалось сохранить DOCX');
+    },
+  });
+
+
   const upload = (
     <Upload accept=".docx" maxCount={1} showUploadList={false} customRequest={async ({ file, onSuccess, onError }) => {
       setUploading(true);
@@ -657,19 +694,19 @@ function DocxTemplateEditor({ template }: { template: Template }) {
       <EditorHeader
         template={template}
         dirty={dirty}
-        saving={false}
+        saving={saveMutation.isPending}
         format={buildsDeliveryPdf ? 'PDF' : 'DOCX'}
-        saveLabel="Автосохранение"
-        saveDisabled
+        saveLabel="Сохранить версию"
+        saveDisabled={!dirty || !officeQuery.data}
         onBack={() => navigate('/templates')}
         onPreview={() => window.open(templatesApi.previewFileUrl(template.id), '_blank', 'noopener,noreferrer')}
-        onSave={() => undefined}
+        onSave={() => saveMutation.mutate()}
       />
 
       <div className="focused-editor-bar">
         <div className="focused-editor-file">
           <Tag icon={<FileWordOutlined />} color="blue">DOCX</Tag>
-          <div><Text strong ellipsis={{ tooltip: filename }}>{filename || 'Файл не загружен'}</Text><small>Редактирование текста и изображений</small></div>
+          <div><Text strong ellipsis={{ tooltip: filename }}>{filename || 'Файл не загружен'}</Text><small>Новая версия создаётся только по кнопке «Сохранить версию»</small></div>
         </div>
         <Space wrap>
           <Popover content={variablePicker} title="Поля документа" trigger="click" placement="bottomRight">
@@ -688,14 +725,14 @@ function DocxTemplateEditor({ template }: { template: Template }) {
           <main className="docx-editor-shell">
             {officeQuery.isLoading && <Skeleton active paragraph={{ rows: 12 }} />}
             {officeQuery.isError && <Alert type="error" showIcon message="Редактор документов недоступен" description="Проверьте локальный сервис документов и попробуйте подключиться ещё раз." action={<Button icon={<ReloadOutlined />} onClick={() => void officeQuery.refetch()}>Повторить</Button>} />}
-            {officeQuery.data && <OnlyOfficeEditor data={officeQuery.data} templateId={template.id} onDirty={setDirty} onError={(value) => message.error(value)} />}
+            {officeQuery.data && <OnlyOfficeEditor data={officeQuery.data} templateId={template.id} onDirty={setDirty} onError={handleOfficeError} />}
           </main>
         </div>
       )}
       <div className="editor-statusbar">
         <span><PictureOutlined />Текст и изображения</span>
         <span><CheckCircleFilled />{buildsDeliveryPdf ? 'Исходный DOCX и PDF-копия сохраняются отдельно' : 'Исходный DOCX сохраняется новой версией'}</span>
-        <span>{dirty ? 'Сохраняем…' : 'Сохранено'}</span>
+        <span>{saveMutation.isPending ? 'Сохраняем…' : dirty ? 'Не сохранено' : 'Сохранено'}</span>
       </div>
     </div>
   );
