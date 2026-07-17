@@ -54,6 +54,7 @@ import { templatesApi } from '@/api/templates';
 import type { OfficeEditorConfig } from '@/api/templates';
 import type { PdfEditorField, Template } from '@/api/types';
 import { VisualEmailEditor } from '@/features/templates/VisualEmailEditor';
+import { PersonalizationSetting } from '@/features/templates/PersonalizationSetting';
 import { getEmailFormat } from '@/features/templates/emailTemplateUtils';
 import './TemplateEditorPage.css';
 
@@ -153,6 +154,10 @@ th { background: #edf5f0; color: #174d38; }
 </section>
 </body>
 </html>`;
+
+function PersonalizationSettingPanel({ template }: { template: Template }) {
+  return <PersonalizationSetting template={template} />;
+}
 
 function EditorHeader({
   template,
@@ -289,7 +294,10 @@ function EmailTemplateEditor({ template }: { template: Template }) {
       </div>
       <div className="template-editor-grid">
         <main className="template-editor-main"><Card className="template-editor-surface" styles={{ body: { padding: 0 } }}><EmailToolbar editor={editor} /><EditorContent editor={editor} className="template-email-canvas" /></Card></main>
-        <aside className="template-editor-aside"><VariablePanel variables={variables} query={variableQuery} onQuery={setVariableQuery} onInsert={(nameValue) => editor?.chain().focus().insertContent(`{{${nameValue}}}`).run()} /></aside>
+        <aside className="template-editor-aside">
+          <PersonalizationSettingPanel template={template} />
+          <VariablePanel variables={variables} query={variableQuery} onQuery={setVariableQuery} onInsert={(nameValue) => editor?.chain().focus().insertContent(`{{${nameValue}}}`).run()} />
+        </aside>
       </div>
       <Modal open={previewOpen} width={820} title="Предпросмотр письма" onCancel={() => setPreviewOpen(false)} footer={null}><div className="template-email-preview desktop"><iframe title="Предпросмотр письма" sandbox="" srcDoc={renderedHtml} /></div></Modal>
     </div>
@@ -395,6 +403,7 @@ function KpTemplateEditor({ template }: { template: Template }) {
         <aside className="kp-pages-panel"><div className="kp-panel-title">Страницы</div><button className="kp-page-thumb active"><span>1</span><div className="kp-page-mini">КП</div></button><Button type="dashed" block size="small" disabled>КП всегда 1 страница</Button></aside>
         <main className="kp-stage"><div className="kp-ruler horizontal" /><KpCanvas initialHtml={initialHtml} controllerRef={controller} onChange={(value) => { setHtml(value); setDirty(true); }} /></main>
         <aside className="template-editor-aside kp-inspector">
+          <PersonalizationSettingPanel template={template} />
           <VariablePanel variables={variables} query={variableQuery} onQuery={setVariableQuery} onInsert={insertVariable} />
           <Card className="template-side-panel" title="Параметры документа"><div className="kp-settings"><span><Text type="secondary">Формат</Text><strong>A4 · 210 × 297 мм</strong></span><span><Text type="secondary">Результат</Text><strong>PDF</strong></span><span><Text type="secondary">Страниц</Text><strong>1</strong></span></div></Card>
           <Checks pdf />
@@ -527,6 +536,7 @@ function PdfOverlayEditor({ template }: { template: Template }) {
             </div>
           </main>
           <aside className="template-editor-aside pdf-overlay-inspector">
+            <PersonalizationSettingPanel template={template} />
             <Card className="template-side-panel" title="Поля документа">
               <div className="pdf-field-list">
                 {fields.map((field) => (
@@ -702,6 +712,10 @@ function DocxTemplateEditor({ template }: { template: Template }) {
         onPreview={() => window.open(templatesApi.previewFileUrl(template.id), '_blank', 'noopener,noreferrer')}
         onSave={() => saveMutation.mutate()}
       />
+
+      <div style={{ maxWidth: 420, marginBottom: 16 }}>
+        <PersonalizationSettingPanel template={template} />
+      </div>
 
       <div className="focused-editor-bar">
         <div className="focused-editor-file">

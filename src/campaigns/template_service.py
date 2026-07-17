@@ -110,6 +110,12 @@ def _validate_file_template_type(template_type: str, filename: str) -> str:
 def _template_types_compatible(existing: str, incoming: str) -> bool:
     return normalize_file_template_type(existing) == normalize_file_template_type(incoming)
 
+def _default_is_template(*, template_type: str, variables: list[dict[str, Any]]) -> bool:
+    if str(template_type or "").strip().lower() == "email":
+        return bool(variables)
+    return bool(variables)
+
+
 def template_to_dict(row: MailTemplate, version: TemplateVersion | None = None) -> dict[str, Any]:
     payload = {
         "id": row.id,
@@ -119,6 +125,7 @@ def template_to_dict(row: MailTemplate, version: TemplateVersion | None = None) 
         "active_version_id": row.active_version_id,
         "tags": list(row.tags or []),
         "archived": bool(row.archived),
+        "is_template": bool(row.is_template),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -167,6 +174,7 @@ def create_template(
     template_id = _new_id()
     version_id = _new_id()
     combined = f"{subject}\n{body_html}\n{body_text}"
+    variables = _extract_variables(combined)
     with session_scope() as session:
         tmpl = MailTemplate(
             id=template_id,
@@ -176,6 +184,7 @@ def create_template(
             status="ready",
             active_version_id=version_id,
             tags=list(tags or []),
+            is_template=_default_is_template(template_type=template_type, variables=variables),
         )
         session.add(tmpl)
         session.add(
@@ -186,7 +195,7 @@ def create_template(
                 subject=subject,
                 body_html=body_html,
                 body_text=body_text,
-                variables=_extract_variables(combined),
+                variables=variables,
                 editor_state=editor_state,
                 created_by=owner_username,
             )
@@ -355,6 +364,7 @@ def upload_file_version(
                     status="ready",
                     active_version_id=version_id,
                     tags=[],
+                    is_template=_default_is_template(template_type=normalized_type, variables=variables),
                 )
                 session.add(tmpl)
 
@@ -678,10 +688,24 @@ def save_version(
     variables: list[dict[str, Any]] | None = None,
     name: str | None = None,
     editor_state: dict[str, Any] | None = None,
+    is_template: bool | None = None,
 ) -> dict[str, Any] | None:
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
         if tmpl is None or tmpl.owner_username != owner_username:
+            return None
+        if is_template is not None:
+            tmpl.is_template = bool(is_template)
+            tmpl.updated_at = _now()
+        content_changed = any(
+            value is not None
+            for value in (subject, body_html, body_text, variables, editor_state)
+        )
+        if not content_changed and name is None and is_template is not None:
+            session.flush()
+            version = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
+            return template_to_dict(tmpl, version)
+        if not content_changed and name is None:
             return None
         current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
         next_number = (current.version_number + 1) if current else 1
@@ -689,6 +713,8 @@ def save_version(
         html = body_html if body_html is not None else (current.body_html if current else "")
         text = body_text if body_text is not None else (current.body_text if current else "")
         vars_list = variables if variables is not None else _extract_variables(f"{subj}\n{html}\n{text}")
+        if is_template is None and variables is not None:
+            tmpl.is_template = _default_is_template(template_type=tmpl.template_type, variables=vars_list)
         resolved_editor_state = editor_state if editor_state is not None else (current.editor_state if current else None)
         version_id = _new_id()
         session.add(

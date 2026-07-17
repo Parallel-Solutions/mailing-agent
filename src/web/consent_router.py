@@ -330,6 +330,16 @@ def _dispatch_materials_after_consent(record: dict, *, mark_started: bool = Fals
                 attachment_mode=attachment_mode,
             )
             return result
+        if job_id:
+            from src.campaigns.generation_service import ensure_recipient_documents_for_job
+
+            ensure_recipient_documents_for_job(
+                job_id=job_id,
+                row_id=row_id,
+                owner_username=owner_username,
+                attachment_mode=attachment_mode,
+                work_type=work_type,
+            )
         result = run_sender(
             dry_run=False,
             row_ids=[row_id],

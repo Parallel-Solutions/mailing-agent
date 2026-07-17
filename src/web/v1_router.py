@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from src.campaigns import (
     audience_service,
+    chain_preview_service,
     chain_service,
     connection_service,
     document_editor_service,
@@ -164,6 +165,7 @@ class TemplateSaveBody(BaseModel):
     body_text: str | None = None
     variables: list[dict[str, Any]] | None = None
     editor_state: dict[str, Any] | None = None
+    is_template: bool | None = None
 
 
 class KpPreviewBody(BaseModel):
@@ -667,6 +669,48 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @router.post("/campaigns/{campaign_id}/email-chain/preview")
+    def post_email_chain_preview(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                chain_preview_service.preview_chain_for_campaign(
+                    campaign_id,
+                    actor.username,
+                    is_admin=actor.is_admin,
+                )
+            )
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "не найден" in message.lower() else 400
+            raise HTTPException(status_code=status, detail=message) from exc
+
+    @router.get("/campaigns/{campaign_id}/email-chain/preview/attachment")
+    def get_email_chain_preview_attachment(
+        campaign_id: str,
+        principal: object = Depends(check_auth),
+        recipient_id: int = Query(..., ge=1),
+        template_id: str = Query(..., min_length=1),
+    ):
+        actor = _actor(principal)
+        try:
+            resolved = chain_preview_service.resolve_preview_attachment(
+                campaign_id,
+                recipient_id,
+                template_id,
+                actor.username,
+                is_admin=actor.is_admin,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="Вложение не найдено")
+        filename, content = resolved
+        return _binary_response(
+            {"filename": filename, "content": content},
+            disposition="attachment",
+        )
+
     @router.get("/campaigns/{campaign_id}/variable-mapping")
     def get_variable_mapping(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
@@ -1087,7 +1131,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 variables=body.variables,
                 name=body.name,
                 editor_state=body.editor_state,
-
+                is_template=body.is_template,
             )
         if not item:
             raise HTTPException(status_code=404, detail="Шаблон не найден")

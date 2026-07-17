@@ -6,7 +6,7 @@ import csv
 import io
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -789,18 +789,6 @@ def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_ad
         if active <= 0:
             errors.append("Нет получателей для отправки")
 
-        documents_required = camp.send_scenario != "email_chain"
-        if documents_required:
-            required_kinds = {
-                "kp": ("kp",),
-                "contract": ("contract",),
-                "both": ("kp", "contract"),
-            }.get(str(camp.document_mode or "kp").lower(), ("kp",))
-            if "kp" in required_kinds and not camp.kp_template_id:
-                errors.append("Выберите шаблон КП")
-            if "contract" in required_kinds and not camp.contract_template_id:
-                errors.append("Выберите шаблон договора")
-
         if camp.send_scenario == "email_chain":
             from src.campaigns.chain_service import get_email_chain, validate_chain
 
@@ -818,23 +806,6 @@ def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_ad
         schedule_payload = schedule_to_dict(schedule) if schedule else None
         campaign_payload = campaign_to_dict(camp)
         send_scenario = camp.send_scenario
-
-    if send_scenario != "email_chain" and active > 0 and not any(
-        message in errors
-        for message in ("Выберите шаблон КП", "Выберите шаблон договора")
-    ):
-        from src.campaigns.generation_service import generation_status
-
-        generation = generation_status(
-            campaign_id,
-            owner_username,
-            is_admin=is_admin,
-        )
-        if not generation.get("ready"):
-            if generation.get("stale"):
-                errors.append("Документы устарели — пересоберите их после изменений")
-            else:
-                errors.append("Сначала сформируйте документы для рассылки")
 
     return {
         "ok": len(errors) == 0,
@@ -929,6 +900,22 @@ def launch_campaign(
             )
             session.add(batch)
             session.flush()
+
+            pre_gen_at = _now() if force_now else max(_now(), scheduled_at - timedelta(hours=1))
+            enqueue_task(
+                task_type="campaign_pre_generate",
+                job_id=camp.job_id or campaign_id,
+                owner_username=owner_username,
+                payload={
+                    "campaign_id": campaign_id,
+                    "batch_id": batch_id,
+                    "recipient_ids": chunk,
+                },
+                available_at=pre_gen_at,
+                idempotency_key=f"campaign_pre_generate:{batch_id}",
+                active_key=f"campaign_pre_generate:{batch_id}",
+                max_attempts=max(1, int(schedule.max_retries or 3)),
+            )
 
             # Idempotent task per batch
             task, _created = enqueue_task(

@@ -399,6 +399,11 @@ def run_payload(payload: dict[str, Any]) -> None:
 
         run_sender_batch(kwargs)
         return
+    if task == "campaign_pre_generate":
+        from src.campaigns.batch_worker import run_campaign_pre_generate
+
+        run_campaign_pre_generate(kwargs)
+        return
     if task == "chain_followup":
         from src.campaigns.chain_send_service import run_chain_followup
 

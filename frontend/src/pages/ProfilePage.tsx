@@ -61,7 +61,6 @@ export function ProfilePage() {
               }}
             >
               <ProFormText name="default_subject" label="Тема по умолчанию" />
-              <ProFormText name="default_document_mode" label="Тип документов по умолчанию" />
               <ProFormText name="default_batch_size" label="Размер пакета по умолчанию" />
             </ProForm>
           ),

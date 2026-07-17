@@ -7,15 +7,11 @@ export function isValidEmail(value: string): boolean {
 export function validateCampaignBasics(input: {
   name?: string;
   mail_subject?: string;
-  document_mode?: string;
   send_scenario?: string;
 }): string[] {
   const errors: string[] = [];
   if (!(input.name || '').trim()) errors.push('Укажите название рассылки');
   if (!(input.mail_subject || '').trim()) errors.push('Укажите тему письма');
-  if (input.document_mode && !['kp', 'contract', 'both'].includes(input.document_mode)) {
-    errors.push('Некорректный тип документов');
-  }
   if (
     input.send_scenario &&
     !['consent_then_materials', 'materials_now', 'email_chain'].includes(input.send_scenario)

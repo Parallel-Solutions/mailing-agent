@@ -364,6 +364,7 @@ class MailTemplate(Base):
     active_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_template: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
