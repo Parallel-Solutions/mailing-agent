@@ -62,6 +62,9 @@ def _build_tools() -> list:
     from src.parser_new.tools.batch_tool import batch_search_tool
     tools.append(batch_search_tool)
 
+    from src.parser_new.tools.discovery_tool import discover_companies_tool
+    tools.append(discover_companies_tool)
+
     from src.parser_new.tools.email_tool import fix_emails_tool
     tools.append(fix_emails_tool)
 
