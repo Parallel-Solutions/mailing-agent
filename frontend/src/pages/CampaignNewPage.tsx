@@ -22,6 +22,7 @@ import {
   scheduleToFormValues,
 } from '@/utils/scheduleForm';
 import { computeLocalSchedulePreview } from '@/utils/schedulePreview';
+import { CampaignGenerationStep } from '@/components/CampaignGenerationStep';
 
 export function CampaignNewPage() {
   const [params] = useSearchParams();
@@ -186,6 +187,7 @@ export function CampaignNewPage() {
               { title: 'Основное' },
               { title: 'Отправитель' },
               { title: 'Получатели' },
+              { title: 'Генерация' },
               { title: 'Расписание' },
               { title: 'Запуск' },
             ]}
@@ -351,6 +353,11 @@ export function CampaignNewPage() {
               },
               {
                 key: '3',
+                label: 'Генерация документов',
+                children: <CampaignGenerationStep campaignId={id} campaign={draft} />,
+              },
+              {
+                key: '4',
                 label: 'Расписание',
                 children: (
                   <ProForm
@@ -404,7 +411,8 @@ export function CampaignNewPage() {
                 ),
               },
               {
-                key: '4',
+                key: '5',
+
                 label: 'Проверка и запуск',
                 children: (
                   <Space direction="vertical">

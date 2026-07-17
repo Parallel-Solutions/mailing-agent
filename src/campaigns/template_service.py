@@ -569,7 +569,7 @@ def save_kp_html_version(
 
 def save_docx_editor_version(template_id: str, owner_username: str, data: bytes) -> dict[str, Any]:
     template = get_template(template_id, owner_username)
-    if not template or template.get("template_type") not in {"kp", "contract"}:
+    if not template or not _is_file_document_template(str(template.get("template_type") or "")):
         raise FileNotFoundError("Шаблон документа не найден")
     version = template.get("version") or {}
     filename = str(version.get("filename") or f"{template['name']}.docx")

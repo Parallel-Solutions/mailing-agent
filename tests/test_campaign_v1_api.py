@@ -82,7 +82,44 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(schedule.status_code, 200)
         self.assertGreaterEqual(schedule.json()["result"]["preview"]["batch_count"], 1)
 
-        launched = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch?force_now=true")
+        blocked_without_template = self.client.post(
+            f"/api/v1/campaigns/{campaign_id}/launch?force_now=true"
+        )
+        self.assertEqual(blocked_without_template.status_code, 400)
+        self.assertIn("Выберите шаблон КП", blocked_without_template.text)
+
+        pdf_buffer = BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        writer.write(pdf_buffer)
+        uploaded = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "kp", "name": "KP"},
+            files={"file": ("kp.pdf", pdf_buffer.getvalue(), "application/pdf")},
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        kp_template_id = uploaded.json()["result"]["id"]
+        self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"kp_template_id": kp_template_id},
+        )
+
+        prepared = self.client.post(f"/api/v1/campaigns/{campaign_id}/generation/prepare")
+        self.assertEqual(prepared.status_code, 200, prepared.text)
+        self.assertTrue(prepared.json()["result"]["prepared"])
+        self.assertEqual(prepared.json()["result"]["manifest"]["recipient_count"], 2)
+
+        blocked_without_generation = self.client.post(
+            f"/api/v1/campaigns/{campaign_id}/launch?force_now=true"
+        )
+        self.assertEqual(blocked_without_generation.status_code, 400)
+        self.assertIn("Сначала сформируйте документы", blocked_without_generation.text)
+
+        with patch(
+            "src.campaigns.generation_service.generation_status",
+            return_value={"ready": True, "stale": False},
+        ):
+            launched = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch?force_now=true")
         self.assertEqual(launched.status_code, 200, launched.text)
         self.assertGreaterEqual(len(launched.json()["result"]["batches"]), 1)
 
@@ -584,9 +621,17 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(email.status_code, 200)
         email_id = email.json()["result"]["id"]
+        kp = self.client.post(
+            "/api/v1/templates",
+            json={"name": "KP gate", "template_type": "kp"},
+        )
+        self.assertEqual(kp.status_code, 200, kp.text)
         self.client.patch(
             f"/api/v1/campaigns/{campaign_id}",
-            json={"email_template_id": email_id},
+            json={
+                "email_template_id": email_id,
+                "kp_template_id": kp.json()["result"]["id"],
+            },
         )
 
         wb = Workbook()
@@ -653,7 +698,11 @@ class CampaignV1ApiTests(unittest.TestCase):
             " ".join(validate_after.json()["result"]["errors"]).lower(),
         )
 
-        launched = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch?force_now=true")
+        with patch(
+            "src.campaigns.generation_service.generation_status",
+            return_value={"ready": True, "stale": False},
+        ):
+            launched = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch?force_now=true")
         self.assertEqual(launched.status_code, 200, launched.text)
 
     def test_email_chain_crud_and_publish(self) -> None:

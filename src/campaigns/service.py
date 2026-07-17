@@ -781,8 +781,26 @@ def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_ad
             .select_from(CampaignRecipient)
             .where(CampaignRecipient.campaign_id == campaign_id, CampaignRecipient.excluded.is_(False))
         ) or 0
+        excluded = session.scalar(
+            select(func.count())
+            .select_from(CampaignRecipient)
+            .where(CampaignRecipient.campaign_id == campaign_id, CampaignRecipient.excluded.is_(True))
+        ) or 0
         if active <= 0:
             errors.append("Нет получателей для отправки")
+
+        documents_required = camp.send_scenario != "email_chain"
+        if documents_required:
+            required_kinds = {
+                "kp": ("kp",),
+                "contract": ("contract",),
+                "both": ("kp", "contract"),
+            }.get(str(camp.document_mode or "kp").lower(), ("kp",))
+            if "kp" in required_kinds and not camp.kp_template_id:
+                errors.append("Выберите шаблон КП")
+            if "contract" in required_kinds and not camp.contract_template_id:
+                errors.append("Выберите шаблон договора")
+
         if camp.send_scenario == "email_chain":
             from src.campaigns.chain_service import get_email_chain, validate_chain
 
@@ -791,30 +809,43 @@ def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_ad
                 errors.extend(chain_validation["errors"])
         elif not camp.email_template_id and not (camp.draft_payload or {}).get("email_body"):
             warnings.append("Шаблон письма не выбран — будет использован текст по умолчанию")
+
         from src.campaigns.variable_match_service import mapping_validation_errors
 
         errors.extend(mapping_validation_errors(camp))
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         draft = dict(camp.draft_payload or {})
-        return {
-            "ok": len(errors) == 0,
-            "errors": errors,
-            "warnings": warnings,
-            "active_recipients": int(active),
-            "mapping_confirmed": bool(draft.get("mapping_confirmed")),
-            "excluded_recipients": int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(CampaignRecipient)
-                    .where(CampaignRecipient.campaign_id == campaign_id, CampaignRecipient.excluded.is_(True))
-                )
-                or 0
-            ),
-            "schedule": schedule_to_dict(schedule) if schedule else None,
-            "campaign": campaign_to_dict(camp),
-        }
+        schedule_payload = schedule_to_dict(schedule) if schedule else None
+        campaign_payload = campaign_to_dict(camp)
+        send_scenario = camp.send_scenario
 
+    if send_scenario != "email_chain" and active > 0 and not any(
+        message in errors
+        for message in ("Выберите шаблон КП", "Выберите шаблон договора")
+    ):
+        from src.campaigns.generation_service import generation_status
 
+        generation = generation_status(
+            campaign_id,
+            owner_username,
+            is_admin=is_admin,
+        )
+        if not generation.get("ready"):
+            if generation.get("stale"):
+                errors.append("Документы устарели — пересоберите их после изменений")
+            else:
+                errors.append("Сначала сформируйте документы для рассылки")
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "active_recipients": int(active),
+        "mapping_confirmed": bool(draft.get("mapping_confirmed")),
+        "excluded_recipients": int(excluded),
+        "schedule": schedule_payload,
+        "campaign": campaign_payload,
+    }
 def launch_campaign(
     campaign_id: str,
     owner_username: str,

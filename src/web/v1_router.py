@@ -15,6 +15,8 @@ from src.campaigns import (
     chain_service,
     connection_service,
     document_editor_service,
+    generation_service,
+
     pdf_overlay_service,
     profile_service,
     service,
@@ -166,6 +168,11 @@ class TemplateSaveBody(BaseModel):
 
 class KpPreviewBody(BaseModel):
     body_html: str
+
+
+class OfficeSaveBody(BaseModel):
+    version_id: str = Field(min_length=1, max_length=200)
+    document_key: str = Field(min_length=1, max_length=128)
 
 
 class PdfOverlayFieldBody(BaseModel):
@@ -539,6 +546,38 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         return _ok(service.validate_campaign_for_launch(campaign_id, actor.username, is_admin=actor.is_admin))
 
+    @router.get("/campaigns/{campaign_id}/generation")
+    def get_campaign_generation(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                generation_service.generation_status(
+                    campaign_id,
+                    actor.username,
+                    is_admin=actor.is_admin,
+                )
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/campaigns/{campaign_id}/generation/prepare")
+    def post_campaign_generation_prepare(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                generation_service.prepare_campaign_generation(
+                    campaign_id,
+                    actor.username,
+                    is_admin=actor.is_admin,
+                )
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @router.get("/chains")
     def get_chains(
         principal: object = Depends(check_auth),
@@ -850,7 +889,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         return _ok(template_ai.list_models())
 
     @router.post("/templates/generate")
-    async def post_template_generate(
+    def post_template_generate(
         template_type: str = Form(...),
         prompt: str = Form(default=""),
         model: str = Form(default=""),
@@ -868,7 +907,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 max_bytes=settings.upload_template_max_bytes,
                 human_name="вложения шаблона",
             )
-            attachments.append((original_name, await upload.read()))
+            attachments.append((original_name, upload.file.read()))
         try:
             item = template_ai.generate_template(
                 actor.username,
@@ -994,6 +1033,26 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         except PermissionError:
             return {"error": 1}
 
+    @router.post("/templates/{template_id}/office-save")
+    def post_office_save(template_id: str, body: OfficeSaveBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                document_editor_service.force_save(
+                    template_id,
+                    actor.username,
+                    body.version_id,
+                    body.document_key,
+                )
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
     @router.get("/templates/{template_id}")
     def get_template(template_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
@@ -1028,13 +1087,14 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 variables=body.variables,
                 name=body.name,
                 editor_state=body.editor_state,
+
             )
         if not item:
             raise HTTPException(status_code=404, detail="Шаблон не найден")
         return _ok(item)
 
     @router.post("/templates/{template_id}/assets")
-    async def post_template_asset(
+    def post_template_asset(
         template_id: str,
         file: UploadFile = File(...),
         principal: object = Depends(check_auth),
@@ -1047,7 +1107,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         if suffix not in template_service.EMAIL_ASSET_EXTENSIONS:
             allowed = ", ".join(sorted(template_service.EMAIL_ASSET_EXTENSIONS))
             raise HTTPException(status_code=400, detail=f"Поддерживаются только изображения: {allowed}.")
-        data = await file.read()
+        data = file.file.read()
         if len(data) > settings.upload_template_max_bytes:
             raise HTTPException(status_code=400, detail="Файл изображения слишком большой.")
         try:

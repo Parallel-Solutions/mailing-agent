@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 import smtplib
 import tempfile
 import time
@@ -84,7 +85,9 @@ def _send_smtp_message(
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
     for filename, data in attachments or []:
-        msg.add_attachment(data, maintype="application", subtype="pdf", filename=filename)
+        content_type, _ = mimetypes.guess_type(filename)
+        maintype, subtype = (content_type or "application/octet-stream").split("/", 1)
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
 
     if creds.use_ssl:
         server: Any = smtplib.SMTP_SSL(creds.host, creds.port, timeout=60)
@@ -328,6 +331,31 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     except Exception as consent_exc:
                         logger.warning("campaign_consent_prepare_failed", error=str(consent_exc))
 
+                attachments: list[tuple[str, bytes]] = []
+                if send_mode == "materials" and job_id:
+                    from src.generator.delivery.sender_agent import (
+                        _resolve_output_folder,
+                        _resolve_pdf_attachments,
+                    )
+                    from src.jobs.storage import resolve_job_paths
+
+                    folder, folder_error = _resolve_output_folder(
+                        recipient.id,
+                        output_dir=resolve_job_paths(job_id).output_dir,
+                    )
+                    if folder_error:
+                        raise RuntimeError(folder_error)
+                    attachment_paths, attachment_error = _resolve_pdf_attachments(
+                        folder,
+                        attachment_mode=camp.document_mode or "kp",
+                    )
+                    if attachment_error:
+                        raise RuntimeError(attachment_error)
+                    attachments = [
+                        (Path(raw_path).name, Path(raw_path).read_bytes())
+                        for raw_path in attachment_paths
+                    ]
+
                 message_id = _send_delivery_message(
                     connection_id=connection_id,
                     owner_username=owner,
@@ -337,6 +365,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     text=text,
                     job_id=job_id,
                     row_id=str(recipient.id),
+                    attachments=attachments,
                 )
                 recipient.send_status = "sent"
                 recipient.last_error = None
