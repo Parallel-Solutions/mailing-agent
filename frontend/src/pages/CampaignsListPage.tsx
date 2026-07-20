@@ -57,62 +57,64 @@ export function CampaignsListPage() {
   });
 
   return (
-    <ProTable<Campaign>
-      rowKey="id"
-      loading={isLoading}
-      search={false}
-      headerTitle="Рассылки"
-      toolBarRender={() => [
-        <Button key="new" type="primary" icon={<PlusOutlined />} onClick={() => navigate('/campaigns/new')}>
-          Создать рассылку
-        </Button>,
-      ]}
-      dataSource={data?.items || []}
-      columns={[
-        {
-          title: 'Название',
-          dataIndex: 'name',
-          render: (_, row) => <Link to={`/campaigns/${row.id}`}>{row.name}</Link>,
-        },
-        {
-          title: 'Статус',
-          dataIndex: 'status',
-          render: (_, row) => <Tag color={statusColor[row.status] || 'default'}>{row.status}</Tag>,
-        },
-        { title: 'Тема', dataIndex: 'mail_subject', ellipsis: true },
-        { title: 'Провайдер', dataIndex: 'transport' },
-        {
-          title: 'Прогресс',
-          render: (_, row) => (
-            <Progress
-              percent={row.progress || 0}
-              size="small"
-              format={() => `${row.sent_count || 0}/${row.total_count || 0}`}
-            />
-          ),
-        },
-        { title: 'Ошибки', dataIndex: 'error_count' },
-        { title: 'Создана', dataIndex: 'created_at', valueType: 'dateTime' },
-        {
-          title: 'Действия',
-          valueType: 'option',
-          render: (_, row) => (
-            <Space>
-              <a onClick={() => navigate(`/campaigns/${row.id}`)}>Открыть</a>
-              <a onClick={() => navigate(`/campaigns/new?id=${row.id}`)}>Редактировать</a>
-              <a onClick={() => duplicate.mutate(row.id)}>Дублировать</a>
-              {row.status === 'paused' ? (
-                <a onClick={() => resume.mutate(row.id)}>Продолжить</a>
-              ) : row.status === 'running' || row.status === 'scheduled' ? (
-                <a onClick={() => pause.mutate(row.id)}>Пауза</a>
-              ) : null}
-              {['running', 'scheduled', 'paused'].includes(row.status) ? (
-                <a onClick={() => cancel.mutate(row.id)}>Отменить</a>
-              ) : null}
-            </Space>
-          ),
-        },
-      ]}
-    />
+    <div data-onboarding-id="campaigns-overview">
+      <ProTable<Campaign>
+        rowKey="id"
+        loading={isLoading}
+        search={false}
+        headerTitle="Рассылки"
+        toolBarRender={() => [
+          <Button key="new" type="primary" icon={<PlusOutlined />} onClick={() => navigate('/campaigns/new')}>
+            Создать рассылку
+          </Button>,
+        ]}
+        dataSource={data?.items || []}
+        columns={[
+          {
+            title: 'Название',
+            dataIndex: 'name',
+            render: (_, row) => <Link to={`/campaigns/${row.id}`}>{row.name}</Link>,
+          },
+          {
+            title: 'Статус',
+            dataIndex: 'status',
+            render: (_, row) => <Tag color={statusColor[row.status] || 'default'}>{row.status}</Tag>,
+          },
+          { title: 'Тема', dataIndex: 'mail_subject', ellipsis: true },
+          { title: 'Провайдер', dataIndex: 'transport' },
+          {
+            title: 'Прогресс',
+            render: (_, row) => (
+              <Progress
+                percent={row.progress || 0}
+                size="small"
+                format={() => `${row.sent_count || 0}/${row.total_count || 0}`}
+              />
+            ),
+          },
+          { title: 'Ошибки', dataIndex: 'error_count' },
+          { title: 'Создана', dataIndex: 'created_at', valueType: 'dateTime' },
+          {
+            title: 'Действия',
+            valueType: 'option',
+            render: (_, row) => (
+              <Space>
+                <a onClick={() => navigate(`/campaigns/${row.id}`)}>Открыть</a>
+                <a onClick={() => navigate(`/campaigns/new?id=${row.id}`)}>Редактировать</a>
+                <a onClick={() => duplicate.mutate(row.id)}>Дублировать</a>
+                {row.status === 'paused' ? (
+                  <a onClick={() => resume.mutate(row.id)}>Продолжить</a>
+                ) : row.status === 'running' || row.status === 'scheduled' ? (
+                  <a onClick={() => pause.mutate(row.id)}>Пауза</a>
+                ) : null}
+                {['running', 'scheduled', 'paused'].includes(row.status) ? (
+                  <a onClick={() => cancel.mutate(row.id)}>Отменить</a>
+                ) : null}
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </div>
   );
 }

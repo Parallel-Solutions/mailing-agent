@@ -13,10 +13,15 @@ import { ProCard } from '@ant-design/pro-components';
 import { App, Button, Dropdown, Space, Tabs, Tag, Tooltip, Typography, Upload } from 'antd';
 import type { MenuProps } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { templatesApi } from '@/api/templates';
 import type { Template } from '@/api/types';
+import {
+  advanceOnboarding,
+  ONBOARDING_ENTER_EVENT,
+  type OnboardingEnterDetail,
+} from '@/features/onboarding/events';
 import { AddTemplateWizard } from '@/features/templates/AddTemplateWizard';
 import { getEmailFormat } from '@/features/templates/emailTemplateUtils';
 import './TemplatesPage.css';
@@ -224,6 +229,18 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
     queryFn: () => templatesApi.list({ template_type: type }),
   });
 
+  useEffect(() => {
+    if (type !== 'email') return;
+    const handleOnboardingEnter = (event: Event) => {
+      const { stepId } = (event as CustomEvent<OnboardingEnterDetail>).detail || {};
+      if (['template-format', 'template-source', 'template-custom'].includes(stepId || '')) {
+        setWizardOpen(true);
+      }
+    };
+    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+  }, [type]);
+
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: ['templates', type] }); };
 
   const handleCreated = (template: Template) => {
@@ -234,7 +251,15 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
   return (
     <>
       <div className="template-library-toolbar">
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setWizardOpen(true)}>
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          data-onboarding-id="add-template"
+          onClick={() => {
+            setWizardOpen(true);
+            advanceOnboarding('template-open');
+          }}
+        >
           {isFileTemplate ? 'Добавить документ' : 'Добавить письмо'}
         </Button>
         {isFileTemplate && (

@@ -66,7 +66,7 @@ function StatisticsPageInner() {
       : '—';
 
   return (
-    <div data-testid="statistics-page">
+    <div data-testid="statistics-page" data-onboarding-id="statistics-overview">
       <div
         style={{
           display: 'flex',

@@ -24,66 +24,68 @@ export function ChainsPage() {
   });
 
   return (
-    <ProTable<ChainListItem>
-      rowKey="id"
-      loading={isLoading}
-      search={false}
-      headerTitle="Конструктор цепочек"
-      toolBarRender={() => [
-        <Button
-          key="new"
-          type="primary"
-          icon={<PlusOutlined />}
-          loading={createChain.isPending}
-          onClick={() => createChain.mutate()}
-        >
-          Создать цепочку
-        </Button>,
-      ]}
-      dataSource={data?.items ?? []}
-      locale={{
-        emptyText: (
-          <Empty description="Цепочек пока нет">
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              loading={createChain.isPending}
-              onClick={() => createChain.mutate()}
-            >
-              Создать цепочку
-            </Button>
-          </Empty>
-        ),
-      }}
-      columns={[
-        {
-          title: 'Название',
-          dataIndex: 'name',
-          render: (_, row) => <Link to={`/chains/${row.id}`}>{row.name}</Link>,
-        },
-        {
-          title: 'Статус',
-          dataIndex: 'published',
-          render: (_, row) => (
-            <Tag color={row.published ? 'success' : 'default'}>
-              {row.published ? 'Опубликована' : 'Черновик'}
-            </Tag>
+    <div data-onboarding-id="chains-overview">
+      <ProTable<ChainListItem>
+        rowKey="id"
+        loading={isLoading}
+        search={false}
+        headerTitle="Конструктор цепочек"
+        toolBarRender={() => [
+          <Button
+            key="new"
+            type="primary"
+            icon={<PlusOutlined />}
+            loading={createChain.isPending}
+            onClick={() => createChain.mutate()}
+          >
+            Создать цепочку
+          </Button>,
+        ]}
+        dataSource={data?.items ?? []}
+        locale={{
+          emptyText: (
+            <Empty description="Цепочек пока нет">
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                loading={createChain.isPending}
+                onClick={() => createChain.mutate()}
+              >
+                Создать цепочку
+              </Button>
+            </Empty>
           ),
-        },
-        { title: 'Обновлена', dataIndex: 'updated_at', valueType: 'dateTime' },
-        {
-          title: 'Действия',
-          valueType: 'option',
-          render: (_, row) => [
-            <a key="open" onClick={() => navigate(`/chains/${row.id}`)}>
-              Открыть конструктор
-            </a>,
-            <a key="campaign" onClick={() => navigate(`/campaigns/new?email_chain_id=${row.id}`)}>
-              К рассылке
-            </a>,
-          ],
-        },
-      ]}
-    />
+        }}
+        columns={[
+          {
+            title: 'Название',
+            dataIndex: 'name',
+            render: (_, row) => <Link to={`/chains/${row.id}`}>{row.name}</Link>,
+          },
+          {
+            title: 'Статус',
+            dataIndex: 'published',
+            render: (_, row) => (
+              <Tag color={row.published ? 'success' : 'default'}>
+                {row.published ? 'Опубликована' : 'Черновик'}
+              </Tag>
+            ),
+          },
+          { title: 'Обновлена', dataIndex: 'updated_at', valueType: 'dateTime' },
+          {
+            title: 'Действия',
+            valueType: 'option',
+            render: (_, row) => [
+              <a key="open" onClick={() => navigate(`/chains/${row.id}`)}>
+                Открыть конструктор
+              </a>,
+              <a key="campaign" onClick={() => navigate(`/campaigns/new?email_chain_id=${row.id}`)}>
+                К рассылке
+              </a>,
+            ],
+          },
+        ]}
+      />
+    </div>
   );
 }

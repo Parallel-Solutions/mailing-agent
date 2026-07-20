@@ -6,6 +6,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { templatesApi } from '@/api/templates';
 import type { Template } from '@/api/types';
 import { DEFAULT_VISUAL_EMAIL_HTML } from '@/features/templates/emailConstants';
+import {
+  advanceOnboarding,
+  ONBOARDING_ENTER_EVENT,
+  type OnboardingEnterDetail,
+} from '@/features/onboarding/events';
 
 type TemplateKind = 'email' | 'document';
 type EmailFormat = 'simple' | 'visual';
@@ -47,6 +52,18 @@ export function AddTemplateWizard({ open, templateType, onClose, onCreated }: Pr
   }, [open, templateType]);
 
   useEffect(() => {
+    if (!open) return;
+    const handleOnboardingEnter = (event: Event) => {
+      const { stepId } = (event as CustomEvent<OnboardingEnterDetail>).detail || {};
+      if (stepId === 'template-format') setStep('format');
+      if (stepId === 'template-source') setStep('gallery');
+      if (stepId === 'template-custom') setStep('custom');
+    };
+    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+  }, [open]);
+
+  useEffect(() => {
     if (!modelsQuery.data?.length || model) return;
     const preferred = modelsQuery.data.find((item) => item.default) || modelsQuery.data[0];
     setModel(preferred.id);
@@ -63,6 +80,7 @@ export function AddTemplateWizard({ open, templateType, onClose, onCreated }: Pr
     onSuccess: (template) => {
       message.success('Шаблон добавлен из примера');
       onCreated(template);
+      advanceOnboarding('template-source', 'audience-open');
       onClose();
     },
     onError: (error) => {
@@ -83,6 +101,7 @@ export function AddTemplateWizard({ open, templateType, onClose, onCreated }: Pr
     onSuccess: (template) => {
       message.success('Создан пустой HTML-шаблон');
       onCreated(template);
+      advanceOnboarding('template-source', 'audience-open');
       onClose();
     },
     onError: (error) => {
@@ -109,6 +128,7 @@ export function AddTemplateWizard({ open, templateType, onClose, onCreated }: Pr
       message.success(prompt.trim() ? 'Шаблон сгенерирован' : 'Шаблон создан из файлов');
       onCreated(template);
       onClose();
+      advanceOnboarding('template-custom', 'audience-open');
     },
     onError: (error) => {
       message.error(error instanceof Error ? error.message : 'Не удалось создать шаблон');
@@ -126,7 +146,13 @@ export function AddTemplateWizard({ open, templateType, onClose, onCreated }: Pr
       return (
         <Space>
           <Button onClick={onClose}>Отмена</Button>
-          <Button type="primary" onClick={() => setStep('gallery')}>
+          <Button
+            type="primary"
+            onClick={() => {
+              setStep('gallery');
+              advanceOnboarding('template-format');
+            }}
+          >
             Далее
           </Button>
         </Space>
@@ -148,7 +174,14 @@ export function AddTemplateWizard({ open, templateType, onClose, onCreated }: Pr
               Пустой HTML-шаблон
             </Button>
           ) : (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setStep('custom')}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                setStep('custom');
+                advanceOnboarding('template-source', 'template-custom');
+              }}
+            >
               Добавить
             </Button>
           )}
@@ -168,7 +201,7 @@ export function AddTemplateWizard({ open, templateType, onClose, onCreated }: Pr
   return (
     <Modal open={open} onCancel={onClose} title={title} width={820} destroyOnClose footer={footer}>
       {step === 'format' ? (
-        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+        <div data-onboarding-id="template-format" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
           <Card
             hoverable
             onClick={() => setEmailFormat('simple')}
@@ -193,7 +226,7 @@ export function AddTemplateWizard({ open, templateType, onClose, onCreated }: Pr
           </Card>
         </div>
       ) : step === 'gallery' ? (
-        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
+        <div data-onboarding-id="template-source" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
           {filteredStarters.map((starter) => (
             <button
               key={starter.id}
@@ -231,7 +264,7 @@ export function AddTemplateWizard({ open, templateType, onClose, onCreated }: Pr
           )}
         </div>
       ) : (
-        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        <Space direction="vertical" size="middle" style={{ width: '100%' }} data-onboarding-id="template-custom">
           <div>
             <Typography.Text>Нейронка</Typography.Text>
             <Select

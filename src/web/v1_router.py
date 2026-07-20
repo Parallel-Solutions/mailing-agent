@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
@@ -17,7 +17,7 @@ from src.campaigns import (
     connection_service,
     document_editor_service,
     generation_service,
-
+    onboarding_service,
     pdf_overlay_service,
     profile_service,
     service,
@@ -146,6 +146,12 @@ class ProfileUpdateBody(BaseModel):
     timezone: str | None = None
     mailing_defaults: dict[str, Any] | None = None
     notifications: dict[str, Any] | None = None
+
+
+class OnboardingUpdateBody(BaseModel):
+    status: Literal["active", "paused", "dismissed", "completed"]
+    current_step: int | None = Field(default=None, ge=0, le=100)
+    completed_steps: list[str] | None = None
 
 
 class TemplateCreateBody(BaseModel):
@@ -327,6 +333,27 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def patch_profile(body: ProfileUpdateBody, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         return _ok(profile_service.update_profile(actor.username, body.model_dump(exclude_none=True)))
+
+    # --- Onboarding ---
+    @router.get("/onboarding")
+    def get_onboarding(principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        return _ok(onboarding_service.get_onboarding(actor.username))
+
+    @router.patch("/onboarding")
+    def patch_onboarding(body: OnboardingUpdateBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                onboarding_service.update_onboarding(actor.username, body.model_dump(exclude_none=True))
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/onboarding/restart")
+    def restart_onboarding(principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        return _ok(onboarding_service.restart_onboarding(actor.username))
 
     # --- Work types ---
     @router.get("/work-types")

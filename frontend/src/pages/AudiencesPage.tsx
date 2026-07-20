@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { audiencesApi } from '@/api/audiences';
 import type { Audience } from '@/api/types';
+import { advanceOnboarding } from '@/features/onboarding/events';
 
 export function AudiencesPage() {
   const { message } = App.useApp();
@@ -22,8 +23,10 @@ export function AudiencesPage() {
 
   const createMutation = useMutation({
     mutationFn: () => audiencesApi.create(`Аудитория ${new Date().toLocaleString('ru-RU')}`),
-    onSuccess: () => {
+    onSuccess: (audience) => {
       message.success('Аудитория создана');
+      setSelected(audience);
+      advanceOnboarding('audience-open');
       void queryClient.invalidateQueries({ queryKey: ['audiences'] });
     },
   });
@@ -40,6 +43,7 @@ export function AudiencesPage() {
             key="new"
             type="primary"
             icon={<PlusOutlined />}
+            data-onboarding-id="create-audience"
             loading={createMutation.isPending}
             onClick={() => createMutation.mutate()}
           >
@@ -90,12 +94,13 @@ export function AudiencesPage() {
                   void queryClient.invalidateQueries({ queryKey: ['audience-members', selected.id] });
                   void queryClient.invalidateQueries({ queryKey: ['audiences'] });
                   onSuccess?.({});
+                  advanceOnboarding('audience-import', 'campaign-basics');
                 } catch (error) {
                   onError?.(error as Error);
                 }
               }}
             >
-              <Button>Импорт</Button>
+              <Button data-onboarding-id="audience-import">Импорт</Button>
             </Upload>
           ) : null
         }

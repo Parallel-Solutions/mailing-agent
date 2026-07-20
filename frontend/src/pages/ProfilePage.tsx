@@ -2,6 +2,7 @@ import { ProForm, ProFormSwitch, ProFormText, ProFormTextArea } from '@ant-desig
 import { App, Tabs, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { profileApi } from '@/api/profile';
+import { OnboardingSettings } from '@/features/onboarding/OnboardingSettings';
 import { ConnectionsPage } from './ConnectionsPage';
 
 export function ProfilePage() {
@@ -19,6 +20,7 @@ export function ProfilePage() {
           key: 'main',
           label: 'Основные данные',
           children: (
+            <div data-onboarding-id="profile-main-form">
             <ProForm
               loading={isLoading}
               initialValues={data}
@@ -28,16 +30,24 @@ export function ProfilePage() {
                 void queryClient.invalidateQueries({ queryKey: ['profile'] });
               }}
             >
-              <ProFormText name="display_name" label="Имя отправителя" />
-              <ProFormText name="email" label="Email" />
-              <ProFormText name="company" label="Компания" />
-              <ProFormText name="job_title" label="Должность" />
-              <ProFormTextArea name="signature" label="Подпись" />
-              <ProFormText name="timezone" label="Часовой пояс" />
+              <div data-onboarding-id="profile-sender">
+                <ProFormText name="display_name" label="Имя отправителя" />
+                <ProFormText name="company" label="Компания" />
+                <ProFormText name="job_title" label="Должность" />
+              </div>
+              <div data-onboarding-id="profile-email">
+                <ProFormText name="email" label="Email" />
+              </div>
+              <div data-onboarding-id="profile-signature">
+                <ProFormTextArea name="signature" label="Подпись" />
+                <ProFormText name="timezone" label="Часовой пояс" />
+              </div>
             </ProForm>
+            </div>
           ),
         },
         { key: 'connections', label: 'Подключения', children: <ConnectionsPage /> },
+        { key: 'onboarding', label: 'Обучение', children: <OnboardingSettings /> },
         {
           key: 'security',
           label: 'Безопасность',

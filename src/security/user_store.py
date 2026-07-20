@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from src.campaigns.onboarding_service import create_onboarding_for_new_user
 from src.infra.db import session_scope
 from src.infra.models import User
 from src.security.auth import _safe_identifier
@@ -100,6 +101,8 @@ def create_user(
                 created_at=created_at,
             )
         )
+        session.flush()
+        create_onboarding_for_new_user(session, safe_username)
     return UserRecord(
         username=safe_username,
         tenant_id=safe_tenant,
@@ -188,6 +191,8 @@ def sync_imported_user(
                     created_at=created_at,
                 )
             )
+            session.flush()
+            create_onboarding_for_new_user(session, safe_username)
             created_text = created_at.isoformat(timespec="seconds")
         else:
             created_text = existing.created_at.isoformat(timespec="seconds")

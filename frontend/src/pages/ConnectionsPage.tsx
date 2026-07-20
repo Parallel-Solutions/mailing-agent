@@ -2,10 +2,15 @@ import { PlusOutlined } from '@ant-design/icons';
 import { ModalForm, ProFormDigit, ProFormSelect, ProFormText, ProTable } from '@ant-design/pro-components';
 import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { connectionsApi } from '@/api/connections';
 import type { SmtpSetupAnalysis, SmtpSetupSettings } from '@/api/connections';
 import type { DeliveryConnection } from '@/api/types';
+import {
+  advanceOnboarding,
+  ONBOARDING_ENTER_EVENT,
+  type OnboardingEnterDetail,
+} from '@/features/onboarding/events';
 import {
   MAILBOX_AUTH_KIND_OPTIONS,
   authKindFromSetupAction,
@@ -353,9 +358,74 @@ export function ConnectionsPage() {
     form.resetFields();
   };
 
-  const enterLimitsStep = (connectionId: string) => {
+  useEffect(() => {
+    const handleOnboardingEnter = (event: Event) => {
+      const { stepId } = (event as CustomEvent<OnboardingEnterDetail>).detail || {};
+      if (stepId === 'connection-open') {
+        setAddModalOpen(false);
+        resetAddModal();
+        return;
+      }
+
+      if (stepId === 'connection-method') {
+        resetAddModal();
+        setAddModalOpen(true);
+        return;
+      }
+
+      if (
+        stepId === 'connection-details'
+        || stepId === 'connection-auth'
+        || stepId === 'connection-api-provider'
+        || stepId === 'connection-credentials'
+        || stepId === 'connection-submit'
+      ) {
+        setAddModalOpen(true);
+        window.setTimeout(() => {
+          const target = document.querySelector(`[data-onboarding-id="${stepId}"]`);
+          if (target) return;
+
+          resetAddModal();
+          const recoverApiProvider = stepId === 'connection-api-provider';
+          setMethodKind(recoverApiProvider ? 'api_key' : 'mailbox');
+          setAddModalOpen(true);
+
+          if (stepId !== 'connection-details' && !recoverApiProvider) {
+            window.setTimeout(
+              () => advanceOnboarding(stepId, 'connection-details'),
+              80,
+            );
+          }
+        }, 120);
+        return;
+      }
+
+      if (stepId === 'connection-limits') {
+        void connectionsApi.list().then((connections) => {
+          const connection = connections.length ? connections[connections.length - 1] : null;
+          if (!connection) {
+            advanceOnboarding('connection-limits', 'template-open');
+            return;
+          }
+          setLimitsStepConnectionId(connection.id);
+          setMethodKind(connection.transport === 'smtp' ? 'mailbox' : 'api_key');
+          form.setFieldsValue({
+            max_per_hour: connection.max_per_hour || 0,
+            max_per_day: connection.max_per_day || 0,
+          });
+          setAddModalOpen(true);
+        });
+      }
+    };
+
+    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+  }, [form]);
+
+  const enterLimitsStep = (connectionId: string, fromStepId = 'connection-submit') => {
     setLimitsStepConnectionId(connectionId);
     form.setFieldsValue({ max_per_hour: 0, max_per_day: 0 });
+    advanceOnboarding(fromStepId);
     refreshConnections();
   };
 
@@ -439,6 +509,7 @@ export function ConnectionsPage() {
       setRecommendedAuthKind('password');
     } finally {
       setIsAnalyzingSmtp(false);
+      advanceOnboarding('connection-details', 'connection-auth');
     }
   };
 
@@ -478,7 +549,7 @@ export function ConnectionsPage() {
         make_default: false,
       });
       message.success('Почтовый ящик подключён через OAuth');
-      enterLimitsStep(created.id);
+      enterLimitsStep(created.id, 'connection-credentials');
     } catch (error) {
       setSmtpSetupError(
         error instanceof Error ? error.message : 'Не удалось завершить OAuth.',
@@ -544,6 +615,7 @@ export function ConnectionsPage() {
             submitButtonProps: {
               disabled: submitDisabled,
               loading: isAnalyzingSmtp || isOAuthConnecting,
+              'data-onboarding-id': 'connection-submit',
               style:
                 !onLimitsStep && methodKind === 'mailbox' && authKind === 'oauth'
                   ? { display: 'none' }
@@ -558,6 +630,7 @@ export function ConnectionsPage() {
                     message.success('Подключение сохранено без лимитов');
                     setAddModalOpen(false);
                     resetAddModal();
+                    advanceOnboarding('connection-limits', 'template-open');
                   }}
                 >
                   Пропустить
@@ -567,7 +640,12 @@ export function ConnectionsPage() {
             },
           }}
           trigger={
-            <Button type="primary" icon={<PlusOutlined />}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              data-onboarding-id="add-connection"
+              onClick={() => advanceOnboarding('connection-open')}
+            >
               Добавить
             </Button>
           }
@@ -593,6 +671,7 @@ export function ConnectionsPage() {
               message.success('Лимиты отправки сохранены');
               refreshConnections();
               resetAddModal();
+              advanceOnboarding('connection-limits', 'template-open');
               return true;
             }
 
@@ -687,7 +766,7 @@ export function ConnectionsPage() {
           }}
         >
           {onLimitsStep ? (
-            <>
+            <div data-onboarding-id="connection-limits">
               {methodKind === 'mailbox' ? (
                 <Steps
                   size="small"
@@ -708,9 +787,10 @@ export function ConnectionsPage() {
                 style={{ marginBottom: 16 }}
               />
               <ConnectionRateLimitFields />
-            </>
+            </div>
           ) : (
             <>
+          <div data-onboarding-id="connection-method">
           <ProFormSelect
             name="method_kind"
             label="Способ отправки"
@@ -724,6 +804,7 @@ export function ConnectionsPage() {
               onChange: (value: MethodKind | null) => {
                 setMethodKind(value || null);
                 setApiTransport(null);
+                advanceOnboarding('connection-method', value === 'api_key' ? 'connection-api-provider' : undefined);
                 resetSmtpWizard();
                 form.setFieldsValue({
                   transport: undefined,
@@ -736,9 +817,12 @@ export function ConnectionsPage() {
             }}
             rules={[{ required: true, message: 'Выберите способ отправки' }]}
           />
+          </div>
 
+          <div>
           {methodKind === 'mailbox' ? (
             <>
+              <div data-onboarding-id={onMailboxEmailStep ? 'connection-details' : undefined}>
               <Steps
                 size="small"
                 current={onMailboxEmailStep ? 0 : 1}
@@ -776,8 +860,11 @@ export function ConnectionsPage() {
                     Определить и продолжить
                   </Button>
                 </Space>
-              ) : (
+              ) : null}
+              </div>
+              {!onMailboxEmailStep ? (
                 <>
+                  <div data-onboarding-id="connection-auth">
                   <Form.Item label="Тип входа" required style={{ marginBottom: 16 }}>
                     <Radio.Group
                       value={authKind || undefined}
@@ -830,7 +917,9 @@ export function ConnectionsPage() {
                       </Space>
                     </Radio.Group>
                   </Form.Item>
+                  </div>
 
+                  <div data-onboarding-id="connection-credentials">
                   {smtpSetupError ? (
                     <Alert
                       type="error"
@@ -974,13 +1063,15 @@ export function ConnectionsPage() {
                       )}
                     </>
                   ) : null}
+                  </div>
                 </>
-              )}
+              ) : null}
             </>
           ) : null}
 
           {methodKind === 'api_key' ? (
             <>
+              <div data-onboarding-id="connection-api-provider">
               <ProFormSelect
                 name="transport"
                 label="Провайдер"
@@ -994,13 +1085,15 @@ export function ConnectionsPage() {
                     setApiTransport(value || null);
                     if (value) {
                       form.setFieldsValue({ api_base_url: API_BASE_URLS[value] });
+                      advanceOnboarding('connection-api-provider', 'connection-credentials');
                     }
                   },
                 }}
                 rules={[{ required: true, message: 'Выберите провайдера' }]}
               />
+              </div>
               {apiTransport ? (
-                <>
+                <div data-onboarding-id="connection-credentials">
                   <ProFormText.Password
                     name="api_token"
                     label={apiTransport === 'rusender' ? 'API-ключ RuSender' : 'API-токен MailoPost'}
@@ -1017,10 +1110,11 @@ export function ConnectionsPage() {
                     message="Перед подключением подтвердите адрес отправителя у провайдера"
                     description="Токен хранится в зашифрованном виде и не отображается после сохранения. Кнопка «Проверить» отправит тестовое письмо на этот адрес. Имя отправителя задаётся в настройках профиля."
                   />
-                </>
+                </div>
               ) : null}
             </>
           ) : null}
+          </div>
             </>
           )}
         </ModalForm>,

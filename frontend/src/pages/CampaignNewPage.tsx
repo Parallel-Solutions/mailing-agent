@@ -14,6 +14,7 @@ import { campaignsApi } from '@/api/campaigns';
 import { connectionsApi } from '@/api/connections';
 import { audiencesApi } from '@/api/audiences';
 import { RecipientGenerateModal } from '@/features/campaigns/RecipientGenerateModal';
+import { ONBOARDING_ENTER_EVENT } from '@/features/onboarding/events';
 import { ChainEmailPreviewModal } from '@/features/campaigns/ChainEmailPreviewModal';
 import { VariableMappingModal } from '@/features/campaigns/VariableMappingModal';
 import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
@@ -24,7 +25,16 @@ import {
 } from '@/utils/scheduleForm';
 import { computeLocalSchedulePreview } from '@/utils/schedulePreview';
 
+const onboardingCampaignSteps: Record<string, number> = {
+  'campaign-basics': 0,
+  'campaign-sender': 1,
+  'campaign-recipients': 2,
+  'campaign-schedule': 3,
+  'campaign-launch': 4,
+};
+
 export function CampaignNewPage() {
+
   const [params] = useSearchParams();
   const existingId = params.get('id');
   const emailChainIdParam = params.get('email_chain_id');
@@ -179,9 +189,19 @@ export function CampaignNewPage() {
       (draft.draft_payload as Record<string, unknown> | undefined)?.mapping_confirmed,
   );
   const launchBlocked = readinessErrors.length > 0;
+  useEffect(() => {
+    const handleOnboardingEnter = (event: Event) => {
+      const stepId = (event as CustomEvent<{ stepId?: string }>).detail?.stepId;
+      const campaignStep = stepId ? onboardingCampaignSteps[stepId] : undefined;
+      if (campaignStep !== undefined) setStep(campaignStep);
+    };
+    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+  }, []);
+
 
   return (
-    <Row gutter={16}>
+    <Row gutter={16} data-onboarding-id="campaign-basics">
       <Col xs={24} xl={16}>
         <ProCard bordered title="Создание рассылки" extra={<Tag>{saveState === 'saving' ? 'Сохранение…' : saveState === 'saved' ? 'Сохранено' : 'Черновик'}</Tag>}>
           <Steps
@@ -211,6 +231,7 @@ export function CampaignNewPage() {
                 key: '0',
                 label: 'Основная информация',
                 children: (
+                  <div data-onboarding-id="campaign-step-basics">
                   <ProForm
                     form={basicsForm}
                     submitter={false}
@@ -239,12 +260,14 @@ export function CampaignNewPage() {
                       </Button>
                     )}
                   </ProForm>
+                  </div>
                 ),
               },
               {
                 key: '1',
                 label: 'Отправитель',
                 children: (
+                  <div data-onboarding-id="campaign-step-sender">
                   <ProForm
                     form={senderForm}
                     submitter={false}
@@ -281,13 +304,14 @@ export function CampaignNewPage() {
                     />
                     <Button onClick={() => navigate('/connections')}>Управлять подключениями</Button>
                   </ProForm>
+                  </div>
                 ),
               },
               {
                 key: '2',
                 label: 'Получатели',
                 children: (
-                  <Space direction="vertical" style={{ width: '100%' }}>
+                  <Space direction="vertical" style={{ width: '100%' }} data-onboarding-id="campaign-step-recipients">
                     <ProFormSelect
                       name="audience_id"
                       label="Сохранённая аудитория"
@@ -358,6 +382,7 @@ export function CampaignNewPage() {
                 key: '3',
                 label: 'Расписание',
                 children: (
+                  <div data-onboarding-id="campaign-step-schedule">
                   <ProForm
                     form={scheduleForm}
                     submitter={false}
@@ -406,6 +431,7 @@ export function CampaignNewPage() {
                         : ''}
                     </Typography.Text>
                   </ProForm>
+                  </div>
                 ),
               },
               {
@@ -413,7 +439,7 @@ export function CampaignNewPage() {
 
                 label: 'Проверка и запуск',
                 children: (
-                  <Space direction="vertical">
+                  <Space direction="vertical" data-onboarding-id="campaign-step-launch">
                     {(validateQuery.data?.warnings || []).map((w) => (
                       <Tag key={w} color="gold">
                         {w}
