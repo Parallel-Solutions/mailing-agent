@@ -11,6 +11,15 @@ test.describe('Infrastructure smoke @smoke', () => {
     expect(healthBody.status).toBe('ok');
     expect(healthBody.database).toBe('up');
 
+    const ready = await request.get(`${API_URL}/ready`);
+    expect(ready.status()).toBe(200);
+    const readyBody = await ready.json();
+    expect(readyBody.status).toBe('ok');
+    expect(readyBody.database).toBe('up');
+    expect(readyBody.redis).toBe('up');
+    expect(readyBody.object_store).toBe('up');
+    expect(readyBody.gotenberg).toBe('up');
+
     const mailpit = await request.get(`${MAILPIT_URL}/api/v1/info`);
     expect(mailpit.status()).toBe(200);
 

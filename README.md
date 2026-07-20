@@ -96,13 +96,31 @@
 
 
 
+### Режимы стека
+
+| Режим | Команда | Compose | БД / проект | Назначение |
+|-------|---------|---------|-------------|------------|
+| **Prod-like** | `docker compose up -d --build` + `.env.docker` | `docker-compose.yml` | `mailing` (default project) | Деплой-подобный стек без Mailpit. Образ `mailing-agent:local` с bind-mount `./src` — не immutable image-only prod. |
+| **Local UI (dev)** | `.\scripts\dev.ps1 start` | base + `docker-compose.dev.yml` | `mailing` / volume `pgdata` | Ручная работа с React UI на `:9806` + Mailpit `:8025` |
+| **E2E** | `npm run e2e:*` / `.\scripts\e2e.ps1` + `.env.e2e` | base + `docker-compose.e2e.yml` | `mailing_e2e` / project `mailing-agent-e2e` | Playwright (порты по умолчанию `19806` / `18025`) |
+| **Unit/integration** | `docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test` | `docker-compose.test.yml` | `mailing_test` / project `mailing-agent-test` | Python-тесты (Postgres + MinIO only; отдельный project, чтобы не трогать local) |
+
+Опциональные профили на base compose: `migrate` / `verify`, `onlyoffice`, `gotenberg-ha`. В e2e — profile `playwright`.
+
+Проверки: `GET /health` — liveness (БД); `GET /ready` — readiness (БД, Redis, MinIO, Gotenberg). Worker имеет свой Docker healthcheck (heartbeat + БД + Redis).
+
+
+
 Docker Compose поднимает:
 
 - `app` — FastAPI-приложение на Python;
+- `worker` — фоновая очередь задач (обязателен рядом с `app`);
 - `postgres` — PostgreSQL (строковые/state-данные, auth, клиенты, события);
 - `minio` — S3-совместимое хранилище файлов (xlsx, docx, pdf, шаблоны);
 - `redis` — кэш и progress streams парсера;
-- `gotenberg`, `gotenberg-2` — внутренние сервисы для DOCX → PDF конвертации.
+- `gotenberg` — внутренний сервис для DOCX → PDF (второй инстанс: profile `gotenberg-ha`).
+- `onlyoffice` — редактор документов (profile `onlyoffice`).
+- `mailpit` — только в dev/e2e overlays (локальный SMTP sink).
 
 Данные приложения:
 - **PostgreSQL** — users/sessions, состояние агентов, owner, consents, события (`*.jsonl`), строки клиентов;
@@ -111,7 +129,7 @@ Docker Compose поднимает:
 
 
 
-Gotenberg не публикуется наружу и доступен только контейнеру приложения по адресам `http://gotenberg:3000` и `http://gotenberg-2:3000`. PDF-конвертация настроена через Gotenberg.
+Gotenberg не публикуется наружу и доступен контейнеру приложения по адресу `http://gotenberg:3000`. PDF-конвертация настроена через Gotenberg.
 
 
 
@@ -188,11 +206,16 @@ http://localhost:9806/
 
 docker compose ps
 
+curl -sf http://localhost:9806/health
+curl -sf http://localhost:9806/ready
+
 docker compose logs -f app
 
 docker compose logs -f worker
 
 ```
+
+Локальный UI (с Mailpit): `.\scripts\dev.ps1 start` — ждёт `/health`, `/ready`, Mailpit и healthy worker.
 
 The `worker` service executes durable PostgreSQL-backed tasks. Queued and
 running tasks survive API restarts; expired leases are retried automatically.
@@ -205,7 +228,7 @@ The API service must not be deployed without at least one worker replica.
 **Unit/integration** (без реальной отправки, Postgres + MinIO):
 
 ```bash
-docker compose -f docker-compose.test.yml run --rm test
+docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test
 ```
 
 Локально (из корня проекта, с активированным `.venv`):
@@ -214,19 +237,17 @@ docker compose -f docker-compose.test.yml run --rm test
 python -m tests
 ```
 
-**E2E send matrix** (реальная отправка через RuSender, 35×4=140 сценариев, несколько часов):
+**Playwright E2E** (React CampaignFlow + Mailpit, отдельный compose-проект `mailing-agent-e2e`):
 
 ```bash
-cp .env.e2e.example .env.docker   # заполнить RuSender и auth
-docker compose up -d
-./scripts/run-e2e-matrix.ps1      # Windows
-# или
-RUN_REAL_E2E=1 docker compose exec app .venv/bin/python -m tests.e2e.run_send_matrix
+cp .env.e2e.example .env.e2e   # не копировать в .env.docker
+npm run e2e:up
+npm run e2e:test:smoke
+npm run e2e:test:email
+npm run e2e:down
 ```
 
-Подробности: [`tests/e2e/README.md`](tests/e2e/README.md).
-
-
+Подробности: [`docs/testing/PLAYWRIGHT_DOCKER.md`](docs/testing/PLAYWRIGHT_DOCKER.md).
 
 Остановка:
 
@@ -318,7 +339,7 @@ Runtime-данные на хосте: `./logs` и `./tmp` (рабочая пап
 
 main.py                         FastAPI-приложение и API-роуты
 
-templates/index.html            веб-интерфейс
+frontend/                       React UI (CampaignFlow), собирается в Docker
 
 src/generator/generation/       генерация DOCX/PDF
 

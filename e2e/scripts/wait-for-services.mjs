@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Wait for app, backend health, and Mailpit before handing off to Playwright.
+ * Wait for app liveness, full readiness, and Mailpit before handing off to Playwright.
  * Exit non-zero on timeout. Usage: node wait-for-services.mjs [--] <cmd...>
  */
 import { spawn } from 'node:child_process';
@@ -33,6 +33,19 @@ async function checkHealth() {
   }
 }
 
+async function checkReady() {
+  const response = await fetch(`${API_URL}/ready`);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.status !== 'ok') {
+    throw new Error(`backend ready: HTTP ${response.status} body=${JSON.stringify(body)}`);
+  }
+  for (const key of ['database', 'redis', 'object_store', 'gotenberg']) {
+    if (body[key] !== 'up') {
+      throw new Error(`backend ready: ${key} not up (${JSON.stringify(body)})`);
+    }
+  }
+}
+
 async function checkMailpit() {
   const response = await fetch(`${MAILPIT_URL}/api/v1/info`);
   if (!response.ok) {
@@ -48,19 +61,21 @@ async function waitAll() {
     try {
       await check('frontend', `${APP_URL}/login`);
       await checkHealth();
+      await checkReady();
       await checkMailpit();
       const elapsed = ((Date.now() - started) / 1000).toFixed(1);
       console.log(`[wait-for-services] ready in ${elapsed}s`);
       console.log(`  frontend: ${APP_URL}`);
       console.log(`  health:   ${API_URL}/health`);
+      console.log(`  ready:    ${API_URL}/ready`);
       console.log(`  mailpit:  ${MAILPIT_URL}`);
       return;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
-      const left = Math.max(0, TIMEOUT_MS - (Date.now() - started));
-      console.log(`[wait-for-services] waiting... (${lastError}) [${Math.ceil(left / 1000)}s left]`);
-      await new Promise((r) => setTimeout(r, INTERVAL_MS));
     }
+    const left = Math.max(0, TIMEOUT_MS - (Date.now() - started));
+    console.log(`[wait-for-services] waiting... (${lastError}) [${Math.ceil(left / 1000)}s left]`);
+    await new Promise((r) => setTimeout(r, INTERVAL_MS));
   }
   console.error(`[wait-for-services] TIMEOUT after ${TIMEOUT_MS}ms: ${lastError}`);
   process.exit(1);

@@ -1,12 +1,12 @@
 FROM node:22-bookworm AS frontend-build
 ENV NODE_OPTIONS=--max-old-space-size=3072
 WORKDIR /frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM python:3.11-slim-bookworm
+FROM python:3.11-slim-bookworm AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -67,8 +67,14 @@ RUN uv pip install --python .venv/bin/python "pypdf>=6.0.0" "pymupdf>=1.26.0"
 
 COPY . .
 COPY --from=frontend-build /frontend/dist /app/frontend/dist
-RUN mkdir -p /app/storage /app/logs /app/data /app/tmp
+RUN mkdir -p /app/storage /app/logs /app/data /app/tmp /app/src/parser_new/memory/vectors
 
 EXPOSE 9806
 
 CMD [".venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9806", "--loop", "asyncio", "--http", "h11"]
+
+# Unit/integration image: preinstalls dev+mcp extras so compose.test does not uv sync every run.
+# Build with: docker build --target test
+FROM runtime AS test
+RUN uv sync --frozen --extra dev --extra mcp --no-install-project
+CMD [".venv/bin/python", "-m", "tests"]

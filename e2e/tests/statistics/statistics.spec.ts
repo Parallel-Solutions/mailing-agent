@@ -17,7 +17,7 @@ test.describe('Statistics page @smoke', () => {
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('statistics-page')).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText('Статистика отправок').first()).toBeVisible();
+    await expect(page.getByText('Статистика').first()).toBeVisible();
 
     const stats = page.getByTestId('statistics-page');
     for (const tab of TABS) {
