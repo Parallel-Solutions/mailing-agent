@@ -92,6 +92,54 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(paused.status_code, 200)
         self.assertEqual(paused.json()["result"]["status"], "paused")
 
+    def test_update_campaign_with_connection_ids(self) -> None:
+        from src.generator.delivery.smtp_mailboxes import create_mailbox
+
+        created = self.client.post("/api/v1/campaigns", json={"name": "Multi sender"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+
+        mailbox_a = create_mailbox(
+            owner_username=self.username,
+            provider="custom",
+            email="sender-a@mailpit.local",
+            password="x",
+            host="mailpit",
+            port=1025,
+            use_ssl=False,
+            use_starttls=False,
+            make_default=True,
+        )
+        mailbox_b = create_mailbox(
+            owner_username=self.username,
+            provider="custom",
+            email="sender-b@mailpit.local",
+            password="x",
+            host="mailpit",
+            port=1025,
+            use_ssl=False,
+            use_starttls=False,
+            make_default=False,
+        )
+
+        patched = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"connection_ids": [mailbox_a["id"], mailbox_b["id"]]},
+        )
+        self.assertEqual(patched.status_code, 200, patched.text)
+        result = patched.json()["result"]
+        self.assertEqual(result["connection_ids"], [mailbox_a["id"], mailbox_b["id"]])
+        self.assertEqual(result["smtp_mailbox_id"], mailbox_a["id"])
+        self.assertEqual(result["transport"], "smtp")
+
+        loaded = self.client.get(f"/api/v1/campaigns/{campaign_id}")
+        self.assertEqual(loaded.status_code, 200)
+        self.assertEqual(loaded.json()["result"]["connection_ids"], [mailbox_a["id"], mailbox_b["id"]])
+
+        validate = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
+        self.assertEqual(validate.status_code, 200)
+        self.assertNotIn("подключение отправителя", " ".join(validate.json()["result"]["errors"]).lower())
+
     def test_replace_recipients_twice_does_not_500(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "Reimport Campaign"})
         self.assertEqual(created.status_code, 200)

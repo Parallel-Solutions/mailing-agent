@@ -414,6 +414,7 @@ class Campaign(Base):
     internal_comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
     smtp_mailbox_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    connection_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     transport: Mapped[str] = mapped_column(String(32), nullable=False, default="smtp")
     email_template_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     kp_template_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

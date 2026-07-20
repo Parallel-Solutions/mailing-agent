@@ -44,6 +44,7 @@ class CampaignCreateBody(BaseModel):
     tags: list[str] | None = None
     internal_comment: str | None = None
     smtp_mailbox_id: str | None = None
+    connection_ids: list[str] | None = None
     transport: str | None = None
     draft_payload: dict[str, Any] | None = None
 
@@ -58,6 +59,7 @@ class CampaignUpdateBody(BaseModel):
     tags: list[str] | None = None
     internal_comment: str | None = None
     smtp_mailbox_id: str | None = None
+    connection_ids: list[str] | None = None
     transport: str | None = None
     email_template_id: str | None = None
     kp_template_id: str | None = None
@@ -402,9 +404,12 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.patch("/campaigns/{campaign_id}")
     def patch_campaign(campaign_id: str, body: CampaignUpdateBody, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = service.update_campaign(
-            campaign_id, actor.username, body.model_dump(exclude_none=True), is_admin=actor.is_admin
-        )
+        try:
+            item = service.update_campaign(
+                campaign_id, actor.username, body.model_dump(exclude_none=True), is_admin=actor.is_admin
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not item:
             raise HTTPException(status_code=404, detail="Рассылка не найдена")
         return _ok(item)
