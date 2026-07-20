@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
+import { chainsApi } from '@/api/chains';
 import { connectionsApi } from '@/api/connections';
 import { audiencesApi } from '@/api/audiences';
 import { RecipientGenerateModal } from '@/features/campaigns/RecipientGenerateModal';
@@ -54,7 +55,7 @@ export function CampaignNewPage() {
   const hydratedIdRef = useRef<string | null>(null);
 
   const createMutation = useMutation({
-    mutationFn: () => campaignsApi.create({ name: 'Черновик рассылки' }),
+    mutationFn: () => campaignsApi.create({ name: 'Черновик рассылки', send_scenario: 'email_chain' }),
     onSuccess: (camp) => {
       setCampaignId(camp.id);
       replaceDraft(camp);
@@ -82,23 +83,40 @@ export function CampaignNewPage() {
     if (!id || !emailChainIdParam) return;
     void campaignsApi
       .update(id, { send_scenario: 'email_chain', email_chain_id: emailChainIdParam })
-      .then((camp) => replaceDraft({ ...camp, ...(camp.draft_payload || {}) }));
+      .then((camp) => {
+        replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
+        basicsForm.setFieldsValue({ email_chain_id: emailChainIdParam });
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, emailChainIdParam]);
 
-  const linkedChainId = emailChainIdParam || draft.email_chain_id;
+  const watchedChainId = Form.useWatch('email_chain_id', basicsForm);
+  const linkedChainId = emailChainIdParam || watchedChainId || draft.email_chain_id;
 
   useEffect(() => {
     if (!id) return;
     if (hydratedIdRef.current === id) return;
     if (!draft.id && draft.name === undefined) return;
     basicsForm.setFieldsValue(draft);
-    senderForm.setFieldsValue(draft);
+    senderForm.setFieldsValue({
+      ...draft,
+      connection_ids:
+        draft.connection_ids?.length
+          ? draft.connection_ids
+          : draft.smtp_mailbox_id
+            ? [draft.smtp_mailbox_id]
+            : [],
+    });
     hydratedIdRef.current = id;
-  }, [id, draft.id, draft.name, draft.mail_subject, draft.smtp_mailbox_id, draft, basicsForm, senderForm]);
+  }, [id, draft.id, draft.name, draft.smtp_mailbox_id, draft.connection_ids, draft, basicsForm, senderForm]);
 
   const mailboxesQuery = useQuery({ queryKey: ['connections'], queryFn: () => connectionsApi.list() });
   const audiencesQuery = useQuery({ queryKey: ['audiences'], queryFn: () => audiencesApi.list() });
+  const chainsQuery = useQuery({
+    queryKey: ['chains'],
+    queryFn: () => chainsApi.list({ limit: 100 }),
+    staleTime: 0,
+  });
   const recipientsQuery = useQuery({
     queryKey: ['campaign-recipients', id],
     queryFn: () => campaignsApi.recipients(id!, { limit: 100 }),
@@ -116,7 +134,18 @@ export function CampaignNewPage() {
     refetchInterval: 15_000,
   });
 
-  const isEmailChainScenario = draft.send_scenario === 'email_chain';
+  const selectedSenderEmails = useMemo(() => {
+    const ids =
+      draft.connection_ids?.length
+        ? draft.connection_ids
+        : draft.smtp_mailbox_id
+          ? [draft.smtp_mailbox_id]
+          : [];
+    return ids
+      .map((connectionId) => (mailboxesQuery.data || []).find((item) => item.id === connectionId)?.email)
+      .filter(Boolean);
+  }, [draft.connection_ids, draft.smtp_mailbox_id, mailboxesQuery.data]);
+
   const recipientCount = recipientsQuery.data?.total || 0;
 
   const persist = async (patch: Record<string, unknown>) => {
@@ -133,6 +162,13 @@ export function CampaignNewPage() {
       setSaveState('error');
     }
   };
+
+  useEffect(() => {
+    if (!id) return;
+    if (draft.send_scenario === 'email_chain') return;
+    void persist({ send_scenario: 'email_chain' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, draft.send_scenario]);
 
   const autosave = (patch: Record<string, unknown>) => {
     setDraft(patch);
@@ -239,26 +275,43 @@ export function CampaignNewPage() {
                     onValuesChange={(_, values) => autosave(values)}
                   >
                     <ProFormText name="name" label="Название" rules={[{ required: true }]} />
-                    <ProFormText name="mail_subject" label="Тема письма" rules={[{ required: true }]} />
-                    <ProFormSelect
-                      name="send_scenario"
-                      label="Сценарий отправки"
-                      options={[
-                        { label: 'Запрос согласия и автоотправка материалов', value: 'consent_then_materials' },
-                        { label: 'Немедленная отправка материалов', value: 'materials_now' },
-                        { label: 'Цепочка писем', value: 'email_chain' },
-                      ]}
-                    />
-                    {id && linkedChainId && (
-                      <Button type="link" onClick={() => navigate(`/chains/${linkedChainId}`)}>
-                        Настроить цепочку писем
-                      </Button>
-                    )}
-                    {id && !linkedChainId && (
-                      <Button type="link" onClick={() => navigate('/chains')}>
-                        Выбрать цепочку писем
-                      </Button>
-                    )}
+                    {id ? (
+                      <>
+                        <ProFormSelect
+                          name="email_chain_id"
+                          label="Цепочка писем"
+                          placeholder="Выберите цепочку"
+                          options={(chainsQuery.data?.items || []).map((chain) => ({
+                            label: chain.name,
+                            value: chain.id,
+                          }))}
+                          fieldProps={{
+                            loading: chainsQuery.isLoading,
+                            onChange: (value: string) =>
+                              autosave({ email_chain_id: value, send_scenario: 'email_chain' }),
+                          }}
+                          rules={[{ required: true, message: 'Выберите цепочку писем' }]}
+                        />
+                        <Space wrap>
+                          {linkedChainId ? (
+                            <Button
+                              type="link"
+                              onClick={() =>
+                                navigate(`/chains/${linkedChainId}`, { state: { campaignId: id } })
+                              }
+                            >
+                              Настроить цепочку писем
+                            </Button>
+                          ) : null}
+                          <Button
+                            type="link"
+                            onClick={() => navigate('/chains', { state: { campaignId: id } })}
+                          >
+                            Создать цепочку
+                          </Button>
+                        </Space>
+                      </>
+                    ) : null}
                   </ProForm>
                   </div>
                 ),
@@ -275,33 +328,31 @@ export function CampaignNewPage() {
                     onValuesChange={(_, values) => autosave(values)}
                   >
                     <ProFormSelect
-                      name="smtp_mailbox_id"
-                      label="Подключение отправителя"
+                      name="connection_ids"
+                      label="Подключения отправителя"
                       placeholder="Выберите SMTP, RuSender или MailoPost"
+                      fieldProps={{
+                        mode: 'multiple',
+                        allowClear: true,
+                        showSearch: true,
+                        optionFilterProp: 'label',
+                        onChange: (values: string[]) => {
+                          autosave({
+                            connection_ids: values,
+                            smtp_mailbox_id: values[0] || null,
+                          });
+                        },
+                      }}
                       options={(mailboxesQuery.data || []).map((m) => ({
                         label: `${m.transport === 'smtp' ? 'SMTP' : m.transport === 'rusender' ? 'RuSender' : 'MailoPost'} · ${m.email}${m.is_default ? ' (по умолчанию)' : ''}`,
                         value: m.id,
                       }))}
-                      fieldProps={{
-                        onChange: (value: string) => {
-                          const connection = (mailboxesQuery.data || []).find((item) => item.id === value);
-                          if (!connection) return;
-                          senderForm.setFieldValue('transport', connection.transport);
-                          autosave({ smtp_mailbox_id: value, transport: connection.transport });
-                        },
-                      }}
                       rules={[{ required: true, message: 'Выберите подключение отправителя' }]}
                     />
-                    <ProFormSelect
-                      name="transport"
-                      label="Способ отправки"
-                      disabled
-                      options={[
-                        { label: 'SMTP', value: 'smtp' },
-                        { label: 'RuSender', value: 'rusender' },
-                        { label: 'MailoPost', value: 'mailopost' },
-                      ]}
-                    />
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      Можно выбрать несколько. Отправка идёт через первое подключение; при достижении лимитов —
+                      через следующее.
+                    </Typography.Text>
                     <Button onClick={() => navigate('/connections')}>Управлять подключениями</Button>
                   </ProForm>
                   </div>
@@ -468,7 +519,7 @@ export function CampaignNewPage() {
                       >
                         Тестовое письмо
                       </Button>
-                      {isEmailChainScenario && linkedChainId ? (
+                      {linkedChainId ? (
                         <Button
                           disabled={recipientCount === 0}
                           onClick={() => setChainPreviewOpen(true)}
@@ -519,11 +570,9 @@ export function CampaignNewPage() {
             <Typography.Text>Исключено: {validateQuery.data?.excluded_recipients || 0}</Typography.Text>
             <Typography.Text>Пакетов (прогноз): {batchCountPreview}</Typography.Text>
             <Typography.Text>
-              Отправитель:{' '}
-              {(mailboxesQuery.data || []).find((item) => item.id === draft.smtp_mailbox_id)?.email ||
-                'не выбран'}
+              Отправители:{' '}
+              {selectedSenderEmails.length > 0 ? selectedSenderEmails.join(', ') : 'не выбраны'}
             </Typography.Text>
-            <Typography.Text>Тема: {draft.mail_subject || '—'}</Typography.Text>
             <Typography.Text>
               Сопоставление переменных:{' '}
               {mappingConfirmed ? (
@@ -566,7 +615,7 @@ export function CampaignNewPage() {
           }}
         />
       ) : null}
-      {id && isEmailChainScenario && linkedChainId ? (
+      {id && linkedChainId ? (
         <ChainEmailPreviewModal
           open={chainPreviewOpen}
           campaignId={id}

@@ -2,9 +2,8 @@
 
 ## Addresses
 
-- Application: http://localhost:9806
+- Application (React CampaignFlow): http://localhost:9806
 - Mailpit UI: http://localhost:8025
-- Legacy wizard (fallback): http://localhost:9806/legacy
 
 ## Credentials
 

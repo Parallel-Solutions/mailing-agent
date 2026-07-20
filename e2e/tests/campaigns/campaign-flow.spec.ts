@@ -17,7 +17,6 @@ test.describe('Campaign creation and schedule', () => {
 
     const name = `E2E Campaign ${Date.now()}`;
     await page.getByLabel('Название').fill(name);
-    await page.getByLabel('Тема письма').fill('E2E subject');
     await expect(page.getByText('Сохранено')).toBeVisible({ timeout: 15_000 });
 
     await goToCampaignStep(page, 'Получатели');
@@ -37,7 +36,6 @@ test.describe('Campaign creation and schedule', () => {
 
     await page.reload();
     await expect(page.getByLabel('Название')).toHaveValue(name, { timeout: 20_000 });
-    await expect(page.getByLabel('Тема письма')).toHaveValue('E2E subject');
 
     guard.assertClean('campaign draft');
   });
@@ -63,8 +61,8 @@ test.describe('Campaign creation and schedule', () => {
         name,
         mail_subject: 'Mailpit subject',
         send_scenario: 'materials_now',
+        connection_ids: [mailpitBox.id],
         smtp_mailbox_id: mailpitBox.id,
-        transport: 'smtp',
         draft_payload: { email_body: '<p>Hello from E2E Mailpit</p>' },
       },
     });

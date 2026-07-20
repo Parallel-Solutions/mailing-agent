@@ -7,7 +7,6 @@ from fastapi.responses import FileResponse, JSONResponse
 
 
 PUBLIC_ASSETS_DIR = Path("src/generator/assets")
-WEB_STATIC_DIR = Path("src/web/static")
 DOCXJS_VENDOR_DIR = Path("src/generator/generation/vendor/docxjs")
 
 NO_CACHE_HEADERS = {
@@ -22,7 +21,7 @@ def create_public_router() -> APIRouter:
 
     @router.get("/health")
     def health():
-        """Liveness/readiness for Docker and E2E wait scripts. No secrets."""
+        """Liveness for Docker healthchecks. Checks DB only; use /ready for deps."""
         try:
             from src.infra.db import check_db_connection
 
@@ -38,6 +37,16 @@ def create_public_router() -> APIRouter:
             )
         return {"status": "ok", "database": "up"}
 
+    @router.get("/ready")
+    def ready():
+        """Readiness: database, Redis, object store (MinIO), and Gotenberg."""
+        from src.infra.readiness import collect_readiness
+
+        payload = collect_readiness()
+        if payload.get("status") != "ok":
+            return JSONResponse(status_code=503, content=payload)
+        return payload
+
     @router.get("/public/mail-signature.png")
     def public_mail_signature():
         signature_path = PUBLIC_ASSETS_DIR / "parresh-signature-logo-KI.png"
@@ -48,27 +57,6 @@ def create_public_router() -> APIRouter:
             media_type="image/png",
             headers=NO_CACHE_HEADERS,
         )
-
-    @router.get("/public/documents-ui.js")
-    def public_documents_ui_script():
-        script_path = WEB_STATIC_DIR / "documents_ui.js"
-        if not script_path.exists():
-            raise HTTPException(status_code=404, detail="Documents UI script not found.")
-        return FileResponse(script_path, media_type="application/javascript", headers=NO_CACHE_HEADERS)
-
-    @router.get("/public/sender-ui.js")
-    def public_sender_ui_script():
-        script_path = WEB_STATIC_DIR / "sender_ui.js"
-        if not script_path.exists():
-            raise HTTPException(status_code=404, detail="Sender UI script not found.")
-        return FileResponse(script_path, media_type="application/javascript", headers=NO_CACHE_HEADERS)
-
-    @router.get("/public/preview-ui.js")
-    def public_preview_ui_script():
-        script_path = WEB_STATIC_DIR / "preview_ui.js"
-        if not script_path.exists():
-            raise HTTPException(status_code=404, detail="Preview UI script not found.")
-        return FileResponse(script_path, media_type="application/javascript", headers=NO_CACHE_HEADERS)
 
     @router.get("/public/vendor/jszip.min.js")
     def public_jszip_vendor():
@@ -84,27 +72,4 @@ def create_public_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="docx-preview vendor script not found.")
         return FileResponse(script_path, media_type="application/javascript", headers=NO_CACHE_HEADERS)
 
-
-    @router.get("/public/statistics.css")
-    def public_statistics_css():
-        css_path = WEB_STATIC_DIR / "statistics.css"
-        if not css_path.exists():
-            raise HTTPException(status_code=404, detail="Statistics CSS not found.")
-        return FileResponse(css_path, media_type="text/css", headers=NO_CACHE_HEADERS)
-
-    @router.get("/public/statistics.js")
-    def public_statistics_js():
-        script_path = WEB_STATIC_DIR / "statistics.js"
-        if not script_path.exists():
-            raise HTTPException(status_code=404, detail="Statistics UI script not found.")
-        return FileResponse(script_path, media_type="application/javascript", headers=NO_CACHE_HEADERS)
-
-    @router.get("/public/chart.min.js")
-    def public_chart_js():
-        script_path = WEB_STATIC_DIR / "chart.min.js"
-        if not script_path.exists():
-            raise HTTPException(status_code=404, detail="Chart.js not found.")
-        return FileResponse(script_path, media_type="application/javascript", headers=NO_CACHE_HEADERS)
-
     return router
-

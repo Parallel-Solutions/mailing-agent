@@ -76,6 +76,44 @@ def _connection_rate_limits(session: Any, mailbox_id: str | None) -> tuple[int, 
     return int(row.max_per_hour or 0), int(row.max_per_day or 0)
 
 
+def _pool_rate_limits(session: Any, connection_ids: list[str]) -> tuple[int, int]:
+    hour_limits: list[int] = []
+    day_limits: list[int] = []
+    for connection_id in connection_ids:
+        hour, day = _connection_rate_limits(session, connection_id)
+        if hour > 0:
+            hour_limits.append(hour)
+        if day > 0:
+            day_limits.append(day)
+    return (sum(hour_limits) if hour_limits else 0, sum(day_limits) if day_limits else 0)
+
+
+def _campaign_connection_ids(row: Campaign) -> list[str]:
+    from src.campaigns.connection_service import campaign_connection_ids
+
+    return campaign_connection_ids(row)
+
+
+def _apply_sender_fields(row: Campaign, data: dict[str, Any]) -> None:
+    from src.campaigns.connection_service import normalize_connection_ids, resolve_connection
+
+    if "connection_ids" in data and data["connection_ids"] is not None:
+        ids = normalize_connection_ids(list(data["connection_ids"]))
+    elif "smtp_mailbox_id" in data and data.get("smtp_mailbox_id"):
+        ids = normalize_connection_ids(None, str(data["smtp_mailbox_id"]))
+    else:
+        return
+
+    row.connection_ids = ids
+    if ids:
+        row.smtp_mailbox_id = ids[0]
+        connection = resolve_connection(ids[0], row.owner_username)
+        row.transport = connection.transport
+    else:
+        row.smtp_mailbox_id = None
+        row.transport = "smtp"
+
+
 def _effective_rate_limits(
     *,
     schedule_max_per_hour: int,
@@ -132,6 +170,7 @@ def campaign_to_dict(row: Campaign, *, include_draft: bool = True) -> dict[str, 
         "internal_comment": row.internal_comment,
         "status": row.status,
         "smtp_mailbox_id": row.smtp_mailbox_id,
+        "connection_ids": list(_campaign_connection_ids(row)),
         "transport": row.transport,
         "email_template_id": row.email_template_id,
         "kp_template_id": row.kp_template_id,
@@ -176,15 +215,18 @@ def create_campaign(owner_username: str, data: dict[str, Any] | None = None) -> 
             document_mode=str(data.get("document_mode") or "kp"),
             mail_subject=str(data.get("mail_subject") or ""),
             description=str(data.get("description") or ""),
-            send_scenario=str(data.get("send_scenario") or "consent_then_materials"),
+            send_scenario=str(data.get("send_scenario") or "email_chain"),
             tags=list(data.get("tags") or []),
             internal_comment=str(data.get("internal_comment") or ""),
             status="draft",
             smtp_mailbox_id=data.get("smtp_mailbox_id"),
+            connection_ids=[],
             transport=str(data.get("transport") or "smtp"),
             draft_payload=dict(data.get("draft_payload") or data),
         )
         session.add(row)
+        session.flush()
+        _apply_sender_fields(row, data)
         session.flush()
         schedule = CampaignSchedule(
             id=_new_id(),
@@ -255,6 +297,13 @@ def update_campaign(
             if row.status not in {"draft"}:
                 pass
 
+        if "email_chain_id" in data and data["email_chain_id"] is not None:
+            from src.campaigns.chain_service import _ensure_chain_access
+            from src.infra.models import EmailChainRecord
+
+            chain_row = session.get(EmailChainRecord, data["email_chain_id"])
+            _ensure_chain_access(chain_row, owner_username, is_admin=is_admin)
+
         for field in (
             "name",
             "work_type",
@@ -263,7 +312,6 @@ def update_campaign(
             "description",
             "send_scenario",
             "internal_comment",
-            "smtp_mailbox_id",
             "transport",
             "email_template_id",
             "kp_template_id",
@@ -273,6 +321,8 @@ def update_campaign(
         ):
             if field in data and data[field] is not None:
                 setattr(row, field, data[field])
+        if "connection_ids" in data or "smtp_mailbox_id" in data:
+            _apply_sender_fields(row, data)
         if "tags" in data:
             row.tags = list(data.get("tags") or [])
         template_fields = ("email_template_id", "kp_template_id", "contract_template_id")
@@ -310,6 +360,7 @@ def duplicate_campaign(campaign_id: str, owner_username: str, *, is_admin: bool 
             "tags": source["tags"],
             "internal_comment": source["internal_comment"],
             "smtp_mailbox_id": source["smtp_mailbox_id"],
+            "connection_ids": source.get("connection_ids") or [],
             "transport": source["transport"],
             "draft_payload": source.get("draft_payload") or {},
         },
@@ -694,7 +745,7 @@ def upsert_schedule(
                 CampaignRecipient.excluded.is_(False),
             )
         ) or 0
-        conn_hour, conn_day = _connection_rate_limits(session, camp.smtp_mailbox_id)
+        conn_hour, conn_day = _pool_rate_limits(session, _campaign_connection_ids(camp))
         max_per_hour, max_per_day = _effective_rate_limits(
             schedule_max_per_hour=schedule.max_per_hour,
             schedule_max_per_day=schedule.max_per_day,
@@ -767,13 +818,9 @@ def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_ad
         warnings: list[str] = []
         if not (camp.name or "").strip():
             errors.append("Укажите название рассылки")
-        if not (camp.mail_subject or "").strip():
-            errors.append("Укажите тему письма")
-        from src.campaigns.connection_service import validate_connection_choice
+        from src.campaigns.connection_service import validate_connection_ids
 
-        connection_error = validate_connection_choice(
-            camp.smtp_mailbox_id, camp.owner_username, camp.transport
-        )
+        connection_error = validate_connection_ids(_campaign_connection_ids(camp), camp.owner_username)
         if connection_error:
             errors.append(connection_error)
         active = session.scalar(
@@ -854,7 +901,7 @@ def launch_campaign(
             .order_by(CampaignRecipient.row_index)
         ).all()
         recipient_ids = [r.id for r in recipients]
-        conn_hour, conn_day = _connection_rate_limits(session, camp.smtp_mailbox_id)
+        conn_hour, conn_day = _pool_rate_limits(session, _campaign_connection_ids(camp))
         # force_now bypasses calendar windows / schedule pacing so "Запустить сейчас"
         # is immediate, but connection mailbox limits still apply.
         schedule_hour = 0 if force_now else schedule.max_per_hour
@@ -925,6 +972,7 @@ def launch_campaign(
                 payload={
                     "campaign_id": campaign_id,
                     "batch_id": batch_id,
+                    "connection_ids": _campaign_connection_ids(camp),
                     "smtp_mailbox_id": camp.smtp_mailbox_id,
                     "transport": camp.transport,
                     "mail_subject": camp.mail_subject,
@@ -1034,6 +1082,7 @@ def resume_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = F
                 payload={
                     "campaign_id": campaign_id,
                     "batch_id": batch.id,
+                    "connection_ids": _campaign_connection_ids(camp),
                     "smtp_mailbox_id": camp.smtp_mailbox_id,
                     "transport": camp.transport,
                     "mail_subject": camp.mail_subject,

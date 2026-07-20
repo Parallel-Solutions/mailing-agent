@@ -107,7 +107,7 @@ export function ChainNodeSettingsPanel({
 
   if (!node) {
     return (
-      <div className="chain-settings-panel">
+      <div className="chain-settings-form">
         <Typography.Text type="secondary">Выберите блок на схеме</Typography.Text>
       </div>
     );
@@ -206,7 +206,7 @@ export function ChainNodeSettingsPanel({
     && !hasChainButtonPlaceholder(selectedEmailTemplate.version?.body_html || '');
 
   return (
-    <div className="chain-settings-panel">
+    <div className="chain-settings-form">
       <Typography.Title level={5} style={{ marginTop: 0 }}>
         Настройки узла
       </Typography.Title>

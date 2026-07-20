@@ -179,9 +179,14 @@ class ConsentStoreTests(unittest.TestCase):
                 "rows": [{"id": "42", "recipient": "user@example.com", "result": "sent"}],
             }
 
-        with patch("src.generator.delivery.sender_agent.run_sender", side_effect=fake_run_sender), patch.object(
-            consent_router, "mark_materials_dispatch_result"
-        ) as mark_result:
+        with (
+            patch("src.generator.delivery.sender_agent.run_sender", side_effect=fake_run_sender),
+            patch(
+                "src.campaigns.generation_service.ensure_recipient_documents_for_job",
+                return_value=None,
+            ),
+            patch.object(consent_router, "mark_materials_dispatch_result") as mark_result,
+        ):
             consent_router._dispatch_materials_after_consent(record)
 
         self.assertEqual(len(calls), 1)
@@ -212,6 +217,10 @@ class ConsentStoreTests(unittest.TestCase):
 
         with (
             patch("src.generator.delivery.sender_agent.run_sender", side_effect=fake_run_sender),
+            patch(
+                "src.campaigns.generation_service.ensure_recipient_documents_for_job",
+                return_value=None,
+            ),
             patch.object(
                 consent_router,
                 "_campaign_delivery_settings",

@@ -15,6 +15,7 @@ from src.infra.db import init_db
 from src.jobs.workspace import pull_job, push_job
 from src.utils.config import settings
 from src.utils.logger import logger
+from src.workers.healthcheck import touch_heartbeat
 from src.workers.task_queue import (
     reconcile_orphaned_agent_states,
     FAILED,
@@ -227,8 +228,10 @@ def main() -> None:
     last_consent_recovery = 0.0
     logger.info("queue_worker_started", worker_id=worker_id)
     last_orphan_reconciliation = time.monotonic()
+    touch_heartbeat()
 
     while not _STOP_REQUESTED:
+        touch_heartbeat()
         last_consent_recovery = _run_consent_recovery_if_due(last_consent_recovery)
         try:
             from src.generator.delivery.send_guard import is_sending_paused

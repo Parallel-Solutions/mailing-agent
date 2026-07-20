@@ -13,8 +13,9 @@ from typing import Any
 
 import httpx
 
-from tests.e2e.api_client import E2EApiClient, E2EApiError
 from tests.external.config import ExtConfig
+from tests.support.api_client import E2EApiClient, E2EApiError
+from tests.support.config import ApiClientConfig
 
 
 SESSION_COOKIE_NAME = "mailing_agent_session"
@@ -24,25 +25,16 @@ class ExtAppAdapter(E2EApiClient):
     """E2EApiClient + statistics API methods for external tests."""
 
     def __init__(self, config: ExtConfig) -> None:
-        from tests.e2e.config import E2EConfig
-        e2e_cfg = E2EConfig(
+        api_cfg = ApiClientConfig(
             base_url=config.base_url,
             username=config.username,
             password=config.password,
-            fixtures_dir=Path(__file__).resolve().parents[3] / "tests" / "e2e" / "fixtures",
-            send_pause_seconds=2.0,
-            parallel_jobs=1,
+            fixtures_dir=Path(__file__).resolve().parents[3] / "e2e" / "fixtures",
             documents_timeout_seconds=600.0,
             sender_timeout_seconds=config.sender_timeout_seconds,
             consent_timeout_seconds=config.followup_wait_seconds,
-            out_dir=Path(__file__).resolve().parents[2] / "out",
-            filter_work_type=None,
-            filter_document_mode=None,
-            filter_kp_variant=None,
-            filter_send_mode=None,
-            filter_recipient_strategy=None,
         )
-        super().__init__(e2e_cfg)
+        super().__init__(api_cfg)
         self.ext_config = config
 
     def login(self) -> None:

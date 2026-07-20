@@ -35,7 +35,6 @@ class Settings(BaseSettings):
     app_allow_registration: bool = False
     # JSON map: {"<mcp-token>": "<username>"} for Authorization: Bearer MCP auth.
     mailing_agent_mcp_tokens: str = ""
-    use_legacy_ui: bool = False
     frontend_dist_dir: str = ""
     seed_demo_data_on_startup: bool = False
 

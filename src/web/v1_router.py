@@ -27,6 +27,7 @@ from src.campaigns import (
     variable_match_service,
     work_type_service,
 )
+from src.campaigns.assistants import run_editor_assistant
 from src.campaigns.schedule_planner import plan_batches
 from src.jobs.access import coerce_principal
 from src.security.auth import Principal
@@ -44,6 +45,7 @@ class CampaignCreateBody(BaseModel):
     tags: list[str] | None = None
     internal_comment: str | None = None
     smtp_mailbox_id: str | None = None
+    connection_ids: list[str] | None = None
     transport: str | None = None
     draft_payload: dict[str, Any] | None = None
 
@@ -58,6 +60,7 @@ class CampaignUpdateBody(BaseModel):
     tags: list[str] | None = None
     internal_comment: str | None = None
     smtp_mailbox_id: str | None = None
+    connection_ids: list[str] | None = None
     transport: str | None = None
     email_template_id: str | None = None
     kp_template_id: str | None = None
@@ -192,6 +195,16 @@ class PdfOverlayFieldBody(BaseModel):
 class PdfOverlaySaveBody(BaseModel):
     fields: list[PdfOverlayFieldBody] = Field(default_factory=list)
 
+
+class AssistantChatBody(BaseModel):
+    editor_kind: str
+    resource_id: str
+    message: str
+    session_id: str | None = None
+    model: str | None = None
+    snapshot: dict[str, Any] | None = None
+
+
 class AudienceCreateBody(BaseModel):
     name: str
     source: str = "manual"
@@ -265,6 +278,8 @@ def _binary_response(item: dict[str, Any], *, disposition: str) -> Response:
         headers={
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}",
             "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
         },
     )
 
@@ -417,9 +432,12 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.patch("/campaigns/{campaign_id}")
     def patch_campaign(campaign_id: str, body: CampaignUpdateBody, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = service.update_campaign(
-            campaign_id, actor.username, body.model_dump(exclude_none=True), is_admin=actor.is_admin
-        )
+        try:
+            item = service.update_campaign(
+                campaign_id, actor.username, body.model_dump(exclude_none=True), is_admin=actor.is_admin
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not item:
             raise HTTPException(status_code=404, detail="Рассылка не найдена")
         return _ok(item)
@@ -874,6 +892,28 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Не удалось отправить: {exc}") from exc
         return _ok({"message_id": message_id, "to": body.to_email})
+
+    # --- Editor assistants ---
+    @router.post("/assistants/chat")
+    def post_assistant_chat(body: AssistantChatBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                run_editor_assistant(
+                    editor_kind=body.editor_kind,
+                    resource_id=body.resource_id,
+                    message=body.message,
+                    owner_username=actor.username,
+                    is_admin=actor.is_admin,
+                    session_id=body.session_id,
+                    model=body.model,
+                    snapshot=body.snapshot,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Ассистент недоступен: {exc}") from exc
 
     # --- Templates ---
     @router.get("/templates")

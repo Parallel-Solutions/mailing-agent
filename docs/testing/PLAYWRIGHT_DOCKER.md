@@ -6,7 +6,7 @@
 |------|--------------|-----------------|----|---------|
 | Local manual / UI | `.\scripts\dev.ps1 start` | `mailing-agent` (directory default) | `mailing` | http://localhost:9806 |
 | Playwright E2E | `.\scripts\e2e.ps1 …` / `npm run e2e:*` | **`mailing-agent-e2e`** | `mailing_e2e` | http://localhost:19806 (see `.env.e2e`) |
-| Unit/integration | `docker compose -f docker-compose.test.yml run --rm test` | test stack | `mailing_test` | n/a |
+| Unit/integration | `docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test` | project `mailing-agent-test` | `mailing_test` | n/a |
 
 E2E must **not** rewrite the local `app` on `:9806`. Scripts pass `-p mailing-agent-e2e` and use non-conflicting host ports (`APP_PUBLIC_PORT=19806`, `MAILPIT_UI_PORT=18025`).
 

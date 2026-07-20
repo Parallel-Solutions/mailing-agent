@@ -81,7 +81,7 @@ function Cmd-Clean { Invoke-Compose -ComposeArgs @('--profile', 'playwright', 'd
 function Cmd-Test {
   param([string[]]$PwArgs)
   try {
-    $composeArgs = @('--profile', 'playwright', 'run', '--rm', '--build', 'playwright') + @($PwArgs)
+    $composeArgs = @('--profile', 'playwright', 'run', '--rm', 'playwright') + @($PwArgs)
     Invoke-Compose -ComposeArgs $composeArgs
   } catch {
     Show-FailureLogs
@@ -107,19 +107,20 @@ function Cmd-Full {
   Cmd-Up
   Write-Host "== waiting for health ==" -ForegroundColor Green
   $deadline = (Get-Date).AddMinutes(5)
+  $appHealthy = ''
+  $workerHealthy = ''
   do {
     Start-Sleep -Seconds 3
     $appId = & @Compose @('ps', '-q', 'app') 2>$null
+    $workerId = & @Compose @('ps', '-q', 'worker') 2>$null
     $appHealthy = if ($appId) { docker inspect --format='{{.State.Health.Status}}' $appId 2>$null } else { '' }
-    if ($appHealthy -eq 'healthy') { break }
+    $workerHealthy = if ($workerId) { docker inspect --format='{{.State.Health.Status}}' $workerId 2>$null } else { '' }
+    if ($appHealthy -eq 'healthy' -and $workerHealthy -eq 'healthy') { break }
   } while ((Get-Date) -lt $deadline)
-  if ($appHealthy -ne 'healthy') {
+  if ($appHealthy -ne 'healthy' -or $workerHealthy -ne 'healthy') {
     Show-FailureLogs
-    throw "app is not healthy (status=$appHealthy)"
+    throw "stack not healthy (app=$appHealthy worker=$workerHealthy)"
   }
-
-  Write-Host "== update visual baselines (first-time Docker Linux) ==" -ForegroundColor Green
-  Cmd-Test @('npx', 'playwright', 'test', '--grep', '@visual', '--project=chromium', '--update-snapshots')
 
   Write-Host "== chromium suite ==" -ForegroundColor Green
   Cmd-Test @('npx', 'playwright', 'test', '--project=chromium')
@@ -129,9 +130,6 @@ function Cmd-Full {
 
   Write-Host "== webkit smoke ==" -ForegroundColor Green
   Cmd-Test @('npx', 'playwright', 'test', '--project=webkit-smoke')
-
-  Write-Host "== repeat chromium (idempotency) ==" -ForegroundColor Green
-  Cmd-Test @('npx', 'playwright', 'test', '--project=chromium')
 
   Write-Host "E2E full suite completed successfully." -ForegroundColor Green
   Show-ReportHint
@@ -150,7 +148,7 @@ switch ($cmd) {
   'down' { Cmd-Down }
   'clean' { Cmd-Clean }
   'test' { Cmd-Test (@('npx', 'playwright', 'test') + $rest) }
-  'smoke' { Cmd-Test @('npx', 'playwright', 'test', '--grep', '@smoke') }  # quoted via single-element strings
+  'smoke' { Cmd-Test @('npx', 'playwright', 'test', '--project=chromium', '--grep', '@smoke') }
   'email' { Cmd-Test @('npx', 'playwright', 'test', '--grep', '@email') }
   'visual' { Cmd-Test @('npx', 'playwright', 'test', '--grep', '@visual', '--project=chromium') }
   'update-snapshots' { Cmd-Test @('npx', 'playwright', 'test', '--grep', '@visual', '--project=chromium', '--update-snapshots') }

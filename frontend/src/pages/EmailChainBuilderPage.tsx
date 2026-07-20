@@ -2,11 +2,12 @@ import { FullscreenExitOutlined, FullscreenOutlined, RedoOutlined, UndoOutlined 
 import { App, Button, Space, Spin, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { chainsApi, type ChainRecord } from '@/api/chains';
 import { campaignsApi } from '@/api/campaigns';
 import { templatesApi } from '@/api/templates';
 import type { ChainLinkKind, EmailChain } from '@/api/types';
+import { EditorSideAccordion } from '@/features/assistants';
 import { ChainCanvas } from '@/features/campaigns/chain/ChainCanvas';
 import { ChainNodeBlock } from '@/features/campaigns/chain/ChainNodeBlock';
 import { ChainNodeSettingsPanel } from '@/features/campaigns/chain/ChainNodeSettingsPanel';
@@ -32,6 +33,8 @@ function isCanvasPanTarget(target: EventTarget | null): boolean {
 export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampaign?: boolean }) {
   const { id = '' } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const campaignId = (location.state as { campaignId?: string } | null)?.campaignId;
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const [chain, setChain] = useState<EmailChain>(createEmptyChain());
@@ -257,7 +260,9 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
     : (chainQuery.data as ChainRecord | undefined)?.name;
   const campaignLink = legacyCampaign
     ? `/campaigns/new?id=${id}`
-    : `/campaigns/new?email_chain_id=${id}`;
+    : campaignId
+      ? `/campaigns/new?id=${campaignId}&email_chain_id=${id}`
+      : `/campaigns/new?email_chain_id=${id}`;
 
   return (
     <div className="email-chain-page">
@@ -329,12 +334,30 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
             onClick={toggleFullscreen}
           />
         </div>
-        <ChainNodeSettingsPanel
-          chain={chain}
-          nodeId={selectedNodeId}
-          emailTemplates={emailTemplatesQuery.data ?? []}
-          documentTemplates={(documentTemplatesQuery.data ?? []).filter((t) => t.version?.filename)}
-          onChange={(next) => applyChain(next, false)}
+        <EditorSideAccordion
+          className="chain-settings-panel"
+          editorKind="chain"
+          resourceId={id}
+          buildSnapshot={() => ({
+            chain,
+            selected_node_id: selectedNodeId,
+          })}
+          handlers={{
+            setChain: (next, selectedId) => {
+              applyChain(next);
+              if (selectedId) setSelectedNodeId(selectedId);
+            },
+            selectChainNode: (nodeId) => setSelectedNodeId(nodeId),
+          }}
+          settings={
+            <ChainNodeSettingsPanel
+              chain={chain}
+              nodeId={selectedNodeId}
+              emailTemplates={emailTemplatesQuery.data ?? []}
+              documentTemplates={(documentTemplatesQuery.data ?? []).filter((t) => t.version?.filename)}
+              onChange={(next) => applyChain(next, false)}
+            />
+          }
         />
       </div>
     </div>

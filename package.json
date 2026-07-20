@@ -5,9 +5,9 @@
   "scripts": {
     "e2e:build": "docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright build playwright",
     "e2e:up": "docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e up -d --build",
-    "e2e:test": "docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm --build playwright",
+    "e2e:test": "docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright",
     "e2e:test:chromium": "docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --project=chromium",
-    "e2e:test:smoke": "docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep \"@smoke\"",
+    "e2e:test:smoke": "docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --project=chromium --grep \"@smoke\"",
     "e2e:test:email": "docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep \"@email\"",
     "e2e:test:visual": "docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep \"@visual\" --project=chromium",
     "e2e:update-snapshots": "docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep \"@visual\" --project=chromium --update-snapshots",

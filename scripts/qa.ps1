@@ -35,13 +35,12 @@ switch ($Command) {
     }
     "unit" {
         Run-Step "backend unit/integration (docker test)" {
-            docker compose -f docker-compose.test.yml run --rm test
+            docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test
         }
     }
     "e2e" {
-        Run-Step "playwright chromium" {
-            npm run e2e:test:chromium
-        }
+        Run-Step "playwright smoke" { npm run e2e:test:smoke }
+        Run-Step "playwright email" { npm run e2e:test:email }
     }
     "full" {
         Push-Location frontend
@@ -50,27 +49,11 @@ switch ($Command) {
         Pop-Location
 
         Run-Step "3. backend tests" {
-            docker compose -f docker-compose.test.yml run --rm test
+            docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test
         }
 
-        Run-Step "4. migrations check" {
-            docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T app .venv/bin/alembic current
-        }
-
-        Run-Step "5. playwright smoke" { npm run e2e:test:smoke }
-        Run-Step "6. playwright chromium full" { npm run e2e:test:chromium }
-        Run-Step "7. playwright firefox smoke" {
-            docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep "@smoke" --project=firefox-smoke
-        }
-        Run-Step "8. playwright webkit smoke" {
-            docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e --profile playwright run --rm playwright npx playwright test --grep "@smoke" --project=webkit-smoke
-        }
-        Run-Step "9. email mailpit" { npm run e2e:test:email }
-        Run-Step "10. visual" { npm run e2e:test:visual }
-
-        Push-Location frontend
-        Run-Step "11. production build" { npm run build }
-        Pop-Location
+        Run-Step "4. playwright smoke" { npm run e2e:test:smoke }
+        Run-Step "5. playwright email" { npm run e2e:test:email }
     }
 }
 

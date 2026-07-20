@@ -37,6 +37,7 @@ export type Campaign = {
   tags?: string[];
   internal_comment?: string;
   smtp_mailbox_id?: string | null;
+  connection_ids?: string[];
   transport?: string;
   email_template_id?: string | null;
   kp_template_id?: string | null;

@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime
     image: mailing-agent:local
     restart: unless-stopped
     env_file:
@@ -11,7 +12,7 @@ services:
       APP_HOST: 0.0.0.0
       APP_PORT: 9806
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
-      GOTENBERG_BASE_URLS: ${GOTENBERG_BASE_URLS:-http://gotenberg:3000,http://gotenberg-2:3000}
+      GOTENBERG_BASE_URLS: ${GOTENBERG_BASE_URLS:-http://gotenberg:3000}
       GOTENBERG_HEALTH_TIMEOUT_SECONDS: ${GOTENBERG_HEALTH_TIMEOUT_SECONDS:-10}
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing
       REDIS_URL: redis://redis:6379
@@ -38,7 +39,6 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./tmp:/app/tmp
-      - ./templates:/app/templates:ro
       - ./src:/app/src
       - ./main.py:/app/main.py:ro
       - ./storage:/app/legacy/storage:ro
@@ -49,11 +49,11 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       gotenberg:
-        condition: service_healthy
-      gotenberg-2:
         condition: service_healthy
     healthcheck:
       test: ['CMD-SHELL', '.venv/bin/python -c "import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:9806/health\", timeout=5).read()"']
@@ -66,6 +66,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runtime
     image: mailing-agent:local
     restart: unless-stopped
     command: .venv/bin/python -m src.workers.queue_worker
@@ -73,7 +74,7 @@ services:
       - .env.docker
     environment:
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
-      GOTENBERG_BASE_URLS: ${GOTENBERG_BASE_URLS:-http://gotenberg:3000,http://gotenberg-2:3000}
+      GOTENBERG_BASE_URLS: ${GOTENBERG_BASE_URLS:-http://gotenberg:3000}
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT_URL: http://minio:9000
@@ -90,9 +91,20 @@ services:
     depends_on:
       app:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', '.venv/bin/python -m src.workers.healthcheck']
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 90s
 
 
   onlyoffice:
+    profiles: ["onlyoffice"]
     image: onlyoffice/documentserver:latest
     restart: unless-stopped
     environment:
@@ -180,6 +192,7 @@ services:
       start_period: 30s
 
   gotenberg-2:
+    profiles: ["gotenberg-ha"]
     image: gotenberg/gotenberg:8-libreoffice
     restart: unless-stopped
     command:
@@ -222,6 +235,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     command: .venv/bin/python -m scripts.migrate.migrate_all
 
   verify:

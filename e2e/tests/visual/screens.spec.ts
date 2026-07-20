@@ -7,7 +7,6 @@ async function stabilize(page: import('@playwright/test').Page) {
   // Remove live KPI / queue widgets from layout so baselines stay height-stable.
   await page.addStyleTag({
     content: `
-      [data-testid="active-sending-card"],
       .ant-pro-card:has(.ant-statistic),
       .ant-table-wrapper,
       .ant-pagination,
@@ -33,7 +32,6 @@ async function expectStableScreenshot(
       page.locator('.ant-statistic-content'),
       page.locator('.ant-progress'),
       page.locator('.ant-tag'),
-      page.locator('[data-testid="active-sending-card"]'),
       page.locator('.ant-pagination'),
       ...extraMasks,
     ],

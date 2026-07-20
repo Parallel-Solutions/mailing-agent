@@ -53,6 +53,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { templatesApi } from '@/api/templates';
 import type { OfficeEditorConfig } from '@/api/templates';
 import type { PdfEditorField, Template } from '@/api/types';
+import { EditorSideAccordion } from '@/features/assistants';
 import { VisualEmailEditor } from '@/features/templates/VisualEmailEditor';
 import { PersonalizationSetting } from '@/features/templates/PersonalizationSetting';
 import { getEmailFormat } from '@/features/templates/emailTemplateUtils';
@@ -68,6 +69,7 @@ type EditorVariable = { name: string; label: string; source: string };
 type CanvasController = {
   command: (name: string, value?: string) => void;
   insertHtml: (html: string) => void;
+  setHtml: (html: string) => void;
   getHtml: () => string;
 };
 type OnlyOfficeInstance = { destroyEditor?: () => void };
@@ -285,6 +287,21 @@ function EmailTemplateEditor({ template }: { template: Template }) {
     Object.entries(SAMPLE_VALUES).forEach(([key, value]) => { html = html.replaceAll(`{{${key}}}`, value); });
     return `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;padding:28px;line-height:1.55}</style></head><body>${html}</body></html>`;
   }, [editor, previewOpen]);
+  const buildAssistantSnapshot = useCallback(() => ({
+    name,
+    subject,
+    body_html: editor?.getHTML() || '',
+    variables,
+    is_template: template.is_template,
+    email_format: 'simple',
+  }), [editor, name, subject, template.is_template, variables]);
+  const assistantHandlers = useMemo(() => ({
+    setSubject: (value: string) => { setSubject(value); setDirty(true); },
+    setHtml: (html: string) => { editor?.commands.setContent(html); setDirty(true); },
+    insertHtml: (html: string) => { editor?.chain().focus().insertContent(html).run(); setDirty(true); },
+    setPersonalization: () => { void queryClient.invalidateQueries({ queryKey: ['template', template.id] }); },
+    markDirty: () => setDirty(true),
+  }), [editor, queryClient, template.id]);
   return (
     <div className="template-editor-page">
       <EditorHeader template={{ ...template, name }} dirty={dirty} saving={saveMutation.isPending} onBack={() => navigate('/templates')} onPreview={() => setPreviewOpen(true)} onSave={() => saveMutation.mutate()} />
@@ -294,10 +311,18 @@ function EmailTemplateEditor({ template }: { template: Template }) {
       </div>
       <div className="template-editor-grid">
         <main className="template-editor-main"><Card className="template-editor-surface" styles={{ body: { padding: 0 } }}><EmailToolbar editor={editor} /><EditorContent editor={editor} className="template-email-canvas" /></Card></main>
-        <aside className="template-editor-aside">
-          <PersonalizationSettingPanel template={template} />
-          <VariablePanel variables={variables} query={variableQuery} onQuery={setVariableQuery} onInsert={(nameValue) => editor?.chain().focus().insertContent(`{{${nameValue}}}`).run()} />
-        </aside>
+        <EditorSideAccordion
+          editorKind="simple_email"
+          resourceId={template.id}
+          buildSnapshot={buildAssistantSnapshot}
+          handlers={assistantHandlers}
+          settings={
+            <>
+              <PersonalizationSettingPanel template={template} />
+              <VariablePanel variables={variables} query={variableQuery} onQuery={setVariableQuery} onInsert={(nameValue) => editor?.chain().focus().insertContent(`{{${nameValue}}}`).run()} />
+            </>
+          }
+        />
       </div>
       <Modal open={previewOpen} width={820} title="Предпросмотр письма" onCancel={() => setPreviewOpen(false)} footer={null}><div className="template-email-preview desktop"><iframe title="Предпросмотр письма" sandbox="" srcDoc={renderedHtml} /></div></Modal>
     </div>
@@ -324,6 +349,15 @@ function KpCanvas({ initialHtml, controllerRef, onChange }: {
     controllerRef.current = {
       command,
       insertHtml: (html: string) => command('insertHTML', html),
+      setHtml: (nextHtml: string) => {
+        doc.open();
+        doc.write(nextHtml);
+        doc.close();
+        doc.designMode = 'on';
+        doc.addEventListener('input', sync);
+        doc.addEventListener('keyup', sync);
+        sync();
+      },
       getHtml: () => `<!doctype html>\n${doc.documentElement.outerHTML}`,
     };
     doc.addEventListener('input', sync);
@@ -394,6 +428,28 @@ function KpTemplateEditor({ template }: { template: Template }) {
     controller.current?.insertHtml(`<span class="variable-token" style="background:#e7f4ec;color:#145c3e;border-radius:3px;padding:1px 3px;font-family:Consolas,monospace">{{${variable}}}</span>`);
     setDirty(true);
   };
+  const buildAssistantSnapshot = useCallback(() => ({
+    name,
+    body_html: controller.current?.getHtml() || html,
+    variables,
+    is_template: template.is_template,
+  }), [html, name, template.is_template, variables]);
+  const assistantHandlers = useMemo(() => ({
+    setHtml: (nextHtml: string) => {
+      if (controller.current?.setHtml) {
+        controller.current.setHtml(nextHtml);
+      } else {
+        setHtml(nextHtml);
+      }
+      setDirty(true);
+    },
+    insertHtml: (fragment: string) => {
+      controller.current?.insertHtml(fragment);
+      setDirty(true);
+    },
+    setPersonalization: () => { void queryClient.invalidateQueries({ queryKey: ['template', template.id] }); },
+    markDirty: () => setDirty(true),
+  }), [queryClient, template.id]);
   return (
     <div className="template-editor-page kp-editor-page">
       <EditorHeader template={{ ...template, name }} dirty={dirty} saving={saveMutation.isPending} format="PDF" onBack={() => navigate('/templates')} onPreview={() => previewMutation.mutate()} onSave={() => saveMutation.mutate()} />
@@ -402,13 +458,22 @@ function KpTemplateEditor({ template }: { template: Template }) {
       <div className="kp-workspace">
         <aside className="kp-pages-panel"><div className="kp-panel-title">Страницы</div><button className="kp-page-thumb active"><span>1</span><div className="kp-page-mini">КП</div></button><Button type="dashed" block size="small" disabled>КП всегда 1 страница</Button></aside>
         <main className="kp-stage"><div className="kp-ruler horizontal" /><KpCanvas initialHtml={initialHtml} controllerRef={controller} onChange={(value) => { setHtml(value); setDirty(true); }} /></main>
-        <aside className="template-editor-aside kp-inspector">
-          <PersonalizationSettingPanel template={template} />
-          <VariablePanel variables={variables} query={variableQuery} onQuery={setVariableQuery} onInsert={insertVariable} />
-          <Card className="template-side-panel" title="Параметры документа"><div className="kp-settings"><span><Text type="secondary">Формат</Text><strong>A4 · 210 × 297 мм</strong></span><span><Text type="secondary">Результат</Text><strong>PDF</strong></span><span><Text type="secondary">Страниц</Text><strong>1</strong></span></div></Card>
-          <Checks pdf />
-          <Button block type="primary" icon={<FilePdfOutlined />} loading={previewMutation.isPending} onClick={() => previewMutation.mutate()}>Собрать тестовый PDF</Button>
-        </aside>
+        <EditorSideAccordion
+          className="kp-inspector"
+          editorKind="kp"
+          resourceId={template.id}
+          buildSnapshot={buildAssistantSnapshot}
+          handlers={assistantHandlers}
+          settings={
+            <>
+              <PersonalizationSettingPanel template={template} />
+              <VariablePanel variables={variables} query={variableQuery} onQuery={setVariableQuery} onInsert={insertVariable} />
+              <Card className="template-side-panel" title="Параметры документа"><div className="kp-settings"><span><Text type="secondary">Формат</Text><strong>A4 · 210 × 297 мм</strong></span><span><Text type="secondary">Результат</Text><strong>PDF</strong></span><span><Text type="secondary">Страниц</Text><strong>1</strong></span></div></Card>
+              <Checks pdf />
+              <Button block type="primary" icon={<FilePdfOutlined />} loading={previewMutation.isPending} onClick={() => previewMutation.mutate()}>Собрать тестовый PDF</Button>
+            </>
+          }
+        />
       </div>
       <div className="editor-statusbar"><span>Страница 1 из 1</span><span><CheckCircleFilled /> HTML-макет будет преобразован в PDF</span><span>100%</span></div>
       <Modal open={Boolean(previewUrl)} width={900} title="Тестовый PDF" onCancel={() => setPreviewUrl('')} footer={null}>{previewUrl && <iframe className="kp-pdf-preview" title="Тестовый PDF" src={previewUrl} />}</Modal>
@@ -535,38 +600,68 @@ function PdfOverlayEditor({ template }: { template: Template }) {
               ))}
             </div>
           </main>
-          <aside className="template-editor-aside pdf-overlay-inspector">
-            <PersonalizationSettingPanel template={template} />
-            <Card className="template-side-panel" title="Поля документа">
-              <div className="pdf-field-list">
-                {fields.map((field) => (
-                  <button key={field.id} type="button" className={selectedId === field.id ? 'active' : ''} onClick={() => { setSelectedId(field.id); setPageIndex(field.page); }}>
-                    <span><strong>{field.label}</strong><code>{`{{${field.variable}}}`}</code></span>
-                    <small>{field.value || 'Пустое значение'}</small>
-                  </button>
-                ))}
-              </div>
-            </Card>
-            {selected && (
-              <Card className="template-side-panel" title="Выбранное поле">
-                <div className="pdf-field-settings">
-                  <label><span>Значение</span><Input value={selected.value} onChange={(event) => updateFieldValue(selected.id, event.target.value)} /></label>
-                  <label><span>Переменная</span><Input value={`{{${selected.variable}}}`} readOnly /></label>
-                  <label><span>Размер текста</span><Input type="number" min={6} max={36} step={0.5} value={selected.font_size} onChange={(event) => updateField(selected.id, { font_size: Number(event.target.value) || selected.font_size })} /></label>
-                  <Button onClick={() => updateField(selected.id, { value: selected.source_text, font_size: editorQuery.data.fields.find((item) => item.id === selected.id)?.font_size || selected.font_size })}>Вернуть исходное значение</Button>
-                </div>
-              </Card>
-            )}
-            {fields.length === 0 && <Alert type="warning" showIcon message="Жёлтые поля не найдены" description="В этом PDF нет распознаваемых выделенных полей. Загрузите PDF с жёлтыми маркерами или DOCX-исходник." />}
-            <Card className="template-side-panel" title="Что сохранится">
-              <div className="template-check-list">
-                <span><CheckCircleFilled />Оригинальный PDF без изменений</span>
-                <span><CheckCircleFilled />Новая PDF-копия с введёнными значениями</span>
-                <span><CheckCircleFilled />Обе версии доступны в архиве</span>
-              </div>
-            </Card>
-            <Button type="primary" block icon={<SaveOutlined />} disabled={!dirty} loading={saveMutation.isPending} onClick={() => saveMutation.mutate()}>Сохранить новую PDF-версию</Button>
-          </aside>
+          <EditorSideAccordion
+            className="pdf-overlay-inspector"
+            editorKind="pdf"
+            resourceId={template.id}
+            buildSnapshot={() => ({
+              fields: fields.map(({ id, page, variable, label, value, font_size, source_text }) => ({
+                id, page, variable, label, value, font_size, source_text,
+              })),
+              page_count: editorQuery.data.page_count,
+              is_template: template.is_template,
+            })}
+            handlers={{
+              updatePdfFields: (updates) => {
+                setFields((current) => current.map((field) => {
+                  const patch = updates.find((item) => item.id === field.id);
+                  if (!patch) return field;
+                  return {
+                    ...field,
+                    ...(patch.value !== undefined ? { value: patch.value } : {}),
+                    ...(patch.font_size !== undefined ? { font_size: patch.font_size } : {}),
+                  };
+                }));
+                setDirty(true);
+              },
+              setPersonalization: () => { void queryClient.invalidateQueries({ queryKey: ['template', template.id] }); },
+              markDirty: () => setDirty(true),
+            }}
+            settings={
+              <>
+                <PersonalizationSettingPanel template={template} />
+                <Card className="template-side-panel" title="Поля документа">
+                  <div className="pdf-field-list">
+                    {fields.map((field) => (
+                      <button key={field.id} type="button" className={selectedId === field.id ? 'active' : ''} onClick={() => { setSelectedId(field.id); setPageIndex(field.page); }}>
+                        <span><strong>{field.label}</strong><code>{`{{${field.variable}}}`}</code></span>
+                        <small>{field.value || 'Пустое значение'}</small>
+                      </button>
+                    ))}
+                  </div>
+                </Card>
+                {selected && (
+                  <Card className="template-side-panel" title="Выбранное поле">
+                    <div className="pdf-field-settings">
+                      <label><span>Значение</span><Input value={selected.value} onChange={(event) => updateFieldValue(selected.id, event.target.value)} /></label>
+                      <label><span>Переменная</span><Input value={`{{${selected.variable}}}`} readOnly /></label>
+                      <label><span>Размер текста</span><Input type="number" min={6} max={36} step={0.5} value={selected.font_size} onChange={(event) => updateField(selected.id, { font_size: Number(event.target.value) || selected.font_size })} /></label>
+                      <Button onClick={() => updateField(selected.id, { value: selected.source_text, font_size: editorQuery.data.fields.find((item) => item.id === selected.id)?.font_size || selected.font_size })}>Вернуть исходное значение</Button>
+                    </div>
+                  </Card>
+                )}
+                {fields.length === 0 && <Alert type="warning" showIcon message="Жёлтые поля не найдены" description="В этом PDF нет распознаваемых выделенных полей. Загрузите PDF с жёлтыми маркерами или DOCX-исходник." />}
+                <Card className="template-side-panel" title="Что сохранится">
+                  <div className="template-check-list">
+                    <span><CheckCircleFilled />Оригинальный PDF без изменений</span>
+                    <span><CheckCircleFilled />Новая PDF-копия с введёнными значениями</span>
+                    <span><CheckCircleFilled />Обе версии доступны в архиве</span>
+                  </div>
+                </Card>
+                <Button type="primary" block icon={<SaveOutlined />} disabled={!dirty} loading={saveMutation.isPending} onClick={() => saveMutation.mutate()}>Сохранить новую PDF-версию</Button>
+              </>
+            }
+          />
         </div>
       )}
       <div className="editor-statusbar"><span>Страница {pageIndex + 1} из {editorQuery.data?.page_count || 1}</span><span><CheckCircleFilled />Исходная вёрстка защищена от изменений</span><span>{dirty ? 'Есть изменения' : 'Сохранено'}</span></div>
@@ -621,7 +716,7 @@ function OnlyOfficeEditor({ data, templateId, onDirty, onError }: {
       disposed = true;
       instance?.destroyEditor?.();
     };
-  }, [containerId, data, onDirty, onError]);
+  }, [containerId, data.config, data.document_key, data.editor_url, onDirty, onError]);
   return <div id={containerId} className="onlyoffice-editor" />;
 }
 
@@ -699,6 +794,15 @@ function DocxTemplateEditor({ template }: { template: Template }) {
     </div>
   );
 
+  const buildAssistantSnapshot = useCallback(() => ({
+    name: template.name,
+    filename,
+    variables,
+    is_template: template.is_template,
+    template_type: template.template_type,
+    version_number: template.version?.version_number,
+  }), [filename, template.is_template, template.name, template.template_type, template.version?.version_number, variables]);
+
   return (
     <div className="template-editor-page docx-editor-page focused-document-editor">
       <EditorHeader
@@ -712,10 +816,6 @@ function DocxTemplateEditor({ template }: { template: Template }) {
         onPreview={() => window.open(templatesApi.previewFileUrl(template.id), '_blank', 'noopener,noreferrer')}
         onSave={() => saveMutation.mutate()}
       />
-
-      <div style={{ maxWidth: 420, marginBottom: 16 }}>
-        <PersonalizationSettingPanel template={template} />
-      </div>
 
       <div className="focused-editor-bar">
         <div className="focused-editor-file">
@@ -732,17 +832,66 @@ function DocxTemplateEditor({ template }: { template: Template }) {
         </Space>
       </div>
 
-      {!hasDocx ? (
-        <Alert type="warning" showIcon message="Для редактирования нужен DOCX" description={<Space direction="vertical"><Text>Загрузите исходник — оформление сохранится, система отдельно создаст PDF для отправки.</Text>{upload}</Space>} />
-      ) : (
+      <div className="docx-assistant-workspace">
         <div className="focused-docx-workspace">
-          <main className="docx-editor-shell">
-            {officeQuery.isLoading && <Skeleton active paragraph={{ rows: 12 }} />}
-            {officeQuery.isError && <Alert type="error" showIcon message="Редактор документов недоступен" description="Проверьте локальный сервис документов и попробуйте подключиться ещё раз." action={<Button icon={<ReloadOutlined />} onClick={() => void officeQuery.refetch()}>Повторить</Button>} />}
-            {officeQuery.data && <OnlyOfficeEditor data={officeQuery.data} templateId={template.id} onDirty={setDirty} onError={handleOfficeError} />}
-          </main>
+          {!hasDocx ? (
+            <Alert type="warning" showIcon message="Для редактирования нужен DOCX" description={<Space direction="vertical"><Text>Загрузите исходник — оформление сохранится, система отдельно создаст PDF для отправки.</Text>{upload}</Space>} />
+          ) : (
+            <main className="docx-editor-shell">
+              {officeQuery.isLoading && <Skeleton active paragraph={{ rows: 12 }} />}
+              {officeQuery.isError && <Alert type="error" showIcon message="Редактор документов недоступен" description="Проверьте локальный сервис документов и попробуйте подключиться ещё раз." action={<Button icon={<ReloadOutlined />} onClick={() => void officeQuery.refetch()}>Повторить</Button>} />}
+              {officeQuery.data && (
+                <OnlyOfficeEditor
+                  key={officeQuery.data.document_key}
+                  data={officeQuery.data}
+                  templateId={template.id}
+                  onDirty={setDirty}
+                  onError={handleOfficeError}
+                />
+              )}
+            </main>
+          )}
         </div>
-      )}
+        <EditorSideAccordion
+          editorKind="docx"
+          resourceId={template.id}
+          buildSnapshot={buildAssistantSnapshot}
+          handlers={{
+            setPersonalization: () => { void queryClient.invalidateQueries({ queryKey: ['template', template.id] }); },
+            reloadTemplate: async () => {
+              // Keep DocxTemplateEditor mounted (chat state). Only refresh template + OnlyOffice session.
+              const latest = await queryClient.fetchQuery({
+                queryKey: ['template', template.id],
+                queryFn: () => templatesApi.get(template.id),
+              });
+              queryClient.setQueryData(['template', template.id], latest);
+              await queryClient.invalidateQueries({ queryKey: ['office-config', template.id] });
+              await queryClient.refetchQueries({ queryKey: ['office-config', template.id, latest.version?.id] });
+              setDirty(false);
+              message.success('Документ обновлён помощником');
+            },
+          }}
+          settings={
+            <>
+              <PersonalizationSettingPanel template={template} />
+              <Card className="template-side-panel" title="Переменные">
+                <Typography.Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 12 }}>
+                  Помощник правит текст точечно. Полная пересборка — только по явной просьбе. Поля можно скопировать вручную.
+                </Typography.Paragraph>
+                <div className="docx-variable-picker-list">
+                  {filteredVariables.map((variable) => (
+                    <button key={variable.name} type="button" onClick={() => void copyVariable(variable.name)}>
+                      <span><strong>{variable.label}</strong><small>{variable.source}</small></span>
+                      <code>{`{{${variable.name}}}`}</code>
+                    </button>
+                  ))}
+                </div>
+              </Card>
+              <Checks kpDocx={buildsDeliveryPdf} />
+            </>
+          }
+        />
+      </div>
       <div className="editor-statusbar">
         <span><PictureOutlined />Текст и изображения</span>
         <span><CheckCircleFilled />{buildsDeliveryPdf ? 'Исходный DOCX и PDF-копия сохраняются отдельно' : 'Исходный DOCX сохраняется новой версией'}</span>
@@ -762,7 +911,8 @@ function resolveTemplateEditor(template: Template) {
 
   const filename = template.version?.filename?.toLowerCase() || '';
   if (filename.endsWith('.docx')) {
-    return <DocxTemplateEditor key={template.version?.id} template={template} />;
+    // Stable key: remounting on every version wipe wiped assistant chat mid-reload.
+    return <DocxTemplateEditor key={template.id} template={template} />;
   }
   if (filename.endsWith('.pdf')) {
     return <PdfOverlayEditor key={template.version?.id} template={template} />;
@@ -771,9 +921,9 @@ function resolveTemplateEditor(template: Template) {
     return <KpTemplateEditor key={template.version?.id} template={template} />;
   }
   if (isDocumentTemplateType(template.template_type)) {
-    return <DocxTemplateEditor key={template.version?.id} template={template} />;
+    return <DocxTemplateEditor key={template.id} template={template} />;
   }
-  return <DocxTemplateEditor key={template.version?.id} template={template} />;
+  return <DocxTemplateEditor key={template.id} template={template} />;
 }
 
 export function TemplateEditorPage() {

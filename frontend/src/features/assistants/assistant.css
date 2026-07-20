@@ -1,0 +1,89 @@
+.editor-side-accordion {
+  min-width: 0;
+}
+
+.editor-side-collapse {
+  background: transparent;
+  border: none;
+}
+
+.editor-side-collapse > .ant-collapse-item {
+  margin-bottom: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px !important;
+  overflow: hidden;
+  background: #fff;
+}
+
+.editor-side-collapse .ant-collapse-header {
+  font-weight: 600;
+}
+
+.editor-side-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.editor-side-settings .template-side-panel {
+  margin-bottom: 0;
+}
+
+.assistant-chat-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 280px;
+  max-height: min(70vh, 640px);
+}
+
+.assistant-chat-intro {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: rgba(15, 23, 42, 0.65);
+}
+
+.assistant-chat-messages {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.assistant-chat-empty {
+  margin: 0;
+  font-size: 12px;
+}
+
+.assistant-chat-bubble {
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.assistant-chat-bubble--user {
+  align-self: flex-end;
+  background: #e8f1ff;
+  max-width: 95%;
+}
+
+.assistant-chat-bubble--assistant {
+  align-self: flex-start;
+  background: #f4f6f8;
+  max-width: 95%;
+}
+
+.assistant-chat-bubble--pending {
+  opacity: 0.75;
+  font-style: italic;
+}
+
+.assistant-chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

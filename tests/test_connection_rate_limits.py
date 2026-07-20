@@ -6,7 +6,12 @@ from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 
-from src.campaigns.connection_service import create_connection, update_connection
+from src.campaigns.connection_service import (
+    create_connection,
+    pick_available_connection,
+    update_connection,
+    validate_connection_ids,
+)
 from src.campaigns.service import (
     _effective_rate_limits,
     _min_positive,
@@ -144,6 +149,49 @@ class ConnectionRateLimitsTests(unittest.TestCase):
         self.assertTrue(batches)
         self.assertTrue(all(int(batch["size"]) <= 5 for batch in batches))
         self.assertEqual(sum(int(batch["size"]) for batch in batches), 20)
+
+
+class MultiSenderConnectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        bootstrap_test_runtime(reset_db=True)
+        from src.utils.config import settings
+
+        self._key = patch.object(settings, "smtp_credentials_key", Fernet.generate_key().decode("ascii"))
+        self._key.start()
+        self.addCleanup(self._key.stop)
+        self.owner = f"owner-{uuid.uuid4().hex[:8]}"
+        create_user(self.owner, "Pass12345!")
+
+    def test_pick_available_connection_falls_back_when_primary_at_limit(self) -> None:
+        primary = create_connection(
+            self.owner,
+            {
+                "transport": "rusender",
+                "email": "primary@example.com",
+                "api_token": "rs_primary",
+                "max_per_hour": 1,
+            },
+        )
+        secondary = create_connection(
+            self.owner,
+            {
+                "transport": "mailopost",
+                "email": "secondary@example.com",
+                "api_token": "mp_secondary",
+                "max_per_hour": 5,
+            },
+        )
+        ids = [primary["id"], secondary["id"]]
+        first = pick_available_connection(ids, self.owner, {}, {})
+        self.assertIsNotNone(first)
+        self.assertEqual(first.id, primary["id"])
+
+        second = pick_available_connection(ids, self.owner, {primary["id"]: 1}, {})
+        self.assertIsNotNone(second)
+        self.assertEqual(second.id, secondary["id"])
+
+    def test_validate_connection_ids_requires_at_least_one(self) -> None:
+        self.assertEqual(validate_connection_ids([], self.owner), "Выберите подключение отправителя")
 
 
 if __name__ == "__main__":
