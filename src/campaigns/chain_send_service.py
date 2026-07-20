@@ -104,6 +104,8 @@ def send_chain_node_email(
     node_id: str,
     batch_id: str | None = None,
     followup_token: str | None = None,
+    hour_counts: dict[str, int] | None = None,
+    day_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     from src.campaigns.batch_worker import _send_delivery_message
 
@@ -125,9 +127,21 @@ def send_chain_node_email(
             if followup_token:
                 mark_token_sent(followup_token, status="skipped")
             return {"status": "skipped", "reason": "suppressed", "node_id": node_id}
-        connection_id = str(camp.smtp_mailbox_id or "")
+        from src.campaigns.connection_service import campaign_connection_ids, pick_available_connection
+
         owner = camp.owner_username
         job_id = camp.job_id
+        counters_hour = hour_counts if hour_counts is not None else {}
+        counters_day = day_counts if day_counts is not None else {}
+        connection = pick_available_connection(
+            campaign_connection_ids(camp),
+            owner,
+            counters_hour,
+            counters_day,
+        )
+        if connection is None:
+            raise RuntimeError("Все подключения исчерпали лимиты отправки")
+        connection_id = connection.id
 
         subject_template, body_html_template, body_text_template = _load_node_email_template(node, camp)
         email_template_id = str(node.get("email_template_id") or "") or None
@@ -213,6 +227,10 @@ def send_chain_node_email(
                     status="sent",
                     provider_message_id=message_id,
                 )
+            if hour_counts is not None:
+                hour_counts[connection_id] = hour_counts.get(connection_id, 0) + 1
+            if day_counts is not None:
+                day_counts[connection_id] = day_counts.get(connection_id, 0) + 1
             session.flush()
             return {"status": "sent", "message_id": message_id, "node_id": node_id}
         except Exception as exc:

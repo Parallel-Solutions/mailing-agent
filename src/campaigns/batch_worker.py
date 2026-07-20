@@ -215,17 +215,19 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
         session.flush()
 
         recipient_ids = list(batch.recipient_ids or [])
-        connection_id = str(kwargs.get("smtp_mailbox_id") or camp.smtp_mailbox_id or "")
         owner = camp.owner_username
         subject_template, body_html_template, body_text_template = _load_email_template(camp)
         job_id = camp.job_id
+        from src.campaigns.connection_service import campaign_connection_ids, normalize_connection_ids
 
-    from src.campaigns.connection_service import resolve_connection
+        raw_connection_ids = kwargs.get("connection_ids")
+        if raw_connection_ids:
+            connection_ids = normalize_connection_ids(list(raw_connection_ids))
+        else:
+            connection_ids = campaign_connection_ids(camp)
 
-    if not connection_id:
+    if not connection_ids:
         raise RuntimeError("Не выбрано подключение отправителя.")
-    connection = resolve_connection(connection_id, owner)
-    transport = connection.transport
 
     send_mode = str(kwargs.get("send_mode") or "")
     if send_mode == "materials" and job_id:
@@ -235,6 +237,8 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
 
     sent = 0
     errors = 0
+    hour_counts: dict[str, int] = {}
+    day_counts: dict[str, int] = {}
     for recipient_id in recipient_ids:
         with session_scope() as session:
             camp = session.get(Campaign, campaign_id)
@@ -266,6 +270,8 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                         recipient_id=int(recipient_id),
                         node_id=root_id,
                         batch_id=batch_id,
+                        hour_counts=hour_counts,
+                        day_counts=day_counts,
                     )
                     if result.get("status") == "skipped":
                         recipient.send_status = "skipped"
@@ -307,6 +313,14 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
             html = strip_chain_button_placeholder(html)
             subject = render_template_text(subject_template, recipient=recipient, campaign=camp)
             try:
+                from src.campaigns.connection_service import pick_available_connection
+
+                connection = pick_available_connection(connection_ids, owner, hour_counts, day_counts)
+                if connection is None:
+                    raise RuntimeError("Все подключения исчерпали лимиты отправки")
+                connection_id = connection.id
+                transport = connection.transport
+
                 if str(kwargs.get("send_mode") or "") == "consent_request" and job_id:
                     try:
                         from src.generator.delivery.consent_store import prepare_consent_request
@@ -394,6 +408,8 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     status="sent",
                     provider_message_id=message_id,
                 )
+                hour_counts[connection_id] = hour_counts.get(connection_id, 0) + 1
+                day_counts[connection_id] = day_counts.get(connection_id, 0) + 1
                 sent += 1
 
                 if job_id:

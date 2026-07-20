@@ -2,11 +2,17 @@ import { PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
 import { App, Button, Empty, Tag } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { chainsApi, type ChainListItem } from '@/api/chains';
+
+type ChainsLocationState = {
+  campaignId?: string;
+};
 
 export function ChainsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const campaignId = (location.state as ChainsLocationState | null)?.campaignId;
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
@@ -14,11 +20,18 @@ export function ChainsPage() {
     queryFn: () => chainsApi.list({ limit: 100 }),
   });
 
+  const chainNavigationState = campaignId ? { campaignId } : undefined;
+
+  const campaignUrl = (chainId: string) =>
+    campaignId
+      ? `/campaigns/new?id=${campaignId}&email_chain_id=${chainId}`
+      : `/campaigns/new?email_chain_id=${chainId}`;
+
   const createChain = useMutation({
     mutationFn: () => chainsApi.create({ name: 'Новая цепочка' }),
     onSuccess: (chain) => {
       void queryClient.invalidateQueries({ queryKey: ['chains'] });
-      navigate(`/chains/${chain.id}`);
+      navigate(`/chains/${chain.id}`, { state: chainNavigationState });
     },
     onError: (error: Error) => message.error(error.message),
   });
@@ -59,7 +72,11 @@ export function ChainsPage() {
         {
           title: 'Название',
           dataIndex: 'name',
-          render: (_, row) => <Link to={`/chains/${row.id}`}>{row.name}</Link>,
+          render: (_, row) => (
+            <Link to={`/chains/${row.id}`} state={chainNavigationState}>
+              {row.name}
+            </Link>
+          ),
         },
         {
           title: 'Статус',
@@ -75,10 +92,13 @@ export function ChainsPage() {
           title: 'Действия',
           valueType: 'option',
           render: (_, row) => [
-            <a key="open" onClick={() => navigate(`/chains/${row.id}`)}>
+            <a
+              key="open"
+              onClick={() => navigate(`/chains/${row.id}`, { state: chainNavigationState })}
+            >
               Открыть конструктор
             </a>,
-            <a key="campaign" onClick={() => navigate(`/campaigns/new?email_chain_id=${row.id}`)}>
+            <a key="campaign" onClick={() => navigate(campaignUrl(row.id))}>
               К рассылке
             </a>,
           ],

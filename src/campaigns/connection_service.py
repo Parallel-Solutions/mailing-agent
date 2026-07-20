@@ -415,6 +415,93 @@ def resolve_connection(connection_id: str, owner_username: str) -> ResolvedConne
         )
 
 
+def normalize_connection_ids(raw: list[str] | None, fallback_id: str | None = None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in list(raw or []):
+        value = _safe_text(item)
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    if not normalized and fallback_id:
+        value = _safe_text(fallback_id)
+        if value:
+            normalized.append(value)
+    return normalized
+
+
+def campaign_connection_ids(campaign: Any) -> list[str]:
+    ids = normalize_connection_ids(list(getattr(campaign, "connection_ids", None) or []))
+    if ids:
+        return ids
+    fallback = _safe_text(getattr(campaign, "smtp_mailbox_id", None))
+    return [fallback] if fallback else []
+
+
+def _connection_at_limit(
+    row: SmtpMailbox | None,
+    *,
+    hour_count: int,
+    day_count: int,
+) -> bool:
+    if row is None:
+        return True
+    max_hour = int(row.max_per_hour or 0)
+    max_day = int(row.max_per_day or 0)
+    if max_hour > 0 and hour_count >= max_hour:
+        return True
+    if max_day > 0 and day_count >= max_day:
+        return True
+    return False
+
+
+def pick_available_connection(
+    ids: list[str],
+    owner_username: str,
+    hour_counts: dict[str, int],
+    day_counts: dict[str, int],
+) -> ResolvedConnection | None:
+    if not ids:
+        return None
+    with session_scope() as session:
+        for connection_id in ids:
+            row = session.get(SmtpMailbox, connection_id)
+            if row is None or row.owner_username != owner_username:
+                continue
+            if _connection_at_limit(
+                row,
+                hour_count=int(hour_counts.get(connection_id, 0)),
+                day_count=int(day_counts.get(connection_id, 0)),
+            ):
+                continue
+            transport = connection_transport(row)
+            sender_name = _profile_sender_name(owner_username, row.sender_name)
+            if transport == "smtp":
+                return ResolvedConnection(row.id, transport, row.email, sender_name, "", "")
+            return ResolvedConnection(
+                id=row.id,
+                transport=transport,
+                email=row.email,
+                sender_name=sender_name,
+                secret=decrypt_secret(row.password_encrypted),
+                api_base_url=row.host,
+            )
+    return None
+
+
+def validate_connection_ids(ids: list[str], owner_username: str) -> str | None:
+    normalized = normalize_connection_ids(ids)
+    if not normalized:
+        return "Выберите подключение отправителя"
+    for connection_id in normalized:
+        try:
+            resolve_connection(connection_id, owner_username)
+        except LookupError:
+            return "Выбранное подключение не найдено"
+    return None
+
+
 def validate_connection_choice(connection_id: str | None, owner_username: str, transport: str) -> str | None:
     if not connection_id:
         return "Выберите подключение отправителя"
