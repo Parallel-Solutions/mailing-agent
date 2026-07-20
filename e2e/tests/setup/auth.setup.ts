@@ -14,6 +14,11 @@ setup('prepare e2e auth and clean mailpit @setup', async ({ request }) => {
   expect(healthBody.status).toBe('ok');
   expect(healthBody.database).toBe('up');
 
+  const ready = await request.get(`${API_URL}/ready`);
+  expect(ready.ok(), `ready not ok: ${ready.status()}`).toBeTruthy();
+  const readyBody = await ready.json();
+  expect(readyBody.status).toBe('ok');
+
   const mailpit = await request.get(`${MAILPIT_URL}/api/v1/info`);
   expect(mailpit.ok(), `mailpit not ok: ${mailpit.status()}`).toBeTruthy();
 

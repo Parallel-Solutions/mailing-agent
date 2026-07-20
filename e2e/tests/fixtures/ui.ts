@@ -21,27 +21,6 @@ export async function waitForFonts(page: Page): Promise<void> {
   });
 }
 
-/** Legacy wizard helper (kept for /legacy routes). */
-export async function goToScreen(page: Page, screenId: string): Promise<void> {
-  await page.goto('/legacy');
-  await page.evaluate((id) => {
-    const w = window as unknown as { goToScreen?: (screen: string) => void; show?: (screen: string) => void };
-    if (typeof w.goToScreen === 'function') {
-      w.goToScreen(id);
-      return;
-    }
-    if (typeof w.show === 'function') {
-      w.show(id);
-      return;
-    }
-    document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'));
-    const screen = document.getElementById(`s-${id}`);
-    if (!screen) throw new Error(`Screen #s-${id} not found`);
-    screen.classList.add('active');
-  }, screenId);
-  await page.locator(`#s-${screenId}`).waitFor({ state: 'visible', timeout: 15_000 });
-}
-
 export async function openAppAuthed(page: Page): Promise<ConsoleGuard> {
   const guard = new ConsoleGuard(page, {
     allowHttp4xxUrls: ['/api/auth/me'],

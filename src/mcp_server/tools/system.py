@@ -6,8 +6,13 @@ from typing import Any, Callable
 def register_system_tools(mcp: Any, get_client: Callable[[], Any]) -> None:
     @mcp.tool()
     def get_health() -> dict[str, Any]:
-        """Return public health/readiness of the mailing-agent app (no auth)."""
+        """Return public liveness of the mailing-agent app (DB only, no auth)."""
         return get_client().get("/health", auth=False)
+
+    @mcp.tool()
+    def get_ready() -> dict[str, Any]:
+        """Return public readiness (DB, Redis, MinIO, Gotenberg; no auth)."""
+        return get_client().get("/ready", auth=False)
 
     @mcp.tool()
     def get_status() -> dict[str, Any]:

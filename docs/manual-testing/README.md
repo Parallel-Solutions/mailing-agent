@@ -8,7 +8,7 @@
 |-------|---------|-----|
 | Локальная ручная проверка | `.\scripts\dev.ps1 start` | `mailing` |
 | Playwright E2E | `.\scripts\e2e.ps1 …` (проект `mailing-agent-e2e`) | `mailing_e2e` |
-| Unit/integration | `docker compose -f docker-compose.test.yml run --rm test` | `mailing_test` |
+| Unit/integration | `docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test` | `mailing_test` |
 
 Не используйте e2e overlay / `mailing_e2e` для ручного тестирования. E2E не должен переписывать app на `:9806`.
 
@@ -24,7 +24,7 @@
 .\scripts\dev.ps1 start
 ```
 
-Команда соберёт контейнеры, поднимет стек (app, worker, postgres, minio, redis, gotenberg, mailpit), дождётся healthcheck и создаст demo seed.
+Команда соберёт контейнеры, поднимет стек (app, worker, postgres, minio, redis, gotenberg, mailpit) и дождётся `/health`, `/ready`, Mailpit и healthy worker. Demo seed на старте выключен (`SEED_DEMO_DATA_ON_STARTUP=0`); при необходимости: `.\scripts\dev.ps1 seed`.
 
 ## Reset
 

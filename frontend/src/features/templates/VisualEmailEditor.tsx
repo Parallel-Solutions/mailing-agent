@@ -9,8 +9,9 @@ import {
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { App, Alert, Breadcrumb, Button, Card, Input, Modal, Space, Tag, Typography } from 'antd';
 import type { Editor } from 'grapesjs';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { EditorSideAccordion } from '@/features/assistants';
 import { PersonalizationSetting } from '@/features/templates/PersonalizationSetting';
 import { templatesApi } from '@/api/templates';
 import type { EmailEditorState, Template } from '@/api/types';
@@ -175,6 +176,52 @@ export function VisualEmailEditor({ template }: Props) {
     editorRef.current?.setDevice(device);
   };
 
+  const buildAssistantSnapshot = useCallback(() => {
+    const editor = editorRef.current;
+    const bodyHtml = editor ? exportVisualEmailHtml(editor) : template.version?.body_html || '';
+    return {
+      name,
+      subject,
+      body_html: bodyHtml,
+      variables,
+      is_template: template.is_template,
+      email_format: 'visual',
+      grapesjs_project: editor?.getProjectData?.() || editorState.grapesjs_project || null,
+    };
+  }, [editorState.grapesjs_project, name, subject, template.is_template, template.version?.body_html, variables]);
+
+  const assistantHandlers = useMemo(
+    () => ({
+      setSubject: (value: string) => {
+        setSubject(value);
+        setDirty(true);
+      },
+      setHtml: (html: string) => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        editor.setComponents(html);
+        setDirty(true);
+      },
+      insertComponents: (html: string) => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        editor.addComponents(html);
+        setDirty(true);
+      },
+      loadGrapesProject: (project: Record<string, unknown>) => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        editor.loadProjectData(project);
+        setDirty(true);
+      },
+      setPersonalization: () => {
+        void queryClient.invalidateQueries({ queryKey: ['template', template.id] });
+      },
+      markDirty: () => setDirty(true),
+    }),
+    [queryClient, template.id],
+  );
+
   return (
     <div className="template-editor-page visual-email-editor">
       <Breadcrumb
@@ -274,27 +321,34 @@ export function VisualEmailEditor({ template }: Props) {
           </div>
           <div ref={containerRef} hidden={Boolean(initError)} />
         </main>
-        <aside className="template-editor-aside">
-          <PersonalizationSetting template={template} />
-          <Alert
-            type="info"
-            showIcon
-            message="Кнопки цепочки"
-            description='Перетащите блок «Кнопки цепочки» на холст — при отправке цепочки сюда подставятся ветки из конструктора.'
-            style={{ marginBottom: 16 }}
-          />
-          <VariablePanel
-            variables={variables}
-            query={variableQuery}
-            onQuery={setVariableQuery}
-            onInsert={(variableName) => {
-              const editor = editorRef.current;
-              if (!editor) return;
-              insertMergeVariable(editor, variableName);
-              setDirty(true);
-            }}
-          />
-        </aside>
+        <EditorSideAccordion
+          editorKind="visual_email"
+          resourceId={template.id}
+          buildSnapshot={buildAssistantSnapshot}
+          handlers={assistantHandlers}
+          settings={
+            <>
+              <PersonalizationSetting template={template} />
+              <Alert
+                type="info"
+                showIcon
+                message="Кнопки цепочки"
+                description='Перетащите блок «Кнопки цепочки» на холст — при отправке цепочки сюда подставятся ветки из конструктора.'
+              />
+              <VariablePanel
+                variables={variables}
+                query={variableQuery}
+                onQuery={setVariableQuery}
+                onInsert={(variableName) => {
+                  const editor = editorRef.current;
+                  if (!editor) return;
+                  insertMergeVariable(editor, variableName);
+                  setDirty(true);
+                }}
+              />
+            </>
+          }
+        />
       </div>
 
       <Modal

@@ -17,7 +17,6 @@ from src.campaigns import (
     connection_service,
     document_editor_service,
     generation_service,
-
     pdf_overlay_service,
     profile_service,
     service,
@@ -27,6 +26,7 @@ from src.campaigns import (
     variable_match_service,
     work_type_service,
 )
+from src.campaigns.assistants import run_editor_assistant
 from src.campaigns.schedule_planner import plan_batches
 from src.jobs.access import coerce_principal
 from src.security.auth import Principal
@@ -186,6 +186,16 @@ class PdfOverlayFieldBody(BaseModel):
 class PdfOverlaySaveBody(BaseModel):
     fields: list[PdfOverlayFieldBody] = Field(default_factory=list)
 
+
+class AssistantChatBody(BaseModel):
+    editor_kind: str
+    resource_id: str
+    message: str
+    session_id: str | None = None
+    model: str | None = None
+    snapshot: dict[str, Any] | None = None
+
+
 class AudienceCreateBody(BaseModel):
     name: str
     source: str = "manual"
@@ -259,6 +269,8 @@ def _binary_response(item: dict[str, Any], *, disposition: str) -> Response:
         headers={
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}",
             "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
         },
     )
 
@@ -847,6 +859,28 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Не удалось отправить: {exc}") from exc
         return _ok({"message_id": message_id, "to": body.to_email})
+
+    # --- Editor assistants ---
+    @router.post("/assistants/chat")
+    def post_assistant_chat(body: AssistantChatBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                run_editor_assistant(
+                    editor_kind=body.editor_kind,
+                    resource_id=body.resource_id,
+                    message=body.message,
+                    owner_username=actor.username,
+                    is_admin=actor.is_admin,
+                    session_id=body.session_id,
+                    model=body.model,
+                    snapshot=body.snapshot,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Ассистент недоступен: {exc}") from exc
 
     # --- Templates ---
     @router.get("/templates")

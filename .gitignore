@@ -22,9 +22,14 @@ artifacts/playwright/screenshots/
 artifacts/playwright/videos/
 artifacts/playwright/traces/
 artifacts/playwright/auth/
+artifacts/import-from-test/
 e2e/node_modules/
 e2e/test-results/
 e2e/playwright-report/
+
+# Local temp / session leftovers
+.tmp_*
+.tmp_cookies.txt
 
 data/
 logs/
@@ -36,7 +41,8 @@ tmp*/
 pytest-cache-files-*/
 src/parser_new/output/
 *.xlsx
-!tests/e2e/fixtures/*.xlsx
+!e2e/fixtures/*.xlsx
+!fixtures/**/*.xlsx
 tests/e2e/out/
 *.db
 *.sqlite

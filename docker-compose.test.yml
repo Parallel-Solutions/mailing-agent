@@ -1,3 +1,8 @@
+# Always use a dedicated compose project so unit tests never rewrite local/dev
+# containers (mailing on :9806 / volume pgdata):
+#   docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test
+name: mailing-agent-test
+
 services:
   postgres:
     image: postgres:16
@@ -41,7 +46,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: mailing-agent:local
+      target: test
+    image: mailing-agent:test
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,13 +73,10 @@ services:
       - ./tests:/app/tests
       - ./migrations:/app/migrations
       - ./scripts:/app/scripts
+      - ./main.py:/app/main.py
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
-      - ./main.py:/app/main.py
-      - ./pyproject.toml:/app/pyproject.toml
-      - ./uv.lock:/app/uv.lock
-    command:
-      ["/bin/sh", "-c", "uv sync --frozen --extra dev --extra mcp --no-install-project && .venv/bin/python -m tests"]
+    command: [".venv/bin/python", "-m", "tests"]
 
 volumes:
   pgdata-test:

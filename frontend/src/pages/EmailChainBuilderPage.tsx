@@ -7,6 +7,7 @@ import { chainsApi, type ChainRecord } from '@/api/chains';
 import { campaignsApi } from '@/api/campaigns';
 import { templatesApi } from '@/api/templates';
 import type { ChainLinkKind, EmailChain } from '@/api/types';
+import { EditorSideAccordion } from '@/features/assistants';
 import { ChainCanvas } from '@/features/campaigns/chain/ChainCanvas';
 import { ChainNodeBlock } from '@/features/campaigns/chain/ChainNodeBlock';
 import { ChainNodeSettingsPanel } from '@/features/campaigns/chain/ChainNodeSettingsPanel';
@@ -329,12 +330,30 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
             onClick={toggleFullscreen}
           />
         </div>
-        <ChainNodeSettingsPanel
-          chain={chain}
-          nodeId={selectedNodeId}
-          emailTemplates={emailTemplatesQuery.data ?? []}
-          documentTemplates={(documentTemplatesQuery.data ?? []).filter((t) => t.version?.filename)}
-          onChange={(next) => applyChain(next, false)}
+        <EditorSideAccordion
+          className="chain-settings-panel"
+          editorKind="chain"
+          resourceId={id}
+          buildSnapshot={() => ({
+            chain,
+            selected_node_id: selectedNodeId,
+          })}
+          handlers={{
+            setChain: (next, selectedId) => {
+              applyChain(next);
+              if (selectedId) setSelectedNodeId(selectedId);
+            },
+            selectChainNode: (nodeId) => setSelectedNodeId(nodeId),
+          }}
+          settings={
+            <ChainNodeSettingsPanel
+              chain={chain}
+              nodeId={selectedNodeId}
+              emailTemplates={emailTemplatesQuery.data ?? []}
+              documentTemplates={(documentTemplatesQuery.data ?? []).filter((t) => t.version?.filename)}
+              onChange={(next) => applyChain(next, false)}
+            />
+          }
         />
       </div>
     </div>

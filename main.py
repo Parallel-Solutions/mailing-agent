@@ -63,7 +63,6 @@ from src.parser_new.progress import subscribe as parser_progress_subscribe
 
 app = FastAPI(title="Mailing Agent")
 PROJECT_ROOT = Path(__file__).resolve().parent
-TEMPLATES_DIR = PROJECT_ROOT / "templates"
 _sender_threads: dict[str, threading.Thread] = {}
 _sender_threads_lock = threading.Lock()
 _philologist_threads: dict[str, threading.Thread] = {}
@@ -1136,23 +1135,12 @@ FRONTEND_DIST = Path(
     str(getattr(settings, "frontend_dist_dir", "") or "").strip()
     or (PROJECT_ROOT / "frontend" / "dist")
 )
-USE_LEGACY_UI = bool(getattr(settings, "use_legacy_ui", False))
-
-
 def _spa_index_response() -> HTMLResponse | FileResponse | RedirectResponse:
     index_file = FRONTEND_DIST / "index.html"
-    if index_file.exists() and not USE_LEGACY_UI:
-        return FileResponse(
-            index_file,
-            headers={
-                "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0",
-            },
-        )
-    html = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
-    return HTMLResponse(
-        content=html,
+    if not index_file.exists():
+        raise HTTPException(status_code=503, detail="Frontend SPA is not built.")
+    return FileResponse(
+        index_file,
         headers={
             "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
             "Pragma": "no-cache",
@@ -1167,22 +1155,6 @@ def index(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_
     if not username or get_user_record(username) is None:
         return RedirectResponse(url="/login", status_code=303)
     return _spa_index_response()
-
-
-@app.get("/legacy", response_class=HTMLResponse)
-def legacy_index(session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
-    username = get_session_username(session_token, ttl_days=max(1, int(settings.app_session_ttl_days or 7)))
-    if not username or get_user_record(username) is None:
-        return RedirectResponse(url="/login", status_code=303)
-    html = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
-    return HTMLResponse(
-        content=html,
-        headers={
-            "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        },
-    )
 
 
 @app.get("/api/status")
@@ -1377,8 +1349,6 @@ app.include_router(
     create_auth_router(
         settings_obj=settings,
         check_auth=check_auth,
-        login_template_path=TEMPLATES_DIR / "login.html",
-        register_template_path=TEMPLATES_DIR / "register.html",
         spa_index_path=FRONTEND_DIST / "index.html",
     )
 )
@@ -1567,7 +1537,7 @@ if _assets_dir.is_dir():
 
 @app.get("/{full_path:path}", response_class=HTMLResponse)
 def spa_fallback(full_path: str, session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
-    """SPA client-side routes; keep API/public/consent/legacy paths untouched."""
+    """SPA client-side routes; keep API/public/consent paths untouched."""
     blocked_prefixes = (
         "api/",
         "public/",
@@ -1583,7 +1553,7 @@ def spa_fallback(full_path: str, session_token: str | None = Cookie(default=None
     )
     if full_path.startswith(blocked_prefixes) or full_path in {"health", "docs", "redoc", "openapi.json"}:
         raise HTTPException(status_code=404, detail="Not Found")
-    if USE_LEGACY_UI or not (FRONTEND_DIST / "index.html").exists():
+    if not (FRONTEND_DIST / "index.html").exists():
         raise HTTPException(status_code=404, detail="Not Found")
     # Auth pages are served by auth_router; app shell requires session except public SPA shells.
     return _spa_index_response()

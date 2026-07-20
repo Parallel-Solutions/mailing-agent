@@ -2,7 +2,7 @@
 
 > Дата аудита: 2026-07-09  
 > Аудитор: senior backend/fullstack engineer review  
-> Статус: **только чтение**, код не изменялся
+> Статус: **OBSOLETE (частично)** — UI статистики теперь React CampaignFlow; Mailpit есть в dev/e2e; Python RuSender matrix (`tests/e2e`) удалена. Актуальный аудит: `docs/audits/PROJECT_AUDIT_2026-07-18.md`.
 
 ---
 

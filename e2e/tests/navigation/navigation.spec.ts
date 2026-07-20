@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { attachGuard, openAppAuthed } from '../fixtures/ui';
 
 const MENU = [
-  { path: '/', name: 'Статистика отправок' },
+  { path: '/', name: 'Статистика' },
   { path: '/campaigns/new', name: 'Создать рассылку' },
   { path: '/campaigns', name: 'Рассылки' },
   { path: '/templates', name: 'Шаблоны и документы' },
@@ -16,7 +16,7 @@ test.describe('Navigation @smoke', () => {
     const guard = await openAppAuthed(page);
     await expect(page).toHaveURL(/\/$/);
     await expect(page.getByTestId('statistics-page')).toBeVisible();
-    await expect(page.getByText('Статистика отправок').first()).toBeVisible();
+    await expect(page.getByText('Статистика').first()).toBeVisible();
 
     await page.goto('/statistics', { waitUntil: 'domcontentloaded' });
     await expect(page).toHaveURL(/\/$/);

@@ -5,6 +5,12 @@
 # Host ports: APP_PUBLIC_PORT / MAILPIT_UI_PORT from .env.e2e (defaults in .env.e2e.example: 19806 / 18025).
 
 services:
+  # Avoid clashing with local stack host ports (9000/9001).
+  minio:
+    ports: !override
+      - "${MINIO_API_PORT:-19000}:9000"
+      - "${MINIO_CONSOLE_PORT:-19001}:9001"
+
   mailpit:
     image: axllent/mailpit:v1.30.4
     restart: unless-stopped
@@ -59,7 +65,6 @@ services:
       PHILOLOGIST_AUTO_RUN_ENABLED: "0"
       INTER_AGENT_HANDOFFS_ENABLED: "0"
       APP_ALLOW_REGISTRATION: "1"
-      USE_LEGACY_UI: "0"
       SEED_DEMO_DATA_ON_STARTUP: "1"
       # Keep queue enabled so campaign batch tasks run in worker for new UI.
       BACKGROUND_QUEUE_ENABLED: "true"
@@ -69,11 +74,11 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       gotenberg:
-        condition: service_healthy
-      gotenberg-2:
         condition: service_healthy
       mailpit:
         condition: service_healthy
@@ -126,7 +131,7 @@ services:
       - ./artifacts/playwright/videos:/artifacts/videos
       - ./artifacts/playwright/traces:/artifacts/traces
       - ./artifacts/playwright/auth:/artifacts/auth
-      - ./tests/e2e/fixtures:/fixtures:ro
+      - ./e2e/fixtures:/fixtures:ro
       - ./fixtures/manual:/work/fixtures/manual:ro
       # Persist visual baselines written with --update-snapshots
       - ./e2e/tests:/e2e/tests
@@ -136,7 +141,7 @@ services:
       app:
         condition: service_healthy
       worker:
-        condition: service_started
+        condition: service_healthy
       mailpit:
         condition: service_healthy
       postgres:
