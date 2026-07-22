@@ -77,7 +77,6 @@ EMAIL_STARTERS: list[dict[str, Any]] = [
                 "В приложении — материалы с описанием условий и возможностей. "
                 "Если возникнут вопросы, мы на связи."
             )
-            + _simple_muted("Контакт для связи: {{email}} · {{campaign_name}}")
         ),
     },
     {
@@ -100,7 +99,6 @@ EMAIL_STARTERS: list[dict[str, Any]] = [
                 "Если предложение ещё актуально — с радостью ответим на вопросы "
                 "и предоставим дополнительную информацию."
             )
-            + _simple_muted("С уважением · {{campaign_name}} · {{email}}")
         ),
     },
     {
@@ -123,7 +121,6 @@ EMAIL_STARTERS: list[dict[str, Any]] = [
                 "В приложении вы найдёте презентацию, описание условий и контактные данные. "
                 "При необходимости готовы провести презентацию или ответить на вопросы."
             )
-            + _simple_muted("Контакт: {{email}} · Регион: {{region}} · {{campaign_name}}")
         ),
     },
     {
@@ -147,7 +144,6 @@ EMAIL_STARTERS: list[dict[str, Any]] = [
                 "и ответим на ваши вопросы."
             )
             + _simple_para("Удобно ли вам созвониться на этой неделе? Напишите удобное время.")
-            + _simple_muted("{{email}} · {{campaign_name}}")
         ),
     },
     {
@@ -202,7 +198,6 @@ EMAIL_STARTERS: list[dict[str, Any]] = [
             f"<p style='margin:0;font-size:13px;color:{_TEXT_SEC}'>Персональный менеджер</p>"
             f"</td>"
             f"</tr></table>"
-            f"<p style='margin:0'>Контакт: {{email}}</p>"
             f"</td></tr>"
             f'<tr><td style="padding:0 32px 32px;text-align:center">'
             f'<div data-ma-chain-buttons="1" style="text-align:center;padding:8px 0">'
@@ -212,10 +207,6 @@ EMAIL_STARTERS: list[dict[str, Any]] = [
             f'border-radius:4px;margin:0 4px">Вариант 2</span>'
             f'<p style="margin:8px 0 0;font-size:12px;color:#8c8c8c">Кнопки цепочки</p>'
             f"</div>"
-            f"</td></tr>"
-            f'<tr><td style="background:{_BG};padding:20px 32px;color:{_TEXT_MUTED};font-size:12px;text-align:center">'
-            f"© {{campaign_name}} · "
-            f'<a href="#" style="color:{_TEXT_MUTED};text-decoration:underline">Отписаться</a>'
             f"</td></tr>"
             f"</table>"
         ),
@@ -276,10 +267,6 @@ EMAIL_STARTERS: list[dict[str, Any]] = [
             f"</td>"
             f"</tr></table>"
             f"</td></tr>"
-            f'<tr><td style="padding:0 28px 28px;color:{_TEXT_MUTED};font-size:13px;border-top:1px solid {_BORDER};'
-            f'padding-top:20px">'
-            "Связаться: {{email}}"
-            f"</td></tr>"
             f"</table>"
         ),
         "editor_state": {"email_format": "visual"},
@@ -325,10 +312,6 @@ EMAIL_STARTERS: list[dict[str, Any]] = [
             f'font-weight:600;margin:0 0 12px 0">'
             "Предложить другое время</a>"
             f"</td></tr></table>"
-            f"</td></tr>"
-            f'<tr><td style="background:{_BG};padding:16px 32px;text-align:center;color:{_TEXT_LIGHT};'
-            f'font-size:12px">'
-            "{{campaign_name}} · {{region}}"
             f"</td></tr>"
             f"</table>"
         ),
@@ -450,6 +433,10 @@ def get_starter(starter_id: str) -> dict[str, Any] | None:
         if starter["id"] == starter_id:
             return starter
     return None
+
+
+def get_starter_document_bytes(starter_id: str) -> bytes | None:
+    return _DOC_STARTER_BYTES.get(starter_id)
 
 
 def use_starter(owner_username: str, starter_id: str) -> dict[str, Any]:

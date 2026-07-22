@@ -20,8 +20,20 @@ from src.infra.db import session_scope
 from src.infra.models import MailTemplate, TemplateVersion
 from src.infra.object_store import delete as delete_object
 from src.infra.object_store import get_bytes, put_bytes
+from src.security.company_access import apply_owner_filter, can_access_owner
 
-VARIABLE_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+_VISIBILITY_NOT_SET = object()
+
+VARIABLE_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_а-яА-ЯёЁ]+)\s*\}\}")
+
+
+def _owns_template(row: MailTemplate | None, owner_username: str, visible_owners: Any = _VISIBILITY_NOT_SET) -> bool:
+    if row is None:
+        return False
+    if visible_owners is not _VISIBILITY_NOT_SET:
+        return can_access_owner(visible_owners, row.owner_username)
+    return row.owner_username == owner_username
+
 FILE_TEMPLATE_TYPE_ALIASES = {
     "kp": "document",
     "contract": "document",
@@ -235,7 +247,7 @@ def upload_template_asset(
 
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
-        if tmpl is None or tmpl.owner_username != owner_username:
+        if not _owns_template(tmpl, owner_username):
             return None
         if tmpl.template_type != "email":
             raise ValueError("Изображения можно загружать только для email-шаблонов")
@@ -256,7 +268,7 @@ def get_template_asset(template_id: str, asset_id: str, owner_username: str) -> 
         return None
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
-        if tmpl is None or tmpl.owner_username != owner_username:
+        if not _owns_template(tmpl, owner_username):
             return None
     storage_key = _template_asset_storage_key(template_id, safe_asset_id)
     try:
@@ -269,6 +281,8 @@ def get_template_asset(template_id: str, asset_id: str, owner_username: str) -> 
 
 
 def _build_kp_pdf_artifact(filename: str, data: bytes) -> tuple[bytes, str]:
+    from src.generator.generation.kp_one_page_fitter import KpLayoutError, fit_docx_to_one_page_pdf
+
     suffix = Path(filename).suffix.lower()
     if suffix == ".pdf":
         return data, f"{Path(filename).stem}.pdf"
@@ -277,13 +291,28 @@ def _build_kp_pdf_artifact(filename: str, data: bytes) -> tuple[bytes, str]:
     with TemporaryDirectory(prefix="kp-template-pdf-") as temp_dir:
         root = Path(temp_dir)
         source_path = root / Path(filename).name
+        output_pdf = root / "converted" / f"{Path(filename).stem}.pdf"
         source_path.write_bytes(data)
-        from src.generator.generation.template_preview import _convert_preview_docx_to_pdf
+        from src.generator.generation.pdf_safe import is_kp_docx
 
-        converted = _convert_preview_docx_to_pdf(source_path, root / "converted")
-        if converted is None or not converted.exists():
-            raise RuntimeError("Не удалось создать PDF-копию исходного DOCX")
-        return converted.read_bytes(), f"{Path(filename).stem}.pdf"
+        file_kind = "kp" if is_kp_docx(source_path) else None
+        if file_kind == "kp":
+            fit_docx_to_one_page_pdf(
+                source_path,
+                output_pdf,
+                file_kind=file_kind,
+                template_docx=source_path,
+            )
+        else:
+            from src.generator.generation.template_preview import convert_docx_to_delivery_pdf
+
+            convert_docx_to_delivery_pdf(
+                source_path,
+                output_pdf,
+                file_kind=file_kind,
+                template_docx=source_path,
+            )
+        return output_pdf.read_bytes(), output_pdf.name
 
 
 def upload_file_version(
@@ -296,21 +325,47 @@ def upload_file_version(
     content_type: str | None = None,
     template_id: str | None = None,
 ) -> dict[str, Any]:
+    requested_name = str(name or "").strip()
     safe_filename = Path(filename).name
     normalized_type = _validate_file_template_type(template_type, safe_filename)
     if not data:
         raise ValueError("Файл шаблона пуст")
 
     try:
-        variables = _extract_variables(_file_text(safe_filename, data))
+        source_text = _file_text(safe_filename, data)
+        variables = _extract_variables(source_text)
+        from src.campaigns.substitution_ai import normalize_placeholders
+
+        for item in normalize_placeholders(source_text):
+            placeholder_name = str(item.get("name") or "").strip()
+            if placeholder_name and placeholder_name not in {str(v.get("name")) for v in variables}:
+                variables.append(
+                    {
+                        "name": placeholder_name,
+                        "label": str(item.get("label") or placeholder_name),
+                        "source": str(item.get("source") or "recipient"),
+                    }
+                )
         rendered_pdf_data: bytes | None = None
         rendered_pdf_filename: str | None = None
         suffix = Path(safe_filename).suffix.lower()
+        inferred_delivery_filename: str | None = None
+        if _is_file_document_template(normalized_type):
+            from src.campaigns.delivery_filename_service import infer_static_delivery_filename
+
+            inferred_delivery_filename = infer_static_delivery_filename(
+                text=source_text,
+                upload_filename=safe_filename,
+            )
+            inferred_stem = Path(inferred_delivery_filename).stem
+            if inferred_stem:
+                safe_filename = f"{inferred_stem}{suffix}"
         if _is_file_document_template(normalized_type) and suffix == ".docx":
-            rendered_pdf_data, rendered_pdf_filename = _build_kp_pdf_artifact(safe_filename, data)
+            rendered_pdf_data, _artifact_name = _build_kp_pdf_artifact(safe_filename, data)
+            rendered_pdf_filename = inferred_delivery_filename or _artifact_name
         elif _is_file_document_template(normalized_type) and suffix == ".pdf":
             rendered_pdf_data = data
-            rendered_pdf_filename = f"{Path(safe_filename).stem}.pdf"
+            rendered_pdf_filename = inferred_delivery_filename or f"{Path(safe_filename).stem}.pdf"
     except (ValueError, RuntimeError):
         raise
     except Exception as exc:
@@ -321,6 +376,22 @@ def upload_file_version(
         from src.campaigns.pdf_overlay_service import analyze_pdf
 
         editor_state = analyze_pdf(data)
+    if rendered_pdf_data is not None and suffix == ".docx":
+        from src.generator.generation.document_builder import DOCUMENT_RENDERER_VERSION
+
+        state = dict(editor_state or {})
+        state["delivery_renderer_version"] = DOCUMENT_RENDERER_VERSION
+        editor_state = state
+
+    upload_stem = Path(filename).name
+    upload_stem_value = Path(upload_stem).stem
+    resolved_template_name = requested_name
+    if _is_file_document_template(normalized_type) and rendered_pdf_filename:
+        from src.campaigns.delivery_filename_service import infer_template_display_name
+
+        inferred_template_name = infer_template_display_name(rendered_pdf_filename)
+        if not resolved_template_name or resolved_template_name == upload_stem_value:
+            resolved_template_name = inferred_template_name
 
     version_id = _new_id()
     resolved_template_id = template_id or _new_id()
@@ -344,7 +415,7 @@ def upload_file_version(
         with session_scope() as session:
             if template_id:
                 tmpl = session.get(MailTemplate, template_id)
-                if tmpl is None or tmpl.owner_username != owner_username:
+                if not _owns_template(tmpl, owner_username):
                     raise FileNotFoundError("Шаблон не найден")
                 if not _template_types_compatible(tmpl.template_type, normalized_type):
                     raise ValueError("Тип загружаемого файла не совпадает с типом шаблона")
@@ -352,14 +423,14 @@ def upload_file_version(
                     tmpl.template_type = "document"
                 current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
                 version_number = (current.version_number + 1) if current else 1
-                if name:
-                    tmpl.name = name
+                if resolved_template_name:
+                    tmpl.name = resolved_template_name
             else:
                 version_number = 1
                 tmpl = MailTemplate(
                     id=resolved_template_id,
                     owner_username=owner_username,
-                    name=name or Path(safe_filename).stem or "Шаблон",
+                    name=resolved_template_name or Path(safe_filename).stem or "Шаблон",
                     template_type=normalized_type,
                     status="ready",
                     active_version_id=version_id,
@@ -416,6 +487,8 @@ def get_template_file(template_id: str, owner_username: str) -> dict[str, Any] |
 
 
 def get_template_delivery_file(template_id: str, owner_username: str) -> dict[str, Any] | None:
+    from src.generator.generation.document_builder import DOCUMENT_RENDERER_VERSION
+
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
         if tmpl is None or tmpl.owner_username != owner_username or not tmpl.active_version_id:
@@ -429,7 +502,9 @@ def get_template_delivery_file(template_id: str, owner_username: str) -> dict[st
         source_key = version.storage_key
         source_name = version.filename
         template_type = tmpl.template_type
-    if rendered_key and rendered_name:
+        editor_state = dict(version.editor_state or {}) if isinstance(version.editor_state, dict) else {}
+        delivery_renderer_version = str(editor_state.get("delivery_renderer_version") or "")
+    if rendered_key and rendered_name and delivery_renderer_version == DOCUMENT_RENDERER_VERSION:
         return {
             "content": get_bytes(rendered_key),
             "filename": rendered_name,
@@ -457,6 +532,9 @@ def get_template_delivery_file(template_id: str, owner_username: str) -> dict[st
         if current is not None and current.template_id == template_id:
             current.rendered_pdf_storage_key = pdf_key
             current.rendered_pdf_filename = pdf_name
+            state = dict(current.editor_state or {}) if isinstance(current.editor_state, dict) else {}
+            state["delivery_renderer_version"] = DOCUMENT_RENDERER_VERSION
+            current.editor_state = state
             session.flush()
     return {
         "content": pdf_data,
@@ -469,7 +547,7 @@ def get_template_delivery_file(template_id: str, owner_username: str) -> dict[st
 def get_template_version_file(template_id: str, version_id: str, owner_username: str) -> dict[str, Any]:
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
-        if tmpl is None or tmpl.owner_username != owner_username:
+        if not _owns_template(tmpl, owner_username):
             raise FileNotFoundError("Шаблон не найден")
         version = session.get(TemplateVersion, version_id)
         if version is None or version.template_id != template_id or not version.storage_key or not version.filename:
@@ -644,9 +722,14 @@ def list_templates(
     template_type: str | None = None,
     q: str | None = None,
     include_archived: bool = False,
+    visible_owners: frozenset[str] | None = _VISIBILITY_NOT_SET,
 ) -> list[dict[str, Any]]:
     with session_scope() as session:
-        stmt = select(MailTemplate).where(MailTemplate.owner_username == owner_username)
+        stmt = select(MailTemplate)
+        if visible_owners is not _VISIBILITY_NOT_SET:
+            stmt = apply_owner_filter(stmt, MailTemplate.owner_username, visible_owners)
+        else:
+            stmt = stmt.where(MailTemplate.owner_username == owner_username)
         if not include_archived:
             stmt = stmt.where(MailTemplate.archived.is_(False))
         normalized_filter = normalize_template_type_filter(template_type)
@@ -669,10 +752,15 @@ def list_templates(
         return result
 
 
-def get_template(template_id: str, owner_username: str) -> dict[str, Any] | None:
+def get_template(
+    template_id: str,
+    owner_username: str,
+    *,
+    visible_owners: frozenset[str] | None = _VISIBILITY_NOT_SET,
+) -> dict[str, Any] | None:
     with session_scope() as session:
         row = session.get(MailTemplate, template_id)
-        if row is None or row.owner_username != owner_username:
+        if not _owns_template(row, owner_username, visible_owners):
             return None
         version = session.get(TemplateVersion, row.active_version_id) if row.active_version_id else None
         return template_to_dict(row, version)
@@ -689,22 +777,35 @@ def save_version(
     name: str | None = None,
     editor_state: dict[str, Any] | None = None,
     is_template: bool | None = None,
+    rendered_pdf_filename: str | None = None,
 ) -> dict[str, Any] | None:
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
-        if tmpl is None or tmpl.owner_username != owner_username:
+        if not _owns_template(tmpl, owner_username):
             return None
-        if is_template is not None:
-            tmpl.is_template = bool(is_template)
-            tmpl.updated_at = _now()
         content_changed = any(
             value is not None
             for value in (subject, body_html, body_text, variables, editor_state)
         )
-        if not content_changed and name is None and is_template is not None:
+        metadata_changed = is_template is not None or rendered_pdf_filename is not None
+        if not content_changed and name is None and metadata_changed:
+            current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
+            if rendered_pdf_filename is not None:
+                if current is None:
+                    raise ValueError("У шаблона нет активной версии")
+                if not _is_file_document_template(str(tmpl.template_type or "")):
+                    raise ValueError("Имя вложения можно задать только для документов")
+                from src.campaigns.delivery_filename_service import normalize_delivery_filename
+
+                current.rendered_pdf_filename = normalize_delivery_filename(rendered_pdf_filename)
+            if is_template is not None:
+                tmpl.is_template = bool(is_template)
+            tmpl.updated_at = _now()
             session.flush()
-            version = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
-            return template_to_dict(tmpl, version)
+            return template_to_dict(tmpl, current)
+        if is_template is not None:
+            tmpl.is_template = bool(is_template)
+            tmpl.updated_at = _now()
         if not content_changed and name is None:
             return None
         current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
@@ -777,7 +878,7 @@ def duplicate_template(template_id: str, owner_username: str) -> dict[str, Any] 
 def archive_template(template_id: str, owner_username: str) -> dict[str, Any] | None:
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
-        if tmpl is None or tmpl.owner_username != owner_username:
+        if not _owns_template(tmpl, owner_username):
             return None
         tmpl.archived = True
         tmpl.updated_at = _now()
@@ -788,7 +889,7 @@ def archive_template(template_id: str, owner_username: str) -> dict[str, Any] | 
 def list_versions(template_id: str, owner_username: str) -> list[dict[str, Any]]:
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
-        if tmpl is None or tmpl.owner_username != owner_username:
+        if not _owns_template(tmpl, owner_username):
             return []
         rows = session.scalars(
             select(TemplateVersion)

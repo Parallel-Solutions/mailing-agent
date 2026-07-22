@@ -116,6 +116,16 @@ export const DRILLDOWN_CONFIG: Record<string, DrillConfig> = {
     params: {},
     filter: (i) => ['email_broken', 'soft_bounce', 'delivery_error', 'spam'].includes(statusKey(i) || ''),
   },
+  kp_layout: {
+    title: 'КП не влезло на 1 стр.',
+    source: 'recipients',
+    columns: [
+      ...RECIPIENT_COLUMNS.slice(0, 5),
+      ['Ошибка', (item) => item.error || item.comment],
+    ],
+    params: {},
+    filter: (i) => i.layout_error_code === 'kp_font_compact',
+  },
   unsub_spam: {
     title: 'Отписки и спам',
     source: 'recipients',

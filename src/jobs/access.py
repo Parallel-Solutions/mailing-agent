@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -71,7 +70,9 @@ def authorize_job_access(job_id: str | None, principal: Any, *, allow_missing: b
     paths = resolve_job_paths(normalized_job_id)
     owner = read_job_owner(normalized_job_id)
     if owner:
-        if actor.is_admin or _same_owner(owner, actor):
+        from src.security.company_access import can_view_owned_resource
+
+        if can_view_owned_resource(actor, str(owner.get("owner_username") or "")):
             return normalized_job_id
         raise JobAccessDenied("Нет доступа к этому job.", status_code=403)
 
@@ -110,6 +111,13 @@ def owner_public_payload(owner: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def principal_payload(principal: Any) -> dict[str, str]:
+def principal_payload(principal: Any) -> dict[str, str | None]:
     actor = coerce_principal(principal)
-    return asdict(actor)
+    payload: dict[str, str | None] = {
+        "username": actor.username,
+        "tenant_id": actor.tenant_id,
+        "role": actor.role,
+        "company_id": actor.company_id,
+        "company_role": actor.company_role,
+    }
+    return payload

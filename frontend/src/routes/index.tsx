@@ -9,9 +9,6 @@ import { RegisterPage } from '@/pages/RegisterPage';
 const StatisticsPage = lazy(() =>
   import('@/features/statistics/StatisticsPage').then((m) => ({ default: m.StatisticsPage })),
 );
-const CampaignsListPage = lazy(() =>
-  import('@/pages/CampaignsListPage').then((m) => ({ default: m.CampaignsListPage })),
-);
 const CampaignNewPage = lazy(() =>
   import('@/pages/CampaignNewPage').then((m) => ({ default: m.CampaignNewPage })),
 );
@@ -30,14 +27,14 @@ const TemplatesPage = lazy(() =>
 const TemplateEditorPage = lazy(() =>
   import('@/pages/TemplateEditorPage').then((m) => ({ default: m.TemplateEditorPage })),
 );
-const AudiencesPage = lazy(() =>
-  import('@/pages/AudiencesPage').then((m) => ({ default: m.AudiencesPage })),
-);
 const ConnectionsPage = lazy(() =>
   import('@/pages/ConnectionsPage').then((m) => ({ default: m.ConnectionsPage })),
 );
 const ProfilePage = lazy(() =>
   import('@/pages/ProfilePage').then((m) => ({ default: m.ProfilePage })),
+);
+const CompaniesPage = lazy(() =>
+  import('@/pages/CompaniesPage').then((m) => ({ default: m.CompaniesPage })),
 );
 const NotFoundPage = lazy(() =>
   import('@/pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })),
@@ -63,14 +60,7 @@ export function AppRoutes() {
             }
           />
           <Route path="/statistics" element={<Navigate to="/" replace />} />
-          <Route
-            path="/campaigns"
-            element={
-              <Lazy>
-                <CampaignsListPage />
-              </Lazy>
-            }
-          />
+          <Route path="/campaigns" element={<Navigate to="/?tab=campaign-list" replace />} />
           <Route
             path="/campaigns/new"
             element={
@@ -127,14 +117,7 @@ export function AppRoutes() {
               </Lazy>
             }
           />
-          <Route
-            path="/audiences"
-            element={
-              <Lazy>
-                <AudiencesPage />
-              </Lazy>
-            }
-          />
+          <Route path="/audiences" element={<Navigate to="/?tab=audiences" replace />} />
           <Route
             path="/connections"
             element={
@@ -148,6 +131,14 @@ export function AppRoutes() {
             element={
               <Lazy>
                 <ProfilePage />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/companies"
+            element={
+              <Lazy>
+                <CompaniesPage />
               </Lazy>
             }
           />

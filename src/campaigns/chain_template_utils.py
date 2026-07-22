@@ -18,11 +18,11 @@ _PLACEHOLDER_RE = re.compile(
 _DEFAULT_WRAPPER_STYLE = "text-align:center;padding:8px 0"
 _PREVIEW_LABELS = ("Вариант 1", "Вариант 2")
 _BUTTON_STYLE = (
-    "display:inline-block;padding:8px 16px;background:#1677ff;color:#fff;"
+    "display:inline-block;margin:0 4px;padding:8px 16px;background:#1677ff;color:#fff;"
     "text-decoration:none;border-radius:4px"
 )
 _PREVIEW_BUTTON_STYLE = (
-    "display:inline-block;padding:8px 16px;background:#d9d9d9;color:#595959;"
+    "display:inline-block;margin:0 4px;padding:8px 16px;background:#d9d9d9;color:#595959;"
     "border-radius:4px"
 )
 
@@ -55,27 +55,23 @@ def build_chain_buttons_html(
     if not buttons:
         return "", ""
     base = _public_base_url()
-    html_parts = [f'<div style="{wrapper_style}">']
     text_parts: list[str] = []
+    button_links: list[str] = []
     for label, token in buttons:
         link = f"{base}/chain/branch/{token}"
         safe_label = escape(label)
-        html_parts.append(
-            f'<p style="margin:0 0 8px"><a href="{link}" style="{_BUTTON_STYLE}">{safe_label}</a></p>'
-        )
+        button_links.append(f'<a href="{link}" style="{_BUTTON_STYLE}">{safe_label}</a>')
         text_parts.append(f"{label}: {link}")
-    html_parts.append("</div>")
-    return "".join(html_parts), "\n".join(text_parts)
+    buttons_row = "".join(button_links)
+    html = f'<div style="{wrapper_style}"><p style="margin:0">{buttons_row}</p></div>'
+    return html, "\n".join(text_parts)
 
 
 def build_chain_buttons_preview_html(*, wrapper_style: str = _DEFAULT_WRAPPER_STYLE) -> str:
-    parts = [f'<div style="{wrapper_style}">']
-    for label in _PREVIEW_LABELS:
-        parts.append(
-            f'<p style="margin:0 0 8px"><span style="{_PREVIEW_BUTTON_STYLE}">{label}</span></p>'
-        )
-    parts.append("</div>")
-    return "".join(parts)
+    buttons_row = "".join(
+        f'<span style="{_PREVIEW_BUTTON_STYLE}">{label}</span>' for label in _PREVIEW_LABELS
+    )
+    return f'<div style="{wrapper_style}"><p style="margin:0">{buttons_row}</p></div>'
 
 
 def inject_chain_buttons(

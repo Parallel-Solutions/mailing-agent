@@ -2,16 +2,21 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from 'react';
 import { statisticsApi } from '@/api/statistics';
+import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { MODAL_PARAM_KEYS } from '@/utils/urlState';
 import { DRILLDOWN_CONFIG, type DrillConfig } from './drilldownConfig';
 import { buildApiParams, useStatisticsState } from './hooks/useStatisticsState';
 import { asRecordArray } from './utils';
 import type { StatsTabKey } from './constants';
 import type { StatsFilters, StatsPagination } from './hooks/useStatisticsState';
+
+const STATS_MODAL_KINDS = ['filters', 'export', 'action', 'drill', 'campaign', 'company'] as const;
 
 type ModalKind =
   | null
@@ -59,66 +64,69 @@ const StatisticsContext = createContext<StatisticsContextValue | null>(null);
 
 export function StatisticsProvider({ children }: { children: ReactNode }) {
   const stats = useStatisticsState();
+  const { searchParams, pushParams } = useUrlNavigation();
+  const modalRaw = searchParams.get('modal');
+  const modal: ModalKind = STATS_MODAL_KINDS.includes(modalRaw as (typeof STATS_MODAL_KINDS)[number])
+    ? (modalRaw as ModalKind)
+    : null;
+  const modalId = searchParams.get('modal_id');
+  const exportType = searchParams.get('export_type') || 'delivery_summary';
+  const actionType = searchParams.get('action_type') || 'call';
+  const drillKind = searchParams.get('drill_kind') || '';
+
   const [campaigns, setCampaigns] = useState<Record<string, unknown>[]>([]);
   const [reportsHistory, setReportsHistory] = useState<Record<string, unknown>[]>([]);
-  const [modal, setModal] = useState<ModalKind>(null);
   const [companyDetail, setCompanyDetail] = useState<Record<string, unknown> | null>(null);
   const [actionRecipient, setActionRecipient] = useState<Record<string, unknown> | null>(null);
-  const [actionType, setActionType] = useState('call');
   const [campaignSummary, setCampaignSummary] = useState<Record<string, unknown> | null>(null);
-  const [exportType, setExportType] = useState('delivery_summary');
   const [drill, setDrill] = useState<DrillState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const closeModal = useCallback(() => {
-    setModal(null);
-  }, []);
+    const keysToRemove = MODAL_PARAM_KEYS.filter((key) => searchParams.has(key));
+    pushParams({}, keysToRemove);
+  }, [pushParams, searchParams]);
 
-  const openFiltersModal = useCallback(() => setModal('filters'), []);
-  const openExportModal = useCallback((type?: string) => {
-    if (type) setExportType(type);
-    setModal('export');
-  }, []);
+  const openFiltersModal = useCallback(() => {
+    pushParams({ modal: 'filters' });
+  }, [pushParams]);
+
+  const openExportModal = useCallback(
+    (type?: string) => {
+      pushParams({ modal: 'export', export_type: type || exportType });
+    },
+    [exportType, pushParams],
+  );
 
   const openCampaignSummary = useCallback(
     (jobId: string) => {
-      const item = campaigns.find((campaign) => String(campaign.job_id) === jobId) || null;
-      setCampaignSummary(item);
-      setModal('campaign');
+      pushParams({ modal: 'campaign', modal_id: jobId });
     },
-    [campaigns],
+    [pushParams],
   );
 
-  const openCompanyModal = useCallback(async (rowKey: string) => {
-    try {
-      const detail = await statisticsApi.recipientDetail(rowKey);
-      setCompanyDetail(detail);
-      setModal('company');
-      setError(null);
-    } catch {
-      setError('Карточка компании недоступна: запись не найдена среди отправок.');
-    }
-  }, []);
+  const openCompanyModal = useCallback(
+    (rowKey: string) => {
+      pushParams({ modal: 'company', modal_id: rowKey });
+      return Promise.resolve();
+    },
+    [pushParams],
+  );
 
-  const openActionModal = useCallback(async (rowKey: string, defaultType = 'call') => {
-    try {
-      const detail = await statisticsApi.recipientDetail(rowKey);
-      setActionRecipient(detail);
-      setActionType(defaultType);
-      setModal('action');
-      setError(null);
-    } catch {
-      setError('Не удалось открыть действие: запись не найдена.');
-    }
-  }, []);
+  const openActionModal = useCallback(
+    (rowKey: string, defaultType = 'call') => {
+      pushParams({ modal: 'action', modal_id: rowKey, action_type: defaultType });
+      return Promise.resolve();
+    },
+    [pushParams],
+  );
 
-  const openDrilldown = useCallback(
+  const loadDrilldown = useCallback(
     async (kind: string, override?: Partial<DrillConfig>) => {
       const base = DRILLDOWN_CONFIG[kind];
       if (!base && !override) return;
       const config: DrillConfig = { ...(base || { title: kind, source: 'recipients', columns: [] }), ...override };
       setDrill({ config, kind, rows: [], loading: true, truncated: false });
-      setModal('drill');
       try {
         const params = buildApiParams(stats.filters, config.params);
         let rows: Record<string, unknown>[] = [];
@@ -155,6 +163,100 @@ export function StatisticsProvider({ children }: { children: ReactNode }) {
     },
     [reportsHistory, stats.filters],
   );
+
+  const openDrilldown = useCallback(
+    async (kind: string, override?: Partial<DrillConfig>) => {
+      pushParams({ modal: 'drill', drill_kind: kind });
+      await loadDrilldown(kind, override);
+    },
+    [loadDrilldown, pushParams],
+  );
+
+  const setExportType = useCallback(
+    (value: string) => {
+      if (modal === 'export') {
+        pushParams({ export_type: value });
+      }
+    },
+    [modal, pushParams],
+  );
+
+  const setActionType = useCallback(
+    (value: string) => {
+      if (modal === 'action') {
+        pushParams({ action_type: value });
+      }
+    },
+    [modal, pushParams],
+  );
+
+  useEffect(() => {
+    if (modal !== 'campaign') {
+      setCampaignSummary(null);
+      return;
+    }
+    if (!modalId) return;
+    const item = campaigns.find((campaign) => String(campaign.job_id) === modalId) || null;
+    setCampaignSummary(item);
+  }, [campaigns, modal, modalId]);
+
+  useEffect(() => {
+    if (modal !== 'company' || !modalId) {
+      if (modal !== 'company') setCompanyDetail(null);
+      return;
+    }
+    let cancelled = false;
+    void statisticsApi
+      .recipientDetail(modalId)
+      .then((detail) => {
+        if (!cancelled) {
+          setCompanyDetail(detail);
+          setError(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCompanyDetail(null);
+          setError('Карточка компании недоступна: запись не найдена среди отправок.');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modal, modalId]);
+
+  useEffect(() => {
+    if (modal !== 'action' || !modalId) {
+      if (modal !== 'action') setActionRecipient(null);
+      return;
+    }
+    let cancelled = false;
+    void statisticsApi
+      .recipientDetail(modalId)
+      .then((detail) => {
+        if (!cancelled) {
+          setActionRecipient(detail);
+          setError(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setActionRecipient(null);
+          setError('Не удалось открыть действие: запись не найдена.');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modal, modalId]);
+
+  useEffect(() => {
+    if (modal !== 'drill' || !drillKind) {
+      if (modal !== 'drill') setDrill(null);
+      return;
+    }
+    void loadDrilldown(drillKind);
+  }, [drillKind, loadDrilldown, modal, stats.filters, reportsHistory]);
 
   const value = useMemo<StatisticsContextValue>(
     () => ({
@@ -201,6 +303,8 @@ export function StatisticsProvider({ children }: { children: ReactNode }) {
       exportType,
       drill,
       error,
+      setExportType,
+      setActionType,
     ],
   );
 

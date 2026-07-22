@@ -76,9 +76,19 @@ export const templatesApi = {
     }
     return apiRequest<Template>('/api/v1/templates/generate', { method: 'POST', body: form });
   },
+  importFile: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('template_type', 'email');
+    return apiRequest<Template>('/api/v1/templates/import', { method: 'POST', body: form });
+  },
+  regenerateImport: (id: string) =>
+    api.post<Template>(`/api/v1/templates/${id}/import-regenerate`),
   fileUrl: (id: string) => `/api/v1/templates/${id}/file`,
   deliveryFileUrl: (id: string) => `/api/v1/templates/${id}/delivery-file`,
   previewFileUrl: (id: string) => `/api/v1/templates/${id}/preview-file`,
+  previewImageUrl: (id: string) => `/api/v1/templates/${id}/preview-image`,
+  starterPreviewImageUrl: (starterId: string) => `/api/v1/templates/starters/${starterId}/preview-image`,
   officeConfig: (id: string) => api.get<OfficeEditorConfig>(`/api/v1/templates/${id}/office-config`),
   forceSaveOffice: (id: string, versionId: string, documentKey: string) =>
     api.post<{ accepted: boolean; key: string }>(`/api/v1/templates/${id}/office-save`, {
@@ -118,6 +128,7 @@ export const templatesApi = {
       variables?: { name: string; source: string; label: string }[];
       editor_state?: EmailEditorState;
       is_template?: boolean;
+      rendered_pdf_filename?: string;
     },
   ) => api.patch<Template>(`/api/v1/templates/${id}`, body),
   uploadAsset: async (templateId: string, file: File) => {

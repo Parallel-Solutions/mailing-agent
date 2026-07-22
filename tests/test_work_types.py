@@ -188,6 +188,26 @@ class WorkTypeProfileTests(unittest.TestCase):
         self.assertNotIn("Здравствуйте!", body)
         self.assertNotIn("уже подготовило", body)
 
+    def test_consent_body_uses_genitive_for_urban_settlement_territory(self) -> None:
+        row = {
+            "ID": "1",
+            "SUB_RF": "Республика Адыгея",
+            "MUN_R_NAME": "Энемское городское поселение",
+            "MUN_NAME": "Энемское городское поселение",
+            "ADM_NAME": 'Администрация муниципального образования "Энемское городское поселение"',
+            "HEAD_FIO": "Лаюк Алий Байзетович",
+            "EMAIL_OSN": "test@example.com",
+        }
+        body = sender_agent._build_consent_request_body(
+            row,
+            consent_url="https://example.test/consent",
+            attachment_mode="kp",
+            work_type=WORK_TYPE_STP_MO,
+        )
+
+        self.assertIn("для территории Энемского городского поселения", body)
+        self.assertNotIn("для территории Энемское городское поселение", body)
+
     def test_updated_consent_action_is_rendered_as_html_button(self) -> None:
         html = sender_agent._htmlify_mail_body(
             "«Направить предложение по разработке МНГП» https://example.test/consent",
@@ -197,6 +217,27 @@ class WorkTypeProfileTests(unittest.TestCase):
         self.assertIn('href="https://example.test/consent"', html)
         self.assertIn(">Направить предложение по разработке МНГП</a>", html)
         self.assertNotIn("просто даёте нам знать", html)
+
+    def test_chain_branch_action_is_rendered_as_html_button(self) -> None:
+        html = sender_agent._htmlify_mail_body(
+            "Получить: http://localhost:8006/chain/branch/dec81458-6275-4ded-8438-1f08bdf4351c\n"
+            "Отписаться: http://localhost:8006/chain/branch/3dc62895-2938-41f0-a0eb-de15f4bd751b",
+            include_unsubscribe=False,
+        )
+
+        self.assertIn(
+            'href="http://localhost:8006/chain/branch/dec81458-6275-4ded-8438-1f08bdf4351c"',
+            html,
+        )
+        self.assertIn(">Получить</a>", html)
+        self.assertIn(
+            'href="http://localhost:8006/chain/branch/3dc62895-2938-41f0-a0eb-de15f4bd751b"',
+            html,
+        )
+        self.assertIn(">Отписаться</a>", html)
+        self.assertIn("background:#1677ff", html)
+        self.assertIn('<p style="margin:0">', html)
+        self.assertNotIn("margin:0 0 8px", html)
 
     def test_territorial_zone_kp_preserves_signature_contact_row(self) -> None:
         doc = Document()
@@ -307,6 +348,37 @@ class WorkTypeProfileTests(unittest.TestCase):
             doc.paragraphs[2].text,
             "ООО «Параллельные Решения» специализируется на комплексной разработке документов.",
         )
+
+    def test_cyrillic_kp_filename_runs_kp_postprocessing(self) -> None:
+        from unittest.mock import patch
+
+        from src.generator.generation.pdf_safe import is_kp_docx
+
+        Path("tmp").mkdir(exist_ok=True)
+        template_path = Path("tmp") / "КП_test_postprocess.docx"
+        output_path = Path("tmp") / "КП_test_postprocess_out.docx"
+        try:
+            template_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            doc = Document()
+            doc.add_paragraph("ADM_NAME")
+            doc.save(template_path)
+
+            self.assertTrue(is_kp_docx(template_path))
+
+            context = build_document_context(self._row(), 101, work_type=WORK_TYPE_STP_MO)
+            with patch(
+                "src.generator.generation.document_builder.restore_svg_assets_from_template"
+            ) as restore_mock, patch(
+                "src.generator.generation.document_builder.stabilize_kp_pdf_layout"
+            ) as stabilize_mock:
+                render_docx(template_path, build_kp_replacements(context), output_path, context)
+
+            stabilize_mock.assert_called_once()
+            restore_mock.assert_called_once()
+        finally:
+            template_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

@@ -98,6 +98,10 @@ def analyze_smtp_setup(
         (probe and probe.reachable) or _has_high_confidence_discovery(discoveries)
     ):
         action = build_fallback_setup_action(context)
+    elif action.action == "show_password":
+        fallback = build_fallback_setup_action(context)
+        if fallback.action != "show_password":
+            action = fallback
     session_id = setup_session_id or str(uuid4())
     _setup_sessions[session_id] = {
         "expires_at": time.time() + _SETUP_SESSION_TTL_SECONDS,
@@ -194,15 +198,21 @@ def verify_smtp_setup(
     try:
         verify_smtp_credentials(credentials)
     except Exception as exc:
+        auth_error = humanize_smtp_error(
+            exc,
+            provider=preset.id,
+            host=preset.host,
+            email=normalized_email,
+        )
         analysis = analyze_smtp_setup(
             normalized_email,
-            last_error=humanize_smtp_error(exc),
+            last_error=auth_error,
             attempt_count=int((session or {}).get("attempt_count", 0)) + 1,
             setup_session_id=setup_session_id,
         )
         return {
             "verified": False,
-            "error": humanize_smtp_error(exc),
+            "error": auth_error,
             "analysis": analysis.to_dict(),
             "settings": {
                 "provider": preset.id,

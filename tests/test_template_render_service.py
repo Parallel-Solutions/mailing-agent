@@ -3,8 +3,10 @@ from __future__ import annotations
 import unittest
 import uuid
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch
 
+from docx import Document
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
@@ -108,12 +110,21 @@ class TemplateRenderServiceTests(unittest.TestCase):
             session.expunge(recipient)
             session.expunge(campaign)
 
-        template_render_service.render_document_template_for_recipient(
+        fetched = self.client.get(f"/api/v1/templates/{self.template_id}")
+        self.assertEqual(fetched.status_code, 200, fetched.text)
+        delivery_name = fetched.json()["result"]["version"]["rendered_pdf_filename"]
+        self.assertTrue(delivery_name)
+
+        first_filename, first_data = template_render_service.render_document_template_for_recipient(
             template_id=self.template_id,
             recipient=recipient,
             campaign=campaign,
             job_id=self.job_id,
         )
+        self.assertEqual(first_filename, delivery_name)
+        self.assertNotEqual(first_filename, f"{self.template_id}.pdf")
+        self.assertTrue(first_data)
+
         cache_path = template_render_service._cache_path(
             self.job_id,
             int(self.recipient_id),
@@ -121,17 +132,21 @@ class TemplateRenderServiceTests(unittest.TestCase):
             ".pdf",
         )
         self.assertTrue(cache_path.exists())
+        self.assertEqual(cache_path.name, f"{self.template_id}.pdf")
 
         with patch(
             "src.campaigns.template_render_service.get_bytes",
             side_effect=AssertionError("should use cache"),
         ):
-            template_render_service.render_document_template_for_recipient(
+            cached_filename, cached_data = template_render_service.render_document_template_for_recipient(
                 template_id=self.template_id,
                 recipient=recipient,
                 campaign=campaign,
                 job_id=self.job_id,
             )
+        self.assertEqual(cached_filename, delivery_name)
+        self.assertNotEqual(cached_filename, f"{self.template_id}.pdf")
+        self.assertTrue(cached_data)
 
     def test_pre_generate_batch_creates_manifest(self) -> None:
         result = template_render_service.pre_generate_batch_templates(
@@ -187,3 +202,116 @@ class TemplateRenderServiceTests(unittest.TestCase):
                 )
             )
         self.assertGreaterEqual(int(count or 0), 1)
+
+    def test_build_replacements_merges_kp_specific_tokens(self) -> None:
+        from pathlib import Path
+
+        from src.generator.generation.transforms import build_document_context
+
+        row = {
+            "ID": "1",
+            "SUB_RF": "Иркутская область",
+            "MUN_R_NAME": "Усть-Кутский муниципальный район",
+            "MUN_NAME": "Нийское сельское поселение",
+            "ADM_NAME": "Администрация Нийского сельского поселения",
+            "HEAD_FIO": "Иванов Иван Иванович",
+        }
+        context = build_document_context(row, 101)
+        string_context = {key: str(value) for key, value in context.items() if value is not None}
+        pairs = dict(
+            template_render_service._build_replacements(
+                string_context,
+                "Уважаемый (ая) HEAD_FIO  ! MUN_R_NAME SUB_RF",
+                source_path=Path("КП_test.docx"),
+            )
+        )
+        self.assertIn("Уважаемый (ая) HEAD_FIO  !", pairs)
+        self.assertIn("MUN_R_NAME SUB_RF", pairs)
+        self.assertNotIn("HEAD_FIO", pairs.get("Уважаемый (ая) HEAD_FIO  !", ""))
+
+    def test_convert_docx_to_pdf_uses_delivery_pipeline(self) -> None:
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory(prefix="template-render-test-") as temp_dir:
+            root = Path(temp_dir)
+            docx_path = root / "rendered.docx"
+            pdf_path = root / "rendered.pdf"
+            docx_path.write_bytes(b"docx")
+            with patch(
+                "src.generator.generation.template_preview.convert_docx_to_delivery_pdf",
+                return_value=pdf_path,
+            ) as convert_mock:
+                result = template_render_service._convert_docx_to_pdf(docx_path, pdf_path, file_kind="kp")
+            convert_mock.assert_called_once_with(
+                docx_path,
+                pdf_path,
+                file_kind="kp",
+                template_docx=docx_path,
+            )
+            self.assertEqual(result, pdf_path)
+
+    @patch("src.generator.generation.pdf_safe.is_kp_docx", return_value=True)
+    @patch("src.campaigns.template_render_service._convert_kp_docx_to_pdf")
+    @patch("src.campaigns.template_render_service.render_docx")
+    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    def test_docx_render_returns_stored_delivery_filename(
+        self,
+        mock_build_pdf,
+        mock_render_docx,
+        mock_convert_kp,
+        _mock_is_kp_docx,
+    ) -> None:
+        mock_build_pdf.return_value = (b"%PDF-1.4 delivery copy", "ignored.pdf")
+
+        def _write_pdf(docx_path: Path, pdf_path: Path, **kwargs: object) -> None:
+            pdf_path.write_bytes(b"%PDF-1.4 rendered")
+
+        mock_convert_kp.side_effect = _write_pdf
+
+        def _fake_render(source: Path, replacements: list[tuple[str, str]], output: Path, context: dict) -> Path:
+            output.write_bytes(source.read_bytes())
+            return output
+
+        mock_render_docx.side_effect = _fake_render
+
+        source_docx = Document()
+        source_docx.add_paragraph("Коммерческое предложение")
+        source_docx.add_paragraph(
+            "на разработку схемы территориального планирования муниципального образования"
+        )
+        payload = BytesIO()
+        source_docx.save(payload)
+        uploaded = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document", "name": "Docx render name"},
+            files={
+                "file": (
+                    "КП_СТП_районы (1) (1).docx",
+                    payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        template_id = uploaded.json()["result"]["id"]
+        delivery_name = uploaded.json()["result"]["version"]["rendered_pdf_filename"]
+        self.assertEqual(delivery_name, "КП_СТП_районы.pdf")
+
+        with session_scope() as session:
+            recipient = session.get(CampaignRecipient, int(self.recipient_id))
+            campaign = session.get(Campaign, self.campaign_id)
+            assert recipient is not None and campaign is not None
+            session.expunge(recipient)
+            session.expunge(campaign)
+
+        filename, data = template_render_service.render_document_template_for_recipient(
+            template_id=template_id,
+            recipient=recipient,
+            campaign=campaign,
+            job_id=self.job_id,
+            force=True,
+        )
+        self.assertEqual(filename, delivery_name)
+        self.assertNotEqual(filename, f"{template_id}.pdf")
+        self.assertTrue(data.startswith(b"%PDF"))

@@ -87,6 +87,8 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./tmp:/app/tmp
+      - ./src:/app/src
+      - ./main.py:/app/main.py:ro
       - chroma-data:/app/src/parser_new/memory/vectors
     depends_on:
       app:

@@ -153,6 +153,33 @@ class PdfSafeTests(unittest.TestCase):
         reader = PdfReader(str(pdf_path))
         self.assertIn(b" rg", reader.pages[0].get_contents().get_data())
 
+    def test_convert_docx_to_delivery_pdf_runs_pdf_safe_pipeline(self) -> None:
+        from unittest.mock import patch
+
+        from src.generator.generation.template_preview import convert_docx_to_delivery_pdf
+
+        source = self.tmp_dir / "КП_test.docx"
+        output = self.tmp_dir / "delivery.pdf"
+        with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+            archive.writestr("word/document.xml", "<w:document><w:body><w:p><w:r><w:t>Text</w:t></w:r></w:p></w:body></w:document>")
+        output.write_bytes(b"%PDF-1.4")
+
+        with patch(
+            "src.generator.generation.template_preview._convert_preview_docx_to_pdf",
+            return_value=output,
+        ) as convert_mock, patch(
+            "src.generator.generation.pdf_safe.prepare_docx_for_pdf_export",
+            return_value=pdf_safe.PdfSafePlan(source_docx=source, staged_docx=source),
+        ) as prepare_mock, patch(
+            "src.generator.generation.pdf_safe.apply_pdf_safe_postprocess",
+        ) as postprocess_mock:
+            result = convert_docx_to_delivery_pdf(source, output, file_kind="kp", template_docx=source)
+
+        prepare_mock.assert_called_once()
+        convert_mock.assert_called_once()
+        postprocess_mock.assert_called_once()
+        self.assertEqual(result, output)
+
 
 if __name__ == "__main__":
     unittest.main()

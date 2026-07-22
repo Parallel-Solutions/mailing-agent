@@ -12,6 +12,24 @@
   flex-wrap: wrap;
 }
 
+.email-chain-header__title {
+  display: grid;
+  gap: 8px;
+  min-width: min(360px, 100%);
+}
+
+.email-chain-name-field {
+  display: grid;
+  gap: 4px;
+  max-width: 360px;
+}
+
+.email-chain-name-field__label {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
 .email-chain-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
@@ -128,14 +146,6 @@
   height: 100%;
   min-height: 0;
   overflow-y: auto;
-}
-
-.chain-settings-panel.editor-side-accordion {
-  padding: 10px;
-}
-
-.chain-settings-panel .editor-side-collapse > .ant-collapse-item {
-  border-color: #e5e7eb;
 }
 
 @media (max-width: 960px) {

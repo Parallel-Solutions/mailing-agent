@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ensureHtmlDocument,
   getEmailFormat,
   hasChainButtonPlaceholder,
+  highlightReviewIssues,
+  highlightPlaceholderIssues,
   htmlToPlainText,
+  sanitizeHtmlFilename,
   substituteChainButtonsPreview,
   substitutePreviewValues,
 } from './emailTemplateUtils';
@@ -47,6 +51,43 @@ describe('emailTemplateUtils', () => {
     const preview = substituteChainButtonsPreview(html);
     expect(preview).toContain('Вариант 1');
     expect(preview).toContain('text-align:left');
+    expect(preview).toContain('<p style="margin:0">');
+    expect(preview).not.toContain('margin:0 0 8px');
     expect(preview).not.toContain('data-ma-chain-buttons');
+  });
+
+  it('sanitizes html download filenames', () => {
+    expect(sanitizeHtmlFilename('Письмо оферта')).toBe('Письмо-оферта.html');
+    expect(sanitizeHtmlFilename('a/b:c?.html')).toBe('abc.html');
+    expect(sanitizeHtmlFilename('   ')).toBe('template.html');
+  });
+
+  it('highlights review issues with severity styles', () => {
+    const html = '<p>на {{ стп }} для</p>';
+    const highlighted = highlightReviewIssues(html, [
+      { fragment: '{{ стп }}', severity: 'error' },
+    ]);
+    expect(highlighted).toContain('<mark style=');
+    expect(highlighted).toContain('{{ стп }}');
+  });
+
+  it('highlights unresolved placeholder tokens in preview html', () => {
+    const html = '<p>Работы {{{Вид_работ}}} для {{company}}</p>';
+    const highlighted = highlightPlaceholderIssues(html, [
+      { token: '{{{Вид_работ}}}' },
+      { token: '{{company}}' },
+    ]);
+    expect(highlighted).toContain('<mark style=');
+    expect(highlighted).toContain('{{{Вид_работ}}}');
+    expect(highlighted).not.toContain('<p>Работы {{{Вид_работ}}}');
+  });
+
+  it('wraps html fragments into a document', () => {
+    const wrapped = ensureHtmlDocument('<p>Hi {{contact_name}}</p>');
+    expect(wrapped).toContain('<!doctype html>');
+    expect(wrapped).toContain('<p>Hi {{contact_name}}</p>');
+    expect(ensureHtmlDocument('<!DOCTYPE html><html><body>x</body></html>')).toBe(
+      '<!DOCTYPE html><html><body>x</body></html>',
+    );
   });
 });

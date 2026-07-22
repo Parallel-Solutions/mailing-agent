@@ -84,7 +84,9 @@ test.describe('Campaign creation and schedule', () => {
 
     await page.reload();
     await goToCampaignStep(page, 'Запуск');
-    await expect(page.getByText('Готово к запуску')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('.campaign-launch-readiness-overlay')).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByText('Готово к запуску')).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('button', { name: 'Запустить сейчас' })).toBeEnabled();
     await page.getByRole('button', { name: 'Запустить сейчас' }).click();
     await page.waitForURL(new RegExp(`/campaigns/${campaignId}`), { timeout: 30_000 });
 

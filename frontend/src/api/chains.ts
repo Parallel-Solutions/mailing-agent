@@ -30,6 +30,7 @@ export const chainsApi = {
   },
   create: (body?: { name?: string }) => api.post<ChainRecord>('/api/v1/chains', body ?? {}),
   get: (id: string) => api.get<ChainRecord>(`/api/v1/chains/${id}`),
+  update: (id: string, body: { name: string }) => api.patch<ChainRecord>(`/api/v1/chains/${id}`, body),
   save: (id: string, chain: EmailChain) => api.put<ChainRecord>(`/api/v1/chains/${id}`, chain),
   publish: (id: string) => api.post<ChainRecord>(`/api/v1/chains/${id}/publish`),
 };

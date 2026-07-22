@@ -1,13 +1,17 @@
 import { ProCard } from '@ant-design/pro-components';
 import { App, Button, Progress, Space, Table, Tabs, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
+import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { readEnumParam } from '@/utils/urlState';
+
+const CAMPAIGN_DETAIL_TABS = ['overview', 'recipients', 'queue', 'stats', 'errors', 'settings'] as const;
 
 export function CampaignDetailPage() {
   const { id = '' } = useParams();
-  const [params, setParams] = useSearchParams();
-  const tab = params.get('tab') || 'overview';
+  const { searchParams, pushParams } = useUrlNavigation();
+  const tab = readEnumParam(searchParams, 'tab', CAMPAIGN_DETAIL_TABS, 'overview');
   const { message } = App.useApp();
   const queryClient = useQueryClient();
 
@@ -96,7 +100,7 @@ export function CampaignDetailPage() {
 
       <Tabs
         activeKey={tab}
-        onChange={(key) => setParams({ tab: key })}
+        onChange={(key) => pushParams({ tab: key === 'overview' ? null : key })}
         items={[
           {
             key: 'overview',
@@ -106,6 +110,9 @@ export function CampaignDetailPage() {
                 <p>Тема: {camp?.mail_subject}</p>
                 <p>
                   Прогресс: {camp?.sent_count}/{camp?.total_count}, ошибки: {camp?.error_count}
+                  {typeof camp?.layout_error_count === 'number' && camp.layout_error_count > 0
+                    ? `, КП не влезло: ${camp.layout_error_count}`
+                    : ''}
                 </p>
                 <p>Сценарий: {camp?.send_scenario}</p>
                 <p>Job: {camp?.job_id}</p>
@@ -141,7 +148,18 @@ export function CampaignDetailPage() {
                 columns={[
                   { title: 'Компания', dataIndex: 'company' },
                   { title: 'Email', dataIndex: 'email' },
-                  { title: 'Статус', dataIndex: 'send_status' },
+                  {
+                    title: 'Статус',
+                    dataIndex: 'send_status',
+                    render: (value: string, row) => (
+                      <Space size={4}>
+                        <span>{value}</span>
+                        {row.layout_error_code === 'kp_font_compact' ? (
+                          <Tag color="error">КП не влезло</Tag>
+                        ) : null}
+                      </Space>
+                    ),
+                  },
                   { title: 'Ошибка', dataIndex: 'last_error' },
                 ]}
               />
@@ -190,6 +208,9 @@ export function CampaignDetailPage() {
               <ProCard bordered>
                 <p>Отправлено: {camp?.sent_count}</p>
                 <p>Ошибки: {camp?.error_count}</p>
+                {(camp?.layout_error_count ?? 0) > 0 ? (
+                  <p>КП не влезло на 1 стр.: {camp?.layout_error_count}</p>
+                ) : null}
                 <Link
                   to={{
                     pathname: '/',

@@ -613,6 +613,9 @@ def _build_delivery_rows_for_job(job_id: str, *, refresh: bool) -> list[dict[str
                     "Прочее",
                 ),
                 "email_domain_provider": _email_domain_provider(_safe_text(row.get("recipient"))),
+                "layout_error_code": _safe_text(row.get("layout_error_code")),
+                "error": _safe_text(row.get("error")),
+                "comment": _safe_text(row.get("comment")),
             }
         )
     return rows
@@ -980,12 +983,14 @@ def _aggregate_counts(rows: list[dict[str, Any]], consent_rows: list[dict[str, A
         for key in ("email_broken", "soft_bounce", "delivery_error", "spam")
     )
     pending = manager_keys.get("pending", 0) + manager_keys.get("no_data", 0)
+    layout_errors = sum(1 for row in rows if _safe_text(row.get("layout_error_code")) == "kp_font_compact")
     return {
         "sent": len(rows),
         "delivered": delivered,
         "opened": opened,
         "clicked": clicked,
         "errors": errors,
+        "layout_errors": layout_errors,
         "pending": pending,
         "consents": confirmed,
         "materials_sent": materials_sent,

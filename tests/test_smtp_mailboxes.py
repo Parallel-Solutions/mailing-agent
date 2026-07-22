@@ -309,9 +309,39 @@ class HumanizeSmtpErrorTests(unittest.TestCase):
 
         from src.generator.delivery.smtp_mailboxes import humanize_smtp_error
 
-        message = humanize_smtp_error(smtplib.SMTPAuthenticationError(535, b"auth failed"))
+        message = humanize_smtp_error(
+            smtplib.SMTPAuthenticationError(535, b"auth failed"),
+            provider="gmail",
+            host="smtp.gmail.com",
+        )
         self.assertIn("пароль приложения", message)
         self.assertIn("apppasswords", message)
+
+    def test_auth_error_mentions_mailru_external_password(self) -> None:
+        import smtplib
+
+        from src.generator.delivery.smtp_mailboxes import humanize_smtp_error
+
+        message = humanize_smtp_error(
+            smtplib.SMTPAuthenticationError(535, b"auth failed"),
+            provider="mailru",
+            host="smtp.mail.ru",
+            email="personal.offer@parresh.ru",
+        )
+        self.assertIn("Почты Mail", message)
+        self.assertIn("внешнего приложения", message)
+        self.assertNotIn("Gmail", message)
+        self.assertNotIn("apppasswords", message)
+
+    def test_auth_error_without_provider_is_generic(self) -> None:
+        import smtplib
+
+        from src.generator.delivery.smtp_mailboxes import humanize_smtp_error
+
+        message = humanize_smtp_error(smtplib.SMTPAuthenticationError(535, b"auth failed"))
+        self.assertIn("пароль приложения", message)
+        self.assertNotIn("Gmail", message)
+        self.assertNotIn("Почты Mail", message)
 
 
 if __name__ == "__main__":

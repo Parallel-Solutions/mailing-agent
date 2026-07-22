@@ -100,6 +100,21 @@ class DocumentEditorServiceTests(unittest.TestCase):
                 "http://localhost:8080/cache/files/data/output.docx?token=1"
             )
         self.assertEqual(resolved, "http://onlyoffice/cache/files/data/output.docx?token=1")
+
+    def test_callback_download_strips_onlyoffice_subpath(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ONLYOFFICE_EDITOR_PUBLIC_URL": "https://offer.parresh.ru/onlyoffice",
+                "ONLYOFFICE_EDITOR_INTERNAL_URL": "http://onlyoffice",
+            },
+            clear=False,
+        ):
+            resolved = document_editor_service._internal_download_url(
+                "https://offer.parresh.ru/onlyoffice/cache/files/data/output.docx?token=1"
+            )
+        self.assertEqual(resolved, "http://onlyoffice/cache/files/data/output.docx?token=1")
+
     def test_save_docx_editor_version_accepts_document_type(self) -> None:
         saved = {"id": "template-1", "version": {"id": "version-2"}}
         with (

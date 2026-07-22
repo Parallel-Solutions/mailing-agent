@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from src.infra.db import init_db
 from src.jobs.workspace import pull_job, push_job
-from src.utils.config import settings
+from src.utils.config import SecurityConfigurationError, settings, validate_public_base_url
 from src.utils.logger import logger
 from src.workers.healthcheck import touch_heartbeat
 from src.workers.task_queue import (
@@ -59,6 +59,19 @@ def _task_timeout_seconds(task_type: str) -> int:
 
 
 def _mark_terminal_failure(task: dict[str, Any], message: str) -> None:
+    task_type = str(task.get("task_type") or "")
+    if task_type == "sender_batch":
+        try:
+            from src.campaigns.batch_worker import finalize_sender_batch_task_failure
+
+            finalize_sender_batch_task_failure(str(task["id"]), message)
+        except Exception:
+            logger.exception(
+                "queue_worker_finalize_sender_batch_failed",
+                task_id=task.get("id"),
+                job_id=task.get("job_id"),
+            )
+        return
     try:
         from src.workers.background_worker import mark_task_state_failed
 
@@ -214,6 +227,7 @@ def main() -> None:
     if hasattr(signal, "SIGINT"):
         signal.signal(signal.SIGINT, _request_stop)
 
+    validate_public_base_url(settings)
     init_db()
     reconciled = reconcile_orphaned_agent_states()
     if reconciled:

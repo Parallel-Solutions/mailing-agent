@@ -78,4 +78,5 @@ export const api = {
     form.append(fieldName, file);
     return apiRequest<T>(path, { method: 'POST', body: form });
   },
+  delete: <T>(path: string) => apiRequest<T>(path, { method: 'DELETE' }),
 };

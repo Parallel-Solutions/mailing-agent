@@ -19,6 +19,63 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class Company(Base):
+    __tablename__ = "companies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    contact_person_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    logo_storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    work_types: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class CompanyMembership(Base):
+    __tablename__ = "company_memberships"
+
+    company_id: Mapped[str] = mapped_column(String(36), ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True)
+    username: Mapped[str] = mapped_column(String(32), ForeignKey("users.username", ondelete="CASCADE"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_company_memberships_company", "company_id"),
+        Index("idx_company_memberships_username", "username"),
+    )
+
+
+class CompanyDocumentCounter(Base):
+    __tablename__ = "company_document_counters"
+
+    company_id: Mapped[str] = mapped_column(String(36), ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True)
+    document_type_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    last_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class CompanyDocumentNumberAllocation(Base):
+    __tablename__ = "company_document_number_allocations"
+
+    company_id: Mapped[str] = mapped_column(String(36), ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True)
+    document_type_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    allocation_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (Index("idx_company_document_allocations_key", "allocation_key"),)
+
 class Session(Base):
     __tablename__ = "sessions"
 
@@ -497,7 +554,7 @@ class CampaignSchedule(Base):
     pause_between_messages_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_per_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    on_error: Mapped[str] = mapped_column(String(32), nullable=False, default="retry")  # retry | skip | pause
+    on_error: Mapped[str] = mapped_column(String(32), nullable=False, default="skip")  # retry | skip | pause
     max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     preview: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -568,6 +625,7 @@ class CampaignChainToken(Base):
     clicked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    test_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
 
     __table_args__ = (
         Index("idx_chain_tokens_campaign", "campaign_id"),

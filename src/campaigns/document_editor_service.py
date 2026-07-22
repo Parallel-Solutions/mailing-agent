@@ -192,11 +192,15 @@ def _internal_download_url(download_url: str) -> str:
     if parsed.hostname in local_hosts or (
         public_editor.hostname and parsed.hostname == public_editor.hostname
     ):
+        public_path = (public_editor.path or "").rstrip("/")
+        path = parsed.path or "/"
+        if public_path and (path == public_path or path.startswith(public_path + "/")):
+            path = path[len(public_path) :] or "/"
         return urlunsplit(
             (
                 internal_editor.scheme or "http",
                 internal_editor.netloc,
-                parsed.path,
+                path,
                 parsed.query,
                 parsed.fragment,
             )

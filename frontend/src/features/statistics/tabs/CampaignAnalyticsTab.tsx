@@ -72,6 +72,11 @@ export function CampaignAnalyticsTab() {
     },
     { title: 'Недоставлено', value: fmt(summary.errors), drill: 'errors' },
     {
+      title: 'КП не влезло',
+      value: fmt(summary.layout_errors),
+      drill: 'kp_layout',
+    },
+    {
       title: 'Отписки и спам',
       value: fmt(Number(summary.unsubscribed || 0) + Number(summary.spam || 0)),
       drill: 'unsub_spam',

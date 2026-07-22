@@ -12,6 +12,8 @@ from typing import Any
 from sqlalchemy import delete, func, select
 
 from src.campaigns.schedule_planner import plan_batches
+from src.campaigns.suppression_service import is_email_suppressed_for_import
+from src.security.company_access import apply_owner_filter, can_access_owner
 from src.infra.db import session_scope
 from src.infra.models import (
     Campaign,
@@ -243,20 +245,34 @@ def create_campaign(owner_username: str, data: dict[str, Any] | None = None) -> 
         return campaign_to_dict(row)
 
 
-def get_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any] | None:
+def get_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any] | None:
     with session_scope() as session:
         row = session.get(Campaign, campaign_id)
         if row is None:
             return None
-        if not is_admin and row.owner_username != owner_username:
+        if not can_access_owner(visible_owners, row.owner_username):
             return None
-        return campaign_to_dict(row)
+        payload = campaign_to_dict(row)
+        payload["layout_error_count"] = _layout_error_count(session, campaign_id)
+        return payload
+
+
+def _layout_error_count(session, campaign_id: str) -> int:
+    extras = session.scalars(
+        select(CampaignRecipient.extra).where(CampaignRecipient.campaign_id == campaign_id)
+    ).all()
+    count = 0
+    for extra in extras:
+        payload = dict(extra or {})
+        if str(payload.get("layout_error_code") or "") == "kp_font_compact":
+            count += 1
+    return count
 
 
 def list_campaigns(
     owner_username: str,
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
     status: str | None = None,
     q: str | None = None,
     limit: int = 50,
@@ -265,8 +281,7 @@ def list_campaigns(
 ) -> dict[str, Any]:
     with session_scope() as session:
         stmt = select(Campaign)
-        if not is_admin:
-            stmt = stmt.where(Campaign.owner_username == owner_username)
+        stmt = apply_owner_filter(stmt, Campaign.owner_username, visible_owners)
         if not include_archived:
             stmt = stmt.where(Campaign.archived.is_(False))
         if status:
@@ -284,26 +299,26 @@ def update_campaign(
     owner_username: str,
     data: dict[str, Any],
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
 ) -> dict[str, Any] | None:
     with session_scope() as session:
         row = session.get(Campaign, campaign_id)
         if row is None:
             return None
-        if not is_admin and row.owner_username != owner_username:
+        if not can_access_owner(visible_owners, row.owner_username):
             return None
         if row.status not in {"draft", "scheduled", "paused"} and data.get("force") is not True:
             # Allow metadata updates on draft-like states; still allow draft_payload merge always for drafts
             if row.status not in {"draft"}:
                 pass
 
+        old_email_chain_id = row.email_chain_id
         if "email_chain_id" in data and data["email_chain_id"] is not None:
             from src.campaigns.chain_service import _ensure_chain_access
             from src.infra.models import EmailChainRecord
 
             chain_row = session.get(EmailChainRecord, data["email_chain_id"])
-            _ensure_chain_access(chain_row, owner_username, is_admin=is_admin)
-
+            _ensure_chain_access(chain_row, owner_username, visible_owners=visible_owners)
         for field in (
             "name",
             "work_type",
@@ -327,6 +342,7 @@ def update_campaign(
             row.tags = list(data.get("tags") or [])
         template_fields = ("email_template_id", "kp_template_id", "contract_template_id")
         template_changed = any(field in data and data[field] is not None for field in template_fields)
+        chain_changed = "email_chain_id" in data and data["email_chain_id"] != old_email_chain_id
         if "draft_payload" in data and isinstance(data["draft_payload"], dict):
             merged = dict(row.draft_payload or {})
             merged.update(data["draft_payload"])
@@ -337,15 +353,76 @@ def update_campaign(
             if key in data:
                 draft[key] = data[key]
         row.draft_payload = draft
-        if template_changed:
+        if template_changed or chain_changed:
             _invalidate_variable_mapping(row)
         row.updated_at = _now()
         session.flush()
         return campaign_to_dict(row)
 
 
-def duplicate_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any] | None:
-    source = get_campaign(campaign_id, owner_username, is_admin=is_admin)
+def reset_campaign_draft(
+    campaign_id: str,
+    owner_username: str,
+    *,
+    visible_owners: frozenset[str] | None = None,
+) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.get(Campaign, campaign_id)
+        if row is None:
+            return None
+        if not can_access_owner(visible_owners, row.owner_username):
+            return None
+        if row.status != "draft":
+            raise ValueError("Cannot reset campaign in status " + row.status)
+
+        session.execute(
+            delete(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign_id)
+        )
+        row.total_count = 0
+        row.name = "Черновик рассылки"
+        row.email_chain_id = None
+        row.email_template_id = None
+        row.kp_template_id = None
+        row.contract_template_id = None
+        row.smtp_mailbox_id = None
+        row.audience_id = None
+        row.work_type = ""
+        row.document_mode = "kp"
+        row.mail_subject = ""
+        row.description = ""
+        row.send_scenario = "consent_then_materials"
+        row.tags = []
+        row.internal_comment = ""
+        row.draft_payload = {}
+
+        schedule = session.scalar(
+            select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id)
+        )
+        if schedule is None:
+            schedule = CampaignSchedule(id=_new_id(), campaign_id=campaign_id)
+            session.add(schedule)
+        schedule.send_immediately = True
+        schedule.start_at = None
+        schedule.timezone = "Europe/Moscow"
+        schedule.weekdays = [0, 1, 2, 3, 4]
+        schedule.time_windows = [{"start": "09:00", "end": "18:00"}]
+        schedule.batch_size = 25
+        schedule.interval_seconds = 300
+        schedule.pause_between_messages_ms = 0
+        schedule.max_per_hour = 0
+        schedule.max_per_day = 0
+        schedule.on_error = "pause"
+        schedule.max_retries = 0
+        schedule.preview = {}
+        schedule.updated_at = _now()
+
+        row.updated_at = _now()
+        session.flush()
+        return campaign_to_dict(row)
+
+
+def duplicate_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any] | None:
+    source = get_campaign(campaign_id, owner_username, visible_owners=visible_owners)
     if not source:
         return None
     created = create_campaign(
@@ -392,13 +469,13 @@ def duplicate_campaign(campaign_id: str, owner_username: str, *, is_admin: bool 
             camp.email_template_id = source.get("email_template_id")
             camp.kp_template_id = source.get("kp_template_id")
             camp.contract_template_id = source.get("contract_template_id")
-    return get_campaign(created["id"], owner_username, is_admin=is_admin)
+    return get_campaign(created["id"], owner_username, visible_owners=visible_owners)
 
 
-def archive_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any] | None:
+def archive_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any] | None:
     with session_scope() as session:
         row = session.get(Campaign, campaign_id)
-        if row is None or (not is_admin and row.owner_username != owner_username):
+        if row is None or not can_access_owner(visible_owners, row.owner_username):
             return None
         row.archived = True
         row.updated_at = _now()
@@ -410,7 +487,7 @@ def list_recipients(
     campaign_id: str,
     owner_username: str,
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
     limit: int = 50,
     offset: int = 0,
     q: str | None = None,
@@ -418,7 +495,7 @@ def list_recipients(
 ) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             return {"items": [], "total": 0}
         stmt = select(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign_id)
         if q:
@@ -446,6 +523,7 @@ def list_recipients(
                 "source": r.source,
                 "validation_status": r.validation_status,
                 "extra": dict(r.extra or {}),
+                "layout_error_code": str(dict(r.extra or {}).get("layout_error_code") or "") or None,
                 "excluded": r.excluded,
                 "send_status": r.send_status,
                 "last_error": r.last_error,
@@ -460,12 +538,12 @@ def replace_recipients(
     owner_username: str,
     recipients: list[dict[str, Any]],
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
     recipient_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
         if camp.status not in {"draft", "paused", "scheduled"}:
             raise ValueError("Cannot replace recipients for campaign in status " + camp.status)
@@ -490,6 +568,7 @@ def replace_recipients(
                 continue
             if email:
                 seen_emails.add(email)
+            suppressed = is_email_suppressed_for_import(email) if email else False
             session.add(
                 CampaignRecipient(
                     campaign_id=campaign_id,
@@ -502,7 +581,7 @@ def replace_recipients(
                     source=str(item.get("source") or "import"),
                     validation_status=status,
                     extra=dict(item.get("extra") or {}),
-                    excluded=bool(item.get("excluded") or status != "valid"),
+                    excluded=bool(item.get("excluded") or status != "valid" or suppressed),
                 )
             )
             added += 1
@@ -529,11 +608,11 @@ def update_recipient(
     owner_username: str,
     data: dict[str, Any],
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
 ) -> dict[str, Any] | None:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             return None
         row = session.get(CampaignRecipient, recipient_id)
         if row is None or row.campaign_id != campaign_id:
@@ -562,11 +641,11 @@ def delete_recipients(
     recipient_ids: list[int],
     owner_username: str,
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
 ) -> int:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             return 0
         deleted = 0
         for rid in recipient_ids:
@@ -705,11 +784,11 @@ def upsert_schedule(
     owner_username: str,
     data: dict[str, Any],
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         if schedule is None:
@@ -790,10 +869,10 @@ def schedule_to_dict(schedule: CampaignSchedule) -> dict[str, Any]:
     }
 
 
-def get_schedule(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any] | None:
+def get_schedule(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any] | None:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             return None
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         if schedule is None:
@@ -809,11 +888,44 @@ def _resolve_send_mode(camp: Campaign) -> str:
     return "materials"
 
 
-def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any]:
+def _sender_batch_task_payload(
+    *,
+    campaign_id: str,
+    batch_id: str,
+    camp: Campaign,
+    schedule: CampaignSchedule,
+) -> dict[str, Any]:
+    return {
+        "campaign_id": campaign_id,
+        "batch_id": batch_id,
+        "connection_ids": _campaign_connection_ids(camp),
+        "smtp_mailbox_id": camp.smtp_mailbox_id,
+        "transport": camp.transport,
+        "mail_subject": camp.mail_subject,
+        "send_mode": _resolve_send_mode(camp),
+        "campaign_name": camp.name,
+        "pause_between_messages_ms": schedule.pause_between_messages_ms,
+        "max_retries": schedule.max_retries,
+        "on_error": schedule.on_error,
+    }
+
+
+def validate_campaign_for_launch(
+    campaign_id: str,
+    owner_username: str,
+    *,
+    visible_owners: frozenset[str] | None = None,
+    deep: bool = False,
+) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
-            return {"ok": False, "errors": ["Рассылка не найдена"], "warnings": []}
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
+            return {
+                "ok": False,
+                "errors": ["Рассылка не найдена"],
+                "warnings": [],
+                "template_issues": [],
+            }
         errors: list[str] = []
         warnings: list[str] = []
         if not (camp.name or "").strip():
@@ -845,9 +957,17 @@ def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_ad
         elif not camp.email_template_id and not (camp.draft_payload or {}).get("email_body"):
             warnings.append("Шаблон письма не выбран — будет использован текст по умолчанию")
 
-        from src.campaigns.variable_match_service import mapping_validation_errors
+        from src.campaigns.template_text_review_service import partition_review_messages
+        from src.campaigns.variable_match_service import (
+            mapping_validation_errors,
+            substitution_validation_issues,
+        )
 
         errors.extend(mapping_validation_errors(camp))
+        template_issues = substitution_validation_issues(camp, deep=False, advisory=False)
+        template_errors, template_warnings = partition_review_messages(template_issues)
+        errors.extend(template_errors)
+        warnings.extend(template_warnings)
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         draft = dict(camp.draft_payload or {})
         schedule_payload = schedule_to_dict(schedule) if schedule else None
@@ -858,6 +978,7 @@ def validate_campaign_for_launch(campaign_id: str, owner_username: str, *, is_ad
         "ok": len(errors) == 0,
         "errors": errors,
         "warnings": warnings,
+        "template_issues": template_issues,
         "active_recipients": int(active),
         "mapping_confirmed": bool(draft.get("mapping_confirmed")),
         "excluded_recipients": int(excluded),
@@ -868,10 +989,15 @@ def launch_campaign(
     campaign_id: str,
     owner_username: str,
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
     force_now: bool = False,
 ) -> dict[str, Any]:
-    validation = validate_campaign_for_launch(campaign_id, owner_username, is_admin=is_admin)
+    validation = validate_campaign_for_launch(
+        campaign_id,
+        owner_username,
+        visible_owners=visible_owners,
+        deep=False,
+    )
     if not validation["ok"]:
         raise ValueError("; ".join(validation["errors"]))
 
@@ -881,14 +1007,23 @@ def launch_campaign(
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         assert schedule is not None
 
-        # Clear future batches if re-launch from paused/scheduled
+        # Clear future/stuck batches if re-launch from paused/scheduled/running.
+        from src.workers.task_queue import enqueue_task, request_cancel
+
         existing = session.scalars(
             select(CampaignBatch).where(
                 CampaignBatch.campaign_id == campaign_id,
-                CampaignBatch.status.in_(["pending", "paused"]),
+                CampaignBatch.status.in_(
+                    ["pending", "paused", "running", "failed", "completed_with_errors", "cancelled"]
+                ),
             )
         ).all()
         for batch in existing:
+            if batch.task_id:
+                try:
+                    request_cancel(batch.task_id)
+                except Exception:
+                    pass
             session.delete(batch)
 
         recipients = session.scalars(
@@ -925,8 +1060,6 @@ def launch_campaign(
             max_per_day=max_per_day,
         )
         schedule.preview = preview
-
-        from src.workers.task_queue import enqueue_task
 
         created_batches: list[dict[str, Any]] = []
         offset = 0
@@ -969,19 +1102,12 @@ def launch_campaign(
                 task_type="sender_batch",
                 job_id=camp.job_id or campaign_id,
                 owner_username=owner_username,
-                payload={
-                    "campaign_id": campaign_id,
-                    "batch_id": batch_id,
-                    "connection_ids": _campaign_connection_ids(camp),
-                    "smtp_mailbox_id": camp.smtp_mailbox_id,
-                    "transport": camp.transport,
-                    "mail_subject": camp.mail_subject,
-                    "send_mode": _resolve_send_mode(camp),
-                    "campaign_name": camp.name,
-                    "pause_between_messages_ms": schedule.pause_between_messages_ms,
-                    "max_retries": schedule.max_retries,
-                    "on_error": schedule.on_error,
-                },
+                payload=_sender_batch_task_payload(
+                    campaign_id=campaign_id,
+                    batch_id=batch_id,
+                    camp=camp,
+                    schedule=schedule,
+                ),
                 available_at=scheduled_at,
                 idempotency_key=f"sender_batch:{batch_id}",
                 active_key=f"sender_batch:{batch_id}",
@@ -1029,10 +1155,10 @@ def launch_campaign(
         }
 
 
-def pause_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any]:
+def pause_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
         camp.status = "paused"
         camp.updated_at = _now()
@@ -1055,19 +1181,26 @@ def pause_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = Fa
         return campaign_to_dict(camp)
 
 
-def resume_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any]:
+def resume_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
-        if camp.status != "paused":
+        if camp.status not in {"paused", "running"}:
             raise ValueError("Campaign is not paused")
 
         from src.workers.task_queue import enqueue_task
 
+        schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
+        if schedule is None:
+            raise ValueError("Campaign schedule not found")
+
         batches = session.scalars(
             select(CampaignBatch)
-            .where(CampaignBatch.campaign_id == campaign_id, CampaignBatch.status == "paused")
+            .where(
+                CampaignBatch.campaign_id == campaign_id,
+                CampaignBatch.status.in_(["paused", "failed", "running"]),
+            )
             .order_by(CampaignBatch.batch_index)
         ).all()
         now = _now()
@@ -1075,23 +1208,23 @@ def resume_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = F
             scheduled_at = batch.scheduled_at if batch.scheduled_at > now else now
             batch.status = "pending"
             batch.scheduled_at = scheduled_at
+            batch.started_at = None
+            batch.completed_at = None
+            batch.error = None
             task, _created = enqueue_task(
                 task_type="sender_batch",
                 job_id=camp.job_id or campaign_id,
                 owner_username=owner_username,
-                payload={
-                    "campaign_id": campaign_id,
-                    "batch_id": batch.id,
-                    "connection_ids": _campaign_connection_ids(camp),
-                    "smtp_mailbox_id": camp.smtp_mailbox_id,
-                    "transport": camp.transport,
-                    "mail_subject": camp.mail_subject,
-                    "send_mode": _resolve_send_mode(camp),
-                    "campaign_name": camp.name,
-                },
+                payload=_sender_batch_task_payload(
+                    campaign_id=campaign_id,
+                    batch_id=batch.id,
+                    camp=camp,
+                    schedule=schedule,
+                ),
                 available_at=scheduled_at,
                 idempotency_key=f"sender_batch:{batch.id}:resume:{int(now.timestamp())}",
                 active_key=f"sender_batch:{batch.id}:resume:{int(now.timestamp())}",
+                max_attempts=max(1, int(schedule.max_retries or 3)),
             )
             batch.task_id = str(task.get("id") or "")
         camp.status = "running"
@@ -1100,10 +1233,10 @@ def resume_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = F
         return campaign_to_dict(camp)
 
 
-def cancel_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any]:
+def cancel_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
         camp.status = "cancelled"
         camp.completed_at = _now()
@@ -1128,10 +1261,10 @@ def cancel_campaign(campaign_id: str, owner_username: str, *, is_admin: bool = F
         return campaign_to_dict(camp)
 
 
-def list_batches(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> list[dict[str, Any]]:
+def list_batches(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> list[dict[str, Any]]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             return []
         rows = session.scalars(
             select(CampaignBatch).where(CampaignBatch.campaign_id == campaign_id).order_by(CampaignBatch.batch_index)
@@ -1155,10 +1288,10 @@ def list_batches(campaign_id: str, owner_username: str, *, is_admin: bool = Fals
         ]
 
 
-def cancel_batch(campaign_id: str, batch_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any]:
+def cancel_batch(campaign_id: str, batch_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
         batch = session.get(CampaignBatch, batch_id)
         if batch is None or batch.campaign_id != campaign_id:
@@ -1174,11 +1307,10 @@ def cancel_batch(campaign_id: str, batch_id: str, owner_username: str, *, is_adm
         return {"id": batch.id, "status": batch.status}
 
 
-def active_sending(owner_username: str, *, is_admin: bool = False) -> dict[str, Any] | None:
+def active_sending(owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any] | None:
     with session_scope() as session:
         stmt = select(Campaign).where(Campaign.status.in_(["running", "scheduled", "paused"]))
-        if not is_admin:
-            stmt = stmt.where(Campaign.owner_username == owner_username)
+        stmt = apply_owner_filter(stmt, Campaign.owner_username, visible_owners)
         camps = session.scalars(stmt.order_by(Campaign.updated_at.desc())).all()
         for camp in camps:
             schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == camp.id))
