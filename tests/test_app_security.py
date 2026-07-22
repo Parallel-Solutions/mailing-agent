@@ -18,6 +18,23 @@ class AppSecurityConfigTests(unittest.TestCase):
     def test_configured_app_password_is_accepted(self) -> None:
         require_configured_app_password(SimpleNamespace(app_password="strong-local-password"))
 
+    def test_public_base_url_rejects_parrpesh_typo(self) -> None:
+        from src.utils.config import validate_public_base_url
+
+        with self.assertRaises(SecurityConfigurationError):
+            validate_public_base_url(SimpleNamespace(public_base_url="https://offer.parrpesh.ru"))
+
+    def test_public_base_url_allows_localhost(self) -> None:
+        from src.utils.config import validate_public_base_url
+
+        validate_public_base_url(SimpleNamespace(public_base_url="http://localhost:9806"))
+
+    def test_public_base_url_rejects_empty(self) -> None:
+        from src.utils.config import validate_public_base_url
+
+        with self.assertRaises(SecurityConfigurationError):
+            validate_public_base_url(SimpleNamespace(public_base_url=""))
+
     def test_main_auth_dependency_uses_session_store(self) -> None:
         main_path = Path(__file__).resolve().parents[1] / "main.py"
         tree = ast.parse(main_path.read_text(encoding="utf-8"))

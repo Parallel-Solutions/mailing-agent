@@ -1205,6 +1205,33 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertIsNone(request.get_header("X-api-key"))
         self.assertEqual(result["message_id"], "message-1")
 
+    def test_rusender_disables_track_links_when_requested(self) -> None:
+        captured: dict[str, Request] = {}
+
+        def fake_request(request: Request, *, timeout: float) -> str:
+            captured["request"] = request
+            return json.dumps({"uuid": "message-1"})
+
+        with patch.object(sender_agent.settings, "rusender_api_key", "rs_ck_v1_secret"), patch.object(
+            sender_agent.settings,
+            "rusender_sender_email",
+            "sender@example.com",
+        ), patch.object(sender_agent.settings, "rusender_track_links", True), patch.object(
+            sender_agent, "_run_rusender_request", side_effect=fake_request
+        ):
+            sender_agent._send_via_rusender(
+                {"ID": "1", "MUN_NAME": "Тестовое МО"},
+                "recipient@example.com",
+                [],
+                "Тема",
+                body_override="Текст письма",
+                track_links=False,
+            )
+
+        payload = json.loads(captured["request"].data.decode("utf-8"))
+        self.assertEqual(payload.get("trackLinks"), 0)
+        self.assertEqual(payload["mail"].get("trackLinks"), 0)
+
     def test_rusender_uses_x_api_key_for_legacy_jwt_keys(self) -> None:
         captured: dict[str, Request] = {}
 

@@ -4,10 +4,13 @@ import unittest
 import uuid
 from unittest.mock import patch
 
+from cryptography.fernet import Fernet
+from sqlalchemy import select
+
 from src.campaigns.chain_send_service import send_chain_node_email
 from src.campaigns.chain_service import empty_chain, save_email_chain
 from src.infra.db import session_scope
-from src.infra.models import Campaign, CampaignRecipient
+from src.infra.models import Campaign, CampaignChainToken, CampaignRecipient
 from tests.bootstrap import bootstrap_test_runtime
 
 
@@ -16,10 +19,33 @@ class ChainSendServiceTests(unittest.TestCase):
         bootstrap_test_runtime(reset_db=True)
         from src.security.user_store import create_user
         from src.campaigns.service import create_campaign
+        from src.utils.config import settings
+
+        self._key = patch.object(settings, "smtp_credentials_key", Fernet.generate_key().decode("ascii"))
+        self._key.start()
+        self.addCleanup(self._key.stop)
 
         self.username = f"chainsend{uuid.uuid4().hex[:8]}"
         create_user(self.username, "Pass12345!")
         self.campaign = create_campaign(self.username, {"name": "Chain send test"})
+        from src.campaigns.connection_service import create_connection
+        from src.campaigns.service import update_campaign
+
+        connection = create_connection(
+            self.username,
+            {
+                "transport": "rusender",
+                "email": "sender@example.com",
+                "sender_name": "Sender",
+                "api_token": "rs_test_token",
+            },
+        )
+        update_campaign(
+            self.campaign["id"],
+            self.username,
+            {"connection_ids": [connection["id"]]},
+        )
+        self.connection_id = connection["id"]
         self.chain = empty_chain()
         self.chain["nodes"][0]["email_template_id"] = "tmpl-root"
         save_email_chain(self.campaign["id"], self.username, self.chain)
@@ -46,6 +72,7 @@ class ChainSendServiceTests(unittest.TestCase):
             recipient_id=self.recipient_id,
             node_id=self.root_node_id,
             followup_token=followup_token,
+            connection_id=self.connection_id,
         )
 
         self.assertEqual(result["status"], "sent")
@@ -53,20 +80,62 @@ class ChainSendServiceTests(unittest.TestCase):
         kwargs = mock_send.call_args.kwargs
         self.assertEqual(kwargs["send_mode"], "chain_followup")
         self.assertEqual(kwargs["send_run_id"], followup_token)
+        self.assertIs(kwargs["track_links"], False)
 
     @patch("src.campaigns.batch_worker._send_delivery_message", return_value="rusender:uuid-root")
-    def test_root_send_uses_default_idempotency_context(self, mock_send) -> None:
+    def test_root_send_uses_chain_root_send_mode(self, mock_send) -> None:
         result = send_chain_node_email(
             campaign_id=self.campaign["id"],
             recipient_id=self.recipient_id,
             node_id=self.root_node_id,
+            connection_id=self.connection_id,
         )
 
         self.assertEqual(result["status"], "sent")
         mock_send.assert_called_once()
         kwargs = mock_send.call_args.kwargs
-        self.assertIsNone(kwargs["send_mode"])
+        self.assertEqual(kwargs["send_mode"], "chain_root")
         self.assertIsNone(kwargs["send_run_id"])
+        self.assertIs(kwargs["track_links"], False)
+
+    @patch("src.campaigns.chain_send_service._finalize_chain_send_success")
+    @patch("src.campaigns.batch_worker._send_delivery_message", return_value="rusender:uuid-root")
+    def test_tokens_persist_when_post_send_finalize_fails(self, mock_send, mock_finalize) -> None:
+        node2 = "node-email-2"
+        self.chain["nodes"].append(
+            {
+                "id": node2,
+                "name": "Письмо 2",
+                "kind": "email",
+                "email_template_id": None,
+                "document_template_ids": [],
+            }
+        )
+        self.chain["edges"] = [
+            {
+                "id": "edge-1",
+                "source_id": self.root_node_id,
+                "target_id": node2,
+                "button_label": "Далее",
+            }
+        ]
+        save_email_chain(self.campaign["id"], self.username, self.chain)
+        mock_finalize.side_effect = RuntimeError("finalize failed")
+
+        with self.assertRaises(RuntimeError):
+            send_chain_node_email(
+                campaign_id=self.campaign["id"],
+                recipient_id=self.recipient_id,
+                node_id=self.root_node_id,
+                connection_id=self.connection_id,
+            )
+
+        mock_send.assert_called_once()
+        with session_scope() as session:
+            tokens = session.scalars(
+                select(CampaignChainToken).where(CampaignChainToken.campaign_id == self.campaign["id"])
+            ).all()
+            self.assertEqual(len(tokens), 1)
 
     @patch("src.campaigns.batch_worker._send_delivery_message", return_value="rusender:uuid-root")
     @patch("src.campaigns.chain_send_service._resolve_document_attachments")
@@ -81,6 +150,7 @@ class ChainSendServiceTests(unittest.TestCase):
                 recipient_id=self.recipient_id,
                 node_id=self.root_node_id,
                 batch_id="batch-1",
+                connection_id=self.connection_id,
             )
 
         mock_send.assert_not_called()

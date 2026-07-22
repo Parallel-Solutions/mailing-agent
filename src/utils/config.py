@@ -1,4 +1,6 @@
+import socket
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -141,6 +143,8 @@ class Settings(BaseSettings):
     rusender_sender_email: str = ""
     rusender_webhook_secret: str = ""
     rusender_webhook_token: str = ""
+    # When false, ask RuSender not to rewrite hrefs via clicks.clicksends.net (best-effort).
+    rusender_track_links: bool = False
     mailopost_api_token: str = ""
     mailopost_api_base_url: str = "https://api.mailopost.ru/v1"
     mailopost_sender_name: str = "ООО «ПР»"
@@ -186,6 +190,45 @@ def require_configured_app_password(settings_obj: Any) -> None:
         raise SecurityConfigurationError(
             "APP_PASSWORD must be set to a non-empty value before starting the service."
         )
+
+
+_LOCAL_PUBLIC_BASE_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0"})
+_KNOWN_PUBLIC_BASE_URL_TYPOS = frozenset({"offer.parrpesh.ru", "parrpesh.ru"})
+
+
+def validate_public_base_url(settings_obj: Any) -> None:
+    raw = str(getattr(settings_obj, "public_base_url", "") or "").strip().rstrip("/")
+    if not raw:
+        raise SecurityConfigurationError(
+            "PUBLIC_BASE_URL must be set to the external URL used in email links and webhooks."
+        )
+
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"}:
+        raise SecurityConfigurationError(
+            f"PUBLIC_BASE_URL must use http or https, got {parsed.scheme or '(none)'!r}."
+        )
+
+    hostname = str(parsed.hostname or "").strip().lower()
+    if not hostname:
+        raise SecurityConfigurationError("PUBLIC_BASE_URL must include a hostname.")
+
+    if hostname in _KNOWN_PUBLIC_BASE_URL_TYPOS or "parrpesh" in hostname:
+        raise SecurityConfigurationError(
+            "PUBLIC_BASE_URL hostname looks like a typo (parrpesh.ru). "
+            "Use https://offer.parresh.ru instead."
+        )
+
+    if hostname in _LOCAL_PUBLIC_BASE_HOSTS or hostname.endswith(".local"):
+        return
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise SecurityConfigurationError(
+            f"PUBLIC_BASE_URL hostname {hostname!r} does not resolve in DNS ({exc})."
+        ) from exc
 
 
 settings = Settings()

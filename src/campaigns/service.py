@@ -1013,7 +1013,9 @@ def launch_campaign(
         existing = session.scalars(
             select(CampaignBatch).where(
                 CampaignBatch.campaign_id == campaign_id,
-                CampaignBatch.status.in_(["pending", "paused", "running", "failed"]),
+                CampaignBatch.status.in_(
+                    ["pending", "paused", "running", "failed", "completed_with_errors", "cancelled"]
+                ),
             )
         ).all()
         for batch in existing:

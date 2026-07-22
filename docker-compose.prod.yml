@@ -1,0 +1,11 @@
+# Production overlay: force the public URL used in email chain/consent links.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d app worker
+services:
+  app:
+    environment:
+      PUBLIC_BASE_URL: https://offer.parresh.ru
+      RUSENDER_TRACK_LINKS: "0"
+  worker:
+    environment:
+      PUBLIC_BASE_URL: https://offer.parresh.ru
+      RUSENDER_TRACK_LINKS: "0"

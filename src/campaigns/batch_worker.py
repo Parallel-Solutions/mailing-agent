@@ -132,6 +132,7 @@ def _send_delivery_message(
     send_mode: str | None = None,
     send_run_id: str | None = None,
     campaign: Campaign | None = None,
+    track_links: bool | None = None,
 ) -> str:
     """Send one message using the saved per-user connection."""
     from src.campaigns.connection_service import resolve_connection
@@ -179,6 +180,7 @@ def _send_delivery_message(
                 credential_api_key=connection.secret,
                 credential_sender_name=connection.sender_name,
                 credential_api_base_url=connection.api_base_url,
+                track_links=track_links,
             )
         elif connection.transport == "mailopost":
             from src.generator.delivery.sender_agent import _send_via_mailopost

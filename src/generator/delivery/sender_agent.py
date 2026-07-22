@@ -2984,6 +2984,7 @@ def _send_via_rusender(
     credential_api_key: str | None = None,
     credential_sender_name: str | None = None,
     credential_api_base_url: str | None = None,
+    track_links: bool | None = None,
 ) -> dict[str, Any]:
     api_key = _safe_text(credential_api_key or settings.rusender_api_key)
     sender_email = _resolve_sender_email(sender_email, settings.rusender_sender_email, settings.smtp_sender_email)
@@ -3027,6 +3028,11 @@ def _send_via_rusender(
     }
     if encoded_attachments:
         payload["mail"]["attachments"] = encoded_attachments
+
+    effective_track_links = settings.rusender_track_links if track_links is None else track_links
+    if not effective_track_links:
+        payload["trackLinks"] = 0
+        payload["mail"]["trackLinks"] = 0
 
     request = Request(
         _build_rusender_url(RUSENDER_SEND_PATH, credential_api_base_url),

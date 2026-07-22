@@ -8,7 +8,12 @@ from src.security.bearer_auth import resolve_request_username
 from src.security.session_store import SESSION_COOKIE_NAME, get_session_username
 from src.security.user_store import get_user_record
 from src.utils.logger import logger
-from src.utils.config import SecurityConfigurationError, require_configured_app_password, settings
+from src.utils.config import (
+    SecurityConfigurationError,
+    require_configured_app_password,
+    settings,
+    validate_public_base_url,
+)
 from src.jobs.access import read_job_owner
 from src.workers.process_manager import (
     _count_user_active_workers,
@@ -95,6 +100,7 @@ def _start_stats_cache_warm_thread() -> None:
 @app.on_event("startup")
 async def app_startup():
     require_configured_app_password(settings)
+    validate_public_base_url(settings)
     from src.infra.db import init_db
     from src.infra.object_store import ensure_bucket
 
@@ -1544,6 +1550,7 @@ def spa_fallback(full_path: str, session_token: str | None = Cookie(default=None
         "api/",
         "public/",
         "consent/",
+        "chain/",
         "login",
         "register",
         "legacy",

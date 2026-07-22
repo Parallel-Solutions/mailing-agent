@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
+import { ApiError } from '@/api/client';
 import { chainsApi } from '@/api/chains';
 import { companiesApi } from '@/api/companies';
 import { connectionsApi } from '@/api/connections';
@@ -613,8 +614,33 @@ export function CampaignNewPage() {
     setLaunchBusy({ active: true, label, progress: 50 });
     try {
       await action();
+    } catch (err) {
+      const detail =
+        err instanceof ApiError
+          ? err.detail
+          : err instanceof Error
+            ? err.message
+            : 'Не удалось выполнить действие';
+      message.error(detail);
     } finally {
       setLaunchBusy({ active: false, label: '', progress: 0 });
+    }
+  };
+
+  const navigateAfterLaunch = async (campaignId: string, successMessage: string) => {
+    message.success(successMessage);
+    await new Promise((resolve) => window.setTimeout(resolve, 3000));
+    try {
+      const batches = await campaignsApi.batches(campaignId);
+      const hasErrors = (batches || []).some(
+        (batch) =>
+          batch.status === 'completed_with_errors' ||
+          batch.status === 'failed' ||
+          (batch.error_count ?? 0) > 0,
+      );
+      navigate(hasErrors ? `/campaigns/${campaignId}?tab=errors` : `/campaigns/${campaignId}`);
+    } catch {
+      navigate(`/campaigns/${campaignId}`);
     }
   };
 
@@ -869,8 +895,7 @@ export function CampaignNewPage() {
                               if (!id) return;
                               await runLaunchAction('Запуск рассылки…', async () => {
                                 await campaignsApi.launch(id, true);
-                                message.success('Рассылка запущена');
-                                navigate(`/campaigns/${id}`);
+                                await navigateAfterLaunch(id, 'Рассылка запущена');
                               });
                             }}
                           >
@@ -882,8 +907,7 @@ export function CampaignNewPage() {
                               if (!id) return;
                               await runLaunchAction('Планирование рассылки…', async () => {
                                 await campaignsApi.launch(id, false);
-                                message.success('Рассылка запланирована');
-                                navigate(`/campaigns/${id}`);
+                                await navigateAfterLaunch(id, 'Рассылка запланирована');
                               });
                             }}
                           >
