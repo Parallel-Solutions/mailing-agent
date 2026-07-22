@@ -1,7 +1,7 @@
 """Add companies and company memberships.
 
 Revision ID: 0016_companies
-Revises: 0015_mail_template_is_template
+Revises: 0016_campaign_connection_ids
 Create Date: 2026-07-20
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision = "0016_companies"
-down_revision = "0015_mail_template_is_template"
+down_revision = "0016_campaign_connection_ids"
 branch_labels = None
 depends_on = None
 
