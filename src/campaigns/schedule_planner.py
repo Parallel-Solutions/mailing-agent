@@ -28,6 +28,22 @@ def _in_time_window(local_dt: datetime, windows: list[dict[str, Any]]) -> bool:
     return False
 
 
+def is_schedule_start_allowed(
+    start_at: datetime,
+    *,
+    timezone_name: str = "Europe/Moscow",
+    weekdays: list[int] | None = None,
+    time_windows: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Return True when start_at falls on an allowed weekday and inside time windows."""
+    allowed_days = set(int(d) for d in weekdays) if weekdays else set(range(7))
+    tz = ZoneInfo(timezone_name or "UTC")
+    local = start_at.astimezone(tz)
+    if local.weekday() not in allowed_days:
+        return False
+    return _in_time_window(local, list(time_windows or []))
+
+
 def _advance_to_allowed(
     utc_dt: datetime,
     *,

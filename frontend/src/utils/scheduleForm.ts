@@ -28,6 +28,20 @@ export function intervalToSeconds(value: number, unit: IntervalUnit): number {
   return unit === 'days' ? n * 86400 : n * 3600;
 }
 
+export function formatScheduleDateTime(iso?: string | null, timezone = 'Europe/Moscow'): string {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: timezone,
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
 export function scheduleToFormValues(schedule?: {
   batch_size?: number;
   start_at?: string | null;
@@ -56,9 +70,10 @@ export function formValuesToSchedulePayload(values: {
   if (values.start_at == null || values.start_at === '') return null;
   const start = dayjs(values.start_at);
   if (!start.isValid()) return null;
+  const effective = start.isBefore(dayjs()) ? dayjs() : start;
   return {
     batch_size: Math.max(1, Math.floor(Number(values.batch_size) || 25)),
-    start_at: start.toISOString(),
+    start_at: effective.toISOString(),
     send_immediately: false,
     interval_seconds: intervalToSeconds(
       Number(values.interval_value) || 1,

@@ -72,6 +72,28 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _schedule_requires_immediate_start(schedule: CampaignSchedule, *, now: datetime | None = None) -> bool:
+    """Start now when there is no valid future slot (past time, outside window, wrong weekday)."""
+    if schedule.send_immediately or schedule.start_at is None:
+        return True
+    from src.campaigns.schedule_planner import is_schedule_start_allowed
+
+    clock = now or _now()
+    start_at = schedule.start_at
+    if start_at.tzinfo is None:
+        start_at = start_at.replace(tzinfo=timezone.utc)
+    else:
+        start_at = start_at.astimezone(timezone.utc)
+    if start_at <= clock:
+        return True
+    return not is_schedule_start_allowed(
+        start_at,
+        timezone_name=str(schedule.timezone or "Europe/Moscow"),
+        weekdays=list(schedule.weekdays or []),
+        time_windows=list(schedule.time_windows or []),
+    )
+
+
 def _new_id() -> str:
     return str(uuid.uuid4())
 
@@ -822,6 +844,12 @@ def upsert_schedule(
                 schedule.start_at = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
             else:
                 schedule.start_at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if schedule.start_at is not None:
+                start = schedule.start_at if schedule.start_at.tzinfo else schedule.start_at.replace(tzinfo=timezone.utc)
+                now = _now()
+                if start.astimezone(timezone.utc) < now:
+                    schedule.start_at = now
+                schedule.send_immediately = False
         for field in ("timezone", "on_error"):
             if field in data and data[field] is not None:
                 setattr(schedule, field, str(data[field]))
@@ -1054,10 +1082,11 @@ def launch_campaign(
         ).all()
         recipient_ids = [r.id for r in recipients]
         conn_hour, conn_day = _pool_rate_limits(session, _campaign_connection_ids(camp))
-        # force_now bypasses calendar windows / schedule pacing so "Запустить сейчас"
-        # is immediate, but connection mailbox limits still apply.
-        schedule_hour = 0 if force_now else schedule.max_per_hour
-        schedule_day = 0 if force_now else schedule.max_per_day
+        launch_now = _now()
+        immediate = force_now or _schedule_requires_immediate_start(schedule, now=launch_now)
+        # immediate launch bypasses calendar windows / schedule pacing, but connection limits still apply.
+        schedule_hour = 0 if immediate else schedule.max_per_hour
+        schedule_day = 0 if immediate else schedule.max_per_day
         max_per_hour, max_per_day = _effective_rate_limits(
             schedule_max_per_hour=schedule_hour,
             schedule_max_per_day=schedule_day,
@@ -1067,14 +1096,15 @@ def launch_campaign(
         preview = plan_batches(
             recipient_count=len(recipient_ids),
             batch_size=schedule.batch_size,
-            interval_seconds=0 if force_now else schedule.interval_seconds,
-            start_at=None if force_now else schedule.start_at,
-            send_immediately=True if force_now else schedule.send_immediately,
+            interval_seconds=0 if immediate else schedule.interval_seconds,
+            start_at=None if immediate else schedule.start_at,
+            send_immediately=True if immediate else schedule.send_immediately,
             timezone_name=schedule.timezone,
-            weekdays=[] if force_now else list(schedule.weekdays or []),
-            time_windows=[] if force_now else list(schedule.time_windows or []),
+            weekdays=[] if immediate else list(schedule.weekdays or []),
+            time_windows=[] if immediate else list(schedule.time_windows or []),
             max_per_hour=max_per_hour,
             max_per_day=max_per_day,
+            now=launch_now,
         )
         schedule.preview = preview
 
@@ -1086,6 +1116,7 @@ def launch_campaign(
             offset += size
             batch_id = _new_id()
             scheduled_at = datetime.fromisoformat(str(plan["scheduled_at"]).replace("Z", "+00:00"))
+            scheduled_at = max(scheduled_at, launch_now)
             batch = CampaignBatch(
                 id=batch_id,
                 campaign_id=campaign_id,
@@ -1098,7 +1129,7 @@ def launch_campaign(
             session.add(batch)
             session.flush()
 
-            pre_gen_at = _now() if force_now else max(_now(), scheduled_at - timedelta(hours=1))
+            pre_gen_at = launch_now if immediate else max(launch_now, scheduled_at - timedelta(hours=1))
             enqueue_task(
                 task_type="campaign_pre_generate",
                 job_id=camp.job_id or campaign_id,
@@ -1141,8 +1172,8 @@ def launch_campaign(
                 }
             )
 
-        camp.status = "running" if (force_now or schedule.send_immediately) else "scheduled"
-        if camp.status == "running" or force_now:
+        camp.status = "running" if immediate else "scheduled"
+        if camp.status == "running" or immediate:
             # If first batch is in the future, keep scheduled
             first_at = preview.get("first_batch_at")
             if first_at:

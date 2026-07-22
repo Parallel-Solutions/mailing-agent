@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
-from src.campaigns.schedule_planner import plan_batches
+from src.campaigns.schedule_planner import is_schedule_start_allowed, plan_batches
 
 
 class SchedulePlannerTests(unittest.TestCase):
@@ -61,6 +61,27 @@ class SchedulePlannerTests(unittest.TestCase):
         first_at = datetime.fromisoformat(str(plan["first_batch_at"]).replace("Z", "+00:00"))
         self.assertGreaterEqual(first_at, now)
         self.assertFalse(str(plan["first_batch_at"]).startswith("2024"))
+
+    def test_is_schedule_start_allowed(self) -> None:
+        inside = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+        outside = datetime(2026, 7, 22, 20, 0, tzinfo=timezone.utc)
+        windows = [{"start": "09:00", "end": "18:00"}]
+        self.assertTrue(
+            is_schedule_start_allowed(
+                inside,
+                timezone_name="Europe/Moscow",
+                weekdays=[0, 1, 2, 3, 4],
+                time_windows=windows,
+            )
+        )
+        self.assertFalse(
+            is_schedule_start_allowed(
+                outside,
+                timezone_name="Europe/Moscow",
+                weekdays=[0, 1, 2, 3, 4],
+                time_windows=windows,
+            )
+        )
 
 
 if __name__ == "__main__":
