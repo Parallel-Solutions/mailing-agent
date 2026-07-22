@@ -41,12 +41,15 @@ def _parse_yandex_xml(xml_bytes: bytes) -> list[dict]:
         return []
 
     results = []
-    for doc in re.findall(r"<doc>(.*?)</doc>", xml_text, re.DOTALL):
-        url_m = re.search(r"<url>(.*?)</url>", doc)
+    # <doc> может иметь атрибуты (напр. <doc id="...">), поэтому <doc\b[^>]*>
+    for doc in re.findall(r"<doc\b[^>]*>(.*?)</doc>", xml_text, re.DOTALL):
+        url_m = re.search(r"<url>(.*?)</url>", doc, re.DOTALL)
         if not url_m:
             continue
         title_m = re.search(r"<title>(.*?)</title>", doc, re.DOTALL)
-        snippet_m = re.search(r"<passages>(.*?)</passages>", doc, re.DOTALL)
+        # сниппет: <passages><passage>...</passage></passages> или <headline>
+        snippet_m = re.search(r"<passages>(.*?)</passages>", doc, re.DOTALL) \
+            or re.search(r"<headline>(.*?)</headline>", doc, re.DOTALL)
 
         url = url_m.group(1).strip()
         title = re.sub(r"<[^>]+>", "", title_m.group(1)).strip() if title_m else ""

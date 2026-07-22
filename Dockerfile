@@ -63,7 +63,7 @@ RUN python -m pip install --no-cache-dir uv
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 RUN .venv/bin/python -m playwright install chromium
-RUN uv pip install --python .venv/bin/python "pypdf>=6.0.0" "pymupdf>=1.26.0"
+RUN uv pip install --python .venv/bin/python "pypdf>=6.0.0" "pymupdf>=1.26.0" "yandex-ai-studio-sdk>=0.22.1"
 
 COPY . .
 COPY --from=frontend-build /frontend/dist /app/frontend/dist
