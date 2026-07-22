@@ -6,6 +6,56 @@ export function getEmailFormat(template: Template): 'simple' | 'visual' {
   return state?.email_format === 'visual' ? 'visual' : 'simple';
 }
 
+export const PARAGRAPH_INDENT = '1.25em';
+
+export function preserveParagraphIndents(html: string): string {
+  if (!html.trim()) return html;
+  if (typeof DOMParser === 'undefined') {
+    return html.replace(/<p(\s[^>]*)?>([\s\u00a0]|&nbsp;)+/gi, (match, attrs = '') => {
+      const styleMatch = String(attrs).match(/style\s*=\s*["']([^"']*)["']/i);
+      const style = styleMatch?.[1] || '';
+      if (/text-indent\s*:/i.test(style)) return match;
+      const styleAttr = style ? ` style="${style};text-indent:${PARAGRAPH_INDENT}"` : ` style="text-indent:${PARAGRAPH_INDENT}"`;
+      return `<p${styleAttr}>`;
+    });
+  }
+
+  const doc = new DOMParser().parseFromString(`<div id="root">${html}</div>`, 'text/html');
+  const root = doc.getElementById('root');
+  if (!root) return html;
+
+  root.querySelectorAll('p').forEach((paragraph) => {
+    const style = paragraph.getAttribute('style') || '';
+    if (/text-indent\s*:/i.test(style)) return;
+
+    const inner = paragraph.innerHTML;
+    const leadingMatch = inner.match(/^((?:\s|&nbsp;|\u00a0)+)/i);
+    if (!leadingMatch) return;
+
+    const spaces = leadingMatch[1].replace(/&nbsp;|\u00a0/gi, ' ').length;
+    if (spaces < 1) return;
+
+    paragraph.innerHTML = inner.slice(leadingMatch[1].length);
+    const indentEm = spaces >= 4 ? PARAGRAPH_INDENT : `${Math.max(1, spaces * 0.3)}em`;
+    const nextStyle = style ? `${style};text-indent:${indentEm}` : `text-indent:${indentEm}`;
+    paragraph.setAttribute('style', nextStyle);
+  });
+
+  return root.innerHTML;
+}
+
+export function paragraphHasIndent(style: string | null | undefined): boolean {
+  return /text-indent\s*:/i.test(String(style || ''));
+}
+
+export function toggleParagraphIndentStyle(style: string | null | undefined): string {
+  const current = String(style || '').trim();
+  if (paragraphHasIndent(current)) {
+    return current.replace(/text-indent\s*:\s*[^;]+;?/gi, '').replace(/;\s*;/g, ';').replace(/^;|;$/g, '').trim();
+  }
+  return current ? `${current};text-indent:${PARAGRAPH_INDENT}` : `text-indent:${PARAGRAPH_INDENT}`;
+}
+
 export function htmlToPlainText(html: string): string {
   if (!html.trim()) return '';
   if (typeof DOMParser !== 'undefined') {
@@ -86,11 +136,15 @@ function extractChainButtonsWrapperStyle(attrs: string): string {
 }
 
 function buildChainButtonsPreviewBlock(wrapperStyle: string): string {
-  const buttons = CHAIN_BUTTONS_PREVIEW_LABELS.map(
+  const actionButtons = CHAIN_BUTTONS_PREVIEW_LABELS.map(
     (label) =>
-      `<span style="display:inline-block;margin:0 4px;padding:8px 16px;background:#d9d9d9;color:#595959;border-radius:4px">${label}</span>`,
+      `<span style="display:inline-block;margin:0 4px;padding:8px 16px;background:#236348;color:#fff;border-radius:4px">${label}</span>`,
   ).join('');
-  return `<div style="${wrapperStyle}"><p style="margin:0">${buttons}</p></div>`;
+  const unsubscribe = '<span style="display:inline-block;color:#868e96;text-decoration:underline">Отписаться</span>';
+  return (
+    `<div style="${wrapperStyle}"><p style="margin:0">${actionButtons}</p></div>`
+    + `<div style="text-align:right;padding:12px 0 0"><p style="margin:0">${unsubscribe}</p></div>`
+  );
 }
 
 export function hasChainButtonPlaceholder(html: string): boolean {

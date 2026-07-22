@@ -26,6 +26,7 @@ import {
 import { EditorContent, useEditor } from '@tiptap/react';
 import type { Editor } from '@tiptap/react';
 import Link from '@tiptap/extension-link';
+import Paragraph from '@tiptap/extension-paragraph';
 import Placeholder from '@tiptap/extension-placeholder';
 import StarterKit from '@tiptap/starter-kit';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -58,7 +59,13 @@ import { readBoolParam } from '@/utils/urlState';
 import { VisualEmailEditor } from '@/features/templates/VisualEmailEditor';
 import { PersonalizationSetting } from '@/features/templates/PersonalizationSetting';
 import { DeliveryFilenameField } from '@/features/templates/DeliveryFilenameField';
-import { downloadEmailHtml, getEmailFormat } from '@/features/templates/emailTemplateUtils';
+import {
+  downloadEmailHtml,
+  getEmailFormat,
+  paragraphHasIndent,
+  preserveParagraphIndents,
+  toggleParagraphIndentStyle,
+} from '@/features/templates/emailTemplateUtils';
 import './TemplateEditorPage.css';
 
 const { Text, Title } = Typography;
@@ -259,7 +266,25 @@ function Checks({ pdf = false, kpDocx = false }: { pdf?: boolean; kpDocx?: boole
 }
 
 
+const EmailParagraph = Paragraph.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      style: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('style'),
+        renderHTML: (attributes) => {
+          if (!attributes.style) return {};
+          return { style: attributes.style };
+        },
+      },
+    };
+  },
+});
+
 function EmailToolbar({ editor }: { editor: Editor | null }) {
+  const paragraphStyle = String(editor?.getAttributes('paragraph').style || '');
+  const indentActive = paragraphHasIndent(paragraphStyle);
   return (
     <div className="template-editor-toolbar">
       <Button type="text" size="small" icon={<UndoOutlined />} onClick={() => editor?.chain().focus().undo().run()} />
@@ -270,6 +295,20 @@ function EmailToolbar({ editor }: { editor: Editor | null }) {
       <Button type={editor?.isActive('strike') ? 'primary' : 'text'} size="small" icon={<StrikethroughOutlined />} onClick={() => editor?.chain().focus().toggleStrike().run()} />
       <Button type={editor?.isActive('bulletList') ? 'primary' : 'text'} size="small" icon={<UnorderedListOutlined />} onClick={() => editor?.chain().focus().toggleBulletList().run()} />
       <Button type={editor?.isActive('orderedList') ? 'primary' : 'text'} size="small" icon={<OrderedListOutlined />} onClick={() => editor?.chain().focus().toggleOrderedList().run()} />
+      <Divider type="vertical" />
+      <Tooltip title="Красная строка">
+        <Button
+          type={indentActive ? 'primary' : 'text'}
+          size="small"
+          onClick={() => {
+            if (!editor) return;
+            const nextStyle = toggleParagraphIndentStyle(paragraphStyle);
+            editor.chain().focus().updateAttributes('paragraph', { style: nextStyle || null }).run();
+          }}
+        >
+          ¶
+        </Button>
+      </Tooltip>
     </div>
   );
 }
@@ -285,13 +324,23 @@ function EmailTemplateEditor({ template }: { template: Template }) {
   const [dirty, setDirty] = useState(false);
   const [variableQuery, setVariableQuery] = useState('');
   const editor = useEditor({
-    extensions: [StarterKit, Link.configure({ openOnClick: false }), Placeholder.configure({ placeholder: 'Начните писать письмо…' })],
+    extensions: [
+      StarterKit.configure({ paragraph: false }),
+      EmailParagraph,
+      Link.configure({ openOnClick: false }),
+      Placeholder.configure({ placeholder: 'Начните писать письмо…' }),
+    ],
     content: template.version?.body_html || '<p>Здравствуйте, {{contact_name}}!</p>',
     onUpdate: () => setDirty(true),
   });
   const variables = template.version?.variables?.length ? template.version.variables : EMAIL_VARIABLES;
   const saveMutation = useMutation({
-    mutationFn: () => templatesApi.save(template.id, { name, subject, body_html: editor?.getHTML() || '', body_text: editor?.getText({ blockSeparator: '\n\n' }) || '' }),
+    mutationFn: () => templatesApi.save(template.id, {
+      name,
+      subject,
+      body_html: preserveParagraphIndents(editor?.getHTML() || ''),
+      body_text: editor?.getText({ blockSeparator: '\n\n' }) || '',
+    }),
     onSuccess: () => {
       setDirty(false);
       message.success('Создана новая версия шаблона');

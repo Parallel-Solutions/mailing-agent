@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select
 
 from src.campaigns.chain_service import (
+    LINK_KIND_CUSTOM,
     create_branch_tokens,
     find_node,
     get_email_chain,
@@ -108,7 +109,7 @@ def _persist_chain_branch_tokens(
     edges: list[dict[str, Any]],
     node_by_id: dict[str, dict[str, Any]],
     test_email: str | None,
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, str]]:
     """Commit branch tokens before sending so links work even if post-send steps fail."""
     if not edges:
         return []
@@ -124,7 +125,11 @@ def _persist_chain_branch_tokens(
             session.add(row)
         session.flush()
         return [
-            (resolve_button_label(edge, node_by_id), row.token)
+            (
+                resolve_button_label(edge, node_by_id),
+                row.token,
+                str((node_by_id.get(str(edge.get("target_id") or "")) or {}).get("link_kind") or LINK_KIND_CUSTOM),
+            )
             for edge, row in zip(edges, token_rows, strict=True)
         ]
 

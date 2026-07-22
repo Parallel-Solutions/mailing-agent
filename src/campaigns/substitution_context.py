@@ -322,4 +322,23 @@ def build_substitution_context(
 
     apply_semantic_aliases(string_context, template_text)
 
+    _normalize_territory_context_values(string_context)
+
     return string_context
+
+
+def _normalize_territory_context_values(string_context: dict[str, str]) -> None:
+    from src.generator.generation.transforms import _capitalize_phrase_if_lower, _normalize_mo_name_case
+
+    mun_name = str(string_context.get("MUN_NAME") or string_context.get("mun_name") or "").strip()
+    if mun_name:
+        normalized = _normalize_mo_name_case(mun_name)
+        string_context["MUN_NAME"] = normalized
+        string_context["mun_name"] = normalized
+
+    for key in ("MUN_R_NAME", "SUB_RF"):
+        value = str(string_context.get(key) or "").strip()
+        if not value:
+            continue
+        if value == value.lower():
+            string_context[key] = _capitalize_phrase_if_lower(value)

@@ -244,6 +244,33 @@ class SubstitutionEngineTests(unittest.TestCase):
         self.assertIn("для территории Энемского городского поселения", rendered)
         self.assertNotIn("для территории Энемское городское поселение", rendered)
 
+    def test_render_mun_name_at_sentence_start_is_capitalized(self) -> None:
+        context = {
+            "MUN_NAME": "Энемское городское поселение",
+            "mun_name": "Энемское городское поселение",
+        }
+        rendered = render_text("{{mun_name}} предлагает выполнить работы.", context)
+        self.assertEqual(rendered, "Энемское городское поселение предлагает выполнить работы.")
+
+    def test_render_mun_name_mid_sentence_uses_lowercase_leading_letter(self) -> None:
+        context = {
+            "MUN_NAME": "Энемское городское поселение",
+            "mun_name": "Энемское городское поселение",
+        }
+        rendered = render_text("Работы выполняются для {{mun_name}}.", context)
+        self.assertTrue(rendered.startswith("Работы выполняются для "))
+        self.assertTrue(rendered.endswith("."))
+        self.assertIn("городское поселение", rendered)
+        self.assertNotEqual(rendered.split(" для ", 1)[1][0], "Э")
+
+    def test_render_mun_name_normalizes_all_caps_source(self) -> None:
+        context = {
+            "MUN_NAME": "ЭНЕМСКОЕ ГОРОДСКОЕ ПОСЕЛЕНИЕ",
+            "mun_name": "ЭНЕМСКОЕ ГОРОДСКОЕ ПОСЕЛЕНИЕ",
+        }
+        rendered = render_text("{{mun_name}}.", context)
+        self.assertEqual(rendered, "Энемское городское поселение.")
+
     def test_renders_cyrillic_identifier_alias(self) -> None:
         context = {
             "DOCUMENT_ID": "42",
