@@ -765,6 +765,7 @@ export function CampaignNewPage() {
                     audiences={audiencesQuery.data || []}
                     recipients={recipientsQuery.data?.items || []}
                     recipientsTotal={recipientsQuery.data?.total || 0}
+                    recipientsLoading={recipientsQuery.isFetching}
                     onAudienceSelect={async (audienceId) => {
                       if (!id) return;
                       await audiencesApi.useInCampaign(audienceId, id);
@@ -894,24 +895,12 @@ export function CampaignNewPage() {
                             onClick={async () => {
                               if (!id) return;
                               await runLaunchAction('Запуск рассылки…', async () => {
-                                await campaignsApi.launch(id, true);
+                                await campaignsApi.launch(id);
                                 await navigateAfterLaunch(id, 'Рассылка запущена');
                               });
                             }}
                           >
-                            Запустить сейчас
-                          </Button>
-                          <Button
-                            disabled={launchBlocked || wizardLocked}
-                            onClick={async () => {
-                              if (!id) return;
-                              await runLaunchAction('Планирование рассылки…', async () => {
-                                await campaignsApi.launch(id, false);
-                                await navigateAfterLaunch(id, 'Рассылка запланирована');
-                              });
-                            }}
-                          >
-                            Запланировать
+                            Старт
                           </Button>
                         </Space>
                       </>
@@ -1030,6 +1019,7 @@ export function CampaignNewPage() {
           mailboxes={mailboxesQuery.data || []}
           audiences={audiencesQuery.data || []}
           recipients={recipientsQuery.data?.items || []}
+          recipientsLoading={recipientsQuery.isFetching}
           scheduleInitialValues={scheduleInitialValues}
           batchCountPreview={batchCountPreview}
           estimatedDurationHours={

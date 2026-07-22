@@ -82,12 +82,24 @@ test.describe('Campaign creation and schedule', () => {
     });
     expect(recipients.ok()).toBeTruthy();
 
+    const schedule = await page.request.put(`/api/v1/campaigns/${campaignId}/schedule`, {
+      data: {
+        send_immediately: true,
+        start_at: null,
+        batch_size: 25,
+        interval_seconds: 0,
+        weekdays: [],
+        time_windows: [],
+      },
+    });
+    expect(schedule.ok()).toBeTruthy();
+
     await page.reload();
     await goToCampaignStep(page, 'Запуск');
     await expect(page.locator('.campaign-launch-readiness-overlay')).toHaveCount(0, { timeout: 60_000 });
     await expect(page.getByText('Готово к запуску')).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByRole('button', { name: 'Запустить сейчас' })).toBeEnabled();
-    await page.getByRole('button', { name: 'Запустить сейчас' }).click();
+    await expect(page.getByRole('button', { name: 'Старт' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Старт' }).click();
     await page.waitForURL(new RegExp(`/campaigns/${campaignId}`), { timeout: 30_000 });
 
     const msg = await mailpitWaitForMessage(

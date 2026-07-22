@@ -40,6 +40,7 @@ type Props = {
   mailboxes: DeliveryConnection[];
   audiences: Audience[];
   recipients: Recipient[];
+  recipientsLoading?: boolean;
   scheduleInitialValues: ScheduleFormValues;
   batchCountPreview: number;
   estimatedDurationHours?: number;
@@ -76,6 +77,7 @@ export function CampaignStepFixModal({
   mailboxes,
   audiences,
   recipients,
+  recipientsLoading,
   scheduleInitialValues,
   batchCountPreview,
   estimatedDurationHours,
@@ -183,6 +185,7 @@ export function CampaignStepFixModal({
             audiences={audiences}
             recipients={recipients}
             recipientsTotal={recipients.length}
+            recipientsLoading={recipientsLoading}
             onAudienceSelect={onAudienceSelect}
             onImportRecipients={onImportRecipients}
             onOpenGenerate={onOpenGenerate}

@@ -33,7 +33,7 @@ def system_prompt(*, editor_kind: str, snapshot: dict[str, Any]) -> str:
     kind_rules = _docx_rules() if editor_kind == "docx" else ""
     return (
         f"Ты полноценный оператор инструмента: {label}.\n"
-        "Ты работаешь внутри CampaignFlow и должен сам менять состояние инструмента "
+        "Ты работаешь внутри ai-offer и должен сам менять состояние инструмента "
         "через доступные tools — как опытный пользователь, без кликов по UI.\n"
         "Правила:\n"
         "- Сначала при необходимости прочитай текущий snapshot/tool-контекст.\n"

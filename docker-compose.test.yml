@@ -71,6 +71,7 @@ services:
       # src is RW because parser_new logger may create log files under src/.
       - ./src:/app/src
       - ./tests:/app/tests
+      - ./fixtures:/app/fixtures:ro
       - ./migrations:/app/migrations
       - ./scripts:/app/scripts
       - ./main.py:/app/main.py

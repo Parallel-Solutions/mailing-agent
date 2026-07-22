@@ -590,9 +590,9 @@ def test_connection(
                 connection_id=connection.id,
                 owner_username=owner_username,
                 to_email=connection.email,
-                subject="Проверка подключения CampaignFlow",
-                html="<p>Подключение успешно. Это тестовое письмо CampaignFlow.</p>",
-                text="Подключение успешно. Это тестовое письмо CampaignFlow.",
+                subject="Проверка подключения ai-offer",
+                html="<p>Подключение успешно. Это тестовое письмо ai-offer.</p>",
+                text="Подключение успешно. Это тестовое письмо ai-offer.",
             )
             message = f"{connection.transport} проверен: тестовое письмо отправлено на {connection.email}."
         mark_mailbox_status(connection.id, status="active", last_error="")

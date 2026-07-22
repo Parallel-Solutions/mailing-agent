@@ -150,7 +150,7 @@ th { background: #edf5f0; color: #174d38; }
 </head>
 <body>
 <section class="page">
-  <div class="brand">CAMPAIGNFLOW · КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div>
+  <div class="brand">AI-OFFER · КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div>
   <div class="meta">
     <div>№ <span class="variable-token">{{OUTGOING_NUMBER}}</span> от <span class="variable-token">{{DATE}}</span></div>
     <div class="recipient">Руководителю<br><span class="variable-token">{{ADM_NAME}}</span></div>

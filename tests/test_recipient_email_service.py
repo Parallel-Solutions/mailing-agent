@@ -199,6 +199,58 @@ class CampaignRecipientsImportTests(unittest.TestCase):
             self.assertEqual(recipient.validation_status, "valid")
             self.assertFalse(recipient.excluded)
 
+    def test_parse_and_import_checko_zgyswi_sample_xlsx(self) -> None:
+        from pathlib import Path
+
+        from src.campaigns.variable_match_service import _heuristic_mapping
+
+        fixture = Path(__file__).resolve().parents[1] / "fixtures/manual/recipients-checko-zgyswi-sample.xlsx"
+        content = fixture.read_bytes()
+        rows, columns = parse_recipients_xlsx(content)
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0]["company"], 'Общество с ограниченной ответственностью "Неопак"')
+        self.assertEqual(rows[0]["contact_name"], "Иванов Иван Иванович")
+        self.assertEqual(rows[0]["email"], "glbuh@neopak.ru, tstender@neopak.ru")
+        self.assertEqual(rows[0]["region"], "Карелия, республика")
+        self.assertIn("сокращенное наименование", rows[0]["extra"])
+        self.assertIn("полное наименование", columns)
+        self.assertIn("руководитель", columns)
+
+        bootstrap_test_runtime(reset_db=True)
+        username = f"zg{uuid.uuid4().hex[:8]}"
+        create_user(username, "Pass12345!")
+        campaign = create_campaign(username, {"name": "ZGYSWI sample import"})
+        result = replace_recipients(campaign["id"], username, recipients=rows, recipient_columns=columns)
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["duplicates_skipped"], 1)
+        self.assertEqual(result["invalid"], 0)
+
+        with session_scope() as session:
+            recipients = session.scalars(
+                select(CampaignRecipient)
+                .where(CampaignRecipient.campaign_id == campaign["id"])
+                .order_by(CampaignRecipient.row_index)
+            ).all()
+            self.assertEqual(len(recipients), 2)
+            self.assertEqual(recipients[0].email, "glbuh@neopak.ru")
+            self.assertEqual(recipients[0].email_fallback, "tstender@neopak.ru")
+            self.assertEqual(recipients[1].email, "tdsoglasie@onego.ru")
+            self.assertEqual(recipients[1].email_fallback, "glavbuh@soglasie.ptz.ru")
+            self.assertEqual(recipients[1].contact_name, "Петров Петр Петрович")
+
+        mapping = _heuristic_mapping(
+            [
+                {"name": "ADM_NAME"},
+                {"name": "HEAD_FIO"},
+                {"name": "SUB_RF"},
+                {"name": "MUN_NAME"},
+            ],
+            columns,
+        )
+        self.assertEqual(mapping.get("HEAD_FIO"), "руководитель")
+        self.assertEqual(mapping.get("SUB_RF"), "регион")
+
 
 if __name__ == "__main__":
     unittest.main()

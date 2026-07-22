@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ProFormSelect } from '@ant-design/pro-components';
 import { Button, Space, Table, Tag, Upload } from 'antd';
 import type { Audience, Campaign, Recipient } from '@/api/types';
@@ -8,6 +9,7 @@ type Props = {
   audiences: Audience[];
   recipients: Recipient[];
   recipientsTotal: number;
+  recipientsLoading?: boolean;
   onAudienceSelect: (audienceId: string) => Promise<void>;
   onImportRecipients: (file: File) => Promise<void>;
   onOpenGenerate: () => void;
@@ -18,10 +20,12 @@ export function CampaignWizardRecipientsStep({
   draft,
   audiences,
   recipients,
+  recipientsLoading,
   onAudienceSelect,
   onImportRecipients,
   onOpenGenerate,
 }: Props) {
+  const [importing, setImporting] = useState(false);
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <ProFormSelect
@@ -42,16 +46,20 @@ export function CampaignWizardRecipientsStep({
         <Upload
           accept=".csv,.xlsx"
           showUploadList={false}
+          disabled={importing}
           customRequest={async ({ file, onSuccess, onError }) => {
+            setImporting(true);
             try {
               await onImportRecipients(file as File);
               onSuccess?.({});
             } catch (error) {
               onError?.(error as Error);
+            } finally {
+              setImporting(false);
             }
           }}
         >
-          <Button>Загрузить Excel / CSV</Button>
+          <Button loading={importing}>Загрузить Excel / CSV</Button>
         </Upload>
         <Button disabled={!campaignId || !draft.job_id} onClick={onOpenGenerate}>
           Сгенерировать список
@@ -60,6 +68,7 @@ export function CampaignWizardRecipientsStep({
       <Table
         rowKey="id"
         size="small"
+        loading={recipientsLoading}
         dataSource={recipients}
         pagination={{ pageSize: 10 }}
         columns={[

@@ -44,6 +44,13 @@ TERRITORY_PLACEHOLDER_NAMES = frozenset(
     }
 )
 
+ADMIN_PLACEHOLDER_NAMES = frozenset(
+    {
+        "ADM_NAME",
+        "ADM_NAME_1",
+    }
+)
+
 IDENTIFIER_VARIABLE_NAMES = frozenset(
     {
         _norm_token(name)
@@ -314,6 +321,24 @@ def _is_territory_placeholder(name: str) -> bool:
     return canonical in TERRITORY_PLACEHOLDER_NAMES or name in TERRITORY_PLACEHOLDER_NAMES
 
 
+def _is_admin_placeholder(name: str) -> bool:
+    canonical = _resolve_territory_canonical(name)
+    return canonical in ADMIN_PLACEHOLDER_NAMES or name in ADMIN_PLACEHOLDER_NAMES
+
+
+def _looks_like_admin_title(value: str) -> bool:
+    clean = str(value or "").strip().casefold()
+    return clean.startswith(("администрация", "администрации"))
+
+
+def _should_apply_admin_case(name: str, value: str) -> bool:
+    if _is_admin_placeholder(name):
+        return True
+    if name.lower() == "company" and _looks_like_admin_title(value):
+        return True
+    return False
+
+
 def _placeholder_is_sentence_start(text: str, token: str) -> bool:
     index = text.find(token)
     if index < 0:
@@ -332,7 +357,7 @@ def _placeholder_in_territory_genitive_context(text: str, token: str) -> bool:
 
 
 def _adapt_territory_value_case(value: str, *, name: str, text: str, token: str) -> str:
-    from src.generator.generation.transforms import _capitalize_phrase_if_lower, _normalize_mo_name_case
+    from src.generator.generation.transforms import _normalize_mo_name_case, normalize_russian_geo_admin_case
 
     canonical = _resolve_territory_canonical(name)
     clean = str(value or "").strip()
@@ -342,21 +367,44 @@ def _adapt_territory_value_case(value: str, *, name: str, text: str, token: str)
     if _placeholder_in_territory_genitive_context(text, token):
         if canonical in {"MUN_NAME", "MUN_NAME"} or name.lower() == "mun_name":
             return _normalize_mo_name_case(clean)
-        return clean
+        return normalize_russian_geo_admin_case(clean)
 
     if canonical in {"MUN_NAME"} or name.lower() == "mun_name":
         normalized = _normalize_mo_name_case(clean)
-    elif canonical in {"MUN_R_NAME", "SUB_RF"}:
-        normalized = _capitalize_phrase_if_lower(clean) if clean == clean.lower() else clean
+    elif canonical in {"MUN_R_NAME", "SUB_RF", "MUN_R_NAME_1", "SUB_RF_1", "MUN_NAME_1", "MUN_NAME_2"}:
+        normalized = normalize_russian_geo_admin_case(clean)
     else:
         normalized = clean
 
     if _placeholder_is_sentence_start(text, token):
-        return _capitalize_phrase_if_lower(normalized) if normalized == normalized.lower() else normalized
+        if normalized == normalized.lower():
+            return normalized[:1].upper() + normalized[1:]
+        return normalized
 
     if normalized and normalized[0].isupper():
         return normalized[0].lower() + normalized[1:]
     return normalized
+
+
+def _adapt_admin_value_case(value: str, *, text: str, token: str) -> str:
+    from src.generator.generation.transforms import normalize_russian_geo_admin_case
+
+    clean = normalize_russian_geo_admin_case(str(value or "").strip())
+    if not clean:
+        return clean
+
+    in_territory_context = _placeholder_in_territory_genitive_context(text, token)
+    at_sentence_start = _placeholder_is_sentence_start(text, token)
+    words = clean.split()
+    if words and words[0].casefold() in {"администрация", "администрации"}:
+        if in_territory_context or not at_sentence_start:
+            words[0] = words[0].lower()
+        elif at_sentence_start:
+            words[0] = words[0][:1].upper() + words[0][1:].lower()
+        clean = " ".join(words)
+    elif at_sentence_start and clean == clean.lower():
+        clean = clean[:1].upper() + clean[1:]
+    return clean
 
 
 def build_replacement_pairs(context: dict[str, str], text: str) -> list[tuple[str, str]]:
@@ -367,6 +415,8 @@ def build_replacement_pairs(context: dict[str, str], text: str) -> list[tuple[st
         value = _context_value(context, item.name)
         if _is_territory_placeholder(item.name):
             value = _adapt_territory_value_case(value, name=item.name, text=text, token=item.token)
+        elif _should_apply_admin_case(item.name, value):
+            value = _adapt_admin_value_case(value, text=text, token=item.token)
         pairs[item.token] = value
 
     for item in discover_brace_artifacts(text):
@@ -375,6 +425,8 @@ def build_replacement_pairs(context: dict[str, str], text: str) -> list[tuple[st
         value = _artifact_replacement_value(context, item)
         if value and _is_territory_placeholder(item.name):
             value = _adapt_territory_value_case(value, name=item.name, text=text, token=item.token)
+        elif value and _should_apply_admin_case(item.name, value):
+            value = _adapt_admin_value_case(value, text=text, token=item.token)
         if value:
             pairs[item.token] = value
 

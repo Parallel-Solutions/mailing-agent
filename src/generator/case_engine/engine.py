@@ -245,13 +245,20 @@ def _build_admin_decision(
     for field in ("MUN_NAME_1", "MUN_R_NAME_1", "SUB_RF_1"):
         decision = decisions_by_field.get(field)
         if decision and decision.result_value:
-            result_value = _replace_case_insensitive(result_value, decision.result_value.lower(), decision.result_value)
+            from src.generator.generation.transforms import normalize_russian_geo_admin_case
+
+            normalized_decision = normalize_russian_geo_admin_case(decision.result_value)
+            result_value = _replace_case_insensitive(result_value, normalized_decision.lower(), normalized_decision)
     sub_rf = _safe_text(row.get("SUB_RF"))
     sub_rf_decision = decisions_by_field.get("SUB_RF_1")
     if sub_rf.startswith("Республика ") and sub_rf_decision:
         result_value = re.sub(r"республики\s+\S+", sub_rf_decision.result_value, result_value, flags=re.IGNORECASE)
     if source_value.count('"') > result_value.count('"'):
         result_value += '"'
+
+    from src.generator.generation.transforms import normalize_russian_geo_admin_case
+
+    result_value = normalize_russian_geo_admin_case(result_value)
 
     warning = _inflection_warnings(adm_result)
     method = "legacy_rule" if adm_result.confidence == "rule" else "legacy_morph"

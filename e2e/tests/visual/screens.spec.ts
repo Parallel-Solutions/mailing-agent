@@ -42,7 +42,7 @@ test.describe('Visual regression @visual', () => {
   test('login screen @visual', async ({ page }) => {
     await page.context().clearCookies();
     await page.goto('/login');
-    await expect(page.getByText('CampaignFlow')).toBeVisible();
+    await expect(page.getByText('ai-offer')).toBeVisible();
     await expectStableScreenshot(page, 'login.png');
   });
 

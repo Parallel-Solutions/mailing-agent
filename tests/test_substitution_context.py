@@ -133,6 +133,60 @@ class SubstitutionContextTests(unittest.TestCase):
         rendered = render_text("Работы: {{Вид_работ}}", context)
         self.assertEqual(rendered, "Работы: Градостроительный аудит")
 
+    def test_builds_legacy_name_placeholders_from_fio(self) -> None:
+        recipient = CampaignRecipient(
+            id=2,
+            campaign_id="camp-1",
+            row_index=1,
+            company="ООО Техностар",
+            contact_name="Федорова Ирина Александровна",
+            email="test@example.com",
+            region="Test Region",
+            extra={},
+        )
+        context = build_substitution_context(recipient=recipient, campaign=self.campaign)
+        self.assertEqual(context["CONTACT_FIRST_NAME"], "Ирина")
+        self.assertEqual(context["CONTACT_PATRONYMIC"], "Александровна")
+        self.assertEqual(context["CONTACT_SURNAME"], "Федорова")
+        self.assertEqual(context["Имя"], "Ирина")
+        self.assertEqual(context["Отчество"], "Александровна")
+        self.assertEqual(context["Фамилия"], "Федорова")
+
+    def test_render_text_replaces_legacy_name_placeholders(self) -> None:
+        recipient = CampaignRecipient(
+            id=3,
+            campaign_id="camp-1",
+            row_index=2,
+            company="ООО Техностар",
+            contact_name="Федорова Ирина Александровна",
+            email="test@example.com",
+            region="Test Region",
+            extra={},
+        )
+        context = build_substitution_context(
+            recipient=recipient,
+            campaign=self.campaign,
+            template_text="Здравствуйте, {{Имя}} {{Отчество}}!",
+        )
+        rendered = render_text("Здравствуйте, {{Имя}} {{Отчество}}!", context)
+        self.assertEqual(rendered, "Здравствуйте, Ирина Александровна!")
+
+    def test_legacy_name_fallback_for_single_word_contact(self) -> None:
+        recipient = CampaignRecipient(
+            id=4,
+            campaign_id="camp-1",
+            row_index=3,
+            company="ООО Техностар",
+            contact_name="Петров",
+            email="test@example.com",
+            region="Test Region",
+            extra={},
+        )
+        context = build_substitution_context(recipient=recipient, campaign=self.campaign)
+        self.assertEqual(context["Имя"], "Петров")
+        rendered = render_text("Здравствуйте, {{Имя}}!", context)
+        self.assertEqual(rendered, "Здравствуйте, Петров!")
+
 
 class SubstitutionEngineTests(unittest.TestCase):
     def test_render_text_replaces_brace_and_bare_tokens(self) -> None:
@@ -270,6 +324,44 @@ class SubstitutionEngineTests(unittest.TestCase):
         }
         rendered = render_text("{{mun_name}}.", context)
         self.assertEqual(rendered, "Энемское городское поселение.")
+
+    def test_render_district_adm_name_after_territory_uses_geo_case(self) -> None:
+        from src.campaigns.substitution_context import _normalize_territory_context_values, _stringify_context
+        from src.generator.generation.transforms import build_document_context
+
+        row = {
+            "ID": 1,
+            "SUB_RF": "орловская область",
+            "MUN_R_NAME": "дмитровский район",
+            "MUN_NAME": "",
+            "ADM_NAME": (
+                "администрация муниципального образования "
+                "дмитровского района орловской области"
+            ),
+            "HEAD_FIO": "Мураева Валентина Егоровна",
+        }
+        context = _stringify_context(build_document_context(row, outgoing_number=101))
+        _normalize_territory_context_values(context)
+        rendered = render_text(
+            "подготовили проект коммерческого предложения на разработку СТП "
+            "для территории {{ADM_NAME_1}}.",
+            context,
+        )
+        self.assertIn(
+            "для территории администрации муниципального образования "
+            "Дмитровского района Орловской области.",
+            rendered,
+        )
+
+    def test_render_adm_name_at_sentence_start_keeps_leading_capital(self) -> None:
+        context = {
+            "ADM_NAME_1": "администрации муниципального образования Дмитровского района",
+        }
+        rendered = render_text("{{ADM_NAME_1}}", context)
+        self.assertEqual(
+            rendered,
+            "Администрации муниципального образования Дмитровского района",
+        )
 
     def test_renders_cyrillic_identifier_alias(self) -> None:
         context = {
