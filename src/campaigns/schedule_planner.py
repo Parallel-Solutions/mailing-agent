@@ -77,6 +77,8 @@ def plan_batches(
     else:
         cursor = start_at if start_at.tzinfo else start_at.replace(tzinfo=timezone.utc)
         cursor = cursor.astimezone(timezone.utc)
+        if cursor < clock:
+            cursor = clock
 
     if count == 0:
         return {
