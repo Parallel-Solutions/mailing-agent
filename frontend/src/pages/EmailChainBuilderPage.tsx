@@ -412,9 +412,9 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
           handlers={{
             setChain: (next, selectedId) => {
               applyChain(next);
-              if (selectedId) setSelectedNodeId(selectedId);
+              if (selectedId) selectNode(selectedId);
             },
-            selectChainNode: (nodeId) => setSelectedNodeId(nodeId),
+            selectChainNode: (nodeId) => selectNode(nodeId),
           }}
           settings={
             <ChainNodeSettingsPanel
