@@ -145,8 +145,23 @@ def _has_table(connection, name: str) -> bool:
     )
 
 
+def _mail_template_column_names(connection) -> set[str]:
+    rows = connection.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'mail_templates'"
+        )
+    )
+    return {str(row[0]) for row in rows}
+
+
 def _detect_schema_revision(connection) -> str | None:
     """Best-effort stamp when alembic_version lags behind the real schema."""
+    if _has_table(connection, "companies"):
+        return "0016_companies"
+    mail_template_columns = _mail_template_column_names(connection)
+    if "is_template" in mail_template_columns:
+        return "0015_mail_template_is_template"
     if _has_table(connection, "email_chains"):
         return "0014_standalone_email_chains"
     if _has_table(connection, "campaign_chain_consent_events"):

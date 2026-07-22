@@ -165,6 +165,16 @@ def upsert_from_provider_event(
     reason = reason_from_provider_status(provider_status)
     if not reason:
         return False
+    if reason == "unsubscribe":
+        from src.campaigns.suppression_service import apply_global_email_suppression
+
+        result = apply_global_email_suppression(
+            recipient,
+            reason=reason,
+            source=source,
+            job_id=job_id,
+        )
+        return bool(result.get("suppressed"))
     return upsert_suppression(
         recipient,
         reason=reason,

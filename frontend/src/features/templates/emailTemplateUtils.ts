@@ -26,6 +26,48 @@ export function substitutePreviewValues(html: string, values: Record<string, str
   return result;
 }
 
+const REVIEW_ERROR_MARK_STYLE =
+  'background:#fff1f0;color:#cf1322;border:1px solid #ffa39e;border-radius:3px;padding:0 2px;';
+const REVIEW_WARNING_MARK_STYLE =
+  'background:#fffbe6;color:#ad6800;border:1px solid #ffe58f;border-radius:3px;padding:0 2px;';
+
+export type ReviewHighlightIssue = {
+  token?: string;
+  fragment?: string;
+  severity?: 'error' | 'warning' | 'info';
+};
+
+export function highlightReviewIssues(html: string, issues: ReviewHighlightIssue[]): string {
+  if (!html || issues.length === 0) {
+    return html;
+  }
+  const fragments = [...new Set(
+    issues
+      .map((issue) => issue.fragment || issue.token)
+      .filter((value): value is string => Boolean(value)),
+  )].sort((left, right) => right.length - left.length);
+  let result = html;
+  for (const fragment of fragments) {
+    const issue = issues.find((item) => item.fragment === fragment || item.token === fragment);
+    const style = issue?.severity === 'warning' || issue?.severity === 'info'
+      ? REVIEW_WARNING_MARK_STYLE
+      : REVIEW_ERROR_MARK_STYLE;
+    result = result.split(fragment).join(`<mark style="${style}">${fragment}</mark>`);
+  }
+  return result;
+}
+
+export type PlaceholderHighlightIssue = {
+  token: string;
+};
+
+export function highlightPlaceholderIssues(html: string, issues: PlaceholderHighlightIssue[]): string {
+  return highlightReviewIssues(
+    html,
+    issues.map((issue) => ({ token: issue.token, fragment: issue.token, severity: 'error' })),
+  );
+}
+
 export const CHAIN_BUTTONS_MARKER = 'data-ma-chain-buttons="1"';
 
 const CHAIN_BUTTONS_PLACEHOLDER_RE =
@@ -46,9 +88,9 @@ function extractChainButtonsWrapperStyle(attrs: string): string {
 function buildChainButtonsPreviewBlock(wrapperStyle: string): string {
   const buttons = CHAIN_BUTTONS_PREVIEW_LABELS.map(
     (label) =>
-      `<p style="margin:0 0 8px"><span style="display:inline-block;padding:8px 16px;background:#d9d9d9;color:#595959;border-radius:4px">${label}</span></p>`,
+      `<span style="display:inline-block;margin:0 4px;padding:8px 16px;background:#d9d9d9;color:#595959;border-radius:4px">${label}</span>`,
   ).join('');
-  return `<div style="${wrapperStyle}">${buttons}</div>`;
+  return `<div style="${wrapperStyle}"><p style="margin:0">${buttons}</p></div>`;
 }
 
 export function hasChainButtonPlaceholder(html: string): boolean {
@@ -74,4 +116,42 @@ export function buildEmailPreviewDocument(html: string): string {
     + html
     + '</div></body></html>'
   );
+}
+
+export function sanitizeHtmlFilename(name: string): string {
+  const slug = String(name || '')
+    .trim()
+    .replace(/\.html?$/i, '')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 120);
+  return `${slug || 'template'}.html`;
+}
+
+export function ensureHtmlDocument(html: string): string {
+  const trimmed = String(html || '').trim();
+  if (!trimmed) {
+    return '<!doctype html>\n<html><head><meta charset="utf-8"></head><body></body></html>';
+  }
+  if (/<!doctype\s+html|<html[\s>]/i.test(trimmed)) {
+    return trimmed;
+  }
+  return (
+    '<!doctype html>\n<html><head><meta charset="utf-8"></head><body>\n'
+    + trimmed
+    + '\n</body></html>'
+  );
+}
+
+export function downloadEmailHtml(name: string, html: string): void {
+  const content = ensureHtmlDocument(html);
+  const blob = new Blob([content], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = sanitizeHtmlFilename(name);
+  a.click();
+  URL.revokeObjectURL(url);
 }

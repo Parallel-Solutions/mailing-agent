@@ -59,6 +59,19 @@ def _task_timeout_seconds(task_type: str) -> int:
 
 
 def _mark_terminal_failure(task: dict[str, Any], message: str) -> None:
+    task_type = str(task.get("task_type") or "")
+    if task_type == "sender_batch":
+        try:
+            from src.campaigns.batch_worker import finalize_sender_batch_task_failure
+
+            finalize_sender_batch_task_failure(str(task["id"]), message)
+        except Exception:
+            logger.exception(
+                "queue_worker_finalize_sender_batch_failed",
+                task_id=task.get("id"),
+                job_id=task.get("job_id"),
+            )
+        return
     try:
         from src.workers.background_worker import mark_task_state_failed
 

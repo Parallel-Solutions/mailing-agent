@@ -1,5 +1,5 @@
 import { FullscreenExitOutlined, FullscreenOutlined, RedoOutlined, UndoOutlined } from '@ant-design/icons';
-import { App, Button, Space, Spin, Typography } from 'antd';
+import { App, Button, Input, Space, Spin, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
@@ -8,9 +8,12 @@ import { campaignsApi } from '@/api/campaigns';
 import { templatesApi } from '@/api/templates';
 import type { ChainLinkKind, EmailChain } from '@/api/types';
 import { EditorSideAccordion } from '@/features/assistants';
+import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { readBoolParam } from '@/utils/urlState';
 import { ChainCanvas } from '@/features/campaigns/chain/ChainCanvas';
 import { ChainNodeBlock } from '@/features/campaigns/chain/ChainNodeBlock';
 import { ChainNodeSettingsPanel } from '@/features/campaigns/chain/ChainNodeSettingsPanel';
+import { invalidateCampaignDerivedData } from '@/features/campaigns/campaignQueryUtils';
 import {
   addChildEmailNode,
   addChildLinkNode,
@@ -37,19 +40,40 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
   const campaignId = (location.state as { campaignId?: string } | null)?.campaignId;
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
+  const { searchParams, pushParams } = useUrlNavigation();
   const [chain, setChain] = useState<EmailChain>(createEmptyChain());
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [chainName, setChainName] = useState('');
   const [history, setHistory] = useState<EmailChain[]>([]);
   const [future, setFuture] = useState<EmailChain[]>([]);
   const [dirty, setDirty] = useState(false);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(() => readBoolParam(searchParams, 'fullscreen'));
   const debounceRef = useRef<number | null>(null);
   const chainLoadedRef = useRef(false);
   const dirtyRef = useRef(false);
+  const savedNameRef = useRef('');
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+
+  const nodeParam = searchParams.get('node');
+  const selectedNodeId = useMemo(() => {
+    if (nodeParam && chain.nodes.some((node) => node.id === nodeParam)) {
+      return nodeParam;
+    }
+    return chain.root_node_id || null;
+  }, [chain.nodes, chain.root_node_id, nodeParam]);
+
+  const selectNode = useCallback(
+    (nodeId: string | null) => {
+      if (!nodeId || nodeId === chain.root_node_id) {
+        pushParams({}, ['node']);
+        return;
+      }
+      pushParams({ node: nodeId });
+    },
+    [chain.root_node_id, pushParams],
+  );
 
   dirtyRef.current = dirty;
 
@@ -79,9 +103,16 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
   useEffect(() => {
     if (!chainQuery.data?.chain) return;
 
+    if (!legacyCampaign) {
+      const loadedName = (chainQuery.data as ChainRecord).name ?? '';
+      if (!chainLoadedRef.current || !dirtyRef.current) {
+        setChainName(loadedName);
+        savedNameRef.current = loadedName;
+      }
+    }
+
     if (!chainLoadedRef.current) {
       setChain(chainQuery.data.chain);
-      setSelectedNodeId(chainQuery.data.chain.root_node_id);
       setHistory([]);
       setFuture([]);
       setDirty(false);
@@ -92,10 +123,12 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
     if (!dirtyRef.current) {
       setChain(chainQuery.data.chain);
     }
-  }, [chainQuery.data?.chain]);
+  }, [chainQuery.data, legacyCampaign]);
 
   useEffect(() => {
     chainLoadedRef.current = false;
+    setChainName('');
+    savedNameRef.current = '';
   }, [id]);
 
   useEffect(() => {
@@ -144,10 +177,29 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
   );
 
   const saveMutation = useMutation({
-    mutationFn: () =>
-      legacyCampaign ? campaignsApi.putEmailChain(id, chain) : chainsApi.save(id, chain),
+    mutationFn: async () => {
+      if (legacyCampaign) {
+        return campaignsApi.putEmailChain(id, chain);
+      }
+      const trimmed = chainName.trim();
+      if (!trimmed) {
+        throw new Error('Укажите название цепочки');
+      }
+      if (trimmed !== savedNameRef.current) {
+        await chainsApi.update(id, { name: trimmed });
+        savedNameRef.current = trimmed;
+        setChainName(trimmed);
+      }
+      return chainsApi.save(id, chain);
+    },
     onSuccess: () => {
       setDirty(false);
+      if (legacyCampaign) {
+        invalidateCampaignDerivedData(queryClient, id);
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ['chain', id] });
+        void queryClient.invalidateQueries({ queryKey: ['chains'] });
+      }
       message.success('Цепочка сохранена');
     },
     onError: (error: Error) => message.error(error.message),
@@ -166,7 +218,7 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
         queryKey: legacyCampaign ? ['email-chain', id] : ['chain', id],
       });
       if (legacyCampaign) {
-        void queryClient.invalidateQueries({ queryKey: ['campaign', id] });
+        invalidateCampaignDerivedData(queryClient, id);
       } else {
         void queryClient.invalidateQueries({ queryKey: ['chains'] });
       }
@@ -185,7 +237,7 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chain, dirty, id]);
+  }, [chain, chainName, dirty, id]);
 
   const undo = () => {
     const prev = history[history.length - 1];
@@ -212,7 +264,7 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
       onOk: () => {
         const next = removeNodeSubtree(chain, selectedNodeId);
         applyChain(next);
-        setSelectedNodeId(next.root_node_id);
+        selectNode(next.root_node_id);
       },
     });
   };
@@ -234,9 +286,11 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
     if (!element) return;
     if (document.fullscreenElement) {
       void document.exitFullscreen();
+      pushParams({}, ['fullscreen']);
       return;
     }
     void element.requestFullscreen();
+    pushParams({ fullscreen: '1' });
   };
 
   if (chainQuery.isLoading || (legacyCampaign && campaignQuery.isLoading)) {
@@ -255,9 +309,7 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
     );
   }
 
-  const titleName = legacyCampaign
-    ? campaignQuery.data?.name
-    : (chainQuery.data as ChainRecord | undefined)?.name;
+  const titleName = legacyCampaign ? campaignQuery.data?.name : chainName;
   const campaignLink = legacyCampaign
     ? `/campaigns/new?id=${id}`
     : campaignId
@@ -267,11 +319,26 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
   return (
     <div className="email-chain-page">
       <div className="email-chain-header">
-        <div>
+        <div className="email-chain-header__title">
           <Typography.Title level={3} style={{ margin: 0 }}>
             Конструктор цепочек писем
           </Typography.Title>
-          <Typography.Text type="secondary">{titleName}</Typography.Text>
+          {legacyCampaign ? (
+            <Typography.Text type="secondary">{titleName}</Typography.Text>
+          ) : (
+            <label className="email-chain-name-field">
+              <span className="email-chain-name-field__label">Название</span>
+              <Input
+                value={chainName}
+                onChange={(event) => {
+                  setChainName(event.target.value);
+                  setDirty(true);
+                }}
+                placeholder="Название цепочки"
+                maxLength={255}
+              />
+            </label>
+          )}
         </div>
         <Space wrap>
           <Button icon={<UndoOutlined />} onClick={undo} disabled={!history.length} />
@@ -310,18 +377,18 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
               chain={chain}
               layout={layout}
               selectedNodeId={selectedNodeId}
-              onSelectNode={setSelectedNodeId}
+              onSelectNode={selectNode}
               onAddChildEmail={(nodeId) => {
                 const next = addChildEmailNode(chain, nodeId);
                 applyChain(next);
                 const newEdge = next.edges[next.edges.length - 1];
-                setSelectedNodeId(newEdge?.target_id ?? nodeId);
+                selectNode(newEdge?.target_id ?? nodeId);
               }}
               onAddChildLink={(nodeId, linkKind: ChainLinkKind) => {
                 const next = addChildLinkNode(chain, nodeId, linkKind);
                 applyChain(next);
                 const newEdge = next.edges[next.edges.length - 1];
-                setSelectedNodeId(newEdge?.target_id ?? nodeId);
+                selectNode(newEdge?.target_id ?? nodeId);
               }}
             />
           </div>

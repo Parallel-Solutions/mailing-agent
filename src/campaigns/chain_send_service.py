@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import select
+
 from src.campaigns.chain_service import (
     create_branch_tokens,
     find_node,
@@ -106,6 +108,8 @@ def send_chain_node_email(
     followup_token: str | None = None,
     hour_counts: dict[str, int] | None = None,
     day_counts: dict[str, int] | None = None,
+    test_email: str | None = None,
+    connection_id: str | None = None,
 ) -> dict[str, Any]:
     from src.campaigns.batch_worker import _send_delivery_message
 
@@ -120,28 +124,42 @@ def send_chain_node_email(
             raise ValueError("chain node not found")
         if not is_email_node(node):
             raise ValueError("chain node is not an email block")
+
+        active_test_email = test_email
+        if followup_token:
+            token_row = session.get(CampaignChainToken, followup_token)
+            if token_row is not None and token_row.test_email:
+                active_test_email = token_row.test_email
+
         from src.generator.delivery.suppression_store import is_suppressed
 
-        suppressed, _reason = is_suppressed(recipient.email)
+        suppression_target = active_test_email or recipient.email
+        suppressed, suppress_reason = is_suppressed(suppression_target)
         if suppressed:
             if followup_token:
                 mark_token_sent(followup_token, status="skipped")
             return {"status": "skipped", "reason": "suppressed", "node_id": node_id}
-        from src.campaigns.connection_service import campaign_connection_ids, pick_available_connection
-
         owner = camp.owner_username
         job_id = camp.job_id
-        counters_hour = hour_counts if hour_counts is not None else {}
-        counters_day = day_counts if day_counts is not None else {}
-        connection = pick_available_connection(
-            campaign_connection_ids(camp),
-            owner,
-            counters_hour,
-            counters_day,
-        )
-        if connection is None:
-            raise RuntimeError("Все подключения исчерпали лимиты отправки")
-        connection_id = connection.id
+        delivery_email = active_test_email or recipient.email
+
+        if connection_id:
+            resolved_connection_id = connection_id
+        else:
+            from src.campaigns.connection_service import campaign_connection_ids, pick_available_connection
+
+            counters_hour = hour_counts if hour_counts is not None else {}
+            counters_day = day_counts if day_counts is not None else {}
+            connection = pick_available_connection(
+                campaign_connection_ids(camp),
+                owner,
+                counters_hour,
+                counters_day,
+            )
+            if connection is None:
+                raise RuntimeError("Все подключения исчерпали лимиты отправки")
+            resolved_connection_id = connection.id
+            connection_id = resolved_connection_id
 
         subject_template, body_html_template, body_text_template = _load_node_email_template(node, camp)
         email_template_id = str(node.get("email_template_id") or "") or None
@@ -160,6 +178,8 @@ def send_chain_node_email(
             campaign=camp,
             template_id=email_template_id,
         )
+        if active_test_email:
+            subject = f"[TEST] {subject}"
 
         edges = outgoing_edges(chain, node_id)
         node_by_id = {n["id"]: n for n in chain.get("nodes") or []}
@@ -170,6 +190,7 @@ def send_chain_node_email(
                 recipient_id=int(recipient_id),
                 source_node_id=node_id,
                 edges=edges,
+                test_email=active_test_email,
             )
             for row in token_rows:
                 session.add(row)
@@ -180,13 +201,32 @@ def send_chain_node_email(
             for edge, row in zip(edges, token_rows, strict=True)
         ]
         html, text = inject_chain_buttons(html, text, buttons)
-        attachments = _resolve_document_attachments(
-            list(node.get("document_template_ids") or []),
-            campaign=camp,
-            recipient=recipient,
-        )
+        from src.generator.generation.kp_one_page_fitter import KpLayoutError
+        from src.campaigns.layout_send_utils import record_kp_layout_send_failure
 
-        if batch_id:
+        try:
+            attachments = _resolve_document_attachments(
+                list(node.get("document_template_ids") or []),
+                campaign=camp,
+                recipient=recipient,
+            )
+        except KpLayoutError as exc:
+            if not active_test_email:
+                record_kp_layout_send_failure(
+                    campaign_id=campaign_id,
+                    recipient=recipient,
+                    campaign=camp,
+                    batch_id=batch_id,
+                    error=exc,
+                    subject=subject,
+                    send_mode="chain_followup" if followup_token else "chain_root",
+                )
+            if followup_token:
+                mark_token_sent(followup_token, error=str(exc))
+            session.commit()
+            raise
+
+        if batch_id and not active_test_email:
             record_delivery_attempt(
                 campaign_id=campaign_id,
                 recipient_id=int(recipient_id),
@@ -196,30 +236,35 @@ def send_chain_node_email(
 
         try:
             message_id = _send_delivery_message(
-                connection_id=connection_id,
+                connection_id=resolved_connection_id,
                 owner_username=owner,
-                to_email=recipient.email,
+                to_email=delivery_email,
                 subject=subject,
                 html=html,
                 text=text,
                 job_id=job_id,
                 row_id=str(recipient.id),
                 attachments=attachments,
+                send_mode="chain_followup" if followup_token else None,
+                send_run_id=followup_token,
+                campaign=camp,
             )
-            extra = dict(recipient.extra or {})
-            chain_state = dict(extra.get("chain") or {})
-            chain_state["current_node_id"] = node_id
-            extra["chain"] = chain_state
-            recipient.extra = extra
+            if not active_test_email:
+                extra = dict(recipient.extra or {})
+                chain_state = dict(extra.get("chain") or {})
+                chain_state["current_node_id"] = node_id
+                extra["chain"] = chain_state
+                recipient.extra = extra
 
-            is_root = node_id == chain.get("root_node_id")
-            if is_root and not followup_token:
-                recipient.send_status = "in_chain"
-            elif followup_token:
+                is_root = node_id == chain.get("root_node_id")
+                if is_root and not followup_token:
+                    recipient.send_status = "in_chain"
+                recipient.last_error = None
+
+            if followup_token:
                 mark_token_sent(followup_token)
-            recipient.last_error = None
 
-            if batch_id:
+            if batch_id and not active_test_email:
                 record_delivery_attempt(
                     campaign_id=campaign_id,
                     recipient_id=int(recipient_id),
@@ -232,11 +277,17 @@ def send_chain_node_email(
             if day_counts is not None:
                 day_counts[connection_id] = day_counts.get(connection_id, 0) + 1
             session.flush()
-            return {"status": "sent", "message_id": message_id, "node_id": node_id}
+            return {
+                "status": "sent",
+                "message_id": message_id,
+                "node_id": node_id,
+                "to": delivery_email,
+                "test_email": active_test_email,
+            }
         except Exception as exc:
             if followup_token:
                 mark_token_sent(followup_token, error=str(exc))
-            if batch_id:
+            if batch_id and not active_test_email:
                 record_delivery_attempt(
                     campaign_id=campaign_id,
                     recipient_id=int(recipient_id),
@@ -244,7 +295,8 @@ def send_chain_node_email(
                     status="failed",
                     error=str(exc),
                 )
-            recipient.last_error = str(exc)
+            if not active_test_email:
+                recipient.last_error = str(exc)
             session.flush()
             logger.exception(
                 "chain_node_send_failed",
@@ -285,7 +337,8 @@ def dispatch_chain_followup(token: str) -> None:
         if recipient is not None:
             from src.generator.delivery.suppression_store import is_suppressed
 
-            suppressed, _reason = is_suppressed(recipient.email)
+            suppression_target = row.test_email or recipient.email
+            suppressed, _reason = is_suppressed(suppression_target)
             if suppressed:
                 from src.campaigns.chain_service import mark_token_sent
 
@@ -305,3 +358,71 @@ def dispatch_chain_followup(token: str) -> None:
             active_key=f"chain_followup:{row.token}",
             max_attempts=3,
         )
+
+
+def start_test_chain(
+    campaign_id: str,
+    to_email: str,
+    owner_username: str,
+    connection_id: str,
+    *,
+    visible_owners: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    from src.security.company_access import can_access_owner
+
+    to_email = str(to_email or "").strip()
+    if not to_email:
+        raise ValueError("Укажите email для теста")
+
+    with session_scope() as session:
+        camp = session.get(Campaign, campaign_id)
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
+            raise ValueError("Рассылка не найдена")
+        if camp.send_scenario != "email_chain":
+            raise ValueError("Рассылка не использует email-цепочку")
+
+        recipient = session.scalar(
+            select(CampaignRecipient)
+            .where(
+                CampaignRecipient.campaign_id == campaign_id,
+                CampaignRecipient.excluded.is_(False),
+            )
+            .order_by(CampaignRecipient.row_index.asc())
+            .limit(1)
+        )
+        if recipient is None:
+            raise ValueError("Нет получателей для тестовой цепочки")
+
+        chain = get_email_chain(camp, session=session)
+        root_id = str(chain.get("root_node_id") or "")
+        if not root_id:
+            raise ValueError("В цепочке не задан корневой блок")
+
+        recipient_id = int(recipient.id)
+        recipient_preview = {
+            "id": recipient_id,
+            "company": recipient.company,
+            "contact_name": recipient.contact_name,
+            "email": recipient.email,
+        }
+
+    result = send_chain_node_email(
+        campaign_id=campaign_id,
+        recipient_id=recipient_id,
+        node_id=root_id,
+        test_email=to_email,
+        connection_id=connection_id,
+    )
+    if result.get("status") != "sent":
+        reason = str(result.get("reason") or "unknown")
+        if reason == "suppressed":
+            raise ValueError(f"Тестовый адрес {to_email} в стоп-листе")
+        raise ValueError(f"Не удалось отправить тестовую цепочку: {reason}")
+
+    return {
+        "mode": "chain_test",
+        "to": to_email,
+        "message_id": result.get("message_id"),
+        "node_id": result.get("node_id"),
+        "recipient_preview": recipient_preview,
+    }

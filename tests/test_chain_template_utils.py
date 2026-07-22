@@ -38,6 +38,8 @@ class ChainTemplateUtilsTests(unittest.TestCase):
         self.assertIn("/chain/branch/token-2", result_html)
         self.assertIn("text-align:center", result_html)
         self.assertIn("padding:12px 0", result_html)
+        self.assertIn('<p style="margin:0">', result_html)
+        self.assertNotIn("margin:0 0 8px", result_html)
         self.assertLess(result_html.index("Hello"), result_html.index("Получить КП"))
         self.assertLess(result_html.index("Получить КП"), result_html.index("Footer"))
         self.assertIn("/chain/branch/token-1", result_text)
@@ -85,6 +87,10 @@ class ChainTemplateUtilsTests(unittest.TestCase):
         preview = build_chain_buttons_preview_html(wrapper_style="text-align:right;padding:4px 0")
         self.assertIn("text-align:right", preview)
         self.assertIn("padding:4px 0", preview)
+        self.assertIn('<p style="margin:0">', preview)
+        self.assertIn("Вариант 1", preview)
+        self.assertIn("Вариант 2", preview)
+        self.assertNotIn("margin:0 0 8px", preview)
 
 
 if __name__ == "__main__":

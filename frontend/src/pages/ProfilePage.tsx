@@ -2,18 +2,25 @@ import { ProForm, ProFormSwitch, ProFormText, ProFormTextArea } from '@ant-desig
 import { App, Tabs, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { profileApi } from '@/api/profile';
+import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { readEnumParam } from '@/utils/urlState';
 import { ConnectionsPage } from './ConnectionsPage';
+
+const PROFILE_TABS = ['main', 'connections', 'security', 'defaults', 'notifications'] as const;
 
 export function ProfilePage() {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery({
-    queryKey: ['profile'],
+  const { searchParams, pushParams } = useUrlNavigation();
+  const activeTab = readEnumParam(searchParams, 'tab', PROFILE_TABS, 'main');
+  const { data, isLoading } = useQuery({    queryKey: ['profile'],
     queryFn: () => profileApi.get(),
   });
 
   return (
     <Tabs
+      activeKey={activeTab}
+      onChange={(key) => pushParams({ tab: key === 'main' ? null : key })}
       items={[
         {
           key: 'main',
@@ -28,7 +35,7 @@ export function ProfilePage() {
                 void queryClient.invalidateQueries({ queryKey: ['profile'] });
               }}
             >
-              <ProFormText name="display_name" label="Имя отправителя" />
+              <ProFormText name="display_name" label="Отображаемое имя" />
               <ProFormText name="email" label="Email" />
               <ProFormText name="company" label="Компания" />
               <ProFormText name="job_title" label="Должность" />

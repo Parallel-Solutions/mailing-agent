@@ -2,10 +2,12 @@ import { PlusOutlined } from '@ant-design/icons';
 import { ModalForm, ProFormDigit, ProFormSelect, ProFormText, ProTable } from '@ant-design/pro-components';
 import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { connectionsApi } from '@/api/connections';
 import type { SmtpSetupAnalysis, SmtpSetupSettings } from '@/api/connections';
 import type { DeliveryConnection } from '@/api/types';
+import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { readBoolParam, readEnumParam } from '@/utils/urlState';
 import {
   MAILBOX_AUTH_KIND_OPTIONS,
   authKindFromSetupAction,
@@ -14,6 +16,7 @@ import {
   type AuthKind,
 } from '@/utils/connectionAuthKind';
 import { selectSmtpSetupSettings, smtpSetupSecurity } from '@/utils/smtpSetup';
+import { SmtpSetupInstructions } from '@/features/connections/SmtpSetupInstructions';
 
 type ConnectionTransport = 'smtp' | 'rusender' | 'mailopost';
 type ApiTransport = 'rusender' | 'mailopost';
@@ -313,22 +316,45 @@ function EditConnectionAction({
   );
 }
 
+const SMTP_SETUP_STAGES = ['email', 'credentials', 'manual'] as const;
+
 export function ConnectionsPage() {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
+  const { searchParams, pushParams } = useUrlNavigation();
+  const addModalOpen = readBoolParam(searchParams, 'add');
+  const smtpSetupStage = readEnumParam(searchParams, 'smtp_stage', SMTP_SETUP_STAGES, 'email');
   const [form] = Form.useForm();
   const [methodKind, setMethodKind] = useState<MethodKind | null>(null);
   const [authKind, setAuthKind] = useState<AuthKind | null>(null);
   const [recommendedAuthKind, setRecommendedAuthKind] = useState<AuthKind | null>(null);
   const [apiTransport, setApiTransport] = useState<ApiTransport | null>(null);
-  const [smtpSetupStage, setSmtpSetupStage] = useState<SmtpSetupStage>('email');
   const [smtpAnalysis, setSmtpAnalysis] = useState<SmtpSetupAnalysis | null>(null);
   const [smtpSetupSettings, setSmtpSetupSettings] = useState<SmtpSetupSettings | null>(null);
   const [smtpSetupError, setSmtpSetupError] = useState('');
   const [isAnalyzingSmtp, setIsAnalyzingSmtp] = useState(false);
   const [isOAuthConnecting, setIsOAuthConnecting] = useState(false);
-  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [isVerifyingSmtp, setIsVerifyingSmtp] = useState(false);
+  const [showAuthKindPicker, setShowAuthKindPicker] = useState(false);
   const [limitsStepConnectionId, setLimitsStepConnectionId] = useState<string | null>(null);
+
+  const setSmtpSetupStage = useCallback(
+    (stage: SmtpSetupStage) => {
+      pushParams({ add: '1', smtp_stage: stage === 'email' ? null : stage });
+    },
+    [pushParams],
+  );
+
+  const setAddModalOpen = useCallback(
+    (open: boolean) => {
+      if (open) {
+        pushParams({ add: '1', smtp_stage: 'email' });
+        return;
+      }
+      pushParams({}, ['add', 'smtp_stage']);
+    },
+    [pushParams],
+  );
 
   const refreshConnections = () => {
     void queryClient.invalidateQueries({ queryKey: ['connections'] });
@@ -343,6 +369,8 @@ export function ConnectionsPage() {
     setAuthKind(null);
     setRecommendedAuthKind(null);
     setIsOAuthConnecting(false);
+    setIsVerifyingSmtp(false);
+    setShowAuthKindPicker(false);
   };
 
   const resetAddModal = () => {
@@ -386,6 +414,7 @@ export function ConnectionsPage() {
     const email = String(values.email || '').trim().toLowerCase();
     setIsAnalyzingSmtp(true);
     setSmtpSetupError('');
+    setShowAuthKindPicker(false);
     try {
       const analysis = await connectionsApi.analyzeSmtp(email);
       setSmtpAnalysis(analysis);
@@ -543,7 +572,7 @@ export function ConnectionsPage() {
             },
             submitButtonProps: {
               disabled: submitDisabled,
-              loading: isAnalyzingSmtp || isOAuthConnecting,
+              loading: isAnalyzingSmtp || isOAuthConnecting || isVerifyingSmtp,
               style:
                 !onLimitsStep && methodKind === 'mailbox' && authKind === 'oauth'
                   ? { display: 'none' }
@@ -612,6 +641,8 @@ export function ConnectionsPage() {
 
             if (methodKind !== 'mailbox' || !authKind || authKind === 'oauth') return false;
 
+            setIsVerifyingSmtp(true);
+            try {
             const security = (values.security || smtpSetupSecurity(
               smtpSetupSettings || {
                 provider: 'custom',
@@ -650,7 +681,6 @@ export function ConnectionsPage() {
                 smtp_username: values.smtp_username || values.email,
               });
             } catch (error) {
-              setSmtpSetupStage('manual');
               setSmtpSetupError(
                 error instanceof Error
                   ? error.message
@@ -660,8 +690,25 @@ export function ConnectionsPage() {
             }
 
             if (!verification.verified) {
-              if (verification.analysis) setSmtpAnalysis(verification.analysis);
-              setSmtpSetupStage('manual');
+              if (verification.analysis) {
+                setSmtpAnalysis(verification.analysis);
+                const analysisAction = verification.analysis.action?.action;
+                if (analysisAction) {
+                  const recommendedKind = authKindFromSetupAction(analysisAction);
+                  const oauthOk = isOAuthKindAvailable({
+                    oauthAvailable: verification.analysis.oauth_available,
+                    oauthProvider: verification.analysis.action.oauth_provider,
+                    email: values.email,
+                    smtpProvider: selectSmtpSetupSettings(verification.analysis)?.provider,
+                  });
+                  const nextKind = recommendedKind === 'oauth' && !oauthOk ? 'app_password' : recommendedKind;
+                  setRecommendedAuthKind(nextKind);
+                  setAuthKind(nextKind);
+                  if (analysisAction === 'show_manual') {
+                    setSmtpSetupStage('manual');
+                  }
+                }
+              }
               setSmtpSetupError(
                 verification.error
                   || 'Сервер найден, но подключение не прошло проверку. Проверьте логин, пароль и настройки SMTP.',
@@ -684,6 +731,9 @@ export function ConnectionsPage() {
             message.success('Почтовый ящик подключён');
             enterLimitsStep(created.id);
             return false;
+            } finally {
+              setIsVerifyingSmtp(false);
+            }
           }}
         >
           {onLimitsStep ? (
@@ -778,59 +828,6 @@ export function ConnectionsPage() {
                 </Space>
               ) : (
                 <>
-                  <Form.Item label="Тип входа" required style={{ marginBottom: 16 }}>
-                    <Radio.Group
-                      value={authKind || undefined}
-                      onChange={(event) => {
-                        setAuthKind(event.target.value as AuthKind);
-                        setSmtpSetupError('');
-                      }}
-                      style={{ width: '100%' }}
-                    >
-                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                        {MAILBOX_AUTH_KIND_OPTIONS.map((option) => {
-                          const oauthDisabled = option.value === 'oauth' && !oauthAvailable;
-                          return (
-                            <Radio
-                              key={option.value}
-                              value={option.value}
-                              disabled={oauthDisabled}
-                              style={{
-                                width: '100%',
-                                margin: 0,
-                                padding: '12px 14px',
-                                border: '1px solid var(--ant-color-border)',
-                                borderRadius: 8,
-                                background:
-                                  authKind === option.value
-                                    ? 'var(--ant-color-primary-bg)'
-                                    : undefined,
-                              }}
-                            >
-                              <Space direction="vertical" size={0}>
-                                <Space size={8}>
-                                  <Typography.Text strong>{option.label}</Typography.Text>
-                                  {recommendedAuthKind === option.value ? (
-                                    <Tag color="blue">Рекомендуем</Tag>
-                                  ) : null}
-                                  {oauthDisabled ? (
-                                    <Tag>Недоступно</Tag>
-                                  ) : null}
-                                </Space>
-                                <Typography.Text type="secondary">{option.description}</Typography.Text>
-                                {oauthDisabled ? (
-                                  <Typography.Text type="secondary">
-                                    OAuth для этого адреса не настроен на сервере или не поддерживается.
-                                  </Typography.Text>
-                                ) : null}
-                              </Space>
-                            </Radio>
-                          );
-                        })}
-                      </Space>
-                    </Radio.Group>
-                  </Form.Item>
-
                   {smtpSetupError ? (
                     <Alert
                       type="error"
@@ -841,28 +838,73 @@ export function ConnectionsPage() {
                     />
                   ) : null}
 
+                  {showAuthKindPicker ? (
+                    <Form.Item label="Тип входа" required style={{ marginBottom: 16 }}>
+                      <Radio.Group
+                        value={authKind || undefined}
+                        onChange={(event) => {
+                          setAuthKind(event.target.value as AuthKind);
+                          setSmtpSetupError('');
+                        }}
+                        style={{ width: '100%' }}
+                      >
+                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                          {MAILBOX_AUTH_KIND_OPTIONS.map((option) => {
+                            const oauthDisabled = option.value === 'oauth' && !oauthAvailable;
+                            return (
+                              <Radio
+                                key={option.value}
+                                value={option.value}
+                                disabled={oauthDisabled}
+                                style={{
+                                  width: '100%',
+                                  margin: 0,
+                                  padding: '12px 14px',
+                                  border: '1px solid var(--ant-color-border)',
+                                  borderRadius: 8,
+                                  background:
+                                    authKind === option.value
+                                      ? 'var(--ant-color-primary-bg)'
+                                      : undefined,
+                                }}
+                              >
+                                <Space direction="vertical" size={0}>
+                                  <Space size={8}>
+                                    <Typography.Text strong>{option.label}</Typography.Text>
+                                    {recommendedAuthKind === option.value ? (
+                                      <Tag color="blue">Рекомендуем</Tag>
+                                    ) : null}
+                                    {oauthDisabled ? (
+                                      <Tag>Недоступно</Tag>
+                                    ) : null}
+                                  </Space>
+                                  <Typography.Text type="secondary">{option.description}</Typography.Text>
+                                  {oauthDisabled ? (
+                                    <Typography.Text type="secondary">
+                                      OAuth для этого адреса не настроен на сервере или не поддерживается.
+                                    </Typography.Text>
+                                  ) : null}
+                                </Space>
+                              </Radio>
+                            );
+                          })}
+                        </Space>
+                      </Radio.Group>
+                    </Form.Item>
+                  ) : smtpSetupStage !== 'manual' ? (
+                    <Button
+                      type="link"
+                      style={{ padding: 0, marginBottom: 16 }}
+                      onClick={() => setShowAuthKindPicker(true)}
+                    >
+                      Изменить тип входа
+                    </Button>
+                  ) : null}
+
                   {authKind === 'oauth' ? (
                     <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                      {smtpAnalysis?.action.message_ru ? (
-                        <Alert
-                          type="info"
-                          showIcon
-                          message={smtpAnalysis.action.message_ru}
-                          description={smtpAnalysis.action.instructions.slice(0, 2).join(' ')}
-                        />
-                      ) : null}
-                      {smtpSetupSettings?.host ? (
-                        <Alert
-                          type="success"
-                          showIcon
-                          message={
-                            'Найден провайдер: '
-                            + (SMTP_PROVIDER_LABELS[smtpSetupSettings.provider] || 'Почтовый сервер')
-                          }
-                          description={
-                            smtpSetupSettings.host + ':' + smtpSetupSettings.port
-                          }
-                        />
+                      {smtpAnalysis?.action ? (
+                        <SmtpSetupInstructions action={smtpAnalysis.action} />
                       ) : null}
                       <Button
                         type="primary"
@@ -879,36 +921,9 @@ export function ConnectionsPage() {
 
                   {authKind === 'password' || authKind === 'app_password' ? (
                     <>
-                      {smtpSetupSettings?.host ? (
-                        <Alert
-                          type={smtpSetupStage === 'manual' ? 'warning' : 'success'}
-                          showIcon
-                          message={
-                            smtpSetupStage === 'manual'
-                              ? 'Проверьте настройки SMTP вручную'
-                              : 'Найден провайдер: '
-                                + (SMTP_PROVIDER_LABELS[smtpSetupSettings.provider] || 'Почтовый сервер')
-                          }
-                          description={
-                            smtpSetupSettings.host + ':' + smtpSetupSettings.port + ' · '
-                            + (
-                              smtpSetupSettings.use_ssl
-                                ? 'SSL/TLS'
-                                : smtpSetupSettings.use_starttls
-                                  ? 'STARTTLS'
-                                  : 'без шифрования'
-                            )
-                          }
-                          style={{ marginBottom: 16 }}
-                        />
-                      ) : null}
-
-                      {smtpAnalysis?.action.message_ru ? (
-                        <Alert
-                          type="info"
-                          showIcon
-                          message={smtpAnalysis.action.message_ru}
-                          description={smtpAnalysis.action.instructions.slice(0, 2).join(' ')}
+                      {smtpSetupStage !== 'manual' && smtpAnalysis?.action ? (
+                        <SmtpSetupInstructions
+                          action={smtpAnalysis.action}
                           style={{ marginBottom: 16 }}
                         />
                       ) : null}
@@ -1015,7 +1030,7 @@ export function ConnectionsPage() {
                     type="info"
                     showIcon
                     message="Перед подключением подтвердите адрес отправителя у провайдера"
-                    description="Токен хранится в зашифрованном виде и не отображается после сохранения. Кнопка «Проверить» отправит тестовое письмо на этот адрес. Имя отправителя задаётся в настройках профиля."
+                    description="Токен хранится в зашифрованном виде и не отображается после сохранения. Кнопка «Проверить» отправит тестовое письмо на этот адрес. Имя отправителя берётся из названия компании в рассылке."
                   />
                 </>
               ) : null}

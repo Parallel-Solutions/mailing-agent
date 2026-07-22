@@ -691,6 +691,10 @@ def _build_delivery_rows(
         delivery_response = _delivery_response_text(go_event, rusender_event, mailopost_event)
         recipient_role = _recipient_role_from_item(item, current_data_roles=current_data_roles)
         sent_at = _to_moscow_datetime(item.get("sent_at"))
+        log_status = _normalize_provider_status(_safe_text(item.get("status")))
+        if log_status in {"failed", "error", "rejected", "not_delivered", "bounced"}:
+            provider_status = log_status
+            label = _report_status_label(provider_status)
         rows.append(
             {
                 "row_id": _safe_text(item.get("row_id")),
@@ -713,6 +717,8 @@ def _build_delivery_rows(
                 "message_id": _safe_text(item.get("provider_job_id") or provider.get("job_id")),
                 "checked_at": _format_moscow_datetime(checked_at),
                 "comment": _comment_text(item, refresh_error),
+                "error": _safe_text(item.get("error")),
+                "layout_error_code": _safe_text(item.get("layout_error_code")),
             }
         )
     return rows, refresh_error
@@ -1897,6 +1903,9 @@ def _message_id(item: dict[str, Any]) -> str:
 
 
 def _comment_text(item: dict[str, Any], refresh_error: str) -> str:
+    error = _safe_text(item.get("error"))
+    if error:
+        return error
     warning = _safe_text(item.get("warning"))
     if warning and refresh_error:
         return f"{warning} Статус не обновлен: {refresh_error}"

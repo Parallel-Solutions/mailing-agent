@@ -1,0 +1,36 @@
+.campaign-wizard-steps .ant-steps-item.campaign-step--warning .ant-steps-item-icon {
+  background-color: #faad14;
+  border-color: #faad14;
+}
+
+.campaign-wizard-steps .ant-steps-item.campaign-step--warning .ant-steps-item-icon > .ant-steps-icon {
+  color: #fff;
+}
+
+.campaign-wizard-steps .ant-steps-item.campaign-step--warning.ant-steps-item-finish .ant-steps-item-icon {
+  background-color: #faad14;
+  border-color: #faad14;
+}
+
+.campaign-wizard-steps .ant-steps-item.campaign-step--clickable {
+  cursor: pointer;
+}
+
+.campaign-wizard-steps .ant-steps-item.campaign-step--clickable:hover .ant-steps-item-title {
+  color: #16794a;
+}
+
+.campaign-wizard--locked {
+  pointer-events: none;
+  user-select: none;
+  opacity: 0.72;
+}
+
+.campaign-step-fix-modal__issues {
+  margin-bottom: 16px;
+}
+
+.campaign-step-fix-modal__issues ul {
+  margin: 0;
+  padding-left: 20px;
+}

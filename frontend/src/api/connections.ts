@@ -17,6 +17,7 @@ export type SmtpSetupAction = {
   instructions: string[];
   oauth_provider?: string | null;
   recommended_settings?: SmtpSetupSettings | null;
+  ai_used?: boolean;
 };
 
 export type SmtpSetupAnalysis = {

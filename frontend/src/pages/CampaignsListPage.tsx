@@ -16,7 +16,7 @@ const statusColor: Record<string, string> = {
   cancelled: 'error',
 };
 
-export function CampaignsListPage() {
+export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
@@ -61,7 +61,7 @@ export function CampaignsListPage() {
       rowKey="id"
       loading={isLoading}
       search={false}
-      headerTitle="Рассылки"
+      headerTitle={embedded ? undefined : 'Рассылки'}
       toolBarRender={() => [
         <Button key="new" type="primary" icon={<PlusOutlined />} onClick={() => navigate('/campaigns/new')}>
           Создать рассылку

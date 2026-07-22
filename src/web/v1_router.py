@@ -21,8 +21,11 @@ from src.campaigns import (
     profile_service,
     service,
     template_ai,
+    template_import_service,
     template_service,
+    template_preview_image_service,
     template_starters,
+    validation_auto_fix_service,
     variable_match_service,
     work_type_service,
 )
@@ -30,6 +33,7 @@ from src.campaigns.assistants import run_editor_assistant
 from src.campaigns.schedule_planner import plan_batches
 from src.jobs.access import coerce_principal
 from src.security.auth import Principal
+from src.security.company_access import visible_owner_usernames
 from src.utils.config import settings
 from src.web.upload_validation import validate_uploaded_file
 
@@ -168,6 +172,7 @@ class TemplateSaveBody(BaseModel):
     variables: list[dict[str, Any]] | None = None
     editor_state: dict[str, Any] | None = None
     is_template: bool | None = None
+    rendered_pdf_filename: str | None = None
 
 
 class KpPreviewBody(BaseModel):
@@ -262,6 +267,10 @@ def _actor(principal: object) -> Principal:
     return coerce_principal(principal)
 
 
+def _visibility(actor: Principal) -> frozenset[str] | None:
+    return visible_owner_usernames(actor)
+
+
 def _binary_response(item: dict[str, Any], *, disposition: str) -> Response:
     filename = str(item["filename"])
     media_type = str(item.get("media_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream")
@@ -277,6 +286,18 @@ def _binary_response(item: dict[str, Any], *, disposition: str) -> Response:
     )
 
 
+def _preview_image_response(item: dict[str, Any], *, cache_control: str) -> Response:
+    headers = {
+        "Content-Disposition": "inline; filename*=UTF-8''preview.png",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": cache_control,
+    }
+    etag = item.get("etag")
+    if etag:
+        headers["ETag"] = f'"{etag}"'
+    return Response(content=item["content"], media_type="image/png", headers=headers)
+
+
 def create_v1_router(*, check_auth: Any) -> APIRouter:
     router = APIRouter(prefix="/api/v1", tags=["v1"])
 
@@ -284,7 +305,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/connections")
     def get_connections(principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        return _ok(connection_service.list_connections(actor.username))
+        return _ok(connection_service.list_connections(actor.username, visible_owners=_visibility(actor)))
 
     @router.post("/connections")
     def post_connection(body: ConnectionCreateBody, principal: object = Depends(check_auth)):
@@ -305,7 +326,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(connection_service.update_connection(
-                connection_id, actor.username, body.model_dump(exclude_none=True)
+                connection_id, actor.username, body.model_dump(exclude_none=True),
+                visible_owners=_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -316,7 +338,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def delete_connection(connection_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            connection_service.delete_connection(connection_id, actor.username)
+            connection_service.delete_connection(connection_id, actor.username, visible_owners=_visibility(actor))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _ok({"deleted": True})
@@ -325,7 +347,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def test_connection(connection_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            return _ok(connection_service.test_connection(connection_id, actor.username))
+            return _ok(connection_service.test_connection(connection_id, actor.username, visible_owners=_visibility(actor)))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:
@@ -366,7 +388,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/campaigns/active-sending")
     def get_active_sending(principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        return _ok(service.active_sending(actor.username, is_admin=actor.is_admin))
+        return _ok(service.active_sending(actor.username, visible_owners=_visibility(actor)))
 
     @router.get("/campaigns")
     def get_campaigns(
@@ -380,7 +402,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         return _ok(
             service.list_campaigns(
                 actor.username,
-                is_admin=actor.is_admin,
+                visible_owners=_visibility(actor),
                 status=status,
                 q=q,
                 limit=limit,
@@ -396,7 +418,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/campaigns/{campaign_id}")
     def get_campaign(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = service.get_campaign(campaign_id, actor.username, is_admin=actor.is_admin)
+        item = service.get_campaign(campaign_id, actor.username, visible_owners=_visibility(actor))
         if not item:
             raise HTTPException(status_code=404, detail="Рассылка не найдена")
         return _ok(item)
@@ -406,7 +428,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             item = service.update_campaign(
-                campaign_id, actor.username, body.model_dump(exclude_none=True), is_admin=actor.is_admin
+                campaign_id, actor.username, body.model_dump(exclude_none=True), visible_owners=_visibility(actor)
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -417,7 +439,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.post("/campaigns/{campaign_id}/duplicate")
     def post_duplicate(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = service.duplicate_campaign(campaign_id, actor.username, is_admin=actor.is_admin)
+        item = service.duplicate_campaign(campaign_id, actor.username, visible_owners=_visibility(actor))
         if not item:
             raise HTTPException(status_code=404, detail="Рассылка не найдена")
         return _ok(item)
@@ -425,7 +447,18 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.post("/campaigns/{campaign_id}/archive")
     def post_archive(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = service.archive_campaign(campaign_id, actor.username, is_admin=actor.is_admin)
+        item = service.archive_campaign(campaign_id, actor.username, visible_owners=_visibility(actor))
+        if not item:
+            raise HTTPException(status_code=404, detail="Рассылка не найдена")
+        return _ok(item)
+
+    @router.post("/campaigns/{campaign_id}/reset")
+    def post_reset_campaign(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            item = service.reset_campaign_draft(campaign_id, actor.username, visible_owners=_visibility(actor))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not item:
             raise HTTPException(status_code=404, detail="Рассылка не найдена")
         return _ok(item)
@@ -441,7 +474,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         return _ok(
             service.list_recipients(
-                campaign_id, actor.username, is_admin=actor.is_admin, limit=limit, offset=offset, q=q
+                campaign_id, actor.username, visible_owners=_visibility(actor), limit=limit, offset=offset, q=q
             )
         )
 
@@ -451,7 +484,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         try:
             return _ok(
                 service.replace_recipients(
-                    campaign_id, actor.username, body.recipients, is_admin=actor.is_admin
+                    campaign_id, actor.username, body.recipients, visible_owners=_visibility(actor)
                 )
             )
         except PermissionError as exc:
@@ -472,7 +505,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             recipient_id,
             actor.username,
             body.model_dump(exclude_none=True),
-            is_admin=actor.is_admin,
+            visible_owners=_visibility(actor),
         )
         if not item:
             raise HTTPException(status_code=404, detail="Получатель не найден")
@@ -484,7 +517,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     ):
         actor = _actor(principal)
         deleted = service.delete_recipients(
-            campaign_id, body.ids, actor.username, is_admin=actor.is_admin
+            campaign_id, body.ids, actor.username, visible_owners=_visibility(actor)
         )
         return _ok({"deleted": deleted})
 
@@ -508,7 +541,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 campaign_id,
                 actor.username,
                 rows,
-                is_admin=actor.is_admin,
+                visible_owners=_visibility(actor),
                 recipient_columns=columns,
             )
             return _ok({"import": result, "preview": rows[:20]})
@@ -520,7 +553,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/campaigns/{campaign_id}/schedule")
     def get_schedule(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = service.get_schedule(campaign_id, actor.username, is_admin=actor.is_admin)
+        item = service.get_schedule(campaign_id, actor.username, visible_owners=_visibility(actor))
         if not item:
             raise HTTPException(status_code=404, detail="Расписание не найдено")
         return _ok(item)
@@ -531,7 +564,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         try:
             return _ok(
                 service.upsert_schedule(
-                    campaign_id, actor.username, body.model_dump(exclude_none=True), is_admin=actor.is_admin
+                    campaign_id, actor.username, body.model_dump(exclude_none=True), visible_owners=_visibility(actor)
                 )
             )
         except PermissionError as exc:
@@ -561,9 +594,34 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         )
 
     @router.get("/campaigns/{campaign_id}/validate")
-    def get_validate(campaign_id: str, principal: object = Depends(check_auth)):
+    def get_validate(
+        campaign_id: str,
+        principal: object = Depends(check_auth),
+        deep: bool = Query(default=False),
+    ):
         actor = _actor(principal)
-        return _ok(service.validate_campaign_for_launch(campaign_id, actor.username, is_admin=actor.is_admin))
+        return _ok(
+            service.validate_campaign_for_launch(
+                campaign_id,
+                actor.username,
+                visible_owners=_visibility(actor),
+                deep=deep,
+            )
+        )
+
+    @router.post("/campaigns/{campaign_id}/validation/auto-fix")
+    def post_validation_auto_fix(campaign_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                validation_auto_fix_service.auto_fix_campaign_validation(
+                    campaign_id,
+                    actor.username,
+                    visible_owners=_visibility(actor),
+                )
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.get("/campaigns/{campaign_id}/generation")
     def get_campaign_generation(campaign_id: str, principal: object = Depends(check_auth)):
@@ -573,7 +631,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 generation_service.generation_status(
                     campaign_id,
                     actor.username,
-                    is_admin=actor.is_admin,
+                    visible_owners=_visibility(actor),
                 )
             )
         except FileNotFoundError as exc:
@@ -587,7 +645,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 generation_service.prepare_campaign_generation(
                     campaign_id,
                     actor.username,
-                    is_admin=actor.is_admin,
+                    visible_owners=_visibility(actor),
                 )
             )
         except FileNotFoundError as exc:
@@ -605,7 +663,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     ):
         actor = _actor(principal)
         return _ok(
-            chain_service.list_chains(actor.username, is_admin=actor.is_admin, limit=limit, offset=offset)
+            chain_service.list_chains(actor.username, visible_owners=_visibility(actor), limit=limit, offset=offset)
         )
 
     @router.post("/chains")
@@ -617,7 +675,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def get_chain(chain_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            return _ok(chain_service.load_chain(chain_id, actor.username, is_admin=actor.is_admin))
+            return _ok(chain_service.load_chain(chain_id, actor.username, visible_owners=_visibility(actor)))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -630,17 +688,34 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                     chain_id,
                     actor.username,
                     body.model_dump(),
-                    is_admin=actor.is_admin,
+                    visible_owners=_visibility(actor),
                 )
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @router.patch("/chains/{chain_id}")
+    def patch_chain(chain_id: str, body: ChainUpdateBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                chain_service.update_chain(
+                    chain_id,
+                    actor.username,
+                    name=body.name,
+                    visible_owners=_visibility(actor),
+                )
+            )
+        except ValueError as exc:
+            detail = str(exc)
+            status = 404 if detail == "Цепочка не найдена" else 400
+            raise HTTPException(status_code=status, detail=detail) from exc
+
     @router.post("/chains/{chain_id}/publish")
     def post_chain_publish(chain_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            return _ok(chain_service.publish_chain(chain_id, actor.username, is_admin=actor.is_admin))
+            return _ok(chain_service.publish_chain(chain_id, actor.username, visible_owners=_visibility(actor)))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -648,7 +723,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def get_email_chain(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            return _ok(chain_service.load_email_chain(campaign_id, actor.username, is_admin=actor.is_admin))
+            return _ok(chain_service.load_email_chain(campaign_id, actor.username, visible_owners=_visibility(actor)))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -661,7 +736,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                     campaign_id,
                     actor.username,
                     body.model_dump(),
-                    is_admin=actor.is_admin,
+                    visible_owners=_visibility(actor),
                 )
             )
         except ValueError as exc:
@@ -672,7 +747,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(
-                chain_service.publish_email_chain(campaign_id, actor.username, is_admin=actor.is_admin)
+                chain_service.publish_email_chain(campaign_id, actor.username, visible_owners=_visibility(actor))
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -681,7 +756,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def get_email_chain_stats(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            chain_service.load_email_chain(campaign_id, actor.username, is_admin=actor.is_admin)
+            chain_service.load_email_chain(campaign_id, actor.username, visible_owners=_visibility(actor))
             return _ok(chain_service.get_chain_click_stats(campaign_id))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -694,7 +769,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 chain_preview_service.preview_chain_for_campaign(
                     campaign_id,
                     actor.username,
-                    is_admin=actor.is_admin,
+                    visible_owners=_visibility(actor),
                 )
             )
         except ValueError as exc:
@@ -708,6 +783,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         principal: object = Depends(check_auth),
         recipient_id: int = Query(..., ge=1),
         template_id: str = Query(..., min_length=1),
+        download: int = Query(0, ge=0, le=1),
     ):
         actor = _actor(principal)
         try:
@@ -716,16 +792,17 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 recipient_id,
                 template_id,
                 actor.username,
-                is_admin=actor.is_admin,
+                visible_owners=_visibility(actor),
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if resolved is None:
             raise HTTPException(status_code=404, detail="Вложение не найдено")
         filename, content = resolved
+        disposition = "attachment" if download else "inline"
         return _binary_response(
             {"filename": filename, "content": content},
-            disposition="attachment",
+            disposition=disposition,
         )
 
     @router.get("/campaigns/{campaign_id}/variable-mapping")
@@ -734,7 +811,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         try:
             return _ok(
                 variable_match_service.get_variable_mapping_state(
-                    campaign_id, actor.username, is_admin=actor.is_admin
+                    campaign_id, actor.username, visible_owners=_visibility(actor)
                 )
             )
         except PermissionError as exc:
@@ -752,7 +829,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 variable_match_service.suggest_variable_mapping(
                     campaign_id,
                     actor.username,
-                    is_admin=actor.is_admin,
+                    visible_owners=_visibility(actor),
                     model=(body.model if body else None) or "",
                 )
             )
@@ -772,7 +849,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                     campaign_id,
                     actor.username,
                     body.mapping,
-                    is_admin=actor.is_admin,
+                    visible_owners=_visibility(actor),
                 )
             )
         except PermissionError as exc:
@@ -790,7 +867,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         try:
             return _ok(
                 service.launch_campaign(
-                    campaign_id, actor.username, is_admin=actor.is_admin, force_now=force_now
+                    campaign_id, actor.username, visible_owners=_visibility(actor), force_now=force_now
                 )
             )
         except ValueError as exc:
@@ -802,7 +879,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def post_pause(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            return _ok(service.pause_campaign(campaign_id, actor.username, is_admin=actor.is_admin))
+            return _ok(service.pause_campaign(campaign_id, actor.username, visible_owners=_visibility(actor)))
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -810,7 +887,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def post_resume(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            return _ok(service.resume_campaign(campaign_id, actor.username, is_admin=actor.is_admin))
+            return _ok(service.resume_campaign(campaign_id, actor.username, visible_owners=_visibility(actor)))
         except (PermissionError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -818,21 +895,21 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def post_cancel(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            return _ok(service.cancel_campaign(campaign_id, actor.username, is_admin=actor.is_admin))
+            return _ok(service.cancel_campaign(campaign_id, actor.username, visible_owners=_visibility(actor)))
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.get("/campaigns/{campaign_id}/batches")
     def get_batches(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        return _ok(service.list_batches(campaign_id, actor.username, is_admin=actor.is_admin))
+        return _ok(service.list_batches(campaign_id, actor.username, visible_owners=_visibility(actor)))
 
     @router.post("/campaigns/{campaign_id}/batches/{batch_id}/cancel")
     def post_cancel_batch(campaign_id: str, batch_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
             return _ok(
-                service.cancel_batch(campaign_id, batch_id, actor.username, is_admin=actor.is_admin)
+                service.cancel_batch(campaign_id, batch_id, actor.username, visible_owners=_visibility(actor))
             )
         except (PermissionError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -840,16 +917,53 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.post("/campaigns/{campaign_id}/test-email")
     def post_test_email(campaign_id: str, body: TestEmailBody, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        camp = service.get_campaign(campaign_id, actor.username, is_admin=actor.is_admin)
+        validation = service.validate_campaign_for_launch(
+            campaign_id,
+            actor.username,
+            visible_owners=_visibility(actor),
+            deep=False,
+        )
+        if not validation.get("ok"):
+            raise HTTPException(status_code=400, detail="; ".join(validation.get("errors") or []))
+        camp = service.get_campaign(campaign_id, actor.username, visible_owners=_visibility(actor))
         if not camp:
             raise HTTPException(status_code=404, detail="Рассылка не найдена")
         connection_id = body.smtp_mailbox_id or camp.get("smtp_mailbox_id")
         if not connection_id:
             raise HTTPException(status_code=400, detail="Не выбрано подключение отправителя")
+
+        if camp.get("send_scenario") == "email_chain":
+            from src.campaigns.chain_send_service import start_test_chain
+
+            try:
+                result = start_test_chain(
+                    campaign_id,
+                    body.to_email,
+                    actor.username,
+                    str(connection_id),
+                    visible_owners=_visibility(actor),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Не удалось отправить: {exc}") from exc
+            return _ok(result)
+
         from src.campaigns.batch_worker import _send_delivery_message
+        from src.infra.db import session_scope
+        from src.infra.models import MailTemplate, TemplateVersion
 
         subject = camp.get("mail_subject") or camp.get("name") or "Тестовое письмо"
         html = str((camp.get("draft_payload") or {}).get("email_body") or f"<p>Тест: {camp.get('name')}</p>")
+        email_template_id = camp.get("email_template_id")
+        if email_template_id:
+            with session_scope() as session:
+                tmpl = session.get(MailTemplate, email_template_id)
+                if tmpl and tmpl.active_version_id:
+                    version = session.get(TemplateVersion, tmpl.active_version_id)
+                    if version:
+                        subject = version.subject or subject
+                        html = version.body_html or html
         try:
             message_id = _send_delivery_message(
                 connection_id=connection_id,
@@ -895,7 +1009,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         q: str | None = None,
     ):
         actor = _actor(principal)
-        return _ok(template_service.list_templates(actor.username, template_type=template_type, q=q))
+        return _ok(template_service.list_templates(actor.username, template_type=template_type, q=q, visible_owners=_visibility(actor)))
 
     @router.post("/templates")
     def post_template(body: TemplateCreateBody, principal: object = Depends(check_auth)):
@@ -957,6 +1071,17 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         _actor(principal)
         return _ok(template_starters.list_starters(template_type=template_type))
 
+    @router.get("/templates/starters/{starter_id}/preview-image")
+    def get_template_starter_preview_image(starter_id: str, principal: object = Depends(check_auth)):
+        _actor(principal)
+        try:
+            item = template_preview_image_service.get_starter_preview_image(starter_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="Превью примера не найдено")
+        return _preview_image_response(item, cache_control="public, max-age=86400")
+
     @router.post("/templates/starters/{starter_id}/use")
     def post_template_starter_use(starter_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
@@ -1005,6 +1130,48 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return _ok(item)
 
+    @router.post("/templates/import")
+    def post_template_import(
+        file: UploadFile = File(...),
+        template_type: str = Form(default="email"),
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        normalized_type = template_service.normalize_file_template_type(template_type)
+        if normalized_type != "email":
+            raise HTTPException(status_code=400, detail="Импорт доступен только для шаблонов письма")
+        original_name = validate_uploaded_file(
+            file,
+            allowed_extensions=(".docx", ".pdf", ".html", ".htm", ".txt"),
+            max_bytes=settings.upload_template_max_bytes,
+            human_name="шаблона письма",
+        )
+        data = file.file.read()
+        try:
+            item = template_import_service.import_visual_email_template(
+                actor.username,
+                filename=original_name,
+                data=data,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return _ok(item)
+
+    @router.post("/templates/{template_id}/import-regenerate")
+    def post_template_import_regenerate(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            item = template_import_service.regenerate_imported_template(actor.username, template_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return _ok(item)
+
     @router.get("/templates/{template_id}/file")
     def get_template_file(template_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
@@ -1023,6 +1190,17 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         if item is None:
             raise HTTPException(status_code=404, detail="PDF для отправки не найден")
         return _binary_response(item, disposition="attachment")
+
+    @router.get("/templates/{template_id}/preview-image")
+    def get_template_preview_image(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            item = template_preview_image_service.get_template_preview_image(template_id, actor.username)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="Превью шаблона не найдено")
+        return _preview_image_response(item, cache_control="private, max-age=3600")
 
     @router.get("/templates/{template_id}/preview-file")
     def get_template_preview_file(template_id: str, principal: object = Depends(check_auth)):
@@ -1139,7 +1317,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/templates/{template_id}")
     def get_template(template_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = template_service.get_template(template_id, actor.username)
+        item = template_service.get_template(template_id, actor.username, visible_owners=_visibility(actor))
         if not item:
             raise HTTPException(status_code=404, detail="Шаблон не найден")
         return _ok(item)
@@ -1147,7 +1325,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.patch("/templates/{template_id}")
     def patch_template(template_id: str, body: TemplateSaveBody, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        current = template_service.get_template(template_id, actor.username)
+        current = template_service.get_template(template_id, actor.username, visible_owners=_visibility(actor))
         if current and current.get("template_type") == "kp" and body.body_html is not None:
             try:
                 item = template_service.save_kp_html_version(
@@ -1161,17 +1339,21 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             except (ValueError, RuntimeError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
-            item = template_service.save_version(
-                template_id,
-                actor.username,
-                subject=body.subject,
-                body_html=body.body_html,
-                body_text=body.body_text,
-                variables=body.variables,
-                name=body.name,
-                editor_state=body.editor_state,
-                is_template=body.is_template,
-            )
+            try:
+                item = template_service.save_version(
+                    template_id,
+                    actor.username,
+                    subject=body.subject,
+                    body_html=body.body_html,
+                    body_text=body.body_text,
+                    variables=body.variables,
+                    name=body.name,
+                    editor_state=body.editor_state,
+                    is_template=body.is_template,
+                    rendered_pdf_filename=body.rendered_pdf_filename,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not item:
             raise HTTPException(status_code=404, detail="Шаблон не найден")
         return _ok(item)
@@ -1248,7 +1430,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/audiences")
     def get_audiences(principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        return _ok(audience_service.list_audiences(actor.username))
+        return _ok(audience_service.list_audiences(actor.username, visible_owners=_visibility(actor)))
 
     @router.post("/audiences")
     def post_audience(body: AudienceCreateBody, principal: object = Depends(check_auth)):
@@ -1258,7 +1440,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/audiences/{audience_id}")
     def get_audience(audience_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = audience_service.get_audience(audience_id, actor.username)
+        item = audience_service.get_audience(audience_id, actor.username, visible_owners=_visibility(actor))
         if not item:
             raise HTTPException(status_code=404, detail="Аудитория не найдена")
         return _ok(item)
@@ -1267,7 +1449,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def patch_audience(audience_id: str, body: AudienceCreateBody, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         item = audience_service.update_audience(
-            audience_id, actor.username, {"name": body.name}
+            audience_id, actor.username, {"name": body.name}, visible_owners=_visibility(actor)
         )
         if not item:
             raise HTTPException(status_code=404, detail="Аудитория не найдена")
@@ -1276,7 +1458,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.post("/audiences/{audience_id}/duplicate")
     def post_audience_duplicate(audience_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = audience_service.duplicate_audience(audience_id, actor.username)
+        item = audience_service.duplicate_audience(audience_id, actor.username, visible_owners=_visibility(actor))
         if not item:
             raise HTTPException(status_code=404, detail="Аудитория не найдена")
         return _ok(item)
@@ -1292,7 +1474,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         return _ok(
             audience_service.list_members(
-                audience_id, actor.username, limit=limit, offset=offset, q=q
+                audience_id, actor.username, limit=limit, offset=offset, q=q,
+                visible_owners=_visibility(actor),
             )
         )
 
@@ -1302,7 +1485,9 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     ):
         actor = _actor(principal)
         try:
-            return _ok(audience_service.replace_members(audience_id, actor.username, body.members))
+            return _ok(audience_service.replace_members(
+                audience_id, actor.username, body.members, visible_owners=_visibility(actor),
+            ))
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1322,7 +1507,9 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         else:
             raise HTTPException(status_code=400, detail="Поддерживаются CSV и XLSX")
         try:
-            result = audience_service.replace_members(audience_id, actor.username, rows)
+            result = audience_service.replace_members(
+                audience_id, actor.username, rows, visible_owners=_visibility(actor),
+            )
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _ok({"import": result, "preview": rows[:20]})
@@ -1333,7 +1520,9 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     ):
         actor = _actor(principal)
         try:
-            return _ok(audience_service.copy_audience_to_campaign(audience_id, campaign_id, actor.username))
+            return _ok(audience_service.copy_audience_to_campaign(
+                audience_id, campaign_id, actor.username, visible_owners=_visibility(actor),
+            ))
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

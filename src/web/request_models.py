@@ -212,6 +212,8 @@ class AuthRegisterRequest(ApiRequest):
     username: str
     password: str
     password_confirm: str | None = None
+    company_id: str | None = None
+    company_role: str | None = None
 
     @field_validator("username", mode="before")
     @classmethod

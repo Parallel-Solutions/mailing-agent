@@ -1,0 +1,83 @@
+import { ProFormSelect } from '@ant-design/pro-components';
+import { Button, Space, Table, Tag, Upload } from 'antd';
+import type { Audience, Campaign, Recipient } from '@/api/types';
+
+type Props = {
+  campaignId?: string;
+  draft: Partial<Campaign>;
+  audiences: Audience[];
+  recipients: Recipient[];
+  recipientsTotal: number;
+  onAudienceSelect: (audienceId: string) => Promise<void>;
+  onImportRecipients: (file: File) => Promise<void>;
+  onOpenGenerate: () => void;
+};
+
+export function CampaignWizardRecipientsStep({
+  campaignId,
+  draft,
+  audiences,
+  recipients,
+  onAudienceSelect,
+  onImportRecipients,
+  onOpenGenerate,
+}: Props) {
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <ProFormSelect
+        name="audience_id"
+        label="Сохранённая аудитория"
+        options={audiences.map((a) => ({
+          label: `${a.name} (${a.member_count})`,
+          value: a.id,
+        }))}
+        fieldProps={{
+          onChange: async (audienceId: string) => {
+            if (!campaignId || !audienceId) return;
+            await onAudienceSelect(audienceId);
+          },
+        }}
+      />
+      <Space wrap>
+        <Upload
+          accept=".csv,.xlsx"
+          showUploadList={false}
+          customRequest={async ({ file, onSuccess, onError }) => {
+            try {
+              await onImportRecipients(file as File);
+              onSuccess?.({});
+            } catch (error) {
+              onError?.(error as Error);
+            }
+          }}
+        >
+          <Button>Загрузить Excel / CSV</Button>
+        </Upload>
+        <Button disabled={!campaignId || !draft.job_id} onClick={onOpenGenerate}>
+          Сгенерировать список
+        </Button>
+      </Space>
+      <Table
+        rowKey="id"
+        size="small"
+        dataSource={recipients}
+        pagination={{ pageSize: 10 }}
+        columns={[
+          { title: 'Компания', dataIndex: 'company' },
+          { title: 'Контакт', dataIndex: 'contact_name' },
+          { title: 'Email', dataIndex: 'email' },
+          {
+            title: 'Проверка',
+            dataIndex: 'validation_status',
+            render: (v) => <Tag color={v === 'valid' ? 'green' : 'red'}>{v}</Tag>,
+          },
+          {
+            title: 'Исключён',
+            dataIndex: 'excluded',
+            render: (v) => (v ? 'да' : 'нет'),
+          },
+        ]}
+      />
+    </Space>
+  );
+}

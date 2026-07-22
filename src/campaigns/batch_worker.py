@@ -11,7 +11,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.campaigns.service import record_delivery_attempt
 from src.infra.db import session_scope
@@ -28,16 +28,28 @@ def _render_body(
     recipient: CampaignRecipient,
     campaign: Campaign,
     template_text: str = "",
+    *,
+    email_template_id: str | None = None,
 ) -> tuple[str, str]:
-    from src.campaigns.variable_match_service import render_template_text
+    from src.campaigns.template_render_service import render_email_template_text
 
     html = template_html or (
         f"<p>Здравствуйте, {recipient.contact_name or 'коллеги'}!</p>"
         f"<p>{campaign.description or campaign.name}</p>"
     )
-    html = render_template_text(html, recipient=recipient, campaign=campaign)
+    html = render_email_template_text(
+        html,
+        recipient=recipient,
+        campaign=campaign,
+        template_id=email_template_id or campaign.email_template_id,
+    )
     if template_text.strip():
-        text = render_template_text(template_text, recipient=recipient, campaign=campaign)
+        text = render_email_template_text(
+            template_text,
+            recipient=recipient,
+            campaign=campaign,
+            template_id=email_template_id or campaign.email_template_id,
+        )
     else:
         text = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<p>", "").replace("</p>", "\n")
     return html, text
@@ -67,16 +79,15 @@ def _send_smtp_message(
     subject: str,
     html: str,
     text: str,
+    sender_name: str = "",
     attachments: list[tuple[str, bytes]] | None = None,
 ) -> str:
     from dataclasses import replace
 
-    from src.campaigns.connection_service import _profile_sender_name
     from src.generator.delivery.smtp_mailboxes import resolve_smtp_credentials
 
     creds = resolve_smtp_credentials(mailbox_id=mailbox_id, owner_username=owner_username)
-    sender_name = _profile_sender_name(owner_username, creds.sender_name)
-    if sender_name != creds.sender_name:
+    if sender_name and sender_name != creds.sender_name:
         creds = replace(creds, sender_name=sender_name)
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -118,11 +129,14 @@ def _send_delivery_message(
     job_id: str | None = None,
     row_id: str = "",
     attachments: list[tuple[str, bytes]] | None = None,
+    send_mode: str | None = None,
+    send_run_id: str | None = None,
+    campaign: Campaign | None = None,
 ) -> str:
     """Send one message using the saved per-user connection."""
     from src.campaigns.connection_service import resolve_connection
 
-    connection = resolve_connection(connection_id, owner_username)
+    connection = resolve_connection(connection_id, owner_username, campaign=campaign)
     attachment_paths: list[str] = []
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
     if attachments:
@@ -143,6 +157,7 @@ def _send_delivery_message(
                 subject=subject,
                 html=html,
                 text=text,
+                sender_name=connection.sender_name,
                 attachments=attachments,
             )
 
@@ -156,7 +171,10 @@ def _send_delivery_message(
                 attachment_paths,
                 subject,
                 body_override=text,
+                html_override=html,
                 job_id=job_id,
+                send_run_id=send_run_id or "",
+                send_mode=send_mode or "",
                 sender_email=connection.email,
                 credential_api_key=connection.secret,
                 credential_sender_name=connection.sender_name,
@@ -171,7 +189,10 @@ def _send_delivery_message(
                 attachment_paths,
                 subject,
                 body_override=text,
+                html_override=html,
                 job_id=job_id,
+                send_run_id=send_run_id or "",
+                send_mode=send_mode or "",
                 sender_email=connection.email,
                 credential_api_token=connection.secret,
                 credential_sender_name=connection.sender_name,
@@ -192,7 +213,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
     campaign_id = str(kwargs.get("campaign_id") or "")
     batch_id = str(kwargs.get("batch_id") or "")
     pause_ms = int(kwargs.get("pause_between_messages_ms") or 0)
-    on_error = str(kwargs.get("on_error") or "retry")
+    on_error = str(kwargs.get("on_error") or "skip")
 
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
@@ -257,6 +278,16 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
             if recipient.send_status in {"sent", "in_chain"}:
                 continue
 
+            from src.generator.delivery.suppression_store import is_suppressed
+
+            suppressed, suppress_reason = is_suppressed(recipient.email)
+            if suppressed:
+                recipient.excluded = True
+                recipient.send_status = "skipped"
+                recipient.last_error = f"Адрес в стоп-листе ({suppress_reason or 'suppressed'})"
+                session.flush()
+                continue
+
             send_mode = str(kwargs.get("send_mode") or "")
             if send_mode == "chain_root":
                 from src.campaigns.chain_send_service import send_chain_node_email
@@ -306,12 +337,23 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
             if not accepted and recipient.send_status == "sent":
                 continue
 
-            html, text = _render_body(body_html_template, recipient, camp, body_text_template)
+            html, text = _render_body(
+                body_html_template,
+                recipient,
+                camp,
+                body_text_template,
+                email_template_id=camp.email_template_id,
+            )
             from src.campaigns.chain_template_utils import strip_chain_button_placeholder
-            from src.campaigns.variable_match_service import render_template_text
+            from src.campaigns.template_render_service import render_email_template_text
 
             html = strip_chain_button_placeholder(html)
-            subject = render_template_text(subject_template, recipient=recipient, campaign=camp)
+            subject = render_email_template_text(
+                subject_template,
+                recipient=recipient,
+                campaign=camp,
+                template_id=camp.email_template_id,
+            )
             try:
                 from src.campaigns.connection_service import pick_available_connection
 
@@ -396,6 +438,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     job_id=job_id,
                     row_id=str(recipient.id),
                     attachments=attachments,
+                    campaign=camp,
                 )
                 recipient.send_status = "sent"
                 recipient.last_error = None
@@ -488,6 +531,67 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
         session.flush()
 
     return {"status": "completed", "sent": sent, "errors": errors}
+
+
+def finalize_sender_batch_task_failure(task_id: str, message: str) -> None:
+    """Mark a stuck sender batch failed when its queue task dies permanently."""
+    from src.infra.models import BackgroundTask
+
+    with session_scope() as session:
+        task = session.get(BackgroundTask, str(task_id))
+        if task is None:
+            return
+        payload = dict(task.payload or {}) if isinstance(task.payload, dict) else {}
+        batch_id = str(payload.get("batch_id") or "")
+        campaign_id = str(payload.get("campaign_id") or "")
+        if not batch_id or not campaign_id:
+            return
+        batch = session.get(CampaignBatch, batch_id)
+        camp = session.get(Campaign, campaign_id)
+        if batch is None or camp is None:
+            return
+        if batch.status not in {"running", "pending"}:
+            return
+
+        safe_message = str(message or "sender batch task failed").strip() or "sender batch task failed"
+        batch.status = "failed"
+        batch.error = safe_message[:2000]
+        batch.completed_at = _now()
+
+        active_batches = session.scalars(
+            select(CampaignBatch).where(
+                CampaignBatch.campaign_id == campaign_id,
+                CampaignBatch.status.in_(["pending", "running"]),
+                CampaignBatch.id != batch_id,
+            )
+        ).all()
+        if active_batches:
+            camp.updated_at = _now()
+            session.flush()
+            return
+
+        pending_recipients = session.scalar(
+            select(func.count())
+            .select_from(CampaignRecipient)
+            .where(
+                CampaignRecipient.campaign_id == campaign_id,
+                CampaignRecipient.excluded.is_(False),
+                CampaignRecipient.send_status == "pending",
+            )
+        ) or 0
+
+        if int(pending_recipients) > 0:
+            camp.status = "paused"
+        elif int(camp.error_count or 0) > 0:
+            camp.status = "completed_with_errors"
+            camp.completed_at = _now()
+        elif int(camp.sent_count or 0) >= int(camp.total_count or 0) and int(camp.total_count or 0) > 0:
+            camp.status = "completed"
+            camp.completed_at = _now()
+        else:
+            camp.status = "paused"
+        camp.updated_at = _now()
+        session.flush()
 
 
 def run_campaign_pre_generate(kwargs: dict[str, Any]) -> dict[str, Any]:

@@ -5,6 +5,7 @@ import type {
   Campaign,
   CampaignGeneration,
   CampaignList,
+  CampaignValidateResponse,
   DocumentTemplatePreview,
   EmailChain,
   EmailChainPreviewResponse,
@@ -27,6 +28,7 @@ export type VariableMappingSuggestResult = {
   template_variables: TemplateVariableItem[];
   recipient_columns: string[];
   suggested_mapping: Record<string, string>;
+  system_variables?: Record<string, string>;
   unmapped: string[];
 };
 
@@ -34,8 +36,10 @@ export type VariableMappingState = {
   mapping_confirmed: boolean;
   mapping_confirmed_at?: string | null;
   variable_mapping: Record<string, string>;
+  system_variables?: Record<string, string>;
   recipient_columns: string[];
   template_variables: TemplateVariableItem[];
+  recipient_template_variables?: TemplateVariableItem[];
 };
 
 export const campaignsApi = {
@@ -53,6 +57,7 @@ export const campaignsApi = {
   update: (id: string, body: Partial<Campaign>) => api.patch<Campaign>(`/api/v1/campaigns/${id}`, body),
   duplicate: (id: string) => api.post<Campaign>(`/api/v1/campaigns/${id}/duplicate`),
   archive: (id: string) => api.post<Campaign>(`/api/v1/campaigns/${id}/archive`),
+  reset: (id: string) => api.post<Campaign>(`/api/v1/campaigns/${id}/reset`),
   activeSending: () => api.get<ActiveSending>('/api/v1/campaigns/active-sending'),
   recipients: (id: string, params?: { limit?: number; offset?: number; q?: string }) => {
     const q = new URLSearchParams();
@@ -94,15 +99,16 @@ export const campaignsApi = {
     template_analysis_confirmed: boolean;
     mode?: string;
   }) => api.post<Record<string, unknown>>('/api/documents/start', body),
-  validate: (id: string) =>
-    api.get<{
-      ok: boolean;
-      errors: string[];
-      warnings: string[];
-      active_recipients: number;
-      excluded_recipients: number;
-      mapping_confirmed?: boolean;
-    }>(`/api/v1/campaigns/${id}/validate`),
+  validate: (id: string, opts?: { deep?: boolean }) => {
+    const suffix = opts?.deep ? '?deep=1' : '';
+    return api.get<CampaignValidateResponse>(`/api/v1/campaigns/${id}/validate${suffix}`);
+  },
+  autoFixValidation: (id: string) =>
+    api.post<{
+      applied: Array<{ kind: string; message: string }>;
+      skipped: Array<{ kind: string; message: string }>;
+      validation: CampaignValidateResponse;
+    }>(`/api/v1/campaigns/${id}/validation/auto-fix`),
   launch: (id: string, forceNow = false) =>
     api.post(`/api/v1/campaigns/${id}/launch?force_now=${forceNow}`),
   pause: (id: string) => api.post<Campaign>(`/api/v1/campaigns/${id}/pause`),
@@ -133,6 +139,37 @@ export const campaignsApi = {
     api.get<EmailChainStats>(`/api/v1/campaigns/${id}/email-chain/stats`),
   previewEmailChain: (id: string) =>
     api.post<EmailChainPreviewResponse>(`/api/v1/campaigns/${id}/email-chain/preview`),
-  previewEmailChainAttachmentUrl: (id: string, recipientId: number, templateId: string) =>
-    `/api/v1/campaigns/${id}/email-chain/preview/attachment?recipient_id=${recipientId}&template_id=${encodeURIComponent(templateId)}`,
+  previewEmailChainAttachmentUrl: (
+    id: string,
+    recipientId: number,
+    templateId: string,
+    options?: { download?: boolean },
+  ) => {
+    const params = new URLSearchParams({
+      recipient_id: String(recipientId),
+      template_id: templateId,
+    });
+    if (options?.download) params.set('download', '1');
+    return `/api/v1/campaigns/${id}/email-chain/preview/attachment?${params.toString()}`;
+  },
+  fetchPreviewEmailChainAttachment: async (
+    id: string,
+    recipientId: number,
+    templateId: string,
+  ): Promise<Blob> => {
+    const response = await fetch(campaignsApi.previewEmailChainAttachmentUrl(id, recipientId, templateId), {
+      credentials: 'include',
+    });
+    if (!response.ok) {
+      let detail = 'Не удалось загрузить вложение';
+      try {
+        const payload = (await response.json()) as { detail?: string };
+        detail = payload.detail || detail;
+      } catch {
+        // Keep the generic message for non-JSON errors.
+      }
+      throw new Error(detail);
+    }
+    return response.blob();
+  },
 };

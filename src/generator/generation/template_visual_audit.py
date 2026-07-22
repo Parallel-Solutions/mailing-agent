@@ -243,20 +243,9 @@ def extract_docx_structure(docx_path: Path) -> dict[str, Any]:
 
 
 def render_pdf_first_page_to_png_data_url(pdf_path: Path) -> str:
-    try:
-        import fitz  # type: ignore
-    except Exception:
-        return ""
-    try:
-        document = fitz.open(str(pdf_path))
-        if document.page_count < 1:
-            return ""
-        page = document.load_page(0)
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
-        payload = pixmap.tobytes("png")
-        return "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
-    except Exception:
-        return ""
+    from src.generator.generation.pdf_preview_image import render_pdf_first_page_to_png_data_url as _render
+
+    return _render(pdf_path, scale=1.6)
 
 
 def call_template_visual_audit_ai(*, context: dict[str, Any], image_data_url: str = "") -> dict[str, Any]:

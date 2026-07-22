@@ -2,6 +2,33 @@ export type User = {
   username: string;
   role?: string;
   tenant_id?: string;
+  company_id?: string | null;
+  company_role?: 'company_admin' | 'member' | null;
+  company?: { id: string; name: string; logo_url?: string | null };
+};
+
+export type Company = {
+  id: string;
+  name: string;
+  phone?: string;
+  contact_person_name?: string;
+  logo_url?: string | null;
+  member_count?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type CampaignDraftPayload = {
+  company_id?: string;
+  company_work_type_id?: string;
+  work_type_name?: string;
+  mapping_confirmed?: boolean;
+  mapping_confirmed_at?: string | null;
+  variable_mapping?: Record<string, string>;
+  email_body?: string;
+  price_total?: string | number;
+  valid_until_days?: number;
+  [key: string]: unknown;
 };
 
 export type Campaign = {
@@ -24,11 +51,15 @@ export type Campaign = {
   audience_id?: string | null;
   email_chain_id?: string | null;
   job_id?: string | null;
+  company_id?: string;
+  company_work_type_id?: string;
+  work_type_name?: string;
   sent_count?: number;
   total_count?: number;
   error_count?: number;
+  layout_error_count?: number;
   progress?: number;
-  draft_payload?: Record<string, unknown>;
+  draft_payload?: CampaignDraftPayload;
   launched_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -80,6 +111,54 @@ export type EmailChainPreviewAttachment = {
   filename: string;
   has_content: boolean;
   error?: string;
+  content_type?: string;
+  text_preview?: string;
+  issues?: TemplatePlaceholderIssue[];
+};
+
+export type TemplateReviewKind =
+  | 'artifact'
+  | 'malformed'
+  | 'unresolved'
+  | 'punctuation'
+  | 'grammar'
+  | 'case';
+
+export type TemplateReviewSeverity = 'error' | 'warning' | 'info';
+
+export type TemplatePlaceholderIssue = {
+  token: string;
+  kind: TemplateReviewKind;
+  field: string;
+  severity?: TemplateReviewSeverity;
+  message?: string;
+  fragment?: string;
+  template_id?: string | null;
+  suggestion?: string;
+  blocking?: boolean;
+};
+
+export type TemplateValidationIssue = {
+  template_id?: string | null;
+  template_name?: string;
+  token: string;
+  kind: TemplateReviewKind;
+  field?: string;
+  severity?: TemplateReviewSeverity;
+  message?: string;
+  fragment?: string;
+  suggestion?: string;
+  blocking?: boolean;
+};
+
+export type CampaignValidateResponse = {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  template_issues?: TemplateValidationIssue[];
+  active_recipients: number;
+  excluded_recipients: number;
+  mapping_confirmed?: boolean;
 };
 
 export type EmailChainPreviewItem = {
@@ -89,6 +168,7 @@ export type EmailChainPreviewItem = {
   body_html: string;
   email_template_id?: string | null;
   attachments: EmailChainPreviewAttachment[];
+  issues?: TemplatePlaceholderIssue[];
 };
 
 export type EmailChainPreviewResponse = {
@@ -133,6 +213,7 @@ export type Recipient = {
   excluded?: boolean;
   send_status?: string;
   last_error?: string | null;
+  layout_error_code?: string | null;
 };
 
 export type Schedule = {
@@ -232,9 +313,29 @@ export type PdfEditorState = {
   fields: PdfEditorField[];
 };
 
+export type ImportRefinementState = {
+  available?: boolean;
+  selected_source?: string;
+  stop_reason?: string;
+  best_score?: number;
+  rounds?: number;
+  spent_usd?: number;
+  source?: string;
+  qa?: {
+    winner?: string;
+    winner_score?: number;
+    candidate_scores?: Record<string, number>;
+    regenerated?: boolean;
+  };
+};
+
 export type EmailEditorState = {
   email_format?: 'simple' | 'visual';
   grapesjs_project?: Record<string, unknown>;
+  imported_layout?: boolean;
+  import_source?: string;
+  import_as_draft?: boolean;
+  import_refinement?: ImportRefinementState;
   brand?: { primaryColor?: string; logoUrl?: string };
   fields?: PdfEditorField[];
 };

@@ -165,5 +165,38 @@ class SmtpSetupAiTests(unittest.TestCase):
         self.assertEqual(action.action, "show_app_password")
 
 
+    def test_mailru_custom_domain_parresh_uses_app_password(self) -> None:
+        action = build_fallback_setup_action(
+            {
+                "email": "personal.offer@parresh.ru",
+                "domain": "parresh.ru",
+                "provider_hint": "mailru",
+                "probe": {
+                    "host": "smtp.mail.ru",
+                    "port": 465,
+                    "use_ssl": True,
+                    "use_starttls": False,
+                    "reachable": True,
+                    "provider": "mailru",
+                    "source": "mx_hint",
+                },
+                "discoveries": [
+                    {
+                        "provider": "mailru",
+                        "host": "smtp.mail.ru",
+                        "port": 465,
+                        "use_ssl": True,
+                        "use_starttls": False,
+                        "source": "mx_hint",
+                        "confidence": "high",
+                    }
+                ],
+                "oauth_available": {"google": False, "microsoft": False},
+            }
+        )
+        self.assertEqual(action.action, "show_app_password")
+        self.assertEqual(action.recommended_settings["host"], "smtp.mail.ru")
+
+
 if __name__ == "__main__":
     unittest.main()

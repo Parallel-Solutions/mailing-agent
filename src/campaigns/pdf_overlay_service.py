@@ -11,6 +11,7 @@ from typing import Any
 import fitz
 
 from src.campaigns import template_service
+from src.campaigns.substitution_engine import PlaceholderInfo, resolve_context_value
 from src.infra.db import session_scope
 from src.infra.models import MailTemplate, TemplateVersion
 from src.infra.object_store import delete as delete_object
@@ -252,3 +253,55 @@ def save_editor_state(template_id: str, owner_username: str, fields: list[dict[s
     except BaseException:
         delete_object(rendered_key)
         raise
+
+
+def _find_text_instances(page: fitz.Page, needle: str) -> list[fitz.Rect]:
+    if not needle:
+        return []
+    rects: list[fitz.Rect] = []
+    for area in page.search_for(needle):
+        rects.append(fitz.Rect(area))
+    return rects
+
+
+def render_pdf_with_discovered_placeholders(
+    data: bytes,
+    placeholders: list[PlaceholderInfo],
+    context: dict[str, str],
+) -> bytes:
+    """Overlay bare/compound placeholders discovered in PDF text."""
+    document = fitz.open(stream=data, filetype="pdf")
+    fields: list[dict[str, Any]] = []
+    try:
+        for page_index in range(document.page_count):
+            page = document[page_index]
+            for field_index, placeholder in enumerate(placeholders):
+                value = resolve_context_value(context, placeholder.name)
+                if not value or placeholder.token not in page.get_text("text"):
+                    continue
+                for rect in _find_text_instances(page, placeholder.token):
+                    fields.append(
+                        {
+                            "id": f"p{page_index}-d{field_index}-{len(fields)}",
+                            "page": page_index,
+                            "variable": placeholder.name,
+                            "label": placeholder.name,
+                            "source_text": placeholder.token,
+                            "value": value,
+                            "x": round(rect.x0, 3),
+                            "y": round(rect.y0, 3),
+                            "width": round(rect.width, 3),
+                            "height": round(rect.height, 3),
+                            "text_x": round(rect.x0, 3),
+                            "baseline": round(rect.y1 - 2, 3),
+                            "font_size": round(max(8.0, min(18.0, rect.height * 0.85)), 2),
+                            "bold": False,
+                            "text_color": "#000000",
+                            "background": "#ffffff",
+                        }
+                    )
+    finally:
+        document.close()
+    if not fields:
+        return data
+    return render_pdf(data, {"fields": fields})

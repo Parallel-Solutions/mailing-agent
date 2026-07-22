@@ -1,10 +1,12 @@
 import {
   ArrowLeftOutlined,
   DesktopOutlined,
+  DownloadOutlined,
   EyeOutlined,
   MobileOutlined,
   SaveOutlined,
   SearchOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { App, Alert, Breadcrumb, Button, Card, Input, Modal, Space, Tag, Typography } from 'antd';
@@ -18,6 +20,7 @@ import type { EmailEditorState, Template } from '@/api/types';
 import { EMAIL_VARIABLES, SAMPLE_EMAIL_VALUES } from './emailConstants';
 import {
   buildEmailPreviewDocument,
+  downloadEmailHtml,
   htmlToPlainText,
   substituteChainButtonsPreview,
   substitutePreviewValues,
@@ -26,7 +29,14 @@ import {
   createVisualEmailEditor,
   exportVisualEmailHtml,
   insertMergeVariable,
+  isFixedLayoutHtml,
 } from './grapesjsConfig';
+import {
+  buildImportMetadataDescription,
+  formatImportScore,
+  importSourceLabel,
+  importStopReasonLabel,
+} from './importMetadata';
 import './VisualEmailEditor.css';
 
 const { Text, Title } = Typography;
@@ -91,6 +101,13 @@ export function VisualEmailEditor({ template }: Props) {
   const editorRef = useRef<Editor | null>(null);
 
   const editorState = (template.version?.editor_state || {}) as EmailEditorState;
+  const importedLayout = Boolean(editorState.imported_layout || template.tags?.includes('import'));
+  const fixedLayoutImport = isFixedLayoutHtml(
+    template.version?.body_html || '',
+    editorState.import_source,
+  );
+  const importRefinement = editorState.import_refinement;
+  const importBannerKey = `import-draft-banner:${template.id}`;
   const [name, setName] = useState(template.name);
   const [subject, setSubject] = useState(template.version?.subject || '');
   const [dirty, setDirty] = useState(false);
@@ -100,8 +117,21 @@ export function VisualEmailEditor({ template }: Props) {
   const [editorDevice, setEditorDevice] = useState<'Desktop' | 'Mobile'>('Desktop');
   const [initError, setInitError] = useState<string | null>(null);
   const [initAttempt, setInitAttempt] = useState(0);
+  const [importBannerOpen, setImportBannerOpen] = useState(() => {
+    if (!importedLayout) return false;
+    try {
+      return sessionStorage.getItem(importBannerKey) !== '1';
+    } catch {
+      return true;
+    }
+  });
 
   const variables = template.version?.variables?.length ? template.version.variables : EMAIL_VARIABLES;
+
+  useEffect(() => {
+    setName(template.name);
+    setSubject(template.version?.subject || '');
+  }, [template.id, template.name, template.version?.id, template.version?.subject]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -116,6 +146,8 @@ export function VisualEmailEditor({ template }: Props) {
         container,
         bodyHtml: template.version?.body_html || '',
         projectData: editorState.grapesjs_project,
+        importedLayout,
+        importSource: editorState.import_source,
         onChange: () => setDirty(true),
         uploadAsset: (file) => templatesApi.uploadAsset(template.id, file),
         onUploadError: (error) => {
@@ -139,11 +171,18 @@ export function VisualEmailEditor({ template }: Props) {
     mutationFn: () => {
       const editor = editorRef.current;
       if (!editor) throw new Error('Редактор ещё не готов');
-      const body_html = exportVisualEmailHtml(editor);
+      const body_html = exportVisualEmailHtml(editor, {
+        canonicalHtml: template.version?.body_html || '',
+        importSource: editorState.import_source,
+      });
       const nextEditorState: EmailEditorState = {
         email_format: 'visual',
         grapesjs_project: editor.getProjectData(),
         brand: editorState.brand,
+        imported_layout: editorState.imported_layout,
+        import_source: editorState.import_source,
+        import_as_draft: editorState.import_as_draft,
+        import_refinement: editorState.import_refinement,
       };
       return templatesApi.save(template.id, {
         name,
@@ -162,6 +201,24 @@ export function VisualEmailEditor({ template }: Props) {
       message.error(error instanceof Error ? error.message : 'Не удалось сохранить шаблон');
     },
   });
+
+  const regenerateMutation = useMutation({
+    mutationFn: () => templatesApi.regenerateImport(template.id),
+    onSuccess: () => {
+      setDirty(false);
+      message.success('Шаблон перегенерирован с AI');
+      void queryClient.invalidateQueries({ queryKey: ['template', template.id] });
+      setInitAttempt((value) => value + 1);
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : 'Не удалось перегенерировать шаблон');
+    },
+  });
+
+  const importMetadataDescription = useMemo(
+    () => buildImportMetadataDescription(editorState.import_source, importRefinement),
+    [editorState.import_source, importRefinement],
+  );
 
   const previewHtml = useMemo(() => {
     const editor = editorRef.current;
@@ -223,7 +280,7 @@ export function VisualEmailEditor({ template }: Props) {
   );
 
   return (
-    <div className="template-editor-page visual-email-editor">
+    <div className={`template-editor-page visual-email-editor${fixedLayoutImport ? ' visual-email-editor--fixed-layout' : ''}`}>
       <Breadcrumb
         items={[
           { title: 'Шаблоны и документы' },
@@ -248,6 +305,30 @@ export function VisualEmailEditor({ template }: Props) {
           </div>
         </Space>
         <Space wrap>
+          {importedLayout && (
+            <Button
+              icon={<ThunderboltOutlined />}
+              loading={regenerateMutation.isPending}
+              onClick={() => regenerateMutation.mutate()}
+            >
+              Перегенерировать с AI
+            </Button>
+          )}
+          <Button
+            icon={<DownloadOutlined />}
+            onClick={() => {
+              const editor = editorRef.current;
+              const html = editor
+                ? exportVisualEmailHtml(editor, {
+                    canonicalHtml: template.version?.body_html || '',
+                    importSource: editorState.import_source,
+                  })
+                : template.version?.body_html || '';
+              downloadEmailHtml(name, html);
+            }}
+          >
+            Скачать HTML
+          </Button>
           <Button icon={<EyeOutlined />} onClick={() => setPreviewOpen(true)}>
             Предпросмотр
           </Button>
@@ -284,6 +365,60 @@ export function VisualEmailEditor({ template }: Props) {
           />
         </label>
       </div>
+
+      {importedLayout && importBannerOpen && (
+        <Alert
+          type="info"
+          showIcon
+          closable
+          style={{ marginBottom: 12 }}
+          message="Импорт — стартовая вёрстка"
+          description={
+            <div className="visual-email-import-meta">
+              <p>
+                Письмо собрано из документа как редактируемый HTML. Проверьте блоки, кнопки и
+                плейсхолдеры перед отправкой.
+              </p>
+              <p>{importMetadataDescription}</p>
+              <Space wrap size={[8, 8]}>
+                <Tag>{importSourceLabel(editorState.import_source)}</Tag>
+                {importRefinement?.best_score !== undefined && (
+                  <Tag color="blue">Score: {formatImportScore(importRefinement.best_score)}</Tag>
+                )}
+                {importRefinement?.stop_reason && (
+                  <Tag>{importStopReasonLabel(importRefinement.stop_reason)}</Tag>
+                )}
+                {importRefinement?.available === false && (
+                  <Tag color="default">AI vision не запускался</Tag>
+                )}
+              </Space>
+            </div>
+          }
+          onClose={() => {
+            setImportBannerOpen(false);
+            try {
+              sessionStorage.setItem(importBannerKey, '1');
+            } catch {
+              /* ignore quota / private mode */
+            }
+          }}
+        />
+      )}
+
+      {importedLayout && !importBannerOpen && (
+        <Card size="small" className="visual-email-import-summary" style={{ marginBottom: 12 }}>
+          <Space wrap size={[8, 8]} align="center">
+            <Text type="secondary">Импорт:</Text>
+            <Tag>{importSourceLabel(editorState.import_source)}</Tag>
+            {importRefinement?.best_score !== undefined && (
+              <Tag color="blue">Score: {formatImportScore(importRefinement.best_score)}</Tag>
+            )}
+            {importRefinement?.stop_reason && (
+              <Tag>{importStopReasonLabel(importRefinement.stop_reason)}</Tag>
+            )}
+          </Space>
+        </Card>
+      )}
 
       <div className="visual-email-editor-grid">
         <main className="visual-email-editor-main">

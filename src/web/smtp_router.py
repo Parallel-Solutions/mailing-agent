@@ -146,7 +146,9 @@ def _actor_username(principal: object) -> str:
 
 
 def _can_access_mailbox(actor: Principal, owner_username: str) -> bool:
-    return actor.is_admin or actor.username == owner_username
+    from src.security.company_access import can_view_owned_resource
+
+    return can_view_owned_resource(actor, owner_username)
 
 
 def _parse_oauth_tokens(payload: dict[str, Any] | None) -> OAuthTokens | None:

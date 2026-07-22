@@ -140,6 +140,59 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(validate.status_code, 200)
         self.assertNotIn("подключение отправителя", " ".join(validate.json()["result"]["errors"]).lower())
 
+    def test_reset_campaign_draft_clears_fields_and_recipients(self) -> None:
+        created = self.client.post("/api/v1/campaigns", json={"name": "Reset me", "mail_subject": "Hello"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+
+        recipients = self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/recipients",
+            json={
+                "recipients": [
+                    {"company": "A", "contact_name": "A", "email": "a@example.com"},
+                ]
+            },
+        )
+        self.assertEqual(recipients.status_code, 200)
+        self.assertEqual(recipients.json()["result"]["total"], 1)
+
+        from src.generator.delivery.smtp_mailboxes import create_mailbox
+
+        mailbox = create_mailbox(
+            owner_username=self.username,
+            provider="custom",
+            email="sender@mailpit.local",
+            password="x",
+            host="mailpit",
+            port=1025,
+            use_ssl=False,
+            use_starttls=False,
+            make_default=True,
+        )
+        patched = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"smtp_mailbox_id": mailbox["id"], "mail_subject": "Changed"},
+        )
+        self.assertEqual(patched.status_code, 200)
+
+        reset = self.client.post(f"/api/v1/campaigns/{campaign_id}/reset")
+        self.assertEqual(reset.status_code, 200, reset.text)
+        payload = reset.json()["result"]
+        self.assertEqual(payload["name"], "Черновик рассылки")
+        self.assertEqual(payload["mail_subject"], "")
+        self.assertIsNone(payload.get("smtp_mailbox_id"))
+        self.assertIsNone(payload.get("email_chain_id"))
+        self.assertEqual(payload.get("draft_payload") or {}, {})
+
+        listed = self.client.get(f"/api/v1/campaigns/{campaign_id}/recipients")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["result"]["total"], 0)
+
+        schedule = self.client.get(f"/api/v1/campaigns/{campaign_id}/schedule")
+        self.assertEqual(schedule.status_code, 200)
+        self.assertEqual(schedule.json()["result"]["batch_size"], 25)
+        self.assertEqual(schedule.json()["result"]["interval_seconds"], 300)
+
     def test_replace_recipients_twice_does_not_500(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "Reimport Campaign"})
         self.assertEqual(created.status_code, 200)
@@ -413,7 +466,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(preview.content, replacement.getvalue())
 
         document = Document()
-        document.add_paragraph("Contract for {{company}} and {{contact_name}}")
+        document.add_paragraph("Договор оказания услуг по разработке МНГП для {{company}}")
         document_payload = BytesIO()
         document.save(document_payload)
         contract = self.client.post(
@@ -430,8 +483,83 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(contract.status_code, 200, contract.text)
         contract_template = contract.json()["result"]
         self.assertEqual(contract_template["template_type"], "document")
-        self.assertEqual(contract_template["version"]["filename"], "contract.docx")
-        self.assertEqual(contract_template["version"]["rendered_pdf_filename"], "contract.pdf")
+        self.assertEqual(contract_template["name"], "Own document")
+        self.assertEqual(contract_template["version"]["filename"], "Договор_МНГП.docx")
+        self.assertEqual(contract_template["version"]["rendered_pdf_filename"], "Договор_МНГП.pdf")
+
+    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    def test_upload_infers_delivery_filename_from_document_content(self, mock_build_pdf) -> None:
+        mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
+        source_docx = Document()
+        source_docx.add_paragraph("Коммерческое предложение")
+        source_docx.add_paragraph(
+            "на разработку схемы территориального планирования муниципального образования"
+        )
+        source_payload = BytesIO()
+        source_docx.save(source_payload)
+        created = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document"},
+            files={
+                "file": (
+                    "КП_СТП_районы (1) (1).docx",
+                    source_payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        template = created.json()["result"]
+        self.assertEqual(template["version"]["filename"], "КП_СТП_районы.docx")
+        self.assertEqual(template["version"]["rendered_pdf_filename"], "КП_СТП_районы.pdf")
+        self.assertEqual(template["name"], "КП СТП районы")
+
+    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    def test_patch_delivery_filename_without_new_version(self, mock_build_pdf) -> None:
+        mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
+        source_docx = Document()
+        source_docx.add_paragraph("Коммерческое предложение")
+        source_payload = BytesIO()
+        source_docx.save(source_payload)
+        created = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document", "name": "Delivery name doc"},
+            files={
+                "file": (
+                    "offer.docx",
+                    source_payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        template = created.json()["result"]
+        template_id = template["id"]
+        version_number = template["version"]["version_number"]
+        version_id = template["version"]["id"]
+
+        patched = self.client.patch(
+            f"/api/v1/templates/{template_id}",
+            json={"rendered_pdf_filename": "КП_СТП_районы.pdf"},
+        )
+        self.assertEqual(patched.status_code, 200, patched.text)
+        updated = patched.json()["result"]
+        self.assertEqual(updated["version"]["rendered_pdf_filename"], "КП_СТП_районы.pdf")
+        self.assertEqual(updated["version"]["version_number"], version_number)
+        self.assertEqual(updated["version"]["id"], version_id)
+
+        fetched = self.client.get(f"/api/v1/templates/{template_id}")
+        self.assertEqual(fetched.status_code, 200, fetched.text)
+        self.assertEqual(
+            fetched.json()["result"]["version"]["rendered_pdf_filename"],
+            "КП_СТП_районы.pdf",
+        )
+
+        empty = self.client.patch(
+            f"/api/v1/templates/{template_id}",
+            json={"rendered_pdf_filename": "   "},
+        )
+        self.assertEqual(empty.status_code, 400, empty.text)
 
     @patch("src.campaigns.template_service._build_kp_pdf_artifact")
     def test_template_starters_and_models(self, mock_build_pdf) -> None:
@@ -454,6 +582,12 @@ class CampaignV1ApiTests(unittest.TestCase):
         doc_used = self.client.post(f"/api/v1/templates/starters/{doc_starters.json()['result'][0]['id']}/use")
         self.assertEqual(doc_used.status_code, 200, doc_used.text)
         self.assertEqual(doc_used.json()["result"]["template_type"], "document")
+
+        materials = self.client.post("/api/v1/templates/starters/email-materials/use")
+        self.assertEqual(materials.status_code, 200, materials.text)
+        materials_html = materials.json()["result"]["version"]["body_html"]
+        self.assertNotIn("Контакт: {{email}}", materials_html)
+        self.assertNotIn("{{campaign_name}}", materials_html)
 
     def test_generate_template_files_only_and_ai(self) -> None:
         html = b"<p>Hello {{contact_name}} from {{company}}</p>"
@@ -545,6 +679,52 @@ class CampaignV1ApiTests(unittest.TestCase):
         used = self.client.post(f"/api/v1/templates/starters/{visual_starters[0]['id']}/use")
         self.assertEqual(used.status_code, 200, used.text)
         self.assertEqual(used.json()["result"]["version"]["editor_state"]["email_format"], "visual")
+
+    def test_import_template_endpoint_html_and_docx(self) -> None:
+        html = b"<table><tr><td><p>Hello {{company}}</p></td></tr></table>"
+        imported_html = self.client.post(
+            "/api/v1/templates/import",
+            data={"template_type": "email"},
+            files={"file": ("mail.html", html, "text/html")},
+        )
+        self.assertEqual(imported_html.status_code, 200, imported_html.text)
+        payload = imported_html.json()["result"]
+        self.assertEqual(payload["template_type"], "email")
+        self.assertEqual(payload["version"]["editor_state"]["email_format"], "visual")
+
+        buffer = BytesIO()
+        document = Document()
+        document.add_heading("Письмо", level=1)
+        document.add_paragraph("Для {{company}}")
+        document.save(buffer)
+        from src.generator.generation.docxjs_converter import DocxJsHtmlResult
+
+        with (
+            patch(
+                "src.campaigns.template_import_service.convert_docx_to_html_result",
+                return_value=DocxJsHtmlResult(
+                    html='<div data-content-width="640"><p>Для {{company}}</p></div>',
+                    content_width=640,
+                ),
+            ),
+            patch(
+                "src.campaigns.template_import_service.convert_docx_to_pdf_bytes",
+                return_value=None,
+            ),
+        ):
+            imported_docx = self.client.post(
+                "/api/v1/templates/import",
+                data={"template_type": "email"},
+                files={
+                    "file": (
+                        "mail.docx",
+                        buffer.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                },
+            )
+        self.assertEqual(imported_docx.status_code, 200, imported_docx.text)
+        self.assertIn("{{company}}", imported_docx.json()["result"]["version"]["body_html"])
 
     def test_generate_template_llm_failure_returns_503(self) -> None:
         with patch("src.campaigns.template_ai._build_client") as mock_client:
@@ -714,6 +894,90 @@ class CampaignV1ApiTests(unittest.TestCase):
         launched = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch?force_now=true")
         self.assertEqual(launched.status_code, 200, launched.text)
 
+    def test_validate_does_not_block_launch_on_template_artifact(self) -> None:
+        created = self.client.post("/api/v1/campaigns", json={"name": "Artifact Campaign"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+
+        email = self.client.post(
+            "/api/v1/templates",
+            json={
+                "name": "Artifact email",
+                "template_type": "email",
+                "body_html": "<p>на {{ стp }} для {{company}}.</p>",
+            },
+        )
+        self.assertEqual(email.status_code, 200, email.text)
+        email_id = email.json()["result"]["id"]
+
+        loaded = self.client.get(f"/api/v1/campaigns/{campaign_id}/email-chain")
+        self.assertEqual(loaded.status_code, 200)
+        chain = loaded.json()["result"]["chain"]
+        chain["nodes"][0]["email_template_id"] = email_id
+        saved = self.client.put(f"/api/v1/campaigns/{campaign_id}/email-chain", json=chain)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        published = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/publish")
+        self.assertEqual(published.status_code, 200, published.text)
+
+        recipients = self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/recipients",
+            json={
+                "recipients": [
+                    {"company": "A", "contact_name": "Ivan", "email": "a@example.com"},
+                ]
+            },
+        )
+        self.assertEqual(recipients.status_code, 200, recipients.text)
+
+        from src.generator.delivery.smtp_mailboxes import create_mailbox
+
+        mailbox = create_mailbox(
+            owner_username=self.username,
+            provider="custom",
+            email="sender@mailpit.local",
+            password="x",
+            host="mailpit",
+            port=1025,
+            use_ssl=False,
+            use_starttls=False,
+            make_default=True,
+        )
+        self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"smtp_mailbox_id": mailbox["id"], "transport": "smtp"},
+        )
+        self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/schedule",
+            json={"send_immediately": True, "batch_size": 1, "interval_seconds": 60},
+        )
+
+        mapping = self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/variable-mapping",
+            json={"mapping": {"company": "company"}},
+        )
+        self.assertEqual(mapping.status_code, 200, mapping.text)
+        self.assertTrue(mapping.json()["result"]["mapping_confirmed"])
+
+        validate_fast = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
+        self.assertEqual(validate_fast.status_code, 200, validate_fast.text)
+        payload = validate_fast.json()["result"]
+        self.assertFalse(any(issue.get("kind") == "artifact" for issue in payload["template_issues"]))
+        self.assertFalse(
+            any("артефакт" in error.lower() for error in payload["errors"]),
+            payload["errors"],
+        )
+
+        preview = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/preview")
+        self.assertEqual(preview.status_code, 200, preview.text)
+        preview_issues = preview.json()["result"]["items"][0]["issues"]
+        self.assertTrue(any(issue.get("kind") == "artifact" for issue in preview_issues))
+        self.assertTrue(
+            any("артефакт" in str(issue.get("message") or "").lower() for issue in preview_issues),
+        )
+
+        launch = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch?force_now=true")
+        self.assertEqual(launch.status_code, 200, launch.text)
+
     def test_email_chain_crud_and_publish(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "Chain API"})
         self.assertEqual(created.status_code, 200)
@@ -765,6 +1029,27 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(linked.status_code, 200, linked.text)
         self.assertEqual(linked.json()["result"]["email_chain_id"], chain_id)
+
+    def test_standalone_chain_rename(self) -> None:
+        created = self.client.post("/api/v1/chains", json={"name": "Старое название"})
+        self.assertEqual(created.status_code, 200, created.text)
+        chain_id = created.json()["result"]["id"]
+
+        renamed = self.client.patch(f"/api/v1/chains/{chain_id}", json={"name": "  Новое название  "})
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(renamed.json()["result"]["name"], "Новое название")
+
+        loaded = self.client.get(f"/api/v1/chains/{chain_id}")
+        self.assertEqual(loaded.status_code, 200)
+        self.assertEqual(loaded.json()["result"]["name"], "Новое название")
+
+        listed = self.client.get("/api/v1/chains")
+        self.assertEqual(listed.status_code, 200)
+        item = next(row for row in listed.json()["result"]["items"] if row["id"] == chain_id)
+        self.assertEqual(item["name"], "Новое название")
+
+        empty = self.client.patch(f"/api/v1/chains/{chain_id}", json={"name": "   "})
+        self.assertEqual(empty.status_code, 400, empty.text)
 
     def test_email_chain_with_link_nodes_and_consent_stats(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "Chain links API"})
@@ -828,6 +1113,279 @@ class CampaignV1ApiTests(unittest.TestCase):
         consents = stats.json()["result"]["consents"]
         self.assertEqual(consents["subscribe"]["count"], 1)
         self.assertEqual(consents["unsubscribe"]["count"], 1)
+
+    def test_validation_auto_fix_applies_variable_mapping(self) -> None:
+        created = self.client.post("/api/v1/campaigns", json={"name": "AutoFix Campaign"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+
+        email = self.client.post(
+            "/api/v1/templates",
+            json={
+                "name": "AutoFix email",
+                "template_type": "email",
+                "body_html": "<p>Hello {{ADM_NAME}} from {{company}}</p>",
+            },
+        )
+        self.assertEqual(email.status_code, 200, email.text)
+        email_id = email.json()["result"]["id"]
+
+        loaded = self.client.get(f"/api/v1/campaigns/{campaign_id}/email-chain")
+        chain = loaded.json()["result"]["chain"]
+        chain["nodes"][0]["email_template_id"] = email_id
+        self.client.put(f"/api/v1/campaigns/{campaign_id}/email-chain", json=chain)
+        self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/publish")
+
+        recipients = self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/recipients",
+            json={
+                "recipients": [
+                    {
+                        "company": "A",
+                        "contact_name": "Ivan",
+                        "email": "a@example.com",
+                        "adm_name": "Ivan Admin",
+                    },
+                ]
+            },
+        )
+        self.assertEqual(recipients.status_code, 200, recipients.text)
+
+        auto_fix = self.client.post(f"/api/v1/campaigns/{campaign_id}/validation/auto-fix")
+        self.assertEqual(auto_fix.status_code, 200, auto_fix.text)
+        payload = auto_fix.json()["result"]
+        self.assertTrue(payload["applied"])
+        self.assertTrue(payload["validation"]["mapping_confirmed"])
+
+    def test_validation_auto_fix_applies_philologist_docx_fixes(self) -> None:
+        docx_buffer = BytesIO()
+        document = Document()
+        document.add_paragraph(
+            "1.2. Выполнение Работ осуществляется по месту нахождения Исполнителя "
+            "на условиях и в сроки, установленные настоящим Договором."
+        )
+        document.save(docx_buffer)
+
+        created = self.client.post("/api/v1/campaigns", json={"name": "DocFix Campaign"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+
+        with patch(
+            "src.campaigns.template_service._build_kp_pdf_artifact",
+            return_value=(b"%PDF-1.4 test", "legal.pdf"),
+        ):
+            uploaded = self.client.post(
+                "/api/v1/templates/upload",
+                data={"template_type": "document", "name": "Legal doc"},
+                files={
+                    "file": (
+                        "legal.docx",
+                        docx_buffer.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                },
+            )
+            self.assertEqual(uploaded.status_code, 200, uploaded.text)
+            document_id = uploaded.json()["result"]["id"]
+
+            email = self.client.post(
+                "/api/v1/templates",
+                json={
+                    "name": "DocFix email",
+                    "template_type": "email",
+                    "body_html": "<p>Hello {{company}}</p>",
+                },
+            )
+            self.assertEqual(email.status_code, 200, email.text)
+            email_id = email.json()["result"]["id"]
+
+            loaded = self.client.get(f"/api/v1/campaigns/{campaign_id}/email-chain")
+            chain = loaded.json()["result"]["chain"]
+            chain["nodes"][0]["email_template_id"] = email_id
+            chain["nodes"][0]["document_template_ids"] = [document_id]
+            self.client.put(f"/api/v1/campaigns/{campaign_id}/email-chain", json=chain)
+            self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/publish")
+
+            recipients = self.client.put(
+                f"/api/v1/campaigns/{campaign_id}/recipients",
+                json={
+                    "recipients": [
+                        {
+                            "company": "A",
+                            "contact_name": "Ivan",
+                            "email": "a@example.com",
+                        },
+                    ]
+                },
+            )
+            self.assertEqual(recipients.status_code, 200, recipients.text)
+
+            auto_fix = self.client.post(f"/api/v1/campaigns/{campaign_id}/validation/auto-fix")
+            self.assertEqual(auto_fix.status_code, 200, auto_fix.text)
+            payload = auto_fix.json()["result"]
+            self.assertTrue(
+                any(item.get("kind") == "document" for item in payload["applied"]),
+                msg=f"applied={payload['applied']} skipped={payload['skipped']}",
+            )
+
+            file_response = self.client.get(f"/api/v1/templates/{document_id}/file")
+            self.assertEqual(file_response.status_code, 200, file_response.text)
+            saved = Document(BytesIO(file_response.content))
+            text = "\n".join(paragraph.text for paragraph in saved.paragraphs)
+            self.assertIn("Выполнение работ", text)
+            self.assertIn("нахождения исполнителя", text)
+
+    def _prepare_campaign_with_email_template(
+        self,
+        *,
+        body_html: str,
+        subject: str = "",
+    ) -> tuple[str, str]:
+        created = self.client.post("/api/v1/campaigns", json={"name": "AutoFix Email Campaign"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+
+        email = self.client.post(
+            "/api/v1/templates",
+            json={
+                "name": "AutoFix email template",
+                "template_type": "email",
+                "subject": subject,
+                "body_html": body_html,
+            },
+        )
+        self.assertEqual(email.status_code, 200, email.text)
+        email_id = email.json()["result"]["id"]
+
+        loaded = self.client.get(f"/api/v1/campaigns/{campaign_id}/email-chain")
+        self.assertEqual(loaded.status_code, 200)
+        chain = loaded.json()["result"]["chain"]
+        chain["nodes"][0]["email_template_id"] = email_id
+        saved = self.client.put(f"/api/v1/campaigns/{campaign_id}/email-chain", json=chain)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        published = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/publish")
+        self.assertEqual(published.status_code, 200, published.text)
+
+        recipients = self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/recipients",
+            json={
+                "recipients": [
+                    {
+                        "company": "A",
+                        "contact_name": "Ivan",
+                        "email": "a@example.com",
+                    },
+                ]
+            },
+        )
+        self.assertEqual(recipients.status_code, 200, recipients.text)
+        return campaign_id, email_id
+
+    def test_validation_auto_fix_repairs_triple_brace_placeholder(self) -> None:
+        campaign_id, email_id = self._prepare_campaign_with_email_template(
+            body_html="<p>Работы по {{{WORK_TITLE}}} для {{company}}.</p>",
+        )
+
+        preview_before = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/preview")
+        self.assertEqual(preview_before.status_code, 200, preview_before.text)
+        issues_before = preview_before.json()["result"]["items"][0]["issues"]
+        self.assertTrue(any(issue.get("kind") == "malformed" for issue in issues_before))
+
+        auto_fix = self.client.post(f"/api/v1/campaigns/{campaign_id}/validation/auto-fix")
+        self.assertEqual(auto_fix.status_code, 200, auto_fix.text)
+        payload = auto_fix.json()["result"]
+        self.assertTrue(
+            any(item.get("kind") == "placeholder" for item in payload["applied"]),
+            msg=f"applied={payload['applied']} skipped={payload['skipped']}",
+        )
+
+        template = self.client.get(f"/api/v1/templates/{email_id}")
+        self.assertEqual(template.status_code, 200, template.text)
+        version = template.json()["result"]["version"]
+        self.assertIn("{{WORK_TITLE}}", version["body_html"])
+        self.assertNotIn("{{{WORK_TITLE}}}", version["body_html"])
+
+        preview_after = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/preview")
+        self.assertEqual(preview_after.status_code, 200, preview_after.text)
+        issues_after = preview_after.json()["result"]["items"][0]["issues"]
+        self.assertFalse(any(issue.get("kind") == "malformed" for issue in issues_after))
+
+    def test_validation_auto_fix_saves_artifact_mapping_without_template_edit(self) -> None:
+        campaign_id, email_id = self._prepare_campaign_with_email_template(
+            body_html="<p>на {{вид работ}} для {{company}}.</p>",
+        )
+        patch_resp = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"work_type": "stp_mo"},
+        )
+        self.assertEqual(patch_resp.status_code, 200, patch_resp.text)
+
+        auto_fix = self.client.post(f"/api/v1/campaigns/{campaign_id}/validation/auto-fix")
+        self.assertEqual(auto_fix.status_code, 200, auto_fix.text)
+        payload = auto_fix.json()["result"]
+        self.assertTrue(
+            any(item.get("kind") == "mapping" for item in payload["applied"]),
+            msg=f"applied={payload['applied']} skipped={payload['skipped']}",
+        )
+
+        template = self.client.get(f"/api/v1/templates/{email_id}")
+        self.assertEqual(template.status_code, 200, template.text)
+        version = template.json()["result"]["version"]
+        self.assertIn("{{вид работ}}", version["body_html"])
+
+        campaign = self.client.get(f"/api/v1/campaigns/{campaign_id}")
+        self.assertEqual(campaign.status_code, 200, campaign.text)
+        system_variables = campaign.json()["result"]["draft_payload"].get("system_variables") or {}
+        self.assertEqual(system_variables.get("вид работ"), "WORK_TITLE")
+
+        preview_after = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/preview")
+        self.assertEqual(preview_after.status_code, 200, preview_after.text)
+        item = preview_after.json()["result"]["items"][0]
+        self.assertNotIn("{{вид работ}}", item["body_html"])
+        self.assertFalse(any(issue.get("kind") == "artifact" for issue in item["issues"]))
+
+    def test_email_chain_preview_hides_resolvable_work_title_artifact(self) -> None:
+        campaign_id, _email_id = self._prepare_campaign_with_email_template(
+            body_html="<p>на {{вид работ}} для {{company}}.</p>",
+        )
+        patch_resp = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"work_type": "stp_mo"},
+        )
+        self.assertEqual(patch_resp.status_code, 200, patch_resp.text)
+
+        preview = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/preview")
+        self.assertEqual(preview.status_code, 200, preview.text)
+        item = preview.json()["result"]["items"][0]
+        self.assertNotIn("{{вид работ}}", item["body_html"])
+        self.assertFalse(any(issue.get("kind") == "artifact" for issue in item["issues"]))
+
+    def test_validation_auto_fix_reports_skipped_when_fragment_missing(self) -> None:
+        campaign_id, _email_id = self._prepare_campaign_with_email_template(
+            body_html="<p>чистый текст без артефактов.</p>",
+        )
+
+        with patch(
+            "src.campaigns.validation_auto_fix_service.substitution_validation_issues",
+            return_value=[
+                {
+                    "template_id": _email_id,
+                    "template_name": "AutoFix email template",
+                    "field": "body_html",
+                    "kind": "artifact",
+                    "severity": "error",
+                    "fragment": "{missing fragment}",
+                    "message": "artifact",
+                }
+            ],
+        ):
+            auto_fix = self.client.post(f"/api/v1/campaigns/{campaign_id}/validation/auto-fix")
+        self.assertEqual(auto_fix.status_code, 200, auto_fix.text)
+        payload = auto_fix.json()["result"]
+        self.assertTrue(
+            any("Не удалось определить замену" in item.get("message", "") for item in payload["skipped"]),
+            msg=f"skipped={payload['skipped']}",
+        )
 
 
 if __name__ == "__main__":

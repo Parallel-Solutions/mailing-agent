@@ -1480,6 +1480,26 @@ class SenderAgentScalabilityTests(unittest.TestCase):
             sender_agent._build_provider_idempotency_key(**{**base_kwargs, "attachment_mode": "all"}),
         )
 
+    def test_provider_idempotency_key_differs_for_chain_followup(self) -> None:
+        base_kwargs = {
+            "provider": "rusender",
+            "job_id": "job-1",
+            "row_id": "42",
+            "recipient": "one@example.com",
+            "send_mode": "materials",
+            "attachment_mode": "kp",
+        }
+        materials = sender_agent._build_provider_idempotency_key(**base_kwargs)
+        followup = sender_agent._build_provider_idempotency_key(
+            **{
+                **base_kwargs,
+                "send_mode": "chain_followup",
+                "send_run_id": "branch-token-1",
+            }
+        )
+
+        self.assertNotEqual(materials, followup)
+
     def test_sent_mail_log_promotes_provider_idempotency_key(self) -> None:
         self.addCleanup(lambda: reset_test_database())
 

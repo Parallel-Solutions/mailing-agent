@@ -53,6 +53,7 @@ RAG_SEMANTIC_WEIGHT = int(_read_env_override("RAG_SEMANTIC_WEIGHT", "30"))
 
 # AI-ревью готового документа
 ENABLE_DOCUMENT_REVIEW_AI = _read_env_override("ENABLE_DOCUMENT_REVIEW_AI", "1") == "1"
+ENABLE_EMAIL_LANGUAGE_AI = _read_env_override("ENABLE_EMAIL_LANGUAGE_AI", "0") == "1"
 DOCUMENT_REVIEW_MODEL = _read_env_override("DOCUMENT_REVIEW_MODEL", CASE_AGENT_MODEL)
 PHILOLOGIST_MODE = _read_env_override("PHILOLOGIST_MODE", "fast").strip().lower() or "fast"
 PHILOLOGIST_LLM_ROUTER = _read_env_override("PHILOLOGIST_LLM_ROUTER", "0") == "1"

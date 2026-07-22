@@ -39,6 +39,7 @@ from src.web.sender_router import create_sender_router
 from src.web.statistics_router import create_statistics_router
 from src.web.smtp_router import create_smtp_router
 from src.web.auth_router import create_auth_router
+from src.web.companies_router import create_companies_router
 from src.web.v1_router import create_v1_router
 from src.web.workers_router import create_workers_router
 from src.web.sender_service import (
@@ -1353,6 +1354,7 @@ app.include_router(
     )
 )
 app.include_router(create_v1_router(check_auth=check_auth))
+app.include_router(create_companies_router(check_auth=check_auth))
 app.include_router(jobs_controller.router)
 app.include_router(create_consent_router())
 app.include_router(create_chain_router())

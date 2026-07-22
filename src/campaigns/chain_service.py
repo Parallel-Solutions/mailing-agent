@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignChainToken, CampaignRecipient, EmailChainRecord
+from src.security.company_access import apply_owner_filter, can_access_owner
 
 CHAIN_VERSION = 2
 
@@ -120,8 +121,13 @@ def _chain_state(row: EmailChainRecord) -> dict[str, Any]:
     }
 
 
-def _ensure_chain_access(row: EmailChainRecord | None, owner_username: str, *, is_admin: bool = False) -> EmailChainRecord:
-    if row is None or (not is_admin and row.owner_username != owner_username):
+def _ensure_chain_access(
+    row: EmailChainRecord | None,
+    owner_username: str,
+    *,
+    visible_owners: frozenset[str] | None = None,
+) -> EmailChainRecord:
+    if row is None or not can_access_owner(visible_owners, row.owner_username):
         raise ValueError("Цепочка не найдена")
     return row
 
@@ -144,7 +150,7 @@ def create_chain(owner_username: str, *, name: str | None = None) -> dict[str, A
 def list_chains(
     owner_username: str,
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -152,12 +158,10 @@ def list_chains(
 
     with session_scope() as session:
         stmt = select(EmailChainRecord).order_by(EmailChainRecord.updated_at.desc())
-        if not is_admin:
-            stmt = stmt.where(EmailChainRecord.owner_username == owner_username)
+        stmt = apply_owner_filter(stmt, EmailChainRecord.owner_username, visible_owners)
         rows = session.scalars(stmt.limit(limit).offset(offset)).all()
         total_stmt = select(func.count()).select_from(EmailChainRecord)
-        if not is_admin:
-            total_stmt = total_stmt.where(EmailChainRecord.owner_username == owner_username)
+        total_stmt = apply_owner_filter(total_stmt, EmailChainRecord.owner_username, visible_owners)
         total = int(session.scalar(total_stmt) or 0)
         return {
             "items": [
@@ -173,25 +177,45 @@ def list_chains(
         }
 
 
-def load_chain(chain_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any]:
+def load_chain(chain_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     with session_scope() as session:
-        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, is_admin=is_admin)
+        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, visible_owners=visible_owners)
         return _chain_state(row)
 
 
-def save_chain(chain_id: str, owner_username: str, chain: dict[str, Any], *, is_admin: bool = False) -> dict[str, Any]:
+def save_chain(chain_id: str, owner_username: str, chain: dict[str, Any], *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     normalized = normalize_chain(chain)
     with session_scope() as session:
-        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, is_admin=is_admin)
+        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, visible_owners=visible_owners)
         row.payload = normalized
         row.updated_at = _now()
         session.flush()
         return _chain_state(row)
 
 
-def publish_chain(chain_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any]:
+def update_chain(
+    chain_id: str,
+    owner_username: str,
+    *,
+    name: str | None = None,
+    visible_owners: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    if name is None:
+        raise ValueError("Не указано название цепочки")
+    trimmed = str(name).strip()
+    if not trimmed:
+        raise ValueError("Укажите название цепочки")
     with session_scope() as session:
-        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, is_admin=is_admin)
+        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, visible_owners=visible_owners)
+        row.name = trimmed[:255]
+        row.updated_at = _now()
+        session.flush()
+        return _chain_state(row)
+
+
+def publish_chain(chain_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
+    with session_scope() as session:
+        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, visible_owners=visible_owners)
         validation = validate_chain(row.payload if isinstance(row.payload, dict) else empty_chain(), strict=True)
         if not validation["ok"]:
             raise ValueError("; ".join(validation["errors"]))
@@ -356,11 +380,11 @@ def validate_chain(chain: dict[str, Any], *, strict: bool = False) -> dict[str, 
     }
 
 
-def save_email_chain(campaign_id: str, owner_username: str, chain: dict[str, Any], *, is_admin: bool = False) -> dict[str, Any]:
+def save_email_chain(campaign_id: str, owner_username: str, chain: dict[str, Any], *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     normalized = normalize_chain(chain)
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise ValueError("Рассылка не найдена")
         if camp.email_chain_id:
             row = session.get(EmailChainRecord, camp.email_chain_id)
@@ -386,10 +410,10 @@ def save_email_chain(campaign_id: str, owner_username: str, chain: dict[str, Any
         }
 
 
-def load_email_chain(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any]:
+def load_email_chain(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise ValueError("Рассылка не найдена")
         chain = get_email_chain(camp, session=session)
         validation = validate_chain(chain, strict=False)
@@ -405,10 +429,10 @@ def load_email_chain(campaign_id: str, owner_username: str, *, is_admin: bool = 
         }
 
 
-def publish_email_chain(campaign_id: str, owner_username: str, *, is_admin: bool = False) -> dict[str, Any]:
+def publish_email_chain(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise ValueError("Рассылка не найдена")
         chain = get_email_chain(camp, session=session)
         validation = validate_chain(chain, strict=True)
@@ -445,6 +469,7 @@ def create_branch_tokens(
     recipient_id: int,
     source_node_id: str,
     edges: list[dict[str, Any]],
+    test_email: str | None = None,
 ) -> list[CampaignChainToken]:
     tokens: list[CampaignChainToken] = []
     for edge in edges:
@@ -456,6 +481,7 @@ def create_branch_tokens(
             source_node_id=source_node_id,
             target_node_id=str(edge["target_id"]),
             send_status="pending",
+            test_email=test_email,
         )
         tokens.append(token)
     return tokens
@@ -472,15 +498,16 @@ def record_branch_click(token: str) -> dict[str, Any]:
         already_clicked = row.clicked_at is not None
         if not already_clicked:
             row.clicked_at = _now()
-            extra = dict(recipient.extra or {})
-            chain_state = dict(extra.get("chain") or {})
-            chain_state["current_node_id"] = row.target_node_id
-            clicked_edges = list(chain_state.get("clicked_edges") or [])
-            if row.edge_id not in clicked_edges:
-                clicked_edges.append(row.edge_id)
-            chain_state["clicked_edges"] = clicked_edges
-            extra["chain"] = chain_state
-            recipient.extra = extra
+            if not row.test_email:
+                extra = dict(recipient.extra or {})
+                chain_state = dict(extra.get("chain") or {})
+                chain_state["current_node_id"] = row.target_node_id
+                clicked_edges = list(chain_state.get("clicked_edges") or [])
+                if row.edge_id not in clicked_edges:
+                    clicked_edges.append(row.edge_id)
+                chain_state["clicked_edges"] = clicked_edges
+                extra["chain"] = chain_state
+                recipient.extra = extra
             session.flush()
         return {
             "token": row.token,
@@ -491,6 +518,7 @@ def record_branch_click(token: str) -> dict[str, Any]:
             "target_node_id": row.target_node_id,
             "already_clicked": already_clicked,
             "send_status": row.send_status,
+            "test_email": row.test_email,
         }
 
 

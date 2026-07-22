@@ -7,6 +7,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from src.generator.delivery.chain_consent_stats import (
+    ChainConsentStatsContext,
+    build_chain_subscribes_view,
+    build_unsubscribes_view,
+)
 from src.generator.delivery.manager_actions import ACTION_TYPES, append_manager_action
 from src.generator.delivery.manager_stats import (
     StatsFilters,
@@ -128,6 +133,29 @@ def create_statistics_router(
             problems_only=problems_only,
             q=q,
             quick_filter=quick_filter,
+        )
+
+    def _build_chain_consent_context(
+        principal: object,
+        *,
+        job_id: str | None = None,
+        campaign: str | None = None,
+        period_from: str = "",
+        period_to: str = "",
+        q: str = "",
+    ) -> ChainConsentStatsContext:
+        actor = coerce_principal(principal)
+        return ChainConsentStatsContext(
+            filters=_build_filters(
+                principal,
+                job_id=job_id,
+                campaign=campaign,
+                period_from=period_from,
+                period_to=period_to,
+                q=q,
+            ),
+            owner_username=actor.username,
+            is_admin=actor.is_admin,
         )
 
     @router.get("/api/sender/campaigns")
@@ -264,6 +292,48 @@ def create_statistics_router(
             q=q,
         )
         return {"status": "ok", "result": build_consents_view(filters, page=page, per_page=per_page)}
+
+    @router.get("/api/sender/chain-subscribes")
+    def sender_chain_subscribes(
+        job_id: str | None = None,
+        campaign: str | None = None,
+        period_from: str = "",
+        period_to: str = "",
+        q: str = "",
+        page: int = Query(default=1, ge=1),
+        per_page: int = Query(default=10, ge=1, le=100),
+        principal: object = Depends(check_auth),
+    ):
+        ctx = _build_chain_consent_context(
+            principal,
+            job_id=job_id,
+            campaign=campaign,
+            period_from=period_from,
+            period_to=period_to,
+            q=q,
+        )
+        return {"status": "ok", "result": build_chain_subscribes_view(ctx, page=page, per_page=per_page)}
+
+    @router.get("/api/sender/unsubscribes")
+    def sender_unsubscribes(
+        job_id: str | None = None,
+        campaign: str | None = None,
+        period_from: str = "",
+        period_to: str = "",
+        q: str = "",
+        page: int = Query(default=1, ge=1),
+        per_page: int = Query(default=10, ge=1, le=100),
+        principal: object = Depends(check_auth),
+    ):
+        ctx = _build_chain_consent_context(
+            principal,
+            job_id=job_id,
+            campaign=campaign,
+            period_from=period_from,
+            period_to=period_to,
+            q=q,
+        )
+        return {"status": "ok", "result": build_unsubscribes_view(ctx, page=page, per_page=per_page)}
 
     @router.get("/api/sender/email-problems")
     def sender_email_problems(

@@ -1,0 +1,442 @@
+"""Full rendered template review for campaign email/document templates."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from src.campaigns.substitution_context import build_substitution_context
+from src.campaigns.substitution_engine import find_template_defects, html_to_review_text, is_blocking_placeholder_defect
+from src.campaigns.text_local_review import review_email_text
+from src.campaigns.variable_match_service import render_template_text
+from src.infra.models import Campaign, CampaignRecipient
+
+_LANGUAGE_KINDS = frozenset({"punctuation", "grammar", "case"})
+
+
+def _normalize_issue_severity(kind: str, severity: str) -> str:
+    if kind in _LANGUAGE_KINDS and severity == "error":
+        return "warning"
+    return severity
+
+
+def _issue_dict(
+    *,
+    template_id: str | None,
+    template_name: str,
+    field: str,
+    kind: str,
+    severity: str,
+    fragment: str,
+    message: str,
+    suggestion: str = "",
+) -> dict[str, Any]:
+    severity = _normalize_issue_severity(kind, severity)
+    return {
+        "template_id": template_id,
+        "template_name": template_name,
+        "field": field,
+        "kind": kind,
+        "severity": severity,
+        "fragment": fragment,
+        "message": message,
+        "suggestion": suggestion,
+        "token": fragment,
+    }
+
+
+def _artifact_message(kind: str, token: str) -> str:
+    if kind == "malformed":
+        return f"Некорректный синтаксис плейсхолдера {token}"
+    if kind == "artifact":
+        return f"В тексте остался артефакт шаблона {token} — замените на системную переменную, например {{WORK_TITLE}}"
+    return f"Не заполнена переменная {token}"
+
+
+def _append_placeholder_issues(
+    issues: list[dict[str, Any]],
+    *,
+    template_id: str | None,
+    template_name: str,
+    field: str,
+    rendered_text: str,
+    source: str = "rendered",
+) -> None:
+    if not rendered_text:
+        return
+    seen: set[tuple[str, str, str]] = set()
+    for defect in find_template_defects(rendered_text, source=source):
+        if not is_blocking_placeholder_defect(defect):
+            continue
+        key = (field, defect.kind, defect.token)
+        if key in seen:
+            continue
+        seen.add(key)
+        issues.append(
+            _issue_dict(
+                template_id=template_id,
+                template_name=template_name,
+                field=field,
+                kind=defect.kind,
+                severity="error",
+                fragment=defect.token,
+                message=_artifact_message(defect.kind, defect.token),
+            )
+        )
+
+
+def _append_strict_original_issues(
+    issues: list[dict[str, Any]],
+    *,
+    template_id: str | None,
+    template_name: str,
+    subject_template: str,
+    body_html_template: str,
+    body_text_template: str,
+) -> None:
+    for field, source_text in (
+        ("subject", subject_template or ""),
+        ("body_html", body_html_template or ""),
+        ("body_text", body_text_template or ""),
+    ):
+        if not source_text.strip():
+            continue
+        _append_placeholder_issues(
+            issues,
+            template_id=template_id,
+            template_name=template_name,
+            field=field,
+            rendered_text=source_text,
+            source="original",
+        )
+
+
+def review_document_text_for_placeholders(
+    text: str,
+    *,
+    template_id: str | None,
+    template_name: str,
+    field: str = "attachment",
+) -> list[dict[str, Any]]:
+    return review_document_text(
+        text,
+        template_id=template_id,
+        template_name=template_name,
+        field=field,
+        include_language=False,
+    )
+
+
+def review_document_text(
+    text: str,
+    *,
+    template_id: str | None,
+    template_name: str,
+    field: str = "attachment",
+    include_language: bool = True,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    _append_placeholder_issues(
+        issues,
+        template_id=template_id,
+        template_name=template_name,
+        field=field,
+        rendered_text=text,
+    )
+    if include_language:
+        _append_local_language_issues(
+            issues,
+            template_id=template_id,
+            template_name=template_name,
+            field=field,
+            rendered_text=text,
+        )
+    return issues
+
+
+def _append_local_language_issues(
+    issues: list[dict[str, Any]],
+    *,
+    template_id: str | None,
+    template_name: str,
+    field: str,
+    rendered_text: str,
+) -> None:
+    plain = html_to_review_text(rendered_text) if rendered_text else ""
+    if not plain:
+        return
+    for item in review_email_text(plain, field=field):
+        issues.append(
+            _issue_dict(
+                template_id=template_id,
+                template_name=template_name,
+                field=field,
+                kind=item.kind,
+                severity=item.severity,
+                fragment=item.fragment,
+                message=item.message,
+                suggestion=item.suggestion,
+            )
+        )
+
+
+def _append_case_issues(
+    issues: list[dict[str, Any]],
+    *,
+    template_id: str | None,
+    template_name: str,
+    recipient: CampaignRecipient,
+    campaign: Campaign,
+) -> None:
+    from src.campaigns.substitution_context import recipient_row
+    from src.generator.generation.config_generator import ENABLE_CASE_AGENT
+    from src.generator.generation.transforms import build_document_context
+    from src.generator.inflection.ai_case_agent import run_case_validation_agent
+
+    if not ENABLE_CASE_AGENT:
+        return
+
+    row = recipient_row(recipient)
+    context = build_document_context(row, outgoing_number=recipient.row_index or 1, work_type=campaign.work_type or None)
+    result = run_case_validation_agent(row, context)
+    for item in result.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").strip()
+        if status == "ok":
+            continue
+        field_name = str(item.get("field") or "context")
+        comment = str(item.get("comment") or "Возможная ошибка падежа").strip()
+        corrected = str(item.get("corrected_value") or "").strip()
+        generated = str(item.get("generated_value") or "").strip()
+        fragment = generated or corrected or field_name
+        issues.append(
+            _issue_dict(
+                template_id=template_id,
+                template_name=template_name,
+                field="context",
+                kind="case",
+                severity="warning",
+                fragment=fragment,
+                message=comment,
+                suggestion=corrected,
+            )
+        )
+
+
+def _append_ai_issues(
+    issues: list[dict[str, Any]],
+    *,
+    template_id: str | None,
+    template_name: str,
+    blocks: list[tuple[str, str]],
+) -> None:
+    from src.generator.generation.config_generator import ENABLE_EMAIL_LANGUAGE_AI
+
+    if not ENABLE_EMAIL_LANGUAGE_AI:
+        return
+
+    try:
+        from src.generator.philologist.document_review_agent import _run_ai_review
+    except ImportError:
+        return
+
+    ai_items = _run_ai_review(blocks, ai_enabled=True)
+    for item in ai_items:
+        severity = str(item.severity or "warning")
+        if severity not in {"error", "warning", "info"}:
+            severity = "warning"
+        if severity == "error":
+            severity = "warning"
+        issues.append(
+            _issue_dict(
+                template_id=template_id,
+                template_name=template_name,
+                field=str(item.location or "body"),
+                kind="grammar",
+                severity=severity,
+                fragment=str(item.fragment or ""),
+                message=str(item.issue or "Грамматическая ошибка"),
+                suggestion=str(item.suggestion or ""),
+            )
+        )
+
+
+def review_rendered_template(
+    *,
+    template_id: str | None,
+    template_name: str,
+    subject_template: str,
+    body_html_template: str,
+    body_text_template: str,
+    recipient: CampaignRecipient,
+    campaign: Campaign,
+    deep: bool = False,
+    advisory: bool = False,
+    rendered_subject: str | None = None,
+    rendered_html: str | None = None,
+    rendered_text: str | None = None,
+    include_placeholder_issues: bool = False,
+    strict_preview: bool = False,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    template_text = "\n".join([subject_template or "", body_html_template or "", body_text_template or ""])
+    if rendered_subject is None:
+        rendered_subject = render_template_text(
+            subject_template or "",
+            recipient=recipient,
+            campaign=campaign,
+            template_id=template_id,
+            template_name=template_name,
+            template_text=template_text,
+        )
+    if rendered_html is None:
+        rendered_html = render_template_text(
+            body_html_template or "",
+            recipient=recipient,
+            campaign=campaign,
+            template_id=template_id,
+            template_name=template_name,
+            template_text=template_text,
+        )
+    if rendered_text is None:
+        rendered_text = (
+            render_template_text(
+                body_text_template or "",
+                recipient=recipient,
+                campaign=campaign,
+                template_id=template_id,
+                template_name=template_name,
+                template_text=template_text,
+            )
+            if (body_text_template or "").strip()
+            else html_to_review_text(rendered_html)
+        )
+
+    if include_placeholder_issues:
+        if strict_preview:
+            _append_strict_original_issues(
+                issues,
+                template_id=template_id,
+                template_name=template_name,
+                subject_template=subject_template or "",
+                body_html_template=body_html_template or "",
+                body_text_template=body_text_template or "",
+            )
+        _append_placeholder_issues(
+            issues,
+            template_id=template_id,
+            template_name=template_name,
+            field="subject",
+            rendered_text=rendered_subject,
+        )
+        _append_placeholder_issues(
+            issues,
+            template_id=template_id,
+            template_name=template_name,
+            field="body_html",
+            rendered_text=rendered_html,
+        )
+        if body_text_template:
+            _append_placeholder_issues(
+                issues,
+                template_id=template_id,
+                template_name=template_name,
+                field="body_text",
+                rendered_text=rendered_text,
+            )
+
+    _append_local_language_issues(
+        issues,
+        template_id=template_id,
+        template_name=template_name,
+        field="subject",
+        rendered_text=rendered_subject,
+    )
+    _append_local_language_issues(
+        issues,
+        template_id=template_id,
+        template_name=template_name,
+        field="body_html",
+        rendered_text=rendered_html,
+    )
+
+    if advisory:
+        _append_case_issues(
+            issues,
+            template_id=template_id,
+            template_name=template_name,
+            recipient=recipient,
+            campaign=campaign,
+        )
+        blocks: list[tuple[str, str]] = []
+        if rendered_subject.strip():
+            blocks.append(("subject", html_to_review_text(rendered_subject)))
+        body_plain = html_to_review_text(rendered_html)
+        if body_plain.strip():
+            for index, paragraph in enumerate([part.strip() for part in body_plain.split(". ") if part.strip()], 1):
+                blocks.append((f"paragraph:{index}", paragraph))
+        _append_ai_issues(
+            issues,
+            template_id=template_id,
+            template_name=template_name,
+            blocks=blocks,
+        )
+
+    return issues
+
+
+def review_campaign_templates(
+    campaign: Campaign,
+    *,
+    deep: bool = False,
+    advisory: bool = False,
+    include_placeholder_issues: bool = False,
+    strict_preview: bool = False,
+) -> list[dict[str, Any]]:
+    from src.campaigns.variable_match_service import _collect_templates_for_validation, _first_validation_recipient
+
+    recipient = _first_validation_recipient(campaign)
+    if recipient is None:
+        return []
+
+    all_issues: list[dict[str, Any]] = []
+    for template_info in _collect_templates_for_validation(campaign):
+        template_id = str(template_info.get("template_id") or "") or None
+        template_name = str(template_info.get("template_name") or "шаблон")
+        subject = str(template_info.get("subject") or "")
+        body_html = str(template_info.get("body_html") or "")
+        body_text = str(template_info.get("body_text") or "")
+        combined = str(template_info.get("text") or "")
+        if not body_html and combined:
+            body_html = combined
+        all_issues.extend(
+            review_rendered_template(
+                template_id=template_id,
+                template_name=template_name,
+                subject_template=subject,
+                body_html_template=body_html,
+                body_text_template=body_text,
+                recipient=recipient,
+                campaign=campaign,
+                deep=deep,
+                advisory=advisory,
+                include_placeholder_issues=include_placeholder_issues,
+                strict_preview=strict_preview,
+            )
+        )
+    return all_issues
+
+
+def partition_review_messages(issues: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    for issue in issues:
+        template_name = str(issue.get("template_name") or "шаблон")
+        message = str(issue.get("message") or issue.get("token") or "Ошибка шаблона")
+        line = f"Шаблон «{template_name}»: {message}"
+        severity = str(issue.get("severity") or "error")
+        if severity == "error":
+            errors.append(line)
+        else:
+            warnings.append(line)
+    return errors, warnings

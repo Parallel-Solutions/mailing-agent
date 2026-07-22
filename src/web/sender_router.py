@@ -384,6 +384,11 @@ def create_sender_router(
         reason = str(payload.get("reason") or "manual").strip()
         if not email:
             raise HTTPException(status_code=400, detail="email обязателен")
+        if reason == "unsubscribe":
+            from src.campaigns.suppression_service import apply_global_email_suppression
+
+            result = apply_global_email_suppression(email, reason=reason, source="manual")
+            return {"status": "ok", "result": {"email": email, "reason": reason, **result}}
         upsert_suppression(email, reason=reason, source="manual")
         return {"status": "ok", "result": {"email": email, "reason": reason}}
 

@@ -148,15 +148,126 @@ class ChainPreviewApiTests(unittest.TestCase):
         recipient_id = payload["recipient"]["id"]
         template_id = payload["items"][0]["attachments"][0]["template_id"]
 
-        attachment = self.client.get(
+        inline = self.client.get(
             f"/api/v1/campaigns/{self.campaign_id}/email-chain/preview/attachment",
             params={"recipient_id": recipient_id, "template_id": template_id},
         )
-        self.assertEqual(attachment.status_code, 200, attachment.text)
-        self.assertTrue(attachment.content)
+        self.assertEqual(inline.status_code, 200, inline.text)
+        self.assertTrue(inline.content)
+        self.assertIn("inline", inline.headers.get("content-disposition", ""))
+
+        download = self.client.get(
+            f"/api/v1/campaigns/{self.campaign_id}/email-chain/preview/attachment",
+            params={"recipient_id": recipient_id, "template_id": template_id, "download": 1},
+        )
+        self.assertEqual(download.status_code, 200, download.text)
+        self.assertTrue(download.content)
+        self.assertIn("attachment", download.headers.get("content-disposition", ""))
 
     def test_preview_without_recipients_returns_400(self) -> None:
         empty = self.client.post("/api/v1/campaigns", json={"name": "Empty"})
         campaign_id = empty.json()["result"]["id"]
         preview = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/preview")
         self.assertEqual(preview.status_code, 400, preview.text)
+
+    def test_preview_detects_malformed_placeholder_in_rendered_email(self) -> None:
+        email = self.client.post(
+            "/api/v1/templates",
+            json={
+                "name": "Malformed email",
+                "template_type": "email",
+                "body_html": "<p>Работы {{{unknown_xyz}} для {{company}}</p>",
+            },
+        )
+        self.assertEqual(email.status_code, 200, email.text)
+        email_template_id = email.json()["result"]["id"]
+
+        loaded = self.client.get(f"/api/v1/campaigns/{self.campaign_id}/email-chain")
+        chain = loaded.json()["result"]["chain"]
+        chain["nodes"][0]["email_template_id"] = email_template_id
+        self.client.put(f"/api/v1/campaigns/{self.campaign_id}/email-chain", json=chain)
+
+        mapping = self.client.put(
+            f"/api/v1/campaigns/{self.campaign_id}/variable-mapping",
+            json={"mapping": {"company": "company"}},
+        )
+        self.assertEqual(mapping.status_code, 200, mapping.text)
+
+        preview = self.client.post(f"/api/v1/campaigns/{self.campaign_id}/email-chain/preview")
+        self.assertEqual(preview.status_code, 200, preview.text)
+        issues = preview.json()["result"]["items"][0]["issues"]
+        self.assertTrue(any(issue.get("kind") == "malformed" for issue in issues))
+        self.assertTrue(any("unknown_xyz" in str(issue.get("token") or issue.get("fragment") or "") for issue in issues))
+
+    def test_preview_detects_stp_artifact_without_substitution(self) -> None:
+        email = self.client.post(
+            "/api/v1/templates",
+            json={
+                "name": "Stp artifact email",
+                "template_type": "email",
+                "body_html": "<p>на {{ стp }} для территории {{company}}</p>",
+            },
+        )
+        self.assertEqual(email.status_code, 200, email.text)
+        email_template_id = email.json()["result"]["id"]
+
+        loaded = self.client.get(f"/api/v1/campaigns/{self.campaign_id}/email-chain")
+        chain = loaded.json()["result"]["chain"]
+        chain["nodes"][0]["email_template_id"] = email_template_id
+        self.client.put(f"/api/v1/campaigns/{self.campaign_id}/email-chain", json=chain)
+
+        mapping = self.client.put(
+            f"/api/v1/campaigns/{self.campaign_id}/variable-mapping",
+            json={"mapping": {"company": "company"}},
+        )
+        self.assertEqual(mapping.status_code, 200, mapping.text)
+
+        preview = self.client.post(f"/api/v1/campaigns/{self.campaign_id}/email-chain/preview")
+        self.assertEqual(preview.status_code, 200, preview.text)
+        item = preview.json()["result"]["items"][0]
+        self.assertIn("{{ стp }}", item["body_html"])
+        issues = item["issues"]
+        self.assertTrue(any(issue.get("kind") == "artifact" for issue in issues))
+
+    def test_preview_detects_language_issues_in_attachment(self) -> None:
+        html = (
+            "<html><body>"
+            "<p>Текст без знака препинания</p>"
+            "<p>Пробел перед точкой .</p>"
+            "</body></html>"
+        ).encode("utf-8")
+
+        uploaded = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document", "name": "Language doc"},
+            files={"file": ("language.html", html, "text/html")},
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        document_template_id = uploaded.json()["result"]["id"]
+        self.client.patch(
+            f"/api/v1/templates/{document_template_id}",
+            json={"is_template": False},
+        )
+
+        loaded = self.client.get(f"/api/v1/campaigns/{self.campaign_id}/email-chain")
+        chain = loaded.json()["result"]["chain"]
+        chain["nodes"][0]["document_template_ids"] = [document_template_id]
+        self.client.put(f"/api/v1/campaigns/{self.campaign_id}/email-chain", json=chain)
+
+        preview = self.client.post(f"/api/v1/campaigns/{self.campaign_id}/email-chain/preview")
+        self.assertEqual(preview.status_code, 200, preview.text)
+        attachment = preview.json()["result"]["items"][0]["attachments"][0]
+        self.assertEqual(attachment["template_id"], document_template_id)
+        self.assertTrue(attachment.get("text_preview"))
+        attachment_issues = attachment.get("issues") or []
+        self.assertTrue(any(issue.get("kind") == "punctuation" for issue in attachment_issues))
+        self.assertTrue(all(issue.get("template_id") == document_template_id for issue in attachment_issues))
+        top_level = preview.json()["result"]["items"][0]["issues"]
+        self.assertTrue(
+            any(
+                issue.get("field") == "attachment"
+                and issue.get("template_id") == document_template_id
+                and issue.get("kind") == "punctuation"
+                for issue in top_level
+            )
+        )
