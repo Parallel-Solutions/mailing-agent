@@ -357,7 +357,13 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
             try:
                 from src.campaigns.connection_service import pick_available_connection
 
-                connection = pick_available_connection(connection_ids, owner, hour_counts, day_counts)
+                connection = pick_available_connection(
+                    connection_ids,
+                    owner,
+                    hour_counts,
+                    day_counts,
+                    campaign=camp,
+                )
                 if connection is None:
                     raise RuntimeError("Все подключения исчерпали лимиты отправки")
                 connection_id = connection.id

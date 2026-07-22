@@ -7,7 +7,7 @@ from unittest.mock import patch
 from cryptography.fernet import Fernet
 
 from src.campaigns import company_service
-from src.campaigns.connection_service import create_connection, resolve_connection, resolve_sender_name
+from src.campaigns.connection_service import create_connection, pick_available_connection, resolve_connection, resolve_sender_name
 from src.campaigns.profile_service import update_profile
 from src.infra.models import Campaign
 from src.security.user_store import create_user
@@ -91,6 +91,20 @@ class ConnectionSenderNameFromCompanyTests(unittest.TestCase):
     def test_resolve_sender_name_ignores_profile_display_name(self) -> None:
         sender_name = resolve_sender_name(self.owner, fallback="Fallback Sender")
         self.assertEqual(sender_name, "ООО Отправитель")
+
+    def test_pick_available_connection_uses_company_sender_name(self) -> None:
+        created = create_connection(
+            self.owner,
+            {
+                "transport": "rusender",
+                "email": "verified@example.com",
+                "api_token": "rs_ck_secret",
+                "sender_name": "Из подключения",
+            },
+        )
+        picked = pick_available_connection([created["id"]], self.owner, {}, {})
+        self.assertIsNotNone(picked)
+        self.assertEqual(picked.sender_name, "ООО Отправитель")
 
 
 if __name__ == "__main__":

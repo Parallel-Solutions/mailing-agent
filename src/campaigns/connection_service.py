@@ -510,6 +510,8 @@ def pick_available_connection(
     owner_username: str,
     hour_counts: dict[str, int],
     day_counts: dict[str, int],
+    *,
+    campaign: Campaign | None = None,
 ) -> ResolvedConnection | None:
     if not ids:
         return None
@@ -525,7 +527,11 @@ def pick_available_connection(
             ):
                 continue
             transport = connection_transport(row)
-            sender_name = _profile_sender_name(owner_username, row.sender_name)
+            sender_name = resolve_sender_name(
+                owner_username,
+                campaign=campaign,
+                fallback=row.sender_name,
+            )
             if transport == "smtp":
                 return ResolvedConnection(row.id, transport, row.email, sender_name, "", "")
             return ResolvedConnection(

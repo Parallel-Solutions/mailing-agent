@@ -155,6 +155,7 @@ def send_chain_node_email(
                 owner,
                 counters_hour,
                 counters_day,
+                campaign=camp,
             )
             if connection is None:
                 raise RuntimeError("Все подключения исчерпали лимиты отправки")
