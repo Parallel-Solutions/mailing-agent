@@ -129,13 +129,10 @@ def _effective_rate_limits(
     )
 
 
-def _validate_email(value: str) -> str:
-    email = (value or "").strip().lower()
-    if not email:
-        return "empty"
-    if not EMAIL_RE.match(email):
-        return "invalid"
-    return "valid"
+def _validate_email(value: str, email_fallback: str = "") -> str:
+    from src.campaigns.recipient_email_service import validate_email_field
+
+    return validate_email_field(value, email_fallback)
 
 
 def extract_recipient_columns(rows: list[dict[str, Any]]) -> list[str]:
@@ -559,15 +556,20 @@ def replace_recipients(
         duplicates = 0
         invalid = 0
         for idx, item in enumerate(recipients):
+            from src.campaigns.recipient_email_service import normalize_import_emails, primary_email_key
+
+            item = normalize_import_emails(item)
             email = str(item.get("email") or "").strip().lower()
-            status = _validate_email(email)
+            email_fallback = str(item.get("email_fallback") or "").strip().lower()
+            status = _validate_email(email, email_fallback)
             if status == "invalid":
                 invalid += 1
-            if email and email in seen_emails:
+            dedup_key = primary_email_key(email, email_fallback)
+            if dedup_key and dedup_key in seen_emails:
                 duplicates += 1
                 continue
-            if email:
-                seen_emails.add(email)
+            if dedup_key:
+                seen_emails.add(dedup_key)
             suppressed = is_email_suppressed_for_import(email) if email else False
             session.add(
                 CampaignRecipient(
@@ -576,7 +578,7 @@ def replace_recipients(
                     company=str(item.get("company") or ""),
                     contact_name=str(item.get("contact_name") or item.get("contact") or ""),
                     email=email,
-                    email_fallback=str(item.get("email_fallback") or "").strip().lower(),
+                    email_fallback=email_fallback,
                     region=str(item.get("region") or ""),
                     source=str(item.get("source") or "import"),
                     validation_status=status,
@@ -624,7 +626,7 @@ def update_recipient(
             row.excluded = bool(data["excluded"])
         if "extra" in data and isinstance(data["extra"], dict):
             row.extra = dict(data["extra"])
-        row.validation_status = _validate_email(row.email)
+        row.validation_status = _validate_email(row.email, row.email_fallback)
         if row.validation_status != "valid":
             row.excluded = True
         session.flush()
@@ -1362,12 +1364,34 @@ def record_delivery_attempt(
     status: str,
     error: str | None = None,
     provider_message_id: str | None = None,
+    delivery_email: str | None = None,
+    attempt_number: int | None = None,
 ) -> bool:
     """Return False if already recorded (idempotent skip)."""
-    key = f"{campaign_id}:{recipient_id}:1"
     with session_scope() as session:
+        if attempt_number is None:
+            latest = session.scalar(
+                select(DeliveryAttempt)
+                .where(
+                    DeliveryAttempt.campaign_id == campaign_id,
+                    DeliveryAttempt.recipient_id == recipient_id,
+                )
+                .order_by(DeliveryAttempt.attempt_number.desc())
+                .limit(1)
+            )
+            if status == "sending":
+                if latest is not None and latest.status == "sending":
+                    attempt_number = latest.attempt_number
+                elif latest is not None and latest.status in {"sent", "delivered"}:
+                    return False
+                else:
+                    attempt_number = int(latest.attempt_number if latest else 0) + 1
+            else:
+                attempt_number = int(latest.attempt_number if latest else 1)
+
+        key = f"{campaign_id}:{recipient_id}:{attempt_number}"
         existing = session.scalar(select(DeliveryAttempt).where(DeliveryAttempt.idempotency_key == key))
-        if existing and existing.status in {"sent", "delivered"}:
+        if existing and existing.status in {"sent", "delivered"} and status not in {"sending"}:
             return False
         if existing is None:
             session.add(
@@ -1375,10 +1399,11 @@ def record_delivery_attempt(
                     campaign_id=campaign_id,
                     recipient_id=recipient_id,
                     batch_id=batch_id,
-                    attempt_number=1,
+                    attempt_number=attempt_number,
                     status=status,
                     error=error,
                     provider_message_id=provider_message_id,
+                    delivery_email=delivery_email,
                     idempotency_key=key,
                 )
             )
@@ -1386,5 +1411,9 @@ def record_delivery_attempt(
             existing.status = status
             existing.error = error
             existing.provider_message_id = provider_message_id
+            if delivery_email:
+                existing.delivery_email = delivery_email
+            if batch_id:
+                existing.batch_id = batch_id
             existing.updated_at = _now()
         return True

@@ -10,21 +10,20 @@ from sqlalchemy import select
 from src.campaigns.batch_worker import run_sender_batch
 from src.campaigns.connection_service import ResolvedConnection
 from src.campaigns.service import create_campaign, replace_recipients
-from src.campaigns.suppression_service import apply_global_email_suppression
+from src.generator.delivery.email_validation import EmailValidationResult
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignBatch, CampaignRecipient
 from src.security.user_store import create_user
 from tests.bootstrap import bootstrap_test_runtime
 
 
-class BatchWorkerSuppressionTests(unittest.TestCase):
+class BatchWorkerEmailValidationTests(unittest.TestCase):
     def setUp(self) -> None:
         bootstrap_test_runtime(reset_db=True)
-        self.username = f"bw{uuid.uuid4().hex[:8]}"
+        self.username = f"bwe{uuid.uuid4().hex[:8]}"
         create_user(self.username, "Pass12345!")
-        self.campaign = create_campaign(self.username, {"name": "Batch suppression"})
+        self.campaign = create_campaign(self.username, {"name": "Batch email validation"})
         self.campaign_id = self.campaign["id"]
-        self.email = "skip@example.com"
         replace_recipients(
             self.campaign_id,
             self.username,
@@ -32,7 +31,7 @@ class BatchWorkerSuppressionTests(unittest.TestCase):
                 {
                     "company": "Org",
                     "contact_name": "User",
-                    "email": self.email,
+                    "email": "person@bad.invalid, backup@example.com",
                 }
             ],
         )
@@ -62,10 +61,10 @@ class BatchWorkerSuppressionTests(unittest.TestCase):
             session.flush()
 
     @patch("src.campaigns.batch_worker._load_email_template", return_value=("Subject", "<p>Hi</p>", "Hi"))
-    @patch("src.campaigns.batch_worker._send_delivery_message")
-    @patch("src.campaigns.connection_service.resolve_connection")
-    def test_run_sender_batch_skips_suppressed_recipient(self, resolve_mock, send_mock, _template_mock) -> None:
-        resolve_mock.return_value = ResolvedConnection(
+    @patch("src.campaigns.batch_worker._send_delivery_message", return_value="smtp:backup@example.com:1")
+    @patch("src.campaigns.connection_service.pick_available_connection")
+    def test_run_sender_batch_uses_second_validated_email(self, pick_mock, send_mock, _template_mock) -> None:
+        pick_mock.return_value = ResolvedConnection(
             id="conn-test",
             transport="smtp",
             email="sender@example.com",
@@ -73,26 +72,42 @@ class BatchWorkerSuppressionTests(unittest.TestCase):
             secret="secret",
             api_base_url="",
         )
-        apply_global_email_suppression(self.email, reason="unsubscribe", source="test")
 
-        result = run_sender_batch(
-            {
-                "campaign_id": self.campaign_id,
-                "batch_id": self.batch_id,
-                "send_mode": "consent_request",
-                "smtp_mailbox_id": "conn-test",
-                "on_error": "skip",
-            }
-        )
+        def fake_result(email: str, is_valid: bool) -> EmailValidationResult:
+            return EmailValidationResult(
+                email=email,
+                normalized_email=email.lower(),
+                domain=email.split("@", 1)[-1],
+                is_valid=is_valid,
+                reason_code="ok_domain" if is_valid else "domain_not_found",
+                reason="" if is_valid else "Email не прошёл проверку.",
+                checked_at="2026-07-22T12:00:00",
+                details={"mode": "domain"},
+            )
 
-        self.assertEqual(result.get("sent"), 0)
-        send_mock.assert_not_called()
+        with patch(
+            "src.campaigns.recipient_email_service.validate_email_address",
+            side_effect=lambda email, **kwargs: fake_result(email, email == "backup@example.com"),
+        ):
+            result = run_sender_batch(
+                {
+                    "campaign_id": self.campaign_id,
+                    "batch_id": self.batch_id,
+                    "send_mode": "email",
+                    "connection_ids": ["conn-test"],
+                    "on_error": "skip",
+                }
+            )
+
+        self.assertEqual(result.get("sent"), 1)
+        send_mock.assert_called_once()
+        self.assertEqual(send_mock.call_args.kwargs["to_email"], "backup@example.com")
         with session_scope() as session:
             recipient = session.get(CampaignRecipient, self.recipient_id)
             self.assertIsNotNone(recipient)
             assert recipient is not None
-            self.assertEqual(recipient.send_status, "failed")
-            self.assertIn("стоп-листе", recipient.last_error or "")
+            self.assertEqual(recipient.send_status, "sent")
+            self.assertEqual((recipient.extra or {}).get("delivery_email"), "backup@example.com")
 
 
 if __name__ == "__main__":

@@ -171,6 +171,7 @@ def _finalize_chain_send_success(
     followup_token: str | None,
     active_test_email: str | None,
     message_id: str,
+    delivery_email: str,
 ) -> None:
     with session_scope() as session:
         recipient = session.get(CampaignRecipient, int(recipient_id))
@@ -199,6 +200,7 @@ def _finalize_chain_send_success(
                 batch_id=batch_id,
                 status="sent",
                 provider_message_id=message_id,
+                delivery_email=delivery_email,
             )
         session.flush()
 
@@ -235,9 +237,28 @@ def send_chain_node_email(
             if token_row is not None and token_row.test_email:
                 active_test_email = token_row.test_email
 
+        delivery_email = active_test_email
+        if not delivery_email:
+            from src.campaigns.recipient_email_service import (
+                persist_delivery_email_state,
+                resolve_delivery_email,
+                validation_attempts_error,
+            )
+
+            delivery_email, validation_attempts = resolve_delivery_email(recipient)
+            if not delivery_email:
+                error_text = validation_attempts_error(validation_attempts)
+                if followup_token:
+                    mark_token_sent(followup_token, status="skipped", error=error_text)
+                recipient.send_status = "failed"
+                recipient.last_error = error_text
+                session.flush()
+                return {"status": "skipped", "reason": "invalid_email", "node_id": node_id}
+            persist_delivery_email_state(recipient, delivery_email)
+
         from src.generator.delivery.suppression_store import is_suppressed
 
-        suppression_target = active_test_email or recipient.email
+        suppression_target = delivery_email
         suppressed, suppress_reason = is_suppressed(suppression_target)
         if suppressed:
             if followup_token:
@@ -246,11 +267,14 @@ def send_chain_node_email(
 
         owner = camp.owner_username
         job_id = camp.job_id
-        delivery_email = active_test_email or recipient.email
         root_node_id = str(chain.get("root_node_id") or "")
 
         if connection_id:
             resolved_connection_id = connection_id
+            from src.campaigns.connection_service import resolve_connection
+
+            resolved = resolve_connection(connection_id, owner, campaign=camp)
+            send_transport = resolved.transport
         else:
             from src.campaigns.connection_service import campaign_connection_ids, pick_available_connection
 
@@ -267,6 +291,7 @@ def send_chain_node_email(
                 raise RuntimeError("Все подключения исчерпали лимиты отправки")
             resolved_connection_id = connection.id
             connection_id = resolved_connection_id
+            send_transport = connection.transport
 
         subject_template, body_html_template, body_text_template = _load_node_email_template(node, camp)
         email_template_id = str(node.get("email_template_id") or "") or None
@@ -322,6 +347,7 @@ def send_chain_node_email(
                 recipient_id=int(recipient_id),
                 batch_id=batch_id,
                 status="sending",
+                delivery_email=delivery_email,
             )
 
         campaign_for_send = camp
@@ -392,7 +418,30 @@ def send_chain_node_email(
             followup_token=followup_token,
             active_test_email=active_test_email,
             message_id=message_id,
+            delivery_email=delivery_email,
         )
+        if not active_test_email:
+            from datetime import datetime, timezone
+
+            from src.campaigns.recipient_email_service import append_campaign_sent_mail_log
+
+            with session_scope() as session:
+                camp = session.get(Campaign, campaign_id)
+                recipient = session.get(CampaignRecipient, int(recipient_id))
+                if camp is not None and recipient is not None:
+                    append_campaign_sent_mail_log(
+                        job_id=job_id,
+                        campaign_id=campaign_id,
+                        recipient_id=int(recipient_id),
+                        recipient=recipient,
+                        delivery_email=delivery_email,
+                        provider_message_id=message_id,
+                        transport=send_transport,
+                        send_mode="chain_followup" if followup_token else "chain_root",
+                        subject=subject,
+                        campaign_name=camp.name,
+                        sent_at=datetime.now(timezone.utc).isoformat(),
+                    )
     except Exception:
         logger.exception(
             "chain_node_send_finalize_failed",
