@@ -12,7 +12,7 @@ from src.campaigns.recipient_email_service import (
     resolve_delivery_email,
     validate_email_field,
 )
-from src.campaigns.service import create_campaign, replace_recipients
+from src.campaigns.service import create_campaign, parse_recipients_xlsx, replace_recipients
 from src.generator.delivery.email_validation import EmailValidationResult
 from src.infra.db import session_scope
 from src.infra.models import CampaignRecipient
@@ -124,6 +124,76 @@ class CampaignRecipientsImportTests(unittest.TestCase):
             )
             self.assertIsNotNone(recipient)
             assert recipient is not None
+            self.assertEqual(recipient.email, "glbuh@neopak.ru")
+            self.assertEqual(recipient.email_fallback, "tstender@neopak.ru")
+            self.assertEqual(recipient.validation_status, "valid")
+            self.assertFalse(recipient.excluded)
+
+    def test_parse_recipients_xlsx_checko_export_maps_core_fields(self) -> None:
+        from io import BytesIO
+
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["Полное наименование", "Email", "Руководитель"])
+        ws.append(
+            [
+                'Общество с ограниченной ответственностью "Неопак"',
+                "glbuh@neopak.ru, tstender@neopak.ru",
+                "Иванов Иван Иванович",
+            ]
+        )
+        buffer = BytesIO()
+        wb.save(buffer)
+
+        rows, _columns = parse_recipients_xlsx(buffer.getvalue())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["company"],
+            'Общество с ограниченной ответственностью "Неопак"',
+        )
+        self.assertEqual(rows[0]["contact_name"], "Иванов Иван Иванович")
+        self.assertEqual(rows[0]["email"], "glbuh@neopak.ru, tstender@neopak.ru")
+
+    def test_replace_recipients_checko_export_splits_emails(self) -> None:
+        from io import BytesIO
+
+        from openpyxl import Workbook
+
+        bootstrap_test_runtime(reset_db=True)
+        username = f"imp{uuid.uuid4().hex[:8]}"
+        create_user(username, "Pass12345!")
+        campaign = create_campaign(username, {"name": "Import Checko xlsx"})
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["Полное наименование", "Email", "Руководитель"])
+        ws.append(
+            [
+                'Общество с ограниченной ответственностью "Неопак"',
+                "glbuh@neopak.ru, tstender@neopak.ru",
+                "Иванов Иван Иванович",
+            ]
+        )
+        buffer = BytesIO()
+        wb.save(buffer)
+        rows, _columns = parse_recipients_xlsx(buffer.getvalue())
+
+        result = replace_recipients(campaign["id"], username, recipients=rows)
+        self.assertEqual(result["invalid"], 0)
+        self.assertEqual(result["total"], 1)
+        with session_scope() as session:
+            recipient = session.scalar(
+                select(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign["id"])
+            )
+            self.assertIsNotNone(recipient)
+            assert recipient is not None
+            self.assertEqual(
+                recipient.company,
+                'Общество с ограниченной ответственностью "Неопак"',
+            )
+            self.assertEqual(recipient.contact_name, "Иванов Иван Иванович")
             self.assertEqual(recipient.email, "glbuh@neopak.ru")
             self.assertEqual(recipient.email_fallback, "tstender@neopak.ru")
             self.assertEqual(recipient.validation_status, "valid")

@@ -37,8 +37,21 @@ _CORE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "mun_name",
         "полное название администрации",
         "муниципальное образование",
+        "полное наименование",
+        "сокращенное наименование",
+        "наименование",
+        "организация",
     ),
-    "contact_name": ("contact", "contact_name", "контакт", "head_fio", "глава мо"),
+    "contact_name": (
+        "contact",
+        "contact_name",
+        "контакт",
+        "head_fio",
+        "глава мо",
+        "руководитель",
+        "фio руководителя",
+        "фио руководителя",
+    ),
     "email": ("email", "e-mail", "почта", "email_osn", "эл. адрес (основной)"),
     "email_fallback": ("email_fallback", "email2", "email_dop", "эл. адрес (доп)"),
     "region": ("region", "регион", "sub_rf", "субъект рф"),
@@ -705,8 +718,10 @@ def parse_recipients_xlsx(content: bytes) -> tuple[list[dict[str, Any]], list[st
     wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
-    first = [str(c or "").strip().lower() for c in next(rows_iter, [])]
-    second = [str(c or "").strip().lower() for c in next(rows_iter, [])]
+    first_raw = [str(c or "").strip() for c in next(rows_iter, [])]
+    second_raw = [str(c or "").strip() for c in next(rows_iter, [])]
+    first = [value.lower() for value in first_raw]
+    second = [value.lower() for value in second_raw]
 
     def _is_mo_tech_header(headers: list[str]) -> bool:
         keys = set(headers)
@@ -718,10 +733,10 @@ def parse_recipients_xlsx(content: bytes) -> tuple[list[dict[str, Any]], list[st
         data_rows: list[tuple[Any, ...]] = list(rows_iter)
     elif _is_mo_tech_header(first):
         headers = first
-        data_rows = [tuple(second)] + list(rows_iter) if any(second) else list(rows_iter)
+        data_rows = [tuple(second_raw)] + list(rows_iter) if any(second_raw) else list(rows_iter)
     else:
         headers = first
-        data_rows = [tuple(second)] + list(rows_iter) if any(second) else list(rows_iter)
+        data_rows = [tuple(second_raw)] + list(rows_iter) if any(second_raw) else list(rows_iter)
 
     mapping = {h: i for i, h in enumerate(headers)}
 

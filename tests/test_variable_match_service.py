@@ -124,6 +124,46 @@ class VariableMatchServiceTests(unittest.TestCase):
         self.assertIn("adm_name", columns)
         self.assertIn("head_fio", columns)
 
+    def test_parse_recipients_xlsx_checko_export(self) -> None:
+        from io import BytesIO
+
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(
+            [
+                "Сокращенное наименование",
+                "Полное наименование",
+                "Email",
+                "Регион",
+                "Руководитель",
+            ]
+        )
+        ws.append(
+            [
+                'ООО "Неопак"',
+                'Общество с ограниченной ответственностью "Неопак"',
+                "glbuh@neopak.ru, tstender@neopak.ru",
+                "Карелия, республика",
+                "Иванов Иван Иванович",
+            ]
+        )
+        buffer = BytesIO()
+        wb.save(buffer)
+
+        rows, columns = parse_recipients_xlsx(buffer.getvalue())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["company"],
+            'Общество с ограниченной ответственностью "Неопак"',
+        )
+        self.assertEqual(rows[0]["contact_name"], "Иванов Иван Иванович")
+        self.assertEqual(rows[0]["email"], "glbuh@neopak.ru, tstender@neopak.ru")
+        self.assertEqual(rows[0]["region"], "Карелия, республика")
+        self.assertIn("сокращенное наименование", rows[0]["extra"])
+        self.assertIn("полное наименование", columns)
+
     def test_heuristic_mapping_matches_mo_columns(self) -> None:
         template_variables = [
             {"name": "ADM_NAME", "label": "ADM_NAME", "source": "recipient"},

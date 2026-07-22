@@ -100,7 +100,14 @@ def recipient_row(recipient: CampaignRecipient) -> dict[str, Any]:
     from src.parser.excel_writer import COLUMNS
 
     extra = dict(recipient.extra or {})
-    company = recipient.company or _extra_value(extra, "MUN_NAME", "ADM_NAME", "COMPANY")
+    company = recipient.company or _extra_value(
+        extra,
+        "MUN_NAME",
+        "ADM_NAME",
+        "COMPANY",
+        "ПОЛНОЕ НАИМЕНОВАНИЕ",
+        "СОКРАЩЕННОЕ НАИМЕНОВАНИЕ",
+    )
     row: dict[str, Any] = {
         key: _extra_value(extra, key)
         for _, key in COLUMNS
@@ -115,7 +122,7 @@ def recipient_row(recipient: CampaignRecipient) -> dict[str, Any]:
             "ADM_NAME": _extra_value(extra, "ADM_NAME") or company,
             "EMAIL": recipient.email or recipient.email_fallback,
             "EMAIL_OSN": recipient.email or recipient.email_fallback,
-            "HEAD_FIO": recipient.contact_name or _extra_value(extra, "HEAD_FIO", "CONTACT"),
+            "HEAD_FIO": recipient.contact_name or _extra_value(extra, "HEAD_FIO", "CONTACT", "РУКОВОДИТЕЛЬ"),
         }
     )
     for key, value in extra.items():
