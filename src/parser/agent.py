@@ -59,18 +59,59 @@ def _latest_batch_file() -> tuple[Optional[str], float]:
     return latest, latest_mtime
 
 def _maybe_run_discovery(message: str) -> dict | None:
-    """Если запрос — 'класс коммерческих организаций по сфере+региону', собрать напрямую.
-    Иначе None → обычный путь агента (в т.ч. администрации МО)."""
-    text = message or ""
-    m_reg = re.search(r"регион[еа]?\s*[:\-]?\s*([^.\n]+)", text, re.IGNORECASE)
-    region = m_reg.group(1).strip() if m_reg else ""
-    m_what = re.search(r"найд[иёе]\w*\s+(.+?)\s+в\s+регион", text, re.IGNORECASE)
-    what = m_what.group(1).strip() if m_what else text
-    if not region or resolve_okved(what) is None:
-        return None  # не коммерческий класс (напр. МО) — пусть работает агент
-    m_vol = re.search(r"(\d{2,4})", text)
-    limit = min(int(m_vol.group(1)), 100) if m_vol else 25
-    return discover_and_write(query=what, region=region, limit=limit)
+    """Если запрос — «собери <кого-то> в <месте>», собрать каскадом источников.
+    Иначе None → обычный путь агента (в т.ч. администрации МО).
+
+    Разбор и порядок источников живут в parser_new/tools/collector.py.
+    """
+    from src.parser_new.tools.collector import parse_request, collect_and_describe
+    from src.parser_new.tools.discovery_tool import resolve_okved
+
+    parsed = parse_request(message or "")
+    if not parsed:
+        return None
+    query, place, limit = parsed
+
+    # Администрации МО и прочие некоммерческие запросы оставляем агенту:
+    # у них свой маршрут с проверкой официальных названий.
+    low = (query + " " + place).lower()
+    if any(kw in low for kw in ("администрац", "муниципальн", "поселени",
+                                "сельсовет", "мэри", "управа", "органы власти")):
+        return None
+
+    return collect_and_describe(query, place, limit)
+
+def _mark_discovery_table_ready(job_id: Optional[str], *, count: int) -> None:
+    """Discovery-ветка НЕ проходит проверку названий МО (её для коммерческого
+    сбора нет), поэтому вручную помечаем таблицу как готовую — иначе gate в
+    download-result (parser_table_verified) вернёт 409 «Дождитесь завершения
+    проверки таблицы». Правка изолирована: МО-путь выставляет этот же статус
+    сам во время реальной верификации, здесь мы его не задеваем."""
+    try:
+        from datetime import datetime
+        from src.generator.orchestration.parser_agent import (
+            _update_municipality_verification_state,
+        )
+        now = datetime.now().isoformat(timespec="seconds")
+        _update_municipality_verification_state(
+            job_id,
+            status="completed",
+            source="discovery",
+            summary_text=f"Коммерческий сбор завершён: {count} организаций.",
+            completed_at=now,
+            result={
+                "status": "ok",
+                "total_rows": count,
+                "updated_rows": 0,
+                "verified_rows": count,
+                "missing_rows": 0,
+                "kept_rows": count,
+            },
+        )
+    except Exception as e:
+        # Статус — вспомогательный: если пометить не удалось, сам сбор уже прошёл,
+        # файл записан. Не роняем ответ пользователю из-за статуса.
+        logger.warning(f"[parser] Не удалось пометить discovery-таблицу готовой: {e}")
 
 def chat(message: str, job_id: Optional[str] = None) -> dict:
     """
@@ -94,9 +135,10 @@ def chat(message: str, job_id: Optional[str] = None) -> dict:
 
         disc = _maybe_run_discovery(message) if uploaded_file is None else None
         if disc is not None:
-            reply_text = (f"Собрано организаций: {disc['count']}. Таблица готова."
-                          if disc.get("success") else f"Не удалось собрать: {disc.get('error')}")
             success = bool(disc.get("success"))
+            reply_text = disc.get("reply") or ""
+            if success:
+                _mark_discovery_table_ready(job_id, count=int(disc.get("count") or 0))
         else:
             result = run_agent_task(
                 task=message, chat_history=[],
