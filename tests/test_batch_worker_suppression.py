@@ -91,8 +91,8 @@ class BatchWorkerSuppressionTests(unittest.TestCase):
             recipient = session.get(CampaignRecipient, self.recipient_id)
             self.assertIsNotNone(recipient)
             assert recipient is not None
-            self.assertEqual(recipient.send_status, "skipped")
-            self.assertTrue(recipient.excluded)
+            self.assertEqual(recipient.send_status, "failed")
+            self.assertIn("стоп-листе", recipient.last_error or "")
 
 
 if __name__ == "__main__":

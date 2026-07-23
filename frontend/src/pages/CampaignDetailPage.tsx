@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { formatScheduleDateTime } from '@/utils/scheduleForm';
 import { readEnumParam } from '@/utils/urlState';
 
 const CAMPAIGN_DETAIL_TABS = ['overview', 'recipients', 'queue', 'stats', 'errors', 'settings'] as const;
@@ -175,7 +176,7 @@ export function CampaignDetailPage() {
                 dataSource={batchesQuery.data || []}
                 columns={[
                   { title: 'Пакет', dataIndex: 'batch_index' },
-                  { title: 'Время', dataIndex: 'scheduled_at' },
+                  { title: 'Время', dataIndex: 'scheduled_at', render: (value: string) => formatScheduleDateTime(value) },
                   { title: 'Кол-во', dataIndex: 'size' },
                   { title: 'Отправлено', dataIndex: 'sent_count' },
                   { title: 'Осталось', dataIndex: 'remaining' },
@@ -246,7 +247,7 @@ export function CampaignDetailPage() {
                 {scheduleQuery.data ? (
                   <Space direction="vertical">
                     <Typography.Text>
-                      Старт: {scheduleQuery.data.start_at || '—'}
+                      Старт: {formatScheduleDateTime(scheduleQuery.data.start_at, scheduleQuery.data.timezone)}
                     </Typography.Text>
                     <Typography.Text>
                       Размер пакета: {scheduleQuery.data.batch_size ?? '—'}

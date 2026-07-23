@@ -262,6 +262,9 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
     errors = 0
     hour_counts: dict[str, int] = {}
     day_counts: dict[str, int] = {}
+    from src.generator.delivery.email_validation import EmailValidationResult
+
+    email_validation_cache: dict[str, EmailValidationResult] = {}
     for recipient_id in recipient_ids:
         with session_scope() as session:
             camp = session.get(Campaign, campaign_id)
@@ -278,16 +281,6 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                 session.flush()
                 return {"status": "cancelled", "sent": sent, "errors": errors}
             if recipient.send_status in {"sent", "in_chain"}:
-                continue
-
-            from src.generator.delivery.suppression_store import is_suppressed
-
-            suppressed, suppress_reason = is_suppressed(recipient.email)
-            if suppressed:
-                recipient.excluded = True
-                recipient.send_status = "skipped"
-                recipient.last_error = f"Адрес в стоп-листе ({suppress_reason or 'suppressed'})"
-                session.flush()
                 continue
 
             send_mode = str(kwargs.get("send_mode") or "")
@@ -333,8 +326,45 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     time.sleep(pause_ms / 1000.0)
                 continue
 
+            from src.campaigns.recipient_email_service import (
+                persist_delivery_email_state,
+                resolve_delivery_email,
+                validation_attempts_error,
+            )
+
+            delivery_email, validation_attempts = resolve_delivery_email(
+                recipient,
+                validation_cache=email_validation_cache,
+            )
+            if not delivery_email:
+                recipient.send_status = "failed"
+                recipient.last_error = validation_attempts_error(validation_attempts)
+                errors += 1
+                batch.error_count = int(batch.error_count or 0) + 1
+                camp.error_count = int(camp.error_count or 0) + 1
+                record_delivery_attempt(
+                    campaign_id=campaign_id,
+                    recipient_id=int(recipient_id),
+                    batch_id=batch_id,
+                    status="failed",
+                    error=recipient.last_error,
+                )
+                session.flush()
+                if on_error == "pause":
+                    camp.status = "paused"
+                    batch.status = "paused"
+                    session.flush()
+                    return {"status": "paused", "sent": sent, "errors": errors}
+                continue
+
+            persist_delivery_email_state(recipient, delivery_email)
+
             accepted = record_delivery_attempt(
-                campaign_id=campaign_id, recipient_id=int(recipient_id), batch_id=batch_id, status="sending"
+                campaign_id=campaign_id,
+                recipient_id=int(recipient_id),
+                batch_id=batch_id,
+                status="sending",
+                delivery_email=delivery_email,
             )
             if not accepted and recipient.send_status == "sent":
                 continue
@@ -381,9 +411,9 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                                 "ID": str(recipient.id),
                                 "Организация": recipient.company,
                                 "Контакт": recipient.contact_name,
-                                "Email": recipient.email,
+                                "Email": delivery_email,
                             },
-                            recipient=recipient.email,
+                            recipient=delivery_email,
                             transport=transport,
                             attachment_mode=camp.document_mode or "kp",
                             subject_template=subject,
@@ -439,7 +469,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                 message_id = _send_delivery_message(
                     connection_id=connection_id,
                     owner_username=owner,
-                    to_email=recipient.email,
+                    to_email=delivery_email,
                     subject=subject,
                     html=html,
                     text=text,
@@ -458,40 +488,29 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     batch_id=batch_id,
                     status="sent",
                     provider_message_id=message_id,
+                    delivery_email=delivery_email,
                 )
                 hour_counts[connection_id] = hour_counts.get(connection_id, 0) + 1
                 day_counts[connection_id] = day_counts.get(connection_id, 0) + 1
                 sent += 1
 
-                if job_id:
-                    try:
-                        from src.jobs.job_docs import append_event
+                from src.campaigns.recipient_email_service import append_campaign_sent_mail_log
+                from src.generator.delivery.manager_stats import invalidate_stats_cache
 
-                        append_event(
-                            job_id,
-                            "sent_mail_log",
-                            {
-                                "email": recipient.email,
-                                "recipient": recipient.email,
-                                "organization": recipient.company,
-                                "mun_name": recipient.company,
-                                "row_id": str(
-                                    (recipient.row_index + 1)
-                                    if recipient.row_index is not None
-                                    else recipient.id
-                                ),
-                                "status": "sent",
-                                "transport": transport,
-                                "campaign_name": camp.name,
-                                "campaign_id": campaign_id,
-                                "sent_at": _now().isoformat(),
-                                "subject": subject,
-                                "send_mode": "materials",
-                                "provider_message_id": message_id,
-                            },
-                        )
-                    except Exception:
-                        pass
+                if append_campaign_sent_mail_log(
+                    job_id=job_id,
+                    campaign_id=campaign_id,
+                    recipient_id=int(recipient_id),
+                    recipient=recipient,
+                    delivery_email=delivery_email,
+                    provider_message_id=message_id,
+                    transport=transport,
+                    send_mode=send_mode or "email",
+                    subject=subject,
+                    campaign_name=camp.name,
+                    sent_at=_now().isoformat(),
+                ):
+                    invalidate_stats_cache(job_id)
             except Exception as exc:
                 errors += 1
                 recipient.send_status = "failed"

@@ -5,6 +5,8 @@ export type EditorVariable = { name: string; label: string; source: string };
 export const EMAIL_VARIABLES: EditorVariable[] = [
   { name: 'company', label: 'Компания', source: 'Получатель' },
   { name: 'contact_name', label: 'Контактное лицо', source: 'Получатель' },
+  { name: 'Имя', label: 'Имя (из ФИО)', source: 'Получатель' },
+  { name: 'Отчество', label: 'Отчество (из ФИО)', source: 'Получатель' },
   { name: 'email', label: 'Email', source: 'Получатель' },
   { name: 'region', label: 'Регион', source: 'Получатель' },
   { name: 'campaign_name', label: 'Название рассылки', source: 'Рассылка' },
@@ -18,6 +20,8 @@ export const EMAIL_VARIABLES: EditorVariable[] = [
 export const SAMPLE_EMAIL_VALUES: Record<string, string> = {
   company: 'ООО «Вектор»',
   contact_name: 'Анна Сергеевна',
+  Имя: 'Анна',
+  Отчество: 'Сергеевна',
   email: 'anna@vector.ru',
   region: 'Московская область',
   campaign_name: 'КП — июль 2026',

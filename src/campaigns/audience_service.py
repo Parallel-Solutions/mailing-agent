@@ -166,8 +166,12 @@ def replace_members(
             session.delete(old)
         valid = 0
         for item in members:
+            from src.campaigns.recipient_email_service import normalize_import_emails
+
+            item = normalize_import_emails(item)
             email = str(item.get("email") or "").strip().lower()
-            status = _validate_email(email)
+            email_fallback = str(item.get("email_fallback") or "").strip().lower()
+            status = _validate_email(email, email_fallback)
             if status == "valid":
                 valid += 1
             suppressed = is_email_suppressed_for_import(email) if email else False
@@ -177,7 +181,7 @@ def replace_members(
                     company=str(item.get("company") or ""),
                     contact_name=str(item.get("contact_name") or ""),
                     email=email,
-                    email_fallback=str(item.get("email_fallback") or "").strip().lower(),
+                    email_fallback=email_fallback,
                     region=str(item.get("region") or ""),
                     source=str(item.get("source") or "import"),
                     validation_status=status,

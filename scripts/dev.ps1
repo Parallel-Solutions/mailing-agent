@@ -1,7 +1,8 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet("start", "reset", "stop", "seed", "status")]
-    [string]$Command = "start"
+    [string]$Command = "start",
+    [switch]$Build
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,7 +74,11 @@ function Show-Access {
 
 switch ($Command) {
     "start" {
-        Invoke-DevCompose -ComposeArgs @('up', '--detach', '--build')
+        if ($Build) {
+            Invoke-DevCompose -ComposeArgs @('up', '--detach', '--build', 'app', 'worker')
+        } else {
+            Invoke-DevCompose -ComposeArgs @('up', '--detach')
+        }
         Wait-Health
         Show-Access
     }

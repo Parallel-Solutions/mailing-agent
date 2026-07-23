@@ -100,7 +100,14 @@ def recipient_row(recipient: CampaignRecipient) -> dict[str, Any]:
     from src.parser.excel_writer import COLUMNS
 
     extra = dict(recipient.extra or {})
-    company = recipient.company or _extra_value(extra, "MUN_NAME", "ADM_NAME", "COMPANY")
+    company = recipient.company or _extra_value(
+        extra,
+        "MUN_NAME",
+        "ADM_NAME",
+        "COMPANY",
+        "ПОЛНОЕ НАИМЕНОВАНИЕ",
+        "СОКРАЩЕННОЕ НАИМЕНОВАНИЕ",
+    )
     row: dict[str, Any] = {
         key: _extra_value(extra, key)
         for _, key in COLUMNS
@@ -115,7 +122,7 @@ def recipient_row(recipient: CampaignRecipient) -> dict[str, Any]:
             "ADM_NAME": _extra_value(extra, "ADM_NAME") or company,
             "EMAIL": recipient.email or recipient.email_fallback,
             "EMAIL_OSN": recipient.email or recipient.email_fallback,
-            "HEAD_FIO": recipient.contact_name or _extra_value(extra, "HEAD_FIO", "CONTACT"),
+            "HEAD_FIO": recipient.contact_name or _extra_value(extra, "HEAD_FIO", "CONTACT", "РУКОВОДИТЕЛЬ"),
         }
     )
     for key, value in extra.items():
@@ -273,6 +280,21 @@ def build_substitution_context(
         }
     )
 
+    from src.generator.generation.transforms import parse_fio_components
+
+    fio_source = recipient.contact_name or str(row.get("HEAD_FIO") or "").strip()
+    surname, first_name, patronymic = parse_fio_components(fio_source)
+    contact_first_name = first_name or (fio_source if fio_source and not surname else "")
+    string_context["CONTACT_FIRST_NAME"] = contact_first_name
+    string_context["CONTACT_PATRONYMIC"] = patronymic
+    string_context["CONTACT_SURNAME"] = surname
+    if contact_first_name:
+        string_context["Имя"] = contact_first_name
+    if patronymic:
+        string_context["Отчество"] = patronymic
+    if surname:
+        string_context["Фамилия"] = surname
+
     mapping = dict(EMAIL_CORE_DEFAULTS)
     mapping.update(dict(variable_mapping or draft.get("variable_mapping") or {}))
     for var_name, column in mapping.items():
@@ -322,4 +344,36 @@ def build_substitution_context(
 
     apply_semantic_aliases(string_context, template_text)
 
+    _normalize_territory_context_values(string_context)
+
     return string_context
+
+
+def _normalize_territory_context_values(string_context: dict[str, str]) -> None:
+    from src.generator.generation.transforms import _normalize_mo_name_case, normalize_russian_geo_admin_case
+
+    mun_name = str(string_context.get("MUN_NAME") or string_context.get("mun_name") or "").strip()
+    if mun_name:
+        normalized = _normalize_mo_name_case(mun_name)
+        string_context["MUN_NAME"] = normalized
+        string_context["mun_name"] = normalized
+
+    for key in (
+        "MUN_R_NAME",
+        "SUB_RF",
+        "MUN_R_NAME_1",
+        "SUB_RF_1",
+        "ADM_NAME_1",
+        "MUN_NAME_1",
+        "WORK_SCOPE_FRAGMENT",
+        "MUN_R_SCOPE_FRAGMENT",
+        "HEAD_MO_FRAGMENT",
+    ):
+        value = str(string_context.get(key) or "").strip()
+        if not value:
+            continue
+        string_context[key] = normalize_russian_geo_admin_case(value)
+
+    adm_name = str(string_context.get("ADM_NAME") or "").strip()
+    if adm_name:
+        string_context["ADM_NAME"] = normalize_russian_geo_admin_case(adm_name)

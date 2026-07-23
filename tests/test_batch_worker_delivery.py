@@ -12,7 +12,7 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
         return (
             '<p>Hello</p>'
             '<a href="http://localhost:8006/chain/branch/uuid-1" '
-            'style="background:#1677ff">Получить</a>'
+            'style="background:#236348">Получить</a>'
         )
 
     def _chain_text(self) -> str:

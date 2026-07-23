@@ -81,13 +81,19 @@ function buildChainButtonsStubInnerHtml(): string {
 
     + '<p style="margin:0 0 8px">'
 
-    + '<span style="display:inline-block;padding:8px 16px;background:#d9d9d9;color:#595959;'
+    + '<span style="display:inline-block;padding:8px 16px;background:#236348;color:#fff;'
 
     + 'border-radius:4px;margin:0 4px">Вариант 1</span>'
 
-    + '<span style="display:inline-block;padding:8px 16px;background:#d9d9d9;color:#595959;'
+    + '<span style="display:inline-block;padding:8px 16px;background:#236348;color:#fff;'
 
     + 'border-radius:4px;margin:0 4px">Вариант 2</span>'
+
+    + '</p>'
+
+    + '<p style="margin:0 0 8px;text-align:right">'
+
+    + '<span style="display:inline-block;color:#868e96;text-decoration:underline">Отписаться</span>'
 
     + '</p>'
 

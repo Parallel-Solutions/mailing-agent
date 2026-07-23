@@ -28,6 +28,22 @@ EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
 CORE_RECIPIENT_COLUMNS = ("company", "contact_name", "email", "email_fallback", "region")
 
+_RECIPIENT_ROW_RESERVED = frozenset(
+    {
+        "email",
+        "email_fallback",
+        "company",
+        "contact_name",
+        "contact",
+        "region",
+        "source",
+        "excluded",
+        "row_index",
+        "extra",
+        "validation_status",
+    }
+)
+
 _CORE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "company": (
         "company",
@@ -37,8 +53,21 @@ _CORE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "mun_name",
         "полное название администрации",
         "муниципальное образование",
+        "полное наименование",
+        "сокращенное наименование",
+        "наименование",
+        "организация",
     ),
-    "contact_name": ("contact", "contact_name", "контакт", "head_fio", "глава мо"),
+    "contact_name": (
+        "contact",
+        "contact_name",
+        "контакт",
+        "head_fio",
+        "глава мо",
+        "руководитель",
+        "фio руководителя",
+        "фио руководителя",
+    ),
     "email": ("email", "e-mail", "почта", "email_osn", "эл. адрес (основной)"),
     "email_fallback": ("email_fallback", "email2", "email_dop", "эл. адрес (доп)"),
     "region": ("region", "регион", "sub_rf", "субъект рф"),
@@ -57,6 +86,28 @@ CAMPAIGN_STATUSES = {
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _schedule_requires_immediate_start(schedule: CampaignSchedule, *, now: datetime | None = None) -> bool:
+    """Start now when there is no valid future slot (past time, outside window, wrong weekday)."""
+    if schedule.send_immediately or schedule.start_at is None:
+        return True
+    from src.campaigns.schedule_planner import is_schedule_start_allowed
+
+    clock = now or _now()
+    start_at = schedule.start_at
+    if start_at.tzinfo is None:
+        start_at = start_at.replace(tzinfo=timezone.utc)
+    else:
+        start_at = start_at.astimezone(timezone.utc)
+    if start_at <= clock:
+        return True
+    return not is_schedule_start_allowed(
+        start_at,
+        timezone_name=str(schedule.timezone or "Europe/Moscow"),
+        weekdays=list(schedule.weekdays or []),
+        time_windows=list(schedule.time_windows or []),
+    )
 
 
 def _new_id() -> str:
@@ -129,19 +180,22 @@ def _effective_rate_limits(
     )
 
 
-def _validate_email(value: str) -> str:
-    email = (value or "").strip().lower()
-    if not email:
-        return "empty"
-    if not EMAIL_RE.match(email):
-        return "invalid"
-    return "valid"
+def _validate_email(value: str, email_fallback: str = "") -> str:
+    from src.campaigns.recipient_email_service import validate_email_field
+
+    return validate_email_field(value, email_fallback)
 
 
 def extract_recipient_columns(rows: list[dict[str, Any]]) -> list[str]:
     columns: list[str] = list(CORE_RECIPIENT_COLUMNS)
     seen = set(columns)
     for row in rows:
+        for key in row:
+            normalized = str(key or "").strip().lower()
+            if not normalized or normalized in _RECIPIENT_ROW_RESERVED or normalized in seen:
+                continue
+            seen.add(normalized)
+            columns.append(normalized)
         for key in (row.get("extra") or {}).keys():
             normalized = str(key or "").strip().lower()
             if normalized and normalized not in seen:
@@ -559,16 +613,27 @@ def replace_recipients(
         duplicates = 0
         invalid = 0
         for idx, item in enumerate(recipients):
+            from src.campaigns.recipient_email_service import normalize_import_emails, primary_email_key
+
+            item = normalize_import_emails(item)
             email = str(item.get("email") or "").strip().lower()
-            status = _validate_email(email)
+            email_fallback = str(item.get("email_fallback") or "").strip().lower()
+            status = _validate_email(email, email_fallback)
             if status == "invalid":
                 invalid += 1
-            if email and email in seen_emails:
+            dedup_key = primary_email_key(email, email_fallback)
+            if dedup_key and dedup_key in seen_emails:
                 duplicates += 1
                 continue
-            if email:
-                seen_emails.add(email)
+            if dedup_key:
+                seen_emails.add(dedup_key)
             suppressed = is_email_suppressed_for_import(email) if email else False
+            extra = dict(item.get("extra") or {})
+            for key, value in item.items():
+                normalized = str(key or "").strip().lower()
+                if not normalized or normalized in _RECIPIENT_ROW_RESERVED or normalized in extra:
+                    continue
+                extra[normalized] = value
             session.add(
                 CampaignRecipient(
                     campaign_id=campaign_id,
@@ -576,11 +641,11 @@ def replace_recipients(
                     company=str(item.get("company") or ""),
                     contact_name=str(item.get("contact_name") or item.get("contact") or ""),
                     email=email,
-                    email_fallback=str(item.get("email_fallback") or "").strip().lower(),
+                    email_fallback=email_fallback,
                     region=str(item.get("region") or ""),
                     source=str(item.get("source") or "import"),
                     validation_status=status,
-                    extra=dict(item.get("extra") or {}),
+                    extra=extra,
                     excluded=bool(item.get("excluded") or status != "valid" or suppressed),
                 )
             )
@@ -624,7 +689,7 @@ def update_recipient(
             row.excluded = bool(data["excluded"])
         if "extra" in data and isinstance(data["extra"], dict):
             row.extra = dict(data["extra"])
-        row.validation_status = _validate_email(row.email)
+        row.validation_status = _validate_email(row.email, row.email_fallback)
         if row.validation_status != "valid":
             row.excluded = True
         session.flush()
@@ -703,8 +768,10 @@ def parse_recipients_xlsx(content: bytes) -> tuple[list[dict[str, Any]], list[st
     wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
-    first = [str(c or "").strip().lower() for c in next(rows_iter, [])]
-    second = [str(c or "").strip().lower() for c in next(rows_iter, [])]
+    first_raw = [str(c or "").strip() for c in next(rows_iter, [])]
+    second_raw = [str(c or "").strip() for c in next(rows_iter, [])]
+    first = [value.lower() for value in first_raw]
+    second = [value.lower() for value in second_raw]
 
     def _is_mo_tech_header(headers: list[str]) -> bool:
         keys = set(headers)
@@ -716,10 +783,10 @@ def parse_recipients_xlsx(content: bytes) -> tuple[list[dict[str, Any]], list[st
         data_rows: list[tuple[Any, ...]] = list(rows_iter)
     elif _is_mo_tech_header(first):
         headers = first
-        data_rows = [tuple(second)] + list(rows_iter) if any(second) else list(rows_iter)
+        data_rows = [tuple(second_raw)] + list(rows_iter) if any(second_raw) else list(rows_iter)
     else:
         headers = first
-        data_rows = [tuple(second)] + list(rows_iter) if any(second) else list(rows_iter)
+        data_rows = [tuple(second_raw)] + list(rows_iter) if any(second_raw) else list(rows_iter)
 
     mapping = {h: i for i, h in enumerate(headers)}
 
@@ -805,6 +872,12 @@ def upsert_schedule(
                 schedule.start_at = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
             else:
                 schedule.start_at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if schedule.start_at is not None:
+                start = schedule.start_at if schedule.start_at.tzinfo else schedule.start_at.replace(tzinfo=timezone.utc)
+                now = _now()
+                if start.astimezone(timezone.utc) < now:
+                    schedule.start_at = now
+                schedule.send_immediately = False
         for field in ("timezone", "on_error"):
             if field in data and data[field] is not None:
                 setattr(schedule, field, str(data[field]))
@@ -885,6 +958,8 @@ def _resolve_send_mode(camp: Campaign) -> str:
         return "consent_request"
     if camp.send_scenario == "email_chain":
         return "chain_root"
+    if camp.send_scenario == "materials_now":
+        return "email"
     return "materials"
 
 
@@ -951,9 +1026,10 @@ def validate_campaign_for_launch(
         if camp.send_scenario == "email_chain":
             from src.campaigns.chain_service import get_email_chain, validate_chain
 
-            chain_validation = validate_chain(get_email_chain(camp), strict=True)
+            chain_validation = validate_chain(get_email_chain(camp), strict=False)
             if not chain_validation["ok"]:
                 errors.extend(chain_validation["errors"])
+            warnings.extend(chain_validation.get("warnings") or [])
         elif not camp.email_template_id and not (camp.draft_payload or {}).get("email_body"):
             warnings.append("Шаблон письма не выбран — будет использован текст по умолчанию")
 
@@ -1037,10 +1113,11 @@ def launch_campaign(
         ).all()
         recipient_ids = [r.id for r in recipients]
         conn_hour, conn_day = _pool_rate_limits(session, _campaign_connection_ids(camp))
-        # force_now bypasses calendar windows / schedule pacing so "Запустить сейчас"
-        # is immediate, but connection mailbox limits still apply.
-        schedule_hour = 0 if force_now else schedule.max_per_hour
-        schedule_day = 0 if force_now else schedule.max_per_day
+        launch_now = _now()
+        immediate = force_now or _schedule_requires_immediate_start(schedule, now=launch_now)
+        # immediate launch bypasses calendar windows / schedule pacing, but connection limits still apply.
+        schedule_hour = 0 if immediate else schedule.max_per_hour
+        schedule_day = 0 if immediate else schedule.max_per_day
         max_per_hour, max_per_day = _effective_rate_limits(
             schedule_max_per_hour=schedule_hour,
             schedule_max_per_day=schedule_day,
@@ -1050,14 +1127,15 @@ def launch_campaign(
         preview = plan_batches(
             recipient_count=len(recipient_ids),
             batch_size=schedule.batch_size,
-            interval_seconds=0 if force_now else schedule.interval_seconds,
-            start_at=None if force_now else schedule.start_at,
-            send_immediately=True if force_now else schedule.send_immediately,
+            interval_seconds=0 if immediate else schedule.interval_seconds,
+            start_at=None if immediate else schedule.start_at,
+            send_immediately=True if immediate else schedule.send_immediately,
             timezone_name=schedule.timezone,
-            weekdays=[] if force_now else list(schedule.weekdays or []),
-            time_windows=[] if force_now else list(schedule.time_windows or []),
+            weekdays=[] if immediate else list(schedule.weekdays or []),
+            time_windows=[] if immediate else list(schedule.time_windows or []),
             max_per_hour=max_per_hour,
             max_per_day=max_per_day,
+            now=launch_now,
         )
         schedule.preview = preview
 
@@ -1069,6 +1147,7 @@ def launch_campaign(
             offset += size
             batch_id = _new_id()
             scheduled_at = datetime.fromisoformat(str(plan["scheduled_at"]).replace("Z", "+00:00"))
+            scheduled_at = max(scheduled_at, launch_now)
             batch = CampaignBatch(
                 id=batch_id,
                 campaign_id=campaign_id,
@@ -1081,7 +1160,7 @@ def launch_campaign(
             session.add(batch)
             session.flush()
 
-            pre_gen_at = _now() if force_now else max(_now(), scheduled_at - timedelta(hours=1))
+            pre_gen_at = launch_now if immediate else max(launch_now, scheduled_at - timedelta(hours=1))
             enqueue_task(
                 task_type="campaign_pre_generate",
                 job_id=camp.job_id or campaign_id,
@@ -1124,8 +1203,8 @@ def launch_campaign(
                 }
             )
 
-        camp.status = "running" if (force_now or schedule.send_immediately) else "scheduled"
-        if camp.status == "running" or force_now:
+        camp.status = "running" if immediate else "scheduled"
+        if camp.status == "running" or immediate:
             # If first batch is in the future, keep scheduled
             first_at = preview.get("first_batch_at")
             if first_at:
@@ -1362,12 +1441,34 @@ def record_delivery_attempt(
     status: str,
     error: str | None = None,
     provider_message_id: str | None = None,
+    delivery_email: str | None = None,
+    attempt_number: int | None = None,
 ) -> bool:
     """Return False if already recorded (idempotent skip)."""
-    key = f"{campaign_id}:{recipient_id}:1"
     with session_scope() as session:
+        if attempt_number is None:
+            latest = session.scalar(
+                select(DeliveryAttempt)
+                .where(
+                    DeliveryAttempt.campaign_id == campaign_id,
+                    DeliveryAttempt.recipient_id == recipient_id,
+                )
+                .order_by(DeliveryAttempt.attempt_number.desc())
+                .limit(1)
+            )
+            if status == "sending":
+                if latest is not None and latest.status == "sending":
+                    attempt_number = latest.attempt_number
+                elif latest is not None and latest.status in {"sent", "delivered"}:
+                    return False
+                else:
+                    attempt_number = int(latest.attempt_number if latest else 0) + 1
+            else:
+                attempt_number = int(latest.attempt_number if latest else 1)
+
+        key = f"{campaign_id}:{recipient_id}:{attempt_number}"
         existing = session.scalar(select(DeliveryAttempt).where(DeliveryAttempt.idempotency_key == key))
-        if existing and existing.status in {"sent", "delivered"}:
+        if existing and existing.status in {"sent", "delivered"} and status not in {"sending"}:
             return False
         if existing is None:
             session.add(
@@ -1375,10 +1476,11 @@ def record_delivery_attempt(
                     campaign_id=campaign_id,
                     recipient_id=recipient_id,
                     batch_id=batch_id,
-                    attempt_number=1,
+                    attempt_number=attempt_number,
                     status=status,
                     error=error,
                     provider_message_id=provider_message_id,
+                    delivery_email=delivery_email,
                     idempotency_key=key,
                 )
             )
@@ -1386,5 +1488,9 @@ def record_delivery_attempt(
             existing.status = status
             existing.error = error
             existing.provider_message_id = provider_message_id
+            if delivery_email:
+                existing.delivery_email = delivery_email
+            if batch_id:
+                existing.batch_id = batch_id
             existing.updated_at = _now()
         return True

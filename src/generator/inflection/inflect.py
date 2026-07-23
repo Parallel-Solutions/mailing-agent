@@ -429,15 +429,22 @@ def build_inflected_fields(row: dict) -> dict:
     if adm_name.count('"') > adm_gen_value.count('"'):
         adm_gen_value += '"'
 
+    from src.generator.generation.transforms import normalize_russian_geo_admin_case
+
+    adm_gen_value = normalize_russian_geo_admin_case(adm_gen_value)
+    mun_gen_value = normalize_russian_geo_admin_case(mun_gen.value)
+    mun_r_gen_value = normalize_russian_geo_admin_case(mun_r_gen.value)
+    sub_rf_gen_value = normalize_russian_geo_admin_case(sub_rf_gen.value)
+
     return {
         "HEAD_FIO_1": fio_gen.value,
         "HEAD_FIO_2": fio_dat.value,
-        "MUN_NAME_1": mun_gen.value,
+        "MUN_NAME_1": mun_gen_value,
         "MUN_NAME_2": mun_project.value,
         "MUN_NAME_3": mun_prep.value,
-        "SUB_RF_1": sub_rf_gen.value,
+        "SUB_RF_1": sub_rf_gen_value,
         "ADM_NAME_1": adm_gen_value,
-        "MUN_R_NAME_1": mun_r_gen.value,
+        "MUN_R_NAME_1": mun_r_gen_value,
         "INFLECTION_DEBUG": {
             "HEAD_FIO_1": fio_gen.confidence,
             "HEAD_FIO_2": fio_dat.confidence,

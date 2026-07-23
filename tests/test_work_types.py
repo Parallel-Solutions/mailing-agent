@@ -235,9 +235,12 @@ class WorkTypeProfileTests(unittest.TestCase):
             html,
         )
         self.assertIn(">Отписаться</a>", html)
-        self.assertIn("background:#1677ff", html)
+        self.assertIn("background:#236348", html)
+        self.assertIn("text-decoration:underline", html)
+        self.assertIn("text-align:right", html)
         self.assertIn('<p style="margin:0">', html)
         self.assertNotIn("margin:0 0 8px", html)
+        self.assertNotIn("background:#1677ff", html)
 
     def test_territorial_zone_kp_preserves_signature_contact_row(self) -> None:
         doc = Document()

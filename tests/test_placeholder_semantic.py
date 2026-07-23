@@ -47,6 +47,11 @@ class PlaceholderSemanticTests(unittest.TestCase):
         self.assertEqual(resolve_system_canonical("вид_работ"), "WORK_TITLE")
         self.assertEqual(_heuristic_system_variable("Вид_работ"), "WORK_TITLE")
 
+    def test_exact_alias_resolves_legacy_name_placeholders(self) -> None:
+        self.assertEqual(resolve_recipient_canonical("Имя"), "CONTACT_FIRST_NAME")
+        self.assertEqual(resolve_recipient_canonical("Отчество"), "CONTACT_PATRONYMIC")
+        self.assertEqual(resolve_recipient_canonical("Компания"), "company")
+
     @patch("src.campaigns.placeholder_semantic._semantic_enabled", return_value=True)
     @patch("src.campaigns.placeholder_semantic._embed_text", side_effect=_fake_embed)
     def test_semantic_resolves_director_name(self, *_mocks: object) -> None:

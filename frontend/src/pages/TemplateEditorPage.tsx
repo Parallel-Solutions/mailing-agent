@@ -26,6 +26,7 @@ import {
 import { EditorContent, useEditor } from '@tiptap/react';
 import type { Editor } from '@tiptap/react';
 import Link from '@tiptap/extension-link';
+import Paragraph from '@tiptap/extension-paragraph';
 import Placeholder from '@tiptap/extension-placeholder';
 import StarterKit from '@tiptap/starter-kit';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -58,7 +59,22 @@ import { readBoolParam } from '@/utils/urlState';
 import { VisualEmailEditor } from '@/features/templates/VisualEmailEditor';
 import { PersonalizationSetting } from '@/features/templates/PersonalizationSetting';
 import { DeliveryFilenameField } from '@/features/templates/DeliveryFilenameField';
-import { downloadEmailHtml, getEmailFormat } from '@/features/templates/emailTemplateUtils';
+import {
+  downloadEmailHtml,
+  getEmailFormat,
+  preserveParagraphIndents,
+} from '@/features/templates/emailTemplateUtils';
+import {
+  applyParagraphIndentToAll,
+  buildEmailEditorHtml,
+  bulkParagraphIndentActive,
+  cancelParagraphIndentNormalization,
+  collectParagraphIndentStates,
+  handleParagraphIndentKeydown,
+  paragraphIndentActive,
+  scheduleParagraphIndentNormalization,
+  toggleCurrentParagraphIndent,
+} from '@/features/templates/emailEditorIndent';
 import './TemplateEditorPage.css';
 
 const { Text, Title } = Typography;
@@ -134,7 +150,7 @@ th { background: #edf5f0; color: #174d38; }
 </head>
 <body>
 <section class="page">
-  <div class="brand">CAMPAIGNFLOW · КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div>
+  <div class="brand">AI-OFFER · КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div>
   <div class="meta">
     <div>№ <span class="variable-token">{{OUTGOING_NUMBER}}</span> от <span class="variable-token">{{DATE}}</span></div>
     <div class="recipient">Руководителю<br><span class="variable-token">{{ADM_NAME}}</span></div>
@@ -259,7 +275,34 @@ function Checks({ pdf = false, kpDocx = false }: { pdf?: boolean; kpDocx?: boole
 }
 
 
-function EmailToolbar({ editor }: { editor: Editor | null }) {
+const EmailParagraph = Paragraph.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      textIndent: {
+        default: null,
+        keepOnSplit: true,
+        parseHTML: (element) => {
+          const style = element.getAttribute('style') || '';
+          const match = style.match(/text-indent\s*:\s*([^;]+)/i);
+          return match?.[1]?.trim() || null;
+        },
+        renderHTML: (attributes) => {
+          if (!attributes.textIndent) return {};
+          return { style: `text-indent:${attributes.textIndent}` };
+        },
+      },
+    };
+  },
+});
+
+function EmailToolbar({ editor, refreshKey }: { editor: Editor | null; refreshKey: number }) {
+  void refreshKey;
+  const paragraphAttrs = editor?.getAttributes('paragraph') || {};
+  const indentActive = paragraphIndentActive(paragraphAttrs);
+  const bulkIndentActive = editor
+    ? bulkParagraphIndentActive(collectParagraphIndentStates(editor), { skipFirst: true })
+    : false;
   return (
     <div className="template-editor-toolbar">
       <Button type="text" size="small" icon={<UndoOutlined />} onClick={() => editor?.chain().focus().undo().run()} />
@@ -270,6 +313,31 @@ function EmailToolbar({ editor }: { editor: Editor | null }) {
       <Button type={editor?.isActive('strike') ? 'primary' : 'text'} size="small" icon={<StrikethroughOutlined />} onClick={() => editor?.chain().focus().toggleStrike().run()} />
       <Button type={editor?.isActive('bulletList') ? 'primary' : 'text'} size="small" icon={<UnorderedListOutlined />} onClick={() => editor?.chain().focus().toggleBulletList().run()} />
       <Button type={editor?.isActive('orderedList') ? 'primary' : 'text'} size="small" icon={<OrderedListOutlined />} onClick={() => editor?.chain().focus().toggleOrderedList().run()} />
+      <Divider type="vertical" />
+      <Tooltip title="Красная строка (Tab)">
+        <Button
+          type={indentActive ? 'primary' : 'text'}
+          size="small"
+          onClick={() => {
+            if (!editor) return;
+            toggleCurrentParagraphIndent(editor);
+          }}
+        >
+          ¶
+        </Button>
+      </Tooltip>
+      <Tooltip title="Красная строка во всех абзацах (кроме первого)">
+        <Button
+          type={bulkIndentActive ? 'primary' : 'text'}
+          size="small"
+          onClick={() => {
+            if (!editor) return;
+            applyParagraphIndentToAll(editor, { skipFirst: true });
+          }}
+        >
+          ¶¶
+        </Button>
+      </Tooltip>
     </div>
   );
 }
@@ -284,14 +352,51 @@ function EmailTemplateEditor({ template }: { template: Template }) {
   const [subject, setSubject] = useState(template.version?.subject || '');
   const [dirty, setDirty] = useState(false);
   const [variableQuery, setVariableQuery] = useState('');
+  const [toolbarRefreshKey, setToolbarRefreshKey] = useState(0);
+  const initialBodyHtml = useMemo(
+    () => preserveParagraphIndents(template.version?.body_html || '<p>Здравствуйте, {{contact_name}}!</p>'),
+    [template.version?.body_html],
+  );
   const editor = useEditor({
-    extensions: [StarterKit, Link.configure({ openOnClick: false }), Placeholder.configure({ placeholder: 'Начните писать письмо…' })],
-    content: template.version?.body_html || '<p>Здравствуйте, {{contact_name}}!</p>',
-    onUpdate: () => setDirty(true),
+    extensions: [
+      StarterKit.configure({ paragraph: false }),
+      EmailParagraph,
+      Link.configure({ openOnClick: false }),
+      Placeholder.configure({ placeholder: 'Начните писать письмо…' }),
+    ],
+    content: initialBodyHtml,
+    onUpdate: ({ editor: activeEditor }) => {
+      setDirty(true);
+      scheduleParagraphIndentNormalization(activeEditor);
+    },
   });
+  useEffect(() => {
+    if (!editor) return;
+    const refreshToolbar = () => setToolbarRefreshKey((value) => value + 1);
+    const handleIndentKeys = (event: KeyboardEvent) => {
+      handleParagraphIndentKeydown(editor, event);
+    };
+    editor.on('selectionUpdate', refreshToolbar);
+    editor.on('transaction', refreshToolbar);
+    editor.view.dom.addEventListener('keydown', handleIndentKeys);
+    return () => {
+      cancelParagraphIndentNormalization(editor);
+      editor.off('selectionUpdate', refreshToolbar);
+      editor.off('transaction', refreshToolbar);
+      editor.view.dom.removeEventListener('keydown', handleIndentKeys);
+    };
+  }, [editor]);
   const variables = template.version?.variables?.length ? template.version.variables : EMAIL_VARIABLES;
   const saveMutation = useMutation({
-    mutationFn: () => templatesApi.save(template.id, { name, subject, body_html: editor?.getHTML() || '', body_text: editor?.getText({ blockSeparator: '\n\n' }) || '' }),
+    mutationFn: () => {
+      if (!editor) throw new Error('Редактор ещё не готов');
+      return templatesApi.save(template.id, {
+        name,
+        subject,
+        body_html: buildEmailEditorHtml(editor),
+        body_text: editor.getText({ blockSeparator: '\n\n' }) || '',
+      });
+    },
     onSuccess: () => {
       setDirty(false);
       message.success('Создана новая версия шаблона');
@@ -299,7 +404,7 @@ function EmailTemplateEditor({ template }: { template: Template }) {
     },
   });
   const renderedHtml = useMemo(() => {
-    let html = editor?.getHTML() || '';
+    let html = preserveParagraphIndents(editor?.getHTML() || '');
     Object.entries(SAMPLE_VALUES).forEach(([key, value]) => { html = html.replaceAll(`{{${key}}}`, value); });
     return `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;padding:28px;line-height:1.55}</style></head><body>${html}</body></html>`;
   }, [editor, previewOpen]);
@@ -319,7 +424,7 @@ function EmailTemplateEditor({ template }: { template: Template }) {
         <label><Text>Тема письма</Text><Input value={subject} onChange={(event) => { setSubject(event.target.value); setDirty(true); }} /></label>
       </div>
       <div className="template-editor-grid">
-        <main className="template-editor-main"><Card className="template-editor-surface" styles={{ body: { padding: 0 } }}><EmailToolbar editor={editor} /><EditorContent editor={editor} className="template-email-canvas" /></Card></main>
+        <main className="template-editor-main"><Card className="template-editor-surface" styles={{ body: { padding: 0 } }}><EmailToolbar editor={editor} refreshKey={toolbarRefreshKey} /><EditorContent editor={editor} className="template-email-canvas" /></Card></main>
         <aside className="template-editor-aside">
           <PersonalizationSettingPanel template={template} />
           <VariablePanel variables={variables} query={variableQuery} onQuery={setVariableQuery} onInsert={(nameValue) => editor?.chain().focus().insertContent(`{{${nameValue}}}`).run()} />

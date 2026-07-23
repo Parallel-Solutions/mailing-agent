@@ -189,7 +189,14 @@ def _render_email_node_preview(
 
     edges = outgoing_edges(chain, node_id)
     node_by_id = {str(n["id"]): n for n in chain.get("nodes") or []}
-    buttons = [(resolve_button_label(edge, node_by_id), "#") for edge in edges]
+    buttons = [
+        (
+            resolve_button_label(edge, node_by_id),
+            "#",
+            str((node_by_id.get(str(edge.get("target_id") or "")) or {}).get("link_kind") or "custom"),
+        )
+        for edge in edges
+    ]
     html, _text = inject_chain_buttons(html, text, buttons)
 
     from src.campaigns.template_text_review_service import review_rendered_template

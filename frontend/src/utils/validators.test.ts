@@ -22,7 +22,7 @@ describe('validators', () => {
     expect(
       validateCampaignBasics({
         name: 'A',
-        email_chain_id: 'chain-1',
+        send_scenario: 'materials_now',
         company_id: 'company-1',
         company_work_type_id: 'work-1',
       }),

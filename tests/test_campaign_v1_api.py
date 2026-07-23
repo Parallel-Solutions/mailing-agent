@@ -1360,6 +1360,32 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertNotIn("{{вид работ}}", item["body_html"])
         self.assertFalse(any(issue.get("kind") == "artifact" for issue in item["issues"]))
 
+    def test_email_chain_preview_substitutes_legacy_name_placeholders(self) -> None:
+        campaign_id, _email_id = self._prepare_campaign_with_email_template(
+            body_html="<p>Здравствуйте, {{Имя}} {{Отчество}}!</p>",
+        )
+        recipients = self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/recipients",
+            json={
+                "recipients": [
+                    {
+                        "company": "ООО Техностар",
+                        "contact_name": "Федорова Ирина Александровна",
+                        "email": "test@example.com",
+                    },
+                ]
+            },
+        )
+        self.assertEqual(recipients.status_code, 200, recipients.text)
+
+        preview = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/preview")
+        self.assertEqual(preview.status_code, 200, preview.text)
+        item = preview.json()["result"]["items"][0]
+        self.assertIn("Ирина Александровна", item["body_html"])
+        self.assertNotIn("{{Имя}}", item["body_html"])
+        self.assertNotIn("{{Отчество}}", item["body_html"])
+        self.assertFalse(any(issue.get("kind") == "artifact" for issue in item["issues"]))
+
     def test_validation_auto_fix_reports_skipped_when_fragment_missing(self) -> None:
         campaign_id, _email_id = self._prepare_campaign_with_email_template(
             body_html="<p>чистый текст без артефактов.</p>",

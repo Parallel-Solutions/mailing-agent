@@ -2717,9 +2717,13 @@ def _send_via_smtp(
 
 
 _CHAIN_BRANCH_BUTTON_RE = re.compile(r"^(.+?):\s*(https?://\S+/chain/branch/\S+)\s*$")
-_CHAIN_BUTTON_STYLE = (
-    "display:inline-block;margin:0 4px;padding:8px 16px;background:#1677ff;color:#fff;"
+_CHAIN_ACTION_BUTTON_STYLE = (
+    "display:inline-block;margin:0 4px;padding:8px 16px;background:#236348;color:#fff;"
     "text-decoration:none;border-radius:4px"
+)
+_CHAIN_UNSUBSCRIBE_BUTTON_STYLE = (
+    "display:inline-block;margin:0;padding:0;background:transparent;color:#868e96;"
+    "text-decoration:underline"
 )
 
 
@@ -2754,19 +2758,35 @@ def _htmlify_mail_body(
             continue
         chain_match = _CHAIN_BRANCH_BUTTON_RE.match(stripped)
         if chain_match:
-            chain_buttons: list[str] = []
+            action_buttons: list[str] = []
+            unsubscribe_buttons: list[str] = []
             while index < len(lines):
                 current = lines[index].strip()
                 current_match = _CHAIN_BRANCH_BUTTON_RE.match(current)
                 if not current_match:
                     break
-                button_text = escape(current_match.group(1), quote=False)
+                raw_label = current_match.group(1)
+                button_text = escape(raw_label, quote=False)
                 chain_url = escape(current_match.group(2), quote=True)
-                chain_buttons.append(
-                    f'<a href="{chain_url}" style="{_CHAIN_BUTTON_STYLE}">{button_text}</a>'
-                )
+                if raw_label.strip().casefold().startswith("отпис"):
+                    unsubscribe_buttons.append(
+                        f'<a href="{chain_url}" style="{_CHAIN_UNSUBSCRIBE_BUTTON_STYLE}">{button_text}</a>'
+                    )
+                else:
+                    action_buttons.append(
+                        f'<a href="{chain_url}" style="{_CHAIN_ACTION_BUTTON_STYLE}">{button_text}</a>'
+                    )
                 index += 1
-            parts.append(f'<p style="margin:0">{"".join(chain_buttons)}</p>')
+            if action_buttons:
+                parts.append(
+                    '<div style="text-align:center;padding:8px 0">'
+                    f'<p style="margin:0">{"".join(action_buttons)}</p></div>'
+                )
+            if unsubscribe_buttons:
+                parts.append(
+                    '<div style="text-align:right;padding:12px 0 0">'
+                    f'<p style="margin:0">{"".join(unsubscribe_buttons)}</p></div>'
+                )
             continue
         parts.append(escape(stripped))
         index += 1

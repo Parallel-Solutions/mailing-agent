@@ -6,6 +6,7 @@ import {
   highlightReviewIssues,
   highlightPlaceholderIssues,
   htmlToPlainText,
+  preserveParagraphIndents,
   sanitizeHtmlFilename,
   substituteChainButtonsPreview,
   substitutePreviewValues,
@@ -80,6 +81,15 @@ describe('emailTemplateUtils', () => {
     expect(highlighted).toContain('<mark style=');
     expect(highlighted).toContain('{{{Вид_работ}}}');
     expect(highlighted).not.toContain('<p>Работы {{{Вид_работ}}}');
+  });
+
+  it('preserves leading spaces as paragraph text-indent', () => {
+    expect(preserveParagraphIndents('<p>&nbsp;&nbsp;&nbsp;&nbsp;Абзац</p>')).toBe(
+      '<p style="text-indent:1.25em">Абзац</p>',
+    );
+    expect(preserveParagraphIndents('<p style="text-indent:2em">Уже с отступом</p>')).toBe(
+      '<p style="text-indent:2em">Уже с отступом</p>',
+    );
   });
 
   it('wraps html fragments into a document', () => {

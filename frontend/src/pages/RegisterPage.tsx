@@ -22,7 +22,7 @@ export function RegisterPage() {
     >
       <LoginForm
         title="Регистрация"
-        subTitle="Создание аккаунта CampaignFlow"
+        subTitle="Создание аккаунта ai-offer"
         submitter={{ searchConfig: { submitText: 'Зарегистрироваться' } }}
         onFinish={async (values) => {
           try {
