@@ -12,6 +12,7 @@ from src.generator.delivery.email_validation import (
 from src.generator.delivery.sender_agent import _is_valid_email, _mail_key, _parse_emails, _safe_text
 from src.infra.models import CampaignRecipient
 from src.utils.config import settings
+from src.utils.logger import logger
 
 RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK = "primary_then_fallback"
 
@@ -218,4 +219,9 @@ def append_campaign_sent_mail_log(
             },
         )
     except Exception:
-        pass
+        logger.exception(
+            "campaign_sent_mail_log_append_failed",
+            job_id=job_id,
+            campaign_id=campaign_id,
+            recipient_id=recipient_id,
+        )

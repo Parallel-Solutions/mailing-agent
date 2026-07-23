@@ -145,6 +145,30 @@ def _has_table(connection, name: str) -> bool:
     )
 
 
+def _has_column(connection, table: str, column: str) -> bool:
+    return (
+        connection.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :table AND column_name = :column"
+            ),
+            {"table": table, "column": column},
+        ).scalar()
+        is not None
+    )
+
+
+def _column_default_contains(connection, table: str, column: str, fragment: str) -> bool:
+    default = connection.execute(
+        text(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = :table AND column_name = :column"
+        ),
+        {"table": table, "column": column},
+    ).scalar()
+    return bool(default and fragment in str(default))
+
+
 def _mail_template_column_names(connection) -> set[str]:
     rows = connection.execute(
         text(
@@ -157,6 +181,16 @@ def _mail_template_column_names(connection) -> set[str]:
 
 def _detect_schema_revision(connection) -> str | None:
     """Best-effort stamp when alembic_version lags behind the real schema."""
+    if _has_column(connection, "delivery_attempts", "delivery_email"):
+        return "0022_delivery_attempt_email"
+    if _has_column(connection, "campaign_chain_tokens", "test_email"):
+        return "0021_chain_token_test_email"
+    if _has_table(connection, "company_document_counters"):
+        return "0020_company_document_numbers"
+    if _has_column(connection, "companies", "work_types"):
+        return "0019_company_work_types"
+    if _column_default_contains(connection, "campaign_schedules", "on_error", "skip"):
+        return "0017_on_error_skip"
     if _has_table(connection, "companies"):
         return "0016_companies"
     mail_template_columns = _mail_template_column_names(connection)
