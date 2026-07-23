@@ -21,26 +21,30 @@ section() {
 
 get_head_revision() {
   python3 - <<'PY'
+import re
 from pathlib import Path
 
 versions = Path("migrations/versions")
 revisions = {}
 for path in versions.glob("*.py"):
     text = path.read_text(encoding="utf-8")
-    rev = down = None
-    for line in text.splitlines():
-        if line.strip().startswith("revision = "):
-            rev = line.split('"')[1]
-        elif line.strip().startswith("down_revision = "):
-            down = line.split('"')[1]
-    if rev:
-        revisions[rev] = down
+    rev_match = re.search(r'^revision\s*=\s*"([^"]+)"', text, re.M)
+    if not rev_match:
+        continue
+    rev = rev_match.group(1)
+    down_match = re.search(r'^down_revision\s*=\s*(.+)$', text, re.M)
+    down = None
+    if down_match:
+        raw = down_match.group(1).strip()
+        if raw.startswith('"'):
+            down = raw.strip('"')
+    revisions[rev] = down
 
 referenced = {down for down in revisions.values() if down}
 for rev in revisions:
     if rev not in referenced:
         print(rev)
-        raise SystemExit
+        raise SystemExit(0)
 if revisions:
     print(sorted(revisions)[-1])
 PY
