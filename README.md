@@ -225,7 +225,21 @@ The API service must not be deployed without at least one worker replica.
 
 Production deploy (offer.parresh.ru):
 
+### Автодеплой (push в `main`)
 
+После зелёного CI job **Deploy to production** подтягивает immutable-образ `:sha` из GHCR и перезапускает `app` + `worker` на сервере.
+
+**One-time setup:**
+
+1. GitHub Secrets: `PROD_SSH_HOST`, `PROD_SSH_USER`, `PROD_SSH_KEY` (опционально `PROD_SSH_PORT`).
+2. Публичный SSH-ключ деплоя → `authorized_keys` пользователя на prod-хосте.
+3. На сервере: `docker login ghcr.io` (PAT с `read:packages`, если пакет private).
+4. Пользователь деплоя в группе `docker`, репозиторий в `/opt/mailing-agent`, `.env.docker` настроен.
+5. Опционально: GitHub Environment `production` с required reviewers.
+
+Первый push в `main` без secrets упадёт на `deploy-prod` — после настройки secrets выполните **Re-run failed jobs**.
+
+### Ручной deploy
 
 ```bash
 cd /opt/mailing-agent
