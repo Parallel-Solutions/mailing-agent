@@ -172,6 +172,44 @@ def validation_attempts_error(attempts: list[dict[str, Any]]) -> str:
     return "; ".join(errors) or "Нет email, прошедшего проверку."
 
 
+def build_campaign_sent_mail_log_record(
+    *,
+    campaign_id: str,
+    recipient_id: int,
+    recipient: CampaignRecipient,
+    delivery_email: str,
+    provider_message_id: str,
+    transport: str,
+    send_mode: str,
+    subject: str,
+    campaign_name: str,
+    sent_at: str,
+    fallback_candidates: list[str] | None = None,
+) -> dict[str, Any]:
+    remaining = fallback_candidates
+    if remaining is None:
+        tried = list((recipient.extra or {}).get("tried_emails") or [])
+        remaining = remaining_fallback_candidates(recipient, tried)
+    return {
+        "email": delivery_email,
+        "recipient": delivery_email,
+        "organization": recipient.company,
+        "mun_name": recipient.company,
+        "row_id": str(recipient_id),
+        "status": "sent",
+        "transport": transport,
+        "campaign_name": campaign_name,
+        "campaign_id": campaign_id,
+        "recipient_id": recipient_id,
+        "sent_at": sent_at,
+        "subject": subject,
+        "send_mode": send_mode,
+        "provider_message_id": provider_message_id,
+        "recipient_strategy": RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
+        "fallback_candidates": remaining,
+    }
+
+
 def append_campaign_sent_mail_log(
     *,
     job_id: str | None,
@@ -186,38 +224,27 @@ def append_campaign_sent_mail_log(
     campaign_name: str,
     sent_at: str,
     fallback_candidates: list[str] | None = None,
-) -> None:
+) -> bool:
     if not job_id:
-        return
+        return False
     try:
         from src.jobs.job_docs import append_event
 
-        remaining = fallback_candidates
-        if remaining is None:
-            tried = list((recipient.extra or {}).get("tried_emails") or [])
-            remaining = remaining_fallback_candidates(recipient, tried)
-        append_event(
-            job_id,
-            "sent_mail_log",
-            {
-                "email": delivery_email,
-                "recipient": delivery_email,
-                "organization": recipient.company,
-                "mun_name": recipient.company,
-                "row_id": str(recipient_id),
-                "status": "sent",
-                "transport": transport,
-                "campaign_name": campaign_name,
-                "campaign_id": campaign_id,
-                "recipient_id": recipient_id,
-                "sent_at": sent_at,
-                "subject": subject,
-                "send_mode": send_mode,
-                "provider_message_id": provider_message_id,
-                "recipient_strategy": RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
-                "fallback_candidates": remaining,
-            },
+        record = build_campaign_sent_mail_log_record(
+            campaign_id=campaign_id,
+            recipient_id=recipient_id,
+            recipient=recipient,
+            delivery_email=delivery_email,
+            provider_message_id=provider_message_id,
+            transport=transport,
+            send_mode=send_mode,
+            subject=subject,
+            campaign_name=campaign_name,
+            sent_at=sent_at,
+            fallback_candidates=fallback_candidates,
         )
+        seq = append_event(job_id, "sent_mail_log", record)
+        return seq is not None
     except Exception:
         logger.exception(
             "campaign_sent_mail_log_append_failed",
@@ -225,3 +252,4 @@ def append_campaign_sent_mail_log(
             campaign_id=campaign_id,
             recipient_id=recipient_id,
         )
+        return False

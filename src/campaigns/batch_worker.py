@@ -495,8 +495,9 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                 sent += 1
 
                 from src.campaigns.recipient_email_service import append_campaign_sent_mail_log
+                from src.generator.delivery.manager_stats import invalidate_stats_cache
 
-                append_campaign_sent_mail_log(
+                if append_campaign_sent_mail_log(
                     job_id=job_id,
                     campaign_id=campaign_id,
                     recipient_id=int(recipient_id),
@@ -508,7 +509,8 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     subject=subject,
                     campaign_name=camp.name,
                     sent_at=_now().isoformat(),
-                )
+                ):
+                    invalidate_stats_cache(job_id)
             except Exception as exc:
                 errors += 1
                 recipient.send_status = "failed"

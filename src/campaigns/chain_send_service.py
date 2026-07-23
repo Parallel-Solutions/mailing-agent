@@ -424,12 +424,13 @@ def send_chain_node_email(
             from datetime import datetime, timezone
 
             from src.campaigns.recipient_email_service import append_campaign_sent_mail_log
+            from src.generator.delivery.manager_stats import invalidate_stats_cache
 
             with session_scope() as session:
                 camp = session.get(Campaign, campaign_id)
                 recipient = session.get(CampaignRecipient, int(recipient_id))
                 if camp is not None and recipient is not None:
-                    append_campaign_sent_mail_log(
+                    if append_campaign_sent_mail_log(
                         job_id=job_id,
                         campaign_id=campaign_id,
                         recipient_id=int(recipient_id),
@@ -441,7 +442,8 @@ def send_chain_node_email(
                         subject=subject,
                         campaign_name=camp.name,
                         sent_at=datetime.now(timezone.utc).isoformat(),
-                    )
+                    ):
+                        invalidate_stats_cache(job_id)
     except Exception:
         logger.exception(
             "chain_node_send_finalize_failed",
