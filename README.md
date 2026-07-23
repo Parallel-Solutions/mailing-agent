@@ -223,6 +223,33 @@ The API service must not be deployed without at least one worker replica.
 
 
 
+Production deploy (offer.parresh.ru):
+
+
+
+```bash
+cd /opt/mailing-agent
+chmod +x scripts/deploy.sh scripts/prod-audit.sh scripts/post-deploy-stats.sh
+
+# Обычный деплой: git pull, rebuild app+worker, health-check, audit
+./scripts/deploy.sh
+
+# Первый деплой после backfill sent_mail_log или при gap в статистике
+./scripts/deploy.sh --post-deploy-stats
+
+# Деплой конкретной ветки/тега
+./scripts/deploy.sh --ref release/companies-campaign-wizard-2026-07-22
+
+# Ручной аудит без деплоя
+./scripts/prod-audit.sh
+```
+
+Скрипт `deploy.sh` использует overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): фиксирует `PUBLIC_BASE_URL`, отключает RuSender click-tracking и **не монтирует** `./src`/`./main.py` — код берётся только из образа после `--build`. Всегда поднимайте `app` и `worker` вместе.
+
+После смены `PUBLIC_BASE_URL` или webhook-токена может понадобиться resend кампаний — см. [`scripts/verify-production-links.ps1`](scripts/verify-production-links.ps1) и [`scripts/resend-chain-campaign.ps1`](scripts/resend-chain-campaign.ps1).
+
+
+
 Тесты:
 
 **Unit/integration** (без реальной отправки, Postgres + MinIO):
