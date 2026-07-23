@@ -3,6 +3,7 @@
 # Usage (on server, from repo root):
 #   ./scripts/deploy.sh
 #   ./scripts/deploy.sh --post-deploy-stats
+#   ./scripts/deploy.sh --no-build
 #   ./scripts/deploy.sh --ref release/companies-campaign-wizard-2026-07-22
 #   PUBLIC_BASE_URL=https://offer.parresh.ru ./scripts/deploy.sh
 
@@ -11,10 +12,11 @@ set -euo pipefail
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://offer.parresh.ru}"
 HEALTH_TIMEOUT_SEC="${HEALTH_TIMEOUT_SEC:-300}"
 POST_DEPLOY_STATS=0
+NO_BUILD=0
 GIT_REF=""
 
 usage() {
-  sed -n '2,8p' "$0"
+  sed -n '2,9p' "$0"
   exit 1
 }
 
@@ -22,6 +24,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --post-deploy-stats)
       POST_DEPLOY_STATS=1
+      shift
+      ;;
+    --no-build)
+      NO_BUILD=1
       shift
       ;;
     --ref)
@@ -68,7 +74,15 @@ fi
 git pull --ff-only
 
 echo "=== Build and restart app + worker ==="
-"${COMPOSE[@]}" up -d --build app worker
+if (( NO_BUILD )); then
+  echo "Skipping image build (--no-build); restarting existing containers."
+  "${COMPOSE[@]}" restart app worker
+else
+  if ! "${COMPOSE[@]}" up -d --build --pull never app worker; then
+    echo "WARNING: rebuild failed (often Docker Hub rate limit). Restarting existing containers without recreate..." >&2
+    "${COMPOSE[@]}" restart app worker
+  fi
+fi
 
 wait_for_url() {
   local url="$1"
