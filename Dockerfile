@@ -1,8 +1,10 @@
+# syntax=docker/dockerfile:1
 FROM node:22-bookworm AS frontend-build
 ENV NODE_OPTIONS=--max-old-space-size=3072
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 COPY frontend/ ./
 RUN npm run build
 
@@ -61,7 +63,8 @@ RUN apt-get update \
 RUN python -m pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 RUN .venv/bin/python -m playwright install chromium
 RUN uv pip install --python .venv/bin/python "pypdf>=6.0.0" "pymupdf>=1.26.0" "yandex-ai-studio-sdk>=0.22.1"
 
@@ -76,5 +79,6 @@ CMD [".venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--po
 # Unit/integration image: preinstalls dev+mcp extras so compose.test does not uv sync every run.
 # Build with: docker build --target test
 FROM runtime AS test
-RUN uv sync --frozen --extra dev --extra mcp --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --extra dev --extra mcp --no-install-project
 CMD [".venv/bin/python", "-m", "tests"]

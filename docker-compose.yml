@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: mailing-agent:local
+    image: ${MAILING_AGENT_IMAGE:-mailing-agent:local}
     restart: unless-stopped
     env_file:
       - .env.docker
@@ -67,7 +67,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: mailing-agent:local
+    image: ${MAILING_AGENT_IMAGE:-mailing-agent:local}
     restart: unless-stopped
     command: .venv/bin/python -m src.workers.queue_worker
     env_file:
@@ -212,7 +212,7 @@ services:
 
   migrate:
     profiles: ["migrate"]
-    image: mailing-agent:local
+    image: ${MAILING_AGENT_IMAGE:-mailing-agent:local}
     env_file:
       - .env.docker
     environment:
@@ -243,7 +243,7 @@ services:
 
   verify:
     profiles: ["migrate"]
-    image: mailing-agent:local
+    image: ${MAILING_AGENT_IMAGE:-mailing-agent:local}
     env_file:
       - .env.docker
     environment:

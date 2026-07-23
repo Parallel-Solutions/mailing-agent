@@ -591,13 +591,15 @@ def auto_fix_campaign_validation(
 
     try:
         suggest = suggest_variable_mapping(campaign_id, owner_username, visible_owners=visible_owners)
-        if suggest.get("status") == "complete" and suggest.get("suggested_mapping"):
-            save_variable_mapping(
-                campaign_id,
-                owner_username,
-                dict(suggest.get("suggested_mapping") or {}),
-                visible_owners=visible_owners,
-            )
+        if suggest.get("status") == "complete":
+            suggested_mapping = dict(suggest.get("suggested_mapping") or {})
+            if suggested_mapping:
+                save_variable_mapping(
+                    campaign_id,
+                    owner_username,
+                    suggested_mapping,
+                    visible_owners=visible_owners,
+                )
             applied.append({"kind": "mapping", "message": "Сопоставление переменных сохранено автоматически"})
         elif suggest.get("unmapped"):
             skipped.append(

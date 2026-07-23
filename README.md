@@ -231,8 +231,14 @@ Production deploy (offer.parresh.ru):
 cd /opt/mailing-agent
 chmod +x scripts/deploy.sh scripts/prod-audit.sh scripts/post-deploy-stats.sh
 
-# Обычный деплой: git pull, rebuild app+worker, health-check, audit
+# Обычный deploy: pull образа из GHCR (быстро, ~3–5 min)
+MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:latest ./scripts/deploy.sh --pull
+
+# Rebuild на сервере (fallback при недоступности registry)
 ./scripts/deploy.sh
+
+# Без rebuild — restart существующих контейнеров
+./scripts/deploy.sh --no-build
 
 # Первый деплой после backfill sent_mail_log или при gap в статистике
 ./scripts/deploy.sh --post-deploy-stats
@@ -252,6 +258,14 @@ chmod +x scripts/deploy.sh scripts/prod-audit.sh scripts/post-deploy-stats.sh
 
 Тесты:
 
+**QA tiers** (рекомендуемый порядок):
+
+```powershell
+.\scripts\qa.ps1 fast    # ~10 min: 6 backend + e2e smoke + campaign email
+.\scripts\qa.ps1 gate    # ~20 min: frontend + full backend + e2e smoke (CI parity)
+.\scripts\qa.ps1 full    # ~30 min: gate + e2e email (chromium)
+```
+
 **Unit/integration** (без реальной отправки, Postgres + MinIO):
 
 ```bash
@@ -268,9 +282,10 @@ python -m tests
 
 ```bash
 cp .env.e2e.example .env.e2e   # не копировать в .env.docker
-npm run e2e:up
+npm run e2e:up:fast            # warm stack, без rebuild (Python через mount src)
+npm run e2e:up:build           # rebuild app+worker после frontend/Dockerfile
 npm run e2e:test:smoke
-npm run e2e:test:email
+npm run e2e:test:email         # chromium only
 npm run e2e:down
 ```
 

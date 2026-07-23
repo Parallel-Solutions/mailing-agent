@@ -2,21 +2,27 @@
 # Production deploy for mailing-agent.
 # Usage (on server, from repo root):
 #   ./scripts/deploy.sh
+#   ./scripts/deploy.sh --pull
 #   ./scripts/deploy.sh --post-deploy-stats
 #   ./scripts/deploy.sh --no-build
 #   ./scripts/deploy.sh --ref release/companies-campaign-wizard-2026-07-22
 #   PUBLIC_BASE_URL=https://offer.parresh.ru ./scripts/deploy.sh
+#
+# Image (GHCR, set in CI):
+#   MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:latest ./scripts/deploy.sh --pull
 
 set -euo pipefail
 
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://offer.parresh.ru}"
+MAILING_AGENT_IMAGE="${MAILING_AGENT_IMAGE:-ghcr.io/parallel-solutions/mailing-agent:latest}"
 HEALTH_TIMEOUT_SEC="${HEALTH_TIMEOUT_SEC:-300}"
 POST_DEPLOY_STATS=0
 NO_BUILD=0
+PULL_IMAGE=0
 GIT_REF=""
 
 usage() {
-  sed -n '2,9p' "$0"
+  sed -n '2,12p' "$0"
   exit 1
 }
 
@@ -27,6 +33,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --no-build)
+      NO_BUILD=1
+      shift
+      ;;
+    --pull)
+      PULL_IMAGE=1
       NO_BUILD=1
       shift
       ;;
@@ -74,11 +85,16 @@ fi
 git pull --ff-only
 
 echo "=== Build and restart app + worker ==="
-if (( NO_BUILD )); then
+if (( PULL_IMAGE )); then
+  echo "Pulling image: $MAILING_AGENT_IMAGE"
+  docker pull "$MAILING_AGENT_IMAGE"
+  export MAILING_AGENT_IMAGE
+  MAILING_AGENT_IMAGE="$MAILING_AGENT_IMAGE" "${COMPOSE[@]}" up -d --no-build app worker
+elif (( NO_BUILD )); then
   echo "Skipping image build (--no-build); restarting existing containers."
   "${COMPOSE[@]}" restart app worker
 else
-  if ! "${COMPOSE[@]}" up -d --build --pull never app worker; then
+  if ! MAILING_AGENT_IMAGE="$MAILING_AGENT_IMAGE" "${COMPOSE[@]}" up -d --build --pull never app worker; then
     echo "WARNING: rebuild failed (often Docker Hub rate limit). Restarting existing containers without recreate..." >&2
     "${COMPOSE[@]}" restart app worker
   fi

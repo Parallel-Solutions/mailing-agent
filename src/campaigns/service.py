@@ -28,6 +28,22 @@ EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
 CORE_RECIPIENT_COLUMNS = ("company", "contact_name", "email", "email_fallback", "region")
 
+_RECIPIENT_ROW_RESERVED = frozenset(
+    {
+        "email",
+        "email_fallback",
+        "company",
+        "contact_name",
+        "contact",
+        "region",
+        "source",
+        "excluded",
+        "row_index",
+        "extra",
+        "validation_status",
+    }
+)
+
 _CORE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "company": (
         "company",
@@ -174,6 +190,12 @@ def extract_recipient_columns(rows: list[dict[str, Any]]) -> list[str]:
     columns: list[str] = list(CORE_RECIPIENT_COLUMNS)
     seen = set(columns)
     for row in rows:
+        for key in row:
+            normalized = str(key or "").strip().lower()
+            if not normalized or normalized in _RECIPIENT_ROW_RESERVED or normalized in seen:
+                continue
+            seen.add(normalized)
+            columns.append(normalized)
         for key in (row.get("extra") or {}).keys():
             normalized = str(key or "").strip().lower()
             if normalized and normalized not in seen:
@@ -606,6 +628,12 @@ def replace_recipients(
             if dedup_key:
                 seen_emails.add(dedup_key)
             suppressed = is_email_suppressed_for_import(email) if email else False
+            extra = dict(item.get("extra") or {})
+            for key, value in item.items():
+                normalized = str(key or "").strip().lower()
+                if not normalized or normalized in _RECIPIENT_ROW_RESERVED or normalized in extra:
+                    continue
+                extra[normalized] = value
             session.add(
                 CampaignRecipient(
                     campaign_id=campaign_id,
@@ -617,7 +645,7 @@ def replace_recipients(
                     region=str(item.get("region") or ""),
                     source=str(item.get("source") or "import"),
                     validation_status=status,
-                    extra=dict(item.get("extra") or {}),
+                    extra=extra,
                     excluded=bool(item.get("excluded") or status != "valid" or suppressed),
                 )
             )
@@ -930,6 +958,8 @@ def _resolve_send_mode(camp: Campaign) -> str:
         return "consent_request"
     if camp.send_scenario == "email_chain":
         return "chain_root"
+    if camp.send_scenario == "materials_now":
+        return "email"
     return "materials"
 
 
@@ -996,9 +1026,10 @@ def validate_campaign_for_launch(
         if camp.send_scenario == "email_chain":
             from src.campaigns.chain_service import get_email_chain, validate_chain
 
-            chain_validation = validate_chain(get_email_chain(camp), strict=True)
+            chain_validation = validate_chain(get_email_chain(camp), strict=False)
             if not chain_validation["ok"]:
                 errors.extend(chain_validation["errors"])
+            warnings.extend(chain_validation.get("warnings") or [])
         elif not camp.email_template_id and not (camp.draft_payload or {}).get("email_body"):
             warnings.append("Шаблон письма не выбран — будет использован текст по умолчанию")
 

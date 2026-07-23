@@ -6,6 +6,7 @@ export function isValidEmail(value: string): boolean {
 
 export function validateCampaignBasics(input: {
   name?: string;
+  send_scenario?: string | null;
   email_chain_id?: string | null;
   company_id?: string | null;
   company_work_type_id?: string | null;
@@ -17,8 +18,9 @@ export function validateCampaignBasics(input: {
   const errors: string[] = [];
   const companyId = (input.company_id || input.draft_payload?.company_id || '').trim();
   const workTypeId = (input.company_work_type_id || input.draft_payload?.company_work_type_id || '').trim();
+  const scenario = (input.send_scenario || 'email_chain').trim();
   if (!(input.name || '').trim()) errors.push('Укажите название рассылки');
-  if (!(input.email_chain_id || '').trim()) {
+  if (scenario === 'email_chain' && !(input.email_chain_id || '').trim()) {
     errors.push('Выберите цепочку писем');
   }
   if (!companyId) errors.push('Выберите компанию');

@@ -124,13 +124,13 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
         return _ok(company)
 
     @router.post("/companies/{company_id}/logo")
-    async def upload_logo(company_id: str, file: UploadFile = File(...), principal: object = Depends(check_auth)):
+    def upload_logo(company_id: str, file: UploadFile = File(...), principal: object = Depends(check_auth)):
         actor = _actor(principal)
         require_company_admin(actor, company_id)
         filename = str(file.filename or "").lower()
         if not any(filename.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp")):
             raise HTTPException(status_code=400, detail="Поддерживаются только PNG, JPEG и WebP.")
-        data = await file.read()
+        data = file.file.read()
         if len(data) > 2 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Логотип не должен превышать 2 МБ.")
         try:

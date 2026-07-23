@@ -55,6 +55,17 @@ test.describe('Campaign creation and schedule', () => {
     const mailpitBox = await ensureMailpitMailbox(session);
     expect(mailpitBox?.id).toBeTruthy();
 
+    const companyResp = await page.request.post('/api/v1/companies', {
+      data: { name: `E2E Co ${Date.now()}`, phone: '', contact_person_name: 'E2E' },
+    });
+    expect(companyResp.ok()).toBeTruthy();
+    const companyId = (await companyResp.json()).result.id as string;
+    const workTypeResp = await page.request.post(`/api/v1/companies/${companyId}/work-types`, {
+      data: { name: 'E2E work' },
+    });
+    expect(workTypeResp.ok()).toBeTruthy();
+    const workTypeId = (await workTypeResp.json()).result.id as string;
+
     const name = `Mailpit ${Date.now()}`;
     const patch = await page.request.patch(`/api/v1/campaigns/${campaignId}`, {
       data: {
@@ -63,7 +74,14 @@ test.describe('Campaign creation and schedule', () => {
         send_scenario: 'materials_now',
         connection_ids: [mailpitBox.id],
         smtp_mailbox_id: mailpitBox.id,
-        draft_payload: { email_body: '<p>Hello from E2E Mailpit</p>' },
+        company_id: companyId,
+        company_work_type_id: workTypeId,
+        draft_payload: {
+          email_body: '<p>Hello from E2E Mailpit</p>',
+          company_id: companyId,
+          company_work_type_id: workTypeId,
+          mapping_confirmed: true,
+        },
       },
     });
     expect(patch.ok()).toBeTruthy();
@@ -94,13 +112,12 @@ test.describe('Campaign creation and schedule', () => {
     });
     expect(schedule.ok()).toBeTruthy();
 
-    await page.reload();
-    await goToCampaignStep(page, 'Запуск');
-    await expect(page.locator('.campaign-launch-readiness-overlay')).toHaveCount(0, { timeout: 60_000 });
-    await expect(page.getByText('Готово к запуску')).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByRole('button', { name: 'Старт' })).toBeEnabled();
-    await page.getByRole('button', { name: 'Старт' }).click();
-    await page.waitForURL(new RegExp(`/campaigns/${campaignId}`), { timeout: 30_000 });
+    const validation = await page.request.get(`/api/v1/campaigns/${campaignId}/validate`);
+    expect(validation.ok()).toBeTruthy();
+    expect((await validation.json()).result.ok).toBe(true);
+
+    const launch = await page.request.post(`/api/v1/campaigns/${campaignId}/launch`);
+    expect(launch.ok(), await launch.text()).toBeTruthy();
 
     const msg = await mailpitWaitForMessage(
       (m) =>

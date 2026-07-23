@@ -128,6 +128,29 @@ def _sync_missing_template_version_columns(connection) -> None:
         connection.execute(text("ALTER TABLE template_versions ADD COLUMN editor_state JSONB"))
 
 
+def _sync_missing_campaign_connection_ids(connection) -> None:
+    if not _has_table(connection, "campaigns"):
+        return
+    if _has_column(connection, "campaigns", "connection_ids"):
+        return
+    connection.execute(
+        text(
+            "ALTER TABLE campaigns ADD COLUMN connection_ids JSONB NOT NULL "
+            "DEFAULT '[]'::jsonb"
+        )
+    )
+    if _has_column(connection, "campaigns", "smtp_mailbox_id"):
+        connection.execute(
+            text(
+                """
+                UPDATE campaigns
+                SET connection_ids = jsonb_build_array(smtp_mailbox_id)
+                WHERE smtp_mailbox_id IS NOT NULL
+                """
+            )
+        )
+
+
 def _recover_orphaned_alembic_revision(connection) -> str | None:
     current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
     if current in _LEGACY_ORPHAN_REVISIONS:
@@ -192,6 +215,8 @@ def _detect_schema_revision(connection) -> str | None:
     if _column_default_contains(connection, "campaign_schedules", "on_error", "skip"):
         return "0017_on_error_skip"
     if _has_table(connection, "companies"):
+        if not _has_column(connection, "campaigns", "connection_ids"):
+            return "0015_mail_template_is_template"
         return "0016_companies"
     mail_template_columns = _mail_template_column_names(connection)
     if "is_template" in mail_template_columns:
@@ -217,6 +242,8 @@ def _detect_schema_revision(connection) -> str | None:
 def init_db() -> None:
     """Ensure target database exists and apply Alembic migrations to head."""
     ensure_database_exists()
+    with engine.begin() as connection:
+        _sync_missing_campaign_connection_ids(connection)
     alembic_cfg = Config("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
     try:

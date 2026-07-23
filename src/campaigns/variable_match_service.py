@@ -310,6 +310,7 @@ def _heuristic_mapping(
 def auto_resolve_artifact_mappings(campaign: Campaign) -> dict[str, str]:
     from src.campaigns.placeholder_semantic import resolve_recipient_canonical, resolve_system_canonical
     from src.campaigns.substitution_engine import discover_brace_artifacts
+    from src.generator.generation.template_analysis import _norm_token
 
     resolved: dict[str, str] = {}
     for item in _collect_templates_for_validation(campaign):
@@ -325,9 +326,13 @@ def auto_resolve_artifact_mappings(campaign: Campaign) -> dict[str, str]:
             inner = str(artifact.name or "").strip()
             if not inner or inner in resolved:
                 continue
-            canonical = resolve_system_canonical(inner) or resolve_recipient_canonical(inner)
-            if canonical:
-                resolved[inner] = canonical
+            system_canonical = resolve_system_canonical(inner)
+            if system_canonical:
+                resolved[inner] = system_canonical
+                continue
+            recipient_canonical = resolve_recipient_canonical(inner)
+            if recipient_canonical and _norm_token(inner) != _norm_token(recipient_canonical):
+                resolved[inner] = recipient_canonical
     return resolved
 
 

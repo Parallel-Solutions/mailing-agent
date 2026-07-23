@@ -1,6 +1,8 @@
 # Overlay for Playwright E2E. Does not replace docker-compose.yml.
 # Always use a separate compose project so local dev (mailing on :9806) is not rewritten:
-#   docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e up -d --build
+#   npm run e2e:up          # warm stack, no rebuild (Python via src mount)
+#   npm run e2e:up:build    # rebuild app+worker after frontend/Dockerfile changes
+#   npm run e2e:up:full     # clean volumes + full rebuild (cold start)
 #   docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e run --rm playwright
 # Host ports: APP_PUBLIC_PORT / MAILPIT_UI_PORT from .env.e2e (defaults in .env.e2e.example: 19806 / 18025).
 
@@ -68,7 +70,19 @@ services:
       SEED_DEMO_DATA_ON_STARTUP: "1"
       # Keep queue enabled so campaign batch tasks run in worker for new UI.
       BACKGROUND_QUEUE_ENABLED: "true"
+      EMAIL_VALIDATION_MODE: syntax
       SMTP_CREDENTIALS_KEY: ${SMTP_CREDENTIALS_KEY:-KMhHbRYezchgJCwbtKxIw97zOrwo5UJI1glFM5moTp8=}
+    volumes:
+      - ./src:/app/src
+      - ./main.py:/app/main.py:ro
+      - ./scripts:/app/scripts:ro
+      - ./migrations:/app/migrations:ro
+    healthcheck:
+      test: ['CMD-SHELL', '.venv/bin/python -c "import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:9806/health\", timeout=5).read()"']
+      interval: 10s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,7 +109,13 @@ services:
       SMTP_USE_SSL: "0"
       SMTP_USE_STARTTLS: "0"
       SMTP_ALLOW_REAL_SEND: "1"
+      EMAIL_VALIDATION_MODE: syntax
       SMTP_CREDENTIALS_KEY: ${SMTP_CREDENTIALS_KEY:-KMhHbRYezchgJCwbtKxIw97zOrwo5UJI1glFM5moTp8=}
+    volumes:
+      - ./src:/app/src
+      - ./main.py:/app/main.py:ro
+      - ./scripts:/app/scripts:ro
+      - ./migrations:/app/migrations:ro
     depends_on:
       app:
         condition: service_healthy
