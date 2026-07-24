@@ -2,14 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
 
 # Cancel superseded CI runs on the same ref (PRs / pushes), but never cancel
 # an in-flight production deploy — see deploy-prod concurrency below.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' }}
 
 env:
   MAILING_AGENT_IMAGE: ghcr.io/parallel-solutions/mailing-agent
@@ -56,7 +56,7 @@ jobs:
   build-image:
     name: Build and push runtime image
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     timeout-minutes: 45
     permissions:
       contents: read
@@ -160,24 +160,49 @@ jobs:
     name: Deploy to production
     runs-on: ubuntu-latest
     needs: [unit, e2e-smoke, build-image]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production
-    timeout-minutes: 20
+    timeout-minutes: 45
+    permissions:
+      contents: read
     # Queue deploys instead of cancelling mid-SSH when another push lands.
     concurrency:
       group: deploy-prod
       cancel-in-progress: false
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.2.0
+      - uses: actions/checkout@v4
         with:
-          host: ${{ secrets.PROD_SSH_HOST }}
-          username: ${{ secrets.PROD_SSH_USER }}
-          key: ${{ secrets.PROD_SSH_KEY }}
-          port: ${{ secrets.PROD_SSH_PORT || 22 }}
-          script_stop: true
-          script: |
-            set -euo pipefail
-            cd /opt/mailing-agent
-            export MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:${{ github.sha }}
-            ./scripts/deploy.sh --pull
+          sparse-checkout: .github/known_hosts
+          sparse-checkout-cone-mode: false
+
+      - name: Validate deploy secret
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PROD_SSH_KEY" ]]; then
+            echo "::error::Missing PROD_SSH_KEY. Add it to the production environment or repository Actions secrets."
+            exit 1
+          fi
+
+      - name: Deploy immutable image via restricted SSH
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          key_file="$RUNNER_TEMP/mailing-agent-deploy-key"
+          trap 'rm -f "$key_file"' EXIT
+
+          install -m 700 -d "$HOME/.ssh"
+          install -m 600 /dev/null "$key_file"
+          printf '%s\n' "$PROD_SSH_KEY" > "$key_file"
+          install -m 600 .github/known_hosts "$HOME/.ssh/known_hosts"
+
+          ssh \
+            -i "$key_file" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            deploy@offer.parresh.ru \
+            "deploy $GITHUB_SHA"

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# ForcedCommand entry point for the dedicated production deploy SSH key.
+
+set -euo pipefail
+
+original_command="${SSH_ORIGINAL_COMMAND:-}"
+if [[ ! "$original_command" =~ ^deploy[[:space:]]([0-9a-f]{40})$ ]]; then
+  echo "ERROR: only 'deploy <40-char-main-commit-sha>' is allowed" >&2
+  exit 64
+fi
+
+exec sudo -n /usr/local/sbin/mailing-agent-deploy-root "${BASH_REMATCH[1]}"

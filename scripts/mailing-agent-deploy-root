@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# Root-owned production deploy entry point.
+# It accepts only a full commit SHA already reachable from origin/main.
+
+set -Eeuo pipefail
+
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+readonly REPO_ROOT="/opt/mailing-agent"
+readonly IMAGE_REPOSITORY="ghcr.io/parallel-solutions/mailing-agent"
+readonly STATE_DIR="/var/lib/mailing-agent-deploy"
+readonly LOCK_FILE="/run/lock/mailing-agent-deploy.lock"
+readonly HEALTH_TIMEOUT_SEC=300
+readonly LOCAL_BASE_URL="http://127.0.0.1:9806"
+readonly PUBLIC_BASE_URL="https://offer.parresh.ru"
+
+log() {
+  printf '[deploy] %s\n' "$*"
+}
+
+fail() {
+  printf '[deploy] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+wait_for_url() {
+  local url="$1"
+  local label="$2"
+  local deadline=$((SECONDS + HEALTH_TIMEOUT_SEC))
+
+  until curl -fsS "$url" >/dev/null; do
+    if (( SECONDS >= deadline )); then
+      log "rollback health timeout: $label ($url)"
+      return 1
+    fi
+    sleep 5
+  done
+  log "rollback health OK: $label ($url)"
+}
+
+record_event() {
+  local status="$1"
+  local requested_sha="$2"
+  local image="$3"
+  printf '%s status=%s sha=%s image=%s\n' \
+    "$(date --iso-8601=seconds)" "$status" "$requested_sha" "$image" \
+    >> "$STATE_DIR/history.log"
+}
+
+rollback() {
+  local previous_head="$1"
+  local previous_image="$2"
+
+  log "deployment failed; rolling back to $previous_image"
+  git reset --hard "$previous_head" >/dev/null
+
+  MAILING_AGENT_IMAGE="$previous_image" \
+    docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+      up -d --no-build --force-recreate --pull never app worker
+
+  wait_for_url "$LOCAL_BASE_URL/health" "local health"
+  wait_for_url "$LOCAL_BASE_URL/ready" "local ready"
+  wait_for_url "$PUBLIC_BASE_URL/health" "public health"
+  wait_for_url "$PUBLIC_BASE_URL/ready" "public ready"
+  log "rollback complete"
+}
+
+main() {
+  local requested_sha="${1:-}"
+  [[ "$requested_sha" =~ ^[0-9a-f]{40}$ ]] \
+    || fail "expected one full lowercase commit SHA"
+
+  [[ "$(id -u)" -eq 0 ]] || fail "must run as root"
+  for cmd in curl docker flock git; do
+    require_cmd "$cmd"
+  done
+
+  install -d -m 0755 "$STATE_DIR"
+  exec 9>"$LOCK_FILE"
+  flock -w 2400 9 || fail "another deploy held the lock for more than 40 minutes"
+
+  cd "$REPO_ROOT"
+  [[ -d .git ]] || fail "$REPO_ROOT is not a Git checkout"
+  [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" == "main" ]] \
+    || fail "$REPO_ROOT must be checked out on main"
+
+  log "fetching origin/main"
+  git fetch --quiet --no-tags origin \
+    "+refs/heads/main:refs/remotes/origin/main"
+  git cat-file -e "${requested_sha}^{commit}" 2>/dev/null \
+    || fail "commit is not present after fetching main: $requested_sha"
+  git merge-base --is-ancestor "$requested_sha" origin/main \
+    || fail "requested commit is not reachable from origin/main: $requested_sha"
+
+  local previous_head previous_app_image previous_worker_image deployed_sha
+  previous_head="$(git rev-parse HEAD)"
+  previous_app_image="$(docker inspect mailing-agent-app-1 --format '{{.Config.Image}}' 2>/dev/null || true)"
+  previous_worker_image="$(docker inspect mailing-agent-worker-1 --format '{{.Config.Image}}' 2>/dev/null || true)"
+  [[ -n "$previous_app_image" && "$previous_app_image" == "$previous_worker_image" ]] \
+    || fail "app and worker must already run the same rollback-capable image"
+
+  deployed_sha="${previous_app_image#"$IMAGE_REPOSITORY:"}"
+  if [[ "$deployed_sha" == "$requested_sha" ]]; then
+    log "$requested_sha is already running on app and worker"
+    record_event "already-current" "$requested_sha" "$previous_app_image"
+    return 0
+  fi
+
+  if [[ "$deployed_sha" =~ ^[0-9a-f]{40}$ ]] \
+    && git cat-file -e "${deployed_sha}^{commit}" 2>/dev/null \
+    && [[ "$deployed_sha" != "$requested_sha" ]] \
+    && git merge-base --is-ancestor "$requested_sha" "$deployed_sha"; then
+    log "skipping stale deploy $requested_sha; $deployed_sha is already running"
+    record_event "stale-skip" "$requested_sha" "$previous_app_image"
+    return 0
+  fi
+
+  log "pinning server checkout to $requested_sha"
+  git reset --hard "$requested_sha" >/dev/null
+
+  local requested_image="$IMAGE_REPOSITORY:$requested_sha"
+  log "deploying $requested_image"
+  set +e
+  MAILING_AGENT_IMAGE="$requested_image" \
+    HEALTH_TIMEOUT_SEC="$HEALTH_TIMEOUT_SEC" \
+    PUBLIC_BASE_URL="$PUBLIC_BASE_URL" \
+    bash ./scripts/deploy.sh --pull --skip-git-update
+  local deploy_status=$?
+  set -e
+
+  if (( deploy_status == 0 )); then
+    printf '%s\n' "$requested_sha" > "$STATE_DIR/current_sha"
+    record_event "success" "$requested_sha" "$requested_image"
+    log "production deploy complete: $requested_sha"
+    return 0
+  fi
+
+  record_event "failed" "$requested_sha" "$requested_image"
+  if rollback "$previous_head" "$previous_app_image"; then
+    printf '%s\n' "$previous_head" > "$STATE_DIR/current_sha"
+    record_event "rollback-success" "$requested_sha" "$previous_app_image"
+  else
+    record_event "rollback-failed" "$requested_sha" "$previous_app_image"
+    fail "deploy failed with status $deploy_status and rollback also failed"
+  fi
+
+  fail "deploy failed with status $deploy_status; rollback succeeded"
+}
+
+main "$@"
