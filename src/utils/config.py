@@ -113,10 +113,11 @@ class Settings(BaseSettings):
     sender_delay_max_seconds: float = 0.0
     sender_transport: str = "smtp"
     sender_unisender_concurrency: int = 1
-    email_validation_mode: str = "domain"
-    email_validation_timeout_seconds: float = 3.0
+    email_validation_mode: str = "smtpbz"
+    email_validation_timeout_seconds: float = 20.0
     smtpbz_api_key: str = ""
     smtpbz_api_base_url: str = "https://api.smtp.bz/v1"
+    smtpbz_fail_open: bool = False
     documents_worker_max_processes: int = 1
     sender_worker_max_processes: int = 1
     user_worker_max_processes_per_task: int = 1

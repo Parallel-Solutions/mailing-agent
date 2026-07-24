@@ -585,11 +585,16 @@ def test_connection(
             message = "SMTP-подключение успешно проверено."
         else:
             from src.campaigns.batch_worker import _send_delivery_message
+            from src.campaigns.recipient_email_service import validate_delivery_email
+
+            email_validation = validate_delivery_email(connection.email)
+            if not email_validation.is_valid:
+                raise ValueError(email_validation.reason or "Email не прошёл проверку SMTP.BZ.")
 
             _send_delivery_message(
                 connection_id=connection.id,
                 owner_username=owner_username,
-                to_email=connection.email,
+                to_email=email_validation.normalized_email,
                 subject="Проверка подключения ai-offer",
                 html="<p>Подключение успешно. Это тестовое письмо ai-offer.</p>",
                 text="Подключение успешно. Это тестовое письмо ai-offer.",

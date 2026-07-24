@@ -49,8 +49,7 @@ from src.generator.delivery.consent_store import (
 )
 from src.generator.delivery.email_validation import (
     EmailValidationResult,
-    normalize_email_validation_mode,
-    validate_email_address,
+    validate_configured_email_address,
 )
 from src.generator.case_engine import build_inflected_fields_with_trace
 from src.generator.inflection.inflect import inflect_mun_name_genitive
@@ -784,17 +783,6 @@ def _consent_candidate_recipients(
     )
 
 
-def _email_validation_mode() -> str:
-    return normalize_email_validation_mode(getattr(settings, "email_validation_mode", "domain"))
-
-
-def _email_validation_timeout_seconds() -> float:
-    try:
-        return max(1.0, float(getattr(settings, "email_validation_timeout_seconds", 3.0) or 3.0))
-    except (TypeError, ValueError):
-        return 3.0
-
-
 def _validate_recipient_for_send(
     recipient: str,
     validation_cache: dict[str, EmailValidationResult],
@@ -802,13 +790,7 @@ def _validate_recipient_for_send(
     cache_key = _mail_key(recipient) or _safe_text(recipient)
     if cache_key in validation_cache:
         return validation_cache[cache_key]
-    result = validate_email_address(
-        recipient,
-        mode=_email_validation_mode(),
-        timeout_seconds=_email_validation_timeout_seconds(),
-        smtpbz_api_key=getattr(settings, "smtpbz_api_key", ""),
-        smtpbz_api_base_url=getattr(settings, "smtpbz_api_base_url", ""),
-    )
+    result = validate_configured_email_address(recipient, config=settings)
     validation_cache[cache_key] = result
     return result
 

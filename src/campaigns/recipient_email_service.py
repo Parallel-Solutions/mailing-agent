@@ -6,8 +6,7 @@ from typing import Any
 
 from src.generator.delivery.email_validation import (
     EmailValidationResult,
-    normalize_email_validation_mode,
-    validate_email_address,
+    validate_configured_email_address,
 )
 from src.generator.delivery.sender_agent import _is_valid_email, _mail_key, _parse_emails, _safe_text
 from src.infra.models import CampaignRecipient
@@ -58,17 +57,6 @@ def primary_email_key(email: str, email_fallback: str = "") -> str:
     return candidates[0] if candidates else ""
 
 
-def _validation_mode() -> str:
-    return normalize_email_validation_mode(getattr(settings, "email_validation_mode", "domain"))
-
-
-def _validation_timeout_seconds() -> float:
-    try:
-        return max(1.0, float(getattr(settings, "email_validation_timeout_seconds", 3.0) or 3.0))
-    except (TypeError, ValueError):
-        return 3.0
-
-
 def _validate_candidate(
     candidate: str,
     validation_cache: dict[str, EmailValidationResult],
@@ -77,15 +65,19 @@ def _validate_candidate(
     cached = validation_cache.get(cache_key)
     if cached is not None:
         return cached
-    result = validate_email_address(
-        candidate,
-        mode=_validation_mode(),
-        timeout_seconds=_validation_timeout_seconds(),
-        smtpbz_api_key=getattr(settings, "smtpbz_api_key", ""),
-        smtpbz_api_base_url=getattr(settings, "smtpbz_api_base_url", ""),
-    )
+    result = validate_configured_email_address(candidate, config=settings)
     validation_cache[cache_key] = result
     return result
+
+
+def validate_delivery_email(
+    email: str,
+    *,
+    validation_cache: dict[str, EmailValidationResult] | None = None,
+) -> EmailValidationResult:
+    """Validate one outgoing recipient with the configured delivery validator."""
+    cache = validation_cache if validation_cache is not None else {}
+    return _validate_candidate(_safe_text(email), cache)
 
 
 def _attempt_record(recipient: str, *, error: str, validation: EmailValidationResult | None = None) -> dict[str, Any]:

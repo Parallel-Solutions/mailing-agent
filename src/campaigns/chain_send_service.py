@@ -299,7 +299,14 @@ def send_chain_node_email(
                 active_test_email = token_row.test_email
 
         delivery_email = active_test_email
-        if not delivery_email:
+        if delivery_email:
+            from src.campaigns.recipient_email_service import validate_delivery_email
+
+            validation_result = validate_delivery_email(delivery_email)
+            if not validation_result.is_valid:
+                raise ValueError(validation_result.reason or "Email не прошёл проверку SMTP.BZ.")
+            delivery_email = validation_result.normalized_email
+        else:
             from src.campaigns.recipient_email_service import (
                 persist_delivery_email_state,
                 resolve_delivery_email,

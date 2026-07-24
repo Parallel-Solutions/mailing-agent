@@ -604,6 +604,12 @@ def send_test_email(
     include_sample_attachment: bool = False,
 ) -> None:
     target = _safe_text(recipient) or credentials.email
+    from src.generator.delivery.email_validation import validate_configured_email_address
+
+    email_validation = validate_configured_email_address(target)
+    if not email_validation.is_valid:
+        raise ValueError(email_validation.reason or "Email не прошёл проверку SMTP.BZ.")
+    target = email_validation.normalized_email
     message = EmailMessage()
     sender_label = credentials.sender_name or credentials.email
     message["Subject"] = "Проверка SMTP-подключения"

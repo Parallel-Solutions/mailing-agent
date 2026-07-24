@@ -972,8 +972,17 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             return _ok(result)
 
         from src.campaigns.batch_worker import _send_delivery_message
+        from src.campaigns.recipient_email_service import validate_delivery_email
         from src.infra.db import session_scope
         from src.infra.models import MailTemplate, TemplateVersion
+
+        email_validation = validate_delivery_email(body.to_email)
+        if not email_validation.is_valid:
+            raise HTTPException(
+                status_code=400,
+                detail=email_validation.reason or "Email не прошёл проверку SMTP.BZ.",
+            )
+        delivery_email = email_validation.normalized_email
 
         subject = camp.get("mail_subject") or camp.get("name") or "Тестовое письмо"
         html = str((camp.get("draft_payload") or {}).get("email_body") or f"<p>Тест: {camp.get('name')}</p>")
@@ -990,7 +999,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             message_id = _send_delivery_message(
                 connection_id=connection_id,
                 owner_username=actor.username,
-                to_email=body.to_email,
+                to_email=delivery_email,
                 subject=f"[TEST] {subject}",
                 html=html,
                 text=html,
@@ -999,7 +1008,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Не удалось отправить: {exc}") from exc
-        return _ok({"message_id": message_id, "to": body.to_email})
+        return _ok({"message_id": message_id, "to": delivery_email})
 
     # --- Editor assistants ---
     @router.post("/assistants/chat")
