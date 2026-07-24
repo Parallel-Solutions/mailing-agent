@@ -225,6 +225,7 @@ def _extract_first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
 
 
 def _load_message_job_index() -> dict[str, dict[str, str]]:
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
     from src.jobs.job_docs import iter_sent_mail_items
 
     index: dict[str, dict[str, str]] = {}
@@ -237,22 +238,19 @@ def _load_message_job_index() -> dict[str, dict[str, str]]:
             if provider_name != "mailopost":
                 continue
         job_id = "" if storage_job_id == "__legacy__" else storage_job_id
-        ids = {
-            _safe_text(value)
-            for value in (
-                item.get("provider_message_id"),
-                item.get("message_id"),
-                provider.get("message_id"),
-                provider.get("id"),
-            )
-            if value not in (None, "")
+        meta = {
+            "job_id": job_id,
+            "row_id": _safe_text(item.get("row_id")),
+            "recipient": _safe_text(item.get("recipient")),
         }
-        for message_id in ids:
-            index[message_id] = {
-                "job_id": job_id,
-                "row_id": _safe_text(item.get("row_id")),
-                "recipient": _safe_text(item.get("recipient")),
-            }
+        for raw in (
+            item.get("provider_message_id"),
+            item.get("message_id"),
+            provider.get("message_id"),
+            provider.get("id"),
+        ):
+            for message_id in provider_message_id_lookup_keys(raw):
+                index[message_id] = meta
     return index
 
 

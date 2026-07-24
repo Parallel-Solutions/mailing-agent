@@ -525,6 +525,7 @@ def _load_company_data_for_job(job_id: str) -> dict[str, dict[str, Any]]:
 
     Returns ``{row_id: {"name": str, "info": {field: value}}}``. Missing/absent
     data is tolerated: statistics fall back to placeholders when a row is absent.
+    For CampaignFlow jobs without data.xlsx coverage, fill from campaign_recipients.
     """
 
     cached = _cache_get(_company_cache, job_id)
@@ -548,8 +549,71 @@ def _load_company_data_for_job(job_id: str) -> dict[str, dict[str, Any]]:
                 }
     except Exception as exc:  # pragma: no cover - defensive, data may be missing
         logger.warning("company_data_load_failed", job_id=job_id, error=str(exc))
+    try:
+        _merge_campaign_recipient_company_data(job_id, data)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("campaign_recipient_company_data_failed", job_id=job_id, error=str(exc))
     _cache_set(_company_cache, job_id, data)
     return data
+
+
+def _merge_campaign_recipient_company_data(job_id: str, data: dict[str, dict[str, Any]]) -> None:
+    """Fill gaps from CampaignFlow recipients (keyed by recipient.id as row_id)."""
+
+    from sqlalchemy import select
+
+    from src.infra.db import session_scope
+    from src.infra.models import Campaign, CampaignRecipient
+
+    with session_scope() as session:
+        campaign = session.scalar(select(Campaign).where(Campaign.job_id == job_id).limit(1))
+        if campaign is None:
+            return
+        recipients = session.scalars(
+            select(CampaignRecipient).where(
+                CampaignRecipient.campaign_id == campaign.id,
+                CampaignRecipient.excluded.is_(False),
+            )
+        ).all()
+        for recipient in recipients:
+            row_id = _safe_text(recipient.id)
+            if not row_id:
+                continue
+            extra = dict(recipient.extra or {}) if isinstance(recipient.extra, dict) else {}
+            info = {
+                "region": _safe_text(recipient.region) or _safe_text(extra.get("region")),
+                "district": _safe_text(extra.get("district")),
+                "settlement": _safe_text(extra.get("settlement") or extra.get("mun_name")),
+                "admin_name": _safe_text(extra.get("admin_name")),
+                "address": _safe_text(extra.get("address")),
+                "head": _safe_text(recipient.contact_name) or _safe_text(extra.get("head")),
+                "population": _safe_text(extra.get("population")),
+                "email_primary": _safe_text(recipient.email),
+                "email_extra": _safe_text(recipient.email_fallback),
+                "phone": _safe_text(extra.get("phone") or extra.get("tel_osn")),
+                "phone_extra": _safe_text(extra.get("phone_extra") or extra.get("tel_dop")),
+                "inn": _safe_text(extra.get("inn")),
+                "kpp": _safe_text(extra.get("kpp")),
+                "ogrn": _safe_text(extra.get("ogrn")),
+                "okpo": _safe_text(extra.get("okpo")),
+                "oktmo": _safe_text(extra.get("oktmo")),
+                "note": _safe_text(extra.get("note")),
+            }
+            existing = data.get(row_id)
+            if existing is None:
+                data[row_id] = {
+                    "name": _safe_text(recipient.company) or f"Компания №{row_id}",
+                    "info": {key: value for key, value in info.items() if value},
+                }
+                continue
+            # Prefer Excel name/info; fill only blank fields from recipient.
+            merged_info = dict(existing.get("info") or {})
+            for key, value in info.items():
+                if value and not _safe_text(merged_info.get(key)):
+                    merged_info[key] = value
+            existing["info"] = merged_info
+            if not _safe_text(existing.get("name")) and _safe_text(recipient.company):
+                existing["name"] = _safe_text(recipient.company)
 
 
 def _company_view(company_entry: dict[str, Any] | None, row_id: str, fallback_org: str) -> dict[str, Any]:
@@ -665,6 +729,90 @@ def _build_consent_rows_for_job(job_id: str) -> list[dict[str, Any]]:
                 "next_action": recommended_action_for("opened" if status_key == "confirmed" else "pending"),
             }
         )
+    rows.extend(_build_chain_consent_rows_for_job(job_id, existing_emails={_safe_text(r.get("email")).lower() for r in rows}))
+    return rows
+
+
+def _build_chain_consent_rows_for_job(job_id: str, *, existing_emails: set[str]) -> list[dict[str, Any]]:
+    """Map CampaignFlow chain subscribe events into consent KPI rows (no duplicates by email)."""
+
+    from sqlalchemy import select
+
+    from src.campaigns.chain_consent_service import ACTION_SUBSCRIBE
+    from src.infra.db import session_scope
+    from src.infra.models import Campaign, CampaignChainConsentEvent, CampaignRecipient
+    from src.generator.delivery.sender_report import _format_moscow_datetime
+
+    rows: list[dict[str, Any]] = []
+    with session_scope() as session:
+        campaign = session.scalar(select(Campaign).where(Campaign.job_id == job_id).limit(1))
+        if campaign is None:
+            return rows
+        events = session.scalars(
+            select(CampaignChainConsentEvent)
+            .where(
+                CampaignChainConsentEvent.campaign_id == campaign.id,
+                CampaignChainConsentEvent.action == ACTION_SUBSCRIBE,
+            )
+            .order_by(CampaignChainConsentEvent.created_at.desc())
+        ).all()
+        recipient_ids = {int(event.recipient_id) for event in events if event.recipient_id is not None}
+        recipients = {}
+        if recipient_ids:
+            for recipient in session.scalars(
+                select(CampaignRecipient).where(CampaignRecipient.id.in_(recipient_ids))
+            ).all():
+                recipients[int(recipient.id)] = recipient
+
+        seen_emails = set(existing_emails)
+        for event in events:
+            email = _safe_text(event.email).lower()
+            if not email or email in seen_emails:
+                continue
+            seen_emails.add(email)
+            recipient = recipients.get(int(event.recipient_id)) if event.recipient_id is not None else None
+            organization = _safe_text(recipient.company) if recipient is not None else ""
+            confirmed_at = _format_moscow_datetime(event.created_at.isoformat() if event.created_at else "")
+            rows.append(
+                {
+                    "row_id": _safe_text(event.recipient_id),
+                    "mun_name": organization,
+                    "recipient": email,
+                    "status": "confirmed",
+                    "status_label": "Подтверждено (цепочка)",
+                    "request_sent_at": "",
+                    "created_at": confirmed_at,
+                    "confirmed_at": confirmed_at,
+                    "expires_at": _format_moscow_datetime(event.expires_at.isoformat() if event.expires_at else ""),
+                    "materials_status": "",
+                    "materials_status_label": "",
+                    "materials_sent_at": "",
+                    "materials_error": "",
+                    "materials_dispatch_summary": "",
+                    "transport": _safe_text(campaign.transport),
+                    "attachment_mode": "",
+                    "work_type": "",
+                    "confirmed_ip": "",
+                    "confirmed_user_agent": "",
+                    "consent_document_path": "",
+                    "job_id": job_id,
+                    "organization": organization,
+                    "contact": _safe_text(recipient.contact_name) if recipient is not None else email,
+                    "email": email,
+                    "consent_status_key": "confirmed",
+                    "consent_status_label": "Подтверждено (цепочка)",
+                    "materials_label": "",
+                    "last_action_label": "Подписка в цепочке",
+                    "last_action_at": confirmed_at,
+                    "interest": {
+                        "key": "medium",
+                        "label": INTEREST_LABELS["medium"],
+                        "tone": INTEREST_TONES["medium"],
+                    },
+                    "next_action": recommended_action_for("opened"),
+                    "source": "chain",
+                }
+            )
     return rows
 
 
@@ -755,6 +903,12 @@ def _build_company_row(group: list[dict[str, Any]]) -> dict[str, Any]:
     manager_status = _manager_status_view(best_key)
     company = first.get("company") or _company_view(None, row_id, _safe_text(first.get("organization")))
     organization = _safe_text(first.get("organization")) or _safe_text(company.get("name"))
+    layout_error_code = ""
+    for row in group:
+        code = _safe_text(row.get("layout_error_code"))
+        if code:
+            layout_error_code = code
+            break
     return {
         "job_id": job_id,
         "row_id": row_id,
@@ -786,6 +940,7 @@ def _build_company_row(group: list[dict[str, Any]]) -> dict[str, Any]:
         "work_type": _safe_text(first.get("work_type")),
         "campaign_name": _safe_text(first.get("campaign_name")),
         "subject": _safe_text(first.get("subject")),
+        "layout_error_code": layout_error_code,
     }
 
 

@@ -39,7 +39,7 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
             text=self._chain_text(),
         )
 
-        self.assertEqual(result, "rusender:msg-1")
+        self.assertEqual(result, "msg-1")
         kwargs = send_mock.call_args.kwargs
         self.assertEqual(kwargs["html_override"], self._chain_html())
         self.assertEqual(kwargs["body_override"], self._chain_text())
@@ -65,7 +65,7 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
             text=self._chain_text(),
         )
 
-        self.assertEqual(result, "mailopost:msg-2")
+        self.assertEqual(result, "msg-2")
         kwargs = send_mock.call_args.kwargs
         self.assertEqual(kwargs["html_override"], self._chain_html())
         self.assertEqual(kwargs["body_override"], self._chain_text())

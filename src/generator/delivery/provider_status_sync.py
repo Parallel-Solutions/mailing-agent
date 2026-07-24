@@ -29,6 +29,8 @@ def _safe_text(value: Any) -> str:
 
 
 def _message_ids_from_item(item: dict[str, Any]) -> list[str]:
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
+
     provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
     values = [
         item.get("provider_message_id"),
@@ -41,10 +43,10 @@ def _message_ids_from_item(item: dict[str, Any]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for value in values:
-        text = _safe_text(value)
-        if text and text not in seen:
-            seen.add(text)
-            result.append(text)
+        for text in provider_message_id_lookup_keys(value):
+            if text and text not in seen:
+                seen.add(text)
+                result.append(text)
     return result
 
 

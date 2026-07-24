@@ -10,7 +10,8 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
   sent: {
     id: 'sent',
     title: 'Компаний в рассылке',
-    description: 'Число компаний (получателей), по которым зафиксирована хотя бы одна отправка письма.',
+    description:
+      'Число компаний (получателей), по которым зафиксирована хотя бы одна отправка письма. В обычной аналитике карточка может называться «Отправлено» — та же метрика.',
     formula: 'Количество уникальных row_id в журнале отправок sent_mail_log.',
     source: 'PostgreSQL job_events → stream sent_mail_log.',
   },
@@ -52,9 +53,10 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
   pending: {
     id: 'pending',
     title: 'Ожидают статуса',
-    description: 'Отправка принята, но финальный статус доставки от провайдера ещё не получен.',
+    description:
+      'Отправка принята, но финальный статус доставки от провайдера ещё не получен. Для SMTP без DSN успешная отправка считается доставленной; открытия/клики без tracking недоступны.',
     formula: 'manager_status ∈ {pending, no_data}.',
-    source: 'Для SMTP часто остаётся 100% до появления bounce-handler.',
+    source: 'Для SMTP: log status→delivered; для API-провайдеров — webhook/JSONL.',
   },
   pending_rate: {
     id: 'pending_rate',
@@ -66,16 +68,17 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
   consents: {
     id: 'consents',
     title: 'Согласия',
-    description: 'Подтверждённые согласия на получение коммерческих материалов (сценарий consent).',
-    formula: 'consent_status = confirmed в consents.json.',
-    source: 'Файл {job}/state/consents.json.',
+    description:
+      'Подтверждённые согласия: legacy consent flow и подписки через кнопки email-цепочки.',
+    formula: 'consent_status = confirmed (consents.json) + chain subscribe events.',
+    source: '{job}/state/consents.json и campaign_chain_consent_events.',
   },
   materials_sent: {
     id: 'materials_sent',
     title: 'Материалы отправлены',
     description: 'После подтверждения согласия материалы (КП) успешно отправлены получателю.',
     formula: 'materials_status = sent или заполнено materials_sent_at.',
-    source: 'consents.json.',
+    source: 'consents.json (legacy consent flow).',
   },
   unsubscribed: {
     id: 'unsubscribed',

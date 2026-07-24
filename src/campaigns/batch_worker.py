@@ -202,10 +202,13 @@ def _send_delivery_message(
             )
         else:
             raise RuntimeError(f"Неподдерживаемый способ отправки: {connection.transport}")
-        message_id = str(result.get("message_id") or result.get("uuid") or "")
+        from src.generator.delivery.provider_ids import normalize_provider_message_id
+
+        message_id = normalize_provider_message_id(result.get("message_id") or result.get("uuid") or "")
         if not message_id:
             raise RuntimeError(f"{connection.transport} не вернул идентификатор письма.")
-        return f"{connection.transport}:{message_id}"
+        # Store bare provider id so webhook task_id / message_id matches join keys.
+        return message_id
     finally:
         if temp_dir is not None:
             temp_dir.cleanup()

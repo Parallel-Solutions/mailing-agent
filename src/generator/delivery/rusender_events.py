@@ -187,30 +187,29 @@ def _extract_first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
 
 
 def _load_task_job_index() -> dict[str, dict[str, str]]:
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
     from src.jobs.job_docs import iter_sent_mail_items
 
     index: dict[str, dict[str, str]] = {}
     for job_id, item in iter_sent_mail_items():
         provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
-        task_ids = {
-            str(value).strip()
-            for value in (
-                item.get("provider_message_id"),
-                item.get("message_id"),
-                item.get("provider_job_id"),
-                provider.get("message_id"),
-                provider.get("uuid"),
-                provider.get("idempotency_key"),
-                provider.get("idempotencyKey"),
-                item.get("idempotency_key"),
-                item.get("idempotencyKey"),
-            )
-            if value not in (None, "")
+        raw_ids = [
+            item.get("provider_message_id"),
+            item.get("message_id"),
+            item.get("provider_job_id"),
+            provider.get("message_id"),
+            provider.get("uuid"),
+            provider.get("idempotency_key"),
+            provider.get("idempotencyKey"),
+            item.get("idempotency_key"),
+            item.get("idempotencyKey"),
+        ]
+        meta = {
+            "job_id": "" if job_id == "__legacy__" else job_id,
+            "row_id": str(item.get("row_id") or "").strip(),
+            "recipient": str(item.get("recipient") or "").strip(),
         }
-        for task_id in task_ids:
-            index[task_id] = {
-                "job_id": "" if job_id == "__legacy__" else job_id,
-                "row_id": str(item.get("row_id") or "").strip(),
-                "recipient": str(item.get("recipient") or "").strip(),
-            }
+        for raw in raw_ids:
+            for task_id in provider_message_id_lookup_keys(raw):
+                index[task_id] = meta
     return index
