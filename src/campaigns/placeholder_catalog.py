@@ -263,6 +263,16 @@ PLACEHOLDER_CATALOG: tuple[PlaceholderEntry, ...] = (
         "patronymic",
     ),
     _entry(
+        "CONTACT_FIRST_PATRONYMIC",
+        "recipient",
+        "Имя и отчество контактного лица без фамилии",
+        "Имя Отчество",
+        "ИО",
+        "им. отч.",
+        "им отч",
+        "first_patronymic",
+    ),
+    _entry(
         "CONTACT_SURNAME",
         "recipient",
         "Фамилия контактного лица (из ФИО получателя)",

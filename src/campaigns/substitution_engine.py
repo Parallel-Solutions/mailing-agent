@@ -9,8 +9,11 @@ from html import unescape
 from src.campaigns.substitution_context import SYSTEM_VARIABLE_ALIASES
 from src.generator.generation.template_analysis import _norm_token
 
-BRACE_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_а-яА-ЯёЁ]+)\s*\}\}")
-MALFORMED_BRACE_RE = re.compile(r"\{{3,}\s*([a-zA-Z0-9_а-яА-ЯёЁ]+)\s*\}{3,}")
+_BRACE_WORD = r"[a-zA-Z0-9_а-яА-ЯёЁ]+"
+# Multi-word braces are opt-in (e.g. {{Имя Отчество}}); do not treat {{вид работ}} as one token.
+_BRACE_TOKEN = rf"(?:{_BRACE_WORD}|Имя\s+Отчество)"
+BRACE_RE = re.compile(rf"\{{\{{\s*({_BRACE_TOKEN})\s*\}}\}}")
+MALFORMED_BRACE_RE = re.compile(rf"\{{{{3,}}\s*({_BRACE_TOKEN})\s*\}}" + r"{3,}")
 ANY_BRACE_ARTIFACT_RE = re.compile(r"\{\{[^{}]{0,120}?\}\}")
 BROKEN_BRACE_CANDIDATE_RE = re.compile(r"\{{2,}[^{}]+")
 BARE_TOKEN_RE = re.compile(
@@ -101,9 +104,9 @@ def _context_value(context: dict[str, str], name: str) -> str:
     if canonical:
         return str(context.get(canonical) or context.get(canonical.upper()) or "")
 
-    from src.campaigns.placeholder_semantic import resolve_system_canonical
+    from src.campaigns.placeholder_semantic import resolve_recipient_canonical, resolve_system_canonical
 
-    semantic_canonical = resolve_system_canonical(name)
+    semantic_canonical = resolve_system_canonical(name) or resolve_recipient_canonical(name)
     if semantic_canonical:
         return str(
             context.get(semantic_canonical) or context.get(semantic_canonical.upper()) or ""

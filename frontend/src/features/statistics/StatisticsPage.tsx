@@ -10,6 +10,7 @@ import { DashboardTab } from './tabs/DashboardTab';
 import { CampaignsTab } from './tabs/CampaignsTab';
 import { RecipientsTab } from './tabs/RecipientsTab';
 import { CampaignAnalyticsTab } from './tabs/CampaignAnalyticsTab';
+import { CampaignFullAnalyticsTab } from './fullAnalytics/CampaignFullAnalyticsTab';
 import { ConsentsTab } from './tabs/ConsentsTab';
 import { MarketingConsentsTab } from './tabs/MarketingConsentsTab';
 import { ProblemsTab } from './tabs/ProblemsTab';
@@ -195,6 +196,8 @@ function TabBody({ tabKey }: { tabKey: string }) {
       return <RecipientsTab />;
     case 'campaign-analytics':
       return <CampaignAnalyticsTab />;
+    case 'campaign-full-analytics':
+      return <CampaignFullAnalyticsTab />;
     case 'consents':
       return <ConsentsTab />;
     case 'marketing-consents':

@@ -67,6 +67,11 @@ export const statisticsApi = {
       withQuery(`/api/sender/campaign-analytics/${encodeURIComponent(jobId)}`, params),
     ),
 
+  campaignFullAnalytics: (jobId: string, params?: StatsParams) =>
+    api.get<Record<string, unknown>>(
+      withQuery(`/api/sender/campaign-full-analytics/${encodeURIComponent(jobId)}`, params),
+    ),
+
   reports: (params?: StatsParams) =>
     api.get<Record<string, unknown>>(withQuery('/api/sender/reports', params)),
 

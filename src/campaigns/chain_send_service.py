@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from sqlalchemy import select
@@ -23,6 +24,8 @@ from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignChainToken, CampaignRecipient, MailTemplate, TemplateVersion
 from src.utils.config import settings
 from src.utils.logger import logger
+
+_CHAIN_FOLLOWUP_PRIORITY = 100
 
 
 def _load_node_email_template(node: dict[str, Any], campaign: Campaign) -> tuple[str, str, str]:
@@ -203,6 +206,64 @@ def _finalize_chain_send_success(
                 delivery_email=delivery_email,
             )
         session.flush()
+
+    if not active_test_email:
+        prewarm_next_node_documents(
+            campaign_id=campaign_id,
+            recipient_id=recipient_id,
+            current_node_id=node_id,
+        )
+
+
+def prewarm_next_node_documents(
+    *,
+    campaign_id: str,
+    recipient_id: int,
+    current_node_id: str,
+) -> None:
+    """Background-render documents for reachable next email nodes before the user clicks."""
+
+    def _run() -> None:
+        try:
+            template_ids: list[str] = []
+            with session_scope() as session:
+                camp = session.get(Campaign, campaign_id)
+                if camp is None or not camp.job_id:
+                    return
+                chain = get_email_chain(camp)
+                node_by_id = {n["id"]: n for n in chain.get("nodes") or []}
+                seen: set[str] = set()
+                for edge in outgoing_edges(chain, current_node_id):
+                    target = node_by_id.get(str(edge.get("target_id") or ""))
+                    if target is None or not is_email_node(target):
+                        continue
+                    for doc_id in target.get("document_template_ids") or []:
+                        key = str(doc_id or "").strip()
+                        if key and key not in seen:
+                            seen.add(key)
+                            template_ids.append(key)
+            if not template_ids:
+                return
+            from src.campaigns.template_render_service import ensure_recipient_templates_rendered
+
+            ensure_recipient_templates_rendered(
+                campaign_id=campaign_id,
+                recipient_id=recipient_id,
+                template_ids=template_ids,
+            )
+        except Exception:
+            logger.exception(
+                "chain_prewarm_failed",
+                campaign_id=campaign_id,
+                recipient_id=recipient_id,
+                node_id=current_node_id,
+            )
+
+    threading.Thread(
+        target=_run,
+        daemon=True,
+        name=f"chain-prewarm-{campaign_id[:8]}-{recipient_id}",
+    ).start()
 
 
 def send_chain_node_email(
@@ -478,22 +539,24 @@ def run_chain_followup(kwargs: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def dispatch_chain_followup(token: str) -> None:
-    from src.workers.task_queue import enqueue_task
-
+def _claim_followup_token(token: str) -> dict[str, Any] | None:
     with session_scope() as session:
-        row = session.get(CampaignChainToken, token)
+        row = session.execute(
+            select(CampaignChainToken)
+            .where(CampaignChainToken.token == token)
+            .with_for_update()
+        ).scalar_one_or_none()
         if row is None:
-            return
+            return None
+        if row.send_status in {"sent", "sending"}:
+            return None
         camp = session.get(Campaign, row.campaign_id)
         if camp is None:
-            return
-        if row.send_status == "sent":
-            return
+            return None
         chain = get_email_chain(camp)
         target_node = find_node(chain, row.target_node_id)
         if target_node is None or is_link_node(target_node):
-            return
+            return None
         recipient = session.get(CampaignRecipient, int(row.recipient_id))
         if recipient is not None:
             from src.generator.delivery.suppression_store import is_suppressed
@@ -501,24 +564,72 @@ def dispatch_chain_followup(token: str) -> None:
             suppression_target = row.test_email or recipient.email
             suppressed, _reason = is_suppressed(suppression_target)
             if suppressed:
-                from src.campaigns.chain_service import mark_token_sent
+                row.send_status = "skipped"
+                session.flush()
+                return None
+        row.send_status = "sending"
+        session.flush()
+        return {
+            "token": row.token,
+            "campaign_id": row.campaign_id,
+            "recipient_id": row.recipient_id,
+            "target_node_id": row.target_node_id,
+            "job_id": camp.job_id or row.campaign_id,
+            "owner_username": camp.owner_username,
+        }
 
-                mark_token_sent(token, status="skipped")
-                return
-        enqueue_task(
-            task_type="chain_followup",
-            job_id=camp.job_id or row.campaign_id,
-            owner_username=camp.owner_username,
-            payload={
-                "token": row.token,
-                "campaign_id": row.campaign_id,
-                "recipient_id": row.recipient_id,
-                "target_node_id": row.target_node_id,
-            },
-            idempotency_key=f"chain_followup:{row.token}",
-            active_key=f"chain_followup:{row.token}",
-            max_attempts=3,
-        )
+
+def _reset_followup_token_pending(token: str) -> None:
+    with session_scope() as session:
+        row = session.get(CampaignChainToken, token)
+        if row is None or row.send_status == "sent":
+            return
+        row.send_status = "pending"
+        row.error = None
+        session.flush()
+
+
+def _enqueue_chain_followup_fallback(payload: dict[str, Any]) -> None:
+    from src.workers.task_queue import enqueue_task
+
+    token = str(payload.get("token") or "")
+    enqueue_task(
+        task_type="chain_followup",
+        job_id=str(payload.get("job_id") or ""),
+        owner_username=str(payload.get("owner_username") or ""),
+        payload={
+            "token": token,
+            "campaign_id": payload.get("campaign_id"),
+            "recipient_id": payload.get("recipient_id"),
+            "target_node_id": payload.get("target_node_id"),
+        },
+        idempotency_key=f"chain_followup:{token}",
+        active_key=f"chain_followup:{token}",
+        max_attempts=3,
+        priority=_CHAIN_FOLLOWUP_PRIORITY,
+    )
+
+
+def _run_chain_followup_fast(payload: dict[str, Any]) -> None:
+    token = str(payload.get("token") or "")
+    try:
+        run_chain_followup(payload)
+    except Exception:
+        logger.exception("chain_followup_fast_failed", token=token)
+        _reset_followup_token_pending(token)
+        _enqueue_chain_followup_fallback(payload)
+
+
+def dispatch_chain_followup(token: str) -> None:
+    payload = _claim_followup_token(token)
+    if payload is None:
+        return
+    threading.Thread(
+        target=_run_chain_followup_fast,
+        args=(payload,),
+        daemon=True,
+        name=f"chain-followup-{token[:8]}",
+    ).start()
 
 
 def start_test_chain(

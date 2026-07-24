@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from html import escape
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.campaigns.chain_consent_service import record_subscribe, record_unsubscribe
@@ -62,7 +62,7 @@ def create_chain_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/chain/branch/{token}", response_class=HTMLResponse)
-    def chain_branch_click(token: str, background_tasks: BackgroundTasks):
+    def chain_branch_click(token: str):
         try:
             result = record_branch_click(token)
         except ValueError as exc:
@@ -126,8 +126,8 @@ def create_chain_router() -> APIRouter:
             return _page("Ссылка недоступна", "Неизвестный тип ссылки.")
 
         if is_email_node(target_node):
-            if result.get("send_status") != "sent":
-                background_tasks.add_task(dispatch_chain_followup, token)
+            if result.get("send_status") not in {"sent", "sending"}:
+                dispatch_chain_followup(token)
 
             if result.get("already_clicked"):
                 return _page("Спасибо", "Вы уже перешли по этой ссылке. Следующее письмо будет отправлено на ваш email.")

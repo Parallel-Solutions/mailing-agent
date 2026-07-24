@@ -139,6 +139,10 @@ export const campaignsApi = {
     api.get<EmailChainStats>(`/api/v1/campaigns/${id}/email-chain/stats`),
   previewEmailChain: (id: string) =>
     api.post<EmailChainPreviewResponse>(`/api/v1/campaigns/${id}/email-chain/preview`),
+  sentEmailPreview: (id: string, recipientId: number) =>
+    api.get<EmailChainPreviewResponse>(
+      `/api/v1/campaigns/${id}/sent-email-preview?recipient_id=${recipientId}`,
+    ),
   previewEmailChainAttachmentUrl: (
     id: string,
     recipientId: number,

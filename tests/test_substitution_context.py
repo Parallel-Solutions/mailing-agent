@@ -151,6 +151,77 @@ class SubstitutionContextTests(unittest.TestCase):
         self.assertEqual(context["Имя"], "Ирина")
         self.assertEqual(context["Отчество"], "Александровна")
         self.assertEqual(context["Фамилия"], "Федорова")
+        self.assertEqual(context["CONTACT_FIRST_PATRONYMIC"], "Ирина Александровна")
+        self.assertEqual(context["Имя Отчество"], "Ирина Александровна")
+
+    def test_render_text_replaces_combined_name_placeholder(self) -> None:
+        recipient = CampaignRecipient(
+            id=5,
+            campaign_id="camp-1",
+            row_index=4,
+            company="ООО Техностар",
+            contact_name="Федорова Ирина Александровна",
+            email="test@example.com",
+            region="Test Region",
+            extra={},
+        )
+        context = build_substitution_context(
+            recipient=recipient,
+            campaign=self.campaign,
+            template_text="Здравствуйте, {{Имя Отчество}}!",
+        )
+        rendered = render_text("Здравствуйте, {{Имя Отчество}}!", context)
+        self.assertEqual(rendered, "Здравствуйте, Ирина Александровна!")
+
+    def test_render_text_replaces_name_placeholder_aliases(self) -> None:
+        recipient = CampaignRecipient(
+            id=6,
+            campaign_id="camp-1",
+            row_index=5,
+            company="ООО Техностар",
+            contact_name="Федорова Ирина Александровна",
+            email="test@example.com",
+            region="Test Region",
+            extra={},
+        )
+        context = build_substitution_context(recipient=recipient, campaign=self.campaign)
+        self.assertEqual(render_text("Здравствуйте, {{ИО}}!", context), "Здравствуйте, Ирина Александровна!")
+        self.assertEqual(
+            render_text("Здравствуйте, {{им. отч.}}!", context),
+            "Здравствуйте, Ирина Александровна!",
+        )
+
+    def test_combined_name_placeholder_without_patronymic(self) -> None:
+        recipient = CampaignRecipient(
+            id=7,
+            campaign_id="camp-1",
+            row_index=6,
+            company="ООО Техностар",
+            contact_name="Федорова Ирина",
+            email="test@example.com",
+            region="Test Region",
+            extra={},
+        )
+        context = build_substitution_context(recipient=recipient, campaign=self.campaign)
+        self.assertEqual(context["CONTACT_FIRST_PATRONYMIC"], "Ирина")
+        rendered = render_text("Здравствуйте, {{Имя Отчество}}!", context)
+        self.assertEqual(rendered, "Здравствуйте, Ирина!")
+
+    def test_combined_name_placeholder_for_name_and_patronymic_only(self) -> None:
+        recipient = CampaignRecipient(
+            id=8,
+            campaign_id="camp-1",
+            row_index=7,
+            company="ООО Техностар",
+            contact_name="Ирина Александровна",
+            email="test@example.com",
+            region="Test Region",
+            extra={},
+        )
+        context = build_substitution_context(recipient=recipient, campaign=self.campaign)
+        self.assertEqual(context["CONTACT_FIRST_PATRONYMIC"], "Ирина Александровна")
+        rendered = render_text("Здравствуйте, {{Имя Отчество}}!", context)
+        self.assertEqual(rendered, "Здравствуйте, Ирина Александровна!")
 
     def test_render_text_replaces_legacy_name_placeholders(self) -> None:
         recipient = CampaignRecipient(

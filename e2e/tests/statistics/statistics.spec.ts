@@ -8,6 +8,7 @@ const STATS_TABS = [
   { key: 'audiences', label: 'База получателей' },
   { key: 'recipients', label: 'Компании' },
   { key: 'campaign-analytics', label: 'Аналитика рассылки' },
+  { key: 'campaign-full-analytics', label: 'Полная аналитика' },
   { key: 'consents', label: 'Согласия' },
   { key: 'marketing-consents', label: 'Подписки и отписки' },
   { key: 'problems', label: 'Проблемы с email' },

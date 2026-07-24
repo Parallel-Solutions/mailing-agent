@@ -19,6 +19,7 @@ from src.generator.delivery.manager_stats import (
     _group_rows_into_companies,
     _pct,
     build_campaign_analytics,
+    build_campaign_full_analytics,
     build_campaigns,
     build_consents_view,
     build_email_problems,
@@ -322,6 +323,36 @@ class CampaignAnalyticsTests(unittest.TestCase):
         self.assertEqual(problem["email"], "b@x.ru")
         self.assertEqual(problem["organization"], "Орг2")
         self.assertEqual(problem["row_key"], make_row_key("job-1", "2", "b@x.ru"))
+
+
+class CampaignFullAnalyticsTests(unittest.TestCase):
+    def test_full_analytics_returns_core_sections(self) -> None:
+        rows = [_delivery_row("job-1", "1", "Орг1", "a@x.ru", "rusender", "delivered")]
+        sent_log = [{"sent_at": "2026-05-01", "recipient": "a@x.ru", "status": "sent"}]
+        with unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs", return_value=rows), \
+             unittest.mock.patch.object(manager_stats, "_load_companies_for_jobs", return_value=_group_rows_into_companies(rows)), \
+             unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=[]), \
+             unittest.mock.patch.object(manager_stats, "_trigger_provider_refresh", return_value=(False, False)), \
+             unittest.mock.patch.object(manager_stats, "_campaign_metadata", return_value={"title": "Кампания"}), \
+             unittest.mock.patch.object(manager_stats, "_campaign_period", return_value=("2026-05-01", "2026-05-02")), \
+             unittest.mock.patch("src.jobs.job_docs.read_sent_mail_log", return_value=sent_log), \
+             unittest.mock.patch("src.campaigns.service.get_campaign_by_job_id", return_value=None), \
+             unittest.mock.patch.object(manager_stats, "build_domain_delivery_stats", return_value={"providers": []}):
+            result = build_campaign_full_analytics("job-1")
+        for key in (
+            "summary",
+            "rates",
+            "operational",
+            "delivery",
+            "domain_stats",
+            "delivery_rows",
+            "sent_mail_log",
+            "documents",
+            "recipients",
+        ):
+            self.assertIn(key, result)
+        self.assertIn("pending_rate", result["rates"])
+        self.assertEqual(result["sent_mail_log"]["pagination"]["total"], 1)
 
 
 class CompanyAggregationTests(unittest.TestCase):

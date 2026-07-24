@@ -24,7 +24,9 @@ from src.security.company_access import apply_owner_filter, can_access_owner
 
 _VISIBILITY_NOT_SET = object()
 
-VARIABLE_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_а-яА-ЯёЁ]+)\s*\}\}")
+_BRACE_WORD = r"[a-zA-Z0-9_а-яА-ЯёЁ]+"
+_BRACE_TOKEN = rf"(?:{_BRACE_WORD}|Имя\s+Отчество)"
+VARIABLE_RE = re.compile(rf"\{{\{{\s*({_BRACE_TOKEN})\s*\}}\}}")
 
 
 def _owns_template(row: MailTemplate | None, owner_username: str, visible_owners: Any = _VISIBILITY_NOT_SET) -> bool:
