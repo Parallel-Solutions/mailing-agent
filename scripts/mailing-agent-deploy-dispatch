@@ -9,4 +9,29 @@ if [[ ! "$original_command" =~ ^deploy[[:space:]]([0-9a-f]{40})$ ]]; then
   exit 64
 fi
 
-exec sudo -n /usr/local/sbin/mailing-agent-deploy-root "${BASH_REMATCH[1]}"
+requested_sha="${BASH_REMATCH[1]}"
+nohup sudo -n /usr/local/sbin/mailing-agent-deploy-root "$requested_sha" \
+  >/dev/null 2>&1 &
+deploy_pid=$!
+elapsed=0
+
+while kill -0 "$deploy_pid" 2>/dev/null; do
+  sleep 5
+  elapsed=$((elapsed + 5))
+  if (( elapsed % 30 == 0 )) && kill -0 "$deploy_pid" 2>/dev/null; then
+    printf '[deploy] server-side deploy still running (%ss)\n' "$elapsed"
+  fi
+done
+
+set +e
+wait "$deploy_pid"
+deploy_status=$?
+set -e
+
+if (( deploy_status == 0 )); then
+  echo "[deploy] server-side deploy completed successfully"
+else
+  echo "[deploy] server-side deploy failed with status $deploy_status" >&2
+  echo "[deploy] inspect /var/log/mailing-agent-deploy.log on production" >&2
+fi
+exit "$deploy_status"

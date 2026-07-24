@@ -11,9 +11,14 @@ readonly REPO_ROOT="/opt/mailing-agent"
 readonly IMAGE_REPOSITORY="ghcr.io/parallel-solutions/mailing-agent"
 readonly STATE_DIR="/var/lib/mailing-agent-deploy"
 readonly LOCK_FILE="/run/lock/mailing-agent-deploy.lock"
+readonly LOG_FILE="/var/log/mailing-agent-deploy.log"
 readonly HEALTH_TIMEOUT_SEC=300
 readonly LOCAL_BASE_URL="http://127.0.0.1:9806"
 readonly PUBLIC_BASE_URL="https://offer.parresh.ru"
+
+touch "$LOG_FILE"
+chmod 0640 "$LOG_FILE"
+exec >>"$LOG_FILE" 2>&1
 
 log() {
   printf '[deploy] %s\n' "$*"
@@ -50,6 +55,22 @@ record_event() {
   printf '%s status=%s sha=%s image=%s\n' \
     "$(date --iso-8601=seconds)" "$status" "$requested_sha" "$image" \
     >> "$STATE_DIR/history.log"
+}
+
+run_with_heartbeat() {
+  local elapsed=0
+  local child_pid
+
+  "$@" &
+  child_pid=$!
+  while kill -0 "$child_pid" 2>/dev/null; do
+    sleep 5
+    elapsed=$((elapsed + 5))
+    if (( elapsed % 30 == 0 )) && kill -0 "$child_pid" 2>/dev/null; then
+      log "deployment command still running (${elapsed}s)"
+    fi
+  done
+  wait "$child_pid"
 }
 
 rollback() {
@@ -126,9 +147,10 @@ main() {
   local requested_image="$IMAGE_REPOSITORY:$requested_sha"
   log "deploying $requested_image"
   set +e
-  MAILING_AGENT_IMAGE="$requested_image" \
-    HEALTH_TIMEOUT_SEC="$HEALTH_TIMEOUT_SEC" \
-    PUBLIC_BASE_URL="$PUBLIC_BASE_URL" \
+  run_with_heartbeat env \
+    "MAILING_AGENT_IMAGE=$requested_image" \
+    "HEALTH_TIMEOUT_SEC=$HEALTH_TIMEOUT_SEC" \
+    "PUBLIC_BASE_URL=$PUBLIC_BASE_URL" \
     bash ./scripts/deploy.sh --pull --skip-git-update
   local deploy_status=$?
   set -e
