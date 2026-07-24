@@ -249,7 +249,7 @@ push main
 4. На сервере должен быть настроен `docker login ghcr.io` (PAT с `read:packages`, если пакет private).
 5. Для полностью автоматического деплоя не включайте required reviewers у GitHub Environment `production`.
 
-Host, пользователь и проверенный ED25519 host key не являются секретами и зафиксированы в workflow/`.github/known_hosts`. Пользователь `deploy` не состоит в группе `docker` и не получает обычный SSH shell: его ключ может вызвать только `deploy <40-char-main-commit-sha>`. Root-owned wrapper сериализует деплои, фиксирует checkout на точном SHA, запускает health/audit gates и возвращает предыдущий image + checkout, если новая версия не проходит проверки.
+Host, пользователь и проверенный ED25519 host key не являются секретами и зафиксированы в workflow/`.github/known_hosts`. Пользователь `deploy` не состоит в группе `docker` и не получает обычный SSH shell: его ключ может вызвать только `deploy <40-char-main-commit-sha>`. Root-owned wrapper сериализует деплои, фиксирует checkout на точном SHA, запускает health/audit gates и возвращает предыдущий image + checkout, если новая версия не проходит проверки. Длинный server-side deploy переживает обрыв SSH, пишет подробный лог в `/var/log/mailing-agent-deploy.log`, а SSH-сессия отправляет heartbeat каждые 30 секунд.
 
 Первый push в `main` без `PROD_SSH_KEY` завершит `deploy-prod` понятной ошибкой. После настройки секрета выполните **Re-run failed jobs**.
 

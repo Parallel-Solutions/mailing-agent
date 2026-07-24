@@ -203,6 +203,9 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=60 \
+            -o TCPKeepAlive=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             deploy@offer.parresh.ru \
             "deploy $GITHUB_SHA"
