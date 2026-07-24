@@ -42,13 +42,17 @@ def _latest_batch_file() -> tuple[Optional[str], float]:
     """
     Возвращает (путь, mtime) самого свежего собранного файла в общем output/latest.
     Используется чтобы понять, создал ли агент новый файл за время запроса.
+
+    ВАЖНО: берём ЛЮБОЙ .xlsx, а не только batch_*. Коллектор пишет batch_*, но
+    агент через write_excel_tool создаёт файлы с другими префиксами (mo_, okruga_,
+    names_ и т.п.) — раньше они не находились, и результат считался несозданным.
     """
     out_dir = Path(__file__).parent.parent / "parser_new" / "output" / "latest"
     if not out_dir.exists():
         return None, -1.0
     latest, latest_mtime = None, -1.0
-    for p in out_dir.glob("batch_*.xlsx"):
-        if "FAILED" in p.name:
+    for p in out_dir.glob("*.xlsx"):
+        if "FAILED" in p.name or p.name.startswith("~$"):
             continue
         try:
             mtime = p.stat().st_mtime
@@ -58,46 +62,92 @@ def _latest_batch_file() -> tuple[Optional[str], float]:
             latest, latest_mtime = str(p), mtime
     return latest, latest_mtime
 
-def _maybe_run_discovery(message: str) -> dict | None:
-    """Если запрос — «собери <кого-то> в <месте>», собрать каскадом источников.
-    Иначе None → обычный путь агента (в т.ч. администрации МО).
+def _clean_reply(text: str) -> str:
+    """Убирает из ответа агента то, что не соответствует интерфейсу.
 
-    Разбор и порядок источников живут в parser_new/tools/collector.py.
+    Модель регулярно дописывает «Результат можно скачать кнопкой ниже» (кнопки
+    нет) и перечисляет собранные поля (в таблице показываются не все). Промпт
+    это не удерживает, поэтому чистим детерминированно.
     """
-    from src.parser_new.tools.collector import parse_request, collect_and_describe
-    from src.parser_new.tools.discovery_tool import resolve_okved
+    if not text:
+        return text
+
+    # режем на предложения, сохраняя разделители
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    # Раньше здесь резались и упоминания скачивания — кнопки в интерфейсе не было.
+    # Сейчас кнопка «Скачать таблицу» есть, поэтому фразы про неё не мешают;
+    # остаётся только вводящее в заблуждение перечисление полей.
+    drop_patterns: tuple[str, ...] = ()
+    field_list = r"(email|e-mail|телефон|инн|огрн|кпп|фио руководител|адрес)"
+    # с этих оборотов обычно начинается перечисление собранных полей
+    enum_start = re.compile(
+        r"[,;]?\s*(данные\s+включают|включая|в\s+том\s+числе|с\s+полями|"
+        r"собран[ыо]\s+поля|поля:)\b.*$",
+        re.IGNORECASE,
+    )
+
+    kept = []
+    for p in parts:
+        low = p.lower()
+        if any(re.search(pat, low) for pat in drop_patterns):
+            continue
+        # перечисление полей: три и более упоминания в одном предложении
+        if len(re.findall(field_list, low)) >= 3:
+            trimmed = enum_start.sub("", p).strip(" ,;—-")
+            # оставляем обрезанное, только если в нём ещё есть смысл
+            if len(trimmed) >= 15 and len(re.findall(field_list, trimmed.lower())) < 3:
+                kept.append(trimmed if trimmed.endswith((".", "!", "?")) else trimmed + ".")
+            continue
+        kept.append(p)
+
+    out = " ".join(kept).strip()
+    return out or "Сбор завершён, данные добавлены в таблицу."
+
+
+def _looks_like_collection(message: str):
+    """Похоже ли на запрос сбора коммерческих организаций → (что, где, сколько).
+
+    Используется НЕ для маршрутизации (её делает агент, выбирая инструмент),
+    а только как страховка: если агент отработал и НЕ создал файла, а запрос
+    очевидно про сбор — дособерём детерминированно, вместо пустого ответа.
+    """
+    from src.parser_new.tools.collector import parse_request
 
     parsed = parse_request(message or "")
     if not parsed:
         return None
-    query, place, limit = parsed
+    query, place, _limit = parsed
 
-    # Администрации МО и прочие некоммерческие запросы оставляем агенту:
-    # у них свой маршрут с проверкой официальных названий.
+    # органы власти собираются другим маршрутом (ОКТМО + batch), не коллектором
     low = (query + " " + place).lower()
-    if any(kw in low for kw in ("администрац", "муниципальн", "поселени",
-                                "сельсовет", "мэри", "управа", "органы власти")):
+    gov_words = ("администрац", "муниципальн", "поселени", "сельсовет", "мэри",
+                 "управа", "органы власти", "министерств", "департамент",
+                 "комитет", "правительств", "госорган", "учреждени")
+    if any(kw in low for kw in gov_words):
         return None
+    return parsed
 
-    return collect_and_describe(query, place, limit)
+def _mark_discovery_table_ready(job_id: Optional[str], *, count: int = 0) -> None:
+    """Помечает собранную таблицу готовой к скачиванию.
 
-def _mark_discovery_table_ready(job_id: Optional[str], *, count: int) -> None:
-    """Discovery-ветка НЕ проходит проверку названий МО (её для коммерческого
-    сбора нет), поэтому вручную помечаем таблицу как готовую — иначе gate в
-    download-result (parser_table_verified) вернёт 409 «Дождитесь завершения
-    проверки таблицы». Правка изолирована: МО-путь выставляет этот же статус
-    сам во время реальной верификации, здесь мы его не задеваем."""
+    Проверки официальных названий МО для коммерческого сбора нет, а gate в
+    download-result (parser_table_verified) её ждёт — без этой отметки скачивание
+    вернёт 409 «Дождитесь завершения проверки таблицы». Вызывается для ЛЮБОГО
+    созданного файла: и когда собрал коллектор, и когда собрал сам агент.
+    """
     try:
         from datetime import datetime
         from src.generator.orchestration.parser_agent import (
             _update_municipality_verification_state,
         )
         now = datetime.now().isoformat(timespec="seconds")
+        summary = (f"Сбор завершён: {count} организаций." if count
+                   else "Сбор завершён, таблица готова.")
         _update_municipality_verification_state(
             job_id,
             status="completed",
             source="discovery",
-            summary_text=f"Коммерческий сбор завершён: {count} организаций.",
+            summary_text=summary,
             completed_at=now,
             result={
                 "status": "ok",
@@ -111,7 +161,7 @@ def _mark_discovery_table_ready(job_id: Optional[str], *, count: int) -> None:
     except Exception as e:
         # Статус — вспомогательный: если пометить не удалось, сам сбор уже прошёл,
         # файл записан. Не роняем ответ пользователю из-за статуса.
-        logger.warning(f"[parser] Не удалось пометить discovery-таблицу готовой: {e}")
+        logger.warning(f"[parser] Не удалось пометить таблицу готовой: {e}")
 
 def chat(message: str, job_id: Optional[str] = None) -> dict:
     """
@@ -120,6 +170,15 @@ def chat(message: str, job_id: Optional[str] = None) -> dict:
     """
     progress.start(job_id)          # фиксируем job_id для потока прогресса
     try:
+        # Разбираем тип МО и количество из фразы ДО запуска агента: модель
+        # регулярно вызывает build_region_mo_file_tool без mo_type, и вместо
+        # городских округов приходят все МО региона подряд.
+        try:
+            from src.parser_new.tools.oktmo_tool import set_request_hint
+            set_request_hint(message)
+        except Exception as e:
+            logger.warning(f"[parser] не удалось разобрать подсказку запроса: {e}")
+
         uploaded_file = None
         job_output_dir = None
         if job_id:
@@ -133,28 +192,81 @@ def chat(message: str, job_id: Optional[str] = None) -> dict:
 
         _, before_mtime = _latest_batch_file()
 
-        disc = _maybe_run_discovery(message) if uploaded_file is None else None
-        if disc is not None:
-            success = bool(disc.get("success"))
-            reply_text = disc.get("reply") or ""
-            if success:
-                _mark_discovery_table_ready(job_id, count=int(disc.get("count") or 0))
-        else:
-            result = run_agent_task(
-                task=message, chat_history=[],
-                uploaded_file_path=uploaded_file, mode="Автоматический",
-            )
-            reply_text, success = result.text, result.success
+        # Маршрутизацию делает АГЕНТ: он сам выбирает инструмент по описанию.
+        # Никаких ключевых слов и регулярок на входе.
+        result = run_agent_task(
+            task=message, chat_history=[],
+            uploaded_file_path=uploaded_file, mode="Автоматический",
+        )
+        reply_text, success = result.text, result.success
 
         src_file, after_mtime = _latest_batch_file()
         file_was_created = src_file is not None and after_mtime > before_mtime
 
+        # СТРАХОВКА (не маршрутизация): агент отработал, но файла нет, а запрос
+        # очевидно про сбор организаций — значит инструмент он не вызвал.
+        # Досбираем детерминированно, чтобы пользователь не остался ни с чем.
+        if not file_was_created and uploaded_file is None:
+            parsed = _looks_like_collection(message)
+            if parsed:
+                logger.warning("[parser] агент не создал файл — досбираю коллектором")
+                from src.parser_new.tools.collector import collect_and_describe
+                disc = collect_and_describe(*parsed)
+                if disc.get("success"):
+                    reply_text = disc["reply"]
+                    success = True
+                    src_file, after_mtime = _latest_batch_file()
+                    file_was_created = src_file is not None
+
+        # Агент иногда отвечает «готово», не создав файла. Не выдаём это за успех:
+        # иначе UI покажет «Результат можно скачать», а скачивать будет нечего.
+        if success and not file_was_created:
+            success = False
+            reply_text = (reply_text or "").rstrip()
+            reply_text += ("\n\nНо файл с результатом не создан — скачивать нечего. "
+                           "Уточните запрос (что и где искать) и повторите.")
+            logger.warning("[parser] отчёт об успехе без созданного файла")
+
+        if file_was_created:
+            _mark_discovery_table_ready(job_id, count=0)
+
         result_file = None
         if file_was_created:
+            # ДОВОДКА КОДОМ, без участия модели: почта с официальных сайтов и
+            # дополнение названий городом. Агент эти шаги систематически
+            # пропускает, поэтому они вынесены в постобработку.
+            try:
+                from src.parser_new.tools.postprocess import postprocess_file
+                st = postprocess_file(src_file)
+                if st.get("error"):
+                    logger.warning(f"[parser] постобработка: {st['error']}")
+                else:
+                    logger.info(f"[parser] постобработка: {st}")
+            except Exception as e:
+                logger.warning(f"[parser] постобработка не выполнена: {e}")
+
+            # Агент называет файл как ему вздумается (ministries_architecture_HMAO_...,
+            # mo_..., кириллицей и т.п.), а эндпоинт скачивания ищет строго batch_*.xlsx.
+            # Поэтому приводим имя к каноничному сами — на модель тут полагаться нельзя.
+            from datetime import datetime as _dt
+            canonical = f"batch_{_dt.now().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
+            src_path = Path(src_file)
+
+            # 1) канонический дубль рядом с оригиналом (общая папка output/latest)
+            if not src_path.name.startswith("batch_"):
+                try:
+                    twin = src_path.parent / canonical
+                    shutil.copy2(src_path, twin)
+                    src_file = str(twin)
+                    logger.info(f"[parser] Файл приведён к каноничному имени: {twin.name}")
+                except Exception as e:
+                    logger.warning(f"Не удалось создать канонический дубль: {e}")
+
+            # 2) копия в папку задачи — тоже с каноничным именем
             if job_output_dir is not None:
                 try:
                     job_output_dir.mkdir(parents=True, exist_ok=True)
-                    dst = job_output_dir / Path(src_file).name
+                    dst = job_output_dir / canonical
                     shutil.copy2(src_file, dst)
                     result_file = str(dst)
                     logger.info(f"[parser] Результат скопирован в папку задачи: {dst}")
@@ -164,7 +276,8 @@ def chat(message: str, job_id: Optional[str] = None) -> dict:
             else:
                 result_file = src_file
 
-        return {"reply": reply_text, "success": success, "result_file": result_file}
+        return {"reply": _clean_reply(reply_text), "success": success,
+                "result_file": result_file}
     finally:
         progress.finish()
 
