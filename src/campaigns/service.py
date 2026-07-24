@@ -532,7 +532,7 @@ def reset_campaign_draft(
         schedule.pause_between_messages_ms = 0
         schedule.max_per_hour = 0
         schedule.max_per_day = 0
-        schedule.on_error = "pause"
+        schedule.on_error = "skip"
         schedule.max_retries = 0
         schedule.preview = {}
         schedule.updated_at = _now()
@@ -1052,6 +1052,43 @@ def _sender_batch_task_payload(
     }
 
 
+MAX_SENDER_BATCH_WORKER_RECOVERIES = 5
+SENDER_BATCH_WORKER_RECOVERY_BACKOFF_SECONDS = 30
+
+
+def enqueue_sender_batch_task(
+    session: Any,
+    *,
+    campaign_id: str,
+    camp: Campaign,
+    batch: CampaignBatch,
+    schedule: CampaignSchedule,
+    owner_username: str,
+    available_at: datetime,
+    idempotency_suffix: str,
+) -> str:
+    """Enqueue a sender_batch task and attach task_id to the batch row."""
+    from src.workers.task_queue import enqueue_task
+
+    task, _created = enqueue_task(
+        task_type="sender_batch",
+        job_id=camp.job_id or campaign_id,
+        owner_username=owner_username,
+        payload=_sender_batch_task_payload(
+            campaign_id=campaign_id,
+            batch_id=batch.id,
+            camp=camp,
+            schedule=schedule,
+        ),
+        available_at=available_at,
+        idempotency_key=f"sender_batch:{batch.id}:{idempotency_suffix}",
+        active_key=f"sender_batch:{batch.id}:{idempotency_suffix}",
+        max_attempts=max(1, int(schedule.max_retries or 3)),
+    )
+    batch.task_id = str(task.get("id") or "")
+    return batch.task_id
+
+
 def validate_campaign_for_launch(
     campaign_id: str,
     owner_username: str,
@@ -1335,8 +1372,6 @@ def resume_campaign(campaign_id: str, owner_username: str, *, visible_owners: fr
         if camp.status not in {"paused", "running"}:
             raise ValueError("Campaign is not paused")
 
-        from src.workers.task_queue import enqueue_task
-
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         if schedule is None:
             raise ValueError("Campaign schedule not found")
@@ -1357,22 +1392,16 @@ def resume_campaign(campaign_id: str, owner_username: str, *, visible_owners: fr
             batch.started_at = None
             batch.completed_at = None
             batch.error = None
-            task, _created = enqueue_task(
-                task_type="sender_batch",
-                job_id=camp.job_id or campaign_id,
+            enqueue_sender_batch_task(
+                session,
+                campaign_id=campaign_id,
+                camp=camp,
+                batch=batch,
+                schedule=schedule,
                 owner_username=owner_username,
-                payload=_sender_batch_task_payload(
-                    campaign_id=campaign_id,
-                    batch_id=batch.id,
-                    camp=camp,
-                    schedule=schedule,
-                ),
                 available_at=scheduled_at,
-                idempotency_key=f"sender_batch:{batch.id}:resume:{int(now.timestamp())}",
-                active_key=f"sender_batch:{batch.id}:resume:{int(now.timestamp())}",
-                max_attempts=max(1, int(schedule.max_retries or 3)),
+                idempotency_suffix=f"resume:{int(now.timestamp())}",
             )
-            batch.task_id = str(task.get("id") or "")
         camp.status = "running"
         camp.updated_at = now
         session.flush()

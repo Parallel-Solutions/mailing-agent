@@ -316,11 +316,6 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     batch.error_count = int(batch.error_count or 0) + 1
                     camp.error_count = int(camp.error_count or 0) + 1
                     logger.exception("campaign_chain_root_failed", campaign_id=campaign_id, recipient_id=recipient_id)
-                    if on_error == "pause":
-                        camp.status = "paused"
-                        batch.status = "paused"
-                        session.flush()
-                        return {"status": "paused", "sent": sent, "errors": errors}
                     if on_error == "retry":
                         session.flush()
                         raise
@@ -353,11 +348,6 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     error=recipient.last_error,
                 )
                 session.flush()
-                if on_error == "pause":
-                    camp.status = "paused"
-                    batch.status = "paused"
-                    session.flush()
-                    return {"status": "paused", "sent": sent, "errors": errors}
                 continue
 
             persist_delivery_email_state(recipient, delivery_email)
@@ -528,11 +518,6 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     error=str(exc),
                 )
                 logger.exception("campaign_batch_send_failed", campaign_id=campaign_id, recipient_id=recipient_id)
-                if on_error == "pause":
-                    camp.status = "paused"
-                    batch.status = "paused"
-                    session.flush()
-                    return {"status": "paused", "sent": sent, "errors": errors}
                 if on_error == "retry":
                     session.flush()
                     raise
@@ -564,8 +549,15 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
 
 
 def finalize_sender_batch_task_failure(task_id: str, message: str) -> None:
-    """Mark a stuck sender batch failed when its queue task dies permanently."""
-    from src.infra.models import BackgroundTask
+    """Recover or finalize a sender batch when its queue task dies permanently."""
+    from datetime import timedelta
+
+    from src.campaigns.service import (
+        MAX_SENDER_BATCH_WORKER_RECOVERIES,
+        SENDER_BATCH_WORKER_RECOVERY_BACKOFF_SECONDS,
+        enqueue_sender_batch_task,
+    )
+    from src.infra.models import BackgroundTask, CampaignSchedule
 
     with session_scope() as session:
         task = session.get(BackgroundTask, str(task_id))
@@ -584,43 +576,100 @@ def finalize_sender_batch_task_failure(task_id: str, message: str) -> None:
             return
 
         safe_message = str(message or "sender batch task failed").strip() or "sender batch task failed"
-        batch.status = "failed"
-        batch.error = safe_message[:2000]
-        batch.completed_at = _now()
+        now = _now()
 
-        active_batches = session.scalars(
-            select(CampaignBatch).where(
-                CampaignBatch.campaign_id == campaign_id,
-                CampaignBatch.status.in_(["pending", "running"]),
-                CampaignBatch.id != batch_id,
-            )
-        ).all()
-        if active_batches:
-            camp.updated_at = _now()
+        def _finalize_campaign_status() -> None:
+            pending_batches = session.scalars(
+                select(CampaignBatch).where(
+                    CampaignBatch.campaign_id == campaign_id,
+                    CampaignBatch.status.in_(["pending", "running", "paused"]),
+                )
+            ).all()
+            if pending_batches:
+                if camp.status in {"running", "scheduled"}:
+                    camp.status = "running"
+                return
+            pending_recipients = session.scalar(
+                select(func.count())
+                .select_from(CampaignRecipient)
+                .where(
+                    CampaignRecipient.campaign_id == campaign_id,
+                    CampaignRecipient.excluded.is_(False),
+                    CampaignRecipient.send_status == "pending",
+                )
+            ) or 0
+            if int(pending_recipients) > 0:
+                if camp.status in {"running", "scheduled"}:
+                    camp.status = "running"
+                return
+            if int(camp.error_count or 0) > 0:
+                camp.status = "completed_with_errors"
+                camp.completed_at = now
+            elif int(camp.sent_count or 0) >= int(camp.total_count or 0) and int(camp.total_count or 0) > 0:
+                camp.status = "completed"
+                camp.completed_at = now
+
+        if camp.status == "cancelled":
+            batch.status = "failed"
+            batch.error = safe_message[:2000]
+            batch.completed_at = now
+            camp.updated_at = now
             session.flush()
             return
 
-        pending_recipients = session.scalar(
-            select(func.count())
-            .select_from(CampaignRecipient)
-            .where(
-                CampaignRecipient.campaign_id == campaign_id,
-                CampaignRecipient.excluded.is_(False),
-                CampaignRecipient.send_status == "pending",
+        if int(batch.worker_recovery_count or 0) >= MAX_SENDER_BATCH_WORKER_RECOVERIES:
+            batch.status = "failed"
+            batch.error = safe_message[:2000]
+            batch.completed_at = now
+            logger.warning(
+                "campaign_batch_recovery_exhausted",
+                campaign_id=campaign_id,
+                batch_id=batch_id,
+                recoveries=batch.worker_recovery_count,
             )
-        ) or 0
+            _finalize_campaign_status()
+            camp.updated_at = now
+            session.flush()
+            return
 
-        if int(pending_recipients) > 0:
-            camp.status = "paused"
-        elif int(camp.error_count or 0) > 0:
-            camp.status = "completed_with_errors"
-            camp.completed_at = _now()
-        elif int(camp.sent_count or 0) >= int(camp.total_count or 0) and int(camp.total_count or 0) > 0:
-            camp.status = "completed"
-            camp.completed_at = _now()
-        else:
-            camp.status = "paused"
-        camp.updated_at = _now()
+        batch.worker_recovery_count = int(batch.worker_recovery_count or 0) + 1
+        batch.status = "pending"
+        batch.started_at = None
+        batch.completed_at = None
+        batch.error = safe_message[:2000]
+        batch.scheduled_at = max(batch.scheduled_at, now)
+
+        if camp.status == "paused":
+            camp.updated_at = now
+            session.flush()
+            return
+
+        schedule = session.scalar(
+            select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id)
+        )
+        if schedule is None:
+            batch.status = "failed"
+            batch.completed_at = now
+            batch.error = "Campaign schedule not found"
+            _finalize_campaign_status()
+            camp.updated_at = now
+            session.flush()
+            return
+
+        available_at = now + timedelta(seconds=SENDER_BATCH_WORKER_RECOVERY_BACKOFF_SECONDS)
+        enqueue_sender_batch_task(
+            session,
+            campaign_id=campaign_id,
+            camp=camp,
+            batch=batch,
+            schedule=schedule,
+            owner_username=camp.owner_username,
+            available_at=available_at,
+            idempotency_suffix=f"recovery:{int(now.timestamp())}:{batch.worker_recovery_count}",
+        )
+        if camp.status in {"running", "scheduled"}:
+            camp.status = "running"
+        camp.updated_at = now
         session.flush()
 
 
