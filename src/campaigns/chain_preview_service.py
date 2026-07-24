@@ -90,6 +90,18 @@ def _first_preview_recipient(session, campaign_id: str) -> CampaignRecipient | N
     )
 
 
+def _resolve_recipient(session, campaign_id: str, recipient_id: int | None) -> CampaignRecipient:
+    if recipient_id is not None:
+        recipient = session.get(CampaignRecipient, int(recipient_id))
+        if recipient is None or recipient.campaign_id != campaign_id:
+            raise ValueError("Получатель не найден")
+        return recipient
+    recipient = _first_preview_recipient(session, campaign_id)
+    if recipient is None:
+        raise ValueError("Нет получателей для препросмотра")
+    return recipient
+
+
 def _preview_attachments(
     document_template_ids: list[str],
     *,
@@ -239,6 +251,7 @@ def preview_chain_for_campaign(
     campaign_id: str,
     owner_username: str,
     *,
+    recipient_id: int | None = None,
     visible_owners: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     with session_scope() as session:
@@ -246,9 +259,7 @@ def preview_chain_for_campaign(
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise ValueError("Рассылка не найдена")
 
-        recipient = _first_preview_recipient(session, campaign_id)
-        if recipient is None:
-            raise ValueError("Нет получателей для препросмотра")
+        recipient = _resolve_recipient(session, campaign_id, recipient_id)
 
         chain = get_email_chain(camp, session=session)
         email_nodes = iter_email_nodes_bfs(chain)

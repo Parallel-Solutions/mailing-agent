@@ -414,16 +414,31 @@ def build_output_folder_name(row: dict) -> str:
     return f"{row_id}_{safe_name}"
 
 
+def _looks_like_patronymic(word: str) -> bool:
+    lower = str(word or "").lower()
+    return lower.endswith(
+        ("вна", "ична", "инична", "овна", "евна", "ич", "оглы", "кызы", "угли")
+    )
+
+
 def parse_fio_components(fio: str) -> tuple[str, str, str]:
     """Return (surname, first_name, patronymic) from a Russian FIO string."""
     parts = [part for part in str(fio or "").split() if part]
     if len(parts) >= 3:
         return parts[0], parts[1], parts[2]
     if len(parts) == 2:
+        if _looks_like_patronymic(parts[1]):
+            return "", parts[0], parts[1]
         return parts[0], parts[1], ""
     if len(parts) == 1:
         return "", parts[0], ""
     return "", "", ""
+
+
+def build_first_patronymic(fio: str) -> str:
+    surname, first_name, patronymic = parse_fio_components(fio)
+    first = first_name or (fio if fio and not surname else "")
+    return " ".join(part for part in (first, patronymic) if part).strip()
 
 
 def build_short_fio(fio: str) -> str:

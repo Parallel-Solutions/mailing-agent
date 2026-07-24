@@ -1548,6 +1548,254 @@ def build_campaign_analytics(job_id: str, *, refresh: bool = False) -> dict[str,
     }
 
 
+def _paginate_list(items: list[Any], *, page: int, per_page: int) -> tuple[list[Any], dict[str, int]]:
+    page = max(1, page)
+    per_page = min(max(1, per_page), 200)
+    total = len(items)
+    start = (page - 1) * per_page
+    return items[start : start + per_page], {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": max(1, (total + per_page - 1) // per_page) if total else 1,
+    }
+
+
+def _consents_summary(consent_rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total": len(consent_rows),
+        "confirmed": sum(1 for row in consent_rows if row.get("consent_status_key") == "confirmed"),
+        "pending": sum(1 for row in consent_rows if row.get("consent_status_key") == "pending"),
+        "materials_sent": sum(
+            1
+            for row in consent_rows
+            if row.get("materials_status") == "sent" or _safe_text(row.get("materials_sent_at"))
+        ),
+    }
+
+
+def _email_templates_for_campaign(campaign: dict[str, Any]) -> list[dict[str, Any]]:
+    from src.campaigns import template_service
+
+    owner = _safe_text(campaign.get("owner_username"))
+    templates: list[dict[str, Any]] = []
+    for field, template_type in (
+        ("email_template_id", "email"),
+        ("kp_template_id", "kp"),
+        ("contract_template_id", "contract"),
+    ):
+        template_id = _safe_text(campaign.get(field))
+        if not template_id:
+            continue
+        try:
+            tmpl = template_service.get_template(template_id, owner) or {}
+        except Exception:
+            tmpl = {}
+        item: dict[str, Any] = {
+            "id": template_id,
+            "type": template_type,
+            "name": _safe_text(tmpl.get("name")) or template_id,
+        }
+        if template_type == "email":
+            item["preview_image_url"] = f"/api/v1/templates/{template_id}/preview-image"
+        templates.append(item)
+    return templates
+
+
+def _documents_summary(job_id: str, *, page: int = 1, per_page: int = 50, query: str = "") -> dict[str, Any]:
+    from src.web.download_sources import list_output_archive_entries
+
+    output_dir = resolve_job_paths(job_id).output_dir
+    if not output_dir.exists():
+        return {"total": 0, "items": [], "pagination": _paginate_list([], page=page, per_page=per_page)[1]}
+    offset = max(0, (max(1, page) - 1) * min(max(1, per_page), 200))
+    limit = min(max(1, per_page), 200)
+    entries, total = list_output_archive_entries(
+        output_dir,
+        offset=offset,
+        limit=limit,
+        query=query,
+    )
+    return {
+        "total": total,
+        "items": entries,
+        "pagination": {
+            "page": max(1, page),
+            "per_page": limit,
+            "total": total,
+            "pages": max(1, (total + limit - 1) // limit) if total else 1,
+        },
+    }
+
+
+def _campaign_recipients_for_preview(campaign_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+    from sqlalchemy import select
+
+    from src.infra.db import session_scope
+    from src.infra.models import CampaignRecipient
+
+    with session_scope() as session:
+        rows = session.scalars(
+            select(CampaignRecipient)
+            .where(
+                CampaignRecipient.campaign_id == campaign_id,
+                CampaignRecipient.excluded.is_(False),
+            )
+            .order_by(CampaignRecipient.row_index.asc())
+            .limit(limit)
+        ).all()
+        return [
+            {
+                "id": row.id,
+                "row_index": row.row_index,
+                "company": row.company,
+                "contact_name": row.contact_name,
+                "email": row.email,
+                "send_status": row.send_status,
+                "last_error": row.last_error,
+            }
+            for row in rows
+        ]
+
+
+def _operational_snapshot(campaign: dict[str, Any] | None, job_id: str) -> dict[str, Any]:
+    from src.campaigns.service import list_batches
+
+    if not campaign:
+        return {"available": False}
+    campaign_id = _safe_text(campaign.get("id"))
+    owner = _safe_text(campaign.get("owner_username"))
+    batches = list_batches(campaign_id, owner, visible_owners=frozenset({owner})) if owner else []
+    live_send: dict[str, Any] | None = None
+    if campaign.get("status") in {"running", "scheduled", "paused"}:
+        remaining = max(0, int(campaign.get("total_count") or 0) - int(campaign.get("sent_count") or 0))
+        queued = sum(1 for batch in batches if batch.get("status") == "pending")
+        running = next((batch for batch in batches if batch.get("status") == "running"), None)
+        if remaining > 0 or queued > 0 or running is not None:
+            live_send = {
+                "status": campaign.get("status"),
+                "remaining": remaining,
+                "queued_batches": queued,
+                "sending_now": running.get("size") if running else 0,
+                "next_batch_at": next(
+                    (batch.get("scheduled_at") for batch in batches if batch.get("status") == "pending"),
+                    None,
+                ),
+            }
+    return {
+        "available": True,
+        "sent_count": campaign.get("sent_count"),
+        "total_count": campaign.get("total_count"),
+        "error_count": campaign.get("error_count"),
+        "layout_error_count": campaign.get("layout_error_count"),
+        "status": campaign.get("status"),
+        "launched_at": campaign.get("launched_at"),
+        "completed_at": campaign.get("completed_at"),
+        "transport": campaign.get("transport"),
+        "progress": campaign.get("progress"),
+        "batches": batches,
+        "live_send": live_send,
+    }
+
+
+def build_campaign_full_analytics(
+    job_id: str,
+    *,
+    refresh: bool = False,
+    delivery_page: int = 1,
+    sent_log_page: int = 1,
+    attempts_page: int = 1,
+    documents_page: int = 1,
+    documents_q: str = "",
+    per_page: int = 50,
+) -> dict[str, Any]:
+    from src.campaigns.chain_service import get_chain_click_stats
+    from src.campaigns.service import get_campaign_by_job_id, list_delivery_attempts
+    from src.jobs.job_docs import read_sent_mail_log
+
+    analytics = build_campaign_analytics(job_id, refresh=refresh)
+    campaign_db = get_campaign_by_job_id(job_id)
+    campaign_meta = analytics.get("campaign") or {}
+    if campaign_db:
+        campaign_meta = {
+            **campaign_meta,
+            **{k: v for k, v in campaign_db.items() if k not in {"draft_payload"}},
+        }
+
+    consent_rows = _load_consents_for_jobs((job_id,))
+    delivery_rows = _load_delivery_for_jobs((job_id,), refresh=refresh)
+    sent_log = read_sent_mail_log(job_id)
+    sent_page_items, sent_pagination = _paginate_list(sent_log, page=sent_log_page, per_page=per_page)
+    delivery_page_items, delivery_pagination = _paginate_list(delivery_rows, page=delivery_page, per_page=per_page)
+
+    domain_filters = StatsFilters(job_ids=(normalize_job_id(job_id),))
+    domain_stats = build_domain_delivery_stats(domain_filters)
+
+    chain_stats: dict[str, Any] = {"edges": [], "consents": {}}
+    delivery_attempts: dict[str, Any] = {"items": [], "pagination": _paginate_list([], page=1, per_page=per_page)[1]}
+    recipients: list[dict[str, Any]] = []
+    email_templates: list[dict[str, Any]] = []
+    if campaign_db:
+        campaign_id = _safe_text(campaign_db.get("id"))
+        if campaign_id:
+            try:
+                chain_stats = get_chain_click_stats(campaign_id)
+            except Exception:
+                logger.exception("full_analytics_chain_stats_failed", job_id=job_id, campaign_id=campaign_id)
+            delivery_attempts = list_delivery_attempts(
+                campaign_id,
+                page=attempts_page,
+                per_page=per_page,
+            )
+            recipients = _campaign_recipients_for_preview(campaign_id)
+            email_templates = _email_templates_for_campaign(campaign_db)
+
+    counts = analytics.get("summary") or {}
+    total_sent = int(counts.get("sent") or 0)
+    rates = dict(analytics.get("rates") or {})
+    rates["pending_rate"] = _pct(int(counts.get("pending") or 0), total_sent)
+
+    return {
+        "job_id": job_id,
+        "campaign": campaign_meta,
+        "campaign_id": _safe_text(campaign_db.get("id")) if campaign_db else "",
+        "period_from": analytics.get("period_from"),
+        "period_to": analytics.get("period_to"),
+        "status": analytics.get("status"),
+        "summary": counts,
+        "rates": rates,
+        "operational": _operational_snapshot(campaign_db, job_id),
+        "delivery": {
+            "funnel": analytics.get("funnel"),
+            "daily": analytics.get("daily"),
+            "undelivery_reasons": analytics.get("undelivery_reasons"),
+            "provider_effectiveness": analytics.get("provider_effectiveness"),
+            "insights": analytics.get("insights"),
+            "high_interest_companies": analytics.get("high_interest_companies"),
+            "problem_addresses": analytics.get("problem_addresses"),
+            "recommendations": analytics.get("recommendations"),
+            "refresh_started": analytics.get("refresh_started"),
+            "refresh_in_progress": analytics.get("refresh_in_progress"),
+            "awaiting_provider_events": analytics.get("awaiting_provider_events"),
+        },
+        "domain_stats": domain_stats,
+        "chain": chain_stats,
+        "consents": _consents_summary(consent_rows),
+        "delivery_rows": {
+            "items": delivery_page_items,
+            "pagination": delivery_pagination,
+        },
+        "sent_mail_log": {
+            "items": sent_page_items,
+            "pagination": sent_pagination,
+        },
+        "delivery_attempts": delivery_attempts,
+        "documents": _documents_summary(job_id, page=documents_page, per_page=per_page, query=documents_q),
+        "email_templates": email_templates,
+        "recipients": recipients,
+    }
+
+
 def list_available_reports() -> list[dict[str, str]]:
     return [
         {

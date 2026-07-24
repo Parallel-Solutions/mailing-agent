@@ -280,7 +280,7 @@ def build_substitution_context(
         }
     )
 
-    from src.generator.generation.transforms import parse_fio_components
+    from src.generator.generation.transforms import build_first_patronymic, parse_fio_components
 
     fio_source = recipient.contact_name or str(row.get("HEAD_FIO") or "").strip()
     surname, first_name, patronymic = parse_fio_components(fio_source)
@@ -294,6 +294,10 @@ def build_substitution_context(
         string_context["Отчество"] = patronymic
     if surname:
         string_context["Фамилия"] = surname
+    first_patronymic = build_first_patronymic(fio_source)
+    string_context["CONTACT_FIRST_PATRONYMIC"] = first_patronymic
+    if first_patronymic:
+        string_context["Имя Отчество"] = first_patronymic
 
     mapping = dict(EMAIL_CORE_DEFAULTS)
     mapping.update(dict(variable_mapping or draft.get("variable_mapping") or {}))

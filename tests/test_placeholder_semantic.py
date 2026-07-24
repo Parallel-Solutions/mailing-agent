@@ -50,6 +50,9 @@ class PlaceholderSemanticTests(unittest.TestCase):
     def test_exact_alias_resolves_legacy_name_placeholders(self) -> None:
         self.assertEqual(resolve_recipient_canonical("Имя"), "CONTACT_FIRST_NAME")
         self.assertEqual(resolve_recipient_canonical("Отчество"), "CONTACT_PATRONYMIC")
+        self.assertEqual(resolve_recipient_canonical("Имя Отчество"), "CONTACT_FIRST_PATRONYMIC")
+        self.assertEqual(resolve_recipient_canonical("ИО"), "CONTACT_FIRST_PATRONYMIC")
+        self.assertEqual(resolve_recipient_canonical("им. отч."), "CONTACT_FIRST_PATRONYMIC")
         self.assertEqual(resolve_recipient_canonical("Компания"), "company")
 
     @patch("src.campaigns.placeholder_semantic._semantic_enabled", return_value=True)

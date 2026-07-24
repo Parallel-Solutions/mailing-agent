@@ -458,6 +458,14 @@ def resolve_cached_attachment(
         return None
 
     if tmpl.is_template and campaign is not None and recipient is not None and job_id:
+        delivery_name = _resolve_delivery_filename(
+            tmpl,
+            version,
+            source_name=str(version.filename or tmpl.name),
+        )
+        pdf_cache = _cache_path(job_id, int(recipient.id), template_id, ".pdf")
+        if _cached_pdf_is_valid(pdf_cache):
+            return delivery_name, pdf_cache.read_bytes()
         try:
             filename, data = render_document_template_for_recipient(
                 template_id=template_id,

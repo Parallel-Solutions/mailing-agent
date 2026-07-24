@@ -19,6 +19,7 @@ from src.campaigns import (
     generation_service,
     pdf_overlay_service,
     profile_service,
+    sent_email_preview_service,
     service,
     template_ai,
     template_import_service,
@@ -804,6 +805,27 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             {"filename": filename, "content": content},
             disposition=disposition,
         )
+
+    @router.get("/campaigns/{campaign_id}/sent-email-preview")
+    def get_sent_email_preview(
+        campaign_id: str,
+        principal: object = Depends(check_auth),
+        recipient_id: int = Query(..., ge=1),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                sent_email_preview_service.preview_sent_email_for_recipient(
+                    campaign_id,
+                    actor.username,
+                    recipient_id=recipient_id,
+                    visible_owners=_visibility(actor),
+                )
+            )
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "не найден" in message.lower() else 400
+            raise HTTPException(status_code=status, detail=message) from exc
 
     @router.get("/campaigns/{campaign_id}/variable-mapping")
     def get_variable_mapping(campaign_id: str, principal: object = Depends(check_auth)):

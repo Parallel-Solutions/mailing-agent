@@ -16,6 +16,7 @@ from src.generator.delivery.manager_actions import ACTION_TYPES, append_manager_
 from src.generator.delivery.manager_stats import (
     StatsFilters,
     build_campaign_analytics,
+    build_campaign_full_analytics,
     build_campaigns,
     build_consents_view,
     build_domain_delivery_stats,
@@ -369,6 +370,33 @@ def create_statistics_router(
     ):
         ensure_job_access(job_id, principal, allow_missing=False)
         return {"status": "ok", "result": build_campaign_analytics(job_id, refresh=refresh)}
+
+    @router.get("/api/sender/campaign-full-analytics/{job_id}")
+    def sender_campaign_full_analytics(
+        job_id: str,
+        refresh: bool = False,
+        delivery_page: int = Query(1, ge=1),
+        sent_log_page: int = Query(1, ge=1),
+        attempts_page: int = Query(1, ge=1),
+        documents_page: int = Query(1, ge=1),
+        documents_q: str = Query(""),
+        per_page: int = Query(50, ge=1, le=200),
+        principal: object = Depends(check_auth),
+    ):
+        ensure_job_access(job_id, principal, allow_missing=False)
+        return {
+            "status": "ok",
+            "result": build_campaign_full_analytics(
+                job_id,
+                refresh=refresh,
+                delivery_page=delivery_page,
+                sent_log_page=sent_log_page,
+                attempts_page=attempts_page,
+                documents_page=documents_page,
+                documents_q=documents_q,
+                per_page=per_page,
+            ),
+        }
 
     @router.get("/api/sender/reports")
     def sender_reports(

@@ -299,6 +299,73 @@ def create_campaign(owner_username: str, data: dict[str, Any] | None = None) -> 
         return campaign_to_dict(row)
 
 
+def get_campaign_by_job_id(job_id: str) -> dict[str, Any] | None:
+    """Resolve campaign by job_id (internal use after job access is verified)."""
+    with session_scope() as session:
+        row = session.scalar(select(Campaign).where(Campaign.job_id == job_id).limit(1))
+        if row is None:
+            return None
+        payload = campaign_to_dict(row, include_draft=False)
+        payload["layout_error_count"] = _layout_error_count(session, row.id)
+        return payload
+
+
+def list_delivery_attempts(
+    campaign_id: str,
+    *,
+    page: int = 1,
+    per_page: int = 50,
+) -> dict[str, Any]:
+    """Paginated delivery attempts for statistics (no owner filter — caller verifies access)."""
+    page = max(1, page)
+    per_page = min(max(1, per_page), 200)
+    with session_scope() as session:
+        total = (
+            session.scalar(
+                select(func.count())
+                .select_from(DeliveryAttempt)
+                .where(DeliveryAttempt.campaign_id == campaign_id)
+            )
+            or 0
+        )
+        start = (page - 1) * per_page
+        rows = session.execute(
+            select(DeliveryAttempt, CampaignRecipient)
+            .join(CampaignRecipient, CampaignRecipient.id == DeliveryAttempt.recipient_id)
+            .where(DeliveryAttempt.campaign_id == campaign_id)
+            .order_by(DeliveryAttempt.created_at.desc(), DeliveryAttempt.id.desc())
+            .offset(start)
+            .limit(per_page)
+        ).all()
+        items = [
+            {
+                "id": attempt.id,
+                "recipient_id": attempt.recipient_id,
+                "batch_id": attempt.batch_id,
+                "attempt_number": attempt.attempt_number,
+                "status": attempt.status,
+                "delivery_email": attempt.delivery_email,
+                "provider_message_id": attempt.provider_message_id,
+                "error": attempt.error,
+                "company": recipient.company,
+                "contact_name": recipient.contact_name,
+                "email": recipient.email,
+                "created_at": attempt.created_at.isoformat() if attempt.created_at else None,
+                "updated_at": attempt.updated_at.isoformat() if attempt.updated_at else None,
+            }
+            for attempt, recipient in rows
+        ]
+        return {
+            "items": items,
+            "pagination": {
+                "page": page,
+                "per_page": per_page,
+                "total": int(total),
+                "pages": max(1, (int(total) + per_page - 1) // per_page),
+            },
+        }
+
+
 def get_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any] | None:
     with session_scope() as session:
         row = session.get(Campaign, campaign_id)

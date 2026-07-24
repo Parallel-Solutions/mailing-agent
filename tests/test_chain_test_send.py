@@ -242,6 +242,31 @@ class ChainTestSendApiTests(unittest.TestCase):
         suppressed, _reason = is_suppressed("alice@example.com")
         self.assertFalse(suppressed)
 
+    @patch("src.web.chain_router.dispatch_chain_followup")
+    def test_email_branch_click_dispatches_followup(self, mock_dispatch) -> None:
+        with session_scope() as session:
+            recipient = session.scalar(
+                select(CampaignRecipient).where(CampaignRecipient.campaign_id == self.campaign_id)
+            )
+            assert recipient is not None
+            token_row = CampaignChainToken(
+                token=str(uuid.uuid4()),
+                campaign_id=self.campaign_id,
+                recipient_id=int(recipient.id),
+                edge_id="edge-1",
+                source_node_id=self.root_node_id,
+                target_node_id=self.node2_id,
+                send_status="pending",
+            )
+            session.add(token_row)
+            session.flush()
+            token_value = token_row.token
+
+        response = self.client.get(f"/chain/branch/{token_value}")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("Спасибо", response.text)
+        mock_dispatch.assert_called_once_with(token_value)
+
 
 if __name__ == "__main__":
     unittest.main()
