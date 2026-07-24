@@ -1,22 +1,38 @@
 #!/usr/bin/env bash
 # Production health and disk audit for mailing-agent.
+# Exit non-zero on hard failures so CI/deploy gates stay red.
 # Usage (on server, from repo root):
 #   ./scripts/prod-audit.sh
 # Optional:
 #   PUBLIC_BASE_URL=https://offer.parresh.ru DISK_WARN_PERCENT=85 ./scripts/prod-audit.sh
+#   MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> ./scripts/prod-audit.sh
+#   EXPECTED_IMAGE_ID=sha256:... ./scripts/prod-audit.sh
 
 set -euo pipefail
 
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://offer.parresh.ru}"
+APP_LOCAL_BASE_URL="${APP_LOCAL_BASE_URL:-http://127.0.0.1:9806}"
 DISK_WARN_PERCENT="${DISK_WARN_PERCENT:-85}"
+MAILING_AGENT_IMAGE="${MAILING_AGENT_IMAGE:-}"
+EXPECTED_IMAGE_ID="${EXPECTED_IMAGE_ID:-}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
+AUDIT_FAILED=0
 
 section() {
   echo ""
   echo "=== $1 ==="
+}
+
+fail() {
+  echo "ERROR: $*" >&2
+  AUDIT_FAILED=1
+}
+
+warn() {
+  echo "WARNING: $*" >&2
 }
 
 get_head_revision() {
@@ -50,6 +66,11 @@ if revisions:
 PY
 }
 
+ids_match() {
+  local a="$1" b="$2"
+  [[ -n "$a" && -n "$b" && ( "$a" == "$b"* || "$b" == "$a"* ) ]]
+}
+
 section "Disk"
 if command -v df >/dev/null 2>&1; then
   df_line="$(df -h / | tail -n 1)"
@@ -57,11 +78,11 @@ if command -v df >/dev/null 2>&1; then
   if [[ "$df_line" =~ ([0-9]+)% ]]; then
     used="${BASH_REMATCH[1]}"
     if (( used >= DISK_WARN_PERCENT )); then
-      echo "WARNING: Disk usage ${used}% exceeds warning threshold ${DISK_WARN_PERCENT}%." >&2
+      warn "Disk usage ${used}% exceeds warning threshold ${DISK_WARN_PERCENT}%."
     fi
   fi
 else
-  echo "WARNING: df not available — run on Linux prod host." >&2
+  warn "df not available — run on Linux prod host."
 fi
 
 section "Docker disk"
@@ -70,17 +91,59 @@ docker system df
 section "Compose services"
 "${COMPOSE[@]}" ps
 
-section "Health"
-curl -sf "$PUBLIC_BASE_URL/health" || echo "WARNING: Public /health failed." >&2
-curl -sf "$PUBLIC_BASE_URL/ready" || echo "WARNING: Public /ready failed." >&2
-
-section "App stability"
-restart_count="$(docker inspect mailing-agent-app-1 --format '{{.RestartCount}}' 2>/dev/null || true)"
-if [[ -n "$restart_count" ]]; then
-  echo "app RestartCount=$restart_count"
-  if (( restart_count > 5 )); then
-    echo "WARNING: app has restarted more than 5 times — investigate crash loop." >&2
+section "Deployed image summary"
+for svc in app worker; do
+  cname="mailing-agent-${svc}-1"
+  if ! docker inspect "$cname" >/dev/null 2>&1; then
+    fail "container $cname not found"
+    continue
   fi
+  img="$(docker inspect "$cname" --format '{{.Config.Image}}' 2>/dev/null || true)"
+  img_id="$(docker inspect "$cname" --format '{{.Image}}' 2>/dev/null || true)"
+  started="$(docker inspect "$cname" --format '{{.State.StartedAt}}' 2>/dev/null || true)"
+  restart_count="$(docker inspect "$cname" --format '{{.RestartCount}}' 2>/dev/null || true)"
+  status="$(docker inspect "$cname" --format '{{.State.Status}}' 2>/dev/null || true)"
+  echo "$svc status=$status image=$img id=$img_id started=$started RestartCount=${restart_count:-0}"
+
+  if [[ "$status" != "running" ]]; then
+    fail "$svc is not running (status=$status)"
+  fi
+  if [[ -n "$MAILING_AGENT_IMAGE" && "$img" != "$MAILING_AGENT_IMAGE" ]]; then
+    # Compose may store the tag without digest; also accept if Config.Image is the ID.
+    if [[ "$img" != "$MAILING_AGENT_IMAGE"* ]]; then
+      fail "$svc Config.Image='$img' does not match MAILING_AGENT_IMAGE='$MAILING_AGENT_IMAGE'"
+    fi
+  fi
+  if [[ -n "$EXPECTED_IMAGE_ID" ]] && ! ids_match "$EXPECTED_IMAGE_ID" "$img_id"; then
+    fail "$svc Image ID '$img_id' does not match EXPECTED_IMAGE_ID='$EXPECTED_IMAGE_ID'"
+  fi
+  if [[ -n "$restart_count" ]] && (( restart_count > 5 )); then
+    fail "$svc RestartCount=$restart_count (>5) — investigate crash loop"
+  fi
+done
+
+section "Health (local)"
+if ! curl -sf "$APP_LOCAL_BASE_URL/health" >/dev/null; then
+  fail "Local /health failed at $APP_LOCAL_BASE_URL/health"
+else
+  echo "local health OK: $APP_LOCAL_BASE_URL/health"
+fi
+if ! curl -sf "$APP_LOCAL_BASE_URL/ready" >/dev/null; then
+  fail "Local /ready failed at $APP_LOCAL_BASE_URL/ready"
+else
+  echo "local ready OK: $APP_LOCAL_BASE_URL/ready"
+fi
+
+section "Health (public)"
+if ! curl -sf "$PUBLIC_BASE_URL/health" >/dev/null; then
+  fail "Public /health failed at $PUBLIC_BASE_URL/health"
+else
+  echo "public health OK: $PUBLIC_BASE_URL/health"
+fi
+if ! curl -sf "$PUBLIC_BASE_URL/ready" >/dev/null; then
+  fail "Public /ready failed at $PUBLIC_BASE_URL/ready"
+else
+  echo "public ready OK: $PUBLIC_BASE_URL/ready"
 fi
 
 section "Alembic"
@@ -88,8 +151,10 @@ db_rev="$("${COMPOSE[@]}" exec -T postgres psql -U mailing -d mailing -t -A -c "
 head_rev="$(get_head_revision || true)"
 echo "database alembic_version=${db_rev:-unknown}"
 echo "repo head revision=${head_rev:-unknown}"
-if [[ -n "$db_rev" && -n "$head_rev" && "$db_rev" != "$head_rev" ]]; then
-  echo "WARNING: Alembic stamp differs from repo head — check migration drift before deploy." >&2
+if [[ -z "$db_rev" || -z "$head_rev" ]]; then
+  fail "Could not resolve Alembic versions (db='${db_rev:-}' head='${head_rev:-}')"
+elif [[ "$db_rev" != "$head_rev" ]]; then
+  fail "Alembic stamp differs from repo head (db=$db_rev head=$head_rev)"
 fi
 
 section "Data directories"
@@ -101,29 +166,78 @@ for path in ./tmp ./logs ./storage; do
 done
 
 section "Docker volumes"
+pg_ok=0
 for vol in mailing-agent_pgdata mailing-agent_minio-data mailing-agent_redis-data mailing-agent_chroma-data; do
   mountpoint="$(docker volume inspect "$vol" --format '{{.Mountpoint}}' 2>/dev/null || true)"
   if [[ -n "$mountpoint" ]]; then
     echo "$vol -> $mountpoint"
-    if [[ "$vol" == *test* ]]; then
-      echo "WARNING: Postgres may be on a test volume ($vol)." >&2
+    if [[ "$vol" == "mailing-agent_pgdata" ]]; then
+      pg_ok=1
     fi
   fi
 done
+if (( pg_ok == 0 )); then
+  fail "Expected volume mailing-agent_pgdata not found"
+fi
+# Detect postgres mounted on a test volume (wrong stack after unit tests).
+pg_mounts="$(docker inspect mailing-agent-postgres-1 --format '{{range .Mounts}}{{.Name}} {{end}}' 2>/dev/null || true)"
+echo "postgres mounts: ${pg_mounts:-unknown}"
+if [[ "$pg_mounts" == *pgdata-test* || "$pg_mounts" == *mailing-agent-test* ]]; then
+  fail "Postgres is on a test volume ($pg_mounts) — restore prod stack (pgdata)"
+fi
+if [[ -n "$pg_mounts" && "$pg_mounts" != *mailing-agent_pgdata* ]]; then
+  fail "Postgres is not using mailing-agent_pgdata (mounts: $pg_mounts)"
+fi
 
 section "PUBLIC_BASE_URL"
 for svc in app worker; do
   val="$("${COMPOSE[@]}" exec -T "$svc" printenv PUBLIC_BASE_URL 2>/dev/null || true)"
   echo "$svc PUBLIC_BASE_URL=$val"
-done
-
-section "Optional profiles (should be stopped on prod unless needed)"
-for name in mailing-agent-onlyoffice-1 mailing-agent-gotenberg-2-1; do
-  state="$(docker inspect "$name" --format '{{.State.Status}}' 2>/dev/null || true)"
-  if [[ "$state" == "running" ]]; then
-    echo "WARNING: $name is running — consider stopping to save RAM/disk." >&2
+  if [[ -z "$val" ]]; then
+    fail "$svc PUBLIC_BASE_URL is empty"
+  elif [[ "$val" != "https://offer.parresh.ru" ]]; then
+    fail "$svc PUBLIC_BASE_URL='$val' (expected https://offer.parresh.ru)"
   fi
 done
 
+section "Forbidden / optional containers (must be stopped on prod)"
+# Hardcoded known offenders + any container from e2e/test compose projects.
+forbidden_patterns=(
+  'mailing-agent-onlyoffice'
+  'mailing-agent-gotenberg-2'
+  'mailpit'
+  'playwright'
+  'mailing-agent-e2e'
+  'mailing-agent-test'
+)
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  name="$(awk '{print $1}' <<<"$line")"
+  project="$(awk '{print $2}' <<<"$line")"
+  for pat in "${forbidden_patterns[@]}"; do
+    if [[ "$name" == *"$pat"* || "$project" == *"$pat"* ]]; then
+      fail "Forbidden container running: name=$name project=$project"
+    fi
+  done
+done < <(docker ps --format '{{.Names}} {{.Label "com.docker.compose.project"}}' 2>/dev/null || true)
+
+# Also flag any compose services outside the prod allowlist in this project.
+section "Prod allowlist check"
+# Expected long-lived: app worker postgres minio redis gotenberg (minio-init is one-shot).
+allow_services='^(app|worker|postgres|minio|minio-init|redis|gotenberg)$'
+while IFS= read -r svc; do
+  [[ -z "$svc" ]] && continue
+  if [[ ! "$svc" =~ $allow_services ]]; then
+    state="$(docker inspect "mailing-agent-${svc}-1" --format '{{.State.Status}}' 2>/dev/null || true)"
+    if [[ "$state" == "running" ]]; then
+      fail "Unexpected compose service running on prod: $svc"
+    fi
+  fi
+done < <("${COMPOSE[@]}" ps --services 2>/dev/null || true)
+
 echo ""
-echo "Audit complete."
+if (( AUDIT_FAILED )); then
+  echo "Audit FAILED." >&2
+  exit 1
+fi
+echo "Audit complete (OK)."

@@ -227,7 +227,18 @@ Production deploy (offer.parresh.ru):
 
 ### Автодеплой (push в `main`)
 
-После зелёного CI job **Deploy to production** подтягивает immutable-образ `:sha` из GHCR и перезапускает `app` + `worker` на сервере.
+```text
+push main
+  ├─ unit          (frontend + test image)
+  ├─ build-image   (push runtime :latest + :sha → GHCR)   ──┐
+  └─ e2e-smoke     (pull :sha, no second runtime build)   │
+                                                          ▼
+                                               deploy-prod (SSH)
+                                                 deploy.sh --pull
+                                                 prod-audit.sh (gate)
+```
+
+На `main` runtime-образ собирается **один раз** и переиспользуется e2e + deploy. Job `deploy-prod` в concurrency-группе `deploy-prod` с `cancel-in-progress: false` — второй push не убивает текущий SSH-деплой.
 
 **One-time setup:**
 
@@ -245,26 +256,46 @@ Production deploy (offer.parresh.ru):
 cd /opt/mailing-agent
 chmod +x scripts/deploy.sh scripts/prod-audit.sh scripts/post-deploy-stats.sh
 
-# Обычный deploy: pull образа из GHCR (быстро, ~3–5 min)
+# Обычный путь: pull immutable образа из GHCR (~3–5 min)
+MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> ./scripts/deploy.sh --pull
+
+# Тот же путь с latest (если sha неизвестен)
 MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:latest ./scripts/deploy.sh --pull
 
-# Rebuild на сервере (fallback при недоступности registry)
-./scripts/deploy.sh
-
-# Без rebuild — restart существующих контейнеров
+# Без pull — только restart уже запущенных контейнеров
 ./scripts/deploy.sh --no-build
 
-# Первый деплой после backfill sent_mail_log или при gap в статистике
-./scripts/deploy.sh --post-deploy-stats
+# После backfill sent_mail_log / gap в статистике
+./scripts/deploy.sh --pull --post-deploy-stats
 
-# Деплой конкретной ветки/тега
-./scripts/deploy.sh --ref release/companies-campaign-wizard-2026-07-22
+# Конкретная ветка/тег (git) + pull образа
+./scripts/deploy.sh --ref release/companies-campaign-wizard-2026-07-22 --pull
 
-# Ручной аудит без деплоя
+# Emergency only: rebuild на сервере (часто упирается в Docker Hub rate limit)
+./scripts/deploy.sh
+
+# Ручной аудит (exit ≠ 0 = плохо)
 ./scripts/prod-audit.sh
 ```
 
-Скрипт `deploy.sh` использует overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): фиксирует `PUBLIC_BASE_URL`, отключает RuSender click-tracking и **не монтирует** `./src`/`./main.py` — код берётся только из образа после `--build`. Всегда поднимайте `app` и `worker` вместе.
+`deploy.sh --pull` делает `docker pull` + `up --force-recreate` для `app`/`worker`, сверяет Image ID, ждёт local (`:9806`) и public health, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе.
+
+### Server checklist (после первого деплоя / при сомнениях)
+
+```bash
+cd /opt/mailing-agent
+docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+# expect: app, worker, postgres, minio, redis, gotenberg (minio-init exited OK)
+
+docker ps --format '{{.Names}} {{.Image}}'
+# no onlyoffice / gotenberg-2 / mailpit / playwright / mailing-agent-e2e / mailing-agent-test
+
+docker inspect mailing-agent-app-1 --format '{{.Config.Image}} {{.Image}}'
+# must be ghcr.io/parallel-solutions/mailing-agent:<sha>
+
+MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> ./scripts/prod-audit.sh
+# must exit 0
+```
 
 После смены `PUBLIC_BASE_URL` или webhook-токена может понадобиться resend кампаний — см. [`scripts/verify-production-links.ps1`](scripts/verify-production-links.ps1) и [`scripts/resend-chain-campaign.ps1`](scripts/resend-chain-campaign.ps1).
 
