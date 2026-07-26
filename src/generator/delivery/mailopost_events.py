@@ -9,6 +9,7 @@ from typing import Any
 from src.jobs import resolve_job_paths
 from src.jobs.json_store import append_jsonl, path_lock, read_jsonl
 from src.jobs.storage import JOBS_DIR
+from src.utils.logger import logger
 
 
 EVENTS_FILENAME = "mailopost_events.jsonl"
@@ -69,6 +70,8 @@ def append_mailopost_events(payload: Any) -> dict[str, Any]:
             "message_id": message_id,
             "recipient": recipient or _safe_text(job_info.get("recipient")),
             "row_id": _safe_text(job_info.get("row_id")),
+            "connection_id": _safe_text(job_info.get("connection_id")),
+            "smtp_response": _extract_delivery_response(event),
             "event": event,
         }
         if not message_id and not record["recipient"] and not event_type:
@@ -99,11 +102,26 @@ def append_mailopost_events(payload: Any) -> dict[str, Any]:
                     provider_status=str(record.get("provider_status") or ""),
                     source="webhook_mailopost",
                     job_id=job_id,
+                    delivery_response=str(record.get("smtp_response") or ""),
+                )
+                from src.generator.delivery.channel_guard import record_channel_outcome
+
+                record_channel_outcome(
+                    connection_id=str(record.get("connection_id") or ""),
+                    provider_message_id=message_id,
+                    provider_status=str(record.get("provider_status") or ""),
+                    recipient=str(record.get("recipient") or ""),
+                    smtp_response=str(record.get("smtp_response") or ""),
+                    occurred_at=str(record.get("occurred_at") or ""),
                 )
                 if str(record.get("provider_status") or "").strip().lower() in {"spam", "complaint", "complained"}:
                     record_complaint()
             except Exception:
-                pass
+                logger.exception(
+                    "mailopost_delivery_feedback_failed",
+                    message_id=message_id,
+                    connection_id=str(record.get("connection_id") or ""),
+                )
         else:
             unmatched += 1
     return {"saved": saved, "skipped": skipped, "duplicates": duplicates, "unmatched": unmatched, "jobs": sorted(jobs)}
@@ -189,6 +207,25 @@ def _extract_event_type(event: dict[str, Any]) -> str:
     return ""
 
 
+def _extract_delivery_response(event: dict[str, Any]) -> str:
+    keys = (
+        "smtpServerResponse",
+        "smtp_server_response",
+        "smtpResponse",
+        "smtp_response",
+        "deliveryResponse",
+        "delivery_response",
+        "bounceReason",
+        "bounce_reason",
+        "reason",
+    )
+    for data in (event, *_nested_dicts(event)):
+        value = _extract_first_text(data, keys)
+        if value:
+            return value
+    return ""
+
+
 def _extract_email(event: dict[str, Any]) -> str:
     nested = _nested_dicts(event)
     for data in (event, *nested):
@@ -209,7 +246,7 @@ def _extract_occurred_at(event: dict[str, Any]) -> str:
 
 def _nested_dicts(event: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     nested = []
-    for key in ("message", "email", "payload", "data"):
+    for key in ("message", "email", "payload", "data", "event"):
         value = event.get(key)
         if isinstance(value, dict):
             nested.append(value)
@@ -242,6 +279,7 @@ def _load_message_job_index() -> dict[str, dict[str, str]]:
             "job_id": job_id,
             "row_id": _safe_text(item.get("row_id")),
             "recipient": _safe_text(item.get("recipient")),
+            "connection_id": _safe_text(item.get("connection_id")),
         }
         for raw in (
             item.get("provider_message_id"),

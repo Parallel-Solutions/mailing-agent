@@ -159,6 +159,12 @@ def _rusender_payload_from_api(task_id: str, data: dict[str, Any]) -> list[dict[
             "payload": {
                 "taskId": task_id,
                 "email": email,
+                "smtpServerResponse": _safe_text(
+                    data.get("smtpServerResponse")
+                    or data.get("smtp_server_response")
+                    or data.get("delivery_response")
+                    or data.get("reason")
+                ),
             },
             "createdAt": _safe_text(data.get("updated_at") or data.get("created_at"))
             or datetime.now().isoformat(timespec="seconds"),

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import func, select
 
@@ -136,7 +137,9 @@ def _send_delivery_message(
 ) -> str:
     """Send one message using the saved per-user connection."""
     from src.campaigns.connection_service import resolve_connection
+    from src.generator.delivery.channel_guard import wait_for_channel_send_slot
 
+    wait_for_channel_send_slot(connection_id)
     connection = resolve_connection(connection_id, owner_username, campaign=campaign)
     attachment_paths: list[str] = []
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
@@ -151,16 +154,22 @@ def _send_delivery_message(
 
     try:
         if connection.transport == "smtp":
-            return _send_smtp_message(
-                mailbox_id=connection.id,
-                owner_username=owner_username,
-                to_email=to_email,
-                subject=subject,
-                html=html,
-                text=text,
-                sender_name=connection.sender_name,
-                attachments=attachments,
-            )
+            try:
+                message_id = _send_smtp_message(
+                    mailbox_id=connection.id,
+                    owner_username=owner_username,
+                    to_email=to_email,
+                    subject=subject,
+                    html=html,
+                    text=text,
+                    sender_name=connection.sender_name,
+                    attachments=attachments,
+                )
+            except Exception as exc:
+                _record_submit_error(connection.id, to_email, exc)
+                raise
+            _record_smtp_accept(connection.id, message_id, to_email)
+            return message_id
 
         row = {"ID": row_id or f"test-{int(_now().timestamp())}", "EMAIL": to_email}
         if connection.transport == "rusender":
@@ -212,6 +221,43 @@ def _send_delivery_message(
     finally:
         if temp_dir is not None:
             temp_dir.cleanup()
+
+
+def _record_submit_error(connection_id: str, recipient: str, error: Exception) -> None:
+    try:
+        from src.generator.delivery.channel_guard import record_channel_outcome
+        from src.generator.delivery.suppression_store import upsert_from_provider_event
+
+        error_text = str(error)
+        record_channel_outcome(
+            connection_id=connection_id,
+            provider_message_id=f"submit-error:{uuid4()}",
+            provider_status="error",
+            recipient=recipient,
+            smtp_response=error_text,
+        )
+        upsert_from_provider_event(
+            recipient=recipient,
+            provider_status="error",
+            source="smtp_submit",
+            delivery_response=error_text,
+        )
+    except Exception:
+        logger.exception("delivery_channel_submit_error_record_failed", connection_id=connection_id)
+
+
+def _record_smtp_accept(connection_id: str, message_id: str, recipient: str) -> None:
+    try:
+        from src.generator.delivery.channel_guard import record_channel_outcome
+
+        record_channel_outcome(
+            connection_id=connection_id,
+            provider_message_id=message_id,
+            provider_status="accepted",
+            recipient=recipient,
+        )
+    except Exception:
+        logger.exception("delivery_channel_smtp_accept_record_failed", connection_id=connection_id)
 
 
 def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -502,6 +548,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     subject=subject,
                     campaign_name=camp.name,
                     sent_at=_now().isoformat(),
+                    connection_id=connection_id,
                 ):
                     invalidate_stats_cache(job_id)
             except Exception as exc:

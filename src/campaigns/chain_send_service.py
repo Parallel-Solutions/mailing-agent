@@ -510,6 +510,7 @@ def send_chain_node_email(
                         subject=subject,
                         campaign_name=camp.name,
                         sent_at=datetime.now(timezone.utc).isoformat(),
+                        connection_id=resolved_connection_id,
                     ):
                         invalidate_stats_cache(job_id)
     except Exception:

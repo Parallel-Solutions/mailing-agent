@@ -1,5 +1,5 @@
 import { PlusOutlined } from '@ant-design/icons';
-import { ModalForm, ProFormDigit, ProFormSelect, ProFormText, ProTable } from '@ant-design/pro-components';
+import { ModalForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProTable } from '@ant-design/pro-components';
 import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useState } from 'react';
@@ -91,6 +91,81 @@ function ConnectionRateLimitFields() {
   );
 }
 
+function ConnectionDeliveryGuardFields() {
+  return (
+    <>
+      <Alert
+        type="warning"
+        showIcon
+        message="Контроль ошибок доставки"
+        description="Считается по всем рассылкам этого подключения за скользящее окно. При превышении порога поток всего канала снижается либо канал отключается, а его активные рассылки ставятся на паузу."
+        style={{ marginTop: 16, marginBottom: 16 }}
+      />
+      <ProFormSwitch
+        name="delivery_guard_enabled"
+        label="Автоматическая защита канала"
+      />
+      <ProFormDigit
+        name="delivery_error_rate_percent"
+        label="Критическая доля ошибок, %"
+        fieldProps={{ min: 0.1, max: 100, precision: 1 }}
+        extra="По умолчанию 5%. Срабатывание происходит при превышении значения."
+      />
+      <ProFormDigit
+        name="delivery_error_window_minutes"
+        label="Окно расчёта, минут"
+        fieldProps={{ min: 5, max: 10080, precision: 0 }}
+      />
+      <ProFormDigit
+        name="delivery_error_min_samples"
+        label="Минимум завершённых доставок для расчёта"
+        fieldProps={{ min: 1, precision: 0 }}
+      />
+      <ProFormDigit
+        name="delivery_error_critical_count"
+        label="Критическое количество ошибок отправки"
+        fieldProps={{ min: 0, precision: 0 }}
+        extra="0 — учитывать только процентный порог."
+      />
+      <ProFormSelect
+        name="delivery_error_action"
+        label="Действие при критическом уровне"
+        options={[
+          {
+            value: 'throttle',
+            label: 'Снизить поток во всём канале',
+          },
+          {
+            value: 'disable',
+            label: 'Отключить канал и поставить рассылки на паузу',
+          },
+        ]}
+      />
+      <ProFormDigit
+        name="delivery_throttled_max_per_hour"
+        label="Сниженный поток, писем в час"
+        fieldProps={{ min: 1, precision: 0 }}
+        extra="Применяется ко всем кампаниям и воркерам этого подключения. Рекомендуемое значение — 50."
+      />
+    </>
+  );
+}
+
+function deliveryGuardPayload(values: Record<string, unknown>) {
+  return {
+    delivery_guard_enabled: values.delivery_guard_enabled !== false,
+    delivery_error_rate_threshold: Math.max(
+      0.001,
+      Math.min(1, (Number(values.delivery_error_rate_percent) || 5) / 100),
+    ),
+    delivery_error_window_minutes: Number(values.delivery_error_window_minutes) || 60,
+    delivery_error_min_samples: Number(values.delivery_error_min_samples) || 20,
+    delivery_error_critical_count: Number(values.delivery_error_critical_count) || 0,
+    delivery_error_action: values.delivery_error_action || 'throttle',
+    delivery_throttled_max_per_hour: Number(values.delivery_throttled_max_per_hour) || 50,
+  };
+}
+
 function EditConnectionAction({
   connection,
   onSaved,
@@ -176,18 +251,27 @@ function EditConnectionAction({
         api_token: '',
         max_per_hour: connection.max_per_hour ?? 0,
         max_per_day: connection.max_per_day ?? 0,
+        delivery_guard_enabled: connection.delivery_guard_enabled ?? true,
+        delivery_error_rate_percent: (connection.delivery_error_rate_threshold ?? 0.05) * 100,
+        delivery_error_window_minutes: connection.delivery_error_window_minutes ?? 60,
+        delivery_error_min_samples: connection.delivery_error_min_samples ?? 20,
+        delivery_error_critical_count: connection.delivery_error_critical_count ?? 10,
+        delivery_error_action: connection.delivery_error_action ?? 'throttle',
+        delivery_throttled_max_per_hour: connection.delivery_throttled_max_per_hour ?? 50,
       }}
       onFinish={async (values) => {
         const rateLimits = {
           max_per_hour: Number(values.max_per_hour) || 0,
           max_per_day: Number(values.max_per_day) || 0,
         };
+        const guardSettings = deliveryGuardPayload(values);
         if (isMail) {
           await connectionsApi.update(connection.id, {
             transport: 'smtp',
             email: values.email,
             ...(isSecretEditing ? { password: values.password } : {}),
             ...rateLimits,
+            ...guardSettings,
           });
         } else {
           const security = values.security as SmtpSecurity | undefined;
@@ -197,6 +281,7 @@ function EditConnectionAction({
             api_token: _apiToken,
             max_per_hour: _maxPerHour,
             max_per_day: _maxPerDay,
+            delivery_error_rate_percent: _deliveryErrorRatePercent,
             ...connectionValues
           } = values;
           await connectionsApi.update(connection.id, {
@@ -211,6 +296,7 @@ function EditConnectionAction({
               ? { api_token: values.api_token }
               : {}),
             ...rateLimits,
+            ...guardSettings,
           });
         }
         message.success('Подключение обновлено');
@@ -312,6 +398,7 @@ function EditConnectionAction({
         </>
       )}
       <ConnectionRateLimitFields />
+      <ConnectionDeliveryGuardFields />
     </ModalForm>
   );
 }
@@ -608,6 +695,13 @@ export function ConnectionsPage() {
             port: 587,
             max_per_hour: 0,
             max_per_day: 0,
+            delivery_guard_enabled: true,
+            delivery_error_rate_percent: 5,
+            delivery_error_window_minutes: 60,
+            delivery_error_min_samples: 20,
+            delivery_error_critical_count: 10,
+            delivery_error_action: 'throttle',
+            delivery_throttled_max_per_hour: 50,
           }}
           onOpenChange={(open) => {
             setAddModalOpen(open);
@@ -618,6 +712,7 @@ export function ConnectionsPage() {
               await connectionsApi.update(limitsStepConnectionId, {
                 max_per_hour: Number(values.max_per_hour) || 0,
                 max_per_day: Number(values.max_per_day) || 0,
+                ...deliveryGuardPayload(values),
               });
               message.success('Лимиты отправки сохранены');
               refreshConnections();
@@ -758,6 +853,7 @@ export function ConnectionsPage() {
                 style={{ marginBottom: 16 }}
               />
               <ConnectionRateLimitFields />
+              <ConnectionDeliveryGuardFields />
             </>
           ) : (
             <>
@@ -1075,6 +1171,20 @@ export function ConnectionsPage() {
               <Tag color={row.status === 'active' ? 'green' : 'red'}>
                 {row.status === 'active' ? 'Подключено' : 'Ошибка'}
               </Tag>
+              {row.delivery_guard?.state === 'throttled' ? (
+                <Tag color="orange">
+                  Поток снижен до {row.delivery_guard.effective_max_per_hour} писем/час
+                </Tag>
+              ) : null}
+              {row.delivery_guard?.state === 'disabled' ? (
+                <Tag color="red">Канал отключён защитой</Tag>
+              ) : null}
+              {row.delivery_guard && row.delivery_guard.terminal_count > 0 ? (
+                <Typography.Text type="secondary">
+                  Ошибки: {row.delivery_guard.error_count}/{row.delivery_guard.terminal_count}
+                  {' '}({(row.delivery_guard.error_rate * 100).toFixed(1)}%)
+                </Typography.Text>
+              ) : null}
               {row.last_error ? <Typography.Text type="danger">{row.last_error}</Typography.Text> : null}
             </Space>
           ),
@@ -1099,6 +1209,27 @@ export function ConnectionsPage() {
               >
                 Проверить
               </a>
+              {row.delivery_guard && row.delivery_guard.state !== 'normal' ? (
+                <Popconfirm
+                  title="Сбросить защиту канала?"
+                  description="Счётчики и состояние будут сброшены. Поставленные на паузу рассылки автоматически не возобновятся."
+                  okText="Сбросить"
+                  cancelText="Отмена"
+                  onConfirm={async () => {
+                    try {
+                      await connectionsApi.resetGuard(row.id);
+                      message.success('Защита канала сброшена');
+                      refreshConnections();
+                    } catch (error) {
+                      message.error(
+                        error instanceof Error ? error.message : 'Не удалось сбросить защиту канала',
+                      );
+                    }
+                  }}
+                >
+                  <a>Сбросить защиту</a>
+                </Popconfirm>
+              ) : null}
               <Popconfirm
                 title="Удалить подключение?"
                 description="Кампании с этим отправителем нельзя будет запустить."

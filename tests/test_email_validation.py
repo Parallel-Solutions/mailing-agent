@@ -52,6 +52,26 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
         self.assertEqual(result.reason_code, "smtpbz_invalid")
         self.assertIn("SMTP.BZ", result.reason)
 
+    def test_smtpbz_mode_rejects_failed_delivery_check_despite_true_result(self) -> None:
+        with patch.object(
+            email_validation,
+            "_run_smtpbz_request",
+            return_value=(
+                '{"result":true,"checks":{"validSyntax":true,'
+                '"validMxRecord":true,"validDeliver":false},'
+                '"smtpMessages":[{"status":521,"message":"521 5.5.1 Protocol error"}]}'
+            ),
+        ):
+            result = email_validation.validate_email_address(
+                "vopros@ek-territory.ru",
+                mode="smtpbz",
+                smtpbz_api_key="token",
+            )
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(result.reason_code, "smtpbz_invalid")
+        self.assertIn("доставляемости", result.reason)
+
     def test_smtpbz_mode_blocks_when_api_is_unavailable(self) -> None:
         with patch.object(
             email_validation,

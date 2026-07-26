@@ -409,6 +409,30 @@ export type DeliveryConnection = {
   has_secret?: boolean;
   max_per_hour?: number;
   max_per_day?: number;
+  delivery_guard_enabled?: boolean;
+  delivery_error_rate_threshold?: number;
+  delivery_error_window_minutes?: number;
+  delivery_error_min_samples?: number;
+  delivery_error_critical_count?: number;
+  delivery_error_action?: 'throttle' | 'disable';
+  delivery_throttled_max_per_hour?: number;
+  delivery_guard?: {
+    enabled: boolean;
+    state: 'normal' | 'throttled' | 'disabled';
+    reason: string;
+    error_rate_threshold: number;
+    window_minutes: number;
+    min_samples: number;
+    critical_error_count: number;
+    action: 'throttle' | 'disable';
+    throttled_max_per_hour: number;
+    terminal_count: number;
+    error_count: number;
+    error_rate: number;
+    effective_max_per_hour: number;
+    triggered_at: string;
+    last_error_at: string;
+  };
 };
 
 export type SmtpMailbox = DeliveryConnection;

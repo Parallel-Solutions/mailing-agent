@@ -342,12 +342,69 @@ class SmtpMailbox(Base):
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     max_per_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    delivery_guard_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    delivery_error_rate_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.05)
+    delivery_error_window_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    delivery_error_min_samples: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    delivery_error_critical_count: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    delivery_error_action: Mapped[str] = mapped_column(String(16), nullable=False, default="throttle")
+    delivery_throttled_max_per_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    delivery_guard_state: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
+    delivery_guard_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivery_guard_terminal_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    delivery_guard_error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    delivery_guard_error_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    delivery_guard_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_guard_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
         Index("idx_smtp_mailboxes_owner", "owner_username"),
         Index("idx_smtp_mailboxes_owner_default", "owner_username", "is_default"),
+    )
+
+
+class DeliveryChannelOutcome(Base):
+    __tablename__ = "delivery_channel_outcomes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    connection_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="CASCADE"), nullable=False
+    )
+    provider_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    provider_status: Mapped[str] = mapped_column(String(64), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    smtp_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_delivery_channel_outcomes_message",
+            "connection_id",
+            "provider_message_id",
+            unique=True,
+        ),
+        Index("idx_delivery_channel_outcomes_window", "connection_id", "occurred_at"),
+    )
+
+
+class DeliveryChannelSendSlot(Base):
+    __tablename__ = "delivery_channel_send_slots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    connection_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="CASCADE"), nullable=False
+    )
+    reserved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("idx_delivery_channel_send_slots_window", "connection_id", "reserved_at"),
     )
 
 

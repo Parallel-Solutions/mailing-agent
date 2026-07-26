@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -22,8 +23,11 @@ WEBHOOK_STATUS_TO_REASON = {
     "hard_bounced": "hard_bounce",
     "hard_bounce": "hard_bounce",
     "email_broken": "hard_bounce",
+    "err_user_unknown": "hard_bounce",
+    "err_recipient_inactive": "hard_bounce",
     "soft_bounced": "soft_bounce",
     "soft_bounce": "soft_bounce",
+    "err_mailbox_full": "soft_bounce",
     "unsubscribed": "unsubscribe",
     "unsubscribe": "unsubscribe",
     "spam": "spam",
@@ -42,6 +46,46 @@ def normalize_email(email: str) -> str:
 def reason_from_provider_status(provider_status: str) -> str | None:
     normalized = str(provider_status or "").strip().lower()
     return WEBHOOK_STATUS_TO_REASON.get(normalized)
+
+
+def reason_from_delivery_response(delivery_response: str) -> str | None:
+    """Classify common enhanced SMTP status codes without probing the mailbox."""
+    normalized = str(delivery_response or "").strip().lower()
+    if not normalized:
+        return None
+    hard_markers = (
+        "user unknown",
+        "unknown user",
+        "no such user",
+        "no such recipient",
+        "recipient not found",
+        "address rejected",
+        "mailbox does not exist",
+        "invalid recipient",
+        "account disabled",
+        "адрес не существует",
+        "пользователь не найден",
+    )
+    soft_markers = (
+        "mailbox full",
+        "quota exceeded",
+        "over quota",
+        "temporarily unavailable",
+        "try again later",
+        "greylist",
+        "greylisted",
+        "ящик переполнен",
+        "временно недоступ",
+    )
+    if re.search(r"(?:^|\D)5\.1\.[0-9](?:\D|$)", normalized) or any(
+        marker in normalized for marker in hard_markers
+    ):
+        return "hard_bounce"
+    if re.search(r"(?:^|\D)4\.[0-9]\.[0-9](?:\D|$)", normalized) or any(
+        marker in normalized for marker in soft_markers
+    ):
+        return "soft_bounce"
+    return None
 
 
 def _expires_for_reason(reason: str) -> datetime | None:
@@ -161,8 +205,9 @@ def upsert_from_provider_event(
     provider_status: str,
     source: str,
     job_id: str | None = None,
+    delivery_response: str = "",
 ) -> bool:
-    reason = reason_from_provider_status(provider_status)
+    reason = reason_from_provider_status(provider_status) or reason_from_delivery_response(delivery_response)
     if not reason:
         return False
     if reason == "unsubscribe":

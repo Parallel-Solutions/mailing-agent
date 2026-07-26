@@ -46,6 +46,15 @@ _SMTPBZ_VALID_KEYS = {
     "email_valid",
     "address_valid",
 }
+_SMTPBZ_REQUIRED_CHECK_KEYS = {
+    "validsyntax",
+    "valid_syntax",
+    "validmxrecord",
+    "valid_mx_record",
+    "validdeliver",
+    "valid_deliver",
+    "valid_delivery",
+}
 
 
 @dataclass(frozen=True)
@@ -358,6 +367,23 @@ def _loads_json_object(raw: Any) -> dict[str, Any] | list[Any] | None:
 def _classify_smtpbz_response(payload: Any) -> tuple[bool, str, str, dict[str, Any]] | None:
     values = list(_flatten_smtpbz_values(payload))
     details = {"smtpbz": {"status": "checked", "response": _safe_response_preview(payload)}}
+
+    # SMTP.BZ can return result=true while a required nested check, such as
+    # checks.validDeliver, is false. Required checks take precedence so that
+    # an address with unconfirmed deliverability is never accepted.
+    for key, value in values:
+        key_l = key.lower().rsplit(".", 1)[-1]
+        if key_l not in _SMTPBZ_REQUIRED_CHECK_KEYS:
+            continue
+        if value is False or (
+            isinstance(value, str) and _SMTPBZ_INVALID_STATUS_RE.match(value.strip())
+        ):
+            return (
+                False,
+                "smtpbz_invalid",
+                "SMTP.BZ: email не прошёл обязательную проверку доставляемости.",
+                details,
+            )
 
     for key, value in values:
         key_l = key.lower().rsplit(".", 1)[-1]

@@ -757,7 +757,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
         with patch.object(
             sender_agent,
-            "validate_email_address",
+            "validate_configured_email_address",
             side_effect=lambda email, **kwargs: fake_result(email, email == "backup@example.com"),
         ):
             valid_recipients, attempts = sender_agent._filter_validated_recipients(candidates, {})

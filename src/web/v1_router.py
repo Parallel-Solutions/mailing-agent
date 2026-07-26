@@ -242,6 +242,13 @@ class ConnectionCreateBody(BaseModel):
     oauth_tokens: dict[str, object] | None = None
     max_per_hour: int = 0
     max_per_day: int = 0
+    delivery_guard_enabled: bool = True
+    delivery_error_rate_threshold: float = 0.05
+    delivery_error_window_minutes: int = 60
+    delivery_error_min_samples: int = 20
+    delivery_error_critical_count: int = 10
+    delivery_error_action: str = "throttle"
+    delivery_throttled_max_per_hour: int = 50
 
 
 class ConnectionUpdateBody(BaseModel):
@@ -258,6 +265,13 @@ class ConnectionUpdateBody(BaseModel):
     use_starttls: bool | None = None
     max_per_hour: int | None = None
     max_per_day: int | None = None
+    delivery_guard_enabled: bool | None = None
+    delivery_error_rate_threshold: float | None = None
+    delivery_error_window_minutes: int | None = None
+    delivery_error_min_samples: int | None = None
+    delivery_error_critical_count: int | None = None
+    delivery_error_action: str | None = None
+    delivery_throttled_max_per_hour: int | None = None
 
 
 def _ok(result: Any) -> dict[str, Any]:
@@ -353,6 +367,20 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Проверка подключения не пройдена: {exc}") from exc
+
+    @router.post("/connections/{connection_id}/guard/reset")
+    def reset_connection_guard(connection_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                connection_service.reset_connection_guard(
+                    connection_id,
+                    actor.username,
+                    visible_owners=_visibility(actor),
+                )
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     # --- Profile ---
     @router.get("/profile")

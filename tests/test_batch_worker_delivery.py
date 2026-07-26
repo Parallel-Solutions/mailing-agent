@@ -18,9 +18,10 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
     def _chain_text(self) -> str:
         return "Hello\n\nПолучить: http://localhost:8006/chain/branch/uuid-1"
 
+    @patch("src.generator.delivery.channel_guard.wait_for_channel_send_slot")
     @patch("src.generator.delivery.sender_agent._send_via_rusender", return_value={"message_id": "msg-1"})
     @patch("src.campaigns.connection_service.resolve_connection")
-    def test_rusender_passes_html_override(self, resolve_mock, send_mock) -> None:
+    def test_rusender_passes_html_override(self, resolve_mock, send_mock, wait_mock) -> None:
         resolve_mock.return_value = ResolvedConnection(
             id="conn-1",
             transport="rusender",
@@ -40,13 +41,15 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "msg-1")
+        wait_mock.assert_called_once_with("conn-1")
         kwargs = send_mock.call_args.kwargs
         self.assertEqual(kwargs["html_override"], self._chain_html())
         self.assertEqual(kwargs["body_override"], self._chain_text())
 
+    @patch("src.generator.delivery.channel_guard.wait_for_channel_send_slot")
     @patch("src.generator.delivery.sender_agent._send_via_mailopost", return_value={"uuid": "msg-2"})
     @patch("src.campaigns.connection_service.resolve_connection")
-    def test_mailopost_passes_html_override(self, resolve_mock, send_mock) -> None:
+    def test_mailopost_passes_html_override(self, resolve_mock, send_mock, wait_mock) -> None:
         resolve_mock.return_value = ResolvedConnection(
             id="conn-2",
             transport="mailopost",
@@ -66,6 +69,7 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "msg-2")
+        wait_mock.assert_called_once_with("conn-2")
         kwargs = send_mock.call_args.kwargs
         self.assertEqual(kwargs["html_override"], self._chain_html())
         self.assertEqual(kwargs["body_override"], self._chain_text())
