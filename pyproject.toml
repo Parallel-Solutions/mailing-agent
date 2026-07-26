@@ -57,7 +57,7 @@ mcp = [
     "mcp>=1.0.0",
 ]
 semantic-rag = [
-    "torch>=2.2.0",
+    "torch>=2.2.0,<2.13.0",
     "transformers>=4.40.0",
 ]
 linguistics = [
@@ -65,8 +65,16 @@ linguistics = [
     "yargy>=0.16.0",
 ]
 agent-full = [
-    "torch>=2.2.0",
+    "torch>=2.2.0,<2.13.0",
     "transformers>=4.40.0",
     "natasha>=1.6.0",
     "yargy>=0.16.0",
 ]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
