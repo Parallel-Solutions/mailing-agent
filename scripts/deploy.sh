@@ -3,6 +3,7 @@
 # Usage (on server, from repo root):
 #   ./scripts/deploy.sh --pull
 #   ./scripts/deploy.sh --pull --post-deploy-stats
+#   ./scripts/deploy.sh --pull --skip-git-update
 #   ./scripts/deploy.sh --no-build
 #   ./scripts/deploy.sh --ref release/companies-campaign-wizard-2026-07-22
 #   PUBLIC_BASE_URL=https://offer.parresh.ru ./scripts/deploy.sh --pull
@@ -23,6 +24,7 @@ APP_LOCAL_BASE_URL="${APP_LOCAL_BASE_URL:-http://127.0.0.1:9806}"
 POST_DEPLOY_STATS=0
 NO_BUILD=0
 PULL_IMAGE=0
+SKIP_GIT_UPDATE=0
 GIT_REF=""
 
 usage() {
@@ -43,6 +45,10 @@ while [[ $# -gt 0 ]]; do
     --pull)
       PULL_IMAGE=1
       NO_BUILD=1
+      shift
+      ;;
+    --skip-git-update)
+      SKIP_GIT_UPDATE=1
       shift
       ;;
     --ref)
@@ -81,12 +87,16 @@ if [[ ! -f .env.docker ]]; then
   exit 1
 fi
 
-echo "=== Git update ==="
-git fetch --all --prune
-if [[ -n "$GIT_REF" ]]; then
-  git checkout "$GIT_REF"
+if (( SKIP_GIT_UPDATE )); then
+  echo "=== Git update skipped (caller pinned the checkout) ==="
+else
+  echo "=== Git update ==="
+  git fetch --all --prune
+  if [[ -n "$GIT_REF" ]]; then
+    git checkout "$GIT_REF"
+  fi
+  git pull --ff-only
 fi
-git pull --ff-only
 
 image_id() {
   docker image inspect "$1" --format '{{.Id}}' 2>/dev/null

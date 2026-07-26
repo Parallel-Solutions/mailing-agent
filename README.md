@@ -233,22 +233,25 @@ push main
   ├─ build-image   (push runtime :latest + :sha → GHCR)   ──┐
   └─ e2e-smoke     (pull :sha, no second runtime build)   │
                                                           ▼
-                                               deploy-prod (SSH)
-                                                 deploy.sh --pull
-                                                 prod-audit.sh (gate)
+                                               deploy-prod (restricted SSH)
+                                                 exact main SHA only
+                                                 deploy.sh + prod-audit
+                                                 automatic rollback on failure
 ```
 
-На `main` runtime-образ собирается **один раз** и переиспользуется e2e + deploy. Job `deploy-prod` в concurrency-группе `deploy-prod` с `cancel-in-progress: false` — второй push не убивает текущий SSH-деплой.
+На `main` runtime-образ собирается **один раз** и переиспользуется e2e + deploy. Job `deploy-prod` в concurrency-группе `deploy-prod` с `cancel-in-progress: false` — второй push не убивает текущий SSH-деплой. Сервер принимает только полный SHA коммита из `origin/main`; устаревший queued deploy не может откатить уже работающую более новую версию.
 
 **One-time setup:**
 
-1. GitHub Secrets: `PROD_SSH_HOST`, `PROD_SSH_USER`, `PROD_SSH_KEY` (опционально `PROD_SSH_PORT`).
-2. Публичный SSH-ключ деплоя → `authorized_keys` пользователя на prod-хосте.
-3. На сервере: `docker login ghcr.io` (PAT с `read:packages`, если пакет private).
-4. Пользователь деплоя в группе `docker`, репозиторий в `/opt/mailing-agent`, `.env.docker` настроен.
-5. Опционально: GitHub Environment `production` с required reviewers.
+1. Создайте отдельную пару SSH-ключей ED25519.
+2. На prod-хосте выполните от `root`: `bash scripts/provision-deploy-user.sh /path/to/key.pub`.
+3. Добавьте приватный ключ в GitHub Actions secret `PROD_SSH_KEY` (repository secret либо secret окружения `production`).
+4. На сервере должен быть настроен `docker login ghcr.io` (PAT с `read:packages`, если пакет private).
+5. Для полностью автоматического деплоя не включайте required reviewers у GitHub Environment `production`.
 
-Первый push в `main` без secrets упадёт на `deploy-prod` — после настройки secrets выполните **Re-run failed jobs**.
+Host, пользователь и проверенный ED25519 host key не являются секретами и зафиксированы в workflow/`.github/known_hosts`. Пользователь `deploy` не состоит в группе `docker` и не получает обычный SSH shell: его ключ может вызвать только `deploy <40-char-main-commit-sha>`. Root-owned wrapper сериализует деплои, фиксирует checkout на точном SHA, запускает health/audit gates и возвращает предыдущий image + checkout, если новая версия не проходит проверки. Длинный server-side deploy переживает обрыв SSH, пишет подробный лог в `/var/log/mailing-agent-deploy.log`, а SSH-сессия отправляет heartbeat каждые 30 секунд.
+
+Первый push в `main` без `PROD_SSH_KEY` завершит `deploy-prod` понятной ошибкой. После настройки секрета выполните **Re-run failed jobs**.
 
 ### Ручной deploy
 
@@ -258,6 +261,10 @@ chmod +x scripts/deploy.sh scripts/prod-audit.sh scripts/post-deploy-stats.sh
 
 # Обычный путь: pull immutable образа из GHCR (~3–5 min)
 MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> ./scripts/deploy.sh --pull
+
+# Для root-owned deploy wrapper: checkout уже зафиксирован на точном SHA
+MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> \
+  ./scripts/deploy.sh --pull --skip-git-update
 
 # Тот же путь с latest (если sha неизвестен)
 MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:latest ./scripts/deploy.sh --pull
@@ -278,7 +285,7 @@ MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:latest ./scripts/de
 ./scripts/prod-audit.sh
 ```
 
-`deploy.sh --pull` делает `docker pull` + `up --force-recreate` для `app`/`worker`, сверяет Image ID, ждёт local (`:9806`) и public health, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе.
+`deploy.sh --pull` делает `docker pull` + `up --force-recreate` для `app`/`worker`, сверяет Image ID, ждёт local (`:9806`) и public health, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. `--skip-git-update` разрешён для root-owned wrapper, который сам проверяет принадлежность SHA к `origin/main`. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе.
 
 ### Server checklist (после первого деплоя / при сомнениях)
 
