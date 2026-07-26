@@ -8,7 +8,7 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY frontend/ ./
 RUN npm run build
 
-FROM python:3.11-slim-bookworm AS runtime
+FROM python:3.11-slim-bookworm AS python-deps
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -33,6 +33,22 @@ RUN apt-get update \
         fonts-tlwg-loma-otf \
         fonts-unifont \
         fonts-wqy-zenhei \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir uv
+
+# Keep dependency installation independent from README and application-source
+# changes. The project itself is not installed into the environment.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    touch README.md \
+    && uv sync --frozen --no-dev --no-install-project \
+    && rm -f README.md
+
+FROM python-deps AS browser-deps
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
         libasound2 \
         libatk-bridge2.0-0 \
         libatk1.0-0 \
@@ -60,13 +76,9 @@ RUN apt-get update \
         xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --no-cache-dir uv
-
-COPY pyproject.toml uv.lock README.md ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
 RUN .venv/bin/python -m playwright install chromium
-RUN uv pip install --python .venv/bin/python "pypdf>=6.0.0" "pymupdf>=1.26.0" "yandex-ai-studio-sdk>=0.22.1"
+
+FROM browser-deps AS runtime
 
 COPY . .
 COPY --from=frontend-build /frontend/dist /app/frontend/dist
@@ -76,9 +88,13 @@ EXPOSE 9806
 
 CMD [".venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9806", "--loop", "asyncio", "--http", "h11"]
 
-# Unit/integration image: preinstalls dev+mcp extras so compose.test does not uv sync every run.
+# Unit/integration image: reuse production Python and browser dependencies.
+# Fixed-layout/PDF regression tests render with Chromium, so the browser stage
+# is intentionally shared with runtime instead of duplicated.
 # Build with: docker build --target test
-FROM runtime AS test
+FROM browser-deps AS test
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --extra dev --extra mcp --no-install-project
+COPY . .
+RUN mkdir -p /app/storage /app/logs /app/data /app/tmp /app/src/parser_new/memory/vectors
 CMD [".venv/bin/python", "-m", "tests"]
