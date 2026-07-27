@@ -56,6 +56,17 @@ class ProductionOnlyOfficeContractTests(unittest.TestCase):
             deploy,
         )
         self.assertIn('ONLYOFFICE_IMAGE="$ONLYOFFICE_IMAGE"', deploy)
+        self.assertIn(
+            'wait_for_container_health "mailing-agent-worker-1" "worker"',
+            deploy,
+        )
+        self.assertLess(
+            deploy.index('echo "=== Production audit ==="'),
+            deploy.index(
+                'prune_old_repo_images "$EXPECTED_IMAGE_ID"',
+                deploy.index('echo "=== Production audit ==="'),
+            ),
+        )
 
     def test_audit_requires_onlyoffice_and_keeps_it_off_host_ports(self) -> None:
         audit = _read("scripts/prod-audit.sh")
@@ -93,6 +104,12 @@ class ProductionOnlyOfficeContractTests(unittest.TestCase):
         self.assertIn("--env-file .env.docker --profile onlyoffice", wrapper)
         self.assertIn(
             "-f docker-compose.yml -f docker-compose.prod.yml",
+            wrapper,
+        )
+        self.assertIn('docker pull "$previous_image"', wrapper)
+        self.assertIn('previous_head="$deployed_sha"', wrapper)
+        self.assertIn(
+            'printf \'%s\\n\' "$requested_sha" > "$STATE_DIR/current_sha"',
             wrapper,
         )
 

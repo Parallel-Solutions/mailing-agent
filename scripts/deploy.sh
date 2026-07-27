@@ -211,19 +211,45 @@ wait_for_url() {
   echo "$label OK: $url"
 }
 
+wait_for_container_health() {
+  local container="$1"
+  local label="$2"
+  local deadline=$((SECONDS + HEALTH_TIMEOUT_SEC))
+  local status health
+
+  while true; do
+    status="$(docker inspect "$container" --format '{{.State.Status}}' 2>/dev/null || true)"
+    health="$(docker inspect "$container" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || true)"
+    if [[ "$status" != "running" ]]; then
+      echo "ERROR: $label container is not running (status=${status:-missing})" >&2
+      "${COMPOSE[@]}" ps
+      exit 1
+    fi
+    if [[ "$health" == "healthy" ]]; then
+      echo "$label container healthy: $container"
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      echo "ERROR: timed out waiting for $label container health (health=${health:-missing})" >&2
+      docker inspect "$container" --format '{{json .State.Health}}' 2>/dev/null || true
+      "${COMPOSE[@]}" ps
+      exit 1
+    fi
+    sleep 5
+  done
+}
+
 echo "=== Health checks (local) ==="
 wait_for_url "$APP_LOCAL_BASE_URL/health" "local health"
 wait_for_url "$APP_LOCAL_BASE_URL/ready" "local ready"
+wait_for_container_health "mailing-agent-app-1" "app"
+wait_for_container_health "mailing-agent-worker-1" "worker"
 
 echo "=== Health checks (public) ==="
 wait_for_url "$PUBLIC_BASE_URL/health" "public health"
 wait_for_url "$PUBLIC_BASE_URL/ready" "public ready"
 wait_for_url "$PUBLIC_BASE_URL/onlyoffice/healthcheck" "public OnlyOffice health"
 wait_for_url "$PUBLIC_BASE_URL/onlyoffice/web-apps/apps/api/documents/api.js" "public OnlyOffice API"
-
-if [[ -n "$EXPECTED_IMAGE_ID" ]]; then
-  prune_old_repo_images "$EXPECTED_IMAGE_ID"
-fi
 
 echo "=== Production audit ==="
 MAILING_AGENT_IMAGE="$MAILING_AGENT_IMAGE" \
@@ -232,6 +258,10 @@ MAILING_AGENT_IMAGE="$MAILING_AGENT_IMAGE" \
   EXPECTED_IMAGE_ID="${EXPECTED_IMAGE_ID:-}" \
   ONLYOFFICE_IMAGE="$ONLYOFFICE_IMAGE" \
   ./scripts/prod-audit.sh
+
+if [[ -n "$EXPECTED_IMAGE_ID" ]]; then
+  prune_old_repo_images "$EXPECTED_IMAGE_ID"
+fi
 
 if (( POST_DEPLOY_STATS )); then
   echo "=== Post-deploy statistics recovery ==="

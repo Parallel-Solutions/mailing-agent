@@ -79,6 +79,10 @@ rollback() {
 
   log "deployment failed; rolling back to $previous_image"
   git reset --hard "$previous_head" >/dev/null
+  if ! docker image inspect "$previous_image" >/dev/null 2>&1; then
+    log "rollback image is not cached; pulling $previous_image"
+    docker pull "$previous_image"
+  fi
 
   MAILING_AGENT_IMAGE="$previous_image" \
     docker compose --env-file .env.docker --profile onlyoffice \
@@ -127,8 +131,14 @@ main() {
     || fail "app and worker must already run the same rollback-capable image"
 
   deployed_sha="${previous_app_image#"$IMAGE_REPOSITORY:"}"
+  if [[ "$deployed_sha" =~ ^[0-9a-f]{40}$ ]] \
+    && git cat-file -e "${deployed_sha}^{commit}" 2>/dev/null; then
+    previous_head="$deployed_sha"
+  fi
   if [[ "$deployed_sha" == "$requested_sha" ]]; then
     log "$requested_sha is already running on app and worker"
+    git reset --hard "$requested_sha" >/dev/null
+    printf '%s\n' "$requested_sha" > "$STATE_DIR/current_sha"
     record_event "already-current" "$requested_sha" "$previous_app_image"
     return 0
   fi
