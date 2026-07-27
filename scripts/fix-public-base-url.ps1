@@ -27,6 +27,6 @@ Set-Content -Path $EnvFile -Value $content -NoNewline
 
 Write-Host "Updated $EnvFile -> PUBLIC_BASE_URL=$PublicBaseUrl"
 Write-Host "Restarting app and worker with production overlay..."
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d app worker
+docker compose --env-file $EnvFile --profile onlyoffice -f docker-compose.yml -f docker-compose.prod.yml up -d app worker
 curl.exe -sf "$PublicBaseUrl/health" | Write-Output
 Write-Host "Done. Resend campaign emails so links use the corrected domain."

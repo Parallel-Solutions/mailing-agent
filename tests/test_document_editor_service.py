@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import os
 import unittest
 from unittest.mock import MagicMock, patch
@@ -34,6 +38,7 @@ class DocumentEditorServiceTests(unittest.TestCase):
                 {
                     "ONLYOFFICE_EDITOR_PUBLIC_URL": "http://documents.example.test",
                     "ONLYOFFICE_APP_INTERNAL_URL": "http://app:9806",
+                    "ONLYOFFICE_JWT_SECRET": "test-onlyoffice-jwt-secret",
                 },
                 clear=False,
             ),
@@ -47,6 +52,26 @@ class DocumentEditorServiceTests(unittest.TestCase):
         self.assertFalse(editor["customization"]["forcesave"])
         self.assertEqual(result["document_key"], "version1_abcdef1234567890")
         self.assertEqual(result["config"]["document"]["key"], result["document_key"])
+        token = result["config"]["token"]
+        encoded_header, encoded_payload, encoded_signature = token.split(".")
+        signing_input = f"{encoded_header}.{encoded_payload}".encode("ascii")
+        expected_signature = hmac.new(
+            b"test-onlyoffice-jwt-secret",
+            signing_input,
+            hashlib.sha256,
+        ).digest()
+        actual_signature = base64.urlsafe_b64decode(
+            encoded_signature + "=" * (-len(encoded_signature) % 4)
+        )
+        self.assertEqual(actual_signature, expected_signature)
+        token_payload = json.loads(
+            base64.urlsafe_b64decode(
+                encoded_payload + "=" * (-len(encoded_payload) % 4)
+            ).decode("utf-8")
+        )
+        unsigned_config = dict(result["config"])
+        unsigned_config.pop("token")
+        self.assertEqual(token_payload, unsigned_config)
 
     def test_force_save_sends_onlyoffice_command(self) -> None:
         response = MagicMock()
@@ -69,7 +94,10 @@ class DocumentEditorServiceTests(unittest.TestCase):
             ),
             patch.dict(
                 os.environ,
-                {"ONLYOFFICE_EDITOR_INTERNAL_URL": "http://onlyoffice"},
+                {
+                    "ONLYOFFICE_EDITOR_INTERNAL_URL": "http://onlyoffice",
+                    "ONLYOFFICE_JWT_SECRET": "test-onlyoffice-jwt-secret",
+                },
                 clear=False,
             ),
         ):
@@ -81,11 +109,59 @@ class DocumentEditorServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(result, {"accepted": True, "key": "version1_abcdef1234567890"})
-        client.post.assert_called_once_with(
-            "http://onlyoffice/coauthoring/CommandService.ashx",
-            json={"c": "forcesave", "key": "version1_abcdef1234567890"},
+        call = client.post.call_args
+        self.assertEqual(
+            call.args[0],
+            "http://onlyoffice/command?shardkey=version1_abcdef1234567890",
+        )
+        self.assertEqual(call.kwargs["json"]["c"], "forcesave")
+        self.assertEqual(call.kwargs["json"]["key"], "version1_abcdef1234567890")
+        self.assertEqual(
+            call.kwargs["headers"]["Authorization"],
+            f"Bearer {call.kwargs['json']['token']}",
         )
         response.raise_for_status.assert_called_once_with()
+
+    def test_force_save_without_jwt_keeps_local_development_compatible(self) -> None:
+        response = MagicMock()
+        response.json.return_value = {"error": 0}
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.post.return_value = response
+
+        with (
+            patch.object(
+                document_editor_service.template_service,
+                "get_template",
+                return_value=_document_template(),
+            ),
+            patch.object(document_editor_service.httpx, "Client", return_value=client),
+            patch.object(
+                document_editor_service.template_service,
+                "get_template_version_file",
+                return_value={"filename": "document.docx", "content": b"source"},
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "ONLYOFFICE_EDITOR_INTERNAL_URL": "http://onlyoffice",
+                    "ONLYOFFICE_JWT_SECRET": "",
+                },
+                clear=False,
+            ),
+        ):
+            document_editor_service.force_save(
+                "template-1",
+                "admin",
+                "version-1",
+                "version1_abcdef1234567890",
+            )
+
+        client.post.assert_called_once_with(
+            "http://onlyoffice/command?shardkey=version1_abcdef1234567890",
+            json={"c": "forcesave", "key": "version1_abcdef1234567890"},
+            headers={},
+        )
 
     def test_callback_download_uses_internal_onlyoffice_url(self) -> None:
         with patch.dict(

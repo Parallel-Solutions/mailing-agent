@@ -14,11 +14,18 @@ PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://offer.parresh.ru}"
 APP_LOCAL_BASE_URL="${APP_LOCAL_BASE_URL:-http://127.0.0.1:9806}"
 DISK_WARN_PERCENT="${DISK_WARN_PERCENT:-85}"
 MAILING_AGENT_IMAGE="${MAILING_AGENT_IMAGE:-}"
+ONLYOFFICE_IMAGE="${ONLYOFFICE_IMAGE:-ghcr.io/parallel-solutions/mailing-agent:onlyoffice-9.4.0.1}"
 EXPECTED_IMAGE_ID="${EXPECTED_IMAGE_ID:-}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
+COMPOSE=(
+  docker compose
+  --env-file .env.docker
+  --profile onlyoffice
+  -f docker-compose.yml
+  -f docker-compose.prod.yml
+)
 AUDIT_FAILED=0
 
 section() {
@@ -146,6 +153,60 @@ else
   echo "public ready OK: $PUBLIC_BASE_URL/ready"
 fi
 
+section "OnlyOffice"
+onlyoffice_container="mailing-agent-onlyoffice-1"
+onlyoffice_status="$(docker inspect "$onlyoffice_container" --format '{{.State.Status}}' 2>/dev/null || true)"
+onlyoffice_health="$(docker inspect "$onlyoffice_container" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || true)"
+onlyoffice_image="$(docker inspect "$onlyoffice_container" --format '{{.Config.Image}}' 2>/dev/null || true)"
+echo "onlyoffice status=${onlyoffice_status:-missing} health=${onlyoffice_health:-unknown} image=${onlyoffice_image:-unknown}"
+if [[ "$onlyoffice_status" != "running" ]]; then
+  fail "OnlyOffice is not running (status=${onlyoffice_status:-missing})"
+fi
+if [[ "$onlyoffice_health" != "healthy" ]]; then
+  fail "OnlyOffice is not healthy (health=${onlyoffice_health:-unknown})"
+fi
+if [[ "$onlyoffice_image" != "$ONLYOFFICE_IMAGE" ]]; then
+  fail "OnlyOffice image '$onlyoffice_image' does not match '$ONLYOFFICE_IMAGE'"
+fi
+if ! "${COMPOSE[@]}" exec -T onlyoffice curl -fsS http://127.0.0.1/healthcheck >/dev/null; then
+  fail "OnlyOffice internal healthcheck failed"
+else
+  echo "onlyoffice internal health OK"
+fi
+if ! curl -fsS "$PUBLIC_BASE_URL/onlyoffice/healthcheck" >/dev/null; then
+  fail "OnlyOffice public healthcheck failed"
+else
+  echo "onlyoffice public health OK: $PUBLIC_BASE_URL/onlyoffice/healthcheck"
+fi
+if ! curl -fsS "$PUBLIC_BASE_URL/onlyoffice/web-apps/apps/api/documents/api.js" >/dev/null; then
+  fail "OnlyOffice public API script is unavailable"
+else
+  echo "onlyoffice public API OK"
+fi
+onlyoffice_ports="$(docker port "$onlyoffice_container" 80/tcp 2>/dev/null || true)"
+if [[ -n "$onlyoffice_ports" ]]; then
+  fail "OnlyOffice port 80 must not be published directly on production: $onlyoffice_ports"
+else
+  echo "onlyoffice has no direct host port (Caddy HTTPS only)"
+fi
+
+onlyoffice_public_url="$("${COMPOSE[@]}" exec -T app printenv ONLYOFFICE_EDITOR_PUBLIC_URL 2>/dev/null || true)"
+echo "app ONLYOFFICE_EDITOR_PUBLIC_URL=$onlyoffice_public_url"
+if [[ "$onlyoffice_public_url" != "$PUBLIC_BASE_URL/onlyoffice" ]]; then
+  fail "ONLYOFFICE_EDITOR_PUBLIC_URL='$onlyoffice_public_url' (expected $PUBLIC_BASE_URL/onlyoffice)"
+fi
+
+app_secret_length="$("${COMPOSE[@]}" exec -T app sh -lc 'printf "%s" "${#ONLYOFFICE_JWT_SECRET}"' 2>/dev/null || true)"
+app_secret_hash="$("${COMPOSE[@]}" exec -T app sh -lc 'test -n "$ONLYOFFICE_JWT_SECRET" && printf "%s" "$ONLYOFFICE_JWT_SECRET" | sha256sum | cut -d " " -f 1' 2>/dev/null || true)"
+onlyoffice_secret_hash="$("${COMPOSE[@]}" exec -T onlyoffice sh -lc 'test -n "$JWT_SECRET" && printf "%s" "$JWT_SECRET" | sha256sum | cut -d " " -f 1' 2>/dev/null || true)"
+if [[ ! "$app_secret_length" =~ ^[0-9]+$ ]] || (( app_secret_length < 32 )); then
+  fail "ONLYOFFICE_JWT_SECRET must contain at least 32 characters"
+elif [[ -z "$app_secret_hash" || "$app_secret_hash" != "$onlyoffice_secret_hash" ]]; then
+  fail "App and OnlyOffice JWT secrets do not match"
+else
+  echo "onlyoffice JWT secret is configured consistently (length=$app_secret_length)"
+fi
+
 section "Alembic"
 db_rev="$("${COMPOSE[@]}" exec -T postgres psql -U mailing -d mailing -t -A -c "SELECT version_num FROM alembic_version;" 2>/dev/null || true)"
 head_rev="$(get_head_revision || true)"
@@ -167,7 +228,8 @@ done
 
 section "Docker volumes"
 pg_ok=0
-for vol in mailing-agent_pgdata mailing-agent_minio-data mailing-agent_redis-data mailing-agent_chroma-data; do
+for vol in mailing-agent_pgdata mailing-agent_minio-data mailing-agent_redis-data mailing-agent_chroma-data \
+  mailing-agent_onlyoffice-data mailing-agent_onlyoffice-lib mailing-agent_onlyoffice-logs mailing-agent_onlyoffice-db; do
   mountpoint="$(docker volume inspect "$vol" --format '{{.Mountpoint}}' 2>/dev/null || true)"
   if [[ -n "$mountpoint" ]]; then
     echo "$vol -> $mountpoint"
@@ -203,7 +265,6 @@ done
 section "Forbidden / optional containers (must be stopped on prod)"
 # Hardcoded known offenders + any container from e2e/test compose projects.
 forbidden_patterns=(
-  'mailing-agent-onlyoffice'
   'mailing-agent-gotenberg-2'
   'mailpit'
   'playwright'
@@ -223,8 +284,8 @@ done < <(docker ps --format '{{.Names}} {{.Label "com.docker.compose.project"}}'
 
 # Also flag any compose services outside the prod allowlist in this project.
 section "Prod allowlist check"
-# Expected long-lived: app worker postgres minio redis gotenberg (minio-init is one-shot).
-allow_services='^(app|worker|postgres|minio|minio-init|redis|gotenberg)$'
+# Expected long-lived: app worker postgres minio redis gotenberg onlyoffice (minio-init is one-shot).
+allow_services='^(app|worker|postgres|minio|minio-init|redis|gotenberg|onlyoffice)$'
 while IFS= read -r svc; do
   [[ -z "$svc" ]] && continue
   if [[ ! "$svc" =~ $allow_services ]]; then

@@ -34,6 +34,7 @@ services:
       ONLYOFFICE_APP_INTERNAL_URL: ${ONLYOFFICE_APP_INTERNAL_URL:-http://app:9806}
       ONLYOFFICE_EDITOR_INTERNAL_URL: ${ONLYOFFICE_EDITOR_INTERNAL_URL:-http://onlyoffice}
       ONLYOFFICE_EDITOR_TOKEN_SECRET: ${ONLYOFFICE_EDITOR_TOKEN_SECRET:-campaignflow-local-editor-secret}
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:-}
     ports:
       - "${APP_PUBLIC_PORT:-9806}:9806"
     volumes:
@@ -107,19 +108,28 @@ services:
 
   onlyoffice:
     profiles: ["onlyoffice"]
-    image: onlyoffice/documentserver:latest
+    image: ${ONLYOFFICE_IMAGE:-onlyoffice/documentserver:9.4.0.1}
     restart: unless-stopped
     environment:
-      JWT_ENABLED: "false"
+      JWT_ENABLED: ${ONLYOFFICE_JWT_ENABLED:-false}
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:-campaignflow-local-onlyoffice-secret}
+      JWT_HEADER: Authorization
+      JWT_IN_BODY: "false"
       ALLOW_PRIVATE_IP_ADDRESS: "true"
+    shm_size: 512m
     ports:
       - "${ONLYOFFICE_PUBLIC_PORT:-8080}:80"
+    volumes:
+      - onlyoffice-data:/var/www/onlyoffice/Data
+      - onlyoffice-lib:/var/lib/onlyoffice
+      - onlyoffice-logs:/var/log/onlyoffice
+      - onlyoffice-db:/var/lib/postgresql
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/healthcheck"]
       interval: 15s
       timeout: 10s
       retries: 20
-      start_period: 120s
+      start_period: 180s
 
   postgres:
     image: postgres:16
@@ -267,3 +277,7 @@ volumes:
   minio-data:
   redis-data:
   chroma-data:
+  onlyoffice-data:
+  onlyoffice-lib:
+  onlyoffice-logs:
+  onlyoffice-db:

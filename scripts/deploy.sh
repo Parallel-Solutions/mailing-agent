@@ -19,6 +19,7 @@ set -euo pipefail
 
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://offer.parresh.ru}"
 MAILING_AGENT_IMAGE="${MAILING_AGENT_IMAGE:-ghcr.io/parallel-solutions/mailing-agent:latest}"
+ONLYOFFICE_IMAGE="${ONLYOFFICE_IMAGE:-ghcr.io/parallel-solutions/mailing-agent:onlyoffice-9.4.0.1}"
 HEALTH_TIMEOUT_SEC="${HEALTH_TIMEOUT_SEC:-300}"
 APP_LOCAL_BASE_URL="${APP_LOCAL_BASE_URL:-http://127.0.0.1:9806}"
 POST_DEPLOY_STATS=0
@@ -69,7 +70,13 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
+COMPOSE=(
+  docker compose
+  --env-file .env.docker
+  --profile onlyoffice
+  -f docker-compose.yml
+  -f docker-compose.prod.yml
+)
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -154,13 +161,15 @@ prune_old_repo_images() {
   done < <(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' "$repo" 2>/dev/null || true)
 }
 
-echo "=== Build and restart app + worker ==="
+echo "=== Build and restart production services ==="
 EXPECTED_IMAGE_ID=""
 
 # Ensure infra is running under the prod overlay (applies MinIO localhost binds
 # when the overlay changes; does not force-recreate healthy postgres).
 echo "=== Ensure prod infra ==="
-MAILING_AGENT_IMAGE="$MAILING_AGENT_IMAGE" "${COMPOSE[@]}" up -d postgres minio redis gotenberg
+MAILING_AGENT_IMAGE="$MAILING_AGENT_IMAGE" \
+  ONLYOFFICE_IMAGE="$ONLYOFFICE_IMAGE" \
+  "${COMPOSE[@]}" up -d postgres minio redis gotenberg onlyoffice
 
 if (( PULL_IMAGE )); then
   echo "Pulling image: $MAILING_AGENT_IMAGE"
@@ -209,6 +218,8 @@ wait_for_url "$APP_LOCAL_BASE_URL/ready" "local ready"
 echo "=== Health checks (public) ==="
 wait_for_url "$PUBLIC_BASE_URL/health" "public health"
 wait_for_url "$PUBLIC_BASE_URL/ready" "public ready"
+wait_for_url "$PUBLIC_BASE_URL/onlyoffice/healthcheck" "public OnlyOffice health"
+wait_for_url "$PUBLIC_BASE_URL/onlyoffice/web-apps/apps/api/documents/api.js" "public OnlyOffice API"
 
 if [[ -n "$EXPECTED_IMAGE_ID" ]]; then
   prune_old_repo_images "$EXPECTED_IMAGE_ID"
@@ -219,6 +230,7 @@ MAILING_AGENT_IMAGE="$MAILING_AGENT_IMAGE" \
   PUBLIC_BASE_URL="$PUBLIC_BASE_URL" \
   APP_LOCAL_BASE_URL="$APP_LOCAL_BASE_URL" \
   EXPECTED_IMAGE_ID="${EXPECTED_IMAGE_ID:-}" \
+  ONLYOFFICE_IMAGE="$ONLYOFFICE_IMAGE" \
   ./scripts/prod-audit.sh
 
 if (( POST_DEPLOY_STATS )); then

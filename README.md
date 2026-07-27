@@ -105,7 +105,7 @@
 | **E2E** | `npm run e2e:*` / `.\scripts\e2e.ps1` + `.env.e2e` | base + `docker-compose.e2e.yml` | `mailing_e2e` / project `mailing-agent-e2e` | Playwright (порты по умолчанию `19806` / `18025`) |
 | **Unit/integration** | `docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test` | `docker-compose.test.yml` | `mailing_test` / project `mailing-agent-test` | Python-тесты (Postgres + MinIO only; отдельный project, чтобы не трогать local) |
 
-Опциональные профили на base compose: `migrate` / `verify`, `onlyoffice`, `gotenberg-ha`. В e2e — profile `playwright`.
+Опциональные профили на base compose: `migrate` / `verify`, `onlyoffice`, `gotenberg-ha`. На production профиль `onlyoffice` включается автоматически скриптами deploy/audit. В e2e — profile `playwright`.
 
 Проверки: `GET /health` — liveness (БД); `GET /ready` — readiness (БД, Redis, MinIO, Gotenberg). Worker имеет свой Docker healthcheck (heartbeat + БД + Redis).
 
@@ -130,6 +130,8 @@ Docker Compose поднимает:
 
 
 Gotenberg не публикуется наружу и доступен контейнеру приложения по адресу `http://gotenberg:3000`. PDF-конвертация настроена через Gotenberg.
+
+OnlyOffice на production доступен только через Caddy по HTTPS-маршруту `https://offer.parresh.ru/onlyoffice`; прямой порт Document Server на хосте не публикуется. Приложение и Document Server используют общий `ONLYOFFICE_JWT_SECRET` из `.env.docker`. Закреплённый образ `9.4.0.1` зеркалируется workflow в GHCR, чтобы deploy не зависел от анонимного лимита Docker Hub.
 
 
 
@@ -247,7 +249,8 @@ push main
 2. На prod-хосте выполните от `root`: `bash scripts/provision-deploy-user.sh /path/to/key.pub`.
 3. Добавьте приватный ключ в GitHub Actions secret `PROD_SSH_KEY` (repository secret либо secret окружения `production`).
 4. На сервере должен быть настроен `docker login ghcr.io` (PAT с `read:packages`, если пакет private).
-5. Для полностью автоматического деплоя не включайте required reviewers у GitHub Environment `production`.
+5. Добавьте в `/opt/mailing-agent/.env.docker` отдельный случайный `ONLYOFFICE_JWT_SECRET` длиной не менее 32 символов.
+6. Для полностью автоматического деплоя не включайте required reviewers у GitHub Environment `production`.
 
 Host, пользователь и проверенный ED25519 host key не являются секретами и зафиксированы в workflow/`.github/known_hosts`. Пользователь `deploy` не состоит в группе `docker` и не получает обычный SSH shell: его ключ может вызвать только `deploy <40-char-main-commit-sha>`. Root-owned wrapper сериализует деплои, фиксирует checkout на точном SHA, запускает health/audit gates и возвращает предыдущий image + checkout, если новая версия не проходит проверки. Длинный server-side deploy переживает обрыв SSH, пишет подробный лог в `/var/log/mailing-agent-deploy.log`, а SSH-сессия отправляет heartbeat каждые 30 секунд.
 
@@ -285,17 +288,17 @@ MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:latest ./scripts/de
 ./scripts/prod-audit.sh
 ```
 
-`deploy.sh --pull` делает `docker pull` + `up --force-recreate` для `app`/`worker`, сверяет Image ID, ждёт local (`:9806`) и public health, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. `--skip-git-update` разрешён для root-owned wrapper, который сам проверяет принадлежность SHA к `origin/main`. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе.
+`deploy.sh --pull` делает `docker pull` + `up --force-recreate` для `app`/`worker`, поднимает закреплённый OnlyOffice, сверяет Image ID, ждёт local (`:9806`), public health и публичный API редактора, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. `--skip-git-update` разрешён для root-owned wrapper, который сам проверяет принадлежность SHA к `origin/main`. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, JWT-защита редактора, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе.
 
 ### Server checklist (после первого деплоя / при сомнениях)
 
 ```bash
 cd /opt/mailing-agent
-docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
-# expect: app, worker, postgres, minio, redis, gotenberg (minio-init exited OK)
+docker compose --env-file .env.docker --profile onlyoffice -f docker-compose.yml -f docker-compose.prod.yml ps
+# expect: app, worker, postgres, minio, redis, gotenberg, onlyoffice (minio-init exited OK)
 
 docker ps --format '{{.Names}} {{.Image}}'
-# no onlyoffice / gotenberg-2 / mailpit / playwright / mailing-agent-e2e / mailing-agent-test
+# no gotenberg-2 / mailpit / playwright / mailing-agent-e2e / mailing-agent-test
 
 docker inspect mailing-agent-app-1 --format '{{.Config.Image}} {{.Image}}'
 # must be ghcr.io/parallel-solutions/mailing-agent:<sha>

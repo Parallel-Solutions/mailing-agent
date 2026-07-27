@@ -78,6 +78,9 @@ services:
       - ./main.py:/app/main.py
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.prod.yml:/app/docker-compose.prod.yml:ro
+      - ./.github/workflows/ci.yml:/app/.github/workflows/ci.yml:ro
     command: [".venv/bin/python", "-m", "tests"]
 
 volumes:

@@ -81,7 +81,8 @@ rollback() {
   git reset --hard "$previous_head" >/dev/null
 
   MAILING_AGENT_IMAGE="$previous_image" \
-    docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+    docker compose --env-file .env.docker --profile onlyoffice \
+      -f docker-compose.yml -f docker-compose.prod.yml \
       up -d --no-build --force-recreate --pull never app worker
 
   wait_for_url "$LOCAL_BASE_URL/health" "local health"
