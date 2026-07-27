@@ -70,6 +70,10 @@ services:
       target: runtime
     image: ${MAILING_AGENT_IMAGE:-mailing-agent:local}
     restart: unless-stopped
+    # The queue worker may spend up to one heartbeat interval supervising a
+    # child, then up to BACKGROUND_QUEUE_SHUTDOWN_GRACE_SECONDS stopping it.
+    # Docker must not SIGKILL the parent before it can release the task lease.
+    stop_grace_period: 75s
     command: .venv/bin/python -m src.workers.queue_worker
     env_file:
       - .env.docker

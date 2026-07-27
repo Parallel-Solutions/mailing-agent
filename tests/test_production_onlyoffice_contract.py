@@ -40,6 +40,7 @@ class ProductionOnlyOfficeContractTests(unittest.TestCase):
         self.assertIn("onlyoffice-data:/var/www/onlyoffice/Data", compose)
         self.assertIn("onlyoffice-db:/var/lib/postgresql", compose)
         self.assertIn("ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:-}", compose)
+        self.assertIn("stop_grace_period: 75s", compose)
 
     def test_deploy_enables_onlyoffice_and_checks_public_assets(self) -> None:
         deploy = _read("scripts/deploy.sh")
