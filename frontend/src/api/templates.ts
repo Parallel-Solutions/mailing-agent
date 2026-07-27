@@ -1,5 +1,12 @@
 import { api, apiRequest } from './client';
-import type { EmailEditorState, PdfEditorField, PdfEditorState, Template } from './types';
+import type {
+  EmailEditorState,
+  FontAsset,
+  PdfEditorField,
+  PdfEditorState,
+  Template,
+  TemplateFontsResult,
+} from './types';
 
 export type OfficeEditorConfig = {
   editor_url: string;
@@ -23,6 +30,25 @@ export type TemplateAiModel = {
 };
 
 export const templatesApi = {
+  listFonts: () => api.get<FontAsset[]>('/api/v1/fonts'),
+  templateFonts: (id: string) =>
+    api.get<TemplateFontsResult>(`/api/v1/templates/${id}/fonts`),
+  resolveTemplateFonts: (id: string) =>
+    api.post<TemplateFontsResult>(`/api/v1/templates/${id}/fonts/resolve`),
+  uploadFont: (
+    file: File,
+    options: { templateId?: string; licenseConfirmed: boolean },
+  ) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('license_confirmed', String(options.licenseConfirmed));
+    if (options.templateId) form.append('template_id', options.templateId);
+    return apiRequest<FontAsset>('/api/v1/fonts/upload', { method: 'POST', body: form });
+  },
+  deleteFont: (fontId: string, templateId?: string) => {
+    const query = templateId ? `?template_id=${encodeURIComponent(templateId)}` : '';
+    return api.delete<{ deleted: boolean; id: string }>(`/api/v1/fonts/${fontId}${query}`);
+  },
   list: (params?: { template_type?: string; q?: string }) => {
     const q = new URLSearchParams();
     if (params?.template_type) q.set('template_type', params.template_type);
@@ -129,6 +155,7 @@ export const templatesApi = {
       editor_state?: EmailEditorState;
       is_template?: boolean;
       rendered_pdf_filename?: string;
+      attachment_output_format?: 'original' | 'pdf';
     },
   ) => api.patch<Template>(`/api/v1/templates/${id}`, body),
   uploadAsset: async (templateId: string, file: File) => {

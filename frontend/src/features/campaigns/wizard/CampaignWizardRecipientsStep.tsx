@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ProFormSelect } from '@ant-design/pro-components';
 import { Button, Space, Table, Tag, Upload } from 'antd';
 import type { Audience, Campaign, Recipient } from '@/api/types';
+import { statusLabel } from '@/utils/presentation';
 
 type Props = {
   campaignId?: string;
@@ -78,7 +79,11 @@ export function CampaignWizardRecipientsStep({
           {
             title: 'Проверка',
             dataIndex: 'validation_status',
-            render: (v) => <Tag color={v === 'valid' ? 'green' : 'red'}>{v}</Tag>,
+            render: (v) => (
+              <Tag color={v === 'valid' ? 'green' : 'red'}>
+                {statusLabel(String(v || ''))}
+              </Tag>
+            ),
           },
           {
             title: 'Исключён',

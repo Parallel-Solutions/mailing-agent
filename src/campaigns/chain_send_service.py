@@ -378,6 +378,9 @@ def send_chain_node_email(
             campaign=camp,
             template_id=email_template_id,
         )
+        from src.campaigns.batch_worker import _assert_variables_filled
+
+        _assert_variables_filled(subject, html, text)
         if active_test_email:
             subject = f"[TEST] {subject}"
 

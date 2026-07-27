@@ -572,6 +572,56 @@ def mapping_validation_errors(campaign: Campaign) -> list[str]:
     return []
 
 
+def empty_variable_validation_errors(campaign: Campaign) -> list[str]:
+    """Validate variable values for every active recipient."""
+    template_variables = collect_template_variables(campaign)
+    variable_names = [
+        str(item.get("name") or "").strip()
+        for item in template_variables
+        if str(item.get("name") or "").strip()
+    ]
+    if not variable_names:
+        return []
+
+    from src.campaigns.substitution_context import build_substitution_context
+    from src.campaigns.substitution_engine import resolve_context_value
+
+    template_text = "\n".join(_collect_template_texts_for_validation(campaign))
+    missing_by_variable: dict[str, list[str]] = {}
+    with session_scope() as session:
+        recipients = session.scalars(
+            select(CampaignRecipient)
+            .where(
+                CampaignRecipient.campaign_id == campaign.id,
+                CampaignRecipient.excluded.is_(False),
+            )
+            .order_by(CampaignRecipient.row_index.asc())
+        ).all()
+        for recipient in recipients:
+            context = build_substitution_context(
+                recipient=recipient,
+                campaign=campaign,
+                outgoing_number=recipient.row_index or 1,
+                template_text=template_text,
+            )
+            for variable_name in variable_names:
+                if str(resolve_context_value(context, variable_name) or "").strip():
+                    continue
+                label = (
+                    str(recipient.company or "").strip()
+                    or str(recipient.email or recipient.email_fallback or "").strip()
+                    or f"строка {int(recipient.row_index or 0) + 1}"
+                )
+                bucket = missing_by_variable.setdefault(variable_name, [])
+                if len(bucket) < 5:
+                    bucket.append(label)
+
+    return [
+        f"Не заполнена переменная «{variable}» для получателей: {', '.join(labels)}"
+        for variable, labels in missing_by_variable.items()
+    ]
+
+
 def resolve_recipient_value(recipient: CampaignRecipient, column: str) -> str:
     raw = str(column or "").strip()
     if _is_literal_value(raw):

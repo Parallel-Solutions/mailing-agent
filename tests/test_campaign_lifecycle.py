@@ -16,7 +16,12 @@ from src.campaigns.state import (
     transition_campaign_status,
 )
 from src.infra.db import session_scope
-from src.infra.models import Campaign, CampaignRecipient, CampaignStatusEvent
+from src.infra.models import (
+    Campaign,
+    CampaignRecipient,
+    CampaignStatusEvent,
+    DeliveryAttempt,
+)
 from src.security.auth import Principal
 from src.security.user_store import create_user
 from src.web.v1_router import create_v1_router
@@ -46,14 +51,26 @@ class CampaignLifecycleTests(unittest.TestCase):
             assert campaign is not None
             campaign.total_count = 4
             campaign.sent_count = 2
-            campaign.error_count = 6
+            campaign.error_count = 1
+            recipients: list[CampaignRecipient] = []
             for index, status in enumerate(("sent", "in_chain", "skipped", "failed")):
+                recipient = CampaignRecipient(
+                    campaign_id=campaign_id,
+                    row_index=index,
+                    email=f"recipient-{index}@example.com",
+                    send_status=status,
+                )
+                session.add(recipient)
+                recipients.append(recipient)
+            session.flush()
+            for attempt_number, status in ((1, "failed"), (2, "sent")):
                 session.add(
-                    CampaignRecipient(
+                    DeliveryAttempt(
                         campaign_id=campaign_id,
-                        row_index=index,
-                        email=f"recipient-{index}@example.com",
-                        send_status=status,
+                        recipient_id=int(recipients[0].id),
+                        attempt_number=attempt_number,
+                        status=status,
+                        idempotency_key=f"{campaign_id}:{recipients[0].id}:{attempt_number}",
                     )
                 )
             session.flush()
@@ -63,7 +80,8 @@ class CampaignLifecycleTests(unittest.TestCase):
         self.assertEqual(metrics["success_count"], 2)
         self.assertEqual(metrics["skipped_count"], 1)
         self.assertEqual(metrics["failed_recipient_count"], 1)
-        self.assertEqual(metrics["attempt_error_count"], 6)
+        self.assertEqual(metrics["attempt_count"], 2)
+        self.assertEqual(metrics["attempt_error_count"], 1)
         self.assertEqual(metrics["progress"], 100.0)
         self.assertEqual(metrics["success_rate"], 50.0)
 

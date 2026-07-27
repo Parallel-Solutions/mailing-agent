@@ -18,6 +18,7 @@ import { ReportsTab } from './tabs/ReportsTab';
 import { CampaignsListPage } from '@/pages/CampaignsListPage';
 import { AudiencesPage } from '@/pages/AudiencesPage';
 import { asRecordArray } from './utils';
+import { formatLocalDateTime } from '@/utils/dateTime';
 
 export function StatisticsPage() {
   return (
@@ -68,7 +69,7 @@ function StatisticsPageInner() {
 
   const generatedAt =
     tab === 'dashboard'
-      ? String(metaQuery.data?.generated_at_label || metaQuery.data?.generated_at || '—')
+      ? formatLocalDateTime(String(metaQuery.data?.generated_at || ''))
       : '—';
 
   return (
@@ -117,7 +118,7 @@ function StatisticsPageInner() {
               onChange={(value) => setFilters({ campaign: value || undefined }, { resetPages: true })}
               options={campaigns.map((item) => ({
                 value: String(item.job_id),
-                label: String(item.title || item.job_id),
+                label: String(item.title || 'Рассылка без названия'),
               }))}
             />
             <Select

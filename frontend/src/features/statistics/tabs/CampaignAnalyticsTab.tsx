@@ -54,7 +54,7 @@ export function CampaignAnalyticsTab() {
   const campaign = asRecord(result.campaign);
 
   const kpis = [
-    { title: 'Отправлено', value: fmtMetric(summary.sent), drill: 'sent' },
+    { title: 'Принято провайдером', value: fmtMetric(summary.sent), drill: 'sent' },
     {
       title: 'Доставлено',
       value: `${fmtMetric(summary.delivered)} / ${rates.delivery_rate ?? 0}%`,
@@ -96,7 +96,7 @@ export function CampaignAnalyticsTab() {
             options={(campaigns.length ? campaigns : asRecordArray(campaignsQuery.data?.campaigns)).map(
               (item) => ({
                 value: String(item.job_id),
-                label: String(item.title || item.job_id),
+                label: String(item.title || 'Рассылка без названия'),
               }),
             )}
           />

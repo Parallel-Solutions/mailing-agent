@@ -59,7 +59,20 @@ def _render_body(
         )
     else:
         text = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<p>", "").replace("</p>", "\n")
+    _assert_variables_filled(html, text)
     return html, text
+
+
+def _assert_variables_filled(*values: str) -> None:
+    from src.campaigns.substitution_engine import find_unresolved_placeholders
+
+    unresolved: list[str] = []
+    for value in values:
+        for token in find_unresolved_placeholders(value):
+            if token not in unresolved:
+                unresolved.append(token)
+    if unresolved:
+        raise ValueError("Не заполнены переменные: " + ", ".join(unresolved))
 
 
 def _load_email_template(campaign: Campaign) -> tuple[str, str, str]:
@@ -145,7 +158,10 @@ def _send_delivery_message(
     from src.campaigns.connection_service import resolve_connection
     from src.generator.delivery.channel_guard import wait_for_channel_send_slot
 
-    wait_for_channel_send_slot(connection_id)
+    wait_for_channel_send_slot(
+        connection_id,
+        allow_warmup=send_mode == "connection_warmup",
+    )
     connection = resolve_connection(connection_id, owner_username, campaign=campaign)
     attachment_paths: list[str] = []
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
@@ -447,6 +463,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                 campaign=camp,
                 template_id=camp.email_template_id,
             )
+            _assert_variables_filled(subject)
             try:
                 from src.campaigns.connection_service import pick_available_connection
 

@@ -1,4 +1,5 @@
 import dayjs, { type Dayjs } from 'dayjs';
+import { formatLocalDateTime } from '@/utils/dateTime';
 
 export type IntervalUnit = 'hours' | 'days';
 
@@ -28,18 +29,8 @@ export function intervalToSeconds(value: number, unit: IntervalUnit): number {
   return unit === 'days' ? n * 86400 : n * 3600;
 }
 
-export function formatScheduleDateTime(iso?: string | null, timezone = 'Europe/Moscow'): string {
-  if (!iso) return '—';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return new Intl.DateTimeFormat('ru-RU', {
-    timeZone: timezone,
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
+export function formatScheduleDateTime(iso?: string | null, _timezone?: string): string {
+  return formatLocalDateTime(iso);
 }
 
 export function scheduleToFormValues(schedule?: {

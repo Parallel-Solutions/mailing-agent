@@ -11,6 +11,7 @@ const queryClient = new QueryClient({
     queries: {
       retry: 1,
       refetchOnWindowFocus: false,
+      placeholderData: (previousData: unknown) => previousData,
     },
   },
 });

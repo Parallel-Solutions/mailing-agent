@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     public_base_url: str = "https://31-130-150-209.sslip.io"
     upload_data_max_bytes: int = 25 * 1024 * 1024
     upload_template_max_bytes: int = 10 * 1024 * 1024
+    upload_font_max_bytes: int = 20 * 1024 * 1024
+    trusted_font_download_enabled: bool = True
+    trusted_font_download_timeout_seconds: float = 15.0
     municipality_upload_auto_verify_max_bytes: int = 4 * 1024 * 1024
 
     openai_api_key: str = ""

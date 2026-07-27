@@ -1,5 +1,5 @@
 import { PlusOutlined } from '@ant-design/icons';
-import { ModalForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProTable } from '@ant-design/pro-components';
+import { ModalForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProFormTextArea, ProTable } from '@ant-design/pro-components';
 import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useState } from 'react';
@@ -17,6 +17,7 @@ import {
 } from '@/utils/connectionAuthKind';
 import { selectSmtpSetupSettings, smtpSetupSecurity } from '@/utils/smtpSetup';
 import { SmtpSetupInstructions } from '@/features/connections/SmtpSetupInstructions';
+import { errorLabel } from '@/utils/presentation';
 
 type ConnectionTransport = 'smtp' | 'rusender' | 'mailopost';
 type ApiTransport = 'rusender' | 'mailopost';
@@ -97,13 +98,13 @@ function ConnectionDeliveryGuardFields() {
       <Alert
         type="warning"
         showIcon
-        message="Контроль ошибок доставки"
-        description="Считается по всем рассылкам этого подключения за скользящее окно. При превышении порога поток всего канала снижается либо канал отключается, а его активные рассылки ставятся на паузу."
+        message="Прогрев при ошибках"
+        description="Если доля ошибок превысит порог, активные рассылки этого подключения будут поставлены на паузу. Система отправит прогревочные письма на указанные адреса, но не будет ограничивать скорость подключения."
         style={{ marginTop: 16, marginBottom: 16 }}
       />
       <ProFormSwitch
         name="delivery_guard_enabled"
-        label="Автоматическая защита канала"
+        label="Запускать прогрев при ошибках"
       />
       <ProFormDigit
         name="delivery_error_rate_percent"
@@ -121,48 +122,40 @@ function ConnectionDeliveryGuardFields() {
         label="Минимум завершённых доставок для расчёта"
         fieldProps={{ min: 1, precision: 0 }}
       />
-      <ProFormDigit
-        name="delivery_error_critical_count"
-        label="Критическое количество ошибок отправки"
-        fieldProps={{ min: 0, precision: 0 }}
-        extra="0 — учитывать только процентный порог."
-      />
-      <ProFormSelect
-        name="delivery_error_action"
-        label="Действие при критическом уровне"
-        options={[
-          {
-            value: 'throttle',
-            label: 'Снизить поток во всём канале',
-          },
-          {
-            value: 'disable',
-            label: 'Отключить канал и поставить рассылки на паузу',
-          },
-        ]}
+      <ProFormTextArea
+        name="warmup_recipients_text"
+        label="Адреса получателей прогрева"
+        placeholder={'warmup-1@example.ru\nwarmup-2@example.ru'}
+        fieldProps={{ autoSize: { minRows: 2, maxRows: 6 } }}
+        extra="По одному адресу в строке или через запятую."
       />
       <ProFormDigit
-        name="delivery_throttled_max_per_hour"
-        label="Сниженный поток, писем в час"
-        fieldProps={{ min: 1, precision: 0 }}
-        extra="Применяется ко всем кампаниям и воркерам этого подключения. Рекомендуемое значение — 50."
+        name="warmup_percent_of_errors"
+        label="Количество писем прогрева, % от числа ошибок"
+        fieldProps={{ min: 1, max: 10000, precision: 0 }}
+        extra="Например, при 20 ошибках и значении 50% будет отправлено 10 прогревочных писем."
       />
     </>
   );
 }
 
 function deliveryGuardPayload(values: Record<string, unknown>) {
+  const warmupRecipients = String(values.warmup_recipients_text || '')
+    .split(/[,;\n]+/)
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
   return {
-    delivery_guard_enabled: values.delivery_guard_enabled !== false,
+    delivery_guard_enabled: values.delivery_guard_enabled === true,
     delivery_error_rate_threshold: Math.max(
       0.001,
       Math.min(1, (Number(values.delivery_error_rate_percent) || 5) / 100),
     ),
     delivery_error_window_minutes: Number(values.delivery_error_window_minutes) || 60,
     delivery_error_min_samples: Number(values.delivery_error_min_samples) || 20,
-    delivery_error_critical_count: Number(values.delivery_error_critical_count) || 0,
-    delivery_error_action: values.delivery_error_action || 'throttle',
-    delivery_throttled_max_per_hour: Number(values.delivery_throttled_max_per_hour) || 50,
+    delivery_error_critical_count: 0,
+    delivery_error_action: 'warmup',
+    warmup_recipients: warmupRecipients,
+    warmup_percent_of_errors: Number(values.warmup_percent_of_errors) || 100,
   };
 }
 
@@ -251,13 +244,12 @@ function EditConnectionAction({
         api_token: '',
         max_per_hour: connection.max_per_hour ?? 0,
         max_per_day: connection.max_per_day ?? 0,
-        delivery_guard_enabled: connection.delivery_guard_enabled ?? true,
+        delivery_guard_enabled: connection.delivery_guard_enabled ?? false,
         delivery_error_rate_percent: (connection.delivery_error_rate_threshold ?? 0.05) * 100,
         delivery_error_window_minutes: connection.delivery_error_window_minutes ?? 60,
         delivery_error_min_samples: connection.delivery_error_min_samples ?? 20,
-        delivery_error_critical_count: connection.delivery_error_critical_count ?? 10,
-        delivery_error_action: connection.delivery_error_action ?? 'throttle',
-        delivery_throttled_max_per_hour: connection.delivery_throttled_max_per_hour ?? 50,
+        warmup_recipients_text: (connection.warmup_recipients || []).join('\n'),
+        warmup_percent_of_errors: connection.warmup_percent_of_errors ?? 100,
       }}
       onFinish={async (values) => {
         const rateLimits = {
@@ -282,6 +274,7 @@ function EditConnectionAction({
             max_per_hour: _maxPerHour,
             max_per_day: _maxPerDay,
             delivery_error_rate_percent: _deliveryErrorRatePercent,
+            warmup_recipients_text: _warmupRecipientsText,
             ...connectionValues
           } = values;
           await connectionsApi.update(connection.id, {
@@ -607,6 +600,7 @@ export function ConnectionsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['connections'],
     queryFn: () => connectionsApi.list(),
+    refetchInterval: 30_000,
   });
 
   const removeMutation = useMutation({
@@ -695,13 +689,12 @@ export function ConnectionsPage() {
             port: 587,
             max_per_hour: 0,
             max_per_day: 0,
-            delivery_guard_enabled: true,
+            delivery_guard_enabled: false,
             delivery_error_rate_percent: 5,
             delivery_error_window_minutes: 60,
             delivery_error_min_samples: 20,
-            delivery_error_critical_count: 10,
-            delivery_error_action: 'throttle',
-            delivery_throttled_max_per_hour: 50,
+            warmup_recipients_text: '',
+            warmup_percent_of_errors: 100,
           }}
           onOpenChange={(open) => {
             setAddModalOpen(open);
@@ -1171,13 +1164,12 @@ export function ConnectionsPage() {
               <Tag color={row.status === 'active' ? 'green' : 'red'}>
                 {row.status === 'active' ? 'Подключено' : 'Ошибка'}
               </Tag>
-              {row.delivery_guard?.state === 'throttled' ? (
-                <Tag color="orange">
-                  Поток снижен до {row.delivery_guard.effective_max_per_hour} писем/час
-                </Tag>
+              {row.delivery_guard?.state === 'warmup' &&
+              ['queued', 'running'].includes(row.delivery_guard?.warmup_status || '') ? (
+                <Tag color="processing">Выполняется прогрев</Tag>
               ) : null}
-              {row.delivery_guard?.state === 'disabled' ? (
-                <Tag color="red">Канал отключён защитой</Tag>
+              {row.delivery_guard?.warmup_status === 'failed' ? (
+                <Tag color="error">Прогрев завершился с ошибкой</Tag>
               ) : null}
               {row.delivery_guard && row.delivery_guard.terminal_count > 0 ? (
                 <Typography.Text type="secondary">
@@ -1185,7 +1177,15 @@ export function ConnectionsPage() {
                   {' '}({(row.delivery_guard.error_rate * 100).toFixed(1)}%)
                 </Typography.Text>
               ) : null}
-              {row.last_error ? <Typography.Text type="danger">{row.last_error}</Typography.Text> : null}
+              {row.delivery_guard?.warmup_status === 'running' ||
+              row.delivery_guard?.warmup_status === 'completed' ||
+              row.delivery_guard?.warmup_status === 'completed_with_errors' ? (
+                <Typography.Text type="secondary">
+                  Прогрев: отправлено {row.delivery_guard.warmup_sent_count}, ошибок{' '}
+                  {row.delivery_guard.warmup_error_count}
+                </Typography.Text>
+              ) : null}
+              {row.last_error ? <Typography.Text type="danger">{errorLabel(row.last_error)}</Typography.Text> : null}
             </Space>
           ),
         },
@@ -1211,23 +1211,23 @@ export function ConnectionsPage() {
               </a>
               {row.delivery_guard && row.delivery_guard.state !== 'normal' ? (
                 <Popconfirm
-                  title="Сбросить защиту канала?"
+                  title="Сбросить состояние прогрева?"
                   description="Счётчики и состояние будут сброшены. Поставленные на паузу рассылки автоматически не возобновятся."
                   okText="Сбросить"
                   cancelText="Отмена"
                   onConfirm={async () => {
                     try {
                       await connectionsApi.resetGuard(row.id);
-                      message.success('Защита канала сброшена');
+                      message.success('Состояние прогрева сброшено');
                       refreshConnections();
                     } catch (error) {
                       message.error(
-                        error instanceof Error ? error.message : 'Не удалось сбросить защиту канала',
+                        error instanceof Error ? error.message : 'Не удалось сбросить состояние прогрева',
                       );
                     }
                   }}
                 >
-                  <a>Сбросить защиту</a>
+                  <a>Сбросить прогрев</a>
                 </Popconfirm>
               ) : null}
               <Popconfirm

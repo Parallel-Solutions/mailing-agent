@@ -28,6 +28,7 @@ import {
   getEmailFormat,
 } from '@/features/templates/emailTemplateUtils';
 import './TemplatesPage.css';
+import { statusLabel } from '@/utils/presentation';
 
 type TemplateKind = 'email' | 'document';
 
@@ -196,7 +197,7 @@ function TemplateCard({
           </Typography.Title>
           <Space size={6} wrap>
             <Tag color={isFileTemplate && !hasFile ? 'orange' : template.status === 'ready' ? 'green' : 'gold'}>
-              {isFileTemplate && !hasFile ? 'Требуется файл' : template.status === 'ready' ? 'Готов' : template.status}
+              {isFileTemplate && !hasFile ? 'Требуется файл' : template.status === 'ready' ? 'Готов' : statusLabel(template.status)}
             </Tag>
             {emailFormat && <Tag color={emailFormat === 'visual' ? 'blue' : 'default'}>{emailFormat === 'visual' ? 'HTML' : 'Текст'}</Tag>}
             {extension && <Tag>{extension}</Tag>}
@@ -228,7 +229,7 @@ function TemplateCard({
             </>
           ) : (
             <Typography.Paragraph type="secondary" ellipsis={{ rows: 3 }}>
-              {template.version?.subject || template.status}
+              {template.version?.subject || statusLabel(template.status)}
             </Typography.Paragraph>
           )}
         </div>
@@ -375,10 +376,7 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
           {isFileTemplate ? 'Добавить документ' : 'Добавить письмо'}
         </Button>
         {isFileTemplate && (
-          <>
-            <TemplateFileUpload primary onUploaded={refresh} />
-            <Typography.Text type="secondary">Форматы: DOCX, PDF, HTML</Typography.Text>
-          </>
+          <Typography.Text type="secondary">Форматы: DOCX, PDF, HTML</Typography.Text>
         )}
         {canBulkSelect && selectedCount > 0 && (
           <div className="template-library-bulk">

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from html import escape
 from io import BytesIO
@@ -45,7 +46,7 @@ FILE_TEMPLATE_EXTENSIONS = {
     "document": {".docx", ".pdf", ".html", ".htm"},
 }
 LEGACY_DOCUMENT_TYPES = ("kp", "contract")
-TEMPLATE_DELIVERY_RENDERER_VERSION = "2026-07-27-generic-document-v1"
+TEMPLATE_DELIVERY_RENDERER_VERSION = "2026-07-27-font-aware-document-v1"
 
 
 class DocumentConversionError(RuntimeError):
@@ -160,6 +161,7 @@ def template_to_dict(row: MailTemplate, version: TemplateVersion | None = None) 
         "tags": list(row.tags or []),
         "archived": bool(row.archived),
         "is_template": bool(row.is_template),
+        "attachment_output_format": str(row.attachment_output_format or "original"),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -302,7 +304,12 @@ def get_template_asset(template_id: str, asset_id: str, owner_username: str) -> 
     return {"content": data, "content_type": content_type}
 
 
-def _build_document_pdf_artifact(filename: str, data: bytes) -> tuple[bytes, str]:
+def _build_document_pdf_artifact(
+    filename: str,
+    data: bytes,
+    *,
+    owner_username: str | None = None,
+) -> tuple[bytes, str]:
     suffix = Path(filename).suffix.lower()
     if suffix == ".pdf":
         return data, f"{Path(filename).stem}.pdf"
@@ -318,14 +325,27 @@ def _build_document_pdf_artifact(filename: str, data: bytes) -> tuple[bytes, str
                 # depend on the original or inferred delivery filename.
                 source_path = root / "source.docx"
                 source_path.write_bytes(data)
+                from src.campaigns.font_service import font_conversion_environment
                 from src.generator.generation.template_preview import convert_docx_to_delivery_pdf
 
-                convert_docx_to_delivery_pdf(
-                    source_path,
-                    output_pdf,
-                    file_kind=None,
-                    template_docx=None,
+                font_context = (
+                    font_conversion_environment(owner_username, data)
+                    if owner_username
+                    else nullcontext(None)
                 )
+                with font_context as font_environment:
+                    conversion_options: dict[str, Any] = {
+                        "file_kind": None,
+                        "template_docx": None,
+                    }
+                    if font_environment:
+                        conversion_options.update(
+                            {
+                                "fontconfig_path": font_environment.fontconfig_path,
+                                "prefer_local": True,
+                            }
+                        )
+                    convert_docx_to_delivery_pdf(source_path, output_pdf, **conversion_options)
             else:
                 from src.generator.generation.pdf_converter import convert_html_to_pdf
 
@@ -534,7 +554,19 @@ def get_template_delivery_file(template_id: str, owner_username: str) -> dict[st
         template_type = tmpl.template_type
         editor_state = dict(version.editor_state or {}) if isinstance(version.editor_state, dict) else {}
         delivery_renderer_version = str(editor_state.get("delivery_renderer_version") or "")
-    if rendered_key and rendered_name and delivery_renderer_version == TEMPLATE_DELIVERY_RENDERER_VERSION:
+        source_suffix = Path(version.filename or "").suffix.lower()
+    current_font_pack_hash = ""
+    if source_suffix == ".docx":
+        from src.campaigns.font_service import template_font_pack_hash
+
+        current_font_pack_hash = template_font_pack_hash(template_id, owner_username)
+    cached_font_pack_hash = str(editor_state.get("font_pack_hash") or "")
+    if (
+        rendered_key
+        and rendered_name
+        and delivery_renderer_version == TEMPLATE_DELIVERY_RENDERER_VERSION
+        and cached_font_pack_hash == current_font_pack_hash
+    ):
         return {
             "content": get_bytes(rendered_key),
             "filename": rendered_name,
@@ -551,7 +583,11 @@ def get_template_delivery_file(template_id: str, owner_username: str) -> dict[st
         pdf_name = f"{Path(source_name).stem}.pdf"
         pdf_key = source_key
     elif suffix in {".docx", ".html", ".htm"}:
-        pdf_data, pdf_name = _build_document_pdf_artifact(source_name, source_data)
+        pdf_data, pdf_name = _build_document_pdf_artifact(
+            source_name,
+            source_data,
+            owner_username=owner_username,
+        )
         pdf_key = f"template-library/{template_id}/{version_id}/delivery/{pdf_name}"
         put_bytes(pdf_key, pdf_data, content_type="application/pdf")
     else:
@@ -564,6 +600,7 @@ def get_template_delivery_file(template_id: str, owner_username: str) -> dict[st
             current.rendered_pdf_filename = pdf_name
             state = dict(current.editor_state or {}) if isinstance(current.editor_state, dict) else {}
             state["delivery_renderer_version"] = TEMPLATE_DELIVERY_RENDERER_VERSION
+            state["font_pack_hash"] = current_font_pack_hash
             current.editor_state = state
             session.flush()
     return {
@@ -572,6 +609,25 @@ def get_template_delivery_file(template_id: str, owner_username: str) -> dict[st
         "media_type": "application/pdf",
         "template_type": template_type,
     }
+
+
+def invalidate_template_font_cache(template_id: str, owner_username: str) -> bool:
+    version_id = ""
+    with session_scope() as session:
+        tmpl = session.get(MailTemplate, template_id)
+        if tmpl is None or tmpl.owner_username != owner_username or not tmpl.active_version_id:
+            return False
+        version = session.get(TemplateVersion, tmpl.active_version_id)
+        if version is None:
+            return False
+        version_id = version.id
+        state = dict(version.editor_state or {}) if isinstance(version.editor_state, dict) else {}
+        state.pop("delivery_renderer_version", None)
+        state.pop("font_pack_hash", None)
+        version.editor_state = state
+        session.flush()
+    delete_object(f"template-library/{template_id}/{version_id}/preview.png")
+    return True
 
 
 def get_template_version_file(template_id: str, version_id: str, owner_username: str) -> dict[str, Any]:
@@ -808,6 +864,7 @@ def save_version(
     editor_state: dict[str, Any] | None = None,
     is_template: bool | None = None,
     rendered_pdf_filename: str | None = None,
+    attachment_output_format: str | None = None,
 ) -> dict[str, Any] | None:
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
@@ -817,7 +874,11 @@ def save_version(
             value is not None
             for value in (subject, body_html, body_text, variables, editor_state)
         )
-        metadata_changed = is_template is not None or rendered_pdf_filename is not None
+        metadata_changed = (
+            is_template is not None
+            or rendered_pdf_filename is not None
+            or attachment_output_format is not None
+        )
         if not content_changed and name is None and metadata_changed:
             current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
             if rendered_pdf_filename is not None:
@@ -830,11 +891,26 @@ def save_version(
                 current.rendered_pdf_filename = normalize_delivery_filename(rendered_pdf_filename)
             if is_template is not None:
                 tmpl.is_template = bool(is_template)
+            if attachment_output_format is not None:
+                normalized_format = str(attachment_output_format or "").strip().lower()
+                if normalized_format not in {"original", "pdf"}:
+                    raise ValueError("Доступны форматы вложения: исходный или PDF")
+                if not _is_file_document_template(str(tmpl.template_type or "")):
+                    raise ValueError("Формат вложения можно выбрать только для документов")
+                tmpl.attachment_output_format = normalized_format
             tmpl.updated_at = _now()
             session.flush()
             return template_to_dict(tmpl, current)
         if is_template is not None:
             tmpl.is_template = bool(is_template)
+            tmpl.updated_at = _now()
+        if attachment_output_format is not None:
+            normalized_format = str(attachment_output_format or "").strip().lower()
+            if normalized_format not in {"original", "pdf"}:
+                raise ValueError("Доступны форматы вложения: исходный или PDF")
+            if not _is_file_document_template(str(tmpl.template_type or "")):
+                raise ValueError("Формат вложения можно выбрать только для документов")
+            tmpl.attachment_output_format = normalized_format
             tmpl.updated_at = _now()
         if not content_changed and name is None:
             return None
@@ -885,7 +961,7 @@ def duplicate_template(template_id: str, owner_username: str) -> dict[str, Any] 
         file_item = get_template_file(template_id, owner_username)
         if file_item is None:
             return None
-        return upload_file_version(
+        copied = upload_file_version(
             owner_username,
             name=f"{source['name']} (копия)",
             template_type=source["template_type"],
@@ -893,16 +969,25 @@ def duplicate_template(template_id: str, owner_username: str) -> dict[str, Any] 
             data=file_item["content"],
             content_type=None,
         )
-    return create_template(
-        owner_username,
-        name=f"{source['name']} (копия)",
-        template_type=source["template_type"],
-        subject=str(version.get("subject") or ""),
-        body_html=str(version.get("body_html") or ""),
-        body_text=str(version.get("body_text") or ""),
-        tags=list(source.get("tags") or []),
-        editor_state=version.get("editor_state") if isinstance(version.get("editor_state"), dict) else None,
-    )
+    else:
+        copied = create_template(
+            owner_username,
+            name=f"{source['name']} (копия)",
+            template_type=source["template_type"],
+            subject=str(version.get("subject") or ""),
+            body_html=str(version.get("body_html") or ""),
+            body_text=str(version.get("body_text") or ""),
+            tags=list(source.get("tags") or []),
+            editor_state=version.get("editor_state") if isinstance(version.get("editor_state"), dict) else None,
+        )
+    metadata: dict[str, Any] = {
+        "is_template": bool(source.get("is_template")),
+    }
+    if _is_file_document_template(str(source.get("template_type") or "")):
+        metadata["attachment_output_format"] = str(
+            source.get("attachment_output_format") or "original"
+        )
+    return save_version(str(copied["id"]), owner_username, **metadata)
 
 
 def archive_template(template_id: str, owner_username: str) -> dict[str, Any] | None:

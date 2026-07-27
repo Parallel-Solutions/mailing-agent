@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -18,6 +20,7 @@ from src.infra.models import (
     DeliveryChannelSendSlot,
     SmtpMailbox,
 )
+from src.utils.logger import logger
 
 
 SUCCESS_STATUSES = {"delivered", "ok_delivered", "accepted"}
@@ -39,8 +42,9 @@ ERROR_STATUSES = {
     "not_delivered",
 }
 ACTIVE_CAMPAIGN_STATUSES = {"scheduled", "running"}
-GUARD_STATES = {"normal", "throttled", "disabled"}
-GUARD_ACTIONS = {"throttle", "disable"}
+GUARD_STATES = {"normal", "throttled", "disabled", "warmup"}
+GUARD_ACTIONS = {"throttle", "disable", "warmup"}
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class DeliveryChannelDisabled(RuntimeError):
@@ -99,14 +103,37 @@ def normalize_guard_settings(data: dict[str, Any]) -> dict[str, Any]:
     if "delivery_error_action" in data and data.get("delivery_error_action") is not None:
         action = str(data.get("delivery_error_action") or "").strip().lower()
         if action not in GUARD_ACTIONS:
-            raise ValueError("delivery_error_action must be 'throttle' or 'disable'.")
+            raise ValueError("Неизвестное действие контроля ошибок.")
         normalized["delivery_error_action"] = action
+    if "warmup_recipients" in data and data.get("warmup_recipients") is not None:
+        raw = data.get("warmup_recipients")
+        values = raw if isinstance(raw, list) else re.split(r"[,;\n]+", str(raw or ""))
+        recipients: list[str] = []
+        for value in values:
+            email = str(value or "").strip().lower()
+            if not email:
+                continue
+            if not EMAIL_RE.fullmatch(email):
+                raise ValueError(f"Некорректный адрес для прогрева: {email}")
+            if email not in recipients:
+                recipients.append(email)
+        normalized["warmup_recipients"] = recipients
+    if "warmup_percent_of_errors" in data and data.get("warmup_percent_of_errors") is not None:
+        normalized["warmup_percent_of_errors"] = _safe_int(
+            data.get("warmup_percent_of_errors"),
+            100,
+            minimum=1,
+            maximum=10000,
+        )
     return normalized
 
 
 def apply_guard_settings(row: SmtpMailbox, data: dict[str, Any]) -> None:
     for key, value in normalize_guard_settings(data).items():
         setattr(row, key, value)
+    if bool(row.delivery_guard_enabled) and str(row.delivery_error_action or "") == "warmup":
+        if not list(row.warmup_recipients or []):
+            raise ValueError("Укажите хотя бы один адрес получателя для прогрева.")
     if not bool(row.delivery_guard_enabled):
         row.delivery_guard_state = "normal"
         row.delivery_guard_reason = None
@@ -136,7 +163,7 @@ def guard_snapshot(row: SmtpMailbox) -> dict[str, Any]:
         "window_minutes": int(row.delivery_error_window_minutes or 60),
         "min_samples": int(row.delivery_error_min_samples or 20),
         "critical_error_count": int(row.delivery_error_critical_count or 0),
-        "action": str(row.delivery_error_action or "throttle"),
+        "action": str(row.delivery_error_action or "warmup"),
         "throttled_max_per_hour": int(row.delivery_throttled_max_per_hour or 50),
         "terminal_count": int(row.delivery_guard_terminal_count or 0),
         "error_count": int(row.delivery_guard_error_count or 0),
@@ -144,6 +171,14 @@ def guard_snapshot(row: SmtpMailbox) -> dict[str, Any]:
         "effective_max_per_hour": _effective_hour_limit(row),
         "triggered_at": row.delivery_guard_triggered_at.isoformat() if row.delivery_guard_triggered_at else "",
         "last_error_at": row.delivery_guard_last_error_at.isoformat() if row.delivery_guard_last_error_at else "",
+        "warmup_recipients": list(row.warmup_recipients or []),
+        "warmup_percent_of_errors": int(row.warmup_percent_of_errors or 100),
+        "warmup_task_id": str(row.warmup_task_id or ""),
+        "warmup_status": str(row.warmup_status or "idle"),
+        "warmup_sent_count": int(row.warmup_sent_count or 0),
+        "warmup_error_count": int(row.warmup_error_count or 0),
+        "warmup_started_at": row.warmup_started_at.isoformat() if row.warmup_started_at else "",
+        "warmup_completed_at": row.warmup_completed_at.isoformat() if row.warmup_completed_at else "",
     }
 
 
@@ -182,7 +217,11 @@ def _campaign_uses_connection(campaign: Campaign, connection_id: str) -> bool:
     return connection_id in connection_ids or str(campaign.smtp_mailbox_id or "") == connection_id
 
 
-def _pause_campaigns_for_channel(connection_id: str) -> int:
+def _pause_campaigns_for_channel(
+    connection_id: str,
+    *,
+    reason: str = "delivery_channel_disabled",
+) -> int:
     task_ids: set[str] = set()
     paused = 0
     with session_scope() as session:
@@ -198,7 +237,7 @@ def _pause_campaigns_for_channel(connection_id: str) -> int:
                 session,
                 campaign,
                 "paused",
-                reason="delivery_channel_disabled",
+                reason=reason,
                 actor="delivery_channel_guard",
                 at=now,
             )
@@ -227,7 +266,7 @@ def _pause_campaigns_for_channel(connection_id: str) -> int:
     return paused
 
 
-def _evaluate_locked(session, row: SmtpMailbox, *, now: datetime) -> bool:
+def _evaluate_locked(session, row: SmtpMailbox, *, now: datetime) -> str | None:
     window_start = now - timedelta(minutes=max(5, int(row.delivery_error_window_minutes or 60)))
     counts = session.execute(
         select(
@@ -245,8 +284,8 @@ def _evaluate_locked(session, row: SmtpMailbox, *, now: datetime) -> bool:
     row.delivery_guard_error_count = error_count
     row.delivery_guard_error_rate = error_rate
 
-    if not bool(row.delivery_guard_enabled) or row.delivery_guard_state in {"throttled", "disabled"}:
-        return False
+    if not bool(row.delivery_guard_enabled) or row.delivery_guard_state in {"throttled", "disabled", "warmup"}:
+        return None
 
     rate_triggered = (
         terminal_count >= max(1, int(row.delivery_error_min_samples or 20))
@@ -255,7 +294,7 @@ def _evaluate_locked(session, row: SmtpMailbox, *, now: datetime) -> bool:
     critical = max(0, int(row.delivery_error_critical_count or 0))
     count_triggered = critical > 0 and error_count >= critical
     if not rate_triggered and not count_triggered:
-        return False
+        return None
 
     reasons: list[str] = []
     if rate_triggered:
@@ -265,14 +304,66 @@ def _evaluate_locked(session, row: SmtpMailbox, *, now: datetime) -> bool:
         )
     if count_triggered:
         reasons.append(f"Количество ошибок доставки {error_count} достигло критического значения {critical}")
-    action = str(row.delivery_error_action or "throttle")
-    row.delivery_guard_state = "disabled" if action == "disable" else "throttled"
+    action = str(row.delivery_error_action or "warmup")
+    if action == "warmup":
+        row.delivery_guard_state = "warmup"
+        row.warmup_status = "queued"
+        row.warmup_sent_count = 0
+        row.warmup_error_count = 0
+        row.warmup_started_at = None
+        row.warmup_completed_at = None
+    else:
+        row.delivery_guard_state = "disabled" if action == "disable" else "throttled"
     row.delivery_guard_reason = "; ".join(reasons)
     row.delivery_guard_triggered_at = now
     if row.delivery_guard_state == "disabled":
         row.status = "disabled_by_guard"
         row.last_error = row.delivery_guard_reason
-    return row.delivery_guard_state == "disabled"
+    return action
+
+
+def _enqueue_connection_warmup(
+    connection_id: str,
+    *,
+    error_count: int,
+    triggered_at: datetime,
+) -> str:
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection_id)
+        if row is None:
+            raise LookupError("Delivery connection not found.")
+        recipients = list(row.warmup_recipients or [])
+        percent = max(1, int(row.warmup_percent_of_errors or 100))
+        message_count = min(
+            10000,
+            max(1, int(math.ceil(max(1, error_count) * percent / 100.0))),
+        )
+        owner_username = str(row.owner_username or "")
+
+    from src.workers.task_queue import enqueue_task
+
+    task, _created = enqueue_task(
+        task_type="connection_warmup",
+        job_id=None,
+        owner_username=owner_username,
+        payload={
+            "connection_id": connection_id,
+            "owner_username": owner_username,
+            "recipients": recipients,
+            "message_count": message_count,
+        },
+        max_attempts=1,
+        idempotency_key=f"connection_warmup:{connection_id}:{triggered_at.isoformat()}",
+        active_key=f"connection_warmup:{connection_id}",
+    )
+    task_id = str(task["id"])
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection_id)
+        if row is not None:
+            row.warmup_task_id = task_id
+            row.warmup_status = "queued"
+            row.updated_at = _now()
+    return task_id
 
 
 def record_channel_outcome(
@@ -291,7 +382,7 @@ def record_channel_outcome(
         return None
 
     timestamp = _parse_occurred_at(occurred_at)
-    should_pause = False
+    triggered_action: str | None = None
     with session_scope() as session:
         row = session.execute(
             select(SmtpMailbox).where(SmtpMailbox.id == connection_id).with_for_update()
@@ -326,16 +417,47 @@ def record_channel_outcome(
         if outcome == "error":
             row.delivery_guard_last_error_at = timestamp
         session.flush()
-        should_pause = _evaluate_locked(session, row, now=_now())
+        triggered_action = _evaluate_locked(session, row, now=_now())
         snapshot = guard_snapshot(row)
 
-    if should_pause:
-        snapshot["paused_campaigns"] = _pause_campaigns_for_channel(connection_id)
+    if triggered_action in {"disable", "warmup"}:
+        snapshot["paused_campaigns"] = _pause_campaigns_for_channel(
+            connection_id,
+            reason=(
+                "delivery_channel_warmup"
+                if triggered_action == "warmup"
+                else "delivery_channel_disabled"
+            ),
+        )
+    if triggered_action == "warmup":
+        try:
+            snapshot["warmup_task_id"] = _enqueue_connection_warmup(
+                connection_id,
+                error_count=int(snapshot.get("error_count") or 0),
+                triggered_at=timestamp,
+            )
+            snapshot["warmup_status"] = "queued"
+        except Exception:
+            logger.exception(
+                "connection_warmup_enqueue_failed",
+                connection_id=connection_id,
+            )
+            with session_scope() as session:
+                row = session.get(SmtpMailbox, connection_id)
+                if row is not None:
+                    row.warmup_status = "failed"
+                    row.delivery_guard_reason = (
+                        "Не удалось поставить прогрев в очередь. "
+                        "Проверьте настройки и сбросьте состояние прогрева."
+                    )
+                    row.updated_at = _now()
+            snapshot["warmup_status"] = "failed"
     return snapshot
 
 
 def reset_channel_guard(connection_id: str, *, enable: bool | None = None) -> dict[str, Any]:
     """Reset counters/state without auto-resuming campaigns."""
+    warmup_task_id: str | None = None
     with session_scope() as session:
         row = session.execute(
             select(SmtpMailbox).where(SmtpMailbox.id == connection_id).with_for_update()
@@ -344,6 +466,7 @@ def reset_channel_guard(connection_id: str, *, enable: bool | None = None) -> di
             raise LookupError("Delivery connection not found.")
         if enable is not None:
             row.delivery_guard_enabled = bool(enable)
+        warmup_task_id = str(row.warmup_task_id or "") or None
         row.delivery_guard_state = "normal"
         row.delivery_guard_reason = None
         row.delivery_guard_terminal_count = 0
@@ -351,6 +474,12 @@ def reset_channel_guard(connection_id: str, *, enable: bool | None = None) -> di
         row.delivery_guard_error_rate = 0.0
         row.delivery_guard_triggered_at = None
         row.delivery_guard_last_error_at = None
+        row.warmup_task_id = None
+        row.warmup_status = "idle"
+        row.warmup_sent_count = 0
+        row.warmup_error_count = 0
+        row.warmup_started_at = None
+        row.warmup_completed_at = None
         if row.status == "disabled_by_guard":
             row.status = "active"
             row.last_error = None
@@ -358,10 +487,26 @@ def reset_channel_guard(connection_id: str, *, enable: bool | None = None) -> di
             delete(DeliveryChannelOutcome).where(DeliveryChannelOutcome.connection_id == connection_id)
         )
         row.updated_at = _now()
-        return guard_snapshot(row)
+        snapshot = guard_snapshot(row)
+    if warmup_task_id:
+        from src.workers.task_queue import request_cancel
+
+        try:
+            request_cancel(warmup_task_id)
+        except Exception:
+            logger.exception(
+                "connection_warmup_cancel_failed",
+                connection_id=connection_id,
+                task_id=warmup_task_id,
+            )
+    return snapshot
 
 
-def reserve_channel_send_slot(connection_id: str) -> float:
+def reserve_channel_send_slot(
+    connection_id: str,
+    *,
+    allow_warmup: bool = False,
+) -> float:
     """Reserve one shared send slot; return seconds until a retry, or 0."""
     now = _now()
     hour_start = now - timedelta(hours=1)
@@ -375,6 +520,10 @@ def reserve_channel_send_slot(connection_id: str) -> float:
         if row.delivery_guard_state == "disabled" or row.status == "disabled_by_guard":
             raise DeliveryChannelDisabled(
                 row.delivery_guard_reason or "Канал отключён из-за ошибок доставки."
+            )
+        if row.delivery_guard_state == "warmup" and not allow_warmup:
+            raise DeliveryChannelDisabled(
+                "Обычная отправка приостановлена до завершения прогрева подключения."
             )
 
         session.execute(
@@ -443,10 +592,17 @@ def reserve_channel_send_slot(connection_id: str) -> float:
         return 0.0
 
 
-def wait_for_channel_send_slot(connection_id: str) -> None:
+def wait_for_channel_send_slot(
+    connection_id: str,
+    *,
+    allow_warmup: bool = False,
+) -> None:
     """Wait in bounded intervals until a slot is available across all workers."""
     while True:
-        wait_seconds = reserve_channel_send_slot(connection_id)
+        wait_seconds = reserve_channel_send_slot(
+            connection_id,
+            allow_warmup=allow_warmup,
+        )
         if wait_seconds <= 0:
             return
         time.sleep(min(wait_seconds, 60.0))

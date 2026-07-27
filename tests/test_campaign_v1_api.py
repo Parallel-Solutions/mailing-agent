@@ -392,7 +392,14 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(duplicate.status_code, 400)
 
-    def _fake_docx_pdf_artifact(self, filename: str, data: bytes) -> tuple[bytes, str]:
+    def _fake_docx_pdf_artifact(
+        self,
+        filename: str,
+        data: bytes,
+        *,
+        owner_username: str | None = None,
+    ) -> tuple[bytes, str]:
+        del data, owner_username
         return (b"%PDF-1.4 delivery copy", f"{Path(filename).stem}.pdf")
 
     @patch("src.campaigns.template_service._build_document_pdf_artifact")

@@ -41,7 +41,7 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "msg-1")
-        wait_mock.assert_called_once_with("conn-1")
+        wait_mock.assert_called_once_with("conn-1", allow_warmup=False)
         kwargs = send_mock.call_args.kwargs
         self.assertEqual(kwargs["html_override"], self._chain_html())
         self.assertEqual(kwargs["body_override"], self._chain_text())
@@ -69,7 +69,7 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "msg-2")
-        wait_mock.assert_called_once_with("conn-2")
+        wait_mock.assert_called_once_with("conn-2", allow_warmup=False)
         kwargs = send_mock.call_args.kwargs
         self.assertEqual(kwargs["html_override"], self._chain_html())
         self.assertEqual(kwargs["body_override"], self._chain_text())

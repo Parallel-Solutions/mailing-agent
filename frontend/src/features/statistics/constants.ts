@@ -1,4 +1,4 @@
-export const AUTO_REFRESH_MS = 20 * 60 * 1000;
+export const AUTO_REFRESH_MS = 30 * 1000;
 export const DASHBOARD_CACHE_PREFIX = 'stats-dashboard-v3:';
 export const PER_PAGE = 10;
 

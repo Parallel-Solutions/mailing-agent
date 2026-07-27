@@ -342,12 +342,12 @@ class SmtpMailbox(Base):
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     max_per_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    delivery_guard_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    delivery_guard_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     delivery_error_rate_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.05)
     delivery_error_window_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     delivery_error_min_samples: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     delivery_error_critical_count: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
-    delivery_error_action: Mapped[str] = mapped_column(String(16), nullable=False, default="throttle")
+    delivery_error_action: Mapped[str] = mapped_column(String(16), nullable=False, default="warmup")
     delivery_throttled_max_per_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
     delivery_guard_state: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
     delivery_guard_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -356,6 +356,14 @@ class SmtpMailbox(Base):
     delivery_guard_error_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     delivery_guard_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivery_guard_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    warmup_recipients: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    warmup_percent_of_errors: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    warmup_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    warmup_status: Mapped[str] = mapped_column(String(16), nullable=False, default="idle")
+    warmup_sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warmup_error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warmup_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    warmup_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -467,6 +475,40 @@ class AudienceMember(Base):
     )
 
 
+class FontAsset(Base):
+    __tablename__ = "font_assets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    family: Mapped[str] = mapped_column(String(255), nullable=False)
+    family_normalized: Mapped[str] = mapped_column(String(255), nullable=False)
+    subfamily: Mapped[str] = mapped_column(String(128), nullable=False, default="Regular")
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=400)
+    italic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    postscript_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="upload")
+    storage_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    license_type: Mapped[str] = mapped_column(String(64), nullable=False, default="user_confirmed")
+    license_url: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    license_storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    embedding_permissions: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown")
+    glyph_coverage: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    created_by: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_font_assets_owner_family", "owner_username", "family_normalized", "status"),
+        Index("uq_font_assets_owner_sha256", "owner_username", "sha256", unique=True),
+    )
+
+
 class MailTemplate(Base):
     __tablename__ = "mail_templates"
 
@@ -479,6 +521,9 @@ class MailTemplate(Base):
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_template: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attachment_output_format: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="original"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
@@ -509,6 +554,42 @@ class TemplateVersion(Base):
 
     __table_args__ = (
         Index("idx_template_versions_template", "template_id", "version_number", unique=True),
+    )
+
+
+class TemplateFontRequirement(Base):
+    __tablename__ = "template_font_requirements"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    template_version_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("template_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    family: Mapped[str] = mapped_column(String(255), nullable=False)
+    family_normalized: Mapped[str] = mapped_column(String(255), nullable=False)
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=400)
+    italic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    resolved_font_asset_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("font_assets.id", ondelete="SET NULL"), nullable=True
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="document")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="missing")
+    fallback_family: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_template_font_requirements_version", "template_version_id"),
+        Index(
+            "uq_template_font_requirement_signature",
+            "template_version_id",
+            "family_normalized",
+            "weight",
+            "italic",
+            unique=True,
+        ),
     )
 
 

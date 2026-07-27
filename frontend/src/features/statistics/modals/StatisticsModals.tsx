@@ -123,7 +123,7 @@ function AdvancedFiltersModal() {
             optionFilterProp="label"
             options={campaigns.map((item) => ({
               value: String(item.job_id),
-              label: String(item.title || item.job_id),
+              label: String(item.title || 'Рассылка без названия'),
             }))}
           />
         </Form.Item>
@@ -240,7 +240,7 @@ function ExportReportModal() {
             onChange={setJobId}
             options={campaigns.map((item) => ({
               value: String(item.job_id),
-              label: String(item.title || item.job_id),
+              label: String(item.title || 'Рассылка без названия'),
             }))}
             placeholder="Текущая / первая доступная"
           />

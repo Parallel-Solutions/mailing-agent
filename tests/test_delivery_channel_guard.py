@@ -10,6 +10,7 @@ from src.campaigns.connection_service import create_connection
 from src.campaigns.service import create_campaign
 from src.generator.delivery.channel_guard import (
     DeliveryChannelDisabled,
+    normalize_guard_settings,
     record_channel_outcome,
     reserve_channel_send_slot,
     reset_channel_guard,
@@ -22,6 +23,29 @@ from tests.bootstrap import bootstrap_test_runtime
 
 
 class DeliveryResponseClassificationTests(unittest.TestCase):
+    def test_warmup_settings_are_normalized(self) -> None:
+        normalized = normalize_guard_settings(
+            {
+                "delivery_error_action": "warmup",
+                "warmup_recipients": [
+                    " First@Example.com ",
+                    "first@example.com",
+                    "second@example.com",
+                ],
+                "warmup_percent_of_errors": 150,
+            }
+        )
+        self.assertEqual(normalized["delivery_error_action"], "warmup")
+        self.assertEqual(
+            normalized["warmup_recipients"],
+            ["first@example.com", "second@example.com"],
+        )
+        self.assertEqual(normalized["warmup_percent_of_errors"], 150)
+
+    def test_invalid_warmup_recipient_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Некорректный адрес"):
+            normalize_guard_settings({"warmup_recipients": ["not-an-email"]})
+
     def test_unknown_recipient_is_hard_bounce(self) -> None:
         self.assertEqual(
             reason_from_delivery_response("550 5.1.1 user unknown"),
@@ -59,6 +83,7 @@ class DeliveryChannelGuardTests(unittest.TestCase):
             "delivery_error_critical_count": 0,
             "delivery_error_action": "throttle",
             "delivery_throttled_max_per_hour": 50,
+            "delivery_guard_enabled": True,
         }
         payload.update(overrides)
         return create_connection(self.owner, payload)
@@ -123,6 +148,49 @@ class DeliveryChannelGuardTests(unittest.TestCase):
         self.assertEqual(reset["state"], "normal")
         with session_scope() as session:
             self.assertEqual(session.get(Campaign, campaign["id"]).status, "paused")
+
+    def test_warmup_action_pauses_campaign_and_enqueues_warmup(self) -> None:
+        from src.infra.models import BackgroundTask, SmtpMailbox
+
+        connection = self._connection(
+            delivery_error_min_samples=1,
+            delivery_error_action="warmup",
+            warmup_recipients=["warmup@example.com"],
+            warmup_percent_of_errors=200,
+        )
+        campaign = create_campaign(
+            self.owner,
+            {
+                "name": "Warmup pause campaign",
+                "connection_ids": [connection["id"]],
+                "transport": "rusender",
+            },
+        )
+        with session_scope() as session:
+            session.get(Campaign, campaign["id"]).status = "running"
+
+        snapshot = record_channel_outcome(
+            connection_id=connection["id"],
+            provider_message_id="failed-warmup",
+            provider_status="hard_bounced",
+        )
+
+        self.assertEqual(snapshot["state"], "warmup")
+        self.assertEqual(snapshot["paused_campaigns"], 1)
+        self.assertEqual(snapshot["warmup_status"], "queued")
+        with self.assertRaises(DeliveryChannelDisabled):
+            reserve_channel_send_slot(connection["id"])
+        self.assertEqual(
+            reserve_channel_send_slot(connection["id"], allow_warmup=True),
+            0.0,
+        )
+        with session_scope() as session:
+            self.assertEqual(session.get(Campaign, campaign["id"]).status, "paused")
+            mailbox = session.get(SmtpMailbox, connection["id"])
+            self.assertEqual(mailbox.warmup_status, "queued")
+            task = session.get(BackgroundTask, mailbox.warmup_task_id)
+            self.assertEqual(task.task_type, "connection_warmup")
+            self.assertEqual(task.payload["message_count"], 2)
 
 
 if __name__ == "__main__":

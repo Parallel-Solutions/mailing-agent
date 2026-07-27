@@ -9,6 +9,8 @@ import { asRecord, asRecordArray, fmt, fmtMetric } from '../utils';
 import { FullAnalyticsDocumentsSection, FullAnalyticsEmailsSection } from './FullAnalyticsMaterialsSections';
 import { MetricInfo } from './MetricInfo';
 import { useCampaignJobSelector } from './useCampaignJobSelector';
+import { formatLocalDateTime } from '@/utils/dateTime';
+import { errorLabel, providerLabel, statusLabel } from '@/utils/presentation';
 
 function metricValue(summary: Record<string, unknown>, key: string): string {
   return fmtMetric(summary[key]);
@@ -161,7 +163,7 @@ export function CampaignFullAnalyticsTab() {
                     {Number(operational.progress ?? 0)}%)
                   </Col>
                   <Col>
-                    Отправлено: {fmt(operational.success_count)} ({Number(operational.success_rate ?? 0)}%) ·{' '}
+                    Принято провайдером: {fmt(operational.success_count)} ({Number(operational.success_rate ?? 0)}%) ·{' '}
                     Пропущено: {fmt(operational.skipped_count)} · Итоговые ошибки:{' '}
                     {fmt(operational.failed_recipient_count)}
                   </Col>
@@ -170,8 +172,8 @@ export function CampaignFullAnalyticsTab() {
                     {fmt(operational.layout_error_count)}
                   </Col>
                   <Col>
-                    Транспорт: {String(operational.transport || '—')} · Статус:{' '}
-                    <Tag>{String(operational.status || '—')}</Tag>
+                    Почтовый сервис: {providerLabel(String(operational.transport || ''))} · Статус:{' '}
+                    <Tag>{statusLabel(String(operational.status || ''))}</Tag>
                   </Col>
                 </Row>
                 {operational.live_send ? (
@@ -194,11 +196,11 @@ export function CampaignFullAnalyticsTab() {
                   dataSource={asRecordArray(operational.batches)}
                   columns={[
                     { title: '№', dataIndex: 'batch_index', width: 60 },
-                    { title: 'Запланирован', dataIndex: 'scheduled_at' },
+                    { title: 'Запланирован', dataIndex: 'scheduled_at', render: (v) => formatLocalDateTime(String(v || '')) },
                     { title: 'Размер', dataIndex: 'size', render: (v) => fmt(v) },
-                    { title: 'Отправлено', dataIndex: 'sent_count', render: (v) => fmt(v) },
-                    { title: 'Ошибки', dataIndex: 'error_count', render: (v) => fmt(v) },
-                    { title: 'Статус', dataIndex: 'status' },
+                    { title: 'Принято провайдером', dataIndex: 'sent_count', render: (v) => fmt(v) },
+                    { title: 'Неудачные попытки', dataIndex: 'error_count', render: (v) => fmt(v) },
+                    { title: 'Статус', dataIndex: 'status', render: (v) => statusLabel(String(v || '')) },
                   ]}
                 />
               </Space>
@@ -223,7 +225,7 @@ export function CampaignFullAnalyticsTab() {
                     dataSource={asRecordArray(domainStats.providers)}
                     columns={[
                       { title: 'Домен', dataIndex: 'provider' },
-                      { title: 'Отправлено', dataIndex: 'sent', render: (v) => fmt(v) },
+                        { title: 'Принято провайдером', dataIndex: 'sent', render: (v) => fmt(v) },
                       { title: 'Доставлено', dataIndex: 'delivered', render: (v) => fmt(v) },
                       { title: 'Открыто', dataIndex: 'opened', render: (v) => fmt(v) },
                       { title: 'Bounce', dataIndex: 'bounced', render: (v) => fmt(v) },
@@ -243,7 +245,7 @@ export function CampaignFullAnalyticsTab() {
                         locale={{ emptyText: 'Нет компаний с высоким интересом' }}
                         columns={[
                           { title: 'Компания', dataIndex: 'organization' },
-                          { title: 'Отправлено', dataIndex: 'sent', render: (v) => fmt(v) },
+                          { title: 'Принято провайдером', dataIndex: 'sent', render: (v) => fmt(v) },
                           { title: 'Open %', dataIndex: 'open_rate', render: (v) => `${v ?? 0}%` },
                           { title: 'Клики', dataIndex: 'clicked', render: (v) => fmt(v) },
                         ]}
@@ -291,10 +293,10 @@ export function CampaignFullAnalyticsTab() {
                     <Table
                       size="small"
                       pagination={false}
-                      rowKey={(row) => String(row.edge_id)}
+                      rowKey={(row, index) => String(row.edge_id || index)}
                       dataSource={asRecordArray(chain.edges)}
                       columns={[
-                        { title: 'Ветка', dataIndex: 'edge_id' },
+                        { title: 'Ветка', render: (_value, _row, index) => `Переход ${index + 1}` },
                         { title: 'Токенов', dataIndex: 'tokens', render: (v) => fmt(v) },
                         { title: 'Кликов', dataIndex: 'clicks', render: (v) => fmt(v) },
                       ]}
@@ -337,7 +339,7 @@ export function CampaignFullAnalyticsTab() {
                     title: <MetricInfo metricId="provider" />,
                     dataIndex: 'provider',
                     width: 100,
-                    render: (v) => String(v || '—'),
+                    render: (v) => providerLabel(String(v || '')),
                   },
                   {
                     title: 'Статус',
@@ -349,14 +351,8 @@ export function CampaignFullAnalyticsTab() {
                     dataIndex: 'bounce_reason_label',
                     width: 140,
                   },
-                  {
-                    title: <MetricInfo metricId="message_id" />,
-                    dataIndex: 'email_id',
-                    width: 120,
-                    ellipsis: true,
-                  },
-                  { title: 'Отправлено', dataIndex: 'sent_at', width: 140 },
-                  { title: 'Проверено', dataIndex: 'checked_at', width: 140 },
+                  { title: 'Принято провайдером', dataIndex: 'sent_at', width: 160, render: (v) => formatLocalDateTime(String(v || '')) },
+                  { title: 'Проверено', dataIndex: 'checked_at', width: 160, render: (v) => formatLocalDateTime(String(v || '')) },
                 ]}
               />
             ),
@@ -378,13 +374,12 @@ export function CampaignFullAnalyticsTab() {
                   onChange: setSentLogPage,
                 }}
                 columns={[
-                  { title: 'Дата', dataIndex: 'sent_at', width: 160 },
+                  { title: 'Дата', dataIndex: 'sent_at', width: 160, render: (v) => formatLocalDateTime(String(v || '')) },
                   { title: 'Email', dataIndex: 'recipient', width: 180 },
                   { title: 'Компания', dataIndex: 'organization' },
                   { title: 'Тема', dataIndex: 'subject' },
-                  { title: 'Транспорт', dataIndex: 'transport', width: 100 },
-                  { title: 'Статус', dataIndex: 'status', width: 90 },
-                  { title: 'ID провайдера', dataIndex: 'provider_message_id', ellipsis: true },
+                  { title: 'Почтовый сервис', dataIndex: 'transport', width: 120, render: (v) => providerLabel(String(v || '')) },
+                  { title: 'Статус', dataIndex: 'status', width: 150, render: (v) => statusLabel(String(v || '')) },
                 ]}
               />
             ),
@@ -408,9 +403,9 @@ export function CampaignFullAnalyticsTab() {
                   { title: '№', dataIndex: 'attempt_number', width: 60 },
                   { title: 'Компания', dataIndex: 'company' },
                   { title: 'Email', dataIndex: 'delivery_email' },
-                  { title: 'Статус', dataIndex: 'status' },
-                  { title: 'Ошибка', dataIndex: 'error', ellipsis: true },
-                  { title: 'Создано', dataIndex: 'created_at', width: 160 },
+                  { title: 'Статус', dataIndex: 'status', render: (v) => statusLabel(String(v || '')) },
+                  { title: 'Ошибка', dataIndex: 'error', ellipsis: true, render: (v) => errorLabel(String(v || '')) },
+                  { title: 'Создано', dataIndex: 'created_at', width: 160, render: (v) => formatLocalDateTime(String(v || '')) },
                 ]}
               />
             ),

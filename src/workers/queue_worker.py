@@ -53,13 +53,35 @@ def _terminate_process(process: subprocess.Popen[Any]) -> None:
 def _task_timeout_seconds(task_type: str) -> int:
     if task_type == "documents":
         return max(0, int(settings.documents_worker_timeout_seconds or 0))
-    if task_type in {"sender", "sender_batch", "chain_followup", "campaign_pre_generate"}:
+    if task_type in {
+        "sender",
+        "sender_batch",
+        "chain_followup",
+        "campaign_pre_generate",
+        "connection_warmup",
+    }:
         return max(0, int(settings.sender_worker_timeout_seconds or 0))
     return 0
 
 
 def _mark_terminal_failure(task: dict[str, Any], message: str) -> None:
     task_type = str(task.get("task_type") or "")
+    if task_type == "connection_warmup":
+        try:
+            from src.generator.delivery.connection_warmup import (
+                finalize_connection_warmup_failure,
+            )
+
+            finalize_connection_warmup_failure(
+                str((task.get("payload") or {}).get("connection_id") or ""),
+                message,
+            )
+        except Exception:
+            logger.exception(
+                "queue_worker_finalize_connection_warmup_failed",
+                task_id=task.get("id"),
+            )
+        return
     if task_type == "sender_batch":
         try:
             from src.campaigns.batch_worker import finalize_sender_batch_task_failure

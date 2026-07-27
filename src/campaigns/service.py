@@ -31,6 +31,7 @@ from src.infra.models import (
     CampaignRecipient,
     CampaignSchedule,
     DeliveryAttempt,
+    BackgroundTask,
     SmtpMailbox,
 )
 
@@ -223,6 +224,7 @@ def campaign_to_dict(
         "failed_recipient_count": 0,
         "processed_count": int(row.sent_count or 0),
         "pending_count": max(0, int(row.total_count or 0) - int(row.sent_count or 0)),
+        "attempt_count": int(row.sent_count or 0) + int(row.error_count or 0),
         "attempt_error_count": int(row.error_count or 0),
         "progress": (
             round(100.0 * int(row.sent_count or 0) / int(row.total_count or 0), 1)
@@ -264,6 +266,7 @@ def campaign_to_dict(
         "failed_recipient_count": int(campaign_metrics["failed_recipient_count"]),
         "processed_count": int(campaign_metrics["processed_count"]),
         "pending_count": int(campaign_metrics["pending_count"]),
+        "attempt_count": int(campaign_metrics["attempt_count"]),
         "attempt_error_count": int(campaign_metrics["attempt_error_count"]),
         "success_rate": float(campaign_metrics["success_rate"]),
         "allowed_actions": allowed_actions(
@@ -1193,11 +1196,15 @@ def validate_campaign_for_launch(
 
         from src.campaigns.template_text_review_service import partition_review_messages
         from src.campaigns.variable_match_service import (
+            empty_variable_validation_errors,
             mapping_validation_errors,
             substitution_validation_issues,
         )
 
-        errors.extend(mapping_validation_errors(camp))
+        mapping_errors = mapping_validation_errors(camp)
+        errors.extend(mapping_errors)
+        if not mapping_errors:
+            errors.extend(empty_variable_validation_errors(camp))
         template_issues = substitution_validation_issues(camp, deep=False, advisory=False)
         template_errors, template_warnings = partition_review_messages(template_issues)
         errors.extend(template_errors)
@@ -1572,6 +1579,52 @@ def list_batches(campaign_id: str, owner_username: str, *, visible_owners: froze
         rows = session.scalars(
             select(CampaignBatch).where(CampaignBatch.campaign_id == campaign_id).order_by(CampaignBatch.batch_index)
         ).all()
+        task_ids = [str(batch.task_id) for batch in rows if batch.task_id]
+        tasks_by_id = {
+            str(task.id): task
+            for task in (
+                session.scalars(
+                    select(BackgroundTask).where(BackgroundTask.id.in_(task_ids))
+                ).all()
+                if task_ids
+                else []
+            )
+        }
+        active_tasks = session.scalars(
+            select(BackgroundTask)
+            .where(
+                BackgroundTask.status.in_(("queued", "running", "retry")),
+                BackgroundTask.cancel_requested_at.is_(None),
+            )
+        ).all()
+        now = _now()
+        active_tasks.sort(
+            key=lambda task: (
+                0 if task.status == "running" else 1,
+                0 if task.available_at <= now else 1,
+                (
+                    -int(task.priority or 0)
+                    if task.available_at <= now
+                    else task.available_at
+                ),
+                (
+                    task.created_at
+                    if task.available_at <= now
+                    else -int(task.priority or 0)
+                ),
+                task.created_at,
+            )
+        )
+        waiting_positions: dict[str, int] = {}
+        waiting_index = 0
+        for task in active_tasks:
+            if task.status == "running":
+                continue
+            waiting_index += 1
+            waiting_positions[str(task.id)] = waiting_index
+        running_task_ids = {
+            str(task.id) for task in active_tasks if task.status == "running"
+        }
         recipient_status_by_id = {
             int(recipient_id): str(send_status or "pending")
             for recipient_id, send_status in session.execute(
@@ -1600,6 +1653,27 @@ def list_batches(campaign_id: str, owner_username: str, *, visible_owners: froze
         result: list[dict[str, Any]] = []
         for batch in rows:
             metrics = _batch_metrics(batch)
+            task = tasks_by_id.get(str(batch.task_id or ""))
+            task_status = str(task.status) if task is not None else ""
+            queue_position = waiting_positions.get(str(batch.task_id or ""))
+            if camp.status == "paused" or batch.status == "paused":
+                wait_reason = "Рассылка приостановлена"
+            elif task is not None and task.status == "running":
+                wait_reason = "Идёт отправка"
+            elif task is not None and task.status == "retry":
+                wait_reason = "Ожидает повторной попытки после ошибки"
+            elif task is not None and task.available_at and task.available_at > now:
+                wait_reason = "Ожидает запланированного времени"
+            elif task is not None and task.status == "queued":
+                wait_reason = "Ожидает свободного отправщика"
+            elif batch.status == "completed":
+                wait_reason = "Отправка завершена"
+            elif batch.status == "cancelled":
+                wait_reason = "Отправка отменена"
+            elif batch.status in {"failed", "completed_with_errors"}:
+                wait_reason = "Завершено с ошибками"
+            else:
+                wait_reason = "Ожидает запуска"
             result.append(
                 {
                     "id": batch.id,
@@ -1614,6 +1688,21 @@ def list_batches(campaign_id: str, owner_username: str, *, visible_owners: froze
                     "remaining": metrics["remaining"],
                     "status": batch.status,
                     "task_id": batch.task_id,
+                    "task_status": task_status or None,
+                    "queue_position": queue_position,
+                    "is_current": bool(
+                        batch.task_id and str(batch.task_id) in running_task_ids
+                    ),
+                    "available_at": (
+                        task.available_at.isoformat()
+                        if task is not None and task.available_at
+                        else batch.scheduled_at.isoformat()
+                        if batch.scheduled_at
+                        else None
+                    ),
+                    "attempt": int(task.attempt or 0) if task is not None else 0,
+                    "max_attempts": int(task.max_attempts or 0) if task is not None else 0,
+                    "wait_reason": wait_reason,
                     "error": batch.error,
                     "started_at": batch.started_at.isoformat() if batch.started_at else None,
                     "completed_at": batch.completed_at.isoformat() if batch.completed_at else None,

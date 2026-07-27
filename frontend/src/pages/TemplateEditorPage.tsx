@@ -59,6 +59,8 @@ import { readBoolParam } from '@/utils/urlState';
 import { VisualEmailEditor } from '@/features/templates/VisualEmailEditor';
 import { PersonalizationSetting } from '@/features/templates/PersonalizationSetting';
 import { DeliveryFilenameField } from '@/features/templates/DeliveryFilenameField';
+import { AttachmentOutputFormatField } from '@/features/templates/AttachmentOutputFormatField';
+import { TemplateFontsPanel } from '@/features/templates/TemplateFontsPanel';
 import { showDocumentUploadError } from '@/features/templates/documentUploadError';
 import {
   downloadEmailHtml,
@@ -189,6 +191,7 @@ function DocumentDeliverySettingsRow({ template }: { template: Template }) {
   return (
     <div className="document-delivery-settings-row">
       <PersonalizationSettingPanel template={template} />
+      <AttachmentOutputFormatField template={template} />
       <DeliveryFilenameField template={template} />
     </div>
   );
@@ -857,6 +860,7 @@ function DocxTemplateEditor({ template }: { template: Template }) {
       />
 
       <DocumentDeliverySettingsRow template={template} />
+      {hasDocx && <TemplateFontsPanel templateId={template.id} />}
 
       <div className="focused-editor-bar">
         <div className="focused-editor-file">

@@ -2,6 +2,7 @@ import { Card, Input, Table, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { statisticsApi } from '@/api/statistics';
+import { formatLocalDateTime } from '@/utils/dateTime';
 import { KpiGrid } from '../components/KpiGrid';
 import { useStatistics } from '../StatisticsContext';
 import { asRecord, asRecordArray, fmt } from '../utils';
@@ -108,12 +109,18 @@ export function MarketingConsentsTab() {
             { title: 'Контакт', dataIndex: 'contact_name', render: (value) => String(value || '—') },
             { title: 'Email', dataIndex: 'email' },
             { title: 'Рассылка', dataIndex: 'campaign_name', render: (value) => String(value || '—') },
-            { title: 'Дата', dataIndex: 'subscribed_at_label' },
+            {
+              title: 'Дата',
+              dataIndex: 'subscribed_at',
+              render: (value) => formatLocalDateTime(String(value || '')),
+            },
             {
               title: 'Действует до',
-              dataIndex: 'expires_at_label',
+              dataIndex: 'expires_at',
               render: (value, row) => (
-                <span style={{ color: row.active ? undefined : '#999' }}>{String(value || '—')}</span>
+                <span style={{ color: row.active ? undefined : '#999' }}>
+                  {formatLocalDateTime(String(value || ''))}
+                </span>
               ),
             },
           ]}
@@ -141,7 +148,11 @@ export function MarketingConsentsTab() {
             { title: 'Компания', dataIndex: 'organization', render: (value) => String(value || '—') },
             { title: 'Источник', dataIndex: 'source_label', render: (value) => String(value || '—') },
             { title: 'Рассылка', dataIndex: 'campaign_name', render: (value) => String(value || '—') },
-            { title: 'Дата', dataIndex: 'unsubscribed_at_label' },
+            {
+              title: 'Дата',
+              dataIndex: 'unsubscribed_at',
+              render: (value) => formatLocalDateTime(String(value || '')),
+            },
           ]}
         />
       </Card>

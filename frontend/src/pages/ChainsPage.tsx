@@ -4,6 +4,7 @@ import { App, Button, Empty, Tag } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { chainsApi, type ChainListItem } from '@/api/chains';
+import { formatLocalDateTime } from '@/utils/dateTime';
 
 type ChainsLocationState = {
   campaignId?: string;
@@ -87,7 +88,7 @@ export function ChainsPage() {
             </Tag>
           ),
         },
-        { title: 'Обновлена', dataIndex: 'updated_at', valueType: 'dateTime' },
+        { title: 'Обновлена', dataIndex: 'updated_at', render: (_, row) => formatLocalDateTime(row.updated_at) },
         {
           title: 'Действия',
           valueType: 'option',

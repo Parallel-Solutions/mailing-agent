@@ -9,11 +9,19 @@ export type MetricGlossaryEntry = {
 export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
   sent: {
     id: 'sent',
-    title: 'Компаний в рассылке',
+    title: 'Принято провайдером',
     description:
-      'Число компаний (получателей), по которым зафиксирована хотя бы одна отправка письма. В обычной аналитике карточка может называться «Отправлено» — та же метрика.',
+      'Число уникальных получателей, для которых почтовый сервис принял хотя бы одну отправку. Неудачная попытка сюда не входит.',
     formula: 'Количество уникальных row_id в журнале отправок sent_mail_log.',
     source: 'PostgreSQL job_events → stream sent_mail_log.',
+  },
+  attempts: {
+    id: 'attempts',
+    title: 'Попытки отправки',
+    description:
+      'Все технические попытки отправить письмо, включая неудачи и повторы одному получателю.',
+    formula: 'Количество строк delivery_attempts.',
+    source: 'PostgreSQL delivery_attempts.',
   },
   delivered: {
     id: 'delivered',

@@ -1,4 +1,5 @@
 import { companyEmailsText, companyField } from './utils';
+import { formatLocalDateTime } from '@/utils/dateTime';
 
 export type DrillColumn = [string, (item: Record<string, unknown>) => unknown];
 
@@ -17,7 +18,7 @@ const RECIPIENT_COLUMNS: DrillColumn[] = [
   ['Контакты', (item) => companyEmailsText(item)],
   ['Статус', (item) => (item.manager_status as { label?: string } | undefined)?.label],
   ['Последнее событие', (item) => item.last_event_label],
-  ['Дата события', (item) => item.last_event_at],
+  ['Дата события', (item) => formatLocalDateTime(String(item.last_event_at || ''))],
   ['Интерес', (item) => (item.interest as { label?: string } | undefined)?.label],
   ['Следующее действие', (item) => (item.next_action as { label?: string } | undefined)?.label],
 ];
@@ -29,7 +30,7 @@ const CONSENT_COLUMNS: DrillColumn[] = [
   ['Статус согласия', (item) => item.consent_status_label],
   ['Материалы', (item) => item.materials_label],
   ['Последнее действие', (item) => item.last_action_label],
-  ['Дата', (item) => item.last_action_at],
+  ['Дата', (item) => formatLocalDateTime(String(item.last_action_at || ''))],
   ['Интерес', (item) => (item.interest as { label?: string } | undefined)?.label],
   ['Следующее действие', (item) => (item.next_action as { label?: string } | undefined)?.label],
 ];
@@ -52,7 +53,7 @@ const PROBLEM_COLUMNS: DrillColumn[] = [
   ['Причина', (item) => item.bounce_reason_label],
   ['Провайдер', (item) => item.provider],
   ['Писем', (item) => item.attempts],
-  ['Последнее событие', (item) => item.last_event_at],
+  ['Последнее событие', (item) => formatLocalDateTime(String(item.last_event_at || ''))],
   ['Рекомендация', (item) => (item.recommended_action as { label?: string } | undefined)?.label],
 ];
 
@@ -60,7 +61,7 @@ const REPORT_COLUMNS: DrillColumn[] = [
   ['Отчёт', (item) => item.report_type],
   ['Период', (item) => `${item.period_from || ''} — ${item.period_to || ''}`],
   ['Формат', (item) => item.format],
-  ['Создан', (item) => item.created_at],
+  ['Создан', (item) => formatLocalDateTime(String(item.created_at || ''))],
   ['Автор', (item) => item.author],
   ['Статус', (item) => item.status],
 ];

@@ -62,6 +62,7 @@ export type Campaign = {
   failed_recipient_count?: number;
   processed_count?: number;
   pending_count?: number;
+  attempt_count?: number;
   attempt_error_count?: number;
   success_rate?: number;
   allowed_actions?: string[];
@@ -300,6 +301,13 @@ export type Batch = {
   failed_recipient_count?: number;
   remaining: number;
   status: string;
+  task_status?: string | null;
+  queue_position?: number | null;
+  is_current?: boolean;
+  available_at?: string | null;
+  attempt?: number;
+  max_attempts?: number;
+  wait_reason?: string;
   error?: string | null;
 };
 
@@ -362,6 +370,7 @@ export type Template = {
   template_type: string;
   status: string;
   is_template?: boolean;
+  attachment_output_format?: 'original' | 'pdf';
   tags?: string[];
   version?: {
     id: string;
@@ -382,6 +391,55 @@ export type Template = {
     };
     created_at?: string | null;
   };
+};
+
+export type FontAsset = {
+  id: string;
+  family: string;
+  family_normalized: string;
+  subfamily: string;
+  weight: number;
+  italic: boolean;
+  postscript_name?: string;
+  source: 'upload' | 'google_fonts' | string;
+  sha256: string;
+  size_bytes: number;
+  original_filename: string;
+  license_type?: string;
+  license_url?: string;
+  embedding_permissions: 'installable' | 'editable' | 'preview_print' | 'restricted' | 'unknown' | string;
+  glyph_coverage?: {
+    glyph_count?: number;
+    latin?: boolean;
+    cyrillic?: boolean;
+    digits?: boolean;
+  };
+  status: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type TemplateFontRequirement = {
+  family: string;
+  family_normalized: string;
+  weight: number;
+  italic: boolean;
+  source_parts?: string[];
+  document_has_embedded_fonts?: boolean;
+  status: 'resolved' | 'system' | 'missing';
+  source: string;
+  font_asset?: FontAsset | null;
+};
+
+export type TemplateFontsResult = {
+  template_id: string;
+  version_id: string;
+  requirements: TemplateFontRequirement[];
+  missing_count: number;
+  ready: boolean;
+  font_pack_hash: string;
+  attempted_families?: string[];
+  downloaded_fonts?: FontAsset[];
 };
 
 export type Audience = {
@@ -429,17 +487,19 @@ export type DeliveryConnection = {
   delivery_error_window_minutes?: number;
   delivery_error_min_samples?: number;
   delivery_error_critical_count?: number;
-  delivery_error_action?: 'throttle' | 'disable';
+  delivery_error_action?: 'throttle' | 'disable' | 'warmup';
   delivery_throttled_max_per_hour?: number;
+  warmup_recipients?: string[];
+  warmup_percent_of_errors?: number;
   delivery_guard?: {
     enabled: boolean;
-    state: 'normal' | 'throttled' | 'disabled';
+    state: 'normal' | 'throttled' | 'disabled' | 'warmup';
     reason: string;
     error_rate_threshold: number;
     window_minutes: number;
     min_samples: number;
     critical_error_count: number;
-    action: 'throttle' | 'disable';
+    action: 'throttle' | 'disable' | 'warmup';
     throttled_max_per_hour: number;
     terminal_count: number;
     error_count: number;
@@ -447,6 +507,14 @@ export type DeliveryConnection = {
     effective_max_per_hour: number;
     triggered_at: string;
     last_error_at: string;
+    warmup_recipients: string[];
+    warmup_percent_of_errors: number;
+    warmup_task_id: string;
+    warmup_status: string;
+    warmup_sent_count: number;
+    warmup_error_count: number;
+    warmup_started_at: string;
+    warmup_completed_at: string;
   };
 };
 

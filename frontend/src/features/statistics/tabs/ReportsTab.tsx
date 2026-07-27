@@ -5,6 +5,8 @@ import { statisticsApi } from '@/api/statistics';
 import { KpiGrid } from '../components/KpiGrid';
 import { useStatistics } from '../StatisticsContext';
 import { asRecord, asRecordArray, fmt } from '../utils';
+import { formatLocalDateTime } from '@/utils/dateTime';
+import { statusLabel } from '@/utils/presentation';
 
 export function ReportsTab() {
   const {
@@ -69,9 +71,9 @@ export function ReportsTab() {
             render: (_, r) => `${r.period_from || ''} — ${r.period_to || ''}`,
           },
           { title: 'Формат', dataIndex: 'format' },
-          { title: 'Создан', dataIndex: 'created_at' },
+          { title: 'Создан', dataIndex: 'created_at', render: (value) => formatLocalDateTime(String(value || '')) },
           { title: 'Автор', dataIndex: 'author' },
-          { title: 'Статус', dataIndex: 'status' },
+          { title: 'Статус', dataIndex: 'status', render: (value) => statusLabel(String(value || '')) },
           {
             title: '',
             key: 'download',

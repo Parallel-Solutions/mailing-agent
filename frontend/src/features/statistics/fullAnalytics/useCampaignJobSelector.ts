@@ -20,7 +20,7 @@ export function useCampaignJobSelector() {
   const options = (campaigns.length ? campaigns : asRecordArray(campaignsQuery.data?.campaigns)).map(
     (item) => ({
       value: String(item.job_id),
-      label: String(item.title || item.job_id),
+      label: String(item.title || 'Рассылка без названия'),
     }),
   );
 

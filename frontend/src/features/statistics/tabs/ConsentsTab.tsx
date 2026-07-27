@@ -2,6 +2,7 @@ import { Button, Card, Col, Input, List, Row, Table } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { statisticsApi } from '@/api/statistics';
+import { formatLocalDateTime } from '@/utils/dateTime';
 import { KpiGrid } from '../components/KpiGrid';
 import { FunnelRow } from '../components/FunnelRow';
 import { useStatistics } from '../StatisticsContext';
@@ -104,7 +105,7 @@ export function ConsentsTab() {
                 render: (_, r) => (
                   <span>
                     {String(r.last_action_label || '—')}
-                    <div>{String(r.last_action_at || '')}</div>
+                    <div>{formatLocalDateTime(String(r.last_action_at || ''))}</div>
                   </span>
                 ),
               },

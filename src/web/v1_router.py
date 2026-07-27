@@ -16,6 +16,7 @@ from src.campaigns import (
     chain_service,
     connection_service,
     document_editor_service,
+    font_service,
     generation_service,
     pdf_overlay_service,
     profile_service,
@@ -175,6 +176,7 @@ class TemplateSaveBody(BaseModel):
     editor_state: dict[str, Any] | None = None
     is_template: bool | None = None
     rendered_pdf_filename: str | None = None
+    attachment_output_format: str | None = None
 
 
 class KpPreviewBody(BaseModel):
@@ -243,13 +245,15 @@ class ConnectionCreateBody(BaseModel):
     oauth_tokens: dict[str, object] | None = None
     max_per_hour: int = 0
     max_per_day: int = 0
-    delivery_guard_enabled: bool = True
+    delivery_guard_enabled: bool = False
     delivery_error_rate_threshold: float = 0.05
     delivery_error_window_minutes: int = 60
     delivery_error_min_samples: int = 20
     delivery_error_critical_count: int = 10
-    delivery_error_action: str = "throttle"
+    delivery_error_action: str = "warmup"
     delivery_throttled_max_per_hour: int = 50
+    warmup_recipients: list[str] = Field(default_factory=list)
+    warmup_percent_of_errors: int = 100
 
 
 class ConnectionUpdateBody(BaseModel):
@@ -273,6 +277,8 @@ class ConnectionUpdateBody(BaseModel):
     delivery_error_critical_count: int | None = None
     delivery_error_action: str | None = None
     delivery_throttled_max_per_hour: int | None = None
+    warmup_recipients: list[str] | None = None
+    warmup_percent_of_errors: int | None = None
 
 
 def _ok(result: Any) -> dict[str, Any]:
@@ -1072,6 +1078,94 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"Ассистент недоступен: {exc}") from exc
 
     # --- Templates ---
+    @router.get("/fonts")
+    def get_fonts(principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        return _ok(font_service.list_fonts(actor.username))
+
+    @router.post("/fonts/upload")
+    def post_font_upload(
+        file: UploadFile = File(...),
+        license_confirmed: bool = Form(default=False),
+        template_id: str | None = Form(default=None),
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        original_name = validate_uploaded_file(
+            file,
+            allowed_extensions=(".ttf", ".otf"),
+            max_bytes=settings.upload_font_max_bytes,
+            human_name="шрифта",
+        )
+        try:
+            item = font_service.upload_font(
+                actor.username,
+                filename=original_name,
+                data=file.file.read(),
+                license_confirmed=license_confirmed,
+                created_by=actor.username,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        affected_ids = set(
+            font_service.template_ids_requiring_family(
+                actor.username,
+                str(item.get("family_normalized") or ""),
+            )
+        )
+        if template_id:
+            affected_ids.add(template_id)
+        for affected_id in affected_ids:
+            template_service.invalidate_template_font_cache(affected_id, actor.username)
+        return _ok(item)
+
+    @router.delete("/fonts/{font_id}")
+    def delete_font(
+        font_id: str,
+        template_id: str | None = Query(default=None),
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        fonts = font_service.list_fonts(actor.username)
+        font = next((item for item in fonts if item["id"] == font_id), None)
+        if font is None:
+            raise HTTPException(status_code=404, detail="Шрифт не найден")
+        affected_ids = set(
+            font_service.template_ids_requiring_family(
+                actor.username,
+                str(font.get("family_normalized") or ""),
+            )
+        )
+        if template_id:
+            affected_ids.add(template_id)
+        if not font_service.delete_font(actor.username, font_id):
+            raise HTTPException(status_code=404, detail="Шрифт не найден")
+        for affected_id in affected_ids:
+            template_service.invalidate_template_font_cache(affected_id, actor.username)
+        return _ok({"deleted": True, "id": font_id})
+
+    @router.get("/templates/{template_id}/fonts")
+    def get_template_fonts(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(font_service.get_template_fonts(template_id, actor.username))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/templates/{template_id}/fonts/resolve")
+    def post_template_fonts_resolve(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            result = font_service.resolve_template_fonts(template_id, actor.username)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        template_service.invalidate_template_font_cache(template_id, actor.username)
+        return _ok(result)
+
     @router.get("/templates")
     def get_templates(
         principal: object = Depends(check_auth),
@@ -1427,6 +1521,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                     editor_state=body.editor_state,
                     is_template=body.is_template,
                     rendered_pdf_filename=body.rendered_pdf_filename,
+                    attachment_output_format=body.attachment_output_format,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

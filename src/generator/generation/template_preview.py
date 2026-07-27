@@ -169,8 +169,21 @@ def resolve_template_preview_file(job_id: str | None, kind: str) -> Path:
         raise FileNotFoundError("Файл предпросмотра не найден.")
     return resolved
 
-def _convert_preview_docx_to_pdf(docx_path: Path, output_dir: Path) -> Path | None:
-    result = convert_docx_batch([docx_path], output_dir, chunk_size=1, worker_count=1)
+def _convert_preview_docx_to_pdf(
+    docx_path: Path,
+    output_dir: Path,
+    *,
+    fontconfig_path: Path | str | None = None,
+    prefer_local: bool = False,
+) -> Path | None:
+    result = convert_docx_batch(
+        [docx_path],
+        output_dir,
+        chunk_size=1,
+        worker_count=1,
+        fontconfig_path=fontconfig_path,
+        prefer_local=prefer_local,
+    )
     pdf_path = result.get(docx_path)
     return pdf_path if pdf_path is not None and pdf_path.exists() else None
 
@@ -182,6 +195,8 @@ def convert_docx_to_delivery_pdf(
     file_kind: str | None = None,
     template_docx: Path | None = None,
     max_body_font_half_points: int = 20,
+    fontconfig_path: Path | str | None = None,
+    prefer_local: bool = False,
 ) -> Path:
     """Convert DOCX to delivery PDF using the same pdf_safe pipeline as bulk generation."""
     from src.generator.generation.pdf_safe import apply_pdf_safe_postprocess, prepare_docx_for_pdf_export
@@ -196,7 +211,12 @@ def convert_docx_to_delivery_pdf(
         template_docx=template_source,
         max_body_font_half_points=max_body_font_half_points,
     )
-    converted = _convert_preview_docx_to_pdf(staged_docx, output_pdf.parent)
+    converted = _convert_preview_docx_to_pdf(
+        staged_docx,
+        output_pdf.parent,
+        fontconfig_path=fontconfig_path,
+        prefer_local=prefer_local,
+    )
     if converted is None or not converted.exists():
         raise RuntimeError("Не удалось преобразовать DOCX в PDF")
     apply_pdf_safe_postprocess(converted, plan)

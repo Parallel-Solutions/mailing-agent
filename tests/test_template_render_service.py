@@ -297,6 +297,14 @@ class TemplateRenderServiceTests(unittest.TestCase):
         template_id = uploaded.json()["result"]["id"]
         delivery_name = uploaded.json()["result"]["version"]["rendered_pdf_filename"]
         self.assertEqual(delivery_name, "КП_СТП_районы.pdf")
+        updated = self.client.patch(
+            f"/api/v1/templates/{template_id}",
+            json={
+                "is_template": True,
+                "attachment_output_format": "pdf",
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
 
         with session_scope() as session:
             recipient = session.get(CampaignRecipient, int(self.recipient_id))
@@ -315,3 +323,40 @@ class TemplateRenderServiceTests(unittest.TestCase):
         self.assertEqual(filename, delivery_name)
         self.assertNotEqual(filename, f"{template_id}.pdf")
         self.assertTrue(data.startswith(b"%PDF"))
+
+    def test_docx_attachment_keeps_original_format_by_default(self) -> None:
+        source_docx = Document()
+        source_docx.add_paragraph("Документ без конвертации")
+        payload = BytesIO()
+        source_docx.save(payload)
+        uploaded = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document", "name": "Original DOCX"},
+            files={
+                "file": (
+                    "original.docx",
+                    payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        item = uploaded.json()["result"]
+        self.assertEqual(item["attachment_output_format"], "original")
+
+        with session_scope() as session:
+            recipient = session.get(CampaignRecipient, int(self.recipient_id))
+            campaign = session.get(Campaign, self.campaign_id)
+            assert recipient is not None and campaign is not None
+            session.expunge(recipient)
+            session.expunge(campaign)
+
+        filename, data = template_render_service.render_document_template_for_recipient(
+            template_id=item["id"],
+            recipient=recipient,
+            campaign=campaign,
+            job_id=self.job_id,
+            force=True,
+        )
+        self.assertEqual(filename, "original.docx")
+        self.assertTrue(data.startswith(b"PK"))

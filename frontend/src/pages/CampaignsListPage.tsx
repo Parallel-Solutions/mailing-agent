@@ -10,6 +10,8 @@ import {
   canCampaignAction,
   shouldPollCampaign,
 } from '@/features/campaigns/campaignLifecycle';
+import { formatLocalDateTime } from '@/utils/dateTime';
+import { statusLabel } from '@/utils/presentation';
 
 const statusColor: Record<string, string> = {
   draft: 'default',
@@ -30,8 +32,8 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
     queryFn: () => campaignsApi.list({ limit: 100 }),
     refetchInterval: (query) =>
       query.state.data?.items.some((item) => shouldPollCampaign(item.status))
-        ? 5_000
-        : false,
+        ? 10_000
+        : 30_000,
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['campaigns'] });
@@ -86,7 +88,7 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
         {
           title: 'Статус',
           dataIndex: 'status',
-          render: (_, row) => <Tag color={statusColor[row.status] || 'default'}>{row.status}</Tag>,
+          render: (_, row) => <Tag color={statusColor[row.status] || 'default'}>{statusLabel(row.status)}</Tag>,
         },
         { title: 'Тема', dataIndex: 'mail_subject', ellipsis: true },
         { title: 'Провайдер', dataIndex: 'transport' },
@@ -100,10 +102,11 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
             />
           ),
         },
-        { title: 'Отправлено', dataIndex: 'success_count' },
+        { title: 'Попытки', dataIndex: 'attempt_count' },
+        { title: 'Принято провайдером', dataIndex: 'success_count' },
         { title: 'Пропущено', dataIndex: 'skipped_count' },
         { title: 'Ошибки', dataIndex: 'failed_recipient_count' },
-        { title: 'Создана', dataIndex: 'created_at', valueType: 'dateTime' },
+        { title: 'Создана', dataIndex: 'created_at', render: (_, row) => formatLocalDateTime(row.created_at) },
         {
           title: 'Действия',
           valueType: 'option',

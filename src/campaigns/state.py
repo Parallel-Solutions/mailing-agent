@@ -14,6 +14,7 @@ from src.infra.models import (
     CampaignBatch,
     CampaignRecipient,
     CampaignStatusEvent,
+    DeliveryAttempt,
 )
 
 
@@ -78,6 +79,16 @@ def recipient_metrics_many(
         for campaign_id, status, count in grouped:
             status_counts[str(campaign_id)][str(status or "pending")] = int(count or 0)
 
+    attempt_counts: dict[str, int] = {campaign_id: 0 for campaign_id in campaign_ids}
+    if campaign_ids:
+        grouped_attempts = session.execute(
+            select(DeliveryAttempt.campaign_id, func.count())
+            .where(DeliveryAttempt.campaign_id.in_(campaign_ids))
+            .group_by(DeliveryAttempt.campaign_id)
+        ).all()
+        for campaign_id, count in grouped_attempts:
+            attempt_counts[str(campaign_id)] = int(count or 0)
+
     result: dict[str, dict[str, Any]] = {}
     for campaign in rows:
         counts = status_counts[str(campaign.id)]
@@ -95,6 +106,7 @@ def recipient_metrics_many(
             "failed_recipient_count": failed_recipient_count,
             "processed_count": processed_count,
             "pending_count": pending_count,
+            "attempt_count": attempt_counts[str(campaign.id)],
             "attempt_error_count": max(0, int(campaign.error_count or 0)),
             "progress": min(100.0, progress),
             "success_rate": min(100.0, success_rate),

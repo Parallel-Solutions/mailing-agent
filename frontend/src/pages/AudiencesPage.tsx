@@ -5,6 +5,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { audiencesApi } from '@/api/audiences';
 import type { Audience } from '@/api/types';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { formatLocalDateTime } from '@/utils/dateTime';
+import { statusLabel } from '@/utils/presentation';
 
 export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
   const { message } = App.useApp();
@@ -52,9 +54,15 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
         columns={[
           { title: 'Название', dataIndex: 'name' },
           { title: 'Записей', dataIndex: 'member_count' },
-          { title: 'Источник', dataIndex: 'source' },
+          {
+            title: 'Источник',
+            dataIndex: 'source',
+            render: (value) =>
+              ({ manual: 'Создано вручную', import: 'Импортировано' })[String(value)] ||
+              'Внешний источник',
+          },
           { title: 'Качество', dataIndex: 'quality_score' },
-          { title: 'Обновлена', dataIndex: 'updated_at', valueType: 'dateTime' },
+          { title: 'Обновлена', dataIndex: 'updated_at', render: (_, row) => formatLocalDateTime(row.updated_at) },
           {
             title: 'Действия',
             valueType: 'option',
@@ -111,7 +119,11 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
             { title: 'Контакт', dataIndex: 'contact_name' },
             { title: 'Email', dataIndex: 'email' },
             { title: 'Регион', dataIndex: 'region' },
-            { title: 'Статус', dataIndex: 'validation_status' },
+            {
+              title: 'Статус',
+              dataIndex: 'validation_status',
+              render: (value) => statusLabel(String(value || '')),
+            },
           ]}
           pagination={{ pageSize: 20, total: membersQuery.data?.total }}
         />
