@@ -1,31 +1,51 @@
+export type ApiErrorDetail = {
+  code?: string;
+  title?: string;
+  message: string;
+  hint?: string;
+};
+
 export class ApiError extends Error {
   status: number;
   detail: string;
+  payload: ApiErrorDetail;
 
-  constructor(status: number, detail: string) {
-    super(detail);
+  constructor(status: number, detail: string | ApiErrorDetail) {
+    const payload = typeof detail === 'string' ? { message: detail } : detail;
+    super(payload.message);
     this.name = 'ApiError';
     this.status = status;
-    this.detail = detail;
+    this.detail = payload.message;
+    this.payload = payload;
   }
 }
 
 type ApiEnvelope<T> = {
   status?: string;
   result?: T;
-  detail?: string | { msg?: string }[];
+  detail?: string | ApiErrorDetail | { msg?: string }[];
 };
 
-async function parseDetail(response: Response): Promise<string> {
+async function parseDetail(response: Response): Promise<ApiErrorDetail> {
   try {
     const data = (await response.json()) as ApiEnvelope<unknown>;
-    if (typeof data.detail === 'string') return data.detail;
+    if (typeof data.detail === 'string') return { message: data.detail };
     if (Array.isArray(data.detail)) {
-      return data.detail.map((item) => item.msg || JSON.stringify(item)).join('; ');
+      return {
+        message: data.detail.map((item) => item.msg || JSON.stringify(item)).join('; '),
+      };
     }
-    return response.statusText || 'Ошибка запроса';
+    if (data.detail && typeof data.detail === 'object' && 'message' in data.detail) {
+      return {
+        code: typeof data.detail.code === 'string' ? data.detail.code : undefined,
+        title: typeof data.detail.title === 'string' ? data.detail.title : undefined,
+        message: String(data.detail.message || response.statusText || 'Ошибка запроса'),
+        hint: typeof data.detail.hint === 'string' ? data.detail.hint : undefined,
+      };
+    }
+    return { message: response.statusText || 'Ошибка запроса' };
   } catch {
-    return response.statusText || 'Ошибка запроса';
+    return { message: response.statusText || 'Ошибка запроса' };
   }
 }
 

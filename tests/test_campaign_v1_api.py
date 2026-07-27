@@ -395,7 +395,7 @@ class CampaignV1ApiTests(unittest.TestCase):
     def _fake_docx_pdf_artifact(self, filename: str, data: bytes) -> tuple[bytes, str]:
         return (b"%PDF-1.4 delivery copy", f"{Path(filename).stem}.pdf")
 
-    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_upload_file_template_and_download_active_version(self, mock_build_pdf) -> None:
         mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
         source_docx = Document()
@@ -484,10 +484,105 @@ class CampaignV1ApiTests(unittest.TestCase):
         contract_template = contract.json()["result"]
         self.assertEqual(contract_template["template_type"], "document")
         self.assertEqual(contract_template["name"], "Own document")
-        self.assertEqual(contract_template["version"]["filename"], "Договор_МНГП.docx")
+        self.assertEqual(contract_template["version"]["filename"], "contract.docx")
         self.assertEqual(contract_template["version"]["rendered_pdf_filename"], "Договор_МНГП.pdf")
 
-    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
+    def test_upload_incidental_kp_phrase_uses_generic_document_builder(self, mock_build_pdf) -> None:
+        mock_build_pdf.return_value = (b"%PDF-1.4 delivery copy", "document.pdf")
+        source_docx = Document()
+        source_docx.add_paragraph(
+            "В случае заинтересованности готовы оперативно представить коммерческое предложение."
+        )
+        source_docx.add_paragraph("Подготовка границ территориальных зон.")
+        source_payload = BytesIO()
+        source_docx.save(source_payload)
+
+        created = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document"},
+            files={
+                "file": (
+                    "Шаблон письма Администрациям.docx",
+                    source_payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+        self.assertEqual(created.status_code, 200, created.text)
+        template = created.json()["result"]
+        self.assertEqual(template["version"]["filename"], "Шаблон письма Администрациям.docx")
+        self.assertEqual(template["version"]["rendered_pdf_filename"], "КП_Территориальные_зоны.pdf")
+        mock_build_pdf.assert_called_once_with(
+            "Шаблон письма Администрациям.docx",
+            source_payload.getvalue(),
+        )
+
+    def test_upload_conversion_error_returns_structured_422(self) -> None:
+        from src.campaigns import template_service
+
+        source_docx = Document()
+        source_docx.add_paragraph("Документ")
+        source_payload = BytesIO()
+        source_docx.save(source_payload)
+        before = self.client.get("/api/v1/templates", params={"template_type": "document"}).json()["result"]
+
+        with patch(
+            "src.campaigns.template_service._build_document_pdf_artifact",
+            side_effect=template_service.DocumentConversionError(),
+        ):
+            response = self.client.post(
+                "/api/v1/templates/upload",
+                data={"template_type": "document"},
+                files={
+                    "file": (
+                        "document.docx",
+                        source_payload.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(
+            response.json()["detail"],
+            {
+                "code": "document_conversion_failed",
+                "title": "Не удалось преобразовать документ",
+                "message": "Документ не удалось преобразовать в PDF.",
+                "hint": "Проверьте, что файл открывается корректно, и повторите загрузку.",
+            },
+        )
+        after = self.client.get("/api/v1/templates", params={"template_type": "document"}).json()["result"]
+        self.assertEqual(len(after), len(before))
+
+    def test_delivery_conversion_errors_return_structured_422(self) -> None:
+        from src.campaigns import template_service
+
+        expected_detail = template_service.DocumentConversionError().to_detail()
+        cases = (
+            (
+                "src.campaigns.template_service.get_template_delivery_file",
+                "/api/v1/templates/document-id/delivery-file",
+            ),
+            (
+                "src.campaigns.template_service.build_file_preview",
+                "/api/v1/templates/document-id/preview-file",
+            ),
+        )
+
+        for target, endpoint in cases:
+            with self.subTest(endpoint=endpoint), patch(
+                target,
+                side_effect=template_service.DocumentConversionError(),
+            ):
+                response = self.client.get(endpoint)
+
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertEqual(response.json()["detail"], expected_detail)
+
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_upload_infers_delivery_filename_from_document_content(self, mock_build_pdf) -> None:
         mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
         source_docx = Document()
@@ -510,11 +605,11 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 200, created.text)
         template = created.json()["result"]
-        self.assertEqual(template["version"]["filename"], "КП_СТП_районы.docx")
+        self.assertEqual(template["version"]["filename"], "КП_СТП_районы (1) (1).docx")
         self.assertEqual(template["version"]["rendered_pdf_filename"], "КП_СТП_районы.pdf")
         self.assertEqual(template["name"], "КП СТП районы")
 
-    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_patch_delivery_filename_without_new_version(self, mock_build_pdf) -> None:
         mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
         source_docx = Document()
@@ -561,7 +656,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(empty.status_code, 400, empty.text)
 
-    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_template_starters_and_models(self, mock_build_pdf) -> None:
         mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
         models = self.client.get("/api/v1/templates/models")
@@ -1171,7 +1266,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         campaign_id = created.json()["result"]["id"]
 
         with patch(
-            "src.campaigns.template_service._build_kp_pdf_artifact",
+            "src.campaigns.template_service._build_document_pdf_artifact",
             return_value=(b"%PDF-1.4 test", "legal.pdf"),
         ):
             uploaded = self.client.post(

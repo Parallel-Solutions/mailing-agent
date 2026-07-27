@@ -254,7 +254,7 @@ class TemplateRenderServiceTests(unittest.TestCase):
     @patch("src.generator.generation.pdf_safe.is_kp_docx", return_value=True)
     @patch("src.campaigns.template_render_service._convert_kp_docx_to_pdf")
     @patch("src.campaigns.template_render_service.render_docx")
-    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_docx_render_returns_stored_delivery_filename(
         self,
         mock_build_pdf,

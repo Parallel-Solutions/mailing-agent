@@ -59,6 +59,7 @@ import { readBoolParam } from '@/utils/urlState';
 import { VisualEmailEditor } from '@/features/templates/VisualEmailEditor';
 import { PersonalizationSetting } from '@/features/templates/PersonalizationSetting';
 import { DeliveryFilenameField } from '@/features/templates/DeliveryFilenameField';
+import { showDocumentUploadError } from '@/features/templates/documentUploadError';
 import {
   downloadEmailHtml,
   getEmailFormat,
@@ -768,7 +769,7 @@ function OnlyOfficeEditor({ data, templateId, onDirty, onError }: {
 }
 
 function DocxTemplateEditor({ template }: { template: Template }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [dirty, setDirty] = useState(false);
@@ -817,7 +818,7 @@ function DocxTemplateEditor({ template }: { template: Template }) {
         await queryClient.invalidateQueries({ queryKey: ['office-config', template.id] });
         onSuccess?.({});
       } catch (error) {
-        message.error(error instanceof Error ? error.message : 'Не удалось загрузить DOCX');
+        showDocumentUploadError(modal, error);
         onError?.(error as Error);
       } finally { setUploading(false); }
     }}><Button icon={<UploadOutlined />} loading={uploading}>Новая версия</Button></Upload>

@@ -21,6 +21,7 @@ import { AddTemplateWizard, type WizardStep } from '@/features/templates/AddTemp
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { readBoolParam, readEnumParam } from '@/utils/urlState';
 import { TemplatePreviewImage } from '@/features/templates/TemplatePreviewImage';
+import { showDocumentUploadError } from '@/features/templates/documentUploadError';
 import {
   buildEmailPreviewDocument,
   downloadEmailHtml,
@@ -43,7 +44,7 @@ function TemplateFileUpload({
   compact?: boolean;
   onUploaded: (template: Template) => void;
 }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [uploading, setUploading] = useState(false);
 
   const button = (
@@ -73,7 +74,7 @@ function TemplateFileUpload({
           onUploaded(uploaded);
           onSuccess?.(uploaded);
         } catch (error) {
-          message.error(error instanceof Error ? error.message : 'Не удалось загрузить шаблон');
+          showDocumentUploadError(modal, error);
           onError?.(error as Error);
         } finally {
           setUploading(false);

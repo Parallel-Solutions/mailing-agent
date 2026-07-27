@@ -1129,6 +1129,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except template_service.DocumentConversionError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_detail()) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _ok(item)
@@ -1255,6 +1257,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             item = template_service.get_template_delivery_file(template_id, actor.username)
+        except template_service.DocumentConversionError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_detail()) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if item is None:
@@ -1277,6 +1281,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             item = template_service.build_file_preview(template_id, actor.username)
+        except template_service.DocumentConversionError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_detail()) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if item is None:

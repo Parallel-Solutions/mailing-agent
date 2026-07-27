@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 import { templatesApi } from '@/api/templates';
 import type { Template } from '@/api/types';
 import { DEFAULT_VISUAL_EMAIL_HTML } from '@/features/templates/emailConstants';
+import { showDocumentUploadError } from '@/features/templates/documentUploadError';
 import { TemplatePreviewImage } from '@/features/templates/TemplatePreviewImage';
 import './AddTemplateWizard.css';
 
@@ -64,7 +65,7 @@ export function AddTemplateWizard({
   onClose,
   onCreated,
 }: Props) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const defaultStep: WizardStep = templateType === 'email' ? 'format' : 'gallery';
   const [internalStep, setInternalStep] = useState<WizardStep>(defaultStep);
   const step = controlledStep ?? internalStep;
@@ -149,7 +150,11 @@ export function AddTemplateWizard({
       onClose();
     },
     onError: (error) => {
-      message.error(error instanceof Error ? error.message : 'Не удалось загрузить шаблон');
+      if (templateType === 'document') {
+        showDocumentUploadError(modal, error);
+      } else {
+        message.error(error instanceof Error ? error.message : 'Не удалось загрузить шаблон');
+      }
     },
   });
 
