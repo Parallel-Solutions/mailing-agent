@@ -3,6 +3,11 @@ import { App, Button, Progress, Space, Table, Tabs, Tag, Typography } from 'antd
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
+import {
+  campaignProgressLabel,
+  canCampaignAction,
+  shouldPollCampaign,
+} from '@/features/campaigns/campaignLifecycle';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { formatScheduleDateTime } from '@/utils/scheduleForm';
 import { readEnumParam } from '@/utils/urlState';
@@ -20,6 +25,10 @@ export function CampaignDetailPage() {
     queryKey: ['campaign', id],
     queryFn: () => campaignsApi.get(id),
     enabled: Boolean(id),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return shouldPollCampaign(status) ? 5_000 : false;
+    },
   });
   const recipientsQuery = useQuery({
     queryKey: ['campaign-recipients', id],
@@ -81,23 +90,28 @@ export function CampaignDetailPage() {
           {camp?.name || 'Рассылка'}
         </Typography.Title>
         <Tag>{camp?.status}</Tag>
-        <Link to={`/campaigns/new?id=${id}`}>Редактировать</Link>
-        <Link to={`/campaigns/${id}/chain`}>Настроить цепочку</Link>
-        {camp?.status === 'paused' ? (
+        {canCampaignAction(camp, 'edit') ? <Link to={`/campaigns/new?id=${id}`}>Редактировать</Link> : null}
+        {canCampaignAction(camp, 'edit') ? <Link to={`/campaigns/${id}/chain`}>Настроить цепочку</Link> : null}
+        {canCampaignAction(camp, 'resume') ? (
           <Button loading={resume.isPending} onClick={() => resume.mutate()}>
             Продолжить
           </Button>
-        ) : (
+        ) : canCampaignAction(camp, 'pause') ? (
           <Button loading={pause.isPending} onClick={() => pause.mutate()}>
             Пауза
           </Button>
-        )}
-        <Button danger loading={cancel.isPending} onClick={() => cancel.mutate()}>
-          Отменить
-        </Button>
+        ) : null}
+        {canCampaignAction(camp, 'cancel') ? (
+          <Button danger loading={cancel.isPending} onClick={() => cancel.mutate()}>
+            Отменить
+          </Button>
+        ) : null}
       </Space>
 
-      <Progress percent={camp?.progress || 0} />
+      <Progress
+        percent={camp?.progress || 0}
+        format={() => (camp ? campaignProgressLabel(camp) : '0/0')}
+      />
 
       <Tabs
         activeKey={tab}
@@ -110,7 +124,9 @@ export function CampaignDetailPage() {
               <ProCard bordered>
                 <p>Тема: {camp?.mail_subject}</p>
                 <p>
-                  Прогресс: {camp?.sent_count}/{camp?.total_count}, ошибки: {camp?.error_count}
+                  Обработано: {camp?.processed_count}/{camp?.total_count}, отправлено:{' '}
+                  {camp?.success_count ?? camp?.sent_count}, пропущено: {camp?.skipped_count ?? 0}, ошибки:{' '}
+                  {camp?.failed_recipient_count ?? 0}
                   {typeof camp?.layout_error_count === 'number' && camp.layout_error_count > 0
                     ? `, КП не влезло: ${camp.layout_error_count}`
                     : ''}
@@ -179,6 +195,9 @@ export function CampaignDetailPage() {
                   { title: 'Время', dataIndex: 'scheduled_at', render: (value: string) => formatScheduleDateTime(value) },
                   { title: 'Кол-во', dataIndex: 'size' },
                   { title: 'Отправлено', dataIndex: 'sent_count' },
+                  { title: 'Обработано', dataIndex: 'processed_count' },
+                  { title: 'Пропущено', dataIndex: 'skipped_count' },
+                  { title: 'Ошибки получателей', dataIndex: 'failed_recipient_count' },
                   { title: 'Осталось', dataIndex: 'remaining' },
                   { title: 'Статус', dataIndex: 'status' },
                   { title: 'Ошибки', dataIndex: 'error_count' },
@@ -207,8 +226,11 @@ export function CampaignDetailPage() {
             label: 'Статистика',
             children: (
               <ProCard bordered>
-                <p>Отправлено: {camp?.sent_count}</p>
-                <p>Ошибки: {camp?.error_count}</p>
+                <p>Обработано: {camp?.processed_count ?? 0} из {camp?.total_count ?? 0}</p>
+                <p>Отправлено: {camp?.success_count ?? camp?.sent_count ?? 0} ({camp?.success_rate ?? 0}%)</p>
+                <p>Пропущено: {camp?.skipped_count ?? 0}</p>
+                <p>Итоговые ошибки получателей: {camp?.failed_recipient_count ?? 0}</p>
+                <p>Технические ошибки попыток: {camp?.attempt_error_count ?? camp?.error_count ?? 0}</p>
                 {(camp?.layout_error_count ?? 0) > 0 ? (
                   <p>КП не влезло на 1 стр.: {camp?.layout_error_count}</p>
                 ) : null}

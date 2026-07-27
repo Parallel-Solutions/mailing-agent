@@ -210,7 +210,10 @@ class FinalizeSenderBatchRecoveryTests(unittest.TestCase):
             assert camp is not None
             assert batch is not None
             self.assertEqual(batch.status, "failed")
-            self.assertEqual(camp.status, "running")
+            self.assertEqual(camp.status, "completed_with_errors")
+            recipient = session.get(CampaignRecipient, self.recipient_id)
+            assert recipient is not None
+            self.assertEqual(recipient.send_status, "failed")
 
 
 if __name__ == "__main__":
