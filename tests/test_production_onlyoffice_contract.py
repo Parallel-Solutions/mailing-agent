@@ -60,6 +60,7 @@ class ProductionOnlyOfficeContractTests(unittest.TestCase):
         audit = _read("scripts/prod-audit.sh")
 
         self.assertIn("mailing-agent-onlyoffice-1", audit)
+        self.assertIn('$svc is not healthy (health=$health)', audit)
         self.assertIn("OnlyOffice is not healthy", audit)
         self.assertIn("OnlyOffice port 80 must not be published directly", audit)
         self.assertIn("App and OnlyOffice JWT secrets do not match", audit)

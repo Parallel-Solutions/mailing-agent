@@ -163,6 +163,10 @@ def _run_claimed_task(task: dict[str, Any], worker_id: str) -> None:
             except subprocess.TimeoutExpired:
                 pass
 
+            # Long-running sender/document tasks execute in a child process.
+            # Keep the container-level heartbeat fresh while the parent is
+            # supervising that child, not only while polling for new tasks.
+            touch_heartbeat()
             if process.poll() is not None:
                 break
             if is_cancel_requested(task_id):

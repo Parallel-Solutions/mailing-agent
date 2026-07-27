@@ -110,10 +110,14 @@ for svc in app worker; do
   started="$(docker inspect "$cname" --format '{{.State.StartedAt}}' 2>/dev/null || true)"
   restart_count="$(docker inspect "$cname" --format '{{.RestartCount}}' 2>/dev/null || true)"
   status="$(docker inspect "$cname" --format '{{.State.Status}}' 2>/dev/null || true)"
-  echo "$svc status=$status image=$img id=$img_id started=$started RestartCount=${restart_count:-0}"
+  health="$(docker inspect "$cname" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || true)"
+  echo "$svc status=$status health=$health image=$img id=$img_id started=$started RestartCount=${restart_count:-0}"
 
   if [[ "$status" != "running" ]]; then
     fail "$svc is not running (status=$status)"
+  fi
+  if [[ "$health" != "healthy" ]]; then
+    fail "$svc is not healthy (health=$health)"
   fi
   if [[ -n "$MAILING_AGENT_IMAGE" && "$img" != "$MAILING_AGENT_IMAGE" ]]; then
     # Compose may store the tag without digest; also accept if Config.Image is the ID.
