@@ -555,6 +555,32 @@ class Campaign(Base):
     )
 
 
+class CampaignStatusEvent(Base):
+    __tablename__ = "campaign_status_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    from_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    actor: Mapped[str] = mapped_column(String(64), nullable=False, default="system")
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index("idx_campaign_status_events_campaign_created", "campaign_id", "created_at"),
+    )
+
+
 class EmailChainRecord(Base):
     __tablename__ = "email_chains"
 

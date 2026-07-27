@@ -57,6 +57,14 @@ export type Campaign = {
   sent_count?: number;
   total_count?: number;
   error_count?: number;
+  success_count?: number;
+  skipped_count?: number;
+  failed_recipient_count?: number;
+  processed_count?: number;
+  pending_count?: number;
+  attempt_error_count?: number;
+  success_rate?: number;
+  allowed_actions?: string[];
   layout_error_count?: number;
   progress?: number;
   draft_payload?: CampaignDraftPayload;
@@ -189,6 +197,9 @@ export type ActiveSending = {
   status: string;
   sent_count: number;
   total_count: number;
+  processed_count: number;
+  skipped_count: number;
+  failed_recipient_count: number;
   remaining: number;
   queued_batches: number;
   sending_now: number;
@@ -199,6 +210,7 @@ export type ActiveSending = {
   max_per_hour: number;
   max_per_day: number;
   progress: number;
+  success_rate: number;
 } | null;
 
 export type Recipient = {
@@ -283,6 +295,9 @@ export type Batch = {
   size: number;
   sent_count: number;
   error_count: number;
+  processed_count?: number;
+  skipped_count?: number;
+  failed_recipient_count?: number;
   remaining: number;
   status: string;
   error?: string | null;

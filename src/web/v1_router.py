@@ -32,6 +32,7 @@ from src.campaigns import (
 )
 from src.campaigns.assistants import run_editor_assistant
 from src.campaigns.schedule_planner import plan_batches
+from src.campaigns.state import CampaignStateConflict
 from src.jobs.access import coerce_principal
 from src.security.auth import Principal
 from src.security.company_access import visible_owner_usernames
@@ -920,6 +921,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                     campaign_id, actor.username, visible_owners=_visibility(actor), force_now=force_now
                 )
             )
+        except CampaignStateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except PermissionError as exc:
@@ -930,6 +933,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(service.pause_campaign(campaign_id, actor.username, visible_owners=_visibility(actor)))
+        except CampaignStateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -938,7 +943,11 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(service.resume_campaign(campaign_id, actor.username, visible_owners=_visibility(actor)))
-        except (PermissionError, ValueError) as exc:
+        except CampaignStateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/campaigns/{campaign_id}/cancel")
@@ -946,6 +955,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(service.cancel_campaign(campaign_id, actor.username, visible_owners=_visibility(actor)))
+        except CampaignStateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -1823,7 +1823,7 @@ def _operational_snapshot(campaign: dict[str, Any] | None, job_id: str) -> dict[
     batches = list_batches(campaign_id, owner, visible_owners=frozenset({owner})) if owner else []
     live_send: dict[str, Any] | None = None
     if campaign.get("status") in {"running", "scheduled", "paused"}:
-        remaining = max(0, int(campaign.get("total_count") or 0) - int(campaign.get("sent_count") or 0))
+        remaining = max(0, int(campaign.get("pending_count") or 0))
         queued = sum(1 for batch in batches if batch.get("status") == "pending")
         running = next((batch for batch in batches if batch.get("status") == "running"), None)
         if remaining > 0 or queued > 0 or running is not None:
@@ -1840,14 +1840,21 @@ def _operational_snapshot(campaign: dict[str, Any] | None, job_id: str) -> dict[
     return {
         "available": True,
         "sent_count": campaign.get("sent_count"),
+        "success_count": campaign.get("success_count"),
         "total_count": campaign.get("total_count"),
+        "processed_count": campaign.get("processed_count"),
+        "pending_count": campaign.get("pending_count"),
+        "skipped_count": campaign.get("skipped_count"),
+        "failed_recipient_count": campaign.get("failed_recipient_count"),
         "error_count": campaign.get("error_count"),
+        "attempt_error_count": campaign.get("attempt_error_count"),
         "layout_error_count": campaign.get("layout_error_count"),
         "status": campaign.get("status"),
         "launched_at": campaign.get("launched_at"),
         "completed_at": campaign.get("completed_at"),
         "transport": campaign.get("transport"),
         "progress": campaign.get("progress"),
+        "success_rate": campaign.get("success_rate"),
         "batches": batches,
         "live_send": live_send,
     }

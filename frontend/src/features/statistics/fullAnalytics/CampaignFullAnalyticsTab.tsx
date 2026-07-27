@@ -157,11 +157,16 @@ export function CampaignFullAnalyticsTab() {
                 <Row gutter={16}>
                   <Col>
                     <MetricInfo metricId="operational_progress" label="Прогресс" />:{' '}
-                    {fmt(operational.sent_count)} / {fmt(operational.total_count)} (
+                    {fmt(operational.processed_count)} / {fmt(operational.total_count)} (
                     {Number(operational.progress ?? 0)}%)
                   </Col>
                   <Col>
-                    Ошибки: {fmt(operational.error_count)} · КП не влезло:{' '}
+                    Отправлено: {fmt(operational.success_count)} ({Number(operational.success_rate ?? 0)}%) ·{' '}
+                    Пропущено: {fmt(operational.skipped_count)} · Итоговые ошибки:{' '}
+                    {fmt(operational.failed_recipient_count)}
+                  </Col>
+                  <Col>
+                    Технические ошибки попыток: {fmt(operational.attempt_error_count)} · КП не влезло:{' '}
                     {fmt(operational.layout_error_count)}
                   </Col>
                   <Col>

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy import delete, func, select
 
+from src.campaigns.state import transition_campaign_status
 from src.infra.db import session_scope
 from src.infra.models import (
     Campaign,
@@ -193,8 +194,14 @@ def _pause_campaigns_for_channel(connection_id: str) -> int:
         for campaign in campaigns:
             if not _campaign_uses_connection(campaign, connection_id):
                 continue
-            campaign.status = "paused"
-            campaign.updated_at = now
+            transition_campaign_status(
+                session,
+                campaign,
+                "paused",
+                reason="delivery_channel_disabled",
+                actor="delivery_channel_guard",
+                at=now,
+            )
             campaign_ids.append(campaign.id)
             paused += 1
         if campaign_ids:

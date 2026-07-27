@@ -189,7 +189,7 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     id: 'operational_progress',
     title: 'Прогресс отправки',
     description: 'Операционные счётчики CampaignFlow: сколько получателей обработано worker.',
-    formula: 'sent_count / total_count, error_count.',
+    formula: 'processed_count / total_count; успешность = success_count / total_count.',
     source: 'PostgreSQL campaigns + campaign_recipients.',
   },
   live_send: {

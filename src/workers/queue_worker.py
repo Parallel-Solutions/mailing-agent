@@ -222,6 +222,32 @@ def _run_consent_recovery_if_due(last_run: float) -> float:
     return now
 
 
+def _run_campaign_state_reconciliation_if_due(last_run: float) -> float:
+    interval = 60
+    now = time.monotonic()
+    if now - last_run < interval:
+        return last_run
+    try:
+        from src.campaigns.state import reconcile_inactive_campaigns
+        from src.infra.db import session_scope
+
+        with session_scope() as session:
+            reports = reconcile_inactive_campaigns(
+                session,
+                repair=True,
+                actor="queue_worker_reconciler",
+            )
+        if reports:
+            logger.warning(
+                "queue_worker_campaign_states_reconciled",
+                count=len(reports),
+                campaign_ids=[str(report["campaign_id"]) for report in reports],
+            )
+    except Exception:
+        logger.exception("queue_worker_campaign_state_reconciliation_failed")
+    return now
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, _request_stop)
     if hasattr(signal, "SIGINT"):
@@ -240,6 +266,7 @@ def main() -> None:
         int(settings.background_queue_lease_seconds),
     )
     last_consent_recovery = 0.0
+    last_campaign_reconciliation = 0.0
     logger.info("queue_worker_started", worker_id=worker_id)
     last_orphan_reconciliation = time.monotonic()
     touch_heartbeat()
@@ -247,6 +274,9 @@ def main() -> None:
     while not _STOP_REQUESTED:
         touch_heartbeat()
         last_consent_recovery = _run_consent_recovery_if_due(last_consent_recovery)
+        last_campaign_reconciliation = _run_campaign_state_reconciliation_if_due(
+            last_campaign_reconciliation
+        )
         try:
             from src.generator.delivery.send_guard import is_sending_paused
 
