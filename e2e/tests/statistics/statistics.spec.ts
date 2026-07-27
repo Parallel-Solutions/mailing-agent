@@ -35,7 +35,7 @@ test.describe('Statistics page @smoke', () => {
       await page.waitForLoadState('networkidle').catch(() => undefined);
     }
     await page.goto('/?tab=dashboard', { waitUntil: 'domcontentloaded' });
-    await expect(stats.getByText('Компаний в рассылке')).toBeVisible();
+    await expect(stats.getByText('Принято провайдером')).toBeVisible();
     await expect(stats.getByText('Нет данных за выбранный период')).toHaveCount(0);
 
     guard.assertClean('statistics tabs');
