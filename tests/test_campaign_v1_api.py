@@ -227,6 +227,44 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(reimported.status_code, 200, reimported.text)
         self.assertEqual(reimported.json()["result"]["import"]["total"], 2)
 
+    def test_import_recipients_preserves_long_fallback_email_list(self) -> None:
+        from openpyxl import Workbook
+
+        created = self.client.post("/api/v1/campaigns", json={"name": "Long fallback emails"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+        fallback_emails = ", ".join(
+            f"fallback-{index:02d}@example.com" for index in range(20)
+        )
+        self.assertGreater(len(fallback_emails), 320)
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append(["Organization", "Primary email", "Fallback emails"])
+        worksheet.append(["ADM_NAME", "EMAIL_OSN", "EMAIL_DOP"])
+        worksheet.append(["Administration", "primary@example.com", fallback_emails])
+        buffer = BytesIO()
+        workbook.save(buffer)
+
+        imported = self.client.post(
+            f"/api/v1/campaigns/{campaign_id}/recipients/import",
+            files={
+                "file": (
+                    "recipients.xlsx",
+                    buffer.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        self.assertEqual(imported.status_code, 200, imported.text)
+        self.assertEqual(imported.json()["result"]["import"]["total"], 1)
+
+        listed = self.client.get(f"/api/v1/campaigns/{campaign_id}/recipients")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        recipient = listed.json()["result"]["items"][0]
+        self.assertEqual(recipient["email"], "primary@example.com")
+        self.assertEqual(recipient["email_fallback"], fallback_emails)
+
     def test_create_list_and_test_provider_connections(self) -> None:
         rusender = self.client.post(
             "/api/v1/connections",
