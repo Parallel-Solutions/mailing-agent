@@ -83,6 +83,10 @@ class ProductionDeploySafetyContractTests(unittest.TestCase):
         backup = (PROJECT_ROOT / "scripts" / "backup-prod-data.sh").read_text(
             encoding="utf-8"
         )
+        self.assertIn("to_regclass", backup)
+        self.assertIn('count="missing"', backup)
+        self.assertIn("minio_config_image", backup)
+        self.assertIn("minio_image_id", backup)
         self.assertIn("mailing-agent_pgdata", backup)
         self.assertIn("mailing-agent_minio-data", backup)
         self.assertIn('"$pg_volume" != *test*', backup)
@@ -94,7 +98,10 @@ class ProductionDeploySafetyContractTests(unittest.TestCase):
 
     def test_each_runtime_declares_its_database_identity(self) -> None:
         expectations = {
-            "docker-compose.yml": ("APP_ENVIRONMENT: local", "DATABASE_EXPECTED_NAME: mailing"),
+            "docker-compose.yml": (
+                "APP_ENVIRONMENT: local",
+                "DATABASE_EXPECTED_NAME: mailing",
+            ),
             "docker-compose.dev.yml": (
                 "APP_ENVIRONMENT: development",
                 "DATABASE_EXPECTED_NAME: mailing",
@@ -107,7 +114,8 @@ class ProductionDeploySafetyContractTests(unittest.TestCase):
                 "APP_ENVIRONMENT: e2e",
                 "DATABASE_EXPECTED_NAME: mailing_e2e",
                 "POSTGRES_DB: mailing_e2e",
-                "pg_isready -U mailing -d mailing_e2e",
+                "pg_isready -U mailing -d postgres",
+                "postgres-e2e-init",
             ),
             "docker-compose.prod.yml": (
                 "APP_ENVIRONMENT: production",
@@ -119,6 +127,26 @@ class ProductionDeploySafetyContractTests(unittest.TestCase):
             for marker in required:
                 with self.subTest(filename=filename, marker=marker):
                     self.assertIn(marker, content)
+
+    def test_minio_image_is_pinned_by_default(self) -> None:
+        compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "minio/minio:RELEASE.2025-09-07T16-13-09Z",
+            compose,
+        )
+        self.assertNotIn("minio/minio:latest", compose)
+
+    def test_backup_restore_verifier_uses_disposable_volumes(self) -> None:
+        verifier = (PROJECT_ROOT / "scripts" / "verify-backup-restore.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("sha256sum --check", verifier)
+        self.assertIn("pg_restore", verifier)
+        self.assertIn("mailing_restore", verifier)
+        self.assertIn("MINIO_IMAGE_ID", verifier)
+        self.assertIn('docker volume rm "$pg_volume" "$minio_volume"', verifier)
+        self.assertNotIn("mailing-agent_pgdata", verifier)
+        self.assertNotIn("mailing-agent_minio-data", verifier)
 
     def test_production_scripts_do_not_remove_volumes(self) -> None:
         for filename in (

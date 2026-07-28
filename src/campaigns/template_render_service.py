@@ -312,7 +312,7 @@ def render_document_template_for_recipient(
     delivery_name = _resolve_delivery_filename(tmpl, version, source_name=source_name)
     wants_pdf = str(tmpl.attachment_output_format or "original") == "pdf"
     expected_font_pack_hash = ""
-    if suffix == ".docx":
+    if suffix == ".docx" and wants_pdf and tmpl.is_template:
         from src.campaigns.font_service import template_font_pack_hash
 
         expected_font_pack_hash = template_font_pack_hash(template_id, tmpl.owner_username)
@@ -605,7 +605,7 @@ def resolve_cached_attachment(
     wants_pdf = str(tmpl.attachment_output_format or "original") == "pdf"
     source_suffix = Path(str(version.filename or "document")).suffix.lower() or ".pdf"
     expected_font_pack_hash = ""
-    if source_suffix == ".docx":
+    if source_suffix == ".docx" and wants_pdf and tmpl.is_template:
         from src.campaigns.font_service import template_font_pack_hash
 
         expected_font_pack_hash = template_font_pack_hash(template_id, owner_username)

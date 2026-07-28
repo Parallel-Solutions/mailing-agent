@@ -61,6 +61,11 @@ minio_tmp_file="$BACKUP_DIR/.minio-$stamp.tar.tmp"
 minio_backup_file="$BACKUP_DIR/minio-$stamp.tar"
 manifest_file="$BACKUP_DIR/backup-$stamp.manifest"
 minio_was_running="$(docker inspect "$MINIO_CONTAINER" --format '{{.State.Running}}')"
+minio_config_image="$(docker inspect "$MINIO_CONTAINER" --format '{{.Config.Image}}')"
+minio_image_id="$(docker inspect "$MINIO_CONTAINER" --format '{{.Image}}')"
+[[ -n "$minio_config_image" && -n "$minio_image_id" ]] \
+  || fail "could not determine the MinIO image used by the source container"
+
 
 cleanup() {
   local status=$?
@@ -80,14 +85,28 @@ docker exec -i "$POSTGRES_CONTAINER" pg_restore --list < "$db_tmp_file" >/dev/nu
 database_revision="$(docker exec "$POSTGRES_CONTAINER" \
   psql -U mailing -d "$DATABASE_NAME" -t -A \
   -c 'SELECT version_num FROM alembic_version;' | tr -d '[:space:]')"
-row_counts="$(docker exec "$POSTGRES_CONTAINER" \
-  psql -U mailing -d "$DATABASE_NAME" -t -A -F, -c \
-  "SELECT 'users',count(*) FROM users
-   UNION ALL SELECT 'campaigns',count(*) FROM campaigns
-   UNION ALL SELECT 'campaign_recipients',count(*) FROM campaign_recipients
-   UNION ALL SELECT 'mail_templates',count(*) FROM mail_templates
-   UNION ALL SELECT 'template_versions',count(*) FROM template_versions
-   UNION ALL SELECT 'smtp_mailboxes',count(*) FROM smtp_mailboxes;")"
+table_row_count() {
+  local table_name="$1"
+  local table_exists
+  local count
+  table_exists="$(docker exec "$POSTGRES_CONTAINER" \
+    psql -U mailing -d "$DATABASE_NAME" -t -A \
+    -c "SELECT to_regclass('public.$table_name') IS NOT NULL;" | tr -d '[:space:]')"
+  if [[ "$table_exists" == "t" ]]; then
+    count="$(docker exec "$POSTGRES_CONTAINER" \
+      psql -U mailing -d "$DATABASE_NAME" -t -A \
+      -c "SELECT count(*) FROM $table_name;" | tr -d '[:space:]')"
+  else
+    count="missing"
+  fi
+  printf '%s,%s\n' "$table_name" "$count"
+}
+
+row_counts=""
+for table_name in users campaigns campaign_recipients mail_templates template_versions smtp_mailboxes; do
+  row_counts+="$(table_row_count "$table_name")"$'\n'
+done
+row_counts="${row_counts%$'\n'}"
 
 minio_size_kb="$(docker run --rm \
   -v "$MINIO_VOLUME:/source:ro" \
@@ -130,6 +149,8 @@ minio_checksum="$(sha256sum "$minio_backup_file" | awk '{print $1}')"
   echo "minio_backup=$(basename "$minio_backup_file")"
   echo "minio_sha256=$minio_checksum"
   echo "minio_volume=$minio_volume"
+  echo "minio_config_image=$minio_config_image"
+  echo "minio_image_id=$minio_image_id"
   echo "minio_source_size_kb=$minio_size_kb"
   echo "row_counts_begin"
   echo "$row_counts"

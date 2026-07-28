@@ -22,14 +22,12 @@ import boto3
 from sqlalchemy import select, text
 
 from src.campaigns import template_service
-from src.campaigns.font_service import inspect_font_bytes
 from src.infra.db import engine, session_scope
 from src.infra.models import FontAsset, MailTemplate, TemplateVersion
 from src.utils.config import settings
 
 
 RECOVERY_WRITE_ENV = "MAILING_AGENT_RECOVERY_ALLOW_WRITE"
-TEST_ARTIFACT_START = datetime(2026, 7, 28, 11, 0, tzinfo=timezone.utc)
 RECOVERABLE_JOB_ID_RE = re.compile(r"^job-[0-9a-f]{12}$")
 
 
@@ -86,8 +84,6 @@ def _is_known_test_source(
     if parts is None:
         return False
     template_id, version_id, filename = parts
-    if item.last_modified >= TEST_ARTIFACT_START:
-        return True
     if filename == "doc.pdf" and item.size <= 1024:
         return True
     if filename == "original.docx" and item.size <= 40_000:
@@ -95,7 +91,9 @@ def _is_known_test_source(
     if (
         filename == "КП_СТП_районы (1) (1).docx"
         and item.size <= 40_000
-        and any(size <= 1024 for size in delivery_sizes.get((template_id, version_id), []))
+        and any(
+            size <= 1024 for size in delivery_sizes.get((template_id, version_id), [])
+        )
     ):
         return True
     return False
@@ -107,7 +105,11 @@ def _recoverable_document_sources(
     delivery_sizes: dict[tuple[str, str], list[int]] = defaultdict(list)
     for item in objects:
         parts = PurePosixPath(item.key).parts
-        if len(parts) == 5 and parts[0] == "template-library" and parts[3] == "delivery":
+        if (
+            len(parts) == 5
+            and parts[0] == "template-library"
+            and parts[3] == "delivery"
+        ):
             delivery_sizes[(parts[1], parts[2])].append(item.size)
 
     recovered: list[StoredObject] = []
@@ -126,7 +128,9 @@ def _recoverable_document_sources(
     return recovered, excluded
 
 
-def _delivery_by_version(objects: list[StoredObject]) -> dict[tuple[str, str], StoredObject]:
+def _delivery_by_version(
+    objects: list[StoredObject],
+) -> dict[tuple[str, str], StoredObject]:
     result: dict[tuple[str, str], StoredObject] = {}
     for item in objects:
         parts = PurePosixPath(item.key).parts
@@ -170,6 +174,8 @@ def _recover_templates(
         grouped[template_id].append(item)
 
     existing_ids: set[str] = set()
+    existing_version_ids: set[str] = set()
+    max_version_number_by_template: dict[str, int] = defaultdict(int)
     with session_scope() as session:
         if grouped:
             existing_ids = set(
@@ -177,34 +183,73 @@ def _recover_templates(
                     select(MailTemplate.id).where(MailTemplate.id.in_(tuple(grouped)))
                 ).all()
             )
+            version_rows = session.execute(
+                select(
+                    TemplateVersion.id,
+                    TemplateVersion.template_id,
+                    TemplateVersion.version_number,
+                ).where(TemplateVersion.template_id.in_(tuple(grouped)))
+            ).all()
+            for version_id, template_id, version_number in version_rows:
+                existing_version_ids.add(str(version_id))
+                max_version_number_by_template[str(template_id)] = max(
+                    max_version_number_by_template[str(template_id)],
+                    int(version_number),
+                )
 
-    planned = sorted(template_id for template_id in grouped if template_id not in existing_ids)
+    missing_sources_by_template: dict[str, list[StoredObject]] = defaultdict(list)
+    for template_id, template_sources in grouped.items():
+        for source in template_sources:
+            _, version_id, _ = _standard_source_parts(source) or ("", "", "")
+            if version_id not in existing_version_ids:
+                missing_sources_by_template[template_id].append(source)
+
+    planned = sorted(
+        template_id for template_id in grouped if template_id not in existing_ids
+    )
+    planned_version_ids = sorted(
+        version_id
+        for template_sources in missing_sources_by_template.values()
+        for source in template_sources
+        for _, version_id, _ in [_standard_source_parts(source) or ("", "", "")]
+    )
     report: dict[str, Any] = {
         "planned_template_ids": planned,
+        "planned_version_ids": planned_version_ids,
         "existing_template_ids": sorted(existing_ids),
+        "existing_version_ids": sorted(existing_version_ids),
         "excluded_test_keys": sorted(item.key for item in excluded),
         "unrecoverable_without_source_template_ids": sorted(
             all_template_ids - all_source_ids
         ),
         "recovered_versions": 0,
+        "repaired_active_template_ids": [],
         "errors": [],
     }
     if not apply:
-        report["recovered_versions"] = sum(len(grouped[item]) for item in planned)
+        report["recovered_versions"] = len(planned_version_ids)
         return report
 
-    for template_id in planned:
+    for template_id in sorted(missing_sources_by_template):
         ordered_sources = sorted(
-            grouped[template_id],
+            missing_sources_by_template[template_id],
             key=lambda item: (item.last_modified, item.key),
         )
         prepared: list[dict[str, Any]] = []
-        for version_number, source in enumerate(ordered_sources, start=1):
+        first_version_number = max_version_number_by_template[template_id] + 1
+        for version_number, source in enumerate(
+            ordered_sources,
+            start=first_version_number,
+        ):
             _, version_id, filename = _standard_source_parts(source) or ("", "", "")
             try:
                 source_data = _get_bytes(source.key)
-                source_text = template_service._file_text(filename, source_data)  # noqa: SLF001
-                variables = template_service._extract_variables(source_text)  # noqa: SLF001
+                source_text = template_service._file_text(
+                    filename, source_data
+                )  # noqa: SLF001
+                variables = template_service._extract_variables(
+                    source_text
+                )  # noqa: SLF001
                 extraction_error = None
                 extraction_status = "ready"
             except Exception as exc:
@@ -213,9 +258,7 @@ def _recover_templates(
                 variables = []
                 extraction_error = str(exc)[:2000]
                 extraction_status = "failed"
-                report["errors"].append(
-                    {"key": source.key, "error": extraction_error}
-                )
+                report["errors"].append({"key": source.key, "error": extraction_error})
             delivery = deliveries.get((template_id, version_id))
             prepared.append(
                 {
@@ -237,12 +280,16 @@ def _recover_templates(
         updated_at = max(
             max(
                 item["source"].last_modified,
-                item["delivery"].last_modified if item["delivery"] else item["source"].last_modified,
+                (
+                    item["delivery"].last_modified
+                    if item["delivery"]
+                    else item["source"].last_modified
+                ),
             )
             for item in prepared
         )
         with session_scope() as session:
-            template = MailTemplate(
+            template = session.get(MailTemplate, template_id) or MailTemplate(
                 id=template_id,
                 owner_username=owner_username,
                 name=Path(active["filename"]).stem or "Восстановленный шаблон",
@@ -279,23 +326,25 @@ def _recover_templates(
                     rendered_pdf_storage_key=(
                         delivery.key
                         if delivery is not None
-                        else source.key
-                        if Path(item["filename"]).suffix.lower() == ".pdf"
-                        else None
+                        else (
+                            source.key
+                            if Path(item["filename"]).suffix.lower() == ".pdf"
+                            else None
+                        )
                     ),
                     rendered_pdf_filename=(
                         PurePosixPath(delivery.key).name
                         if delivery is not None
-                        else item["filename"]
-                        if Path(item["filename"]).suffix.lower() == ".pdf"
-                        else None
+                        else (
+                            item["filename"]
+                            if Path(item["filename"]).suffix.lower() == ".pdf"
+                            else None
+                        )
                     ),
                     editor_state=None,
                     source_text=item["source_text"],
                     source_sha256=(
-                        hashlib.sha256(source_data).hexdigest()
-                        if source_data
-                        else None
+                        hashlib.sha256(source_data).hexdigest() if source_data else None
                     ),
                     text_extraction_status=item["extraction_status"],
                     text_extraction_error=item["extraction_error"],
@@ -309,6 +358,33 @@ def _recover_templates(
                 )
                 session.add(version)
                 report["recovered_versions"] += 1
+    for template_id in sorted(grouped):
+        with session_scope() as session:
+            template = session.get(MailTemplate, template_id)
+            if template is None:
+                continue
+            valid_version_ids = set(
+                session.scalars(
+                    select(TemplateVersion.id).where(
+                        TemplateVersion.template_id == template_id
+                    )
+                ).all()
+            )
+            if template.active_version_id in valid_version_ids:
+                continue
+            recoverable_version_ids = [
+                version_id
+                for source in sorted(
+                    grouped[template_id],
+                    key=lambda item: (item.last_modified, item.key),
+                    reverse=True,
+                )
+                for _, version_id, _ in [_standard_source_parts(source) or ("", "", "")]
+                if version_id in valid_version_ids
+            ]
+            if recoverable_version_ids:
+                template.active_version_id = recoverable_version_ids[0]
+                report["repaired_active_template_ids"].append(template_id)
     return report
 
 
@@ -346,6 +422,8 @@ def _recover_fonts(
             if session.get(FontAsset, font_id) is not None:
                 continue
         try:
+            from src.campaigns.font_service import inspect_font_bytes
+
             data = _get_bytes(item.key)
             metadata = inspect_font_bytes(PurePosixPath(item.key).name, data)
             digest = hashlib.sha256(data).hexdigest()
@@ -378,7 +456,9 @@ def _recover_fonts(
                     original_filename=PurePosixPath(item.key).name,
                     license_type="recovered_existing",
                     license_url="",
-                    license_storage_key=license_key if license_key in license_keys else None,
+                    license_storage_key=(
+                        license_key if license_key in license_keys else None
+                    ),
                     embedding_permissions=metadata.embedding_permissions,
                     glyph_coverage=metadata.glyph_coverage,
                     status="active",
@@ -444,9 +524,7 @@ def _assert_recovery_target(*, apply: bool) -> None:
             f"'mailing_recovery_*', got {database_name!r}."
         )
     if apply and os.environ.get(RECOVERY_WRITE_ENV, "").strip() != "1":
-        raise RuntimeError(
-            f"Set {RECOVERY_WRITE_ENV}=1 to apply recovery changes."
-        )
+        raise RuntimeError(f"Set {RECOVERY_WRITE_ENV}=1 to apply recovery changes.")
 
 
 def main() -> int:

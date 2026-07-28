@@ -292,6 +292,8 @@ MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:latest ./scripts/de
 
 Backup-файлы находятся в `/var/backups/mailing-agent/`: `mailing-<UTC>.dump`, `minio-<UTC>.tar`, `backup-<UTC>.manifest`. По умолчанию сохраняются 30 дампов PostgreSQL и 3 полных snapshot MinIO; значения регулируются `PROD_BACKUP_KEEP_COUNT` и `PROD_MINIO_BACKUP_KEEP_COUNT`. Backup-скрипт откажется работать, если контейнеры подключены не к production volumes `mailing-agent_pgdata` / `mailing-agent_minio-data`, если видит test-volume или если `app`/`worker` ещё пишут данные.
 
+Run a full restore drill with `bash scripts/verify-backup-restore.sh /var/backups/mailing-agent/backup-<UTC>.manifest`. It verifies checksums, restores PostgreSQL and MinIO into disposable containers and volumes, checks the Alembic revision and row counts, and removes only the temporary resources it created. The manifest records the exact MinIO image ID for reproducibility.
+
 Остальная часть deploy поднимает закреплённый OnlyOffice, сверяет Image ID, ждёт local (`:9806`), public health и публичный API редактора, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. `--skip-git-update` разрешён для root-owned wrapper, который сам проверяет принадлежность SHA к `origin/main`. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, JWT-защита редактора, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе. Не используйте на production `docker compose down -v` / `down --volumes`.
 
 ### Server checklist (после первого деплоя / при сомнениях)
