@@ -126,6 +126,7 @@ class Settings(BaseSettings):
     user_worker_max_processes_per_task: int = 1
     user_inprocess_max_tasks: int = 1
     documents_worker_timeout_seconds: int = 21600
+    template_text_extraction_timeout_seconds: int = 120
     sender_worker_timeout_seconds: int = 0
     background_queue_enabled: bool = True
     background_queue_poll_seconds: float = 1.0

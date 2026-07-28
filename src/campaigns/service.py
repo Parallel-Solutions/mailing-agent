@@ -1199,12 +1199,14 @@ def validate_campaign_for_launch(
             empty_variable_validation_errors,
             mapping_validation_errors,
             substitution_validation_issues,
+            template_text_cache_validation_errors,
         )
 
         mapping_errors = mapping_validation_errors(camp)
         errors.extend(mapping_errors)
         if not mapping_errors:
             errors.extend(empty_variable_validation_errors(camp))
+        errors.extend(template_text_cache_validation_errors(camp))
         template_issues = substitution_validation_issues(camp, deep=False, advisory=False)
         template_errors, template_warnings = partition_review_messages(template_issues)
         errors.extend(template_errors)

@@ -12,10 +12,10 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from sqlalchemy import select
 
-from src.campaigns import template_render_service
-from src.campaigns.service import create_campaign, replace_recipients
+from src.campaigns import template_render_service, template_service
+from src.campaigns.service import create_campaign, replace_recipients, validate_campaign_for_launch
 from src.infra.db import session_scope
-from src.infra.models import Campaign, CampaignRecipient, MailTemplate
+from src.infra.models import Campaign, CampaignRecipient, MailTemplate, TemplateVersion
 from src.security.auth import Principal
 from src.security.user_store import create_user
 from src.web.v1_router import create_v1_router
@@ -80,6 +80,82 @@ class TemplateRenderServiceTests(unittest.TestCase):
                 select(CampaignRecipient.id).where(CampaignRecipient.campaign_id == self.campaign_id)
             )
         assert self.recipient_id is not None
+
+    def test_launch_validation_uses_persisted_pdf_text(self) -> None:
+        with session_scope() as session:
+            template = session.get(MailTemplate, self.template_id)
+            assert template is not None and template.active_version_id
+            version = session.get(TemplateVersion, template.active_version_id)
+            assert version is not None
+            self.assertEqual(version.source_text, "")
+            self.assertEqual(version.text_extraction_status, "ready")
+            self.assertEqual(len(str(version.source_sha256 or "")), 64)
+
+        with patch.object(
+            template_service,
+            "_file_text",
+            side_effect=AssertionError("launch validation must not parse the source PDF"),
+        ):
+            result = validate_campaign_for_launch(self.campaign_id, self.username)
+
+        self.assertIn("errors", result)
+
+    def test_launch_validation_reports_pending_legacy_pdf_cache(self) -> None:
+        with session_scope() as session:
+            template = session.get(MailTemplate, self.template_id)
+            assert template is not None and template.active_version_id
+            version = session.get(TemplateVersion, template.active_version_id)
+            assert version is not None
+            version.source_text = None
+            version.text_extraction_status = "pending"
+            session.flush()
+
+        with patch.object(
+            template_service,
+            "_file_text",
+            side_effect=AssertionError("launch validation must not parse a pending source PDF"),
+        ):
+            result = validate_campaign_for_launch(self.campaign_id, self.username)
+
+        self.assertTrue(any("\u043e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442\u0441\u044f" in error for error in result["errors"]))
+
+    def test_background_task_backfills_legacy_pdf_text_once(self) -> None:
+        with session_scope() as session:
+            template = session.get(MailTemplate, self.template_id)
+            assert template is not None and template.active_version_id
+            version_id = template.active_version_id
+            version = session.get(TemplateVersion, version_id)
+            assert version is not None
+            version.source_text = None
+            version.source_sha256 = None
+            version.text_extraction_status = "pending"
+            session.flush()
+
+        from src.campaigns.template_text_cache_service import run_template_text_extraction
+
+        run_template_text_extraction({"version_id": version_id})
+
+        with session_scope() as session:
+            version = session.get(TemplateVersion, version_id)
+            assert version is not None
+            self.assertEqual(version.source_text, "")
+            self.assertEqual(version.text_extraction_status, "ready")
+            self.assertEqual(len(str(version.source_sha256 or "")), 64)
+
+    def test_pending_pdf_backfill_tasks_are_deduplicated(self) -> None:
+        with session_scope() as session:
+            template = session.get(MailTemplate, self.template_id)
+            assert template is not None and template.active_version_id
+            version = session.get(TemplateVersion, template.active_version_id)
+            assert version is not None
+            version.source_text = None
+            version.text_extraction_status = "pending"
+            session.flush()
+
+        from src.campaigns.template_text_cache_service import enqueue_pending_template_text_extractions
+
+        self.assertEqual(enqueue_pending_template_text_extractions(), 1)
+        self.assertEqual(enqueue_pending_template_text_extractions(), 0)
 
     def test_static_attachment_when_not_template(self) -> None:
         with session_scope() as session:

@@ -50,14 +50,7 @@ def _template_render_metadata(template_id: str) -> tuple[str, str]:
         return "", ""
     tmpl, version = loaded
     template_name = str(tmpl.name or "")
-    text = "\n".join([version.subject or "", version.body_html or "", version.body_text or ""])
-    if version.storage_key and version.filename:
-        try:
-            file_text = template_service._file_text(version.filename, get_bytes(version.storage_key))  # noqa: SLF001
-            if file_text:
-                text = file_text
-        except Exception:
-            pass
+    text = template_service.cached_version_source_text(version)
     return template_name, text
 
 
@@ -351,12 +344,7 @@ def render_document_template_for_recipient(
 
     source_data = get_bytes(source_key)
     source_suffix = Path(source_name).suffix.lower()
-    template_text = ""
-    if source_suffix in {".docx", ".pdf"}:
-        try:
-            template_text = template_service._file_text(source_name, source_data)  # noqa: SLF001
-        except Exception:
-            template_text = version.body_html or ""
+    template_text = template_service.cached_version_source_text(version)
 
     context = _build_context(
         recipient,
@@ -368,7 +356,7 @@ def render_document_template_for_recipient(
     )
 
     if source_suffix == ".docx":
-        text = template_text or template_service._file_text(source_name, source_data)  # noqa: SLF001
+        text = template_text
         with TemporaryDirectory(prefix="template-render-") as temp_dir:
             root = Path(temp_dir)
             source_path = root / Path(source_name).name
@@ -435,8 +423,7 @@ def render_document_template_for_recipient(
         else:
             from src.campaigns.pdf_overlay_service import render_pdf_with_discovered_placeholders
 
-            pdf_text = template_service._file_text(source_name, source_data)  # noqa: SLF001
-            placeholders = discover_placeholders(pdf_text)
+            placeholders = discover_placeholders(template_text)
             if placeholders:
                 pdf_data = render_pdf_with_discovered_placeholders(source_data, placeholders, context)
             else:
