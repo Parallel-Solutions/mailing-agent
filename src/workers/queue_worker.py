@@ -13,7 +13,12 @@ from uuid import uuid4
 
 from src.infra.db import init_db
 from src.jobs.workspace import pull_job, push_job
-from src.utils.config import SecurityConfigurationError, settings, validate_public_base_url
+from src.utils.config import (
+    SecurityConfigurationError,
+    settings,
+    validate_public_base_url,
+    validate_runtime_database,
+)
 from src.utils.logger import logger
 from src.workers.healthcheck import touch_heartbeat
 from src.workers.task_queue import (
@@ -309,6 +314,7 @@ def main() -> None:
         signal.signal(signal.SIGINT, _request_stop)
 
     validate_public_base_url(settings)
+    validate_runtime_database(settings)
     init_db()
     reconciled = reconcile_orphaned_agent_states()
     if reconciled:

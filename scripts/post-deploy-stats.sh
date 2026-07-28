@@ -8,7 +8,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
+COMPOSE=(docker compose -p mailing-agent -f docker-compose.yml -f docker-compose.prod.yml)
 PY=("${COMPOSE[@]}" exec -T -e PYTHONPATH=/app -w /app app .venv/bin/python)
 
 section() {

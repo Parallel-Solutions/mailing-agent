@@ -119,7 +119,9 @@ def discover_placeholders(text: str) -> list[PlaceholderInfo]:
         return []
 
     found: dict[str, PlaceholderInfo] = {}
-    for match in BRACE_RE.finditer(text):
+    brace_matches = list(BRACE_RE.finditer(text))
+    brace_ranges = [match.span() for match in brace_matches]
+    for match in brace_matches:
         name = match.group(1)
         found[match.group(0)] = PlaceholderInfo(token=match.group(0), name=name, kind="brace")
 
@@ -128,6 +130,8 @@ def discover_placeholders(text: str) -> list[PlaceholderInfo]:
             found[token] = PlaceholderInfo(token=token, name=canonical, kind="compound")
 
     for match in BARE_TOKEN_RE.finditer(text):
+        if any(start <= match.start() and match.end() <= end for start, end in brace_ranges):
+            continue
         name = match.group(0)
         if name in found:
             continue

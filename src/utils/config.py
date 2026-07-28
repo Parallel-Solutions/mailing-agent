@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     app_username: str = "admin"
     app_password: str = ""
+    app_environment: str = "local"
+    database_expected_name: str = ""
     app_users: str = ""
     app_admin_tenant_id: str = "admin"
     app_session_ttl_days: int = 7
@@ -194,6 +196,64 @@ def require_configured_app_password(settings_obj: Any) -> None:
     if not password:
         raise SecurityConfigurationError(
             "APP_PASSWORD must be set to a non-empty value before starting the service."
+        )
+
+
+_KNOWN_APP_ENVIRONMENTS = frozenset(
+    {"local", "development", "test", "e2e", "production"}
+)
+
+
+def _database_name_from_settings(settings_obj: Any) -> str:
+    raw = str(getattr(settings_obj, "database_url", "") or "").strip()
+    parsed = urlparse(raw)
+    database_name = parsed.path.lstrip("/").split("?", 1)[0].strip()
+    if not database_name:
+        raise SecurityConfigurationError("DATABASE_URL must include a database name.")
+    return database_name
+
+
+def validate_runtime_database(settings_obj: Any) -> None:
+    environment = str(
+        getattr(settings_obj, "app_environment", "local") or "local"
+    ).strip().lower()
+    if environment not in _KNOWN_APP_ENVIRONMENTS:
+        raise SecurityConfigurationError(
+            f"APP_ENVIRONMENT must be one of {sorted(_KNOWN_APP_ENVIRONMENTS)}, "
+            f"got {environment!r}."
+        )
+
+    database_name = _database_name_from_settings(settings_obj)
+    expected_name = str(
+        getattr(settings_obj, "database_expected_name", "") or ""
+    ).strip()
+    if not expected_name:
+        expected_name = {
+            "test": "mailing_test",
+            "e2e": "mailing_e2e",
+            "production": "mailing",
+            "development": "mailing",
+            "local": "mailing",
+        }[environment]
+    if database_name != expected_name:
+        raise SecurityConfigurationError(
+            f"Refusing to start {environment!r} against database "
+            f"{database_name!r}; expected {expected_name!r}."
+        )
+
+    if environment == "test" and not database_name.endswith("_test"):
+        raise SecurityConfigurationError(
+            "Test runtime requires a database whose name ends with '_test'."
+        )
+    if environment == "e2e" and not database_name.endswith("_e2e"):
+        raise SecurityConfigurationError(
+            "E2E runtime requires a database whose name ends with '_e2e'."
+        )
+    if environment in {"local", "development", "production"} and database_name.endswith(
+        ("_test", "_e2e")
+    ):
+        raise SecurityConfigurationError(
+            f"{environment!r} runtime cannot use a test or E2E database."
         )
 
 

@@ -86,6 +86,7 @@ rollback() {
 
   MAILING_AGENT_IMAGE="$previous_image" \
     docker compose --env-file .env.docker --profile onlyoffice \
+      -p mailing-agent \
       -f docker-compose.yml -f docker-compose.prod.yml \
       up -d --no-build --force-recreate --pull never app worker
 

@@ -17,6 +17,8 @@
 services:
   app:
     environment:
+      APP_ENVIRONMENT: production
+      DATABASE_EXPECTED_NAME: mailing
       PUBLIC_BASE_URL: https://offer.parresh.ru
       RUSENDER_TRACK_LINKS: "0"
       ONLYOFFICE_EDITOR_PUBLIC_URL: https://offer.parresh.ru/onlyoffice
@@ -33,6 +35,8 @@ services:
         condition: service_healthy
   worker:
     environment:
+      APP_ENVIRONMENT: production
+      DATABASE_EXPECTED_NAME: mailing
       PUBLIC_BASE_URL: https://offer.parresh.ru
       RUSENDER_TRACK_LINKS: "0"
     volumes: !reset

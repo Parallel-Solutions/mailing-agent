@@ -288,7 +288,11 @@ MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:latest ./scripts/de
 ./scripts/prod-audit.sh
 ```
 
-`deploy.sh --pull` делает `docker pull` + `up --force-recreate` для `app`/`worker`, поднимает закреплённый OnlyOffice, сверяет Image ID, ждёт local (`:9806`), public health и публичный API редактора, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. `--skip-git-update` разрешён для root-owned wrapper, который сам проверяет принадлежность SHA к `origin/main`. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, JWT-защита редактора, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе.
+`deploy.sh --pull` сначала проверяет, что текущая Alembic-ревизия production-БД входит в граф миграций checkout. Затем он останавливает `app`/`worker` и **до любых изменений инфраструктурных контейнеров** запускает [`scripts/backup-prod-data.sh`](scripts/backup-prod-data.sh): создаёт и проверяет `pg_dump`, снимает согласованный snapshot named volume MinIO, считает SHA-256 и записывает manifest с ревизией и контрольными количествами строк. Только после успешного backup выполняются `docker pull` + `up --force-recreate`. При ошибке скрипт пытается вернуть остановленные сервисы.
+
+Backup-файлы находятся в `/var/backups/mailing-agent/`: `mailing-<UTC>.dump`, `minio-<UTC>.tar`, `backup-<UTC>.manifest`. По умолчанию сохраняются 30 дампов PostgreSQL и 3 полных snapshot MinIO; значения регулируются `PROD_BACKUP_KEEP_COUNT` и `PROD_MINIO_BACKUP_KEEP_COUNT`. Backup-скрипт откажется работать, если контейнеры подключены не к production volumes `mailing-agent_pgdata` / `mailing-agent_minio-data`, если видит test-volume или если `app`/`worker` ещё пишут данные.
+
+Остальная часть deploy поднимает закреплённый OnlyOffice, сверяет Image ID, ждёт local (`:9806`), public health и публичный API редактора, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. `--skip-git-update` разрешён для root-owned wrapper, который сам проверяет принадлежность SHA к `origin/main`. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, JWT-защита редактора, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе. Не используйте на production `docker compose down -v` / `down --volumes`.
 
 ### Server checklist (после первого деплоя / при сомнениях)
 
@@ -327,11 +331,7 @@ MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> ./scripts/pro
 docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test
 ```
 
-Локально (из корня проекта, с активированным `.venv`):
-
-```bash
-python -m tests
-```
+Запускайте backend-тесты только этой командой. `tests/bootstrap.py` требует одновременно `MAILING_AGENT_TEST_MODE=1`, ожидаемое имя `mailing_test` и фактическое подключение к БД с суффиксом `_test`; прямой запуск против `mailing`, даже при ошибочно выставленном test-флаге, завершится до `TRUNCATE`.
 
 **Playwright E2E** (React CampaignFlow + Mailpit, отдельный compose-проект `mailing-agent-e2e`):
 

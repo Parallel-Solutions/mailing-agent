@@ -57,6 +57,10 @@ services:
         condition: service_completed_successfully
     environment:
       MAILING_AGENT_TEST_RUNTIME: /app/.test-runtime
+      MAILING_AGENT_TEST_MODE: "1"
+      MAILING_AGENT_TEST_DATABASE: mailing_test
+      APP_ENVIRONMENT: test
+      DATABASE_EXPECTED_NAME: mailing_test
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing_test
       APP_PASSWORD: test-only-password
       APP_USERNAME: admin

@@ -10,7 +10,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from src.utils.config import settings
+from src.utils.config import settings, validate_runtime_database
 
 
 class Base(DeclarativeBase):
@@ -73,6 +73,10 @@ def _admin_database_url(database_url: str, *, admin_database: str = "postgres") 
 
 
 def ensure_database_exists() -> None:
+    # Every entrypoint (API, worker, parser and one-shot migration scripts)
+    # reaches the database through this function. Keep the contour guard here
+    # so a maintenance command cannot bypass checks performed by main.py.
+    validate_runtime_database(settings)
     database_url = settings.database_url
     database_name = _database_name_from_url(database_url)
     admin_engine = create_engine(

@@ -7,6 +7,12 @@
 # Host ports: APP_PUBLIC_PORT / MAILPIT_UI_PORT from .env.e2e (defaults in .env.e2e.example: 19806 / 18025).
 
 services:
+  postgres:
+    environment:
+      POSTGRES_DB: mailing_e2e
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mailing -d mailing_e2e"]
+
   # Avoid clashing with local stack host ports (9000/9001).
   minio:
     ports: !override
@@ -44,6 +50,8 @@ services:
     environment:
       APP_HOST: 0.0.0.0
       APP_PORT: 9806
+      APP_ENVIRONMENT: e2e
+      DATABASE_EXPECTED_NAME: mailing_e2e
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing_e2e
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT_URL: http://minio:9000
@@ -102,6 +110,8 @@ services:
       - .env.docker
       - .env.e2e
     environment:
+      APP_ENVIRONMENT: e2e
+      DATABASE_EXPECTED_NAME: mailing_e2e
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing_e2e
       BACKGROUND_QUEUE_ENABLED: "true"
       SMTP_HOST: mailpit
