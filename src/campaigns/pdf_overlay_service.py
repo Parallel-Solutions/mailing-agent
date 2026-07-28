@@ -241,6 +241,11 @@ def save_editor_state(template_id: str, owner_username: str, fields: list[dict[s
                 filename=active.filename,
                 rendered_pdf_storage_key=rendered_key,
                 rendered_pdf_filename=rendered_name,
+                source_text=active.source_text,
+                source_sha256=active.source_sha256,
+                text_extraction_status=active.text_extraction_status,
+                text_extraction_error=active.text_extraction_error,
+                text_extracted_at=active.text_extracted_at,
                 editor_state=state,
                 created_by=owner_username,
             )

@@ -13,7 +13,6 @@ from src.campaigns.variable_match_ai import default_model, suggest_mappings_with
 from src.generator.generation.template_analysis import _mapping_suggestions, _norm_token
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignRecipient, MailTemplate, TemplateVersion
-from src.infra.object_store import get_bytes
 from src.security.company_access import can_access_owner
 
 USER_INPUT_VARIABLES = frozenset(
@@ -144,15 +143,7 @@ def _merge_document_template_variables(
     if version is None:
         return
     _merge_variables(variables, [item for item in (version.variables or []) if isinstance(item, dict)])
-    text = version.body_html or ""
-    if version.storage_key and version.filename:
-        try:
-            text = template_service._file_text(  # noqa: SLF001
-                version.filename,
-                get_bytes(version.storage_key),
-            )
-        except Exception:
-            text = text or ""
+    text = template_service.cached_version_source_text(version)
     for item in template_service._extract_variables(text):  # noqa: SLF001
         name = str(item.get("name") or "").strip()
         if name and name not in variables:
@@ -718,12 +709,7 @@ def _collect_templates_for_validation(campaign: Campaign) -> list[dict[str, str 
             version = _load_template_version(session, template_id)
             if version is None:
                 continue
-            text = version.body_html or ""
-            if version.storage_key and version.filename:
-                try:
-                    text = template_service._file_text(version.filename, get_bytes(version.storage_key))  # noqa: SLF001
-                except Exception:
-                    text = text or ""
+            text = template_service.cached_version_source_text(version)
             if text:
                 items.append(
                     {
@@ -738,6 +724,36 @@ def _collect_templates_for_validation(campaign: Campaign) -> list[dict[str, str 
 
 def _collect_template_texts_for_validation(campaign: Campaign) -> list[str]:
     return [str(item.get("text") or "") for item in _collect_templates_for_validation(campaign) if item.get("text")]
+
+
+def template_text_cache_validation_errors(campaign: Campaign) -> list[str]:
+    """Report document versions whose persistent text cache is not ready."""
+    from src.campaigns.template_render_service import collect_campaign_template_ids
+
+    _email_ids, document_ids = collect_campaign_template_ids(campaign)
+    if not document_ids:
+        document_mode = str(campaign.document_mode or "kp").lower()
+        if document_mode in {"kp", "both"} and campaign.kp_template_id:
+            document_ids.append(campaign.kp_template_id)
+        if document_mode in {"contract", "both"} and campaign.contract_template_id:
+            if campaign.contract_template_id not in document_ids:
+                document_ids.append(campaign.contract_template_id)
+
+    errors: list[str] = []
+    with session_scope() as session:
+        for template_id in document_ids:
+            tmpl = session.get(MailTemplate, template_id) if template_id else None
+            version = _load_template_version(session, template_id)
+            if version is None or not version.storage_key or version.source_text is not None:
+                continue
+            name = str(tmpl.name if tmpl else template_id or "document")
+            if version.text_extraction_status == "failed":
+                detail = str(version.text_extraction_error or "").strip()
+                suffix = f" \u041f\u0440\u0438\u0447\u0438\u043d\u0430: {detail}" if detail else ""
+                errors.append(f"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0442\u0435\u043a\u0441\u0442 \u0448\u0430\u0431\u043b\u043e\u043d\u0430 \u00ab{name}\u00bb.{suffix}")
+            else:
+                errors.append(f"\u0428\u0430\u0431\u043b\u043e\u043d \u00ab{name}\u00bb \u0435\u0449\u0451 \u043e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442\u0441\u044f. \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443 \u0447\u0435\u0440\u0435\u0437 \u043c\u0438\u043d\u0443\u0442\u0443.")
+    return errors
 
 
 def _first_validation_recipient(campaign: Campaign) -> CampaignRecipient | None:

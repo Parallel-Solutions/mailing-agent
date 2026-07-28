@@ -76,7 +76,7 @@ export async function apiRequest<T>(
 }
 
 export const api = {
-  get: <T>(path: string) => apiRequest<T>(path),
+  get: <T>(path: string, options: RequestInit = {}) => apiRequest<T>(path, options),
   post: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
     apiRequest<T>(path, {
       method: 'POST',

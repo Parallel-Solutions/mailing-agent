@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from contextlib import nullcontext
@@ -126,6 +127,34 @@ def _file_text(filename: str, data: bytes) -> str:
     return ""
 
 
+def _content_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def cached_version_source_text(version: TemplateVersion) -> str:
+    """Return persisted template text without reading or parsing the source file."""
+    if version.source_text is not None:
+        return str(version.source_text)
+    return "\n".join(
+        part
+        for part in (version.subject or "", version.body_html or "", version.body_text or "")
+        if part
+    )
+
+
+def _set_source_text_cache(
+    version: TemplateVersion,
+    *,
+    text: str,
+    source_data: bytes | None = None,
+) -> None:
+    version.source_text = str(text or "")
+    version.source_sha256 = _content_sha256(source_data) if source_data is not None else None
+    version.text_extraction_status = "ready"
+    version.text_extraction_error = None
+    version.text_extracted_at = _now()
+
+
 def _is_file_document_template(template_type: str) -> bool:
     return normalize_file_template_type(template_type) == "document"
 
@@ -184,6 +213,8 @@ def version_to_dict(row: TemplateVersion) -> dict[str, Any]:
         "rendered_pdf_storage_key": row.rendered_pdf_storage_key,
         "rendered_pdf_filename": row.rendered_pdf_filename,
         "editor_state": row.editor_state,
+        "text_extraction_status": row.text_extraction_status,
+        "text_extraction_error": row.text_extraction_error,
         "artifacts": {
             "source": {"filename": row.filename, "storage_key": row.storage_key} if row.filename else None,
             "delivery_pdf": {
@@ -223,19 +254,19 @@ def create_template(
             is_template=_default_is_template(template_type=template_type, variables=variables),
         )
         session.add(tmpl)
-        session.add(
-            TemplateVersion(
-                id=version_id,
-                template_id=template_id,
-                version_number=1,
-                subject=subject,
-                body_html=body_html,
-                body_text=body_text,
-                variables=variables,
-                editor_state=editor_state,
-                created_by=owner_username,
-            )
+        version = TemplateVersion(
+            id=version_id,
+            template_id=template_id,
+            version_number=1,
+            subject=subject,
+            body_html=body_html,
+            body_text=body_text,
+            variables=variables,
+            editor_state=editor_state,
+            created_by=owner_username,
         )
+        _set_source_text_cache(version, text=combined)
+        session.add(version)
         session.flush()
         return template_to_dict(tmpl, session.get(TemplateVersion, version_id))
 
@@ -506,6 +537,7 @@ def upload_file_version(
                 editor_state=editor_state,
                 created_by=owner_username,
             )
+            _set_source_text_cache(version, text=source_text, source_data=data)
             session.add(version)
             tmpl.active_version_id = version_id
             tmpl.status = "ready"
@@ -727,6 +759,7 @@ def save_kp_html_version(
                 rendered_pdf_filename=filename,
                 created_by=owner_username,
             )
+            _set_source_text_cache(version, text=html, source_data=pdf_data)
             session.add(version)
             tmpl.active_version_id = version_id
             tmpl.status = "ready"
@@ -924,23 +957,33 @@ def save_version(
             tmpl.is_template = _default_is_template(template_type=tmpl.template_type, variables=vars_list)
         resolved_editor_state = editor_state if editor_state is not None else (current.editor_state if current else None)
         version_id = _new_id()
-        session.add(
-            TemplateVersion(
-                id=version_id,
-                template_id=template_id,
-                version_number=next_number,
-                subject=subj,
-                body_html=html,
-                body_text=text,
-                variables=vars_list,
-                storage_key=current.storage_key if current else None,
-                filename=current.filename if current else None,
-                rendered_pdf_storage_key=current.rendered_pdf_storage_key if current else None,
-                rendered_pdf_filename=current.rendered_pdf_filename if current else None,
-                editor_state=resolved_editor_state,
-                created_by=owner_username,
-            )
+        version = TemplateVersion(
+            id=version_id,
+            template_id=template_id,
+            version_number=next_number,
+            subject=subj,
+            body_html=html,
+            body_text=text,
+            variables=vars_list,
+            storage_key=current.storage_key if current else None,
+            filename=current.filename if current else None,
+            rendered_pdf_storage_key=current.rendered_pdf_storage_key if current else None,
+            rendered_pdf_filename=current.rendered_pdf_filename if current else None,
+            editor_state=resolved_editor_state,
+            created_by=owner_username,
         )
+        if current is not None and current.storage_key:
+            version.source_text = current.source_text
+            version.source_sha256 = current.source_sha256
+            version.text_extraction_status = current.text_extraction_status
+            version.text_extraction_error = current.text_extraction_error
+            version.text_extracted_at = current.text_extracted_at
+        else:
+            _set_source_text_cache(
+                version,
+                text="\n".join(part for part in (subj, html, text) if part),
+            )
+        session.add(version)
         tmpl.active_version_id = version_id
         tmpl.status = "ready"
         if name is not None:

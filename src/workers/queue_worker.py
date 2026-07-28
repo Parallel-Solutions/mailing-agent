@@ -53,6 +53,8 @@ def _terminate_process(process: subprocess.Popen[Any]) -> None:
 def _task_timeout_seconds(task_type: str) -> int:
     if task_type == "documents":
         return max(0, int(settings.documents_worker_timeout_seconds or 0))
+    if task_type == "template_text_extract":
+        return max(1, int(settings.template_text_extraction_timeout_seconds or 120))
     if task_type in {
         "sender",
         "sender_batch",
@@ -66,6 +68,17 @@ def _task_timeout_seconds(task_type: str) -> int:
 
 def _mark_terminal_failure(task: dict[str, Any], message: str) -> None:
     task_type = str(task.get("task_type") or "")
+    if task_type == "template_text_extract":
+        try:
+            from src.campaigns.template_text_cache_service import mark_template_text_extraction_failed
+
+            mark_template_text_extraction_failed(
+                str((task.get("payload") or {}).get("version_id") or ""),
+                message,
+            )
+        except Exception:
+            logger.exception("queue_worker_finalize_template_text_extraction_failed", task_id=task.get("id"))
+        return
     if task_type == "connection_warmup":
         try:
             from src.generator.delivery.connection_warmup import (
@@ -274,6 +287,22 @@ def _run_campaign_state_reconciliation_if_due(last_run: float) -> float:
     return now
 
 
+def _run_template_text_backfill_if_due(last_run: float) -> float:
+    interval = 30
+    now = time.monotonic()
+    if now - last_run < interval:
+        return last_run
+    try:
+        from src.campaigns.template_text_cache_service import enqueue_pending_template_text_extractions
+
+        created = enqueue_pending_template_text_extractions(limit=10)
+        if created:
+            logger.info("template_source_text_backfill_enqueued", count=created)
+    except Exception:
+        logger.exception("template_source_text_backfill_enqueue_failed")
+    return now
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, _request_stop)
     if hasattr(signal, "SIGINT"):
@@ -293,6 +322,7 @@ def main() -> None:
     )
     last_consent_recovery = 0.0
     last_campaign_reconciliation = 0.0
+    last_template_text_backfill = 0.0
     logger.info("queue_worker_started", worker_id=worker_id)
     last_orphan_reconciliation = time.monotonic()
     touch_heartbeat()
@@ -303,6 +333,7 @@ def main() -> None:
         last_campaign_reconciliation = _run_campaign_state_reconciliation_if_due(
             last_campaign_reconciliation
         )
+        last_template_text_backfill = _run_template_text_backfill_if_due(last_template_text_backfill)
         try:
             from src.generator.delivery.send_guard import is_sending_paused
 
