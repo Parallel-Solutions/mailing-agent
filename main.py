@@ -13,6 +13,7 @@ from src.utils.config import (
     require_configured_app_password,
     settings,
     validate_public_base_url,
+    validate_runtime_database,
 )
 from src.jobs.access import read_job_owner
 from src.workers.process_manager import (
@@ -101,6 +102,7 @@ def _start_stats_cache_warm_thread() -> None:
 async def app_startup():
     require_configured_app_password(settings)
     validate_public_base_url(settings)
+    validate_runtime_database(settings)
     from src.infra.db import init_db
     from src.infra.object_store import ensure_bucket
 

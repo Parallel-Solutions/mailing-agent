@@ -11,7 +11,11 @@ from typing import Any
 import fitz
 
 from src.campaigns import template_service
-from src.campaigns.substitution_engine import PlaceholderInfo, resolve_context_value
+from src.campaigns.substitution_engine import (
+    PlaceholderInfo,
+    is_identifier_variable,
+    resolve_context_value,
+)
 from src.infra.db import session_scope
 from src.infra.models import MailTemplate, TemplateVersion
 from src.infra.object_store import delete as delete_object
@@ -22,12 +26,29 @@ VARIABLE_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
 FONT_FILES = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    "C:/Windows/Fonts/arial.ttf",
 )
+BOLD_FONT_FILES = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",
+)
+PDF_PAGE_MARGIN = 36.0
+PDF_TEXTBOX_MIN_FONT_SIZE = 6.0
+PDF_TEXTBOX_FONT_STEP = 0.25
+PDF_TEXTBOX_LINE_HEIGHT = 1.0
+PDF_REDACTION_HORIZONTAL_INSET = 0.25
+PDF_REDACTION_VERTICAL_PADDING = 0.4
+PDF_GEOMETRY_TOLERANCE = 0.25
 KNOWN_FIELDS = {
     "ADM_NAME": ("ADM_NAME", "Получатель"),
     "HEAD_FIO": ("HEAD_FIO", "ФИО руководителя"),
     "(ая)": ("HEAD_SUFFIX", "Окончание обращения"),
 }
+
+
+class PdfOverlayLayoutError(ValueError):
+    """Raised when a personalized PDF value cannot be rendered safely."""
 
 
 def _new_id() -> str:
@@ -166,9 +187,117 @@ def _rgb(value: str, fallback: tuple[float, float, float]) -> tuple[float, float
         return fallback
 
 
+def _field_rect(field: dict[str, Any], *, prefix: str = "") -> fitz.Rect:
+    x = float(field.get(f"{prefix}x", field["x"]))
+    y = float(field.get(f"{prefix}y", field["y"]))
+    width = float(field.get(f"{prefix}width", field["width"]))
+    height = float(field.get(f"{prefix}height", field["height"]))
+    return fitz.Rect(x, y, x + width, y + height)
+
+
+def _redaction_rect(field: dict[str, Any], page_rect: fitz.Rect) -> fitz.Rect:
+    source = _field_rect(field, prefix="redact_") if "redact_x" in field else _field_rect(field)
+    inset = min(PDF_REDACTION_HORIZONTAL_INSET, max(0.0, source.width / 4))
+    rect = fitz.Rect(
+        source.x0 + inset,
+        source.y0 - PDF_REDACTION_VERTICAL_PADDING,
+        source.x1 - inset,
+        source.y1 + PDF_REDACTION_VERTICAL_PADDING,
+    )
+    return rect & page_rect
+
+
+def _rect_is_inside(container: fitz.Rect, candidate: fitz.Rect) -> bool:
+    expanded = fitz.Rect(
+        container.x0 - PDF_GEOMETRY_TOLERANCE,
+        container.y0 - PDF_GEOMETRY_TOLERANCE,
+        container.x1 + PDF_GEOMETRY_TOLERANCE,
+        container.y1 + PDF_GEOMETRY_TOLERANCE,
+    )
+    return not candidate.is_empty and expanded.contains(candidate)
+
+
+def _rects_materially_overlap(first: fitz.Rect, second: fitz.Rect) -> bool:
+    intersection = first & second
+    return (
+        not intersection.is_empty
+        and intersection.width > PDF_GEOMETRY_TOLERANCE
+        and intersection.height > PDF_GEOMETRY_TOLERANCE
+    )
+
+
+def _font_file_for_field(field: dict[str, Any]) -> str | None:
+    candidates = BOLD_FONT_FILES if bool(field.get("bold")) else FONT_FILES
+    return next((path for path in candidates if Path(path).exists()), None)
+
+
+def _insert_fitted_textbox(
+    page: fitz.Page,
+    field: dict[str, Any],
+    rect: fitz.Rect,
+    value: str,
+) -> fitz.Rect:
+    initial_font_size = max(
+        PDF_TEXTBOX_MIN_FONT_SIZE,
+        min(36.0, float(field.get("font_size") or 10)),
+    )
+    font_size = initial_font_size
+    font_file = _font_file_for_field(field)
+    font_name = (
+        "CampaignFlowSansBold"
+        if bool(field.get("bold")) and font_file
+        else "CampaignFlowSans"
+    )
+    align = max(0, min(3, int(field.get("align") or 0)))
+
+    while font_size + 1e-6 >= PDF_TEXTBOX_MIN_FONT_SIZE:
+        kwargs: dict[str, Any] = {
+            "fontsize": font_size,
+            "color": _rgb(field.get("text_color", "#000000"), (0, 0, 0)),
+            "overlay": True,
+            "align": align,
+            "lineheight": float(field.get("line_height") or PDF_TEXTBOX_LINE_HEIGHT),
+        }
+        if font_file:
+            kwargs.update({"fontname": font_name, "fontfile": font_file})
+        else:
+            kwargs["fontname"] = "helv"
+        spare_height = page.insert_textbox(rect, value, **kwargs)
+        if spare_height >= 0:
+            used_height = max(0.0, min(rect.height, rect.height - spare_height))
+            return fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + used_height)
+        font_size = round(font_size - PDF_TEXTBOX_FONT_STEP, 2)
+
+    label = str(field.get("label") or field.get("variable") or "PDF field")
+    raise PdfOverlayLayoutError(
+        f"Текст поля «{label}» не помещается в заданную область даже при размере "
+        f"{PDF_TEXTBOX_MIN_FONT_SIZE:g} pt."
+    )
+
+
+def _validate_rendered_field_rect(
+    *,
+    page_rect: fitz.Rect,
+    field: dict[str, Any],
+    rendered_rect: fitz.Rect,
+    previous: list[tuple[dict[str, Any], fitz.Rect]],
+) -> None:
+    label = str(field.get("label") or field.get("variable") or "PDF field")
+    if not _rect_is_inside(page_rect, rendered_rect):
+        raise PdfOverlayLayoutError(f"Текст поля «{label}» выходит за границы страницы PDF.")
+    for previous_field, previous_rect in previous:
+        if not _rects_materially_overlap(rendered_rect, previous_rect):
+            continue
+        previous_label = str(
+            previous_field.get("label") or previous_field.get("variable") or "PDF field"
+        )
+        raise PdfOverlayLayoutError(
+            f"Поля «{previous_label}» и «{label}» перекрываются после подстановки."
+        )
+
+
 def render_pdf(data: bytes, state: dict[str, Any]) -> bytes:
     document = fitz.open(stream=data, filetype="pdf")
-    font_file = next((path for path in FONT_FILES if Path(path).exists()), None)
     try:
         changed_by_page: dict[int, list[dict[str, Any]]] = {}
         for field in state.get("fields") or []:
@@ -179,28 +308,31 @@ def render_pdf(data: bytes, state: dict[str, Any]) -> bytes:
                 continue
             page = document[page_index]
             for field in fields:
-                rect = fitz.Rect(
-                    float(field["x"]) - 0.8,
-                    float(field["y"]) - 0.8,
-                    float(field["x"]) + float(field["width"]) + 0.8,
-                    float(field["y"]) + float(field["height"]) + 0.8,
+                rect = _redaction_rect(field, page.rect)
+                page.add_redact_annot(
+                    rect,
+                    fill=_rgb(field.get("background", "#ffff00"), (1, 1, 0)),
                 )
-                page.add_redact_annot(rect, fill=_rgb(field.get("background", "#ffff00"), (1, 1, 0)))
             page.apply_redactions()
+            rendered_fields: list[tuple[dict[str, Any], fitz.Rect]] = []
             for field in fields:
                 value = str(field.get("value") or "")
                 if not value:
                     continue
-                font_size = max(6.0, min(36.0, float(field.get("font_size") or 10)))
-                point = fitz.Point(float(field.get("text_x") or field["x"]), float(field.get("baseline") or (field["y"] + field["height"] - 2)))
-                kwargs: dict[str, Any] = {
-                    "fontsize": font_size,
-                    "color": _rgb(field.get("text_color", "#000000"), (0, 0, 0)),
-                    "overlay": True,
-                }
-                if font_file:
-                    kwargs.update({"fontname": "CampaignFlowSans", "fontfile": font_file})
-                page.insert_text(point, value, **kwargs)
+                textbox = _field_rect(field)
+                label = str(field.get("label") or field.get("variable") or "PDF field")
+                if not _rect_is_inside(page.rect, textbox):
+                    raise PdfOverlayLayoutError(
+                        f"Область поля «{label}» выходит за границы страницы PDF."
+                    )
+                rendered_rect = _insert_fitted_textbox(page, field, textbox, value)
+                _validate_rendered_field_rect(
+                    page_rect=page.rect,
+                    field=field,
+                    rendered_rect=rendered_rect,
+                    previous=rendered_fields,
+                )
+                rendered_fields.append((field, rendered_rect))
         return document.tobytes(garbage=4, deflate=True)
     finally:
         document.close()
@@ -269,6 +401,57 @@ def _find_text_instances(page: fitz.Page, needle: str) -> list[fitz.Rect]:
     return rects
 
 
+def _default_discovered_textbox_rect(
+    page: fitz.Page,
+    source_rect: fitz.Rect,
+    *,
+    font_size: float,
+) -> fitz.Rect:
+    required_height = max(source_rect.height + 1.5, font_size * 1.4)
+    bottom = min(page.rect.y1, source_rect.y0 + required_height)
+    return fitz.Rect(source_rect.x0, source_rect.y0, source_rect.x1, bottom)
+
+
+def _next_content_top(
+    page: fitz.Page,
+    *,
+    source_rect: fitz.Rect,
+    right_edge: float,
+) -> float | None:
+    candidates: list[float] = []
+    for word in page.get_text("words"):
+        word_rect = fitz.Rect(word[:4])
+        if word_rect.y0 <= source_rect.y1 + 1:
+            continue
+        if word_rect.x1 <= source_rect.x0 or word_rect.x0 >= right_edge:
+            continue
+        candidates.append(word_rect.y0)
+    return min(candidates) if candidates else None
+
+
+def _is_admin_name_placeholder(name: str) -> bool:
+    return str(name or "").strip().upper() in {"ADM_NAME", "ADM_NAME_1"}
+
+
+def _discovered_textbox_rect(
+    page: fitz.Page,
+    source_rect: fitz.Rect,
+    placeholder: PlaceholderInfo,
+    *,
+    font_size: float,
+) -> fitz.Rect:
+    default_rect = _default_discovered_textbox_rect(page, source_rect, font_size=font_size)
+    if not _is_admin_name_placeholder(placeholder.name):
+        return default_rect
+
+    right_edge = max(source_rect.x1, page.rect.x1 - PDF_PAGE_MARGIN)
+    page_bottom = page.rect.y1 - PDF_PAGE_MARGIN
+    next_top = _next_content_top(page, source_rect=source_rect, right_edge=right_edge)
+    available_bottom = min(page_bottom, next_top - 4 if next_top is not None else page_bottom)
+    bottom = max(source_rect.y1, available_bottom)
+    return fitz.Rect(source_rect.x0, source_rect.y0, right_edge, bottom)
+
+
 def render_pdf_with_discovered_placeholders(
     data: bytes,
     placeholders: list[PlaceholderInfo],
@@ -280,11 +463,30 @@ def render_pdf_with_discovered_placeholders(
     try:
         for page_index in range(document.page_count):
             page = document[page_index]
-            for field_index, placeholder in enumerate(placeholders):
+            page_text = page.get_text("text")
+            claimed_source_rects: list[fitz.Rect] = []
+            ordered_placeholders = sorted(
+                placeholders,
+                key=lambda item: len(item.token),
+                reverse=True,
+            )
+            for field_index, placeholder in enumerate(ordered_placeholders):
                 value = resolve_context_value(context, placeholder.name)
-                if not value or placeholder.token not in page.get_text("text"):
+                if not value or placeholder.token not in page_text:
                     continue
                 for rect in _find_text_instances(page, placeholder.token):
+                    if any(
+                        _rects_materially_overlap(rect, claimed)
+                        for claimed in claimed_source_rects
+                    ):
+                        continue
+                    font_size = round(max(8.0, min(18.0, rect.height * 0.85)), 2)
+                    textbox = _discovered_textbox_rect(
+                        page,
+                        rect,
+                        placeholder,
+                        font_size=font_size,
+                    )
                     fields.append(
                         {
                             "id": f"p{page_index}-d{field_index}-{len(fields)}",
@@ -293,18 +495,22 @@ def render_pdf_with_discovered_placeholders(
                             "label": placeholder.name,
                             "source_text": placeholder.token,
                             "value": value,
-                            "x": round(rect.x0, 3),
-                            "y": round(rect.y0, 3),
-                            "width": round(rect.width, 3),
-                            "height": round(rect.height, 3),
-                            "text_x": round(rect.x0, 3),
-                            "baseline": round(rect.y1 - 2, 3),
-                            "font_size": round(max(8.0, min(18.0, rect.height * 0.85)), 2),
+                            "redact_x": round(rect.x0, 3),
+                            "redact_y": round(rect.y0, 3),
+                            "redact_width": round(rect.width, 3),
+                            "redact_height": round(rect.height, 3),
+                            "x": round(textbox.x0, 3),
+                            "y": round(textbox.y0, 3),
+                            "width": round(textbox.width, 3),
+                            "height": round(textbox.height, 3),
+                            "font_size": font_size,
                             "bold": False,
+                            "align": 2 if is_identifier_variable(placeholder.name) else 0,
                             "text_color": "#000000",
                             "background": "#ffffff",
                         }
                     )
+                    claimed_source_rects.append(rect)
     finally:
         document.close()
     if not fields:

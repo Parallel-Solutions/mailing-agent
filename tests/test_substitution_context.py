@@ -8,6 +8,7 @@ from unittest.mock import patch
 from src.campaigns.substitution_context import build_substitution_context, _resolve_director_name
 from src.campaigns.substitution_engine import (
     build_replacement_pairs,
+    discover_placeholders,
     find_unresolved_placeholders,
     render_text,
 )
@@ -260,6 +261,13 @@ class SubstitutionContextTests(unittest.TestCase):
 
 
 class SubstitutionEngineTests(unittest.TestCase):
+    def test_braced_token_is_not_discovered_again_as_bare(self) -> None:
+        placeholders = discover_placeholders("Дата: {{current_date}}")
+        self.assertEqual(
+            [(item.token, item.kind) for item in placeholders],
+            [("{{current_date}}", "brace")],
+        )
+
     def test_render_text_replaces_brace_and_bare_tokens(self) -> None:
         context = {
             "DATE": "21.07.2026",

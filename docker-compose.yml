@@ -1,3 +1,5 @@
+name: ${COMPOSE_PROJECT_NAME:-mailing-agent}
+
 services:
   app:
     build:
@@ -11,6 +13,8 @@ services:
     environment:
       APP_HOST: 0.0.0.0
       APP_PORT: 9806
+      APP_ENVIRONMENT: local
+      DATABASE_EXPECTED_NAME: mailing
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
       GOTENBERG_BASE_URLS: ${GOTENBERG_BASE_URLS:-http://gotenberg:3000}
       GOTENBERG_HEALTH_TIMEOUT_SECONDS: ${GOTENBERG_HEALTH_TIMEOUT_SECONDS:-10}
@@ -78,6 +82,8 @@ services:
     env_file:
       - .env.docker
     environment:
+      APP_ENVIRONMENT: local
+      DATABASE_EXPECTED_NAME: mailing
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
       GOTENBERG_BASE_URLS: ${GOTENBERG_BASE_URLS:-http://gotenberg:3000}
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing
@@ -151,7 +157,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-09-07T16-13-09Z}
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -230,6 +236,8 @@ services:
     env_file:
       - .env.docker
     environment:
+      APP_ENVIRONMENT: local
+      DATABASE_EXPECTED_NAME: mailing
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT_URL: http://minio:9000
@@ -261,6 +269,8 @@ services:
     env_file:
       - .env.docker
     environment:
+      APP_ENVIRONMENT: local
+      DATABASE_EXPECTED_NAME: mailing
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing
       WORKSPACE_DIR: /app/tmp
       LEGACY_JOBS_DIR: /app/legacy/storage/jobs

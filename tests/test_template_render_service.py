@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 import uuid
 from io import BytesIO
@@ -209,6 +210,8 @@ class TemplateRenderServiceTests(unittest.TestCase):
         )
         self.assertTrue(cache_path.exists())
         self.assertEqual(cache_path.name, f"{self.template_id}.pdf")
+        meta_path = template_render_service._meta_cache_path(cache_path)
+        self.assertTrue(meta_path.exists())
 
         with patch(
             "src.campaigns.template_render_service.get_bytes",
@@ -223,6 +226,49 @@ class TemplateRenderServiceTests(unittest.TestCase):
         self.assertEqual(cached_filename, delivery_name)
         self.assertNotEqual(cached_filename, f"{self.template_id}.pdf")
         self.assertTrue(cached_data)
+
+    def test_personalized_original_pdf_invalidates_stale_renderer_cache(self) -> None:
+        with session_scope() as session:
+            recipient = session.get(CampaignRecipient, int(self.recipient_id))
+            campaign = session.get(Campaign, self.campaign_id)
+            assert recipient is not None and campaign is not None
+            session.expunge(recipient)
+            session.expunge(campaign)
+
+        _filename, first_data = template_render_service.render_document_template_for_recipient(
+            template_id=self.template_id,
+            recipient=recipient,
+            campaign=campaign,
+            job_id=self.job_id,
+        )
+        cache_path = template_render_service._cache_path(
+            self.job_id,
+            int(self.recipient_id),
+            self.template_id,
+            ".pdf",
+        )
+        meta_path = template_render_service._meta_cache_path(cache_path)
+        stale_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        stale_meta["renderer_version"] = "stale-renderer"
+        meta_path.write_text(json.dumps(stale_meta), encoding="utf-8")
+
+        with patch(
+            "src.campaigns.template_render_service.get_bytes",
+            return_value=first_data,
+        ) as get_bytes_mock:
+            template_render_service.render_document_template_for_recipient(
+                template_id=self.template_id,
+                recipient=recipient,
+                campaign=campaign,
+                job_id=self.job_id,
+            )
+
+        get_bytes_mock.assert_called_once()
+        refreshed_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            refreshed_meta["renderer_version"],
+            template_render_service.DOCUMENT_RENDERER_VERSION,
+        )
 
     def test_pre_generate_batch_creates_manifest(self) -> None:
         result = template_render_service.pre_generate_batch_templates(

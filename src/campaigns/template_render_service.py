@@ -221,10 +221,13 @@ def _write_render_meta(
     *,
     fit_result: Any | None = None,
     font_pack_hash: str = "",
+    template_version_id: str = "",
 ) -> None:
     payload: dict[str, Any] = {"renderer_version": DOCUMENT_RENDERER_VERSION}
     if font_pack_hash:
         payload["font_pack_hash"] = font_pack_hash
+    if template_version_id:
+        payload["template_version_id"] = template_version_id
     if fit_result is not None:
         payload["font_half_points"] = int(fit_result.font_half_points)
     _meta_cache_path(pdf_cache).write_text(
@@ -233,15 +236,26 @@ def _write_render_meta(
     )
 
 
-def _cached_pdf_is_valid(pdf_cache: Path, *, expected_font_pack_hash: str = "") -> bool:
+def _cached_pdf_is_valid(
+    pdf_cache: Path,
+    *,
+    expected_font_pack_hash: str = "",
+    expected_template_version_id: str = "",
+    require_meta: bool = False,
+) -> bool:
     if not pdf_cache.exists():
         return False
     meta = _read_render_meta(pdf_cache)
     if meta is None:
-        return True
+        return not require_meta
     if str(meta.get("renderer_version") or "") != DOCUMENT_RENDERER_VERSION:
         return False
     if expected_font_pack_hash and str(meta.get("font_pack_hash") or "") != expected_font_pack_hash:
+        return False
+    if (
+        expected_template_version_id
+        and str(meta.get("template_version_id") or "") != expected_template_version_id
+    ):
         return False
     return True
 
@@ -255,6 +269,7 @@ def _convert_kp_docx_to_pdf(
     fontconfig_path: Path | str | None = None,
     prefer_local: bool = False,
     font_pack_hash: str = "",
+    template_version_id: str = "",
 ) -> None:
     from src.generator.generation.kp_one_page_fitter import fit_docx_to_one_page_pdf
 
@@ -267,7 +282,12 @@ def _convert_kp_docx_to_pdf(
         fontconfig_path=fontconfig_path,
         prefer_local=prefer_local,
     )
-    _write_render_meta(output_pdf, fit_result=fit_result, font_pack_hash=font_pack_hash)
+    _write_render_meta(
+        output_pdf,
+        fit_result=fit_result,
+        font_pack_hash=font_pack_hash,
+        template_version_id=template_version_id,
+    )
 
 
 def render_document_template_for_recipient(
@@ -292,7 +312,7 @@ def render_document_template_for_recipient(
     delivery_name = _resolve_delivery_filename(tmpl, version, source_name=source_name)
     wants_pdf = str(tmpl.attachment_output_format or "original") == "pdf"
     expected_font_pack_hash = ""
-    if suffix == ".docx":
+    if suffix == ".docx" and wants_pdf and tmpl.is_template:
         from src.campaigns.font_service import template_font_pack_hash
 
         expected_font_pack_hash = template_font_pack_hash(template_id, tmpl.owner_username)
@@ -301,10 +321,21 @@ def render_document_template_for_recipient(
         if wants_pdf and _cached_pdf_is_valid(
             pdf_cache,
             expected_font_pack_hash=expected_font_pack_hash,
+            expected_template_version_id=str(version.id),
+            require_meta=bool(tmpl.is_template),
         ):
             return delivery_name, pdf_cache.read_bytes()
         if not wants_pdf and cache_file.exists():
-            return delivery_name, cache_file.read_bytes()
+            if (
+                suffix != ".pdf"
+                or not tmpl.is_template
+                or _cached_pdf_is_valid(
+                    cache_file,
+                    expected_template_version_id=str(version.id),
+                    require_meta=True,
+                )
+            ):
+                return delivery_name, cache_file.read_bytes()
 
     if not tmpl.is_template:
         filename = delivery_name
@@ -404,6 +435,7 @@ def render_document_template_for_recipient(
                         fontconfig_path=fontconfig_path,
                         prefer_local=prefer_local,
                         font_pack_hash=active_font_pack_hash,
+                        template_version_id=str(version.id),
                     )
                 else:
                     _convert_docx_to_pdf(
@@ -413,7 +445,11 @@ def render_document_template_for_recipient(
                         fontconfig_path=fontconfig_path,
                         prefer_local=prefer_local,
                     )
-                    _write_render_meta(pdf_cache, font_pack_hash=active_font_pack_hash)
+                    _write_render_meta(
+                        pdf_cache,
+                        font_pack_hash=active_font_pack_hash,
+                        template_version_id=str(version.id),
+                    )
             return delivery_name, pdf_cache.read_bytes()
 
     if source_suffix == ".pdf":
@@ -429,6 +465,7 @@ def render_document_template_for_recipient(
             else:
                 pdf_data = source_data
         pdf_cache.write_bytes(pdf_data)
+        _write_render_meta(pdf_cache, template_version_id=str(version.id))
         return delivery_name, pdf_data
 
     if source_suffix in {".html", ".htm"}:
@@ -566,6 +603,12 @@ def resolve_cached_attachment(
         return None
 
     wants_pdf = str(tmpl.attachment_output_format or "original") == "pdf"
+    source_suffix = Path(str(version.filename or "document")).suffix.lower() or ".pdf"
+    expected_font_pack_hash = ""
+    if source_suffix == ".docx" and wants_pdf and tmpl.is_template:
+        from src.campaigns.font_service import template_font_pack_hash
+
+        expected_font_pack_hash = template_font_pack_hash(template_id, owner_username)
 
     if tmpl.is_template and campaign is not None and recipient is not None and job_id:
         delivery_name = _resolve_delivery_filename(
@@ -573,12 +616,6 @@ def resolve_cached_attachment(
             version,
             source_name=str(version.filename or tmpl.name),
         )
-        source_suffix = Path(str(version.filename or "document")).suffix.lower() or ".pdf"
-        expected_font_pack_hash = ""
-        if source_suffix == ".docx":
-            from src.campaigns.font_service import template_font_pack_hash
-
-            expected_font_pack_hash = template_font_pack_hash(template_id, owner_username)
         target_cache = _cache_path(
             job_id,
             int(recipient.id),
@@ -586,10 +623,12 @@ def resolve_cached_attachment(
             ".pdf" if wants_pdf else source_suffix,
         )
         if target_cache.exists() and (
-            not wants_pdf
+            target_cache.suffix.lower() != ".pdf"
             or _cached_pdf_is_valid(
                 target_cache,
                 expected_font_pack_hash=expected_font_pack_hash,
+                expected_template_version_id=str(version.id),
+                require_meta=True,
             )
         ):
             return delivery_name, target_cache.read_bytes()
@@ -602,9 +641,10 @@ def resolve_cached_attachment(
             )
             return filename, data
         except Exception as exc:
+            from src.campaigns.pdf_overlay_service import PdfOverlayLayoutError
             from src.generator.generation.kp_one_page_fitter import KpLayoutError
 
-            if isinstance(exc, KpLayoutError):
+            if isinstance(exc, (KpLayoutError, PdfOverlayLayoutError)):
                 raise
             pass
 
@@ -614,12 +654,19 @@ def resolve_cached_attachment(
             version,
             source_name=str(version.filename or tmpl.name),
         )
-        source_suffix = Path(str(version.filename or "document")).suffix.lower() or ".pdf"
         suffixes = (".pdf",) if wants_pdf else (source_suffix,)
         for suffix in suffixes:
             cache_file = _cache_dir(job_id, recipient_id) / f"{template_id}{suffix}"
-            if cache_file.exists():
-                return delivery_name, cache_file.read_bytes()
+            if not cache_file.exists():
+                continue
+            if suffix == ".pdf" and tmpl.is_template and not _cached_pdf_is_valid(
+                cache_file,
+                expected_font_pack_hash=expected_font_pack_hash,
+                expected_template_version_id=str(version.id),
+                require_meta=True,
+            ):
+                continue
+            return delivery_name, cache_file.read_bytes()
 
     filename = _resolve_delivery_filename(
         tmpl,

@@ -21,6 +21,7 @@ cd "$REPO_ROOT"
 
 COMPOSE=(
   docker compose
+  -p mailing-agent
   --env-file .env.docker
   --profile onlyoffice
   -f docker-compose.yml

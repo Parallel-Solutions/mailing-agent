@@ -72,6 +72,7 @@ cd "$REPO_ROOT"
 
 COMPOSE=(
   docker compose
+  -p mailing-agent
   --env-file .env.docker
   --profile onlyoffice
   -f docker-compose.yml
@@ -164,8 +165,33 @@ prune_old_repo_images() {
 echo "=== Build and restart production services ==="
 EXPECTED_IMAGE_ID=""
 
-# Ensure infra is running under the prod overlay (applies MinIO localhost binds
-# when the overlay changes; does not force-recreate healthy postgres).
+echo "=== Migration compatibility preflight ==="
+DATABASE_REVISION="$(docker exec mailing-agent-postgres-1 \
+  psql -U mailing -d mailing -t -A \
+  -c "SELECT version_num FROM alembic_version;" | tr -d '[:space:]')"
+python3 scripts/migration_guard.py --database-revision "$DATABASE_REVISION"
+
+echo "=== Stop application writers for a consistent data backup ==="
+"${COMPOSE[@]}" stop app worker
+
+DEPLOY_COMPLETE=0
+restore_services_on_failure() {
+  local status=$?
+  if (( status != 0 && DEPLOY_COMPLETE == 0 )); then
+    echo "ERROR: deploy failed; attempting to restart available production services." >&2
+    docker start mailing-agent-minio-1 >/dev/null 2>&1 || true
+    docker start mailing-agent-app-1 mailing-agent-worker-1 >/dev/null 2>&1 || true
+  fi
+  return "$status"
+}
+trap restore_services_on_failure EXIT
+
+echo "=== Pre-deploy PostgreSQL + MinIO backup ==="
+bash ./scripts/backup-prod-data.sh
+
+# This is intentionally after the verified data backup. A compose regression
+# must never be able to replace an infrastructure container before recovery
+# artifacts exist.
 echo "=== Ensure prod infra ==="
 MAILING_AGENT_IMAGE="$MAILING_AGENT_IMAGE" \
   ONLYOFFICE_IMAGE="$ONLYOFFICE_IMAGE" \
@@ -268,5 +294,6 @@ if (( POST_DEPLOY_STATS )); then
   ./scripts/post-deploy-stats.sh
 fi
 
+DEPLOY_COMPLETE=1
 echo ""
 echo "Deploy complete."
