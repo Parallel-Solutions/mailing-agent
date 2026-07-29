@@ -73,27 +73,53 @@ run_with_heartbeat() {
   wait "$child_pid"
 }
 
+rollback_diagnostics() {
+  log "rollback diagnostics:"
+  docker compose --env-file .env.docker --profile onlyoffice \
+    -p mailing-agent \
+    -f docker-compose.yml -f docker-compose.prod.yml \
+    ps || true
+  docker logs --tail 200 mailing-agent-app-1 || true
+  docker logs --tail 200 mailing-agent-worker-1 || true
+}
+
 rollback() {
   local previous_head="$1"
   local previous_image="$2"
 
   log "deployment failed; rolling back to $previous_image"
-  git reset --hard "$previous_head" >/dev/null
+  if ! git reset --hard "$previous_head" >/dev/null; then
+    log "rollback failed: could not restore checkout to $previous_head"
+    rollback_diagnostics
+    return 1
+  fi
   if ! docker image inspect "$previous_image" >/dev/null 2>&1; then
     log "rollback image is not cached; pulling $previous_image"
-    docker pull "$previous_image"
+    if ! docker pull "$previous_image"; then
+      log "rollback failed: could not pull $previous_image"
+      rollback_diagnostics
+      return 1
+    fi
   fi
 
-  MAILING_AGENT_IMAGE="$previous_image" \
+  if ! env "MAILING_AGENT_IMAGE=$previous_image" \
     docker compose --env-file .env.docker --profile onlyoffice \
       -p mailing-agent \
       -f docker-compose.yml -f docker-compose.prod.yml \
-      up -d --no-build --force-recreate --pull never app worker
+      up -d --no-build --force-recreate --pull never app worker; then
+    log "rollback failed: application containers could not be recreated"
+    rollback_diagnostics
+    return 1
+  fi
 
-  wait_for_url "$LOCAL_BASE_URL/health" "local health"
-  wait_for_url "$LOCAL_BASE_URL/ready" "local ready"
-  wait_for_url "$PUBLIC_BASE_URL/health" "public health"
-  wait_for_url "$PUBLIC_BASE_URL/ready" "public ready"
+  if ! wait_for_url "$LOCAL_BASE_URL/health" "local health" \
+    || ! wait_for_url "$LOCAL_BASE_URL/ready" "local ready" \
+    || ! wait_for_url "$PUBLIC_BASE_URL/health" "public health" \
+    || ! wait_for_url "$PUBLIC_BASE_URL/ready" "public ready"; then
+    log "rollback failed: one or more health checks did not recover"
+    rollback_diagnostics
+    return 1
+  fi
   log "rollback complete"
 }
 

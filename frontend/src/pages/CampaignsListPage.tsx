@@ -68,7 +68,8 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
   });
 
   return (
-    <ProTable<Campaign>
+    <div data-onboarding-id="campaigns-overview">
+      <ProTable<Campaign>
       rowKey="id"
       loading={isLoading}
       search={false}
@@ -129,6 +130,7 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
           ),
         },
       ]}
-    />
+      />
+    </div>
   );
 }

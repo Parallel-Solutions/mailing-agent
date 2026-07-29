@@ -45,32 +45,14 @@ warn() {
 
 get_head_revision() {
   python3 - <<'PY'
-import re
 from pathlib import Path
 
-versions = Path("migrations/versions")
-revisions = {}
-for path in versions.glob("*.py"):
-    text = path.read_text(encoding="utf-8")
-    rev_match = re.search(r'^revision\s*=\s*"([^"]+)"', text, re.M)
-    if not rev_match:
-        continue
-    rev = rev_match.group(1)
-    down_match = re.search(r'^down_revision\s*=\s*(.+)$', text, re.M)
-    down = None
-    if down_match:
-        raw = down_match.group(1).strip()
-        if raw.startswith('"'):
-            down = raw.strip('"')
-    revisions[rev] = down
+from scripts.migration_guard import load_revision_graph, migration_heads
 
-referenced = {down for down in revisions.values() if down}
-for rev in revisions:
-    if rev not in referenced:
-        print(rev)
-        raise SystemExit(0)
-if revisions:
-    print(sorted(revisions)[-1])
+heads = migration_heads(load_revision_graph(Path("migrations/versions")))
+if len(heads) != 1:
+    raise SystemExit(f"expected one Alembic head, found {list(heads)}")
+print(heads[0])
 PY
 }
 

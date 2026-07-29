@@ -363,6 +363,28 @@ def _placeholder_in_territory_genitive_context(text: str, token: str) -> bool:
     return text[:index].rstrip().casefold().endswith("для территории")
 
 
+def _admin_value_for_context(
+    value: str,
+    *,
+    name: str,
+    text: str,
+    token: str,
+    context: dict[str, str],
+) -> str:
+    index = text.find(token)
+    if index < 0 or not re.search(r"\bдля$", text[:index].rstrip(), flags=re.IGNORECASE):
+        return value
+    if _resolve_territory_canonical(name) == "ADM_NAME_1":
+        return value
+    canonical_genitive = _context_value(context, "ADM_NAME_1")
+    if canonical_genitive:
+        return canonical_genitive
+
+    from src.generator.inflection.inflect import inflect_admin_name_genitive
+
+    return inflect_admin_name_genitive(value).value or value
+
+
 def _adapt_territory_value_case(value: str, *, name: str, text: str, token: str) -> str:
     from src.generator.generation.transforms import _normalize_mo_name_case, normalize_russian_geo_admin_case
 
@@ -423,6 +445,13 @@ def build_replacement_pairs(context: dict[str, str], text: str) -> list[tuple[st
         if _is_territory_placeholder(item.name):
             value = _adapt_territory_value_case(value, name=item.name, text=text, token=item.token)
         elif _should_apply_admin_case(item.name, value):
+            value = _admin_value_for_context(
+                value,
+                name=item.name,
+                text=text,
+                token=item.token,
+                context=context,
+            )
             value = _adapt_admin_value_case(value, text=text, token=item.token)
         pairs[item.token] = value
 
@@ -433,6 +462,13 @@ def build_replacement_pairs(context: dict[str, str], text: str) -> list[tuple[st
         if value and _is_territory_placeholder(item.name):
             value = _adapt_territory_value_case(value, name=item.name, text=text, token=item.token)
         elif value and _should_apply_admin_case(item.name, value):
+            value = _admin_value_for_context(
+                value,
+                name=item.name,
+                text=text,
+                token=item.token,
+                context=context,
+            )
             value = _adapt_admin_value_case(value, text=text, token=item.token)
         if value:
             pairs[item.token] = value
@@ -493,7 +529,11 @@ def render_text(text: str, context: dict[str, str]) -> str:
     rendered = text
     for token, value in build_replacement_pairs(context, text):
         rendered = rendered.replace(token, value)
-    return _apply_territory_genitive_fix(rendered, context)
+    rendered = _apply_territory_genitive_fix(rendered, context)
+
+    from src.campaigns.text_local_review import normalize_generated_correspondence_text
+
+    return normalize_generated_correspondence_text(rendered)
 
 
 def resolve_context_value(context: dict[str, str], name: str) -> str:

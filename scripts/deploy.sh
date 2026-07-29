@@ -162,6 +162,29 @@ prune_old_repo_images() {
   done < <(docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' "$repo" 2>/dev/null || true)
 }
 
+refresh_restricted_deploy_helpers() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    echo "Skipping restricted deploy helper refresh (not running as root)."
+    return
+  fi
+
+  local expected_sha current_sha
+  expected_sha="${MAILING_AGENT_IMAGE##*:}"
+  current_sha="$(git rev-parse HEAD)"
+  if [[ ! "$expected_sha" =~ ^[0-9a-f]{40}$ || "$current_sha" != "$expected_sha" ]]; then
+    echo "Skipping restricted deploy helper refresh (checkout/image SHA mismatch)."
+    return
+  fi
+
+  install -o root -g root -m 0755 \
+    scripts/mailing-agent-deploy-dispatch \
+    /usr/local/bin/mailing-agent-deploy-dispatch
+  install -o root -g root -m 0755 \
+    scripts/mailing-agent-deploy-root \
+    /usr/local/sbin/mailing-agent-deploy-root
+  echo "Restricted deploy helpers refreshed from $current_sha."
+}
+
 echo "=== Build and restart production services ==="
 EXPECTED_IMAGE_ID=""
 
@@ -293,6 +316,8 @@ if (( POST_DEPLOY_STATS )); then
   echo "=== Post-deploy statistics recovery ==="
   ./scripts/post-deploy-stats.sh
 fi
+
+refresh_restricted_deploy_helpers
 
 DEPLOY_COMPLETE=1
 echo ""

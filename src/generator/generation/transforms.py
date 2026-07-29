@@ -3,6 +3,12 @@ import re
 from typing import Optional
 
 from src.generator.case_engine import build_inflected_fields_with_trace
+from src.generator.generation.recipient_normalization import (
+    contains_nested_administration,
+    extract_administration_entity_name,
+    is_district_level_entity_name,
+    normalize_administration_recipient,
+)
 from src.generator.generation.work_types import build_work_type_context, normalize_work_type
 
 
@@ -62,9 +68,11 @@ _ADMIN_SERVICE_WORDS = frozenset(
         "городского",
         "городское",
         "городском",
+        "городской",
         "сельского",
         "сельское",
         "сельском",
+        "сельский",
         "город",
         "города",
         "городе",
@@ -262,9 +270,15 @@ def ensure_official_district_wording(value: str) -> str:
     text = normalize_display_text(value).strip()
     if not text:
         return ""
-    return re.sub(
+    text = re.sub(
         r"(?<!муниципального\s)\b(?!муниципального\b)([А-ЯЁа-яё-]+(?:ского|цкого|ого))\s+района\b",
         r"\1 муниципального района",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"(?<!муниципальный\s)\b(?!муниципальный\b)([А-ЯЁа-яё-]+(?:ский|цкий|ской))\s+район\b",
+        r"\1 муниципальный район",
         text,
         flags=re.IGNORECASE,
     )
@@ -312,10 +326,20 @@ def build_unified_admin_name(mun_name: str) -> str:
 
 
 def build_district_admin_name(district_name: str) -> str:
-    normalized_district_name = normalize_display_text(district_name).strip()
+    normalized_district_name = ensure_official_district_wording(
+        normalize_russian_geo_admin_case(district_name)
+    )
     if not normalized_district_name:
         return ""
-    return f"Администрация муниципального образования {normalized_district_name}"
+
+    from src.generator.inflection.inflect import inflect_mun_name_genitive
+
+    district_genitive = inflect_mun_name_genitive(normalized_district_name).value
+    return f"Администрация {district_genitive or normalized_district_name}"
+
+
+def _looks_like_district_entity_name(value: str) -> bool:
+    return is_district_level_entity_name(value)
 
 
 def _quoted_name_looks_like_mo_name(value: str) -> bool:
@@ -374,6 +398,10 @@ def extract_official_mo_name_from_adm_name(adm_name: str) -> str:
     normalized_adm_name = normalize_display_text(adm_name).strip()
     if not normalized_adm_name:
         return ""
+    if contains_nested_administration(normalized_adm_name):
+        return normalize_russian_geo_admin_case(
+            extract_administration_entity_name(normalized_adm_name)
+        )
     quote_match = re.search(r'["«](.+?)["»]', normalized_adm_name)
     if quote_match:
         quoted = normalize_display_text(quote_match.group(1)).strip()
@@ -483,13 +511,37 @@ def build_document_context(row: dict, outgoing_number: int, work_type: str | Non
     raw_adm_name = normalize_display_text(row.get("ADM_NAME", ""))
     official_mo_name = extract_official_mo_name_from_adm_name(raw_adm_name)
     raw_mun_name = normalize_display_text(row.get("MUN_NAME", ""))
+    canonical_raw_mun_name = extract_administration_entity_name(raw_mun_name)
+    canonical_adm_entity_name = extract_administration_entity_name(raw_adm_name)
     normalized_mun_r_name = normalize_russian_geo_admin_case(str(row.get("MUN_R_NAME", "")))
-    is_district_context = not raw_mun_name and bool(normalized_mun_r_name)
-    normalized_mun_name = normalized_mun_r_name if is_district_context else official_mo_name or raw_mun_name
-    adm_name = (
-        raw_adm_name or build_district_admin_name(normalized_mun_r_name)
+    primary_entity_name = (
+        canonical_raw_mun_name
+        or normalized_mun_r_name
+        or canonical_adm_entity_name
+    )
+    is_district_context = _looks_like_district_entity_name(primary_entity_name)
+    district_entity_name = (
+        normalized_mun_r_name
+        if _looks_like_district_entity_name(normalized_mun_r_name)
+        else primary_entity_name
+    )
+    normalized_mun_name = (
+        ensure_official_district_wording(district_entity_name)
         if is_district_context
-        else build_unified_admin_name(normalized_mun_name)
+        else (
+            canonical_raw_mun_name
+            if contains_nested_administration(raw_adm_name) and canonical_raw_mun_name
+            else official_mo_name or canonical_raw_mun_name or raw_mun_name
+        )
+    )
+    adm_name = (
+        build_district_admin_name(normalized_mun_name)
+        if is_district_context
+        else (
+            normalize_administration_recipient(raw_adm_name)
+            if contains_nested_administration(raw_adm_name)
+            else build_unified_admin_name(normalized_mun_name)
+        )
     )
     row_for_inflection = dict(row)
     row_for_inflection["MUN_NAME"] = normalized_mun_name
@@ -507,7 +559,9 @@ def build_document_context(row: dict, outgoing_number: int, work_type: str | Non
         if value:
             inflected[field] = normalize_russian_geo_admin_case(value)
     adm_name = patch_admin_name_components(adm_name, row_for_inflection, inflected)
-    adm_name = normalize_russian_geo_admin_case(adm_name)
+    adm_name = normalize_administration_recipient(
+        normalize_russian_geo_admin_case(adm_name)
+    )
     oktmo = row_for_inflection.get("REQUISITES_OKTNO", row_for_inflection.get("REQUISITES_OKTMO", ""))
     context = {
         "ID": row.get("ID"),
@@ -540,6 +594,8 @@ def build_document_context(row: dict, outgoing_number: int, work_type: str | Non
         "DATE": datetime.now().strftime("%d.%m.%Y"),
     }
     context.update(inflected)
+    context["ADM_NAME"] = normalize_administration_recipient(context.get("ADM_NAME"))
+    context["ADM_NAME_1"] = normalize_administration_recipient(context.get("ADM_NAME_1"))
     context.update(build_work_type_context(effective_work_type))
     context["HEAD_MO_FRAGMENT"] = (
         str(context.get("MUN_R_NAME_1", "")).strip()

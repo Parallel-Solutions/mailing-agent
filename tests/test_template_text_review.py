@@ -101,6 +101,54 @@ class TemplateTextReviewTests(unittest.TestCase):
         self.assertIn("Энемского городского поселения", case_issues[0].suggestion)
         self.assertNotIn("Энемское городское поселение.", case_issues[0].suggestion)
 
+    def test_review_email_text_detects_admin_nominative_after_for(self) -> None:
+        issues = review_email_text(
+            "Разработка Генплана и ПЗЗ для администрация Дятьковского района.",
+            field="subject",
+        )
+
+        case_issue = next(item for item in issues if item.kind == "case")
+        self.assertEqual(case_issue.fragment, "для администрация")
+        self.assertEqual(case_issue.suggestion, "для администрации")
+
+    def test_review_email_text_detects_nested_administration_name(self) -> None:
+        issues = review_email_text(
+            (
+                "Администрации муниципального образования "
+                "«Администрация Дятьковского района»."
+            ),
+            field="body",
+        )
+
+        self.assertTrue(
+            any(
+                item.kind == "grammar"
+                and "повтор" in item.message.casefold()
+                for item in issues
+            )
+        )
+
+    def test_rendered_review_runs_new_local_rules_without_advisory_mode(self) -> None:
+        issues = review_rendered_template(
+            template_id=None,
+            template_name="Mail",
+            subject_template="",
+            body_html_template="",
+            body_text_template="",
+            recipient=MagicMock(),
+            campaign=MagicMock(),
+            rendered_subject="Разработка для администрация Дятьковского района.",
+            rendered_html=(
+                "<p>Администрации муниципального образования "
+                "«Администрация Дятьковского района».</p>"
+            ),
+            rendered_text="",
+            advisory=False,
+        )
+
+        self.assertTrue(any(item.get("kind") == "case" for item in issues))
+        self.assertTrue(any(item.get("kind") == "grammar" for item in issues))
+
     def test_review_email_text_detects_single_brace_artifact(self) -> None:
         issues = review_email_text(
             "разработку {разработке схемы территориального планирования для территории.",

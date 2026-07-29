@@ -8,6 +8,11 @@ import { templatesApi } from '@/api/templates';
 import type { Template } from '@/api/types';
 import { OperationProgress } from '@/components/OperationProgress';
 import { DEFAULT_VISUAL_EMAIL_HTML } from '@/features/templates/emailConstants';
+import {
+  advanceOnboarding,
+  ONBOARDING_ENTER_EVENT,
+  type OnboardingEnterDetail,
+} from '@/features/onboarding/events';
 import { showDocumentUploadError } from '@/features/templates/documentUploadError';
 import { TemplatePreviewImage } from '@/features/templates/TemplatePreviewImage';
 import './AddTemplateWizard.css';
@@ -24,6 +29,24 @@ type Props = {
   onClose: () => void;
   onCreated: (template: Template) => void;
 };
+
+export function finishTemplateCreation({
+  template,
+  fromStepId,
+  onClose,
+  onCreated,
+}: {
+  template: Template;
+  fromStepId: string;
+  onClose: () => void;
+  onCreated: (template: Template) => void;
+}) {
+  // Close the wizard before either navigation. The onboarding route must be
+  // final while the tour is active; otherwise the editor route stays final.
+  onClose();
+  onCreated(template);
+  advanceOnboarding(fromStepId, 'audience-open');
+}
 
 const EMAIL_IMPORT_ACCEPT = '.docx,.pdf,.html,.htm,.txt';
 const DOCUMENT_UPLOAD_ACCEPT = '.docx,.pdf,.html,.htm';
@@ -171,6 +194,18 @@ export function AddTemplateWizard({
   }, [controlledStep, defaultStep, open, templateType]);
 
   useEffect(() => {
+    if (!open) return;
+    const handleOnboardingEnter = (event: Event) => {
+      const { stepId } = (event as CustomEvent<OnboardingEnterDetail>).detail || {};
+      if (stepId === 'template-format') setStep('format');
+      if (stepId === 'template-source') setStep('gallery');
+      if (stepId === 'template-custom') setStep('custom');
+    };
+    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+  }, [open, setStep]);
+
+  useEffect(() => {
     if (!modelsQuery.data?.length || model) return;
     const preferred = modelsQuery.data.find((item) => item.default) || modelsQuery.data[0];
     setModel(preferred.id);
@@ -187,8 +222,12 @@ export function AddTemplateWizard({
     mutationFn: (starterId: string) => templatesApi.useStarter(starterId),
     onSuccess: (template) => {
       message.success('Шаблон добавлен из примера');
-      onCreated(template);
-      onClose();
+      finishTemplateCreation({
+        template,
+        fromStepId: 'template-source',
+        onClose,
+        onCreated,
+      });
     },
     onError: (error) => {
       message.error(error instanceof Error ? error.message : 'Не удалось создать шаблон');
@@ -206,8 +245,12 @@ export function AddTemplateWizard({
           ? 'Черновик импортирован — доработайте в редакторе'
           : 'Шаблон загружен',
       );
-      onCreated(template);
-      onClose();
+      finishTemplateCreation({
+        template,
+        fromStepId: emailFormat === 'upload' ? 'template-format' : 'template-source',
+        onClose,
+        onCreated,
+      });
     },
     onError: (error) => {
       if (templateType === 'document') {
@@ -233,8 +276,12 @@ export function AddTemplateWizard({
       }),
     onSuccess: (template) => {
       message.success('Создан пустой HTML-шаблон');
-      onCreated(template);
-      onClose();
+      finishTemplateCreation({
+        template,
+        fromStepId: 'template-source',
+        onClose,
+        onCreated,
+      });
     },
     onError: (error) => {
       message.error(error instanceof Error ? error.message : 'Не удалось создать шаблон');
@@ -258,8 +305,12 @@ export function AddTemplateWizard({
     },
     onSuccess: (template) => {
       message.success(prompt.trim() ? 'Шаблон сгенерирован' : 'Шаблон создан из файлов');
-      onCreated(template);
-      onClose();
+      finishTemplateCreation({
+        template,
+        fromStepId: 'template-custom',
+        onClose,
+        onCreated,
+      });
     },
     onError: (error) => {
       message.error(error instanceof Error ? error.message : 'Не удалось создать шаблон');
@@ -363,7 +414,13 @@ export function AddTemplateWizard({
               Выбрать файл
             </Button>
           ) : (
-            <Button type="primary" onClick={() => setStep('gallery')}>
+            <Button
+              type="primary"
+              onClick={() => {
+                setStep('gallery');
+                advanceOnboarding('template-format');
+              }}
+            >
               Далее
             </Button>
           )}
@@ -386,7 +443,14 @@ export function AddTemplateWizard({
               Пустой HTML-шаблон
             </Button>
           ) : (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setStep('custom')}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                setStep('custom');
+                advanceOnboarding('template-source', 'template-custom');
+              }}
+            >
               Добавить
             </Button>
           )}
@@ -465,7 +529,7 @@ export function AddTemplateWizard({
             />
           </div>
         ) : step === 'format' ? (
-          <div className="add-template-wizard__format-grid">
+          <div className="add-template-wizard__format-grid" data-onboarding-id="template-format">
             <Card
               hoverable
               onClick={() => setEmailFormat('simple')}
@@ -502,7 +566,7 @@ export function AddTemplateWizard({
             </Card>
           </div>
         ) : step === 'gallery' ? (
-          <div className="add-template-wizard__gallery">
+          <div className="add-template-wizard__gallery" data-onboarding-id="template-source">
             {showDocumentGalleryUpload ? (
               <button
                 type="button"
@@ -545,7 +609,12 @@ export function AddTemplateWizard({
             )}
           </div>
         ) : (
-          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Space
+            direction="vertical"
+            size="middle"
+            style={{ width: '100%' }}
+            data-onboarding-id="template-custom"
+          >
             <div>
               <Typography.Text>Нейронка</Typography.Text>
               <Select

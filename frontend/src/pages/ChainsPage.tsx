@@ -38,7 +38,8 @@ export function ChainsPage() {
   });
 
   return (
-    <ProTable<ChainListItem>
+    <div data-onboarding-id="chains-overview">
+      <ProTable<ChainListItem>
       rowKey="id"
       loading={isLoading}
       search={false}
@@ -105,6 +106,7 @@ export function ChainsPage() {
           ],
         },
       ]}
-    />
+      />
+    </div>
   );
 }
