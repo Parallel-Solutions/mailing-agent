@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 import threading
+import uuid
+from html import escape
 from typing import Any
 
 from sqlalchemy import select
 
 from src.campaigns.chain_service import (
     LINK_KIND_CUSTOM,
+    TRACKED_CONTENT_EDGE_PREFIX,
+    TRACKED_DOCUMENT_EDGE_PREFIX,
     create_branch_tokens,
     find_node,
     get_email_chain,
@@ -82,12 +88,13 @@ def _resolve_document_attachments(
     *,
     campaign: Campaign,
     recipient: CampaignRecipient,
-) -> list[tuple[str, bytes]]:
+) -> tuple[list[tuple[str, bytes]], list[tuple[str, str]]]:
     from src.campaigns.template_render_service import resolve_cached_attachment
 
     attachments: list[tuple[str, bytes]] = []
+    document_specs: list[tuple[str, str]] = []
     if not document_template_ids:
-        return attachments
+        return attachments, document_specs
     owner = campaign.owner_username
     job_id = campaign.job_id
     for template_id in document_template_ids:
@@ -101,7 +108,145 @@ def _resolve_document_attachments(
         )
         if resolved:
             attachments.append(resolved)
-    return attachments
+            document_specs.append((str(template_id), str(resolved[0])))
+    return attachments, document_specs
+
+
+_TRACKABLE_HREF_RE = re.compile(
+    r"(?P<prefix>\bhref\s*=\s*)(?P<quote>[\"'])(?P<url>https?://[^\"']+)(?P=quote)",
+    re.IGNORECASE,
+)
+_TRACKABLE_TEXT_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+
+
+def _public_tracking_base() -> str:
+    return str(
+        getattr(settings, "public_base_url", "") or "http://localhost:9806"
+    ).rstrip("/")
+
+
+def _persist_content_link_tokens(
+    *,
+    campaign_id: str,
+    recipient_id: int,
+    node_id: str,
+    html: str,
+    text: str,
+    test_email: str | None,
+) -> tuple[str, str]:
+    from src.campaigns.link_analytics_service import (
+        _normalize_url,
+        _template_links,
+    )
+
+    declared_links = _template_links(html, text)
+    if not declared_links:
+        return html, text
+    tracked_urls: dict[str, str] = {}
+    with session_scope() as session:
+        for item in declared_links:
+            url = str(item.get("url") or "")
+            if not url:
+                continue
+            link_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+            token = str(uuid.uuid4())
+            session.add(
+                CampaignChainToken(
+                    token=token,
+                    campaign_id=campaign_id,
+                    recipient_id=recipient_id,
+                    edge_id=f"{TRACKED_CONTENT_EDGE_PREFIX}{link_hash}",
+                    source_node_id=node_id,
+                    target_node_id=f"{TRACKED_CONTENT_EDGE_PREFIX}{link_hash}",
+                    send_status="ready",
+                    error=url,
+                    test_email=test_email,
+                )
+            )
+            tracked_urls[url] = f"{_public_tracking_base()}/chain/content/{token}"
+        session.flush()
+
+    def replace_href(match: re.Match[str]) -> str:
+        normalized = _normalize_url(match.group("url"))
+        tracked = tracked_urls.get(normalized)
+        if not tracked:
+            return match.group(0)
+        return (
+            f"{match.group('prefix')}{match.group('quote')}"
+            f"{tracked}{match.group('quote')}"
+        )
+
+    def replace_text_url(match: re.Match[str]) -> str:
+        normalized = _normalize_url(match.group(0))
+        return tracked_urls.get(normalized, match.group(0))
+
+    return (
+        _TRACKABLE_HREF_RE.sub(replace_href, html or ""),
+        _TRACKABLE_TEXT_URL_RE.sub(replace_text_url, text or ""),
+    )
+
+
+def _persist_document_open_tokens(
+    *,
+    campaign_id: str,
+    recipient_id: int,
+    node_id: str,
+    documents: list[tuple[str, str]],
+    test_email: str | None,
+) -> list[tuple[str, str]]:
+    if not documents:
+        return []
+    links: list[tuple[str, str]] = []
+    with session_scope() as session:
+        for template_id, filename in documents:
+            token = str(uuid.uuid4())
+            session.add(
+                CampaignChainToken(
+                    token=token,
+                    campaign_id=campaign_id,
+                    recipient_id=recipient_id,
+                    edge_id=f"{TRACKED_DOCUMENT_EDGE_PREFIX}{template_id}",
+                    source_node_id=node_id,
+                    target_node_id=template_id,
+                    send_status="ready",
+                    test_email=test_email,
+                )
+            )
+            links.append(
+                (
+                    filename or "Документ",
+                    f"{_public_tracking_base()}/chain/document/{token}",
+                )
+            )
+        session.flush()
+    return links
+
+
+def _inject_document_open_links(
+    html: str,
+    text: str,
+    links: list[tuple[str, str]],
+) -> tuple[str, str]:
+    if not links:
+        return html, text
+    html_links = "".join(
+        (
+            '<p style="margin:6px 0">'
+            f'<a href="{escape(url)}" style="color:#236348;text-decoration:underline">'
+            f"Открыть документ: {escape(filename)}</a></p>"
+        )
+        for filename, url in links
+    )
+    text_links = "\n".join(
+        f"Открыть документ: {filename}: {url}" for filename, url in links
+    )
+    return (
+        (html or "")
+        + '<div style="margin-top:16px">'
+        + html_links
+        + "</div>",
+        (text or "") + "\n\n" + text_links,
+    )
 
 
 def _persist_chain_branch_tokens(
@@ -391,7 +536,7 @@ def send_chain_node_email(
         from src.campaigns.layout_send_utils import record_kp_layout_send_failure
 
         try:
-            attachments = _resolve_document_attachments(
+            attachments, document_specs = _resolve_document_attachments(
                 list(node.get("document_template_ids") or []),
                 campaign=camp,
                 recipient=recipient,
@@ -423,6 +568,22 @@ def send_chain_node_email(
 
         campaign_for_send = camp
 
+    html, text = _persist_content_link_tokens(
+        campaign_id=campaign_id,
+        recipient_id=int(recipient_id),
+        node_id=node_id,
+        html=html,
+        text=text,
+        test_email=active_test_email,
+    )
+    document_links = _persist_document_open_tokens(
+        campaign_id=campaign_id,
+        recipient_id=int(recipient_id),
+        node_id=node_id,
+        documents=document_specs,
+        test_email=active_test_email,
+    )
+    html, text = _inject_document_open_links(html, text, document_links)
     buttons = _persist_chain_branch_tokens(
         campaign_id=campaign_id,
         recipient_id=int(recipient_id),
@@ -514,6 +675,7 @@ def send_chain_node_email(
                         campaign_name=camp.name,
                         sent_at=datetime.now(timezone.utc).isoformat(),
                         connection_id=resolved_connection_id,
+                        chain_node_id=node_id,
                     ):
                         invalidate_stats_cache(job_id)
     except Exception:

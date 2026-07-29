@@ -5,7 +5,13 @@ export type DrillColumn = [string, (item: Record<string, unknown>) => unknown];
 
 export type DrillConfig = {
   title: string;
-  source: 'recipients' | 'consents' | 'email-problems' | 'campaigns' | 'reports';
+  source:
+    | 'recipients'
+    | 'consents'
+    | 'email-problems'
+    | 'campaigns'
+    | 'campaign-attempts'
+    | 'reports';
   columns: DrillColumn[];
   params?: Record<string, string>;
   filter?: (item: Record<string, unknown>) => boolean;
@@ -21,6 +27,24 @@ const RECIPIENT_COLUMNS: DrillColumn[] = [
   ['Дата события', (item) => formatLocalDateTime(String(item.last_event_at || ''))],
   ['Интерес', (item) => (item.interest as { label?: string } | undefined)?.label],
   ['Следующее действие', (item) => (item.next_action as { label?: string } | undefined)?.label],
+];
+
+const CAMPAIGN_ATTEMPT_COLUMNS: DrillColumn[] = [
+  ['Компания', (item) => item.organization],
+  ['Email-адреса', (item) => companyEmailsText(item)],
+  ['Всего попыток', (item) => item.attempts_total],
+  ['Принято провайдером', (item) => item.sent_count],
+  ['Доставлено', (item) => item.delivered_count],
+  ['Ошибки', (item) => item.error_count],
+  ['Статусы', (item) => item.status_summary],
+  [
+    'Провайдеры',
+    (item) =>
+      Array.isArray(item.provider_labels)
+        ? item.provider_labels.map(String).join(', ')
+        : item.provider_labels,
+  ],
+  ['Последняя попытка', (item) => formatLocalDateTime(String(item.last_event_at || ''))],
 ];
 
 const CONSENT_COLUMNS: DrillColumn[] = [
@@ -39,7 +63,7 @@ const CAMPAIGN_COLUMNS: DrillColumn[] = [
   ['Название', (item) => item.title],
   ['Период', (item) => item.period_label],
   ['Провайдер', (item) => item.provider_label],
-  ['Отправлено', (item) => item.sent],
+  ['Принято провайдером', (item) => item.sent],
   ['Доставлено', (item) => `${item.delivered} / ${item.delivery_rate}%`],
   ['Открыто', (item) => `${item.opened} / ${item.open_rate}%`],
   ['Переходы', (item) => `${item.clicked} / ${item.ctr}%`],
@@ -71,21 +95,41 @@ function statusKey(item: Record<string, unknown>) {
 }
 
 export const DRILLDOWN_CONFIG: Record<string, DrillConfig> = {
-  sent: { title: 'Компании в рассылке', source: 'recipients', columns: RECIPIENT_COLUMNS, params: {} },
-  delivered: {
-    title: 'Доставлено',
+  all_attempts: {
+    title: 'Все попытки и отправки',
+    source: 'campaign-attempts',
+    columns: CAMPAIGN_ATTEMPT_COLUMNS,
+    params: {},
+  },
+  not_sent: {
+    title: 'Не дошло до отправки',
+    source: 'campaign-attempts',
+    columns: CAMPAIGN_ATTEMPT_COLUMNS,
+    params: {},
+    filter: (item) => Number(item.sent_count || 0) < Number(item.attempts_total || 0),
+  },
+  sent: {
+    title: 'Отправлено в почтовый провайдер',
     source: 'recipients',
     columns: RECIPIENT_COLUMNS,
-    params: { quick_filter: 'delivered' },
+    params: {},
+  },
+  delivered: {
+    title: 'Доставлено реальное письмо',
+    source: 'recipients',
+    columns: RECIPIENT_COLUMNS,
+    params: {},
+    filter: (item) => ['delivered', 'opened', 'clicked'].includes(statusKey(item) || ''),
   },
   opened: {
     title: 'Открыто',
     source: 'recipients',
     columns: RECIPIENT_COLUMNS,
-    params: { quick_filter: 'opened' },
+    params: {},
+    filter: (item) => ['opened', 'clicked'].includes(statusKey(item) || ''),
   },
   clicked: {
-    title: 'Переходы',
+    title: 'Кликнули по ссылке',
     source: 'recipients',
     columns: RECIPIENT_COLUMNS,
     params: { quick_filter: 'clicked' },
@@ -111,11 +155,11 @@ export const DRILLDOWN_CONFIG: Record<string, DrillConfig> = {
     filter: (item) => item.materials_label === 'Материалы отправлены',
   },
   errors: {
-    title: 'Недоставлено',
+    title: 'Ошибки почтового провайдера',
     source: 'recipients',
     columns: RECIPIENT_COLUMNS,
     params: {},
-    filter: (i) => ['email_broken', 'soft_bounce', 'delivery_error', 'spam'].includes(statusKey(i) || ''),
+    filter: (i) => ['email_broken', 'soft_bounce', 'delivery_error'].includes(statusKey(i) || ''),
   },
   kp_layout: {
     title: 'КП не влезло на 1 стр.',
@@ -133,6 +177,20 @@ export const DRILLDOWN_CONFIG: Record<string, DrillConfig> = {
     columns: RECIPIENT_COLUMNS,
     params: {},
     filter: (i) => ['unsubscribed', 'spam'].includes(statusKey(i) || ''),
+  },
+  unsubscribed: {
+    title: 'Отписались',
+    source: 'recipients',
+    columns: RECIPIENT_COLUMNS,
+    params: {},
+    filter: (i) => statusKey(i) === 'unsubscribed',
+  },
+  spam: {
+    title: 'Добавили в спам',
+    source: 'recipients',
+    columns: RECIPIENT_COLUMNS,
+    params: {},
+    filter: (i) => statusKey(i) === 'spam',
   },
   recipients_active: {
     title: 'Активные получатели',

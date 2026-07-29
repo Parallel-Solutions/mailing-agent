@@ -6,7 +6,6 @@ const MENU = [
   { path: '/campaigns/new', name: 'Создать рассылку' },
   { path: '/campaigns', name: 'Рассылки' },
   { path: '/templates', name: 'Шаблоны и документы' },
-  { path: '/audiences', name: 'База получателей' },
   { path: '/connections', name: 'Подключения' },
   { path: '/profile', name: 'Профиль' },
 ] as const;
@@ -19,6 +18,10 @@ test.describe('Navigation @smoke', () => {
     await expect(page.getByText('Статистика').first()).toBeVisible();
 
     await page.goto('/statistics', { waitUntil: 'domcontentloaded' });
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId('statistics-page')).toBeVisible();
+
+    await page.goto('/audiences', { waitUntil: 'domcontentloaded' });
     await expect(page).toHaveURL(/\/$/);
     await expect(page.getByTestId('statistics-page')).toBeVisible();
 

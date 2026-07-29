@@ -135,6 +135,13 @@ export function StatisticsProvider({ children }: { children: ReactNode }) {
         if (config.source === 'campaigns') {
           const result = await statisticsApi.campaigns(params);
           rows = asRecordArray(result.campaigns);
+        } else if (config.source === 'campaign-attempts') {
+          const jobId = String(params.campaign || '');
+          if (!jobId) throw new Error('Campaign is required for attempts drilldown.');
+          rows = await fetchAllPages((page) =>
+            statisticsApi.campaignAttempts(jobId, { page, per_page: 100 }),
+          );
+          truncated = rows.length >= 2000;
         } else if (config.source === 'reports') {
           rows = reportsHistory;
         } else if (config.source === 'consents') {

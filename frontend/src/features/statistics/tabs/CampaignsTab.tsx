@@ -10,7 +10,6 @@ export function CampaignsTab() {
   const {
     apiBaseParams,
     refreshNonce,
-    setCampaigns,
     openDrilldown,
     openCampaignSummary,
     setTab,
@@ -30,9 +29,8 @@ export function CampaignsTab() {
   });
 
   useEffect(() => {
-    if (query.data) setCampaigns(asRecordArray(query.data.campaigns));
     if (query.isError) setError('Не удалось загрузить рассылки.');
-  }, [query.data, query.isError, setCampaigns, setError]);
+  }, [query.isError, setError]);
 
   const result = query.data || {};
   const summary = asRecord(result.summary);
@@ -87,7 +85,7 @@ export function CampaignsTab() {
           { title: 'Название', dataIndex: 'title' },
           { title: 'Период', dataIndex: 'period_label' },
           { title: 'Провайдер', dataIndex: 'provider_label' },
-          { title: 'Отправлено', dataIndex: 'sent', render: (v) => fmt(v) },
+          { title: 'Принято провайдером', dataIndex: 'sent', render: (v) => fmt(v) },
           {
             title: 'Доставлено',
             render: (_, r) => `${fmt(r.delivered)} / ${r.delivery_rate}%`,

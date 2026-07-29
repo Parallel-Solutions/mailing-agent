@@ -97,7 +97,10 @@ export function DashboardTab() {
             title="Проблемы с email"
             size="small"
             extra={
-              <Button size="small" onClick={() => setTab('problems')}>
+              <Button
+                size="small"
+                onClick={() => setTab('recipients', { quick_filter: 'problems' })}
+              >
                 Посмотреть все
               </Button>
             }
