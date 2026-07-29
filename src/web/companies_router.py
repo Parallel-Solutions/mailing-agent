@@ -123,6 +123,13 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
             raise HTTPException(status_code=404, detail="Компания не найдена.")
         return _ok(company)
 
+    @router.delete("/companies/{company_id}")
+    def delete_company(company_id: str, principal: object = Depends(check_auth)):
+        require_app_admin(_actor(principal))
+        if not company_service.delete_company(company_id):
+            raise HTTPException(status_code=404, detail="Компания не найдена.")
+        return _ok({"removed": True})
+
     @router.post("/companies/{company_id}/logo")
     def upload_logo(company_id: str, file: UploadFile = File(...), principal: object = Depends(check_auth)):
         actor = _actor(principal)

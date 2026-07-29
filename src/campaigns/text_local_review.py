@@ -29,6 +29,11 @@ NOMINATIVE_SETTLEMENT_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 SINGLE_BRACE_ARTIFACT_RE = re.compile(r"(?<!\{)\{(?!\{)(?!\s)[^{}<>]{2,120}")
+ADMIN_NOMINATIVE_AFTER_FOR_RE = re.compile(r"\bдля\s+администрация\b", re.IGNORECASE)
+NESTED_ADMINISTRATION_RE = re.compile(
+    r"\bадминистраци[ия]\s+муниципального\s+образования\s+[«\"]\s*администраци[ия]\b",
+    re.IGNORECASE,
+)
 
 
 def suggest_territory_genitive(name: str) -> str:
@@ -121,6 +126,26 @@ def review_email_text(text: str, *, field: str = "body") -> list[LocalTextIssue]
             message="Обнаружены двойные пробелы.",
             kind="grammar",
             severity="info",
+        )
+
+    for match in ADMIN_NOMINATIVE_AFTER_FOR_RE.finditer(text):
+        fragment = match.group(0)
+        _add_issue(
+            issues,
+            fragment=fragment,
+            message="После предлога «для» название администрации должно стоять в родительном падеже.",
+            kind="case",
+            severity="warning",
+            suggestion=re.sub(r"администрация$", "администрации", fragment, flags=re.IGNORECASE),
+        )
+
+    for match in NESTED_ADMINISTRATION_RE.finditer(text):
+        _add_issue(
+            issues,
+            fragment=match.group(0),
+            message="В названии получателя повторяется слово «Администрация».",
+            kind="grammar",
+            severity="warning",
         )
 
     if "предмета нормирование" in text.casefold():

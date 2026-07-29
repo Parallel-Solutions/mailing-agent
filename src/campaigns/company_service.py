@@ -6,11 +6,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 
 from src.infra.db import session_scope
 from src.infra.models import Company, CompanyMembership
-from src.infra.object_store import ObjectNotFoundError, delete, get_bytes, put_bytes
+from src.infra.object_store import ObjectNotFoundError, delete as delete_object, get_bytes, put_bytes
 from src.security.auth import _safe_identifier
 from src.security.company_access import (
     COMPANY_ADMIN_ROLE,
@@ -19,6 +19,7 @@ from src.security.company_access import (
     invalidate_company_members_cache,
 )
 from src.security.user_store import UserStoreError, create_user, username_exists, validate_username
+from src.utils.logger import logger
 
 LOGO_MAX_BYTES = 2 * 1024 * 1024
 LOGO_CONTENT_TYPES = {
@@ -157,6 +158,30 @@ def update_company(company_id: str, data: dict[str, Any]) -> dict[str, Any] | No
         return _company_to_dict(row, member_count=int(count or 0))
 
 
+def delete_company(company_id: str) -> bool:
+    logo_storage_key: str | None = None
+    with session_scope() as session:
+        row = session.get(Company, company_id)
+        if row is None:
+            return False
+        logo_storage_key = row.logo_storage_key
+        session.delete(row)
+        session.flush()
+
+    invalidate_company_members_cache(company_id)
+    if logo_storage_key:
+        try:
+            delete_object(logo_storage_key)
+        except Exception:
+            logger.warning(
+                "company_logo_cleanup_failed",
+                company_id=company_id,
+                storage_key=logo_storage_key,
+                exc_info=True,
+            )
+    return True
+
+
 def upload_company_logo(company_id: str, data: bytes, content_type: str) -> dict[str, Any] | None:
     if len(data) > LOGO_MAX_BYTES:
         raise CompanyServiceError("Логотип не должен превышать 2 МБ.")
@@ -185,7 +210,7 @@ def delete_company_logo(company_id: str) -> dict[str, Any] | None:
             return None
         if row.logo_storage_key:
             try:
-                delete(row.logo_storage_key)
+                delete_object(row.logo_storage_key)
             except ObjectNotFoundError:
                 pass
             row.logo_storage_key = None

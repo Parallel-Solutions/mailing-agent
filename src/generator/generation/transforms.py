@@ -262,9 +262,15 @@ def ensure_official_district_wording(value: str) -> str:
     text = normalize_display_text(value).strip()
     if not text:
         return ""
-    return re.sub(
+    text = re.sub(
         r"(?<!муниципального\s)\b(?!муниципального\b)([А-ЯЁа-яё-]+(?:ского|цкого|ого))\s+района\b",
         r"\1 муниципального района",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"(?<!муниципальный\s)\b(?!муниципальный\b)([А-ЯЁа-яё-]+(?:ский|цкий|ской))\s+район\b",
+        r"\1 муниципальный район",
         text,
         flags=re.IGNORECASE,
     )
@@ -312,10 +318,29 @@ def build_unified_admin_name(mun_name: str) -> str:
 
 
 def build_district_admin_name(district_name: str) -> str:
-    normalized_district_name = normalize_display_text(district_name).strip()
+    normalized_district_name = ensure_official_district_wording(
+        normalize_russian_geo_admin_case(district_name)
+    )
     if not normalized_district_name:
         return ""
-    return f"Администрация муниципального образования {normalized_district_name}"
+
+    from src.generator.inflection.inflect import inflect_mun_name_genitive
+
+    district_genitive = inflect_mun_name_genitive(normalized_district_name).value
+    return f"Администрация {district_genitive or normalized_district_name}"
+
+
+_DISTRICT_SUBENTITY_MARKERS = ("поселение", "сельсовет", "поссовет")
+
+
+def _looks_like_district_entity_name(value: str) -> bool:
+    clean = normalize_display_text(value).strip()
+    if not clean:
+        return False
+    lowered = clean.casefold()
+    if any(marker in lowered for marker in _DISTRICT_SUBENTITY_MARKERS):
+        return False
+    return bool(re.search(r"\bрайон(?:а|у|ом|е)?\b", lowered))
 
 
 def _quoted_name_looks_like_mo_name(value: str) -> bool:
@@ -484,10 +509,17 @@ def build_document_context(row: dict, outgoing_number: int, work_type: str | Non
     official_mo_name = extract_official_mo_name_from_adm_name(raw_adm_name)
     raw_mun_name = normalize_display_text(row.get("MUN_NAME", ""))
     normalized_mun_r_name = normalize_russian_geo_admin_case(str(row.get("MUN_R_NAME", "")))
-    is_district_context = not raw_mun_name and bool(normalized_mun_r_name)
-    normalized_mun_name = normalized_mun_r_name if is_district_context else official_mo_name or raw_mun_name
+    is_district_context = bool(normalized_mun_r_name) and (
+        not raw_mun_name
+        or _looks_like_district_entity_name(raw_mun_name)
+    )
+    normalized_mun_name = (
+        ensure_official_district_wording(normalized_mun_r_name)
+        if is_district_context
+        else official_mo_name or raw_mun_name
+    )
     adm_name = (
-        raw_adm_name or build_district_admin_name(normalized_mun_r_name)
+        build_district_admin_name(normalized_mun_name)
         if is_district_context
         else build_unified_admin_name(normalized_mun_name)
     )
