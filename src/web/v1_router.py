@@ -15,6 +15,7 @@ from src.campaigns import (
     chain_preview_service,
     chain_service,
     connection_service,
+    document_layout_service,
     document_editor_service,
     font_service,
     generation_service,
@@ -219,6 +220,10 @@ class AudienceMembersBody(BaseModel):
 class TestEmailBody(BaseModel):
     to_email: str
     smtp_mailbox_id: str | None = None
+
+
+class DocumentLayoutApplyBody(BaseModel):
+    template_id: str = Field(min_length=1, max_length=200)
 
 
 class WorkTypeCreateBody(BaseModel):
@@ -808,6 +813,48 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                     visible_owners=_visibility(actor),
                 )
             )
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "не найден" in message.lower() else 400
+            raise HTTPException(status_code=status, detail=message) from exc
+
+    @router.post("/campaigns/{campaign_id}/document-layout/inspect")
+    def post_campaign_document_layout_inspect(
+        campaign_id: str,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                document_layout_service.inspect_campaign_layout(
+                    campaign_id,
+                    actor.username,
+                    visible_owners=_visibility(actor),
+                )
+            )
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "не найден" in message.lower() else 400
+            raise HTTPException(status_code=status, detail=message) from exc
+
+    @router.post("/campaigns/{campaign_id}/document-layout/apply")
+    def post_campaign_document_layout_apply(
+        campaign_id: str,
+        body: DocumentLayoutApplyBody,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                document_layout_service.apply_campaign_layout(
+                    campaign_id,
+                    body.template_id,
+                    actor.username,
+                    visible_owners=_visibility(actor),
+                )
+            )
+        except pdf_overlay_service.PdfOverlayLayoutError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             message = str(exc)
             status = 404 if "не найден" in message.lower() else 400

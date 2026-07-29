@@ -164,15 +164,16 @@ def _signature(campaign: Campaign, template_ids: list[str]) -> str:
 
 
 def _render_pdf_overlay(source_data: bytes, editor_state: dict[str, Any], context: dict[str, Any]) -> bytes:
-    from src.campaigns.pdf_overlay_service import render_pdf
+    from src.campaigns.pdf_overlay_service import render_pdf, resolve_layout_field_value
 
     state = deepcopy(editor_state)
     for field in state.get("fields") or []:
-        variable = str(field.get("variable") or "").strip()
-        if not variable:
-            continue
-        value = str(context.get(variable) or context.get(variable.upper()) or "")
-        if value:
+        value = resolve_layout_field_value(field, context)
+        is_dynamic = bool(
+            str(field.get("value_template") or "").strip()
+            or str(field.get("variable") or "").strip()
+        )
+        if is_dynamic or value:
             field["value"] = value
     return render_pdf(source_data, state)
 

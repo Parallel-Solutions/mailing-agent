@@ -1,6 +1,7 @@
 import {
   ProCard,
 } from '@ant-design/pro-components';
+import { SwapOutlined } from '@ant-design/icons';
 import { App, Alert, Button, Col, Collapse, Form, Row, Space, Spin, Steps, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -12,6 +13,7 @@ import { companiesApi } from '@/api/companies';
 import { connectionsApi } from '@/api/connections';
 import { audiencesApi } from '@/api/audiences';
 import type { Campaign } from '@/api/types';
+import { CampaignDocumentLayoutReview } from '@/features/campaigns/CampaignDocumentLayoutReview';
 import { CampaignStepFixModal } from '@/features/campaigns/CampaignStepFixModal';
 import {
   buildCampaignStepValidation,
@@ -62,7 +64,7 @@ function draftBasicsFields(draft: Partial<Campaign>) {
 
 const CAMPAIGN_MODAL_KEYS = ['modal', 'fix_step', 'preview_node'] as const;
 
-type CampaignModalKind = 'generate' | 'mapping' | 'preview' | 'fix';
+type CampaignModalKind = 'generate' | 'mapping' | 'preview' | 'layout' | 'fix';
 
 export function CampaignNewPage() {
   const [params] = useSearchParams();
@@ -74,6 +76,7 @@ export function CampaignNewPage() {
   const generateModalOpen = modalKind === 'generate';
   const mappingModalOpen = modalKind === 'mapping';
   const chainPreviewOpen = modalKind === 'preview';
+  const layoutReviewOpen = modalKind === 'layout';
   const fixModalStep =
     modalKind === 'fix'
       ? (readIntParam(params, 'fix_step', 0, 0, 3) as CampaignWizardStepIndex)
@@ -889,6 +892,13 @@ export function CampaignNewPage() {
                             </Button>
                           ) : null}
                           <Button
+                            icon={<SwapOutlined />}
+                            disabled={recipientCount === 0 || wizardLocked}
+                            onClick={() => openWizardModal('layout')}
+                          >
+                            Проверить вёрстку документов
+                          </Button>
+                          <Button
                             type="primary"
                             disabled={launchBlocked || wizardLocked}
                             title={readinessErrors.join('; ') || undefined}
@@ -994,6 +1004,16 @@ export function CampaignNewPage() {
           activeNodeId={previewNodeId}
           onActiveNodeChange={(nodeId) => pushParams({ preview_node: nodeId })}
           onClose={closeWizardModal}
+        />
+      ) : null}
+      {id ? (
+        <CampaignDocumentLayoutReview
+          open={layoutReviewOpen}
+          campaignId={id}
+          onClose={closeWizardModal}
+          onApplied={() => {
+            void queryClient.invalidateQueries({ queryKey: campaignValidateQueryKey(id) });
+          }}
         />
       ) : null}
       {fixModalStep !== null ? (

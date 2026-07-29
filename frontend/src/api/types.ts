@@ -190,6 +190,38 @@ export type EmailChainPreviewResponse = {
   items: EmailChainPreviewItem[];
 };
 
+export type DocumentLayoutReviewItem = {
+  template_id: string;
+  active_version_id: string;
+  template_name: string;
+  filename: string;
+  status: 'candidate' | 'already_applied' | 'skipped' | 'error';
+  message: string;
+  changes: string[];
+  before_image?: string;
+  after_image?: string;
+  can_apply: boolean;
+  layout_version?: string;
+};
+
+export type CampaignDocumentLayoutReview = {
+  campaign_id: string;
+  recipient: {
+    id: number;
+    company?: string;
+    contact_name?: string;
+  };
+  estimate_seconds: number;
+  documents: DocumentLayoutReviewItem[];
+};
+
+export type CampaignDocumentLayoutApplyResult = {
+  template_id: string;
+  template_version_id: string;
+  layout_version: string;
+  changes: string[];
+};
+
 export type CampaignList = { items: Campaign[]; total: number };
 
 export type ActiveSending = {

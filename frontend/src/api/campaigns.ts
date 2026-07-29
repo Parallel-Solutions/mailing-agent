@@ -3,6 +3,8 @@ import type {
   ActiveSending,
   Batch,
   Campaign,
+  CampaignDocumentLayoutApplyResult,
+  CampaignDocumentLayoutReview,
   CampaignGeneration,
   CampaignList,
   CampaignValidateResponse,
@@ -155,6 +157,13 @@ export const campaignsApi = {
     api.get<EmailChainStats>(`/api/v1/campaigns/${id}/email-chain/stats`),
   previewEmailChain: (id: string) =>
     api.post<EmailChainPreviewResponse>(`/api/v1/campaigns/${id}/email-chain/preview`),
+  inspectDocumentLayout: (id: string) =>
+    api.post<CampaignDocumentLayoutReview>(`/api/v1/campaigns/${id}/document-layout/inspect`),
+  applyDocumentLayout: (id: string, templateId: string) =>
+    api.post<CampaignDocumentLayoutApplyResult>(
+      `/api/v1/campaigns/${id}/document-layout/apply`,
+      { template_id: templateId },
+    ),
   sentEmailPreview: (id: string, recipientId: number) =>
     api.get<EmailChainPreviewResponse>(
       `/api/v1/campaigns/${id}/sent-email-preview?recipient_id=${recipientId}`,

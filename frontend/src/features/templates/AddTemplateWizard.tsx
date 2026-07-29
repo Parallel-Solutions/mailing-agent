@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { templatesApi } from '@/api/templates';
 import type { Template } from '@/api/types';
+import { OperationProgress } from '@/components/OperationProgress';
 import { DEFAULT_VISUAL_EMAIL_HTML } from '@/features/templates/emailConstants';
 import { showDocumentUploadError } from '@/features/templates/documentUploadError';
 import { TemplatePreviewImage } from '@/features/templates/TemplatePreviewImage';
@@ -37,6 +38,60 @@ function getAcceptString(templateType: TemplateKind, emailFormat: EmailFormat): 
 function getUploadHint(templateType: TemplateKind): string {
   if (templateType === 'document') return 'DOCX, PDF, HTML';
   return 'DOCX, PDF, HTML, TXT';
+}
+
+function getUploadOperation(
+  file: File | null,
+  templateType: TemplateKind,
+  emailFormat: EmailFormat,
+) {
+  const extension = file?.name.split('.').pop()?.toLowerCase() || '';
+  if (templateType === 'document') {
+    if (extension === 'docx') {
+      return {
+        estimate: [20, 45] as [number, number],
+        stages: [
+          'Загружаем файл',
+          'Проверяем формат и безопасность',
+          'Извлекаем текст и определяем шрифты',
+          'Готовим PDF-предпросмотр',
+          'Сохраняем шаблон',
+        ],
+      };
+    }
+    return {
+      estimate: [8, 20] as [number, number],
+      stages: [
+        'Загружаем файл',
+        'Проверяем формат и безопасность',
+        'Извлекаем текст и поля',
+        'Готовим предпросмотр',
+        'Сохраняем шаблон',
+      ],
+    };
+  }
+  if (emailFormat === 'upload') {
+    return {
+      estimate: [20, 60] as [number, number],
+      stages: [
+        'Загружаем файл',
+        'Извлекаем содержимое',
+        'Преобразуем документ в письмо',
+        'Проверяем HTML-вёрстку',
+        'Сохраняем черновик',
+      ],
+    };
+  }
+  return {
+    estimate: [20, 60] as [number, number],
+    stages: [
+      'Загружаем файл',
+      'Извлекаем содержимое',
+      'Формируем структуру письма',
+      'Проверяем результат',
+      'Сохраняем шаблон',
+    ],
+  };
 }
 
 async function uploadTemplateFromFile(
@@ -80,6 +135,7 @@ export function AddTemplateWizard({
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState<string>();
   const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [activeUploadFile, setActiveUploadFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
@@ -108,6 +164,7 @@ export function AddTemplateWizard({
     setEmailFormat('simple');
     setPrompt('');
     setFileList([]);
+    setActiveUploadFile(null);
     setModel(undefined);
     setIsDragging(false);
     dragCounterRef.current = 0;
@@ -140,6 +197,9 @@ export function AddTemplateWizard({
 
   const uploadFileMutation = useMutation({
     mutationFn: (file: File) => uploadTemplateFromFile(file, templateType, emailFormat),
+    onMutate: (file) => {
+      setActiveUploadFile(file);
+    },
     onSuccess: (template) => {
       message.success(
         emailFormat === 'upload'
@@ -155,6 +215,9 @@ export function AddTemplateWizard({
       } else {
         message.error(error instanceof Error ? error.message : 'Не удалось загрузить шаблон');
       }
+    },
+    onSettled: () => {
+      setActiveUploadFile(null);
     },
   });
 
@@ -212,6 +275,10 @@ export function AddTemplateWizard({
       uploadFileMutation.mutate(file);
     },
     [isGalleryBusy, uploadFileMutation],
+  );
+  const uploadOperation = useMemo(
+    () => getUploadOperation(activeUploadFile, templateType, emailFormat),
+    [activeUploadFile, emailFormat, templateType],
   );
 
   useEffect(() => {
@@ -275,6 +342,13 @@ export function AddTemplateWizard({
   }, [step, templateType]);
 
   const footer = (() => {
+    if (uploadFileMutation.isPending) {
+      return (
+        <Button disabled loading>
+          Обработка файла
+        </Button>
+      );
+    }
     if (step === 'format') {
       return (
         <Space>
@@ -360,8 +434,37 @@ export function AddTemplateWizard({
           event.target.value = '';
         }}
       />
-      <Modal open={open} onCancel={onClose} title={title} width={920} destroyOnClose footer={footer}>
-        {step === 'format' ? (
+      <Modal
+        open={open}
+        onCancel={() => {
+          if (!uploadFileMutation.isPending) onClose();
+        }}
+        title={uploadFileMutation.isPending ? 'Обработка загруженного файла' : title}
+        width={920}
+        destroyOnClose
+        closable={!uploadFileMutation.isPending}
+        maskClosable={!uploadFileMutation.isPending}
+        keyboard={!uploadFileMutation.isPending}
+        footer={footer}
+      >
+        {uploadFileMutation.isPending ? (
+          <div className="add-template-wizard__upload-progress">
+            <div>
+              <Typography.Text strong>{activeUploadFile?.name || 'Файл'}</Typography.Text>
+              {activeUploadFile ? (
+                <Typography.Text type="secondary">
+                  {(activeUploadFile.size / 1024 / 1024).toFixed(1)} МБ
+                </Typography.Text>
+              ) : null}
+            </div>
+            <OperationProgress
+              active
+              title="Подготавливаем шаблон"
+              stages={uploadOperation.stages}
+              estimatedSeconds={uploadOperation.estimate}
+            />
+          </div>
+        ) : step === 'format' ? (
           <div className="add-template-wizard__format-grid">
             <Card
               hoverable
