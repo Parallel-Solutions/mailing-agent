@@ -1,7 +1,7 @@
-import { PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
-import { Button, Typography } from 'antd';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { App, Button, Popconfirm, Typography } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Navigate } from 'react-router-dom';
 import { companiesApi } from '@/api/companies';
 import type { Company } from '@/api/types';
@@ -12,10 +12,27 @@ import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 
 export function CompaniesPage() {
   const queryClient = useQueryClient();
+  const { message } = App.useApp();
   const { isAppAdmin } = usePermissions();
   const { searchParams, pushParams } = useUrlNavigation();
   const editId = searchParams.get('edit');
   const workTypesId = searchParams.get('work_types');
+  const deleteCompany = useMutation({
+    mutationFn: companiesApi.remove,
+    onSuccess: (_, companyId) => {
+      if (editId === companyId) pushParams({}, ['edit']);
+      if (workTypesId === companyId) pushParams({}, ['work_types']);
+      void queryClient.invalidateQueries({ queryKey: ['companies'] });
+      message.success('Компания удалена');
+    },
+    onError: (error) => {
+      message.error(
+        error instanceof Error ? error.message : 'Не удалось удалить компанию',
+      );
+    },
+  });
+
+
 
   const { data, isLoading } = useQuery({
     queryKey: ['companies'],
@@ -70,6 +87,24 @@ export function CompaniesPage() {
               <a key="work-types" onClick={() => pushParams({ work_types: row.id })}>
                 Виды работ
               </a>,
+              <Popconfirm
+                key="delete"
+                title={`Удалить компанию «${row.name}»?`}
+                description="Компания и её настройки будут удалены. Аккаунты участников и их данные сохранятся."
+                okText="Удалить"
+                cancelText="Отмена"
+                okButtonProps={{ danger: true }}
+                onConfirm={() => deleteCompany.mutateAsync(row.id)}
+              >
+                <Button
+                  type="link"
+                  danger
+                  icon={<DeleteOutlined />}
+                  loading={deleteCompany.isPending && deleteCompany.variables === row.id}
+                >
+                  Удалить
+                </Button>
+              </Popconfirm>,
             ],
           },
         ]}

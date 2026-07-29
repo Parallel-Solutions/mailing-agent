@@ -1,5 +1,6 @@
 import {
   InboxOutlined,
+  DeleteOutlined,
   CopyOutlined,
   DownloadOutlined,
   EditOutlined,
@@ -105,6 +106,8 @@ function TemplateCard({
   onPreview?: (templateId: string) => void;
 }) {
   const navigate = useNavigate();
+  const { message, modal } = App.useApp();
+  const [archiving, setArchiving] = useState(false);
   const isFileTemplate = type !== 'email';
   const variables = template.version?.variables || [];
   const filename = template.version?.filename || '';
@@ -123,6 +126,32 @@ function TemplateCard({
     }
     onPreview?.(template.id);
   };
+  const archiveDocument = () => {
+    modal.confirm({
+      title: `Удалить документ «${template.name}»?`,
+      content: 'Документ будет перемещён в архив и исчезнет из списка.',
+      okText: 'Удалить',
+      okType: 'danger',
+      cancelText: 'Отмена',
+      onOk: async () => {
+        setArchiving(true);
+        try {
+          await templatesApi.archive(template.id);
+          message.success('Документ удалён');
+          onSelectedChange?.(false);
+          onRefresh();
+        } catch (error) {
+          message.error(
+            error instanceof Error ? error.message : 'Не удалось удалить документ',
+          );
+          throw error;
+        } finally {
+          setArchiving(false);
+        }
+      },
+    });
+  };
+
 
   const moreItems: MenuProps['items'] = [];
   if (isFileTemplate && hasFile) {
@@ -162,7 +191,7 @@ function TemplateCard({
         onRefresh();
       },
     },
-    {
+    !isFileTemplate ? {
       key: 'archive',
       icon: <InboxOutlined />,
       label: 'Переместить в архив',
@@ -172,7 +201,7 @@ function TemplateCard({
         onSelectedChange?.(false);
         onRefresh();
       },
-    },
+    } : null,
   );
 
   return (
@@ -253,6 +282,17 @@ function TemplateCard({
               compact
               onUploaded={onRefresh}
             />
+          )}
+          {isFileTemplate && (
+            <Tooltip title="Удалить документ">
+              <Button
+                danger
+                icon={<DeleteOutlined />}
+                loading={archiving}
+                aria-label={`Удалить документ ${template.name}`}
+                onClick={archiveDocument}
+              />
+            </Tooltip>
           )}
           <Dropdown menu={{ items: moreItems }} trigger={['click']} placement="bottomRight">
             <Tooltip title="Другие действия">

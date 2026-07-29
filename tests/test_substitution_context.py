@@ -427,8 +427,7 @@ class SubstitutionEngineTests(unittest.TestCase):
             context,
         )
         self.assertIn(
-            "для территории администрации муниципального образования "
-            "Дмитровского района Орловской области.",
+            "для территории администрации Дмитровского муниципального района.",
             rendered,
         )
 
@@ -441,6 +440,35 @@ class SubstitutionEngineTests(unittest.TestCase):
             rendered,
             "Администрации муниципального образования Дмитровского района",
         )
+
+    def test_render_company_after_for_uses_canonical_admin_genitive(self) -> None:
+        context = {
+            "company": "Администрация Дятьковского района",
+            "ADM_NAME_1": "администрации Дятьковского муниципального района",
+        }
+
+        rendered = render_text(
+            "Разработка Генплана и ПЗЗ для {{company}} от ООО «Параллельные решения».",
+            context,
+        )
+
+        self.assertEqual(
+            rendered,
+            (
+                "Разработка Генплана и ПЗЗ для администрации "
+                "Дятьковского муниципального района от ООО «Параллельные решения»."
+            ),
+        )
+
+    def test_render_regular_company_after_for_stays_unchanged(self) -> None:
+        context = {
+            "company": "ООО «Ромашка»",
+            "ADM_NAME_1": "администрации муниципального района",
+        }
+
+        rendered = render_text("Предложение для {{company}}.", context)
+
+        self.assertEqual(rendered, "Предложение для ООО «Ромашка».")
 
     def test_renders_cyrillic_identifier_alias(self) -> None:
         context = {

@@ -151,6 +151,29 @@ class CompanyAccessTests(unittest.TestCase):
         response = client.get("/api/v1/companies")
         self.assertEqual(response.status_code, 403)
 
+    def test_only_app_admin_can_delete_company(self) -> None:
+        other = company_service.create_company(name="Disposable Org")
+        company_service.add_member(
+            other["id"],
+            self.outsider,
+            role="member",
+        )
+
+        forbidden = self.ca_client.delete(f"/api/v1/companies/{other['id']}")
+        self.assertEqual(forbidden.status_code, 403)
+
+        deleted = self.admin_client.delete(f"/api/v1/companies/{other['id']}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()["result"], {"removed": True})
+        self.assertIsNone(company_service.get_company(other["id"]))
+
+        surviving_user = get_user_record(self.outsider)
+        self.assertIsNotNone(surviving_user)
+        self.assertIsNone(surviving_user.company_id)
+
+        missing = self.admin_client.delete(f"/api/v1/companies/{other['id']}")
+        self.assertEqual(missing.status_code, 404)
+
     def test_company_work_types_crud_and_permissions(self) -> None:
         company_id = self.company["id"]
         base = f"/api/v1/companies/{company_id}/work-types"
