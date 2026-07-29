@@ -21,6 +21,7 @@ import {
   isMappingRelatedMessage,
   type CampaignWizardStepIndex,
 } from '@/features/campaigns/campaignStepValidation';
+import { ONBOARDING_ENTER_EVENT } from '@/features/onboarding/events';
 import '@/features/campaigns/CampaignWizardSteps.css';
 import { RecipientGenerateModal } from '@/features/campaigns/RecipientGenerateModal';
 import { ChainEmailPreviewModal } from '@/features/campaigns/ChainEmailPreviewModal';
@@ -63,6 +64,14 @@ function draftBasicsFields(draft: Partial<Campaign>) {
 }
 
 const CAMPAIGN_MODAL_KEYS = ['modal', 'fix_step', 'preview_node'] as const;
+
+const ONBOARDING_CAMPAIGN_STEPS: Record<string, number> = {
+  'campaign-basics': 0,
+  'campaign-sender': 1,
+  'campaign-recipients': 2,
+  'campaign-schedule': 3,
+  'campaign-launch': 4,
+};
 
 type CampaignModalKind = 'generate' | 'mapping' | 'preview' | 'layout' | 'fix';
 
@@ -110,6 +119,16 @@ export function CampaignNewPage() {
     },
     [pushParams],
   );
+
+  useEffect(() => {
+    const handleOnboardingEnter = (event: Event) => {
+      const stepId = (event as CustomEvent<{ stepId?: string }>).detail?.stepId;
+      const campaignStep = stepId ? ONBOARDING_CAMPAIGN_STEPS[stepId] : undefined;
+      if (campaignStep !== undefined) setWizardStep(campaignStep);
+    };
+    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+  }, [setWizardStep]);
 
   const openWizardModal = useCallback(
     (kind: CampaignModalKind, extra: Record<string, string | null | undefined> = {}) => {
@@ -724,7 +743,8 @@ export function CampaignNewPage() {
                 key: '0',
                 label: 'Основная информация',
                 children: (
-                  <CampaignWizardBasicsStep
+                  <div data-onboarding-id="campaign-step-basics">
+                    <CampaignWizardBasicsStep
                     form={basicsForm}
                     draft={draft}
                     chainOptions={chainOptions}
@@ -742,27 +762,31 @@ export function CampaignNewPage() {
                     onNavigateChain={() => linkedChainId && navigate(`/chains/${linkedChainId}`)}
                     onNavigateChainsList={() => navigate('/chains')}
                     onNavigateCompanies={() => navigate('/companies')}
-                  />
+                    />
+                  </div>
                 ),
               },
               {
                 key: '1',
                 label: 'Отправитель',
                 children: (
-                  <CampaignWizardSenderStep
+                  <div data-onboarding-id="campaign-step-sender">
+                    <CampaignWizardSenderStep
                     form={senderForm}
                     draft={draft}
                     mailboxes={mailboxesQuery.data || []}
                     onAutosave={autosave}
                     onNavigateConnections={() => navigate('/connections')}
-                  />
+                    />
+                  </div>
                 ),
               },
               {
                 key: '2',
                 label: 'Получатели',
                 children: (
-                  <CampaignWizardRecipientsStep
+                  <div data-onboarding-id="campaign-step-recipients">
+                    <CampaignWizardRecipientsStep
                     campaignId={id ?? undefined}
                     draft={draft}
                     audiences={audiencesQuery.data || []}
@@ -783,14 +807,16 @@ export function CampaignNewPage() {
                       message.success('Импорт выполнен');
                     }}
                     onOpenGenerate={() => openWizardModal('generate')}
-                  />
+                    />
+                  </div>
                 ),
               },
               {
                 key: '3',
                 label: 'Расписание',
                 children: (
-                  <CampaignWizardScheduleStep
+                  <div data-onboarding-id="campaign-step-schedule">
+                    <CampaignWizardScheduleStep
                     form={scheduleForm}
                     initialValues={scheduleInitialValues}
                     batchCountPreview={batchCountPreview}
@@ -806,7 +832,8 @@ export function CampaignNewPage() {
                       await campaignsApi.putSchedule(id, payload);
                       void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
                     }}
-                  />
+                    />
+                  </div>
                 ),
               },
               {
@@ -814,7 +841,7 @@ export function CampaignNewPage() {
 
                 label: 'Проверка и запуск',
                 children: (
-                  <Space direction="vertical" style={{ width: '100%' }}>
+                  <Space direction="vertical" style={{ width: '100%' }} data-onboarding-id="campaign-step-launch">
                     {launchValidation.isChecking ? (
                       <Spin tip="Проверка…" />
                     ) : launchValidation.error ? (

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
+from src.generator.generation.recipient_normalization import format_administration_recipient
 from src.generator.generation.work_types import WORK_TYPE_TERRITORIAL_ZONE_BOUNDARIES
 
 from docx import Document
@@ -100,7 +101,9 @@ def build_structured_kp_model(context: dict) -> KPDocumentModel:
     return KPDocumentModel(
         outgoing_number=str(context.get("OUTGOING_NUMBER") or ""),
         date=str(context.get("DATE") or ""),
-        recipient=str(context.get("ADM_NAME_1") or context.get("ADM_NAME") or "").strip(),
+        recipient=format_administration_recipient(
+            context.get("ADM_NAME_1") or context.get("ADM_NAME") or ""
+        ),
         work_title=work_title,
         work_scope=work_scope,
         work_result=str(context.get("WORK_RESULT_NAME") or "").strip(),

@@ -529,7 +529,11 @@ def render_text(text: str, context: dict[str, str]) -> str:
     rendered = text
     for token, value in build_replacement_pairs(context, text):
         rendered = rendered.replace(token, value)
-    return _apply_territory_genitive_fix(rendered, context)
+    rendered = _apply_territory_genitive_fix(rendered, context)
+
+    from src.campaigns.text_local_review import normalize_generated_correspondence_text
+
+    return normalize_generated_correspondence_text(rendered)
 
 
 def resolve_context_value(context: dict[str, str], name: str) -> str:

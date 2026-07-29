@@ -34,7 +34,7 @@ class MigrationGuardTests(unittest.TestCase):
             "0001_initial",
             versions_dir=VERSIONS_DIR,
         )
-        self.assertEqual(heads, ("0030_template_source_text_cache",))
+        self.assertEqual(heads, ("0031_merge_onboarding_main",))
 
     def test_unknown_or_ahead_database_revision_is_rejected(self) -> None:
         with self.assertRaisesRegex(

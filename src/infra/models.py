@@ -434,6 +434,25 @@ class UserProfile(Base):
     )
 
 
+class UserOnboardingState(Base):
+    __tablename__ = "user_onboarding_states"
+
+    username: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.username", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    current_step: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_steps: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Audience(Base):
     __tablename__ = "audiences"
 

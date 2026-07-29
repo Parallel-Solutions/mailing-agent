@@ -1,3 +1,24 @@
+export type OnboardingStatus = 'active' | 'paused' | 'dismissed' | 'completed';
+
+export type OnboardingState = {
+  version: number;
+  status: OnboardingStatus;
+  current_step: number;
+  completed_steps: string[];
+  step_count: number;
+  available: boolean;
+  paused_at: string | null;
+  dismissed_at: string | null;
+  completed_at: string | null;
+  updated_at: string | null;
+};
+
+export type OnboardingUpdate = {
+  status: OnboardingStatus;
+  current_step?: number;
+  completed_steps?: string[];
+};
+
 export type User = {
   username: string;
   role?: string;
