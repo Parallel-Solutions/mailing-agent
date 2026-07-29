@@ -23,7 +23,11 @@ export async function waitForFonts(page: Page): Promise<void> {
 
 export async function openAppAuthed(page: Page): Promise<ConsoleGuard> {
   const guard = new ConsoleGuard(page, {
-    allowHttp4xxUrls: ['/api/auth/me'],
+    allowHttp4xxUrls: ['/api/auth/me', '/api/v1/templates/', '/api/v1/companies/'],
+    allowConsole: [
+      // Optional lazy-loaded preview thumbnails and company logos may 404 in E2E seed data.
+      'Failed to load resource: the server responded with a status of 404 (Not Found)',
+    ],
   });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await page.getByTestId('statistics-page').waitFor({ state: 'visible', timeout: 30_000 });

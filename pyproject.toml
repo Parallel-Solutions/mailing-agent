@@ -44,11 +44,14 @@ dependencies = [
     "redis>=8.0.0",
     "cursor-sdk>=0.1.9",
     "cryptography>=49.0.0",
+    "fonttools>=4.63.0",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "coverage>=7.10.0",
     "pytest>=8.4.0",
+    "pytest-xdist>=3.6.0",
 ]
 mcp = [
     "mcp>=1.0.0",
@@ -67,3 +70,37 @@ agent-full = [
     "natasha>=1.6.0",
     "yargy>=0.16.0",
 ]
+
+[tool.coverage.run]
+branch = true
+source = ["src", "."]
+relative_files = true
+data_file = ".test-runtime/.coverage"
+omit = [
+    ".test-runtime/*",
+    ".venv/*",
+    "e2e/*",
+    "examples/*",
+    "frontend/*",
+    "migrations/*",
+    "scripts/*",
+    "tests/*",
+    "tmp/*",
+    "fill_emails.py",
+    "test_chat.py",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+include = ["main.py", "src/*"]
+
+[tool.coverage.html]
+directory = ".test-runtime/backend-coverage-html"
+
+[tool.coverage.json]
+output = ".test-runtime/backend-coverage.json"
+
+[tool.coverage.xml]
+output = ".test-runtime/backend-coverage.xml"

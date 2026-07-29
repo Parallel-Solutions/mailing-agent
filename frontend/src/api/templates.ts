@@ -1,5 +1,12 @@
 import { api, apiRequest } from './client';
-import type { EmailEditorState, PdfEditorField, PdfEditorState, Template } from './types';
+import type {
+  EmailEditorState,
+  FontAsset,
+  PdfEditorField,
+  PdfEditorState,
+  Template,
+  TemplateFontsResult,
+} from './types';
 
 export type OfficeEditorConfig = {
   editor_url: string;
@@ -23,6 +30,25 @@ export type TemplateAiModel = {
 };
 
 export const templatesApi = {
+  listFonts: () => api.get<FontAsset[]>('/api/v1/fonts'),
+  templateFonts: (id: string) =>
+    api.get<TemplateFontsResult>(`/api/v1/templates/${id}/fonts`),
+  resolveTemplateFonts: (id: string) =>
+    api.post<TemplateFontsResult>(`/api/v1/templates/${id}/fonts/resolve`),
+  uploadFont: (
+    file: File,
+    options: { templateId?: string; licenseConfirmed: boolean },
+  ) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('license_confirmed', String(options.licenseConfirmed));
+    if (options.templateId) form.append('template_id', options.templateId);
+    return apiRequest<FontAsset>('/api/v1/fonts/upload', { method: 'POST', body: form });
+  },
+  deleteFont: (fontId: string, templateId?: string) => {
+    const query = templateId ? `?template_id=${encodeURIComponent(templateId)}` : '';
+    return api.delete<{ deleted: boolean; id: string }>(`/api/v1/fonts/${fontId}${query}`);
+  },
   list: (params?: { template_type?: string; q?: string }) => {
     const q = new URLSearchParams();
     if (params?.template_type) q.set('template_type', params.template_type);
@@ -76,9 +102,19 @@ export const templatesApi = {
     }
     return apiRequest<Template>('/api/v1/templates/generate', { method: 'POST', body: form });
   },
+  importFile: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('template_type', 'email');
+    return apiRequest<Template>('/api/v1/templates/import', { method: 'POST', body: form });
+  },
+  regenerateImport: (id: string) =>
+    api.post<Template>(`/api/v1/templates/${id}/import-regenerate`),
   fileUrl: (id: string) => `/api/v1/templates/${id}/file`,
   deliveryFileUrl: (id: string) => `/api/v1/templates/${id}/delivery-file`,
   previewFileUrl: (id: string) => `/api/v1/templates/${id}/preview-file`,
+  previewImageUrl: (id: string) => `/api/v1/templates/${id}/preview-image`,
+  starterPreviewImageUrl: (starterId: string) => `/api/v1/templates/starters/${starterId}/preview-image`,
   officeConfig: (id: string) => api.get<OfficeEditorConfig>(`/api/v1/templates/${id}/office-config`),
   forceSaveOffice: (id: string, versionId: string, documentKey: string) =>
     api.post<{ accepted: boolean; key: string }>(`/api/v1/templates/${id}/office-save`, {
@@ -118,6 +154,8 @@ export const templatesApi = {
       variables?: { name: string; source: string; label: string }[];
       editor_state?: EmailEditorState;
       is_template?: boolean;
+      rendered_pdf_filename?: string;
+      attachment_output_format?: 'original' | 'pdf';
     },
   ) => api.patch<Template>(`/api/v1/templates/${id}`, body),
   uploadAsset: async (templateId: string, file: File) => {

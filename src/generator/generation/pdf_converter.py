@@ -100,8 +100,8 @@ def _build_writer_pdf_filter() -> str:
     return f"pdf:writer_pdf_Export:{json.dumps(filter_data, ensure_ascii=False, separators=(',', ':'))}"
 
 
-def _convert_libreoffice_chunk(args: Tuple[str, List[str], str, str]) -> List[Tuple[str, Optional[str]]]:
-    soffice, chunk_paths, output_dir, profile_dir = args
+def _convert_libreoffice_chunk(args: Tuple[str, List[str], str, str, Optional[str]]) -> List[Tuple[str, Optional[str]]]:
+    soffice, chunk_paths, output_dir, profile_dir, fontconfig_path = args
     profile_uri = Path(profile_dir).resolve().as_uri()
     pdf_filter = _build_writer_pdf_filter()
 
@@ -117,7 +117,8 @@ def _convert_libreoffice_chunk(args: Tuple[str, List[str], str, str]) -> List[Tu
                 "--outdir",
                 output_dir,
                 *chunk_paths,
-            ]
+            ],
+            env={"FONTCONFIG_FILE": fontconfig_path} if fontconfig_path else None,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return [(docx_path_str, None) for docx_path_str in chunk_paths]
@@ -129,7 +130,7 @@ def _convert_libreoffice_chunk(args: Tuple[str, List[str], str, str]) -> List[Tu
     return results
 
 
-def _run_libreoffice_convert(command: list[str]) -> None:
+def _run_libreoffice_convert(command: list[str], env: dict[str, str] | None = None) -> None:
     popen_kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
@@ -137,6 +138,8 @@ def _run_libreoffice_convert(command: list[str]) -> None:
     }
     if os.name == "nt":
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    if env:
+        popen_kwargs["env"] = {**os.environ, **env}
     process = subprocess.Popen(command, **popen_kwargs)
     try:
         stdout, stderr = process.communicate(timeout=LIBREOFFICE_CONVERT_TIMEOUT_SECONDS)
@@ -177,6 +180,7 @@ def _convert_with_libreoffice(
     chunk_size: int,
     worker_count: int,
     profiles_root: Optional[Path],
+    fontconfig_path: str | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> Dict[Path, Optional[Path]]:
     soffice = find_soffice()
@@ -193,7 +197,7 @@ def _convert_with_libreoffice(
     for index, chunk in enumerate(chunks, start=1):
         profile_dir = profiles_dir / f"profile_{index}"
         profile_dir.mkdir(parents=True, exist_ok=True)
-        tasks.append((soffice, [str(path) for path in chunk], str(output_dir), str(profile_dir)))
+        tasks.append((soffice, [str(path) for path in chunk], str(output_dir), str(profile_dir), fontconfig_path))
 
     max_workers = max(1, min(worker_count, len(tasks)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -660,11 +664,15 @@ def _convert_with_gotenberg(
     return result
 
 
-def _backend_sequence() -> list[str]:
-    sequence = ["gotenberg"]
+def _backend_sequence(*, prefer_local: bool = False) -> list[str]:
+    has_local = bool(find_soffice())
+    if prefer_local and has_local:
+        sequence = ["libreoffice", "gotenberg"]
+    else:
+        sequence = ["gotenberg"]
     if ONLYOFFICE_BASE_URL:
         sequence.append("onlyoffice")
-    if find_soffice():
+    if has_local and "libreoffice" not in sequence:
         sequence.append("libreoffice")
     return sequence
 
@@ -677,6 +685,7 @@ def _run_backend(
     chunk_size: int,
     worker_count: int,
     profiles_root: Optional[Path],
+    fontconfig_path: str | None = None,
     progress_callback: ProgressCallback | None = None,
     timing_callback: BackendTimingCallback | None = None,
 ) -> Dict[Path, Optional[Path]]:
@@ -688,6 +697,7 @@ def _run_backend(
             chunk_size=chunk_size,
             worker_count=worker_count,
             profiles_root=profiles_root,
+            fontconfig_path=fontconfig_path,
             progress_callback=progress_callback,
         )
     elif backend == "onlyoffice":
@@ -737,6 +747,8 @@ def convert_docx_batch(
     profiles_root: Optional[Path] = None,
     progress_callback: ProgressCallback | None = None,
     timing_callback: BackendTimingCallback | None = None,
+    fontconfig_path: Path | str | None = None,
+    prefer_local: bool = False,
 ) -> Dict[Path, Optional[Path]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     result: Dict[Path, Optional[Path]] = {path: None for path in docx_paths}
@@ -749,7 +761,8 @@ def convert_docx_batch(
             if progress_callback:
                 progress_callback()
 
-    for backend in _backend_sequence():
+    resolved_fontconfig_path = str(fontconfig_path) if fontconfig_path else None
+    for backend in _backend_sequence(prefer_local=prefer_local):
         pending = _pending_paths(result)
         if not pending:
             break
@@ -760,6 +773,7 @@ def convert_docx_batch(
             chunk_size=chunk_size,
             worker_count=worker_count,
             profiles_root=profiles_root,
+            fontconfig_path=resolved_fontconfig_path,
             progress_callback=progress_callback,
             timing_callback=timing_callback,
         )

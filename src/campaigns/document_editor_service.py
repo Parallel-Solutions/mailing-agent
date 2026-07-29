@@ -11,7 +11,7 @@ import os
 import secrets
 import time
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
@@ -31,6 +31,25 @@ def _encode_token(payload: dict[str, Any]) -> str:
     encoded = base64.urlsafe_b64encode(raw).rstrip(b"=")
     signature = hmac.new(_secret(), encoded, hashlib.sha256).digest()
     return f"{encoded.decode('ascii')}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode('ascii')}"
+
+
+def _onlyoffice_jwt_secret() -> bytes:
+    return os.getenv("ONLYOFFICE_JWT_SECRET", "").strip().encode("utf-8")
+
+
+def _encode_onlyoffice_jwt(payload: dict[str, Any]) -> str:
+    secret = _onlyoffice_jwt_secret()
+    if not secret:
+        return ""
+    header = {"alg": "HS256", "typ": "JWT"}
+
+    def encode_part(value: dict[str, Any]) -> bytes:
+        raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=")
+
+    signing_input = b".".join((encode_part(header), encode_part(payload)))
+    signature = hmac.new(secret, signing_input, hashlib.sha256).digest()
+    return f"{signing_input.decode('ascii')}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode('ascii')}"
 
 
 def _decode_token(token: str, template_id: str) -> dict[str, Any]:
@@ -77,63 +96,67 @@ def editor_config(template_id: str, owner_username: str) -> dict[str, Any]:
     editor_url = os.getenv("ONLYOFFICE_EDITOR_PUBLIC_URL", "http://localhost:8080").rstrip("/")
     source_url = f"{app_url}/api/v1/templates/{template_id}/office-source?token={token}"
     callback_url = f"{app_url}/api/v1/templates/{template_id}/office-callback?token={token}"
+    config: dict[str, Any] = {
+        "documentType": "word",
+        "type": "desktop",
+        "document": {
+            "fileType": "docx",
+            "key": document_key,
+            "title": filename,
+            "url": source_url,
+            "permissions": {
+                "edit": True,
+                "download": False,
+                "print": False,
+                "review": False,
+                "comment": False,
+                "chat": False,
+            },
+        },
+        "editorConfig": {
+            "lang": "ru",
+            "callbackUrl": callback_url,
+            "user": {"id": owner_username, "name": owner_username},
+            "coEditing": {
+                "mode": "fast",
+                "change": False,
+            },
+            "customization": {
+                "autosave": True,
+                "forcesave": False,
+                "compactHeader": True,
+                "compactToolbar": True,
+                "comments": False,
+                "feedback": False,
+                "help": False,
+                "hideRightMenu": True,
+                "hideRulers": True,
+                "integrationMode": "embed",
+                "macros": False,
+                "macrosMode": "disable",
+                "plugins": False,
+                "suggestFeature": False,
+                "toolbarHideFileName": True,
+                "unit": "cm",
+                "uiTheme": "theme-white",
+                "features": {
+                    "featuresTips": False,
+                    "spellcheck": {"mode": True},
+                    "tabBackground": {"mode": "toolbar", "change": False},
+                    "tabStyle": {"mode": "line", "change": False},
+                },
+            },
+        },
+        "height": "100%",
+        "width": "100%",
+    }
+    token = _encode_onlyoffice_jwt(config)
+    if token:
+        config["token"] = token
     return {
         "editor_url": editor_url,
         "document_key": document_key,
-        "config": {
-            "documentType": "word",
-            "type": "desktop",
-            "document": {
-                "fileType": "docx",
-                "key": document_key,
-                "title": filename,
-                "url": source_url,
-                "permissions": {
-                    "edit": True,
-                    "download": False,
-                    "print": False,
-                    "review": False,
-                    "comment": False,
-                    "chat": False,
-                },
-            },
-            "editorConfig": {
-                "lang": "ru",
-                "callbackUrl": callback_url,
-                "user": {"id": owner_username, "name": owner_username},
-                "coEditing": {
-                    "mode": "fast",
-                    "change": False,
-                },
-                "customization": {
-                    "autosave": True,
-                    "forcesave": False,
-                    "compactHeader": True,
-                    "compactToolbar": True,
-                    "comments": False,
-                    "feedback": False,
-                    "help": False,
-                    "hideRightMenu": True,
-                    "hideRulers": True,
-                    "integrationMode": "embed",
-                    "macros": False,
-                    "macrosMode": "disable",
-                    "plugins": False,
-                    "suggestFeature": False,
-                    "toolbarHideFileName": True,
-                    "unit": "cm",
-                    "uiTheme": "theme-white",
-                    "features": {
-                        "featuresTips": False,
-                        "spellcheck": {"mode": True},
-                        "tabBackground": {"mode": "toolbar", "change": False},
-                        "tabStyle": {"mode": "line", "change": False},
-                    },
-                },
-            },
-            "height": "100%",
-            "width": "100%",
-        },
+        "config": config,
     }
 
 
@@ -157,11 +180,18 @@ def force_save(
     if not document_key.startswith(expected_prefix) or len(document_key) > 128:
         raise ValueError("Invalid editor session key")
     editor_internal_url = os.getenv("ONLYOFFICE_EDITOR_INTERNAL_URL", "http://onlyoffice").rstrip("/")
-    endpoint = f"{editor_internal_url}/coauthoring/CommandService.ashx"
+    endpoint = f"{editor_internal_url}/command?shardkey={quote(document_key, safe='')}"
+    command = {"c": "forcesave", "key": document_key}
+    request_payload: dict[str, Any] = dict(command)
+    headers: dict[str, str] = {}
+    onlyoffice_token = _encode_onlyoffice_jwt(command)
+    if onlyoffice_token:
+        request_payload["token"] = onlyoffice_token
+        headers["Authorization"] = f"Bearer {onlyoffice_token}"
     try:
         with httpx.Client(timeout=httpx.Timeout(30, connect=10)) as client:
             for attempt in range(5):
-                response = client.post(endpoint, json={"c": "forcesave", "key": document_key})
+                response = client.post(endpoint, json=request_payload, headers=headers)
                 response.raise_for_status()
                 payload = response.json()
                 if int(payload.get("error") or 0) != 4 or attempt == 4:
@@ -192,11 +222,15 @@ def _internal_download_url(download_url: str) -> str:
     if parsed.hostname in local_hosts or (
         public_editor.hostname and parsed.hostname == public_editor.hostname
     ):
+        public_path = (public_editor.path or "").rstrip("/")
+        path = parsed.path or "/"
+        if public_path and (path == public_path or path.startswith(public_path + "/")):
+            path = path[len(public_path) :] or "/"
         return urlunsplit(
             (
                 internal_editor.scheme or "http",
                 internal_editor.netloc,
-                parsed.path,
+                path,
                 parsed.query,
                 parsed.fragment,
             )

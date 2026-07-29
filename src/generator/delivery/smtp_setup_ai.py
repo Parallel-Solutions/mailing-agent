@@ -103,8 +103,10 @@ def build_fallback_setup_action(context: dict[str, Any]) -> SetupAction:
                 action="show_oauth" if google_oauth else "show_app_password",
                 message_ru="Не удалось войти. Для Gmail используйте пароль приложения или OAuth.",
                 instructions=[
-                    "Откройте https://myaccount.google.com/apppasswords",
-                    "Создайте пароль приложения «Почта» и вставьте его без пробелов (16 символов).",
+                    "Откройте страницу паролей приложений: https://myaccount.google.com/apppasswords",
+                    "Войдите в аккаунт Google и подтвердите двухфакторную аутентификацию, если потребуется.",
+                    "Создайте пароль приложения «Почта» и скопируйте 16-символьный код.",
+                    "Вставьте пароль приложения в поле ниже без пробелов и нажмите «Проверить и подключить».",
                     *probe_note,
                 ],
                 oauth_provider="google" if google_oauth else None,
@@ -141,8 +143,10 @@ def build_fallback_setup_action(context: dict[str, Any]) -> SetupAction:
             action="show_oauth" if google_oauth else "show_app_password",
             message_ru="Gmail готов к подключению. Рекомендуем OAuth или пароль приложения.",
             instructions=[
-                "Нажмите «Войти через Google» или создайте пароль приложения: https://myaccount.google.com/apppasswords",
-                "Обычный пароль Google не подходит; пароль приложения можно вставить без пробелов.",
+                "Нажмите «Войти через Google» или откройте https://myaccount.google.com/apppasswords",
+                "Создайте пароль приложения «Почта» в настройках безопасности Google.",
+                "Скопируйте 16-символьный пароль и вставьте его без пробелов в поле ниже.",
+                "Обычный пароль от входа в Google не подходит для SMTP.",
                 *probe_note,
             ],
             oauth_provider="google" if google_oauth else None,
@@ -162,13 +166,30 @@ def build_fallback_setup_action(context: dict[str, Any]) -> SetupAction:
             recommended_settings=recommended,
         )
 
-    if resolved_provider in {"yandex", "mailru"}:
+    if resolved_provider == "yandex":
         return SetupAction(
             action="show_app_password",
-            message_ru="Почтовый сервер найден. Введите пароль или пароль приложения.",
+            message_ru="Яндекс готов к подключению. Нужен пароль приложения.",
             instructions=[
-                "Для Яндекса: https://id.yandex.ru/security/app-passwords",
-                "Для Mail.ru: используйте пароль для внешних приложений в настройках почты.",
+                "Откройте https://id.yandex.ru/security/app-passwords",
+                "Войдите в аккаунт Яндекса и создайте пароль для приложения «Почта».",
+                "Скопируйте сгенерированный пароль и вставьте его в поле ниже.",
+                "Обычный пароль от входа в почту не подходит для SMTP.",
+                *probe_note,
+            ],
+            oauth_provider=None,
+            recommended_settings=recommended,
+        )
+
+    if resolved_provider == "mailru":
+        return SetupAction(
+            action="show_app_password",
+            message_ru="Почта Mail готова к подключению. Нужен пароль для внешнего приложения.",
+            instructions=[
+                "Откройте инструкцию Mail: https://help.mail.ru/mail/login/mailer/",
+                "Войдите в аккаунт и перейдите в «Безопасность → Пароли для внешних приложений».",
+                "Создайте новый пароль для внешнего приложения и скопируйте его.",
+                "Вставьте пароль в поле ниже — обычный пароль от входа в почту не подойдёт.",
                 *probe_note,
             ],
             oauth_provider=None,
@@ -312,9 +333,14 @@ def _build_request_kwargs(context: dict[str, Any]) -> dict[str, Any]:
         "Поля:\n"
         "- action: apply_settings|show_oauth|show_app_password|show_password|show_manual|retry_probe|contact_admin\n"
         "- message_ru: короткое сообщение пользователю\n"
-        "- instructions: массив строк с шагами\n"
+        "- instructions: массив из 3–5 строк с пошаговыми инструкциями\n"
         "- oauth_provider: google|microsoft|null\n"
         "- recommended_settings: host/port/use_ssl/use_starttls/provider из probe или discoveries, не придумывай host\n"
+        "Для action=show_app_password обязательно дай подробную инструкцию со ссылками:\n"
+        "- Gmail: https://myaccount.google.com/apppasswords\n"
+        "- Яндекс: https://id.yandex.ru/security/app-passwords\n"
+        "- Mail.ru: https://help.mail.ru/mail/login/mailer/\n"
+        "Каждый шаг — отдельная строка в instructions[]. Включай полные URL в текст шага.\n"
         "Не предлагай host/port, которых нет в probe или discoveries.\n"
         f"Контекст:\n{json.dumps(context, ensure_ascii=False)}"
     )

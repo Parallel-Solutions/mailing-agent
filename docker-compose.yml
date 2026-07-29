@@ -1,16 +1,20 @@
+name: ${COMPOSE_PROJECT_NAME:-mailing-agent}
+
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: mailing-agent:local
+    image: ${MAILING_AGENT_IMAGE:-mailing-agent:local}
     restart: unless-stopped
     env_file:
       - .env.docker
     environment:
       APP_HOST: 0.0.0.0
       APP_PORT: 9806
+      APP_ENVIRONMENT: local
+      DATABASE_EXPECTED_NAME: mailing
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
       GOTENBERG_BASE_URLS: ${GOTENBERG_BASE_URLS:-http://gotenberg:3000}
       GOTENBERG_HEALTH_TIMEOUT_SECONDS: ${GOTENBERG_HEALTH_TIMEOUT_SECONDS:-10}
@@ -34,6 +38,7 @@ services:
       ONLYOFFICE_APP_INTERNAL_URL: ${ONLYOFFICE_APP_INTERNAL_URL:-http://app:9806}
       ONLYOFFICE_EDITOR_INTERNAL_URL: ${ONLYOFFICE_EDITOR_INTERNAL_URL:-http://onlyoffice}
       ONLYOFFICE_EDITOR_TOKEN_SECRET: ${ONLYOFFICE_EDITOR_TOKEN_SECRET:-campaignflow-local-editor-secret}
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:-}
     ports:
       - "${APP_PUBLIC_PORT:-9806}:9806"
     volumes:
@@ -67,12 +72,18 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: mailing-agent:local
+    image: ${MAILING_AGENT_IMAGE:-mailing-agent:local}
     restart: unless-stopped
+    # The queue worker may spend up to one heartbeat interval supervising a
+    # child, then up to BACKGROUND_QUEUE_SHUTDOWN_GRACE_SECONDS stopping it.
+    # Docker must not SIGKILL the parent before it can release the task lease.
+    stop_grace_period: 75s
     command: .venv/bin/python -m src.workers.queue_worker
     env_file:
       - .env.docker
     environment:
+      APP_ENVIRONMENT: local
+      DATABASE_EXPECTED_NAME: mailing
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
       GOTENBERG_BASE_URLS: ${GOTENBERG_BASE_URLS:-http://gotenberg:3000}
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing
@@ -87,6 +98,8 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./tmp:/app/tmp
+      - ./src:/app/src
+      - ./main.py:/app/main.py:ro
       - chroma-data:/app/src/parser_new/memory/vectors
     depends_on:
       app:
@@ -105,19 +118,28 @@ services:
 
   onlyoffice:
     profiles: ["onlyoffice"]
-    image: onlyoffice/documentserver:latest
+    image: ${ONLYOFFICE_IMAGE:-onlyoffice/documentserver:9.4.0.1}
     restart: unless-stopped
     environment:
-      JWT_ENABLED: "false"
+      JWT_ENABLED: ${ONLYOFFICE_JWT_ENABLED:-false}
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:-campaignflow-local-onlyoffice-secret}
+      JWT_HEADER: Authorization
+      JWT_IN_BODY: "false"
       ALLOW_PRIVATE_IP_ADDRESS: "true"
+    shm_size: 512m
     ports:
       - "${ONLYOFFICE_PUBLIC_PORT:-8080}:80"
+    volumes:
+      - onlyoffice-data:/var/www/onlyoffice/Data
+      - onlyoffice-lib:/var/lib/onlyoffice
+      - onlyoffice-logs:/var/log/onlyoffice
+      - onlyoffice-db:/var/lib/postgresql
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/healthcheck"]
       interval: 15s
       timeout: 10s
       retries: 20
-      start_period: 120s
+      start_period: 180s
 
   postgres:
     image: postgres:16
@@ -135,7 +157,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-09-07T16-13-09Z}
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -210,10 +232,12 @@ services:
 
   migrate:
     profiles: ["migrate"]
-    image: mailing-agent:local
+    image: ${MAILING_AGENT_IMAGE:-mailing-agent:local}
     env_file:
       - .env.docker
     environment:
+      APP_ENVIRONMENT: local
+      DATABASE_EXPECTED_NAME: mailing
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT_URL: http://minio:9000
@@ -241,10 +265,12 @@ services:
 
   verify:
     profiles: ["migrate"]
-    image: mailing-agent:local
+    image: ${MAILING_AGENT_IMAGE:-mailing-agent:local}
     env_file:
       - .env.docker
     environment:
+      APP_ENVIRONMENT: local
+      DATABASE_EXPECTED_NAME: mailing
       DATABASE_URL: postgresql+psycopg://mailing:mailing@postgres:5432/mailing
       WORKSPACE_DIR: /app/tmp
       LEGACY_JOBS_DIR: /app/legacy/storage/jobs
@@ -265,3 +291,7 @@ volumes:
   minio-data:
   redis-data:
   chroma-data:
+  onlyoffice-data:
+  onlyoffice-lib:
+  onlyoffice-logs:
+  onlyoffice-db:

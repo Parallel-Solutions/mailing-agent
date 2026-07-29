@@ -26,7 +26,7 @@ class ChainTemplateUtilsTests(unittest.TestCase):
             "<span>stub</span></div><p>Footer</p>"
         )
         text = f"Hello\n\n{TEXT_CHAIN_BUTTONS_MARKER}\nFooter"
-        buttons = [("Получить КП", "token-1"), ("Отказаться", "token-2")]
+        buttons = [("Получить КП", "token-1", "custom"), ("Отписаться", "token-2", "unsubscribe")]
 
         result_html, result_text = inject_chain_buttons(html, text, buttons)
 
@@ -36,8 +36,13 @@ class ChainTemplateUtilsTests(unittest.TestCase):
         self.assertIn("/chain/branch/token-1", result_html)
         self.assertIn("Получить КП", result_html)
         self.assertIn("/chain/branch/token-2", result_html)
+        self.assertIn("background:#236348", result_html)
+        self.assertIn("text-decoration:underline", result_html)
+        self.assertIn("text-align:right", result_html)
         self.assertIn("text-align:center", result_html)
         self.assertIn("padding:12px 0", result_html)
+        self.assertIn('<p style="margin:0">', result_html)
+        self.assertNotIn("margin:0 0 8px", result_html)
         self.assertLess(result_html.index("Hello"), result_html.index("Получить КП"))
         self.assertLess(result_html.index("Получить КП"), result_html.index("Footer"))
         self.assertIn("/chain/branch/token-1", result_text)
@@ -85,6 +90,27 @@ class ChainTemplateUtilsTests(unittest.TestCase):
         preview = build_chain_buttons_preview_html(wrapper_style="text-align:right;padding:4px 0")
         self.assertIn("text-align:right", preview)
         self.assertIn("padding:4px 0", preview)
+        self.assertIn('<p style="margin:0">', preview)
+        self.assertIn("Вариант 1", preview)
+        self.assertIn("Вариант 2", preview)
+        self.assertIn("Отписаться", preview)
+        self.assertIn("background:#236348", preview)
+        self.assertIn("text-align:right", preview)
+        self.assertNotIn("margin:0 0 8px", preview)
+
+    def test_unsubscribe_rendered_separately_from_action_buttons(self) -> None:
+        html, text = inject_chain_buttons(
+            "<p>Body</p>",
+            "Body",
+            [
+                ("Получить", "token-action", "custom"),
+                ("Отписаться", "token-unsub", "unsubscribe"),
+            ],
+        )
+        self.assertIn("background:#236348", html)
+        self.assertIn("text-decoration:underline", html)
+        self.assertLess(html.index("Получить"), html.index("Отписаться"))
+        self.assertIn("Отписаться:", text)
 
 
 if __name__ == "__main__":

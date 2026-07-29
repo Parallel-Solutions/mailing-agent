@@ -1,25 +1,35 @@
-export const AUTO_REFRESH_MS = 20 * 60 * 1000;
+export const AUTO_REFRESH_MS = 30 * 1000;
 export const DASHBOARD_CACHE_PREFIX = 'stats-dashboard-v3:';
 export const PER_PAGE = 10;
 
 export const STATS_TABS = [
   { key: 'dashboard', label: 'Обзор' },
-  { key: 'campaigns', label: 'Рассылки' },
+  { key: 'campaign-list', label: 'Рассылки' },
+  { key: 'campaigns', label: 'Показатели рассылок' },
+  { key: 'audiences', label: 'База получателей' },
   { key: 'recipients', label: 'Компании' },
   { key: 'campaign-analytics', label: 'Аналитика рассылки' },
+  { key: 'campaign-full-analytics', label: 'Полная аналитика' },
   { key: 'consents', label: 'Согласия' },
+  { key: 'marketing-consents', label: 'Подписки и отписки' },
   { key: 'problems', label: 'Проблемы с email' },
   { key: 'reports', label: 'Отчёты' },
 ] as const;
+
+export const MANAGEMENT_TAB_KEYS = ['campaign-list', 'audiences'] as const;
 
 export type StatsTabKey = (typeof STATS_TABS)[number]['key'];
 
 export const PAGE_TITLES: Record<StatsTabKey, string> = {
   dashboard: 'Статистика рассылки',
-  campaigns: 'Рассылки',
+  'campaign-list': 'Рассылки',
+  campaigns: 'Показатели рассылок',
+  audiences: 'База получателей',
   recipients: 'Компании и статусы',
   'campaign-analytics': 'Детальная аналитика рассылки',
+  'campaign-full-analytics': 'Полная аналитика рассылки',
   consents: 'Согласия и интерес',
+  'marketing-consents': 'Подписки и отписки',
   problems: 'Проблемы с email',
   reports: 'Отчёты и выгрузки',
 };

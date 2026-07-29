@@ -3,17 +3,22 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import dayjs from 'dayjs';
 import { statisticsApi } from '@/api/statistics';
-import { AUTO_REFRESH_MS, PAGE_TITLES, PROVIDER_OPTIONS, STATS_TABS } from './constants';
+import { AUTO_REFRESH_MS, MANAGEMENT_TAB_KEYS, PAGE_TITLES, PROVIDER_OPTIONS, STATS_TABS } from './constants';
 import { StatisticsProvider, useStatistics } from './StatisticsContext';
 import { StatisticsModals } from './modals/StatisticsModals';
 import { DashboardTab } from './tabs/DashboardTab';
 import { CampaignsTab } from './tabs/CampaignsTab';
 import { RecipientsTab } from './tabs/RecipientsTab';
 import { CampaignAnalyticsTab } from './tabs/CampaignAnalyticsTab';
+import { CampaignFullAnalyticsTab } from './fullAnalytics/CampaignFullAnalyticsTab';
 import { ConsentsTab } from './tabs/ConsentsTab';
+import { MarketingConsentsTab } from './tabs/MarketingConsentsTab';
 import { ProblemsTab } from './tabs/ProblemsTab';
 import { ReportsTab } from './tabs/ReportsTab';
+import { CampaignsListPage } from '@/pages/CampaignsListPage';
+import { AudiencesPage } from '@/pages/AudiencesPage';
 import { asRecordArray } from './utils';
+import { formatLocalDateTime } from '@/utils/dateTime';
 
 export function StatisticsPage() {
   return (
@@ -60,9 +65,11 @@ function StatisticsPageInner() {
     enabled: tab === 'dashboard',
   });
 
+  const isManagementTab = MANAGEMENT_TAB_KEYS.includes(tab as (typeof MANAGEMENT_TAB_KEYS)[number]);
+
   const generatedAt =
     tab === 'dashboard'
-      ? String(metaQuery.data?.generated_at_label || metaQuery.data?.generated_at || '—')
+      ? formatLocalDateTime(String(metaQuery.data?.generated_at || ''))
       : '—';
 
   return (
@@ -80,59 +87,63 @@ function StatisticsPageInner() {
           <Typography.Title level={3} style={{ marginBottom: 4 }}>
             {PAGE_TITLES[tab]}
           </Typography.Title>
-          <Typography.Text type="secondary">Обновлено: {generatedAt}</Typography.Text>
+          {!isManagementTab ? (
+            <Typography.Text type="secondary">Обновлено: {generatedAt}</Typography.Text>
+          ) : null}
         </div>
-        <Space wrap>
-          <DatePicker.RangePicker
-            value={[
-              filters.period_from ? dayjs(filters.period_from) : null,
-              filters.period_to ? dayjs(filters.period_to) : null,
-            ]}
-            onChange={(value) =>
-              setFilters(
-                {
-                  period_from: value?.[0]?.format('YYYY-MM-DD'),
-                  period_to: value?.[1]?.format('YYYY-MM-DD'),
-                },
-                { resetPages: true },
-              )
-            }
-          />
-          <Select
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            placeholder="Все рассылки"
-            style={{ minWidth: 200 }}
-            value={filters.campaign}
-            onChange={(value) => setFilters({ campaign: value || undefined }, { resetPages: true })}
-            options={campaigns.map((item) => ({
-              value: String(item.job_id),
-              label: String(item.title || item.job_id),
-            }))}
-          />
-          <Select
-            allowClear
-            placeholder="Все провайдеры"
-            style={{ minWidth: 160 }}
-            value={filters.provider}
-            onChange={(value) =>
-              setFilters(
-                { provider: value || undefined, providers: undefined },
-                { resetPages: true },
-              )
-            }
-            options={PROVIDER_OPTIONS.filter((item) => item.value)}
-          />
-          {tab !== 'reports' ? (
-            <Button onClick={openFiltersModal}>Расширенные фильтры</Button>
-          ) : (
-            <Button onClick={() => openExportModal()}>Экспорт отчёта</Button>
-          )}
-          <Button type="primary" onClick={() => requestRefresh()}>
-            Обновить
-          </Button>
-        </Space>
+        {!isManagementTab ? (
+          <Space wrap>
+            <DatePicker.RangePicker
+              value={[
+                filters.period_from ? dayjs(filters.period_from) : null,
+                filters.period_to ? dayjs(filters.period_to) : null,
+              ]}
+              onChange={(value) =>
+                setFilters(
+                  {
+                    period_from: value?.[0]?.format('YYYY-MM-DD'),
+                    period_to: value?.[1]?.format('YYYY-MM-DD'),
+                  },
+                  { resetPages: true },
+                )
+              }
+            />
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              placeholder="Все рассылки"
+              style={{ minWidth: 200 }}
+              value={filters.campaign}
+              onChange={(value) => setFilters({ campaign: value || undefined }, { resetPages: true })}
+              options={campaigns.map((item) => ({
+                value: String(item.job_id),
+                label: String(item.title || 'Рассылка без названия'),
+              }))}
+            />
+            <Select
+              allowClear
+              placeholder="Все провайдеры"
+              style={{ minWidth: 160 }}
+              value={filters.provider}
+              onChange={(value) =>
+                setFilters(
+                  { provider: value || undefined, providers: undefined },
+                  { resetPages: true },
+                )
+              }
+              options={PROVIDER_OPTIONS.filter((item) => item.value)}
+            />
+            {tab !== 'reports' ? (
+              <Button onClick={openFiltersModal}>Расширенные фильтры</Button>
+            ) : (
+              <Button onClick={() => openExportModal()}>Экспорт отчёта</Button>
+            )}
+            <Button type="primary" onClick={() => requestRefresh()}>
+              Обновить
+            </Button>
+          </Space>
+        ) : null}
       </div>
 
       {error ? (
@@ -176,14 +187,22 @@ function TabBody({ tabKey }: { tabKey: string }) {
   switch (tabKey) {
     case 'dashboard':
       return <DashboardTab />;
+    case 'campaign-list':
+      return <CampaignsListPage embedded />;
     case 'campaigns':
       return <CampaignsTab />;
+    case 'audiences':
+      return <AudiencesPage embedded />;
     case 'recipients':
       return <RecipientsTab />;
     case 'campaign-analytics':
       return <CampaignAnalyticsTab />;
+    case 'campaign-full-analytics':
+      return <CampaignFullAnalyticsTab />;
     case 'consents':
       return <ConsentsTab />;
+    case 'marketing-consents':
+      return <MarketingConsentsTab />;
     case 'problems':
       return <ProblemsTab />;
     case 'reports':

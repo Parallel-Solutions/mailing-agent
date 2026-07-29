@@ -5,6 +5,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
 import type { Campaign } from '@/api/types';
+import {
+  campaignProgressLabel,
+  canCampaignAction,
+  shouldPollCampaign,
+} from '@/features/campaigns/campaignLifecycle';
+import { formatLocalDateTime } from '@/utils/dateTime';
+import { statusLabel } from '@/utils/presentation';
 
 const statusColor: Record<string, string> = {
   draft: 'default',
@@ -16,13 +23,17 @@ const statusColor: Record<string, string> = {
   cancelled: 'error',
 };
 
-export function CampaignsListPage() {
+export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ['campaigns'],
     queryFn: () => campaignsApi.list({ limit: 100 }),
+    refetchInterval: (query) =>
+      query.state.data?.items.some((item) => shouldPollCampaign(item.status))
+        ? 10_000
+        : 30_000,
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['campaigns'] });
@@ -59,61 +70,66 @@ export function CampaignsListPage() {
   return (
     <div data-onboarding-id="campaigns-overview">
       <ProTable<Campaign>
-        rowKey="id"
-        loading={isLoading}
-        search={false}
-        headerTitle="Рассылки"
-        toolBarRender={() => [
-          <Button key="new" type="primary" icon={<PlusOutlined />} onClick={() => navigate('/campaigns/new')}>
-            Создать рассылку
-          </Button>,
-        ]}
-        dataSource={data?.items || []}
-        columns={[
-          {
-            title: 'Название',
-            dataIndex: 'name',
-            render: (_, row) => <Link to={`/campaigns/${row.id}`}>{row.name}</Link>,
-          },
-          {
-            title: 'Статус',
-            dataIndex: 'status',
-            render: (_, row) => <Tag color={statusColor[row.status] || 'default'}>{row.status}</Tag>,
-          },
-          { title: 'Тема', dataIndex: 'mail_subject', ellipsis: true },
-          { title: 'Провайдер', dataIndex: 'transport' },
-          {
-            title: 'Прогресс',
-            render: (_, row) => (
-              <Progress
-                percent={row.progress || 0}
-                size="small"
-                format={() => `${row.sent_count || 0}/${row.total_count || 0}`}
-              />
-            ),
-          },
-          { title: 'Ошибки', dataIndex: 'error_count' },
-          { title: 'Создана', dataIndex: 'created_at', valueType: 'dateTime' },
-          {
-            title: 'Действия',
-            valueType: 'option',
-            render: (_, row) => (
-              <Space>
-                <a onClick={() => navigate(`/campaigns/${row.id}`)}>Открыть</a>
+      rowKey="id"
+      loading={isLoading}
+      search={false}
+      headerTitle={embedded ? undefined : 'Рассылки'}
+      toolBarRender={() => [
+        <Button key="new" type="primary" icon={<PlusOutlined />} onClick={() => navigate('/campaigns/new')}>
+          Создать рассылку
+        </Button>,
+      ]}
+      dataSource={data?.items || []}
+      columns={[
+        {
+          title: 'Название',
+          dataIndex: 'name',
+          render: (_, row) => <Link to={`/campaigns/${row.id}`}>{row.name}</Link>,
+        },
+        {
+          title: 'Статус',
+          dataIndex: 'status',
+          render: (_, row) => <Tag color={statusColor[row.status] || 'default'}>{statusLabel(row.status)}</Tag>,
+        },
+        { title: 'Тема', dataIndex: 'mail_subject', ellipsis: true },
+        { title: 'Провайдер', dataIndex: 'transport' },
+        {
+          title: 'Прогресс',
+          render: (_, row) => (
+            <Progress
+              percent={row.progress || 0}
+              size="small"
+              format={() => campaignProgressLabel(row)}
+            />
+          ),
+        },
+        { title: 'Попытки', dataIndex: 'attempt_count' },
+        { title: 'Принято провайдером', dataIndex: 'success_count' },
+        { title: 'Пропущено', dataIndex: 'skipped_count' },
+        { title: 'Ошибки', dataIndex: 'failed_recipient_count' },
+        { title: 'Создана', dataIndex: 'created_at', render: (_, row) => formatLocalDateTime(row.created_at) },
+        {
+          title: 'Действия',
+          valueType: 'option',
+          render: (_, row) => (
+            <Space>
+              <a onClick={() => navigate(`/campaigns/${row.id}`)}>Открыть</a>
+              {canCampaignAction(row, 'edit') ? (
                 <a onClick={() => navigate(`/campaigns/new?id=${row.id}`)}>Редактировать</a>
-                <a onClick={() => duplicate.mutate(row.id)}>Дублировать</a>
-                {row.status === 'paused' ? (
-                  <a onClick={() => resume.mutate(row.id)}>Продолжить</a>
-                ) : row.status === 'running' || row.status === 'scheduled' ? (
-                  <a onClick={() => pause.mutate(row.id)}>Пауза</a>
-                ) : null}
-                {['running', 'scheduled', 'paused'].includes(row.status) ? (
-                  <a onClick={() => cancel.mutate(row.id)}>Отменить</a>
-                ) : null}
-              </Space>
-            ),
-          },
-        ]}
+              ) : null}
+              <a onClick={() => duplicate.mutate(row.id)}>Дублировать</a>
+              {canCampaignAction(row, 'resume') ? (
+                <a onClick={() => resume.mutate(row.id)}>Продолжить</a>
+              ) : canCampaignAction(row, 'pause') ? (
+                <a onClick={() => pause.mutate(row.id)}>Пауза</a>
+              ) : null}
+              {canCampaignAction(row, 'cancel') ? (
+                <a onClick={() => cancel.mutate(row.id)}>Отменить</a>
+              ) : null}
+            </Space>
+          ),
+        },
+      ]}
       />
     </div>
   );

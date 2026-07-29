@@ -105,7 +105,7 @@
 | **E2E** | `npm run e2e:*` / `.\scripts\e2e.ps1` + `.env.e2e` | base + `docker-compose.e2e.yml` | `mailing_e2e` / project `mailing-agent-e2e` | Playwright (порты по умолчанию `19806` / `18025`) |
 | **Unit/integration** | `docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test` | `docker-compose.test.yml` | `mailing_test` / project `mailing-agent-test` | Python-тесты (Postgres + MinIO only; отдельный project, чтобы не трогать local) |
 
-Опциональные профили на base compose: `migrate` / `verify`, `onlyoffice`, `gotenberg-ha`. В e2e — profile `playwright`.
+Опциональные профили на base compose: `migrate` / `verify`, `onlyoffice`, `gotenberg-ha`. На production профиль `onlyoffice` включается автоматически скриптами deploy/audit. В e2e — profile `playwright`.
 
 Проверки: `GET /health` — liveness (БД); `GET /ready` — readiness (БД, Redis, MinIO, Gotenberg). Worker имеет свой Docker healthcheck (heartbeat + БД + Redis).
 
@@ -130,6 +130,8 @@ Docker Compose поднимает:
 
 
 Gotenberg не публикуется наружу и доступен контейнеру приложения по адресу `http://gotenberg:3000`. PDF-конвертация настроена через Gotenberg.
+
+OnlyOffice на production доступен только через Caddy по HTTPS-маршруту `https://offer.parresh.ru/onlyoffice`; прямой порт Document Server на хосте не публикуется. Приложение и Document Server используют общий `ONLYOFFICE_JWT_SECRET` из `.env.docker`. Закреплённый образ `9.4.0.1` зеркалируется workflow в GHCR, чтобы deploy не зависел от анонимного лимита Docker Hub.
 
 
 
@@ -223,7 +225,107 @@ The API service must not be deployed without at least one worker replica.
 
 
 
+Production deploy (offer.parresh.ru):
+
+### Автодеплой (push в `main`)
+
+```text
+push main
+  ├─ unit          (frontend + test image)
+  ├─ build-image   (push runtime :latest + :sha → GHCR)   ──┐
+  └─ e2e-smoke     (pull :sha, no second runtime build)   │
+                                                          ▼
+                                               deploy-prod (restricted SSH)
+                                                 exact main SHA only
+                                                 deploy.sh + prod-audit
+                                                 automatic rollback on failure
+```
+
+На `main` runtime-образ собирается **один раз** и переиспользуется e2e + deploy. Job `deploy-prod` в concurrency-группе `deploy-prod` с `cancel-in-progress: false` — второй push не убивает текущий SSH-деплой. Сервер принимает только полный SHA коммита из `origin/main`; устаревший queued deploy не может откатить уже работающую более новую версию.
+
+**One-time setup:**
+
+1. Создайте отдельную пару SSH-ключей ED25519.
+2. На prod-хосте выполните от `root`: `bash scripts/provision-deploy-user.sh /path/to/key.pub`.
+3. Добавьте приватный ключ в GitHub Actions secret `PROD_SSH_KEY` (repository secret либо secret окружения `production`).
+4. На сервере должен быть настроен `docker login ghcr.io` (PAT с `read:packages`, если пакет private).
+5. Добавьте в `/opt/mailing-agent/.env.docker` отдельный случайный `ONLYOFFICE_JWT_SECRET` длиной не менее 32 символов.
+6. Для полностью автоматического деплоя не включайте required reviewers у GitHub Environment `production`.
+
+Host, пользователь и проверенный ED25519 host key не являются секретами и зафиксированы в workflow/`.github/known_hosts`. Пользователь `deploy` не состоит в группе `docker` и не получает обычный SSH shell: его ключ может вызвать только `deploy <40-char-main-commit-sha>`. Root-owned wrapper сериализует деплои, фиксирует checkout на точном SHA, запускает health/audit gates и возвращает предыдущий image + checkout, если новая версия не проходит проверки. Длинный server-side deploy переживает обрыв SSH, пишет подробный лог в `/var/log/mailing-agent-deploy.log`, а SSH-сессия отправляет heartbeat каждые 30 секунд.
+
+Первый push в `main` без `PROD_SSH_KEY` завершит `deploy-prod` понятной ошибкой. После настройки секрета выполните **Re-run failed jobs**.
+
+### Ручной deploy
+
+```bash
+cd /opt/mailing-agent
+chmod +x scripts/deploy.sh scripts/prod-audit.sh scripts/post-deploy-stats.sh
+
+# Обычный путь: pull immutable образа из GHCR (~3–5 min)
+MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> ./scripts/deploy.sh --pull
+
+# Для root-owned deploy wrapper: checkout уже зафиксирован на точном SHA
+MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> \
+  ./scripts/deploy.sh --pull --skip-git-update
+
+# Тот же путь с latest (если sha неизвестен)
+MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:latest ./scripts/deploy.sh --pull
+
+# Без pull — только restart уже запущенных контейнеров
+./scripts/deploy.sh --no-build
+
+# После backfill sent_mail_log / gap в статистике
+./scripts/deploy.sh --pull --post-deploy-stats
+
+# Конкретная ветка/тег (git) + pull образа
+./scripts/deploy.sh --ref release/companies-campaign-wizard-2026-07-22 --pull
+
+# Emergency only: rebuild на сервере (часто упирается в Docker Hub rate limit)
+./scripts/deploy.sh
+
+# Ручной аудит (exit ≠ 0 = плохо)
+./scripts/prod-audit.sh
+```
+
+`deploy.sh --pull` сначала проверяет, что текущая Alembic-ревизия production-БД входит в граф миграций checkout. Затем он останавливает `app`/`worker` и **до любых изменений инфраструктурных контейнеров** запускает [`scripts/backup-prod-data.sh`](scripts/backup-prod-data.sh): создаёт и проверяет `pg_dump`, снимает согласованный snapshot named volume MinIO, считает SHA-256 и записывает manifest с ревизией и контрольными количествами строк. Только после успешного backup выполняются `docker pull` + `up --force-recreate`. При ошибке скрипт пытается вернуть остановленные сервисы.
+
+Backup-файлы находятся в `/var/backups/mailing-agent/`: `mailing-<UTC>.dump`, `minio-<UTC>.tar`, `backup-<UTC>.manifest`. По умолчанию сохраняются 30 дампов PostgreSQL и 3 полных snapshot MinIO; значения регулируются `PROD_BACKUP_KEEP_COUNT` и `PROD_MINIO_BACKUP_KEEP_COUNT`. Backup-скрипт откажется работать, если контейнеры подключены не к production volumes `mailing-agent_pgdata` / `mailing-agent_minio-data`, если видит test-volume или если `app`/`worker` ещё пишут данные.
+
+Run a full restore drill with `bash scripts/verify-backup-restore.sh /var/backups/mailing-agent/backup-<UTC>.manifest`. It verifies checksums, restores PostgreSQL and MinIO into disposable containers and volumes, checks the Alembic revision and row counts, and removes only the temporary resources it created. The manifest records the exact MinIO image ID for reproducibility.
+
+Остальная часть deploy поднимает закреплённый OnlyOffice, сверяет Image ID, ждёт local (`:9806`), public health и публичный API редактора, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. `--skip-git-update` разрешён для root-owned wrapper, который сам проверяет принадлежность SHA к `origin/main`. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, JWT-защита редактора, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе. Не используйте на production `docker compose down -v` / `down --volumes`.
+
+### Server checklist (после первого деплоя / при сомнениях)
+
+```bash
+cd /opt/mailing-agent
+docker compose --env-file .env.docker --profile onlyoffice -f docker-compose.yml -f docker-compose.prod.yml ps
+# expect: app, worker, postgres, minio, redis, gotenberg, onlyoffice (minio-init exited OK)
+
+docker ps --format '{{.Names}} {{.Image}}'
+# no gotenberg-2 / mailpit / playwright / mailing-agent-e2e / mailing-agent-test
+
+docker inspect mailing-agent-app-1 --format '{{.Config.Image}} {{.Image}}'
+# must be ghcr.io/parallel-solutions/mailing-agent:<sha>
+
+MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> ./scripts/prod-audit.sh
+# must exit 0
+```
+
+После смены `PUBLIC_BASE_URL` или webhook-токена может понадобиться resend кампаний — см. [`scripts/verify-production-links.ps1`](scripts/verify-production-links.ps1) и [`scripts/resend-chain-campaign.ps1`](scripts/resend-chain-campaign.ps1).
+
+
+
 Тесты:
+
+**QA tiers** (рекомендуемый порядок):
+
+```powershell
+.\scripts\qa.ps1 fast    # ~10 min: 6 backend + e2e smoke + campaign email
+.\scripts\qa.ps1 gate    # ~20 min: frontend + full backend + e2e smoke (CI parity)
+.\scripts\qa.ps1 full    # ~30 min: gate + e2e email (chromium)
+```
 
 **Unit/integration** (без реальной отправки, Postgres + MinIO):
 
@@ -231,19 +333,16 @@ The API service must not be deployed without at least one worker replica.
 docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm test
 ```
 
-Локально (из корня проекта, с активированным `.venv`):
-
-```bash
-python -m tests
-```
+Запускайте backend-тесты только этой командой. `tests/bootstrap.py` требует одновременно `MAILING_AGENT_TEST_MODE=1`, ожидаемое имя `mailing_test` и фактическое подключение к БД с суффиксом `_test`; прямой запуск против `mailing`, даже при ошибочно выставленном test-флаге, завершится до `TRUNCATE`.
 
 **Playwright E2E** (React CampaignFlow + Mailpit, отдельный compose-проект `mailing-agent-e2e`):
 
 ```bash
 cp .env.e2e.example .env.e2e   # не копировать в .env.docker
-npm run e2e:up
+npm run e2e:up:fast            # warm stack, без rebuild (Python через mount src)
+npm run e2e:up:build           # rebuild app+worker после frontend/Dockerfile
 npm run e2e:test:smoke
-npm run e2e:test:email
+npm run e2e:test:email         # chromium only
 npm run e2e:down
 ```
 
@@ -322,6 +421,8 @@ Runtime-данные на хосте: `./logs` и `./tmp` (рабочая пап
 - `UNISENDER_SENDER_EMAIL`, `UNISENDER_SENDER_NAME` — отправитель писем;
 
 - `SMTP_*` — резервные SMTP-настройки, если используются.
+
+- `SMTPBZ_API_KEY` — API-ключ валидатора из панели SMTP.BZ; по умолчанию каждый адрес проверяется перед отправкой. `SMTPBZ_FAIL_OPEN=0` блокирует отправку, если проверка недоступна.
 
 - `SENDER_DELAY_SECONDS` — фиксированная пауза между SMTP-письмами; `SENDER_DELAY_MIN_SECONDS`/`SENDER_DELAY_MAX_SECONDS` задают случайную паузу, например `179` и `247` для диапазона 2:59–4:07.
 

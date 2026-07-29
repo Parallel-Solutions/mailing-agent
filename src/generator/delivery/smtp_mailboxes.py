@@ -473,13 +473,53 @@ def _ensure_fresh_oauth_credentials(
     )
 
 
-def humanize_smtp_error(exc: Exception) -> str:
-    if isinstance(exc, smtplib.SMTPAuthenticationError):
+def _humanize_smtp_auth_error(
+    *,
+    provider: str = "",
+    host: str = "",
+    email: str = "",
+) -> str:
+    normalized_provider = _safe_text(provider).lower()
+    normalized_host = _safe_text(host).lower()
+    normalized_email = _safe_text(email).lower()
+    if normalized_provider == "mailru" or "mail.ru" in normalized_host:
+        return (
+            "Неверный логин или пароль SMTP. "
+            "Для Почты Mail нужен пароль для внешнего приложения (не обычный пароль от входа в почту). "
+            "Создайте его в настройках безопасности: https://help.mail.ru/mail/security/protection/external"
+        )
+    if normalized_provider == "yandex" or "yandex" in normalized_host:
+        return (
+            "Неверный логин или пароль SMTP. "
+            "Для Яндекса нужен пароль приложения (не обычный пароль от входа в почту). "
+            "Создайте его здесь: https://id.yandex.ru/security/app-passwords"
+        )
+    if (
+        normalized_provider == "gmail"
+        or "gmail.com" in normalized_host
+        or normalized_email.endswith("@gmail.com")
+        or normalized_email.endswith("@googlemail.com")
+    ):
         return (
             "Неверный логин или пароль SMTP. "
             "Для Gmail нужен пароль приложения (не обычный пароль Google), "
             "его можно вставить без пробелов: https://myaccount.google.com/apppasswords"
         )
+    return (
+        "Неверный логин или пароль SMTP. "
+        "Если включена двухфакторная аутентификация, используйте пароль приложения."
+    )
+
+
+def humanize_smtp_error(
+    exc: Exception,
+    *,
+    provider: str = "",
+    host: str = "",
+    email: str = "",
+) -> str:
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return _humanize_smtp_auth_error(provider=provider, host=host, email=email)
     if isinstance(exc, smtplib.SMTPConnectError):
         return "Не удалось подключиться к SMTP-серверу. Проверьте host, порт и шифрование."
     if isinstance(exc, CredentialVaultError):
@@ -564,6 +604,12 @@ def send_test_email(
     include_sample_attachment: bool = False,
 ) -> None:
     target = _safe_text(recipient) or credentials.email
+    from src.generator.delivery.email_validation import validate_configured_email_address
+
+    email_validation = validate_configured_email_address(target)
+    if not email_validation.is_valid:
+        raise ValueError(email_validation.reason or "Email не прошёл проверку SMTP.BZ.")
+    target = email_validation.normalized_email
     message = EmailMessage()
     sender_label = credentials.sender_name or credentials.email
     message["Subject"] = "Проверка SMTP-подключения"

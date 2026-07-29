@@ -525,6 +525,7 @@ def _load_company_data_for_job(job_id: str) -> dict[str, dict[str, Any]]:
 
     Returns ``{row_id: {"name": str, "info": {field: value}}}``. Missing/absent
     data is tolerated: statistics fall back to placeholders when a row is absent.
+    For CampaignFlow jobs without data.xlsx coverage, fill from campaign_recipients.
     """
 
     cached = _cache_get(_company_cache, job_id)
@@ -548,8 +549,71 @@ def _load_company_data_for_job(job_id: str) -> dict[str, dict[str, Any]]:
                 }
     except Exception as exc:  # pragma: no cover - defensive, data may be missing
         logger.warning("company_data_load_failed", job_id=job_id, error=str(exc))
+    try:
+        _merge_campaign_recipient_company_data(job_id, data)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("campaign_recipient_company_data_failed", job_id=job_id, error=str(exc))
     _cache_set(_company_cache, job_id, data)
     return data
+
+
+def _merge_campaign_recipient_company_data(job_id: str, data: dict[str, dict[str, Any]]) -> None:
+    """Fill gaps from CampaignFlow recipients (keyed by recipient.id as row_id)."""
+
+    from sqlalchemy import select
+
+    from src.infra.db import session_scope
+    from src.infra.models import Campaign, CampaignRecipient
+
+    with session_scope() as session:
+        campaign = session.scalar(select(Campaign).where(Campaign.job_id == job_id).limit(1))
+        if campaign is None:
+            return
+        recipients = session.scalars(
+            select(CampaignRecipient).where(
+                CampaignRecipient.campaign_id == campaign.id,
+                CampaignRecipient.excluded.is_(False),
+            )
+        ).all()
+        for recipient in recipients:
+            row_id = _safe_text(recipient.id)
+            if not row_id:
+                continue
+            extra = dict(recipient.extra or {}) if isinstance(recipient.extra, dict) else {}
+            info = {
+                "region": _safe_text(recipient.region) or _safe_text(extra.get("region")),
+                "district": _safe_text(extra.get("district")),
+                "settlement": _safe_text(extra.get("settlement") or extra.get("mun_name")),
+                "admin_name": _safe_text(extra.get("admin_name")),
+                "address": _safe_text(extra.get("address")),
+                "head": _safe_text(recipient.contact_name) or _safe_text(extra.get("head")),
+                "population": _safe_text(extra.get("population")),
+                "email_primary": _safe_text(recipient.email),
+                "email_extra": _safe_text(recipient.email_fallback),
+                "phone": _safe_text(extra.get("phone") or extra.get("tel_osn")),
+                "phone_extra": _safe_text(extra.get("phone_extra") or extra.get("tel_dop")),
+                "inn": _safe_text(extra.get("inn")),
+                "kpp": _safe_text(extra.get("kpp")),
+                "ogrn": _safe_text(extra.get("ogrn")),
+                "okpo": _safe_text(extra.get("okpo")),
+                "oktmo": _safe_text(extra.get("oktmo")),
+                "note": _safe_text(extra.get("note")),
+            }
+            existing = data.get(row_id)
+            if existing is None:
+                data[row_id] = {
+                    "name": _safe_text(recipient.company) or f"Компания №{row_id}",
+                    "info": {key: value for key, value in info.items() if value},
+                }
+                continue
+            # Prefer Excel name/info; fill only blank fields from recipient.
+            merged_info = dict(existing.get("info") or {})
+            for key, value in info.items():
+                if value and not _safe_text(merged_info.get(key)):
+                    merged_info[key] = value
+            existing["info"] = merged_info
+            if not _safe_text(existing.get("name")) and _safe_text(recipient.company):
+                existing["name"] = _safe_text(recipient.company)
 
 
 def _company_view(company_entry: dict[str, Any] | None, row_id: str, fallback_org: str) -> dict[str, Any]:
@@ -573,8 +637,9 @@ def _company_view(company_entry: dict[str, Any] | None, row_id: str, fallback_or
 
 
 def _build_delivery_rows_for_job(job_id: str, *, refresh: bool) -> list[dict[str, Any]]:
-    # Match test-stand aggregation (send_run / sender-state filters), not full history.
-    delivery_rows, _ = _build_delivery_rows(job_id, refresh=refresh, for_statistics=False)
+    # CampaignFlow writes sent_mail_log without legacy sender-state / send_run scope.
+    # Manager statistics must aggregate the full mailing history from job_events.
+    delivery_rows, _ = _build_delivery_rows(job_id, refresh=refresh, for_statistics=True)
     latest_actions = latest_action_by_recipient(job_id)
     company_data = _load_company_data_for_job(job_id)
     rows: list[dict[str, Any]] = []
@@ -613,6 +678,9 @@ def _build_delivery_rows_for_job(job_id: str, *, refresh: bool) -> list[dict[str
                     "Прочее",
                 ),
                 "email_domain_provider": _email_domain_provider(_safe_text(row.get("recipient"))),
+                "layout_error_code": _safe_text(row.get("layout_error_code")),
+                "error": _safe_text(row.get("error")),
+                "comment": _safe_text(row.get("comment")),
             }
         )
     return rows
@@ -661,6 +729,90 @@ def _build_consent_rows_for_job(job_id: str) -> list[dict[str, Any]]:
                 "next_action": recommended_action_for("opened" if status_key == "confirmed" else "pending"),
             }
         )
+    rows.extend(_build_chain_consent_rows_for_job(job_id, existing_emails={_safe_text(r.get("email")).lower() for r in rows}))
+    return rows
+
+
+def _build_chain_consent_rows_for_job(job_id: str, *, existing_emails: set[str]) -> list[dict[str, Any]]:
+    """Map CampaignFlow chain subscribe events into consent KPI rows (no duplicates by email)."""
+
+    from sqlalchemy import select
+
+    from src.campaigns.chain_consent_service import ACTION_SUBSCRIBE
+    from src.infra.db import session_scope
+    from src.infra.models import Campaign, CampaignChainConsentEvent, CampaignRecipient
+    from src.generator.delivery.sender_report import _format_moscow_datetime
+
+    rows: list[dict[str, Any]] = []
+    with session_scope() as session:
+        campaign = session.scalar(select(Campaign).where(Campaign.job_id == job_id).limit(1))
+        if campaign is None:
+            return rows
+        events = session.scalars(
+            select(CampaignChainConsentEvent)
+            .where(
+                CampaignChainConsentEvent.campaign_id == campaign.id,
+                CampaignChainConsentEvent.action == ACTION_SUBSCRIBE,
+            )
+            .order_by(CampaignChainConsentEvent.created_at.desc())
+        ).all()
+        recipient_ids = {int(event.recipient_id) for event in events if event.recipient_id is not None}
+        recipients = {}
+        if recipient_ids:
+            for recipient in session.scalars(
+                select(CampaignRecipient).where(CampaignRecipient.id.in_(recipient_ids))
+            ).all():
+                recipients[int(recipient.id)] = recipient
+
+        seen_emails = set(existing_emails)
+        for event in events:
+            email = _safe_text(event.email).lower()
+            if not email or email in seen_emails:
+                continue
+            seen_emails.add(email)
+            recipient = recipients.get(int(event.recipient_id)) if event.recipient_id is not None else None
+            organization = _safe_text(recipient.company) if recipient is not None else ""
+            confirmed_at = _format_moscow_datetime(event.created_at.isoformat() if event.created_at else "")
+            rows.append(
+                {
+                    "row_id": _safe_text(event.recipient_id),
+                    "mun_name": organization,
+                    "recipient": email,
+                    "status": "confirmed",
+                    "status_label": "Подтверждено (цепочка)",
+                    "request_sent_at": "",
+                    "created_at": confirmed_at,
+                    "confirmed_at": confirmed_at,
+                    "expires_at": _format_moscow_datetime(event.expires_at.isoformat() if event.expires_at else ""),
+                    "materials_status": "",
+                    "materials_status_label": "",
+                    "materials_sent_at": "",
+                    "materials_error": "",
+                    "materials_dispatch_summary": "",
+                    "transport": _safe_text(campaign.transport),
+                    "attachment_mode": "",
+                    "work_type": "",
+                    "confirmed_ip": "",
+                    "confirmed_user_agent": "",
+                    "consent_document_path": "",
+                    "job_id": job_id,
+                    "organization": organization,
+                    "contact": _safe_text(recipient.contact_name) if recipient is not None else email,
+                    "email": email,
+                    "consent_status_key": "confirmed",
+                    "consent_status_label": "Подтверждено (цепочка)",
+                    "materials_label": "",
+                    "last_action_label": "Подписка в цепочке",
+                    "last_action_at": confirmed_at,
+                    "interest": {
+                        "key": "medium",
+                        "label": INTEREST_LABELS["medium"],
+                        "tone": INTEREST_TONES["medium"],
+                    },
+                    "next_action": recommended_action_for("opened"),
+                    "source": "chain",
+                }
+            )
     return rows
 
 
@@ -751,6 +903,12 @@ def _build_company_row(group: list[dict[str, Any]]) -> dict[str, Any]:
     manager_status = _manager_status_view(best_key)
     company = first.get("company") or _company_view(None, row_id, _safe_text(first.get("organization")))
     organization = _safe_text(first.get("organization")) or _safe_text(company.get("name"))
+    layout_error_code = ""
+    for row in group:
+        code = _safe_text(row.get("layout_error_code"))
+        if code:
+            layout_error_code = code
+            break
     return {
         "job_id": job_id,
         "row_id": row_id,
@@ -782,6 +940,7 @@ def _build_company_row(group: list[dict[str, Any]]) -> dict[str, Any]:
         "work_type": _safe_text(first.get("work_type")),
         "campaign_name": _safe_text(first.get("campaign_name")),
         "subject": _safe_text(first.get("subject")),
+        "layout_error_code": layout_error_code,
     }
 
 
@@ -980,12 +1139,14 @@ def _aggregate_counts(rows: list[dict[str, Any]], consent_rows: list[dict[str, A
         for key in ("email_broken", "soft_bounce", "delivery_error", "spam")
     )
     pending = manager_keys.get("pending", 0) + manager_keys.get("no_data", 0)
+    layout_errors = sum(1 for row in rows if _safe_text(row.get("layout_error_code")) == "kp_font_compact")
     return {
         "sent": len(rows),
         "delivered": delivered,
         "opened": opened,
         "clicked": clicked,
         "errors": errors,
+        "layout_errors": layout_errors,
         "pending": pending,
         "consents": confirmed,
         "materials_sent": materials_sent,
@@ -1539,6 +1700,261 @@ def build_campaign_analytics(job_id: str, *, refresh: bool = False) -> dict[str,
         "refresh_started": refresh_started,
         "refresh_in_progress": refresh_in_progress,
         "awaiting_provider_events": bool(counts["sent"] > 0 and counts["pending"] >= counts["sent"]),
+    }
+
+
+def _paginate_list(items: list[Any], *, page: int, per_page: int) -> tuple[list[Any], dict[str, int]]:
+    page = max(1, page)
+    per_page = min(max(1, per_page), 200)
+    total = len(items)
+    start = (page - 1) * per_page
+    return items[start : start + per_page], {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": max(1, (total + per_page - 1) // per_page) if total else 1,
+    }
+
+
+def _consents_summary(consent_rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total": len(consent_rows),
+        "confirmed": sum(1 for row in consent_rows if row.get("consent_status_key") == "confirmed"),
+        "pending": sum(1 for row in consent_rows if row.get("consent_status_key") == "pending"),
+        "materials_sent": sum(
+            1
+            for row in consent_rows
+            if row.get("materials_status") == "sent" or _safe_text(row.get("materials_sent_at"))
+        ),
+    }
+
+
+def _email_templates_for_campaign(campaign: dict[str, Any]) -> list[dict[str, Any]]:
+    from src.campaigns import template_service
+
+    owner = _safe_text(campaign.get("owner_username"))
+    templates: list[dict[str, Any]] = []
+    for field, template_type in (
+        ("email_template_id", "email"),
+        ("kp_template_id", "kp"),
+        ("contract_template_id", "contract"),
+    ):
+        template_id = _safe_text(campaign.get(field))
+        if not template_id:
+            continue
+        try:
+            tmpl = template_service.get_template(template_id, owner) or {}
+        except Exception:
+            tmpl = {}
+        item: dict[str, Any] = {
+            "id": template_id,
+            "type": template_type,
+            "name": _safe_text(tmpl.get("name")) or template_id,
+        }
+        if template_type == "email":
+            item["preview_image_url"] = f"/api/v1/templates/{template_id}/preview-image"
+        templates.append(item)
+    return templates
+
+
+def _documents_summary(job_id: str, *, page: int = 1, per_page: int = 50, query: str = "") -> dict[str, Any]:
+    from src.web.download_sources import list_output_archive_entries
+
+    output_dir = resolve_job_paths(job_id).output_dir
+    if not output_dir.exists():
+        return {"total": 0, "items": [], "pagination": _paginate_list([], page=page, per_page=per_page)[1]}
+    offset = max(0, (max(1, page) - 1) * min(max(1, per_page), 200))
+    limit = min(max(1, per_page), 200)
+    entries, total = list_output_archive_entries(
+        output_dir,
+        offset=offset,
+        limit=limit,
+        query=query,
+    )
+    return {
+        "total": total,
+        "items": entries,
+        "pagination": {
+            "page": max(1, page),
+            "per_page": limit,
+            "total": total,
+            "pages": max(1, (total + limit - 1) // limit) if total else 1,
+        },
+    }
+
+
+def _campaign_recipients_for_preview(campaign_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+    from sqlalchemy import select
+
+    from src.infra.db import session_scope
+    from src.infra.models import CampaignRecipient
+
+    with session_scope() as session:
+        rows = session.scalars(
+            select(CampaignRecipient)
+            .where(
+                CampaignRecipient.campaign_id == campaign_id,
+                CampaignRecipient.excluded.is_(False),
+            )
+            .order_by(CampaignRecipient.row_index.asc())
+            .limit(limit)
+        ).all()
+        return [
+            {
+                "id": row.id,
+                "row_index": row.row_index,
+                "company": row.company,
+                "contact_name": row.contact_name,
+                "email": row.email,
+                "send_status": row.send_status,
+                "last_error": row.last_error,
+            }
+            for row in rows
+        ]
+
+
+def _operational_snapshot(campaign: dict[str, Any] | None, job_id: str) -> dict[str, Any]:
+    from src.campaigns.service import list_batches
+
+    if not campaign:
+        return {"available": False}
+    campaign_id = _safe_text(campaign.get("id"))
+    owner = _safe_text(campaign.get("owner_username"))
+    batches = list_batches(campaign_id, owner, visible_owners=frozenset({owner})) if owner else []
+    live_send: dict[str, Any] | None = None
+    if campaign.get("status") in {"running", "scheduled", "paused"}:
+        remaining = max(0, int(campaign.get("pending_count") or 0))
+        queued = sum(1 for batch in batches if batch.get("status") == "pending")
+        running = next((batch for batch in batches if batch.get("status") == "running"), None)
+        if remaining > 0 or queued > 0 or running is not None:
+            live_send = {
+                "status": campaign.get("status"),
+                "remaining": remaining,
+                "queued_batches": queued,
+                "sending_now": running.get("size") if running else 0,
+                "next_batch_at": next(
+                    (batch.get("scheduled_at") for batch in batches if batch.get("status") == "pending"),
+                    None,
+                ),
+            }
+    return {
+        "available": True,
+        "sent_count": campaign.get("sent_count"),
+        "success_count": campaign.get("success_count"),
+        "total_count": campaign.get("total_count"),
+        "processed_count": campaign.get("processed_count"),
+        "pending_count": campaign.get("pending_count"),
+        "skipped_count": campaign.get("skipped_count"),
+        "failed_recipient_count": campaign.get("failed_recipient_count"),
+        "error_count": campaign.get("error_count"),
+        "attempt_error_count": campaign.get("attempt_error_count"),
+        "layout_error_count": campaign.get("layout_error_count"),
+        "status": campaign.get("status"),
+        "launched_at": campaign.get("launched_at"),
+        "completed_at": campaign.get("completed_at"),
+        "transport": campaign.get("transport"),
+        "progress": campaign.get("progress"),
+        "success_rate": campaign.get("success_rate"),
+        "batches": batches,
+        "live_send": live_send,
+    }
+
+
+def build_campaign_full_analytics(
+    job_id: str,
+    *,
+    refresh: bool = False,
+    delivery_page: int = 1,
+    sent_log_page: int = 1,
+    attempts_page: int = 1,
+    documents_page: int = 1,
+    documents_q: str = "",
+    per_page: int = 50,
+) -> dict[str, Any]:
+    from src.campaigns.chain_service import get_chain_click_stats
+    from src.campaigns.service import get_campaign_by_job_id, list_delivery_attempts
+    from src.jobs.job_docs import read_sent_mail_log
+
+    analytics = build_campaign_analytics(job_id, refresh=refresh)
+    campaign_db = get_campaign_by_job_id(job_id)
+    campaign_meta = analytics.get("campaign") or {}
+    if campaign_db:
+        campaign_meta = {
+            **campaign_meta,
+            **{k: v for k, v in campaign_db.items() if k not in {"draft_payload"}},
+        }
+
+    consent_rows = _load_consents_for_jobs((job_id,))
+    delivery_rows = _load_delivery_for_jobs((job_id,), refresh=refresh)
+    sent_log = read_sent_mail_log(job_id)
+    sent_page_items, sent_pagination = _paginate_list(sent_log, page=sent_log_page, per_page=per_page)
+    delivery_page_items, delivery_pagination = _paginate_list(delivery_rows, page=delivery_page, per_page=per_page)
+
+    domain_filters = StatsFilters(job_ids=(normalize_job_id(job_id),))
+    domain_stats = build_domain_delivery_stats(domain_filters)
+
+    chain_stats: dict[str, Any] = {"edges": [], "consents": {}}
+    delivery_attempts: dict[str, Any] = {"items": [], "pagination": _paginate_list([], page=1, per_page=per_page)[1]}
+    recipients: list[dict[str, Any]] = []
+    email_templates: list[dict[str, Any]] = []
+    if campaign_db:
+        campaign_id = _safe_text(campaign_db.get("id"))
+        if campaign_id:
+            try:
+                chain_stats = get_chain_click_stats(campaign_id)
+            except Exception:
+                logger.exception("full_analytics_chain_stats_failed", job_id=job_id, campaign_id=campaign_id)
+            delivery_attempts = list_delivery_attempts(
+                campaign_id,
+                page=attempts_page,
+                per_page=per_page,
+            )
+            recipients = _campaign_recipients_for_preview(campaign_id)
+            email_templates = _email_templates_for_campaign(campaign_db)
+
+    counts = analytics.get("summary") or {}
+    total_sent = int(counts.get("sent") or 0)
+    rates = dict(analytics.get("rates") or {})
+    rates["pending_rate"] = _pct(int(counts.get("pending") or 0), total_sent)
+
+    return {
+        "job_id": job_id,
+        "campaign": campaign_meta,
+        "campaign_id": _safe_text(campaign_db.get("id")) if campaign_db else "",
+        "period_from": analytics.get("period_from"),
+        "period_to": analytics.get("period_to"),
+        "status": analytics.get("status"),
+        "summary": counts,
+        "rates": rates,
+        "operational": _operational_snapshot(campaign_db, job_id),
+        "delivery": {
+            "funnel": analytics.get("funnel"),
+            "daily": analytics.get("daily"),
+            "undelivery_reasons": analytics.get("undelivery_reasons"),
+            "provider_effectiveness": analytics.get("provider_effectiveness"),
+            "insights": analytics.get("insights"),
+            "high_interest_companies": analytics.get("high_interest_companies"),
+            "problem_addresses": analytics.get("problem_addresses"),
+            "recommendations": analytics.get("recommendations"),
+            "refresh_started": analytics.get("refresh_started"),
+            "refresh_in_progress": analytics.get("refresh_in_progress"),
+            "awaiting_provider_events": analytics.get("awaiting_provider_events"),
+        },
+        "domain_stats": domain_stats,
+        "chain": chain_stats,
+        "consents": _consents_summary(consent_rows),
+        "delivery_rows": {
+            "items": delivery_page_items,
+            "pagination": delivery_pagination,
+        },
+        "sent_mail_log": {
+            "items": sent_page_items,
+            "pagination": sent_pagination,
+        },
+        "delivery_attempts": delivery_attempts,
+        "documents": _documents_summary(job_id, page=documents_page, per_page=per_page, query=documents_q),
+        "email_templates": email_templates,
+        "recipients": recipients,
     }
 
 

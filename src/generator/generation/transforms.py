@@ -34,6 +34,144 @@ def _capitalize_phrase_if_lower(value: str) -> str:
     return text
 
 
+_ADMIN_SERVICE_WORDS = frozenset(
+    {
+        "администрация",
+        "администрации",
+        "муниципального",
+        "муниципальном",
+        "муниципальный",
+        "муниципальное",
+        "муниципальная",
+        "образования",
+        "образование",
+        "района",
+        "район",
+        "районе",
+        "области",
+        "область",
+        "края",
+        "край",
+        "округа",
+        "округ",
+        "республики",
+        "республика",
+        "поселения",
+        "поселение",
+        "поселении",
+        "городского",
+        "городское",
+        "городском",
+        "сельского",
+        "сельское",
+        "сельском",
+        "город",
+        "города",
+        "городе",
+        "село",
+        "села",
+        "селе",
+        "деревня",
+        "деревни",
+        "посёлок",
+        "поселок",
+        "посёлка",
+        "поселка",
+        "посёлке",
+        "поселке",
+        "пгт",
+        "сельсовет",
+        "сельсовета",
+        "поссовет",
+        "поссовета",
+        "рабочий",
+        "рабочего",
+        "рабочем",
+        "поселок",
+        "посёлок",
+    }
+)
+
+_LOCALITY_MARKERS = frozenset(
+    {
+        "города",
+        "город",
+        "села",
+        "село",
+        "поселка",
+        "посёлка",
+        "поселок",
+        "посёлок",
+    }
+)
+
+_REPUBLIC_MARKERS = frozenset({"республики", "республика"})
+
+_TOPONYM_WORD_RE = re.compile(
+    r"^[а-яё]+(?:"
+    r"ского|цкого|нского|овского|евского|инского|"
+    r"ской|скую|ская|ский|цкий|"
+    r"ого|ому|ом|"
+    r"ая|ый|ий|ое|ее"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def _title_case_hyphenated_word(word: str) -> str:
+    return "-".join(part[:1].upper() + part[1:] if part else part for part in word.split("-"))
+
+
+def _normalize_geo_word_case(word: str, *, prev_lower: str) -> str:
+    clean = word.strip(",.;:")
+    if not clean:
+        return word
+
+    trailing = word[len(clean) :]
+    lower = clean.casefold()
+    if lower in _ADMIN_SERVICE_WORDS:
+        return lower + trailing
+    if prev_lower in _LOCALITY_MARKERS or prev_lower in _REPUBLIC_MARKERS:
+        return _title_case_hyphenated_word(lower) + trailing
+    if "-" in clean or _TOPONYM_WORD_RE.match(lower):
+        return _title_case_hyphenated_word(lower) + trailing
+    return clean + trailing
+
+
+def _normalize_geo_plain_phrase(text: str) -> str:
+    words = text.split()
+    if not words:
+        return text
+    normalized_words: list[str] = []
+    prev_lower = ""
+    for word in words:
+        normalized_words.append(_normalize_geo_word_case(word, prev_lower=prev_lower))
+        prev_lower = word.strip(",.;:").casefold()
+    return " ".join(normalized_words)
+
+
+def normalize_russian_geo_admin_case(value: str) -> str:
+    text = normalize_display_text(value).strip()
+    if not text:
+        return ""
+
+    parts: list[str] = []
+    cursor = 0
+    for match in re.finditer(r'("([^"]+)"|«([^»]+)»)', text):
+        if match.start() > cursor:
+            parts.append(_normalize_geo_plain_phrase(text[cursor : match.start()]))
+        if match.group(2) is not None:
+            inner = _normalize_mo_name_case(match.group(2))
+            parts.append(f'"{inner}"')
+        else:
+            inner = _normalize_mo_name_case(match.group(3))
+            parts.append(f"«{inner}»")
+        cursor = match.end()
+    if cursor < len(text):
+        parts.append(_normalize_geo_plain_phrase(text[cursor:]))
+    return "".join(parts).strip()
+
+
 def _capitalize_words(value: str) -> str:
     words = []
     for word in normalize_display_text(value).split():
@@ -100,7 +238,7 @@ def _dedupe_scope_parts(parts: list[str]) -> list[str]:
     result: list[str] = []
     lower_result: list[str] = []
     for raw_part in parts:
-        part = _capitalize_phrase_if_lower(raw_part)
+        part = normalize_russian_geo_admin_case(raw_part)
         if not part:
             continue
         lower_part = part.lower()
@@ -124,9 +262,15 @@ def ensure_official_district_wording(value: str) -> str:
     text = normalize_display_text(value).strip()
     if not text:
         return ""
-    return re.sub(
+    text = re.sub(
         r"(?<!муниципального\s)\b(?!муниципального\b)([А-ЯЁа-яё-]+(?:ского|цкого|ого))\s+района\b",
         r"\1 муниципального района",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"(?<!муниципальный\s)\b(?!муниципальный\b)([А-ЯЁа-яё-]+(?:ский|цкий|ской))\s+район\b",
+        r"\1 муниципальный район",
         text,
         flags=re.IGNORECASE,
     )
@@ -174,10 +318,29 @@ def build_unified_admin_name(mun_name: str) -> str:
 
 
 def build_district_admin_name(district_name: str) -> str:
-    normalized_district_name = normalize_display_text(district_name).strip()
+    normalized_district_name = ensure_official_district_wording(
+        normalize_russian_geo_admin_case(district_name)
+    )
     if not normalized_district_name:
         return ""
-    return f"Администрация муниципального образования {normalized_district_name}"
+
+    from src.generator.inflection.inflect import inflect_mun_name_genitive
+
+    district_genitive = inflect_mun_name_genitive(normalized_district_name).value
+    return f"Администрация {district_genitive or normalized_district_name}"
+
+
+_DISTRICT_SUBENTITY_MARKERS = ("поселение", "сельсовет", "поссовет")
+
+
+def _looks_like_district_entity_name(value: str) -> bool:
+    clean = normalize_display_text(value).strip()
+    if not clean:
+        return False
+    lowered = clean.casefold()
+    if any(marker in lowered for marker in _DISTRICT_SUBENTITY_MARKERS):
+        return False
+    return bool(re.search(r"\bрайон(?:а|у|ом|е)?\b", lowered))
 
 
 def _quoted_name_looks_like_mo_name(value: str) -> bool:
@@ -276,6 +439,33 @@ def build_output_folder_name(row: dict) -> str:
     return f"{row_id}_{safe_name}"
 
 
+def _looks_like_patronymic(word: str) -> bool:
+    lower = str(word or "").lower()
+    return lower.endswith(
+        ("вна", "ична", "инична", "овна", "евна", "ич", "оглы", "кызы", "угли")
+    )
+
+
+def parse_fio_components(fio: str) -> tuple[str, str, str]:
+    """Return (surname, first_name, patronymic) from a Russian FIO string."""
+    parts = [part for part in str(fio or "").split() if part]
+    if len(parts) >= 3:
+        return parts[0], parts[1], parts[2]
+    if len(parts) == 2:
+        if _looks_like_patronymic(parts[1]):
+            return "", parts[0], parts[1]
+        return parts[0], parts[1], ""
+    if len(parts) == 1:
+        return "", parts[0], ""
+    return "", "", ""
+
+
+def build_first_patronymic(fio: str) -> str:
+    surname, first_name, patronymic = parse_fio_components(fio)
+    first = first_name or (fio if fio and not surname else "")
+    return " ".join(part for part in (first, patronymic) if part).strip()
+
+
 def build_short_fio(fio: str) -> str:
     parts = [part for part in str(fio).split() if part]
     if not parts:
@@ -318,11 +508,18 @@ def build_document_context(row: dict, outgoing_number: int, work_type: str | Non
     raw_adm_name = normalize_display_text(row.get("ADM_NAME", ""))
     official_mo_name = extract_official_mo_name_from_adm_name(raw_adm_name)
     raw_mun_name = normalize_display_text(row.get("MUN_NAME", ""))
-    normalized_mun_r_name = _capitalize_phrase_if_lower(row.get("MUN_R_NAME", ""))
-    is_district_context = not raw_mun_name and bool(normalized_mun_r_name)
-    normalized_mun_name = normalized_mun_r_name if is_district_context else official_mo_name or raw_mun_name
+    normalized_mun_r_name = normalize_russian_geo_admin_case(str(row.get("MUN_R_NAME", "")))
+    is_district_context = bool(normalized_mun_r_name) and (
+        not raw_mun_name
+        or _looks_like_district_entity_name(raw_mun_name)
+    )
+    normalized_mun_name = (
+        ensure_official_district_wording(normalized_mun_r_name)
+        if is_district_context
+        else official_mo_name or raw_mun_name
+    )
     adm_name = (
-        raw_adm_name or build_district_admin_name(normalized_mun_r_name)
+        build_district_admin_name(normalized_mun_name)
         if is_district_context
         else build_unified_admin_name(normalized_mun_name)
     )
@@ -330,14 +527,19 @@ def build_document_context(row: dict, outgoing_number: int, work_type: str | Non
     row_for_inflection["MUN_NAME"] = normalized_mun_name
     row_for_inflection["ADM_NAME"] = adm_name
     row_for_inflection["MUN_R_NAME"] = normalized_mun_r_name
-    row_for_inflection["SUB_RF"] = _capitalize_phrase_if_lower(row.get("SUB_RF", ""))
+    row_for_inflection["SUB_RF"] = normalize_russian_geo_admin_case(str(row.get("SUB_RF", "")))
     row_for_inflection.update(build_work_type_context(effective_work_type))
     if "REQUISITES_OKTNO" not in row_for_inflection and "REQUISITES_OKTMO" in row_for_inflection:
         row_for_inflection["REQUISITES_OKTNO"] = row_for_inflection.get("REQUISITES_OKTMO")
     if "REQUISITES_OKTMO" not in row_for_inflection and "REQUISITES_OKTNO" in row_for_inflection:
         row_for_inflection["REQUISITES_OKTMO"] = row_for_inflection.get("REQUISITES_OKTNO")
     inflected, _ = build_inflected_fields_with_trace(row_for_inflection)
+    for field in ("MUN_NAME_1", "MUN_R_NAME_1", "SUB_RF_1", "ADM_NAME_1"):
+        value = str(inflected.get(field, "")).strip()
+        if value:
+            inflected[field] = normalize_russian_geo_admin_case(value)
     adm_name = patch_admin_name_components(adm_name, row_for_inflection, inflected)
+    adm_name = normalize_russian_geo_admin_case(adm_name)
     oktmo = row_for_inflection.get("REQUISITES_OKTNO", row_for_inflection.get("REQUISITES_OKTMO", ""))
     context = {
         "ID": row.get("ID"),
@@ -380,4 +582,18 @@ def build_document_context(row: dict, outgoing_number: int, work_type: str | Non
     context["MUN_R_SCOPE_FRAGMENT"] = ensure_official_district_wording(
         f"{context.get('MUN_R_NAME_1', '')} {context.get('SUB_RF_1', '')}".strip()
     )
+    for field in (
+        "MUN_R_NAME",
+        "SUB_RF",
+        "MUN_R_NAME_1",
+        "SUB_RF_1",
+        "ADM_NAME_1",
+        "MUN_NAME_1",
+        "WORK_SCOPE_FRAGMENT",
+        "MUN_R_SCOPE_FRAGMENT",
+        "HEAD_MO_FRAGMENT",
+    ):
+        value = str(context.get(field, "")).strip()
+        if value:
+            context[field] = normalize_russian_geo_admin_case(value)
     return context

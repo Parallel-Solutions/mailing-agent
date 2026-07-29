@@ -3,24 +3,30 @@ import { App, Tabs, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { profileApi } from '@/api/profile';
 import { OnboardingSettings } from '@/features/onboarding/OnboardingSettings';
+import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { readEnumParam } from '@/utils/urlState';
 import { ConnectionsPage } from './ConnectionsPage';
+
+const PROFILE_TABS = ['main', 'connections', 'onboarding', 'security', 'defaults', 'notifications'] as const;
 
 export function ProfilePage() {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery({
-    queryKey: ['profile'],
+  const { searchParams, pushParams } = useUrlNavigation();
+  const activeTab = readEnumParam(searchParams, 'tab', PROFILE_TABS, 'main');
+  const { data, isLoading } = useQuery({    queryKey: ['profile'],
     queryFn: () => profileApi.get(),
   });
 
   return (
     <Tabs
+      activeKey={activeTab}
+      onChange={(key) => pushParams({ tab: key === 'main' ? null : key })}
       items={[
         {
           key: 'main',
           label: 'Основные данные',
           children: (
-            <div data-onboarding-id="profile-main-form">
             <ProForm
               loading={isLoading}
               initialValues={data}
@@ -31,7 +37,7 @@ export function ProfilePage() {
               }}
             >
               <div data-onboarding-id="profile-sender">
-                <ProFormText name="display_name" label="Имя отправителя" />
+                <ProFormText name="display_name" label="Отображаемое имя" />
                 <ProFormText name="company" label="Компания" />
                 <ProFormText name="job_title" label="Должность" />
               </div>
@@ -43,7 +49,6 @@ export function ProfilePage() {
                 <ProFormText name="timezone" label="Часовой пояс" />
               </div>
             </ProForm>
-            </div>
           ),
         },
         { key: 'connections', label: 'Подключения', children: <ConnectionsPage /> },

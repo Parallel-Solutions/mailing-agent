@@ -14,7 +14,7 @@ test.describe('Authentication', () => {
 
     await page.goto('/');
     await page.waitForURL(/\/login/);
-    await expect(page.getByText('CampaignFlow')).toBeVisible();
+    await expect(page.getByText('ai-offer')).toBeVisible();
 
     await loginViaUi(page, USERNAME, PASSWORD);
     await expect(page.getByTestId('statistics-page')).toBeVisible();

@@ -4,6 +4,7 @@ import { App, Button, Empty, Tag } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { chainsApi, type ChainListItem } from '@/api/chains';
+import { formatLocalDateTime } from '@/utils/dateTime';
 
 type ChainsLocationState = {
   campaignId?: string;
@@ -39,72 +40,72 @@ export function ChainsPage() {
   return (
     <div data-onboarding-id="chains-overview">
       <ProTable<ChainListItem>
-        rowKey="id"
-        loading={isLoading}
-        search={false}
-        headerTitle="Конструктор цепочек"
-        toolBarRender={() => [
-          <Button
-            key="new"
-            type="primary"
-            icon={<PlusOutlined />}
-            loading={createChain.isPending}
-            onClick={() => createChain.mutate()}
-          >
-            Создать цепочку
-          </Button>,
-        ]}
-        dataSource={data?.items ?? []}
-        locale={{
-          emptyText: (
-            <Empty description="Цепочек пока нет">
-              <Button
-                type="primary"
-                icon={<PlusOutlined />}
-                loading={createChain.isPending}
-                onClick={() => createChain.mutate()}
-              >
-                Создать цепочку
-              </Button>
-            </Empty>
+      rowKey="id"
+      loading={isLoading}
+      search={false}
+      headerTitle="Конструктор цепочек"
+      toolBarRender={() => [
+        <Button
+          key="new"
+          type="primary"
+          icon={<PlusOutlined />}
+          loading={createChain.isPending}
+          onClick={() => createChain.mutate()}
+        >
+          Создать цепочку
+        </Button>,
+      ]}
+      dataSource={data?.items ?? []}
+      locale={{
+        emptyText: (
+          <Empty description="Цепочек пока нет">
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              loading={createChain.isPending}
+              onClick={() => createChain.mutate()}
+            >
+              Создать цепочку
+            </Button>
+          </Empty>
+        ),
+      }}
+      columns={[
+        {
+          title: 'Название',
+          dataIndex: 'name',
+          render: (_, row) => (
+            <Link to={`/chains/${row.id}`} state={chainNavigationState}>
+              {row.name}
+            </Link>
           ),
-        }}
-        columns={[
-          {
-            title: 'Название',
-            dataIndex: 'name',
-            render: (_, row) => (
-              <Link to={`/chains/${row.id}`} state={chainNavigationState}>
-                {row.name}
-              </Link>
-            ),
-          },
-          {
-            title: 'Статус',
-            dataIndex: 'published',
-            render: (_, row) => (
-              <Tag color={row.published ? 'success' : 'default'}>
-                {row.published ? 'Опубликована' : 'Черновик'}
-              </Tag>
-            ),
-          },
-          { title: 'Обновлена', dataIndex: 'updated_at', valueType: 'dateTime' },
-          {
-            title: 'Действия',
-            valueType: 'option',
-            render: (_, row) => [
-              <a
-                key="open"
-                onClick={() => navigate(`/chains/${row.id}`, { state: chainNavigationState })}
-              >
-                Открыть конструктор
-              </a>,
-              <a key="campaign" onClick={() => navigate(campaignUrl(row.id))}>
-                К рассылке
-              </a>,
-            ],
-          },
-        ]}
+        },
+        {
+          title: 'Статус',
+          dataIndex: 'published',
+          render: (_, row) => (
+            <Tag color={row.published ? 'success' : 'default'}>
+              {row.published ? 'Опубликована' : 'Черновик'}
+            </Tag>
+          ),
+        },
+        { title: 'Обновлена', dataIndex: 'updated_at', render: (_, row) => formatLocalDateTime(row.updated_at) },
+        {
+          title: 'Действия',
+          valueType: 'option',
+          render: (_, row) => [
+            <a
+              key="open"
+              onClick={() => navigate(`/chains/${row.id}`, { state: chainNavigationState })}
+            >
+              Открыть конструктор
+            </a>,
+            <a key="campaign" onClick={() => navigate(campaignUrl(row.id))}>
+              К рассылке
+            </a>,
+          ],
+        },
+      ]}
       />
     </div>
   );

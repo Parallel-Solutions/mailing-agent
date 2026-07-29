@@ -26,8 +26,11 @@ tools/oktmo_tool.py — сбор списка действующих МО рег
 """
 from __future__ import annotations
 
+import json
 import re
 import time
+from pathlib import Path
+
 import httpx
 from bs4 import BeautifulSoup
 from openpyxl import Workbook
@@ -72,10 +75,22 @@ def _clean_html(s: str) -> str:
     return s.strip()
 
 # Стоп-слова и усечение окончаний — для резолва региона по названию
-_STOP = {"муниципальные","образования","область","области","край","края","крае",
-         "республика","республики","округ","округа","автономный","автономной",
-         "автономная","город","города","федерального","значения","столицы",
-         "российской","федерации"}
+# ВАЖНО: здесь должны быть ВСЕ падежные формы служебных слов. Раньше в списке
+# были только "автономный"/"округ", поэтому запрос «Ханты-Мансийском автономном
+# округе» матчился с ЧУКОТСКИМ автономным округом по общим словам — молчаливо
+# неверный регион, что хуже пустого результата.
+_STOP = {"муниципальные","муниципальных","муниципальными","муниципальное",
+         "образования","образованиях","образованиями","образование",
+         "область","области","областью","областей","областная",
+         "край","края","крае","краем","краю",
+         "республика","республики","республике","республикой","республику",
+         "округ","округа","округе","округом","округу","округов",
+         "автономный","автономной","автономная","автономном","автономного",
+         "автономному","автономным","автономное",
+         "город","города","городе","городом","городской",
+         "федерального","федеральная","территория","значения","столицы",
+         "российской","федерации","субъект","субъекта","регион","региона",
+         "регионе"}
 _SUFS = sorted(["овского","евского","ского","ской","ская","ское","инская","инской",
                 "ный","ной","ная","ное","ого","его","ой","ай","ая","ое","ие","ий",
                 "ы","и","а","я","о","е","й"], key=len, reverse=True)
@@ -126,26 +141,94 @@ def _get_region_index() -> list[dict]:
     return idx
 
 
+# --- субъекты, которых НЕТ в индексе классификатора ---
+# Автономные округа в ОКТМО вложены в родительский субъект, поэтому на
+# странице-индексе (88 записей) их нет вовсе: ХМАО и ЯНАО лежат под Тюменской
+# областью (71), Ненецкий АО — под Архангельской (11). Их коды не проходят
+# фильтр «код региона + 9 нулей», и раньше такие запросы либо не находились,
+# либо матчились с чужим округом. Здесь они заданы прямыми кодами ОКТМО.
+#
+# Порядок важен: «Ямало-Ненецкий» содержит «ненецк», поэтому ямальские ключи
+# проверяются раньше ненецких.
+_NESTED_SUBJECTS = [
+    (("ямал", "янао", "ямало-ненецк"), "71900000000",
+     "Ямало-Ненецкий автономный округ"),
+    (("ханты", "хмао", "югра", "югры", "югре"), "71800000000",
+     "Ханты-Мансийский автономный округ — Югра"),
+    (("ненецк", "нао"), "11800000000",
+     "Ненецкий автономный округ"),
+]
+
+# Сокращения и разговорные написания: по корням слов они не сматчатся никогда
+# («хмао» не является префиксом «ханты-мансийск» и наоборот).
+_ALIASES = {
+    "башкирия": "Башкортостан", "татария": "Татарстан", "якутия": "Саха",
+    "чувашия": "Чувашская", "удмуртия": "Удмуртская", "мордовия": "Мордовия",
+    "кчр": "Карачаево-Черкесская", "кбр": "Кабардино-Балкарская",
+    "рсо": "Северная Осетия", "алания": "Северная Осетия",
+    "спб": "Санкт-Петербург", "питер": "Санкт-Петербург",
+    "мск": "Москва", "мо": "Московская",
+    "еао": "Еврейская", "чао": "Чукотский",
+}
+
+
+def _match_nested(query: str) -> dict | None:
+    """Автономные округа, отсутствующие в индексе, — по прямому коду ОКТМО."""
+    low = (query or "").lower()
+    for keys, code, name in _NESTED_SUBJECTS:
+        if any(k in low for k in keys):
+            return {"code": code[:2], "oktmo": code,
+                    "url": f"{BASE}/{code}.html", "name": name,
+                    "kw": _keywords(name)}
+    return None
+
+
 def resolve_region(query: str) -> dict | None:
     """
     Находит регион в индексе ОКТМО по названию (в любой форме/падеже).
     Returns: {code, url, name} или None.
     """
+    if not (query or "").strip():
+        return None
+
+    # 1) автономные округа: их нет в индексе, только прямым кодом
+    nested = _match_nested(query)
+    if nested:
+        logger.info(f"[oktmo] '{query}' -> {nested['name']} (вложенный округ)")
+        return nested
+
+    # 2) сокращения -> развёрнутое название
+    q = query
+    low = q.lower()
+    for alias, full in _ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", low):
+            q = f"{q} {full}"
+            break
+
     idx = _get_region_index()
-    qkw = _keywords(query)
+    qkw = _keywords(q)
     if not qkw:
         return None
+
     best, best_score = None, 0
     for item in idx:
         score = 0
-        for q in qkw:
+        for qk in qkw:
             for k in item["kw"]:
-                if q == k or q.startswith(k) or k.startswith(q):
+                # односимвольные пересечения не считаем: они дают ложные матчи
+                if qk == k or (len(k) >= 4 and qk.startswith(k)) \
+                        or (len(qk) >= 4 and k.startswith(qk)):
                     score += 1
                     break
         if score > best_score:
             best, best_score = item, score
-    return best if best_score > 0 else None
+
+    if not best:
+        logger.info(f"[oktmo] регион не распознан: {query!r} (ключи: {sorted(qkw)})")
+        return None
+
+    logger.info(f"[oktmo] '{query}' -> {best['name']} (совпадений: {best_score})")
+    return best
 
 def _split_name_center(s: str) -> tuple[str, str]:
     """«Ленинградский муниципальный округ (ст-ца Ленинградская)» → (название, центр)."""
@@ -155,9 +238,18 @@ def _split_name_center(s: str) -> tuple[str, str]:
     return s.strip(), ""
 
 
+# Страницы классификатора в пределах запуска не меняются, а _collect заходит на
+# страницу района ДВАЖДЫ: сперва чтобы проверить наличие поселений, потом чтобы
+# в неё спуститься. Без кэша это удваивает число сетевых запросов.
+_children_cache: dict[str, list[dict]] = {}
+
+
 def _children(url: str) -> list[dict]:
     """Прямые дети узла на classinform: [{oktmo, name, center, url}].
     Каждая ссылка дублируется (код + название); родитель помечен ведущим '-' — отсеиваем."""
+    cached = _children_cache.get(url)
+    if cached is not None:
+        return cached
     soup = BeautifulSoup(_fetch(url), "lxml")
     by_code: dict[str, list[str]] = {}
     for a in soup.find_all("a", href=True):
@@ -179,6 +271,7 @@ def _children(url: str) -> list[dict]:
             continue
         nm, center = _split_name_center(name)
         out.append({"oktmo": code, "name": nm, "center": center, "url": f"{BASE}/{code}.html"})
+    _children_cache[url] = out
     return out
 
 
@@ -259,10 +352,66 @@ def _collect(url: str, depth: int, acc: list[dict], visited: set[str],
 
 
 
-def fetch_region_mo_list(region: str) -> tuple[list[dict], dict]:
+# ==============================
+# ДИСКОВЫЙ КЭШ СПИСКА МО
+# ==============================
+#
+# Обход дерева классификатора занимает 1-3 минуты на регион (десятки страниц с
+# вежливой задержкой). При этом состав муниципалитетов меняется в результате
+# реформ — раз в несколько месяцев, не чаще. Поэтому список кэшируется на диск.
+
+_MO_CACHE_TTL_SEC = 30 * 24 * 3600      # месяц
+
+
+def _mo_cache_dir() -> Path | None:
+    try:
+        try:
+            from src.parser_new import config
+        except ImportError:
+            import config
+        d = Path(config.MEMORY_DIR) / "oktmo"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except Exception as e:
+        logger.debug(f"[oktmo] кэш недоступен: {e}")
+        return None
+
+
+def _mo_cache_load(oktmo: str) -> list[dict] | None:
+    d = _mo_cache_dir()
+    if not d:
+        return None
+    f = d / f"{oktmo}.json"
+    if not f.exists():
+        return None
+    try:
+        if time.time() - f.stat().st_mtime > _MO_CACHE_TTL_SEC:
+            logger.info(f"[oktmo] кэш устарел, обновляю: {f.name}")
+            return None
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) and data else None
+    except Exception as e:
+        logger.warning(f"[oktmo] не удалось прочитать кэш {f.name}: {e}")
+        return None
+
+
+def _mo_cache_save(oktmo: str, rows: list[dict]) -> None:
+    d = _mo_cache_dir()
+    if not d or not rows:
+        return
+    try:
+        (d / f"{oktmo}.json").write_text(
+            json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"[oktmo] не удалось сохранить кэш: {e}")
+
+
+def fetch_region_mo_list(region: str, refresh: bool = False) -> tuple[list[dict], dict]:
     """
     По названию региона возвращает (список МО, инфо_о_регионе).
-    Регион резолвится по индексу ОКТМО — никаких кодов ФНS.
+    Регион резолвится по индексу ОКТМО — никаких кодов ФНС.
+
+    refresh=True — игнорировать кэш и перечитать классификатор.
     """
     info = resolve_region(region)
     if not info:
@@ -272,6 +421,17 @@ def fetch_region_mo_list(region: str) -> tuple[list[dict], dict]:
         )
 
     logger.info(f"[oktmo] регион распознан: {info['name']} (ОКТМО {info['code']})")
+
+    key = str(info.get("oktmo") or info.get("code") or region)
+    if not refresh:
+        cached = _mo_cache_load(key)
+        if cached:
+            logger.info(f"[oktmo] {info['name']}: {len(cached)} МО из кэша "
+                        f"(обход классификатора пропущен)")
+            _emit(f"Беру список МО из сохранённого справочника ({len(cached)}).")
+            return cached, info
+
+    _emit("Обхожу классификатор ОКТМО, это занимает пару минут…")
     acc: list[dict] = []
     visited: set[str] = set()
     _collect(info["url"], depth=0, acc=acc, visited=visited)
@@ -283,6 +443,7 @@ def fetch_region_mo_list(region: str) -> tuple[list[dict], dict]:
             unique.append(r)
 
     logger.info(f"[oktmo] {info['name']}: найдено {len(unique)} действующих МО")
+    _mo_cache_save(key, unique)
     return unique, info
 
 
@@ -324,24 +485,159 @@ def _subject_to_nominative(genitive: str) -> str:
     return s
 
 
-def build_region_mo_file(region: str) -> tuple[str, int, str]:
+# Тип МО по слову из запроса пользователя. В ОКТМО названия выглядят как
+# «городской округ Сургут», «Ханты-Мансийский муниципальный район»,
+# «сельское поселение Луговской» — фильтруем по вхождению.
+# Правила проверяются ПО ПОРЯДКУ, от частного к общему: «городские округа»
+# должны сработать раньше, чем просто «округа» или «городские».
+# Слева — что должно встретиться в запросе (все элементы), справа — подстроки
+# для отбора по названию МО.
+_MO_TYPE_RULES = (
+    (("городск", "округ"),     ("городской округ",)),
+    (("городск", "поселени"),  ("городское поселение",)),
+    (("муниципальн", "округ"), ("муниципальный округ",)),
+    (("муниципальн", "район"), ("муниципальный район",)),
+    (("сельск",),              ("сельское поселение",)),
+    (("город",),               ("городской округ",)),
+    (("район",),               ("муниципальный район",)),
+    (("округ",),               ("городской округ", "муниципальный округ")),
+    (("поселени",),            ("сельское поселение", "городское поселение")),
+)
+
+
+def _mo_type_patterns(mo_type: str) -> tuple[str, ...]:
+    """Слова из запроса -> подстроки, по которым отбираем МО. Пусто = все типы."""
+    low = (mo_type or "").strip().lower()
+    if not low:
+        return ()
+    for needles, patterns in _MO_TYPE_RULES:
+        if all(n in low for n in needles):
+            return patterns
+    return ()
+
+
+# ==============================
+# ПОДСКАЗКА ИЗ ИСХОДНОЙ ФРАЗЫ ПОЛЬЗОВАТЕЛЯ
+# ==============================
+#
+# Модель систематически вызывает build_region_mo_file_tool без mo_type, и вместо
+# 13 городских округов пользователь получает все 107 МО вместе с сельскими
+# поселениями. Поэтому тип и количество разбираются из исходной фразы ДО запуска
+# агента и подставляются, если он параметр не передал.
+
+_REQUEST_HINT: dict[str, object] = {"mo_type": "", "limit": 0}
+
+# Как называть отобранные МО в сообщениях пользователю. Родительный падеж
+# множественного числа — он подходит и для «список ...», и для «13 ...».
+_MO_LABELS = {
+    ("городской округ",): "городских округов",
+    ("муниципальный округ",): "муниципальных округов",
+    ("муниципальный район",): "районов",
+    ("сельское поселение",): "сельских поселений",
+    ("городское поселение",): "городских поселений",
+    ("городской округ", "муниципальный округ"): "округов",
+    ("сельское поселение", "городское поселение"): "поселений",
+}
+
+
+def mo_label(mo_type: str = "") -> str:
+    """Как назвать искомые МО в сообщении пользователю.
+    Пусто -> нейтральное «МО»; иначе — то, что человек и просил."""
+    patterns = _mo_type_patterns(mo_type or str(_REQUEST_HINT.get("mo_type") or ""))
+    return _MO_LABELS.get(tuple(patterns), "МО") if patterns else "МО"
+
+
+def set_request_hint(message: str) -> None:
+    """Запоминает тип МО и количество из фразы пользователя. Вызывается из chat()."""
+    text = (message or "").strip()
+    _REQUEST_HINT["mo_type"] = ""
+    _REQUEST_HINT["limit"] = 0
+    if not text:
+        return
+
+    # берём только «что ищем», без географии: иначе «районы» из названия места
+    # («Ханты-Мансийского района») будут приняты за тип МО
+    head = re.split(r"\bв\s+регионе\b|\bв\s+субъекте\b", text, maxsplit=1,
+                    flags=re.IGNORECASE)[0]
+    if head == text:
+        parts = re.split(r"\s+в\s+", text, flags=re.IGNORECASE)
+        head = parts[0] if len(parts) > 1 else text
+
+    low = head.lower()
+    for needles, _patterns in _MO_TYPE_RULES:
+        if all(n in low for n in needles):
+            _REQUEST_HINT["mo_type"] = head.strip()
+            logger.info(f"[oktmo] тип МО из запроса: {head.strip()!r}")
+            break
+
+    m = re.search(r"объ[её]м\s*[:\-]?\s*(\d{1,4})", text, re.IGNORECASE)
+    if m:
+        _REQUEST_HINT["limit"] = int(m.group(1))
+
+
+def build_region_mo_file(region: str, mo_type: str = "",
+                         limit: int = 0) -> tuple[str, int, str]:
     """
-    Собирает все МО региона и создаёт Excel в формате data.xlsx.
+    Собирает МО региона и создаёт Excel в формате data.xlsx.
     Заполняет SUB_RF, MUN_NAME, REQUISITES_OKTMO; остальное — пусто.
+
+    mo_type: отбор по типу («городские округа», «районы», «сельские поселения»).
+             Пусто — все типы подряд.
+    limit:   сколько строк оставить. 0 — без ограничения.
+
     Returns: (путь_к_файлу, кол-во_МО, распознанное_название_региона).
     """
     if not _EXCEL_HELPERS:
         raise RuntimeError("excel_tool недоступен — запусти внутри проекта parser_new")
 
-    _emit("Ищу список МО региона в классификаторе ОКТМО…")
+    # подсказку из фразы пользователя подставляем ДО первого сообщения, иначе
+    # в интерфейсе мелькнёт нейтральное «МО» вместо запрошенного типа
+    if not (mo_type or "").strip():
+        mo_type = str(_REQUEST_HINT.get("mo_type") or "")
+        if mo_type:
+            logger.info(f"[oktmo] агент не задал mo_type, беру из запроса: {mo_type!r}")
+    if not limit:
+        limit = int(_REQUEST_HINT.get("limit") or 0)
+
+    # Запоминаем ИТОГОВЫЙ тип — неважно, пришёл он параметром от агента или из
+    # разбора фразы. Дальше его читает batch_processor через mo_label(), чтобы
+    # в интерфейсе было «13 городских округов», а не безликое «13 МО».
+    if (mo_type or "").strip():
+        _REQUEST_HINT["mo_type"] = mo_type
+
+    _emit(f"Ищу список {mo_label(mo_type)} региона в классификаторе ОКТМО…")
     mo, info = fetch_region_mo_list(region)
     if not mo:
         raise ValueError(f"По региону '{region}' не найдено действующих МО.")
 
+    # отбор по типу: пользователь просит «администрации городов», а не всё подряд
+    total_in_region = len(mo)
+    patterns = _mo_type_patterns(mo_type)
+    if patterns:
+        before = len(mo)
+        mo = [r for r in mo
+              if any(p in (r.get("name") or "").lower() for p in patterns)]
+        logger.info(f"[oktmo] фильтр по типу {mo_type!r}: {before} -> {len(mo)}")
+        if not mo:
+            raise ValueError(
+                f"В регионе '{region}' не найдено МО типа '{mo_type}'. "
+                f"Всего действующих МО: {before}. Уточни тип или собери все."
+            )
+
+    if limit and limit > 0:
+        mo = mo[:limit]
+
     # название субъекта из заголовка ОКТМО -> именительный падеж
     raw = re.sub(r"^муниципальные образования\s+", "", info["name"], flags=re.I)
     sub_rf = _subject_to_nominative(raw)
-    _emit(f"Нашёл список: {sub_rf} — {len(mo)} действующих МО.")
+    # Показываем ИТОГ отбора. Сырое число до фильтра (107 вместо 13) пользователя
+    # только путает — он просил города, а не все МО региона.
+    label = mo_label(mo_type)
+    if len(mo) != total_in_region:
+        _emit(f"{sub_rf}: отобрано {len(mo)} {label} "
+              f"(всего действующих МО в регионе: {total_in_region}).")
+    else:
+        _emit(f"{sub_rf}: {len(mo)} действующих {label}.")
 
     wb = Workbook()
     ws = wb.active
@@ -465,24 +761,42 @@ def build_okrugs_file_tool(region: str = "", include_city: bool = True) -> str:
         return f"Не удалось собрать округа: {e}"
 
 @tool
-def build_region_mo_file_tool(region: str) -> str:
+def build_region_mo_file_tool(region: str, mo_type: str = "", limit: int = 0) -> str:
     """
-    ПЕРВЫЙ ШАГ при запросе собрать данные по ВСЕМ МО региона
-    ("найди все МО Челябинской области", "собери все округа ..." и т.п.).
+    ПЕРВЫЙ ШАГ при запросе собрать данные по муниципальным образованиям региона:
+    администрации городов, районов, поселений, округов.
 
-    Находит в официальном классификаторе ОКТМО полный список действующих
-    муниципальных образований региона (по названию региона) и создаёт готовый
-    Excel-файл с заполненными SUB_RF, MUN_NAME и ОКТМО.
+    Находит в официальном классификаторе ОКТМО список действующих МО региона и
+    создаёт Excel с заполненными SUB_RF, MUN_NAME и ОКТМО.
 
     После этого ОБЯЗАТЕЛЬНО вызови batch_search_tool с полученным путём —
     он заполнит реквизиты, контакты и главу по каждому МО.
 
     Параметры:
-      region: название региона ("Челябинская область", "Забайкальский край").
+      region:  название региона ("Челябинская область", "ХМАО", "Забайкальский край")
+      mo_type: КАКИЕ ИМЕННО МО нужны. Обязательно передавай, если пользователь
+               назвал тип — иначе вернутся ВСЕ МО подряд, включая сотни сельских
+               поселений, и пользователь получит не то, что просил.
+                 "городские округа" / "города" -> только городские округа
+                 "муниципальные округа"        -> только муниципальные округа
+                 "районы"                      -> только муниципальные районы
+                 "сельские поселения"          -> только сельские поселения
+                 ""                            -> все типы подряд
+      limit:   сколько МО оставить. Если пользователь указал количество —
+               передавай его сюда. 0 — без ограничения.
+
+    Примеры:
+      «администрации городов ХМАО, 20 штук»
+          -> region="ХМАО", mo_type="городские округа", limit=20
+      «все МО Челябинской области»
+          -> region="Челябинская область", mo_type="", limit=0
+      «сельские поселения Татарстана»
+          -> region="Татарстан", mo_type="сельские поселения", limit=0
     """
     try:
-        path, n, sub_rf = build_region_mo_file(region)
-        return (f"Регион: {sub_rf}. Действующих МО: {n} (источник: ОКТМО).\n"
+        path, n, sub_rf = build_region_mo_file(region, mo_type=mo_type, limit=limit)
+        kind = f" (тип: {mo_type})" if mo_type else ""
+        return (f"Регион: {sub_rf}. Отобрано МО{kind}: {n} (источник: ОКТМО).\n"
                 f"Создан файл: {path}\n"
                 f"Следующий шаг: вызови batch_search_tool(file_path=\"{path}\").")
     except Exception as e:

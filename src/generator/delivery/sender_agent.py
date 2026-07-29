@@ -49,10 +49,10 @@ from src.generator.delivery.consent_store import (
 )
 from src.generator.delivery.email_validation import (
     EmailValidationResult,
-    normalize_email_validation_mode,
-    validate_email_address,
+    validate_configured_email_address,
 )
 from src.generator.case_engine import build_inflected_fields_with_trace
+from src.generator.inflection.inflect import inflect_mun_name_genitive
 from src.generator.philologist.philologist_agent import run_philologist
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
@@ -514,7 +514,32 @@ def _mail_mun_name_genitive(mun_name: str, fallback: str = "") -> str:
         return f"Городского поселения {normalized[len('Городское поселение ') :].strip()}".strip()
     if normalized.startswith("Сельское поселение "):
         return f"Сельского поселения {normalized[len('Сельское поселение ') :].strip()}".strip()
+    if normalized:
+        inflected = inflect_mun_name_genitive(normalized)
+        if inflected.value:
+            return inflected.value
     return normalized
+
+
+def _mail_territory_name_parts(
+    row: dict[str, Any],
+    *,
+    values: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    resolved = values or _mail_template_values(row)
+    mun_name = _safe_text(resolved.get("MUN_NAME_GENITIVE")) or _safe_text(resolved.get("MUN_R_NAME"))
+    subject_name = _safe_text(resolved.get("SUB_RF_1")) or _safe_text(resolved.get("SUB_RF"))
+    return mun_name, subject_name
+
+
+def _mail_territory_client_name(
+    row: dict[str, Any],
+    *,
+    values: dict[str, str] | None = None,
+) -> str:
+    mun_name, subject_name = _mail_territory_name_parts(row, values=values)
+    client_name = " ".join(part for part in (mun_name, subject_name) if part).strip()
+    return client_name or "муниципального образования"
 
 
 def _mail_template_values(row: dict[str, Any]) -> dict[str, str]:
@@ -527,8 +552,9 @@ def _mail_template_values(row: dict[str, Any]) -> dict[str, str]:
     mun_name_genitive = (
         _safe_text(inflected.get("MUN_R_NAME_1"))
         or _safe_text(row.get("MUN_R_NAME_1"))
-        or _safe_text(row.get("MUN_R_NAME"))
-        or _mail_mun_name_genitive(mun_name, _safe_text(inflected.get("MUN_NAME_1")))
+        or _safe_text(inflected.get("MUN_NAME_1"))
+        or _safe_text(row.get("MUN_NAME_1"))
+        or _mail_mun_name_genitive(mun_name)
     )
     subject_name_genitive = (
         _safe_text(inflected.get("SUB_RF_1"))
@@ -757,17 +783,6 @@ def _consent_candidate_recipients(
     )
 
 
-def _email_validation_mode() -> str:
-    return normalize_email_validation_mode(getattr(settings, "email_validation_mode", "domain"))
-
-
-def _email_validation_timeout_seconds() -> float:
-    try:
-        return max(1.0, float(getattr(settings, "email_validation_timeout_seconds", 3.0) or 3.0))
-    except (TypeError, ValueError):
-        return 3.0
-
-
 def _validate_recipient_for_send(
     recipient: str,
     validation_cache: dict[str, EmailValidationResult],
@@ -775,13 +790,7 @@ def _validate_recipient_for_send(
     cache_key = _mail_key(recipient) or _safe_text(recipient)
     if cache_key in validation_cache:
         return validation_cache[cache_key]
-    result = validate_email_address(
-        recipient,
-        mode=_email_validation_mode(),
-        timeout_seconds=_email_validation_timeout_seconds(),
-        smtpbz_api_key=getattr(settings, "smtpbz_api_key", ""),
-        smtpbz_api_base_url=getattr(settings, "smtpbz_api_base_url", ""),
-    )
+    result = validate_configured_email_address(recipient, config=settings)
     validation_cache[cache_key] = result
     return result
 
@@ -1762,13 +1771,10 @@ def _build_consent_request_body(
 ) -> str:
     profile = get_work_type_profile(work_type)
     values = _mail_template_values(row)
-    mun_name = _safe_text(values.get("MUN_R_NAME")) or _safe_text(values.get("MUN_NAME"))
-    subject_name = _safe_text(values.get("SUB_RF_1")) or _safe_text(values.get("SUB_RF"))
+    mun_name, subject_name = _mail_territory_name_parts(row, values=values)
     mode = _normalize_attachment_mode(attachment_mode)
     if mode == ATTACHMENT_MODE_KP:
-        client_name = " ".join(part for part in (mun_name, subject_name) if part).strip()
-        if not client_name:
-            client_name = "муниципального образования"
+        client_name = _mail_territory_client_name(row, values=values)
         work_name = {
             "territorial_zone_boundaries": "описания местоположения границ территориальных зон",
             "random_forest": "решения по интеллектуальной автоматизации государственного сектора",
@@ -2692,6 +2698,17 @@ def _send_via_smtp(
     return _save_sent_copy(message)
 
 
+_CHAIN_BRANCH_BUTTON_RE = re.compile(r"^(.+?):\s*(https?://\S+/chain/branch/\S+)\s*$")
+_CHAIN_ACTION_BUTTON_STYLE = (
+    "display:inline-block;margin:0 4px;padding:8px 16px;background:#236348;color:#fff;"
+    "text-decoration:none;border-radius:4px"
+)
+_CHAIN_UNSUBSCRIBE_BUTTON_STYLE = (
+    "display:inline-block;margin:0;padding:0;background:transparent;color:#868e96;"
+    "text-decoration:underline"
+)
+
+
 def _htmlify_mail_body(
     body: str,
     *,
@@ -2699,8 +2716,10 @@ def _htmlify_mail_body(
     include_unsubscribe: bool = True,
 ) -> str:
     parts: list[str] = []
-    for line in body.splitlines():
-        stripped = line.strip()
+    lines = body.splitlines()
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
         consent_match = re.match(
             r'^[«"]?((?:Получить|Направить) [^»"]+?\.?)[»"]?\s*:?\s*(https?://\S+)\s*$',
             stripped,
@@ -2717,8 +2736,42 @@ def _htmlify_mail_body(
                 f">{button_text}</a>"
                 "</div>"
             )
+            index += 1
+            continue
+        chain_match = _CHAIN_BRANCH_BUTTON_RE.match(stripped)
+        if chain_match:
+            action_buttons: list[str] = []
+            unsubscribe_buttons: list[str] = []
+            while index < len(lines):
+                current = lines[index].strip()
+                current_match = _CHAIN_BRANCH_BUTTON_RE.match(current)
+                if not current_match:
+                    break
+                raw_label = current_match.group(1)
+                button_text = escape(raw_label, quote=False)
+                chain_url = escape(current_match.group(2), quote=True)
+                if raw_label.strip().casefold().startswith("отпис"):
+                    unsubscribe_buttons.append(
+                        f'<a href="{chain_url}" style="{_CHAIN_UNSUBSCRIBE_BUTTON_STYLE}">{button_text}</a>'
+                    )
+                else:
+                    action_buttons.append(
+                        f'<a href="{chain_url}" style="{_CHAIN_ACTION_BUTTON_STYLE}">{button_text}</a>'
+                    )
+                index += 1
+            if action_buttons:
+                parts.append(
+                    '<div style="text-align:center;padding:8px 0">'
+                    f'<p style="margin:0">{"".join(action_buttons)}</p></div>'
+                )
+            if unsubscribe_buttons:
+                parts.append(
+                    '<div style="text-align:right;padding:12px 0 0">'
+                    f'<p style="margin:0">{"".join(unsubscribe_buttons)}</p></div>'
+                )
             continue
         parts.append(escape(stripped))
+        index += 1
     non_empty = [line for line in parts if line]
     html = "<br>".join(non_empty)
     for marker in _mail_footer_html_markers():
@@ -2924,6 +2977,7 @@ def _send_via_rusender(
     *,
     mail_template_path: Path | None = None,
     body_override: str | None = None,
+    html_override: str | None = None,
     job_id: str | None = None,
     send_run_id: str = "",
     send_mode: str = "",
@@ -2932,6 +2986,7 @@ def _send_via_rusender(
     credential_api_key: str | None = None,
     credential_sender_name: str | None = None,
     credential_api_base_url: str | None = None,
+    track_links: bool | None = None,
 ) -> dict[str, Any]:
     api_key = _safe_text(credential_api_key or settings.rusender_api_key)
     sender_email = _resolve_sender_email(sender_email, settings.rusender_sender_email, settings.smtp_sender_email)
@@ -2942,7 +2997,7 @@ def _send_via_rusender(
         raise RuntimeError("Не указан подтверждённый email отправителя RuSender.")
 
     plaintext_body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
-    html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
+    html_body = html_override if html_override is not None else _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
     idempotency_key = _build_provider_idempotency_key(
         provider="rusender",
         job_id=job_id,
@@ -2975,6 +3030,11 @@ def _send_via_rusender(
     }
     if encoded_attachments:
         payload["mail"]["attachments"] = encoded_attachments
+
+    effective_track_links = settings.rusender_track_links if track_links is None else track_links
+    if not effective_track_links:
+        payload["trackLinks"] = 0
+        payload["mail"]["trackLinks"] = 0
 
     request = Request(
         _build_rusender_url(RUSENDER_SEND_PATH, credential_api_base_url),
@@ -3144,6 +3204,7 @@ def _send_via_mailopost(
     *,
     mail_template_path: Path | None = None,
     body_override: str | None = None,
+    html_override: str | None = None,
     job_id: str | None = None,
     send_run_id: str = "",
     send_mode: str = "",
@@ -3162,7 +3223,7 @@ def _send_via_mailopost(
         raise RuntimeError("Не указан подтверждённый email отправителя MailoPost.")
 
     plaintext_body = body_override if body_override is not None else _build_mail_body(row, mail_template_path=mail_template_path)
-    html_body = _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
+    html_body = html_override if html_override is not None else _htmlify_mail_body(plaintext_body, include_unsubscribe=False)
     idempotency_key = _build_provider_idempotency_key(
         provider="mailopost",
         job_id=job_id,

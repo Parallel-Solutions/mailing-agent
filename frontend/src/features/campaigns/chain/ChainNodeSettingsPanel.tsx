@@ -1,9 +1,10 @@
 import { ProForm, ProFormSelect, ProFormText } from '@ant-design/pro-components';
-import { Alert, App, Form, Select, Typography } from 'antd';
+import { Alert, App, Form, Typography } from 'antd';
 import type { FormInstance } from 'antd';
 import { useEffect, useRef } from 'react';
 import type { ChainLinkKind, EmailChain, EmailChainNode, Template } from '@/api/types';
 import { hasChainButtonPlaceholder } from '@/features/templates/emailTemplateUtils';
+import { TemplatePickerField } from '@/features/templates/TemplatePickerField';
 import { isEmailNode, isLinkNode } from './chainUtils';
 
 type Props = {
@@ -241,13 +242,12 @@ export function ChainNodeSettingsPanel({
 
         {isEmailNode({ ...node, kind }) && (
           <>
-            <ProFormSelect
-              name="email_template_id"
-              label="Шаблон письма"
-              showSearch
-              options={emailTemplates.map((t) => ({ label: t.name, value: t.id }))}
-              fieldProps={{ placeholder: 'Поиск шаблона...', optionFilterProp: 'label' }}
-            />
+            <Form.Item name="email_template_id" label="Шаблон письма">
+              <TemplatePickerField
+                templates={emailTemplates}
+                placeholder="Поиск шаблона..."
+              />
+            </Form.Item>
             {missingChainButtonsPlaceholder && (
               <Alert
                 type="info"
@@ -258,16 +258,10 @@ export function ChainNodeSettingsPanel({
               />
             )}
             <Form.Item name="document_template_ids" label="Документы">
-              <Select
+              <TemplatePickerField
                 mode="multiple"
-                allowClear
-                showSearch
-                optionFilterProp="label"
+                templates={documentTemplates}
                 placeholder="Выберите документы"
-                options={documentTemplates.map((t) => ({
-                  label: t.version?.filename ? `${t.name} — ${t.version.filename}` : t.name,
-                  value: t.id,
-                }))}
               />
             </Form.Item>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>

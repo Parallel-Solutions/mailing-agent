@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from src.campaigns.onboarding_service import create_onboarding_for_new_user
 from src.infra.db import session_scope
-from src.infra.models import User
+from src.infra.models import CompanyMembership, User
 from src.security.auth import _safe_identifier
 from src.security.passwords import dummy_verify_password, hash_password, verify_password
 
@@ -28,6 +28,8 @@ class UserRecord:
     tenant_id: str
     role: str
     created_at: str
+    company_id: str | None = None
+    company_role: str | None = None
 
 
 def _now() -> datetime:
@@ -59,6 +61,18 @@ def username_exists(username: str) -> bool:
     return row is not None
 
 
+def _membership_for_username(username: str) -> tuple[str | None, str | None]:
+    with session_scope() as session:
+        row = session.execute(
+            select(CompanyMembership.company_id, CompanyMembership.role).where(
+                CompanyMembership.username == username
+            )
+        ).first()
+    if row is None:
+        return None, None
+    return str(row[0]), str(row[1] or "")
+
+
 def get_user_record(username: str) -> UserRecord | None:
     safe_username = _safe_identifier(username, fallback="")
     if not safe_username:
@@ -67,11 +81,26 @@ def get_user_record(username: str) -> UserRecord | None:
         row = session.get(User, safe_username)
     if row is None:
         return None
+    company_id, company_role = _membership_for_username(row.username)
     return UserRecord(
         username=row.username,
         tenant_id=row.tenant_id,
         role=row.role,
         created_at=row.created_at.isoformat(timespec="seconds"),
+        company_id=company_id,
+        company_role=company_role,
+    )
+
+
+def _record_from_user_row(row: User) -> UserRecord:
+    company_id, company_role = _membership_for_username(row.username)
+    return UserRecord(
+        username=row.username,
+        tenant_id=row.tenant_id,
+        role=row.role,
+        created_at=row.created_at.isoformat(timespec="seconds"),
+        company_id=company_id,
+        company_role=company_role,
     )
 
 
@@ -123,12 +152,7 @@ def verify_user_password(username: str, password: str) -> UserRecord | None:
         return None
     if not verify_password(password, row.password_hash):
         return None
-    return UserRecord(
-        username=row.username,
-        tenant_id=row.tenant_id,
-        role=row.role,
-        created_at=row.created_at.isoformat(timespec="seconds"),
-    )
+    return _record_from_user_row(row)
 
 
 def has_admin_user() -> bool:
@@ -208,9 +232,14 @@ def sync_imported_user(
 
 
 def user_record_to_dict(record: UserRecord) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "username": record.username,
         "tenant_id": record.tenant_id,
         "role": record.role,
         "created_at": record.created_at,
     }
+    if record.company_id:
+        payload["company_id"] = record.company_id
+    if record.company_role:
+        payload["company_role"] = record.company_role
+    return payload

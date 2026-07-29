@@ -45,7 +45,7 @@ CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
 KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
 KP_TEMPLATE_PDF_PATH = TEMPLATES_DIR / KP_TEMPLATE_PDF_FILENAME
 CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
-DOCUMENT_RENDERER_VERSION = "2026-06-23-signature-contact-template-gap-v23"
+DOCUMENT_RENDERER_VERSION = "2026-07-28-formal-correspondence-v4"
 OUTPUT_FOLDER_MANIFEST_FILENAME = ".mailing_agent_output.json"
 
 SVG_BLIP_PATTERN = re.compile(
@@ -1831,11 +1831,14 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
     for paragraph in iter_paragraphs(doc):
         replace_text_in_runs(paragraph, replacements)
 
-    if template_path.name.startswith("kp_"):
+    from src.generator.generation.pdf_safe import is_kp_docx
+
+    is_kp = is_kp_docx(template_path)
+    if is_kp:
         stabilize_kp_pdf_layout(doc, context)
 
     doc.save(output_path)
-    if template_path.name.startswith("kp_"):
+    if is_kp:
         restore_svg_assets_from_template(template_path, output_path)
     return output_path
 

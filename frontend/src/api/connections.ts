@@ -17,6 +17,7 @@ export type SmtpSetupAction = {
   instructions: string[];
   oauth_provider?: string | null;
   recommended_settings?: SmtpSetupSettings | null;
+  ai_used?: boolean;
 };
 
 export type SmtpSetupAnalysis = {
@@ -189,4 +190,6 @@ export const connectionsApi = {
     apiRequest<{ deleted: boolean }>(`/api/v1/connections/${id}`, { method: 'DELETE' }),
   test: (id: string) =>
     api.post<{ status: string; message: string }>(`/api/v1/connections/${id}/test`),
+  resetGuard: (id: string) =>
+    api.post<DeliveryConnection>(`/api/v1/connections/${id}/guard/reset`),
 };

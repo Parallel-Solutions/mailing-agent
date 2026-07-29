@@ -319,6 +319,14 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "EMAIL_DOP": ("Эл. Адрес (доп)", "Доп почта", "Резерв"),
     "TEL_OSN": ("Телефон", "Телефон основной"),
     "TEL_DOP": ("Телефон (доп)", "Доп телефон"),
+    "DATE": ("current_date", "CURRENT_DATE", "дата", "Дата документа"),
+    "current_date": ("DATE", "CURRENT_DATE", "дата"),
+    "VALID_UNTIL": ("valid_until", "срок действия", "Срок действия"),
+    "DIRECTOR_NAME": ("director_name", "Подписант", "генеральный директор"),
+    "PRICE_TOTAL": ("price_total", "Стоимость", "стоимость"),
+    "OUTGOING_NUMBER": ("outgoing_number", "исходящий номер", "CONTRACT_NUMBER"),
+    "WORK_TITLE": ("WORK_TITLE_1", "WORK_TITLE_NOMINATIVE", "Вид_работ", "Вид работ", "вид работ"),
+    "Вид_работ": ("WORK_TITLE", "WORK_TITLE_1", "WORK_TITLE_NOMINATIVE", "Вид работ"),
 }
 
 
@@ -326,7 +334,12 @@ def _norm_token(value: str) -> str:
     return re.sub(r"[^0-9A-ZА-ЯЁ]+", "", str(value or "").upper())
 
 
-def _mapping_suggestions(placeholders: list[str], headers: list[str]) -> list[dict[str, Any]]:
+def _mapping_suggestions(
+    placeholders: list[str],
+    headers: list[str],
+    *,
+    column_samples: dict[str, list[str]] | None = None,
+) -> list[dict[str, Any]]:
     normalized_headers = {_norm_token(header): header for header in headers}
     result: list[dict[str, Any]] = []
     for placeholder in placeholders:
@@ -345,6 +358,22 @@ def _mapping_suggestions(placeholders: list[str], headers: list[str]) -> list[di
                     continue
                 if normalized_placeholder and (normalized_placeholder in header_norm or header_norm in normalized_placeholder):
                     candidates.append({"column": header, "confidence": 0.55, "reason": "partial_name_match"})
+        if not candidates:
+            from src.campaigns.placeholder_semantic import semantic_match_recipient_column
+
+            semantic = semantic_match_recipient_column(
+                placeholder,
+                headers,
+                samples=column_samples,
+            )
+            if semantic is not None:
+                candidates.append(
+                    {
+                        "column": semantic.canonical,
+                        "confidence": min(float(semantic.score), 0.84),
+                        "reason": "semantic_match",
+                    }
+                )
         unique_candidates: list[dict[str, Any]] = []
         seen = set()
         for item in sorted(candidates, key=lambda candidate: float(candidate.get("confidence") or 0), reverse=True):

@@ -9,6 +9,7 @@ from typing import Any
 from src.jobs import resolve_job_paths
 from src.jobs.json_store import append_jsonl, path_lock, read_jsonl
 from src.jobs.storage import JOBS_DIR
+from src.utils.logger import logger
 
 
 EVENTS_FILENAME = "rusender_events.jsonl"
@@ -42,7 +43,8 @@ def append_rusender_events(payload: Any) -> dict[str, Any]:
             skipped += 1
             continue
 
-        job_id = task_to_job.get(task_id, {}).get("job_id", "")
+        task_info = task_to_job.get(task_id, {})
+        job_id = task_info.get("job_id", "")
         record = {
             "received_at": datetime.now().isoformat(timespec="seconds"),
             "event_id": _extract_first_text(event, ("eventId", "event_id", "id")),
@@ -50,7 +52,9 @@ def append_rusender_events(payload: Any) -> dict[str, Any]:
             "provider_status": _status_from_trigger(_extract_trigger(event)),
             "occurred_at": _extract_first_text(event, ("occurredAt", "occurred_at", "createdAt", "created_at")),
             "task_id": task_id,
-            "recipient": _extract_email(event),
+            "recipient": _extract_email(event) or task_info.get("recipient", ""),
+            "connection_id": task_info.get("connection_id", ""),
+            "smtp_response": _extract_smtp_response(event),
             "event": event,
         }
 
@@ -77,13 +81,28 @@ def append_rusender_events(payload: Any) -> dict[str, Any]:
                     provider_status=str(record.get("provider_status") or ""),
                     source="webhook_rusender",
                     job_id=job_id,
+                    delivery_response=str(record.get("smtp_response") or ""),
+                )
+                from src.generator.delivery.channel_guard import record_channel_outcome
+
+                record_channel_outcome(
+                    connection_id=str(record.get("connection_id") or ""),
+                    provider_message_id=task_id,
+                    provider_status=str(record.get("provider_status") or ""),
+                    recipient=str(record.get("recipient") or ""),
+                    smtp_response=str(record.get("smtp_response") or ""),
+                    occurred_at=str(record.get("occurred_at") or ""),
                 )
                 from src.generator.delivery.send_guard import record_complaint
 
                 if str(record.get("provider_status") or "").strip().lower() in {"spam", "complaint"}:
                     record_complaint()
             except Exception:
-                pass
+                logger.exception(
+                    "rusender_delivery_feedback_failed",
+                    task_id=task_id,
+                    connection_id=str(record.get("connection_id") or ""),
+                )
         else:
             unmatched += 1
     return {"saved": saved, "skipped": skipped, "duplicates": duplicates, "unmatched": unmatched, "jobs": sorted(jobs)}
@@ -178,6 +197,26 @@ def _extract_email(event: dict[str, Any]) -> str:
     return _extract_first_text(event, ("email", "recipient", "to"))
 
 
+def _extract_smtp_response(event: dict[str, Any]) -> str:
+    keys = (
+        "smtpServerResponse",
+        "smtp_server_response",
+        "smtpResponse",
+        "smtp_response",
+        "deliveryResponse",
+        "delivery_response",
+        "bounceReason",
+        "bounce_reason",
+        "reason",
+    )
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        response = _extract_first_text(payload, keys)
+        if response:
+            return response
+    return _extract_first_text(event, keys)
+
+
 def _extract_first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
     for key in keys:
         value = data.get(key)
@@ -187,30 +226,30 @@ def _extract_first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
 
 
 def _load_task_job_index() -> dict[str, dict[str, str]]:
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
     from src.jobs.job_docs import iter_sent_mail_items
 
     index: dict[str, dict[str, str]] = {}
     for job_id, item in iter_sent_mail_items():
         provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
-        task_ids = {
-            str(value).strip()
-            for value in (
-                item.get("provider_message_id"),
-                item.get("message_id"),
-                item.get("provider_job_id"),
-                provider.get("message_id"),
-                provider.get("uuid"),
-                provider.get("idempotency_key"),
-                provider.get("idempotencyKey"),
-                item.get("idempotency_key"),
-                item.get("idempotencyKey"),
-            )
-            if value not in (None, "")
+        raw_ids = [
+            item.get("provider_message_id"),
+            item.get("message_id"),
+            item.get("provider_job_id"),
+            provider.get("message_id"),
+            provider.get("uuid"),
+            provider.get("idempotency_key"),
+            provider.get("idempotencyKey"),
+            item.get("idempotency_key"),
+            item.get("idempotencyKey"),
+        ]
+        meta = {
+            "job_id": "" if job_id == "__legacy__" else job_id,
+            "row_id": str(item.get("row_id") or "").strip(),
+            "recipient": str(item.get("recipient") or "").strip(),
+            "connection_id": str(item.get("connection_id") or "").strip(),
         }
-        for task_id in task_ids:
-            index[task_id] = {
-                "job_id": "" if job_id == "__legacy__" else job_id,
-                "row_id": str(item.get("row_id") or "").strip(),
-                "recipient": str(item.get("recipient") or "").strip(),
-            }
+        for raw in raw_ids:
+            for task_id in provider_message_id_lookup_keys(raw):
+                index[task_id] = meta
     return index

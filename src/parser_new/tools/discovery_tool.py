@@ -107,6 +107,20 @@ SECTOR_OKVED: dict[str, list[str]] = {
     "парикмахер": ["96.02"],
     "автосервис": ["45.20"],
     "автосалон":  ["45.11"],
+    # авто-ремонт (частые формулировки)
+    "авторемонт": ["45.20"],
+    "автотехцентр": ["45.20"],
+    "автомастерск": ["45.20"],
+    "шиномонтаж": ["45.20"],
+    "автомойк":   ["45.20"],
+    "автозапчаст": ["45.31", "45.32"],
+    # двери и дверная фурнитура
+    "фурнитур":   ["25.72", "46.74", "47.52", "22.23"],
+    "скобян":     ["25.72", "46.74", "47.52"],
+    "замк":       ["25.72", "46.74"],
+    "петл":       ["25.72"],
+    "двер":       ["16.23", "25.12", "22.23", "46.73", "47.52"],
+    "окн":        ["16.23", "22.23", "25.12", "43.32"],
 }
 
 
@@ -120,6 +134,42 @@ def resolve_okved(query: str, explicit: str = "") -> list[str] | None:
         if kw in q:
             return list(codes)
     return None
+
+
+# ==============================
+# КАРТА "ГОРОД/РАЙОН -> СУБЪЕКТ РФ"
+# ==============================
+# Города и районы, которых НЕТ в карте субъектов (get_region_code): они входят
+# в состав субъекта. Ключ — корень названия (нижний регистр), как пишет
+# пользователь; значение — (код субъекта РФ, подстрока для фильтра по адресу).
+# Расширяется одной строкой. ВНИМАНИЕ: фильтр по адресу идёт по подстроке,
+# поэтому для «размытых» названий (напр. "Пушкин" поймает "ул. Пушкина")
+# возможны ложные совпадения — добавляй такие с осторожностью.
+CITY_TO_SUBJECT: dict[str, tuple[str, str]] = {
+    "колпин":     ("78", "колпино"),     # Санкт-Петербург
+    "кронштадт":  ("78", "кронштадт"),   # Санкт-Петербург
+    "сестрорецк": ("78", "сестрорецк"),  # Санкт-Петербург
+    "зеленоград": ("77", "зеленоград"),  # Москва
+}
+
+
+def resolve_region(region: str) -> tuple[str | None, str]:
+    """Определяет (код субъекта РФ, подстрока-фильтр по адресу).
+    - субъект РФ ("Санкт-Петербург")     -> (код, "")      без фильтра
+    - город/район из карты ("Колпино")   -> (код субъекта, подстрока) с фильтром
+    - иначе                              -> (None, "")
+    """
+    text = (region or "").strip()
+    # сначала пробуем как субъект РФ
+    code = get_region_code(text)
+    if code:
+        return code, ""
+    # затем как город/район внутри субъекта
+    key = text.lower()
+    for city_root, (subj_code, addr_sub) in CITY_TO_SUBJECT.items():
+        if city_root in key:
+            return subj_code, addr_sub
+    return None, ""
 
 
 # ==============================
@@ -264,7 +314,7 @@ def discover_companies(query: str, region: str, okved: str = "", limit: int = 25
     if not config.CHECKO_API_KEY:
         return {"success": False, "rows": [], "error": "CHECKO_API_KEY не задан"}
 
-    region_code = get_region_code(region)
+    region_code, address_filter = resolve_region(region)
     if not region_code:
         return {"success": False, "rows": [],
                 "error": f"Не удалось определить код региона для '{region}'"}
@@ -277,7 +327,10 @@ def discover_companies(query: str, region: str, okved: str = "", limit: int = 25
     okved_str = ",".join(okved_codes)
     logger.info(f"[discovery] query={query!r} region={region_code} okved=[{okved_str}] limit={limit}")
 
-    inns = _collect_inns(okved_codes, region_code, limit)
+    # email-фильтр (только с почтой) и фильтр по городу снижают выход,
+    # поэтому берём кандидатов с запасом: сильнее, если фильтруем по городу.
+    oversample = 8 if address_filter else 4
+    inns = _collect_inns(okved_codes, region_code, limit, oversample=oversample)
     if not inns:
         return {"success": False, "rows": [], "okved": okved_str,
                 "region_code": region_code,
@@ -286,15 +339,18 @@ def discover_companies(query: str, region: str, okved: str = "", limit: int = 25
     rows: list[dict] = []
     seen_inn: set[str] = set()
     for inn in inns:
-        if len(rows) >= limit:       # набрали нужное число действующих — стоп
+        if len(rows) >= limit:       # набрали нужное число — стоп
             break
         row = _enrich_one(inn)
         if not row:
             continue
         raw = row.pop("_status_raw", "")
-        active = _status_active(raw)
-        status_txt = _flat(raw, "Наим", "Код")
-        if not active:
+        if not _status_active(raw):          # только действующие
+            continue
+        if not (row.get("email") or "").strip():   # только компании с почтой
+            continue
+        # фильтр по городу/району внутри субъекта (напр. "Колпино")
+        if address_filter and address_filter not in (row.get("address") or "").lower():
             continue
         key = (row.get("inn") or inn).strip()
         if key in seen_inn:
@@ -305,6 +361,10 @@ def discover_companies(query: str, region: str, okved: str = "", limit: int = 25
         time.sleep(0.2)
 
     logger.info(f"[discovery] Собрано {len(rows)} организаций из {len(inns)} ИНН")
+    if address_filter and not rows:
+        return {"success": False, "rows": [], "okved": okved_str,
+                "region_code": region_code,
+                "error": f"В '{region}' не найдено ни одной компании с почтой."}
     return {"success": True, "rows": rows,
             "okved": okved_str, "region_code": region_code}
 

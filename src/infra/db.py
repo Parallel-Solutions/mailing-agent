@@ -10,7 +10,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from src.utils.config import settings
+from src.utils.config import settings, validate_runtime_database
 
 
 class Base(DeclarativeBase):
@@ -73,6 +73,10 @@ def _admin_database_url(database_url: str, *, admin_database: str = "postgres") 
 
 
 def ensure_database_exists() -> None:
+    # Every entrypoint (API, worker, parser and one-shot migration scripts)
+    # reaches the database through this function. Keep the contour guard here
+    # so a maintenance command cannot bypass checks performed by main.py.
+    validate_runtime_database(settings)
     database_url = settings.database_url
     database_name = _database_name_from_url(database_url)
     admin_engine = create_engine(
@@ -128,6 +132,29 @@ def _sync_missing_template_version_columns(connection) -> None:
         connection.execute(text("ALTER TABLE template_versions ADD COLUMN editor_state JSONB"))
 
 
+def _sync_missing_campaign_connection_ids(connection) -> None:
+    if not _has_table(connection, "campaigns"):
+        return
+    if _has_column(connection, "campaigns", "connection_ids"):
+        return
+    connection.execute(
+        text(
+            "ALTER TABLE campaigns ADD COLUMN connection_ids JSONB NOT NULL "
+            "DEFAULT '[]'::jsonb"
+        )
+    )
+    if _has_column(connection, "campaigns", "smtp_mailbox_id"):
+        connection.execute(
+            text(
+                """
+                UPDATE campaigns
+                SET connection_ids = jsonb_build_array(smtp_mailbox_id)
+                WHERE smtp_mailbox_id IS NOT NULL
+                """
+            )
+        )
+
+
 def _recover_orphaned_alembic_revision(connection) -> str | None:
     current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
     if current in _LEGACY_ORPHAN_REVISIONS:
@@ -145,8 +172,59 @@ def _has_table(connection, name: str) -> bool:
     )
 
 
+def _has_column(connection, table: str, column: str) -> bool:
+    return (
+        connection.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :table AND column_name = :column"
+            ),
+            {"table": table, "column": column},
+        ).scalar()
+        is not None
+    )
+
+
+def _column_default_contains(connection, table: str, column: str, fragment: str) -> bool:
+    default = connection.execute(
+        text(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = :table AND column_name = :column"
+        ),
+        {"table": table, "column": column},
+    ).scalar()
+    return bool(default and fragment in str(default))
+
+
+def _mail_template_column_names(connection) -> set[str]:
+    rows = connection.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'mail_templates'"
+        )
+    )
+    return {str(row[0]) for row in rows}
+
+
 def _detect_schema_revision(connection) -> str | None:
     """Best-effort stamp when alembic_version lags behind the real schema."""
+    if _has_column(connection, "delivery_attempts", "delivery_email"):
+        return "0022_delivery_attempt_email"
+    if _has_column(connection, "campaign_chain_tokens", "test_email"):
+        return "0021_chain_token_test_email"
+    if _has_table(connection, "company_document_counters"):
+        return "0020_company_document_numbers"
+    if _has_column(connection, "companies", "work_types"):
+        return "0019_company_work_types"
+    if _column_default_contains(connection, "campaign_schedules", "on_error", "skip"):
+        return "0017_on_error_skip"
+    if _has_table(connection, "companies"):
+        if not _has_column(connection, "campaigns", "connection_ids"):
+            return "0015_mail_template_is_template"
+        return "0016_companies"
+    mail_template_columns = _mail_template_column_names(connection)
+    if "is_template" in mail_template_columns:
+        return "0015_mail_template_is_template"
     if _has_table(connection, "email_chains"):
         return "0014_standalone_email_chains"
     if _has_table(connection, "campaign_chain_consent_events"):
@@ -168,6 +246,8 @@ def _detect_schema_revision(connection) -> str | None:
 def init_db() -> None:
     """Ensure target database exists and apply Alembic migrations to head."""
     ensure_database_exists()
+    with engine.begin() as connection:
+        _sync_missing_campaign_connection_ids(connection)
     alembic_cfg = Config("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
     try:

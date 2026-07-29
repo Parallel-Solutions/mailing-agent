@@ -48,6 +48,22 @@ except Exception:
     def _emit(*a, **k):
         pass
 
+def _label() -> str:
+    """Как называть обрабатываемые строки в сообщениях пользователю.
+
+    Тип («городские округа», «районы», «сельские поселения») разбирается из
+    исходной фразы в oktmo_tool. Здесь он только подставляется в текст, чтобы
+    интерфейс говорил словами пользователя, а не обобщённым «МО».
+    """
+    try:
+        try:
+            from src.parser_new.tools.oktmo_tool import mo_label
+        except ImportError:
+            from tools.oktmo_tool import mo_label
+        return mo_label()
+    except Exception:
+        return "МО"
+
 
 # ==============================
 # КОНСТАНТЫ
@@ -765,9 +781,9 @@ def run(
 
     if total:
         if cycle > 1:
-            _emit(f"Прохожу ещё раз по {total} МО с неполными данными…")
+            _emit(f"Прохожу ещё раз по {total} {_label()} с неполными данными…")
         else:
-            _emit(f"Начинаю сбор данных по {total} МО.")
+            _emit(f"Начинаю сбор данных: {total} {_label()}.")
 
     for i, rec in enumerate(records, 1):
         try:
@@ -801,7 +817,7 @@ def run(
             processed += 1
 
             if total and i % progress_step == 0 and i < total:
-                _emit(f"Собрал данные о {i} МО из {total}…")
+                _emit(f"Собрал данные: {i} из {total} {_label()}…")
 
             if i % save_every == 0:
                 wb.save(str(out_path))
