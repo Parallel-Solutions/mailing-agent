@@ -141,6 +141,63 @@ class DatabaseRuntimeGuardTests(unittest.TestCase):
 
         create_engine.assert_not_called()
 
+    def test_migration_lock_is_released_after_failure(self) -> None:
+        from src.infra import db
+
+        connection = MagicMock()
+        connection.dialect.name = "postgresql"
+        mocked_engine = MagicMock()
+        mocked_engine.connect.return_value.__enter__.return_value = connection
+
+        with patch.object(db, "engine", mocked_engine):
+            with self.assertRaisesRegex(RuntimeError, "migration failed"):
+                with db._migration_lock():
+                    raise RuntimeError("migration failed")
+
+        statements = [str(call.args[0]) for call in connection.execute.call_args_list]
+        self.assertEqual(
+            statements,
+            [
+                "SELECT pg_advisory_lock(:lock_id)",
+                "SELECT pg_advisory_unlock(:lock_id)",
+            ],
+        )
+
+    def test_detects_current_merged_schema_when_stamp_lags(self) -> None:
+        from src.infra import db
+
+        with (
+            patch.object(
+                db,
+                "_template_version_column_names",
+                return_value=set(db._TEMPLATE_SOURCE_TEXT_COLUMNS),
+            ),
+            patch.object(
+                db,
+                "_has_table",
+                side_effect=lambda _connection, table: table
+                == "user_onboarding_states",
+            ),
+        ):
+            revision = db._detect_schema_revision(MagicMock())
+
+        self.assertEqual(revision, "0031_merge_onboarding_main")
+
+    def test_detects_main_schema_without_onboarding_branch(self) -> None:
+        from src.infra import db
+
+        with (
+            patch.object(
+                db,
+                "_template_version_column_names",
+                return_value=set(db._TEMPLATE_SOURCE_TEXT_COLUMNS),
+            ),
+            patch.object(db, "_has_table", return_value=False),
+        ):
+            revision = db._detect_schema_revision(MagicMock())
+
+        self.assertEqual(revision, "0030_template_source_text_cache")
+
 
 class PasswordHardeningTests(unittest.TestCase):
     def test_dummy_verify_password_never_raises(self) -> None:

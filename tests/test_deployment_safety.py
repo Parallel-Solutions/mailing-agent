@@ -69,6 +69,48 @@ class MigrationGuardTests(unittest.TestCase):
 
 
 class ProductionDeploySafetyContractTests(unittest.TestCase):
+    def test_prod_audit_uses_tuple_aware_migration_graph(self) -> None:
+        audit = (PROJECT_ROOT / "scripts" / "prod-audit.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "from scripts.migration_guard import load_revision_graph, migration_heads",
+            audit,
+        )
+        self.assertIn("heads = migration_heads(load_revision_graph(", audit)
+        self.assertNotIn("down_match = re.search", audit)
+
+    def test_root_rollback_fails_fast_and_captures_diagnostics(self) -> None:
+        deploy_root = (
+            PROJECT_ROOT / "scripts" / "mailing-agent-deploy-root"
+        ).read_text(encoding="utf-8")
+        self.assertIn('if ! git reset --hard "$previous_head"', deploy_root)
+        self.assertIn('if ! docker pull "$previous_image"', deploy_root)
+        self.assertIn('if ! env "MAILING_AGENT_IMAGE=$previous_image"', deploy_root)
+        self.assertIn(
+            'if ! wait_for_url "$LOCAL_BASE_URL/health" "local health"',
+            deploy_root,
+        )
+        self.assertIn("rollback_diagnostics", deploy_root)
+        self.assertIn("docker logs --tail 200 mailing-agent-app-1", deploy_root)
+
+    def test_successful_immutable_deploy_refreshes_restricted_helpers(self) -> None:
+        deploy = (PROJECT_ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+        self.assertIn("refresh_restricted_deploy_helpers()", deploy)
+        self.assertIn('"${MAILING_AGENT_IMAGE##*:}"', deploy)
+        self.assertIn('current_sha="$(git rev-parse HEAD)"', deploy)
+        self.assertIn(
+            "scripts/mailing-agent-deploy-root",
+            deploy,
+        )
+        self.assertIn(
+            "/usr/local/sbin/mailing-agent-deploy-root",
+            deploy,
+        )
+        self.assertLess(deploy.index("./scripts/prod-audit.sh"), deploy.rindex(
+            "refresh_restricted_deploy_helpers"
+        ))
+
     def test_deploy_backs_up_before_recreating_application(self) -> None:
         deploy = (PROJECT_ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
         backup_position = deploy.index("bash ./scripts/backup-prod-data.sh")
