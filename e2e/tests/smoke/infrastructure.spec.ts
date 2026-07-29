@@ -29,7 +29,7 @@ test.describe('Infrastructure smoke @smoke', () => {
     });
 
     await page.goto('/login');
-    await expect(page.getByText('CampaignFlow')).toBeVisible();
+    await expect(page.getByText('ai-offer')).toBeVisible();
     await expect(page.getByPlaceholder('Логин')).toBeVisible();
 
     await page.goto('/');

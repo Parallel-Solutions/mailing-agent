@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 from src.jobs.access import principal_payload
 from src.security.auth import authenticate_user, principal_from_user_record
 from src.security.session_store import SESSION_COOKIE_NAME, create_session, delete_session
-from src.security.user_store import UserStoreError, create_user
+from src.security.user_store import UserStoreError, create_user, get_user_record
 from src.web.request_models import AuthLoginRequest, AuthRegisterRequest
 
 
@@ -123,15 +123,30 @@ def create_auth_router(
 
     @router.get("/api/auth/me")
     def auth_me(principal: object = Depends(check_auth)):
+        from src.campaigns import company_service
+        from src.jobs.access import coerce_principal
+
+        actor = coerce_principal(principal)
+        user_payload = principal_payload(principal)
+        if actor.company_id:
+            company = company_service.get_company(actor.company_id)
+            if company:
+                user_payload["company"] = {
+                    "id": company["id"],
+                    "name": company["name"],
+                    "logo_url": company.get("logo_url"),
+                }
         return {
             "status": "ok",
             "result": {
-                "user": principal_payload(principal),
+                "user": user_payload,
             },
         }
 
     @router.post("/api/admin/users")
     async def admin_create_user(payload: AuthRegisterRequest, principal: object = Depends(check_auth)):
+        from src.campaigns import company_service
+        from src.campaigns.company_service import CompanyServiceError
         from src.jobs.access import coerce_principal
 
         actor = coerce_principal(principal)
@@ -139,7 +154,16 @@ def create_auth_router(
             raise HTTPException(status_code=403, detail="Только администратор может создавать пользователей.")
         try:
             record = create_user(payload.username, payload.password)
+            if payload.company_id:
+                company_service.add_member(
+                    payload.company_id,
+                    record.username,
+                    role=payload.company_role or "member",
+                )
+                record = get_user_record(record.username) or record
         except UserStoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except CompanyServiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             "status": "ok",

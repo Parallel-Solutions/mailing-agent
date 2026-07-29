@@ -65,6 +65,16 @@ def _build_tools() -> list:
     from src.parser_new.tools.discovery_tool import discover_companies_tool
     tools.append(discover_companies_tool)
 
+    # Каскадный сбор (2ГИС + реестр) — основной инструмент для коммерческих
+    # организаций. Агент выбирает его сам по описанию, без маршрутизации в коде.
+    from src.parser_new.tools.collector import collect_recipients_tool
+    tools.append(collect_recipients_tool)
+
+    # Точечный сбор только через 2ГИС — на случай, когда нужна именно карта
+    # (район города, сфера без кода ОКВЭД).
+    from src.parser_new.tools.twogis_tool import discover_via_2gis_tool
+    tools.append(discover_via_2gis_tool)
+
     from src.parser_new.tools.email_tool import fix_emails_tool
     tools.append(fix_emails_tool)
 

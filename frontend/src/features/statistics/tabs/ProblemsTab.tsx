@@ -2,6 +2,7 @@ import { Button, Table } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { statisticsApi } from '@/api/statistics';
+import { formatLocalDateTime } from '@/utils/dateTime';
 import { KpiGrid } from '../components/KpiGrid';
 import { ProblemsCharts } from '../components/StatsCharts';
 import { useStatistics } from '../StatisticsContext';
@@ -72,7 +73,11 @@ export function ProblemsTab() {
           { title: 'Причина', dataIndex: 'bounce_reason_label' },
           { title: 'Провайдер', dataIndex: 'provider' },
           { title: 'Писем', dataIndex: 'attempts', render: (v) => fmt(v) },
-          { title: 'Последнее событие', dataIndex: 'last_event_at' },
+          {
+            title: 'Последнее событие',
+            dataIndex: 'last_event_at',
+            render: (value) => formatLocalDateTime(String(value || '')),
+          },
           {
             title: 'Рекомендация',
             render: (_, r) => (

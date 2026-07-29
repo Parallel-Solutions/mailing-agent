@@ -2,11 +2,17 @@ import { ProForm, ProFormSwitch, ProFormText, ProFormTextArea } from '@ant-desig
 import { App, Tabs, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { profileApi } from '@/api/profile';
+import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { readEnumParam } from '@/utils/urlState';
 import { ConnectionsPage } from './ConnectionsPage';
+
+export const PROFILE_TABS = ['main', 'connections', 'security', 'defaults', 'notifications'] as const;
 
 export function ProfilePage() {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
+  const { searchParams, pushParams } = useUrlNavigation();
+  const activeTab = readEnumParam(searchParams, 'tab', PROFILE_TABS, 'main');
   const { data, isLoading } = useQuery({
     queryKey: ['profile'],
     queryFn: () => profileApi.get(),
@@ -14,6 +20,8 @@ export function ProfilePage() {
 
   return (
     <Tabs
+      activeKey={activeTab}
+      onChange={(key) => pushParams({ tab: key === 'main' ? null : key })}
       items={[
         {
           key: 'main',
@@ -28,10 +36,10 @@ export function ProfilePage() {
                 void queryClient.invalidateQueries({ queryKey: ['profile'] });
               }}
             >
-              <ProFormText name="display_name" label="Имя отправителя" />
-              <ProFormText name="email" label="Email" />
+              <ProFormText name="display_name" label="Отображаемое имя" />
               <ProFormText name="company" label="Компания" />
               <ProFormText name="job_title" label="Должность" />
+              <ProFormText name="email" label="Email" />
               <ProFormTextArea name="signature" label="Подпись" />
               <ProFormText name="timezone" label="Часовой пояс" />
             </ProForm>
@@ -43,8 +51,8 @@ export function ProfilePage() {
           label: 'Безопасность',
           children: (
             <Typography.Paragraph type="secondary">
-              Смена пароля в этом интерфейсе недоступна. В локальном окружении создайте нового пользователя
-              через регистрацию или обратитесь к администратору.
+              Смена пароля в этом интерфейсе недоступна. В локальном окружении создайте нового
+              пользователя через регистрацию или обратитесь к администратору.
             </Typography.Paragraph>
           ),
         },

@@ -6,7 +6,7 @@ import { KpiGrid } from '../components/KpiGrid';
 import { FunnelRow } from '../components/FunnelRow';
 import { AnalyticsCharts } from '../components/StatsCharts';
 import { useStatistics } from '../StatisticsContext';
-import { asRecord, asRecordArray, fmt } from '../utils';
+import { asRecord, asRecordArray, fmt, fmtMetric } from '../utils';
 
 export function CampaignAnalyticsTab() {
   const {
@@ -54,26 +54,31 @@ export function CampaignAnalyticsTab() {
   const campaign = asRecord(result.campaign);
 
   const kpis = [
-    { title: 'Отправлено', value: fmt(summary.sent), drill: 'sent' },
+    { title: 'Принято провайдером', value: fmtMetric(summary.sent), drill: 'sent' },
     {
       title: 'Доставлено',
-      value: `${fmt(summary.delivered)} / ${rates.delivery_rate ?? 0}%`,
+      value: `${fmtMetric(summary.delivered)} / ${rates.delivery_rate ?? 0}%`,
       drill: 'delivered',
     },
     {
       title: 'Открыто',
-      value: `${fmt(summary.opened)} / ${rates.open_rate ?? 0}%`,
+      value: `${fmtMetric(summary.opened)} / ${rates.open_rate ?? 0}%`,
       drill: 'opened',
     },
     {
       title: 'Переходы',
-      value: `${fmt(summary.clicked)} / ${rates.ctr ?? 0}%`,
+      value: `${fmtMetric(summary.clicked)} / ${rates.ctr ?? 0}%`,
       drill: 'clicked',
     },
-    { title: 'Недоставлено', value: fmt(summary.errors), drill: 'errors' },
+    { title: 'Недоставлено', value: fmtMetric(summary.errors), drill: 'errors' },
+    {
+      title: 'КП не влезло',
+      value: fmtMetric(summary.layout_errors),
+      drill: 'kp_layout',
+    },
     {
       title: 'Отписки и спам',
-      value: fmt(Number(summary.unsubscribed || 0) + Number(summary.spam || 0)),
+      value: fmtMetric(Number(summary.unsubscribed || 0) + Number(summary.spam || 0)),
       drill: 'unsub_spam',
     },
   ];
@@ -91,7 +96,7 @@ export function CampaignAnalyticsTab() {
             options={(campaigns.length ? campaigns : asRecordArray(campaignsQuery.data?.campaigns)).map(
               (item) => ({
                 value: String(item.job_id),
-                label: String(item.title || item.job_id),
+                label: String(item.title || 'Рассылка без названия'),
               }),
             )}
           />

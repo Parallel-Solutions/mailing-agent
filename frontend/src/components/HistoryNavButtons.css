@@ -1,0 +1,16 @@
+.history-nav-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.history-nav-buttons .ant-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.history-nav-buttons .ant-btn:disabled {
+  color: rgba(0, 0, 0, 0.25);
+}

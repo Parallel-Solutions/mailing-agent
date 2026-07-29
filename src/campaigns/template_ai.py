@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,71 @@ except ImportError:  # pragma: no cover
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+
+# USD per 1M tokens (input, output). Conservative defaults for budget tracking.
+_MODEL_COST_PER_MILLION: dict[str, tuple[float, float]] = {
+    "gpt-4o": (2.50, 10.0),
+    "gpt-4.1": (2.0, 8.0),
+    "gpt-4o-mini": (0.15, 0.60),
+}
+_DEFAULT_INPUT_COST_PER_M = 2.50
+_DEFAULT_OUTPUT_COST_PER_M = 10.0
+# Extra image tokens when usage API does not itemize vision separately.
+_VISION_IMAGE_TOKEN_ESTIMATE = 1000
+
+
+@dataclass(frozen=True)
+class LlmUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    image_count: int = 0
+
+
+@dataclass(frozen=True)
+class VisionLlmResult:
+    payload: dict[str, Any]
+    usage: LlmUsage = field(default_factory=LlmUsage)
+    estimated_cost_usd: float = 0.0
+    model: str = ""
+
+
+def _model_cost_rates(model: str) -> tuple[float, float]:
+    lowered = (model or "").lower()
+    for key, rates in _MODEL_COST_PER_MILLION.items():
+        if key in lowered:
+            return rates
+    if "mini" in lowered:
+        return _MODEL_COST_PER_MILLION["gpt-4o-mini"]
+    return _DEFAULT_INPUT_COST_PER_M, _DEFAULT_OUTPUT_COST_PER_M
+
+
+def estimate_llm_cost_usd(
+    *,
+    model: str,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    image_count: int = 0,
+) -> float:
+    input_rate, output_rate = _model_cost_rates(model)
+    prompt = max(0, int(prompt_tokens or 0)) + max(0, int(image_count or 0)) * _VISION_IMAGE_TOKEN_ESTIMATE
+    completion = max(0, int(completion_tokens or 0))
+    return (prompt * input_rate + completion * output_rate) / 1_000_000.0
+
+
+def _usage_from_response(response: Any, *, image_count: int = 0) -> LlmUsage:
+    usage = getattr(response, "usage", None)
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+    if total_tokens <= 0:
+        total_tokens = prompt_tokens + completion_tokens
+    return LlmUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        image_count=max(0, int(image_count or 0)),
+    )
 
 
 def list_models() -> list[dict[str, str]]:
@@ -98,12 +164,16 @@ def _attachments_context(files: list[tuple[str, bytes]]) -> str:
     return "\n\n".join(chunks)
 
 
+def _resolve_model(model: str) -> str:
+    allowed = {item["id"] for item in list_models()}
+    return model.strip() if model.strip() in allowed else next(iter(allowed), "gpt-4o-mini")
+
+
 def _call_llm(model: str, system: str, user: str) -> dict[str, Any]:
     client = _build_client()
     if client is None:
         raise RuntimeError("AI недоступен: не настроен OpenAI API ключ")
-    allowed = {item["id"] for item in list_models()}
-    resolved_model = model.strip() if model.strip() in allowed else next(iter(allowed), "gpt-4o-mini")
+    resolved_model = _resolve_model(model)
     try:
         response = client.chat.completions.create(
             model=resolved_model,
@@ -120,6 +190,66 @@ def _call_llm(model: str, system: str, user: str) -> dict[str, Any]:
         return _parse_json_payload(content)
     except json.JSONDecodeError as exc:
         raise RuntimeError("Модель вернула некорректный JSON") from exc
+
+
+def _call_vision_llm(
+    model: str,
+    system: str,
+    user_text: str,
+    image_data_urls: list[str] | None = None,
+    *,
+    max_tokens: int = 8000,
+) -> dict[str, Any]:
+    return _call_vision_llm_tracked(
+        model,
+        system,
+        user_text,
+        image_data_urls,
+        max_tokens=max_tokens,
+    ).payload
+
+
+def _call_vision_llm_tracked(
+    model: str,
+    system: str,
+    user_text: str,
+    image_data_urls: list[str] | None = None,
+    *,
+    max_tokens: int = 8000,
+) -> VisionLlmResult:
+    client = _build_client()
+    if client is None:
+        raise RuntimeError("AI недоступен: не настроен OpenAI API ключ")
+    resolved_model = _resolve_model(model)
+    image_urls = [url for url in (image_data_urls or []) if url]
+    content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+    for url in image_urls:
+        content.append({"type": "image_url", "image_url": {"url": url}})
+    try:
+        response = client.chat.completions.create(
+            model=resolved_model,
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
+            ],
+            max_tokens=max(1000, int(max_tokens or 8000)),
+        )
+    except Exception as exc:
+        raise RuntimeError(_llm_error_message(exc, model=resolved_model)) from exc
+    raw = response.choices[0].message.content or ""
+    try:
+        payload = _parse_json_payload(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Модель вернула некорректный JSON") from exc
+    usage = _usage_from_response(response, image_count=len(image_urls))
+    cost = estimate_llm_cost_usd(
+        model=resolved_model,
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        image_count=usage.image_count,
+    )
+    return VisionLlmResult(payload=payload, usage=usage, estimated_cost_usd=cost, model=resolved_model)
 
 
 def _docx_from_paragraphs(title: str, paragraphs: list[str]) -> bytes:

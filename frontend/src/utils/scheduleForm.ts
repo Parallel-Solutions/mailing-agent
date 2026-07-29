@@ -1,4 +1,5 @@
 import dayjs, { type Dayjs } from 'dayjs';
+import { formatLocalDateTime } from '@/utils/dateTime';
 
 export type IntervalUnit = 'hours' | 'days';
 
@@ -26,6 +27,10 @@ export function intervalFromSeconds(seconds: number): {
 export function intervalToSeconds(value: number, unit: IntervalUnit): number {
   const n = Math.max(1, Math.floor(Number(value) || 1));
   return unit === 'days' ? n * 86400 : n * 3600;
+}
+
+export function formatScheduleDateTime(iso?: string | null, _timezone?: string): string {
+  return formatLocalDateTime(iso);
 }
 
 export function scheduleToFormValues(schedule?: {
@@ -56,9 +61,10 @@ export function formValuesToSchedulePayload(values: {
   if (values.start_at == null || values.start_at === '') return null;
   const start = dayjs(values.start_at);
   if (!start.isValid()) return null;
+  const effective = start.isBefore(dayjs()) ? dayjs() : start;
   return {
     batch_size: Math.max(1, Math.floor(Number(values.batch_size) || 25)),
-    start_at: start.toISOString(),
+    start_at: effective.toISOString(),
     send_immediately: false,
     interval_seconds: intervalToSeconds(
       Number(values.interval_value) || 1,

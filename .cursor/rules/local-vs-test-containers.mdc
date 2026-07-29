@@ -45,6 +45,24 @@ Python under `./src` is volume-mounted and does **not** need this rebuild. Skipp
 | Playwright E2E | `.\scripts\e2e.ps1 …` / `npm run e2e:*` | Compose project **`mailing-agent-e2e`**, DB **`mailing_e2e`**, host ports from `.env.e2e` (default app **19806**, Mailpit **18025**) |
 | Unit/integration | `docker compose -f docker-compose.test.yml run --rm test` | DB **`mailing_test`**, volume **`pgdata-test`** |
 
+### Restore dev stack after unit/integration tests (mandatory)
+
+`docker-compose.test.yml` shares the default Compose project name (`mailing-agent`) and service names (`postgres`, `minio`) with the local dev stack. Running tests **recreates** those containers on **`pgdata-test`** / `mailing_test`. The app on http://localhost:9806 keeps `DATABASE_URL=…/mailing` but reads the wrong volume until dev is restored.
+
+**After any** `docker compose -f docker-compose.test.yml run …` (including targeted `pytest`), **before** telling the user to use `:9806` or ending the turn:
+
+1. Bring dev infrastructure back (do **not** use `down -v` / `reset`):
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres minio app worker
+```
+
+Equivalent: `.\scripts\dev.ps1 start`.
+
+2. Verify postgres uses volume **`pgdata`** (not `pgdata-test`) and http://localhost:9806/health is OK.
+
+Never leave local manual testing on a postgres container still mounted to `pgdata-test`.
+
 Never leave the default project’s `app` on `:9806` with `DATABASE_URL=…/mailing_e2e`. After E2E, run `npm run e2e:down` (or `.\scripts\e2e.ps1 down`). Local UI stays on `dev.ps1` / `mailing`.
 
 ## Safety

@@ -170,6 +170,12 @@ def create_sender_router(
             schedule_delivery_fallback_check(jobs, provider=provider)
         except Exception:
             logger.exception("delivery_fallback_schedule_failed", provider=provider, jobs=jobs)
+        try:
+            from src.campaigns.delivery_fallback_service import schedule_campaign_delivery_fallbacks_from_webhook_result
+
+            schedule_campaign_delivery_fallbacks_from_webhook_result(result, provider=provider)
+        except Exception:
+            logger.exception("campaign_delivery_fallback_schedule_failed", provider=provider, jobs=jobs)
 
     @router.post("/api/sender/run")
     def sender_run(payload: SenderRunRequest | None = Body(default=None), principal: object = Depends(check_auth)):
@@ -384,6 +390,11 @@ def create_sender_router(
         reason = str(payload.get("reason") or "manual").strip()
         if not email:
             raise HTTPException(status_code=400, detail="email обязателен")
+        if reason == "unsubscribe":
+            from src.campaigns.suppression_service import apply_global_email_suppression
+
+            result = apply_global_email_suppression(email, reason=reason, source="manual")
+            return {"status": "ok", "result": {"email": email, "reason": reason, **result}}
         upsert_suppression(email, reason=reason, source="manual")
         return {"status": "ok", "result": {"email": email, "reason": reason}}
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import {
+import { sameSearchParams } from '@/utils/urlState';import {
   DASHBOARD_CACHE_PREFIX,
   isStatsTabKey,
   type StatsTabKey,
@@ -23,6 +23,8 @@ export type StatsFilters = {
 export type StatsPagination = {
   recipients: number;
   consents: number;
+  subscribes: number;
+  unsubscribes: number;
   problems: number;
 };
 
@@ -66,6 +68,8 @@ function readPagination(params: URLSearchParams): StatsPagination {
   return {
     recipients: Math.max(1, Number(params.get('rp') || 1) || 1),
     consents: Math.max(1, Number(params.get('cp') || 1) || 1),
+    subscribes: Math.max(1, Number(params.get('sp') || 1) || 1),
+    unsubscribes: Math.max(1, Number(params.get('up') || 1) || 1),
     problems: Math.max(1, Number(params.get('pp') || 1) || 1),
   };
 }
@@ -144,8 +148,28 @@ export function useStatisticsState() {
       const nextTab = next.tab ?? tab;
       const nextFilters = next.filters ?? filters;
       const nextPagination = next.pagination ?? pagination;
-      const params = new URLSearchParams();
+      const params = new URLSearchParams(searchParams);
       if (nextTab !== 'dashboard') params.set('tab', nextTab);
+      else params.delete('tab');
+      params.delete('from');
+      params.delete('to');
+      params.delete('period_from');
+      params.delete('period_to');
+      params.delete('campaign');
+      params.delete('provider');
+      params.delete('providers');
+      params.delete('consent_status');
+      params.delete('manager_action');
+      params.delete('org');
+      params.delete('organization');
+      params.delete('problems_only');
+      params.delete('quick_filter');
+      params.delete('q');
+      params.delete('rp');
+      params.delete('cp');
+      params.delete('sp');
+      params.delete('up');
+      params.delete('pp');
       if (nextFilters.period_from) params.set('from', nextFilters.period_from);
       if (nextFilters.period_to) params.set('to', nextFilters.period_to);
       if (nextFilters.campaign) params.set('campaign', nextFilters.campaign);
@@ -159,12 +183,14 @@ export function useStatisticsState() {
       if (nextFilters.q) params.set('q', nextFilters.q);
       if (nextPagination.recipients > 1) params.set('rp', String(nextPagination.recipients));
       if (nextPagination.consents > 1) params.set('cp', String(nextPagination.consents));
+      if (nextPagination.subscribes > 1) params.set('sp', String(nextPagination.subscribes));
+      if (nextPagination.unsubscribes > 1) params.set('up', String(nextPagination.unsubscribes));
       if (nextPagination.problems > 1) params.set('pp', String(nextPagination.problems));
-      setSearchParams(params, { replace: true });
+      if (sameSearchParams(searchParams, params)) return;
+      setSearchParams(params, { replace: false });
     },
-    [filters, pagination, setSearchParams, tab],
+    [filters, pagination, searchParams, setSearchParams, tab],
   );
-
   const setTab = useCallback(
     (nextTab: StatsTabKey, patch?: Partial<StatsFilters>) => {
       const nextFilters = { ...filters, ...patch };
@@ -172,10 +198,16 @@ export function useStatisticsState() {
       if (nextTab !== 'recipients' && patch?.quick_filter === undefined) {
         delete nextFilters.quick_filter;
       }
-      if (nextTab !== 'campaigns' && nextTab !== 'recipients' && nextTab !== 'consents' && nextTab !== 'problems') {
+      if (
+        nextTab !== 'campaigns' &&
+        nextTab !== 'recipients' &&
+        nextTab !== 'consents' &&
+        nextTab !== 'marketing-consents' &&
+        nextTab !== 'problems'
+      ) {
         delete nextFilters.q;
       }
-      const nextPagination = { recipients: 1, consents: 1, problems: 1 };
+      const nextPagination = { recipients: 1, consents: 1, subscribes: 1, unsubscribes: 1, problems: 1 };
       setFiltersState(nextFilters);
       setPaginationState(nextPagination);
       syncUrl({ tab: nextTab, filters: nextFilters, pagination: nextPagination });
@@ -190,7 +222,7 @@ export function useStatisticsState() {
         if (patch[key] === undefined && key in patch) delete nextFilters[key];
       }
       const nextPagination = options?.resetPages
-        ? { recipients: 1, consents: 1, problems: 1 }
+        ? { recipients: 1, consents: 1, subscribes: 1, unsubscribes: 1, problems: 1 }
         : pagination;
       setFiltersState(nextFilters);
       if (options?.resetPages) setPaginationState(nextPagination);
@@ -201,7 +233,7 @@ export function useStatisticsState() {
 
   const clearFilters = useCallback(() => {
     const empty: StatsFilters = {};
-    const nextPagination = { recipients: 1, consents: 1, problems: 1 };
+    const nextPagination = { recipients: 1, consents: 1, subscribes: 1, unsubscribes: 1, problems: 1 };
     setFiltersState(empty);
     setPaginationState(nextPagination);
     syncUrl({ filters: empty, pagination: nextPagination });

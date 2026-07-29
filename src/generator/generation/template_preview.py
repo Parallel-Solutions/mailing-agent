@@ -169,10 +169,60 @@ def resolve_template_preview_file(job_id: str | None, kind: str) -> Path:
         raise FileNotFoundError("Файл предпросмотра не найден.")
     return resolved
 
-def _convert_preview_docx_to_pdf(docx_path: Path, output_dir: Path) -> Path | None:
-    result = convert_docx_batch([docx_path], output_dir, chunk_size=1, worker_count=1)
+def _convert_preview_docx_to_pdf(
+    docx_path: Path,
+    output_dir: Path,
+    *,
+    fontconfig_path: Path | str | None = None,
+    prefer_local: bool = False,
+) -> Path | None:
+    result = convert_docx_batch(
+        [docx_path],
+        output_dir,
+        chunk_size=1,
+        worker_count=1,
+        fontconfig_path=fontconfig_path,
+        prefer_local=prefer_local,
+    )
     pdf_path = result.get(docx_path)
     return pdf_path if pdf_path is not None and pdf_path.exists() else None
+
+
+def convert_docx_to_delivery_pdf(
+    source_docx: Path,
+    output_pdf: Path,
+    *,
+    file_kind: str | None = None,
+    template_docx: Path | None = None,
+    max_body_font_half_points: int = 20,
+    fontconfig_path: Path | str | None = None,
+    prefer_local: bool = False,
+) -> Path:
+    """Convert DOCX to delivery PDF using the same pdf_safe pipeline as bulk generation."""
+    from src.generator.generation.pdf_safe import apply_pdf_safe_postprocess, prepare_docx_for_pdf_export
+
+    output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    staged_docx = output_pdf.parent / f"_pdf_safe_{source_docx.name}"
+    template_source = template_docx if template_docx and template_docx.exists() else source_docx
+    plan = prepare_docx_for_pdf_export(
+        source_docx,
+        staged_docx,
+        file_kind=file_kind,
+        template_docx=template_source,
+        max_body_font_half_points=max_body_font_half_points,
+    )
+    converted = _convert_preview_docx_to_pdf(
+        staged_docx,
+        output_pdf.parent,
+        fontconfig_path=fontconfig_path,
+        prefer_local=prefer_local,
+    )
+    if converted is None or not converted.exists():
+        raise RuntimeError("Не удалось преобразовать DOCX в PDF")
+    apply_pdf_safe_postprocess(converted, plan)
+    if converted != output_pdf:
+        output_pdf.write_bytes(converted.read_bytes())
+    return output_pdf
 
 
 def build_template_preview(

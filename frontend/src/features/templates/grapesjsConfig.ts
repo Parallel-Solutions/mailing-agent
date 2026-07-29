@@ -13,19 +13,14 @@ type NewsletterPresetPlugin = (editor: Editor, options?: Record<string, unknown>
 
 
 type CreateEditorOptions = {
-
   container: HTMLElement;
-
   bodyHtml: string;
-
   projectData?: Record<string, unknown> | null;
-
+  importedLayout?: boolean;
+  importSource?: string | null;
   onChange: () => void;
-
   uploadAsset: (file: File) => Promise<string>;
-
   onUploadError?: (error: unknown) => void;
-
 };
 
 
@@ -86,13 +81,19 @@ function buildChainButtonsStubInnerHtml(): string {
 
     + '<p style="margin:0 0 8px">'
 
-    + '<span style="display:inline-block;padding:8px 16px;background:#d9d9d9;color:#595959;'
+    + '<span style="display:inline-block;padding:8px 16px;background:#236348;color:#fff;'
 
     + 'border-radius:4px;margin:0 4px">Вариант 1</span>'
 
-    + '<span style="display:inline-block;padding:8px 16px;background:#d9d9d9;color:#595959;'
+    + '<span style="display:inline-block;padding:8px 16px;background:#236348;color:#fff;'
 
     + 'border-radius:4px;margin:0 4px">Вариант 2</span>'
+
+    + '</p>'
+
+    + '<p style="margin:0 0 8px;text-align:right">'
+
+    + '<span style="display:inline-block;color:#868e96;text-decoration:underline">Отписаться</span>'
 
     + '</p>'
 
@@ -244,6 +245,145 @@ function resolveNewsletterPreset(): NewsletterPresetPlugin {
 
 
 
+const FIXED_LAYOUT_RE = /data-layout=["']fixed["']/i;
+
+export function isFixedLayoutHtml(html: string, importSource?: string | null): boolean {
+  if (importSource === 'fixed_layout') return true;
+  return FIXED_LAYOUT_RE.test(html || '');
+}
+
+function extractStyleBlocks(html: string): string[] {
+  const blocks: string[] = [];
+  const pattern = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+  let match = pattern.exec(html);
+  while (match) {
+    blocks.push(match[0]);
+    match = pattern.exec(html);
+  }
+  return blocks;
+}
+
+function injectFixedLayoutCanvasStyles(editor: Editor, styleBlocks: string[]): void {
+  const frame = editor.Canvas.getFrameEl() as HTMLIFrameElement | null;
+  const doc = frame?.contentDocument;
+  if (!doc) return;
+  const head = doc.head || doc.getElementsByTagName('head')[0];
+  if (!head) return;
+  head.querySelectorAll('[data-ma-fixed-layout="1"]').forEach((node) => node.remove());
+  for (const block of styleBlocks) {
+    const css = block.replace(/^<style\b[^>]*>/i, '').replace(/<\/style>$/i, '');
+    const el = doc.createElement('style');
+    el.setAttribute('data-ma-fixed-layout', '1');
+    el.textContent = css;
+    head.appendChild(el);
+  }
+  // Suppress GrapesJS dashed/selected chrome on every absolute text chip — it reads
+  // as white "highlights" over the decor PNG (especially on teal callouts).
+  const chrome = doc.createElement('style');
+  chrome.setAttribute('data-ma-fixed-layout', '1');
+  chrome.textContent = `
+    .ma-fixed-layout-root .fixed-text,
+    .ma-fixed-layout-root .fixed-text *,
+    .ma-fixed-layout-root .fixed-text div,
+    .ma-fixed-layout-root .fixed-text span,
+    .ma-fixed-layout-root .fixed-text a {
+      background: transparent !important;
+      background-color: transparent !important;
+      box-shadow: none !important;
+    }
+    .ma-fixed-layout-root .fixed-text [data-gjs-highlightable],
+    .ma-fixed-layout-root .fixed-text *[data-gjs-highlightable] {
+      outline: none !important;
+      box-shadow: none !important;
+      background: transparent !important;
+      background-color: transparent !important;
+    }
+    .ma-fixed-layout-root .fixed-text .gjs-selected,
+    .ma-fixed-layout-root .fixed-text .gjs-hovered,
+    .ma-fixed-layout-root .fixed-page .gjs-selected,
+    .ma-fixed-layout-root .fixed-page .gjs-hovered {
+      outline: none !important;
+      box-shadow: none !important;
+      background: transparent !important;
+      background-color: transparent !important;
+    }
+    .gjs-dashed .ma-fixed-layout-root .fixed-text *[data-gjs-highlightable] {
+      outline: none !important;
+      background: transparent !important;
+    }
+  `;
+  head.appendChild(chrome);
+}
+
+function registerFixedLayoutComponent(editor: Editor): void {
+  const domComponents = editor.DomComponents;
+  const defaultType = domComponents.getType('default');
+  const defaultModel = defaultType.model;
+  const defaultView = defaultType.view;
+
+  domComponents.addType('ma-fixed-layout-page', {
+    isComponent(el) {
+      if (typeof el === 'object' && el !== null && 'getAttribute' in el) {
+        const element = el as HTMLElement;
+        if (element.getAttribute?.('data-layout') === 'fixed') {
+          return { type: 'ma-fixed-layout-page' };
+        }
+      }
+      return false;
+    },
+    model: {
+      defaults: {
+        ...defaultModel.prototype.defaults,
+        name: 'Fixed layout',
+        tagName: 'div',
+        droppable: false,
+        editable: false,
+        draggable: false,
+        copyable: false,
+        removable: false,
+        layerable: true,
+        highlightable: true,
+        selectable: true,
+        hoverable: true,
+        attributes: {
+          'data-layout': 'fixed',
+          class: 'fixed-page',
+        },
+      },
+    },
+    view: defaultView,
+  });
+
+  // Absolute text chips inside fixed layout: keep editable text but no selection chrome.
+  domComponents.addType('ma-fixed-layout-chip', {
+    isComponent(el) {
+      if (typeof el !== 'object' || el === null || !('closest' in el)) return false;
+      const element = el as HTMLElement;
+      if (!element.closest?.('.fixed-text')) return false;
+      const style = (element.getAttribute?.('style') || '').toLowerCase();
+      if (style.includes('position:absolute') || style.includes('position: absolute')) {
+        return { type: 'ma-fixed-layout-chip' };
+      }
+      return false;
+    },
+    model: {
+      defaults: {
+        ...defaultModel.prototype.defaults,
+        name: 'Fixed text',
+        droppable: false,
+        draggable: false,
+        copyable: false,
+        removable: false,
+        highlightable: false,
+        hoverable: false,
+        selectable: true,
+        editable: true,
+      },
+    },
+    view: defaultView,
+  });
+}
+
 const NEWSLETTER_PRESET_OPTS = {
   modalTitleImport: 'Импорт HTML',
   modalTitleExport: 'Экспорт HTML',
@@ -254,9 +394,37 @@ const NEWSLETTER_PRESET_OPTS = {
   showStylesOnChange: true,
 };
 
+function wrapImportedHtml(html: string): string {
+  const trimmed = html.trim();
+  if (!trimmed) return trimmed;
+  if (/class=["'][^"']*main-body/i.test(trimmed)) {
+    return trimmed;
+  }
+  const widthMatch = trimmed.match(/data-content-width=["'](\d+)["']/i)
+    || trimmed.match(/max-width\s*:\s*(\d+)px/i)
+    || trimmed.match(/width:(\d+)px/i);
+  const maxWidth = Math.max(480, Math.min(800, Number(widthMatch?.[1] || 600)));
+  const isFixedLayout = /data-layout=["']fixed["']/i.test(trimmed);
+  const cellStyle = isFixedLayout ? 'padding:0;overflow:hidden' : 'padding:0';
+  return (
+    '<table class="main-body" width="100%" cellpadding="0" cellspacing="0" role="presentation" '
+    + `style="width:100%;max-width:${maxWidth}px;margin:0 auto;background:#ffffff">`
+    + `<tr><td class="cell" style="${cellStyle}">`
+    + trimmed
+    + '</td></tr></table>'
+  );
+}
+
 
 
 export function createVisualEmailEditor(options: CreateEditorOptions): Editor {
+  const fixedLayoutMode = isFixedLayoutHtml(options.bodyHtml, options.importSource);
+  const presetOpts = {
+    ...NEWSLETTER_PRESET_OPTS,
+    inlineCss: !fixedLayoutMode,
+    showStylesOnChange: !fixedLayoutMode,
+  };
+  const fixedLayoutStyleBlocks = fixedLayoutMode ? extractStyleBlocks(options.bodyHtml) : [];
 
   const editor = grapesjs.init({
 
@@ -268,7 +436,7 @@ export function createVisualEmailEditor(options: CreateEditorOptions): Editor {
 
     storageManager: false,
 
-    plugins: [usePlugin(resolveNewsletterPreset(), NEWSLETTER_PRESET_OPTS)],
+    plugins: [usePlugin(resolveNewsletterPreset(), presetOpts)],
 
     deviceManager: {
 
@@ -293,6 +461,13 @@ export function createVisualEmailEditor(options: CreateEditorOptions): Editor {
 
 
   registerChainButtonsComponent(editor);
+  registerFixedLayoutComponent(editor);
+
+  if (fixedLayoutMode) {
+    editor.on('canvas:frame:load', () => {
+      injectFixedLayoutCanvasStyles(editor, fixedLayoutStyleBlocks);
+    });
+  }
 
 
 
@@ -344,7 +519,13 @@ export function createVisualEmailEditor(options: CreateEditorOptions): Editor {
 
     } else if (options.bodyHtml.trim()) {
 
-      editor.setComponents(options.bodyHtml);
+      const html = options.importedLayout ? wrapImportedHtml(options.bodyHtml) : options.bodyHtml;
+
+      editor.setComponents(html);
+      if (fixedLayoutMode) {
+        injectFixedLayoutCanvasStyles(editor, fixedLayoutStyleBlocks);
+        editor.getWrapper()?.addClass('ma-fixed-layout-root');
+      }
 
     }
 
@@ -396,7 +577,14 @@ export function createVisualEmailEditor(options: CreateEditorOptions): Editor {
 
 
 
-export function exportVisualEmailHtml(editor: Editor): string {
+export function exportVisualEmailHtml(
+  editor: Editor,
+  options?: { canonicalHtml?: string; importSource?: string | null },
+): string {
+  const canonical = options?.canonicalHtml || '';
+  if (canonical && isFixedLayoutHtml(canonical, options?.importSource)) {
+    return canonical;
+  }
 
   const inlined = editor.runCommand('gjs-get-inlined-html');
 

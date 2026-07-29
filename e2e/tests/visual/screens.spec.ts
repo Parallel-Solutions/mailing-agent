@@ -42,7 +42,7 @@ test.describe('Visual regression @visual', () => {
   test('login screen @visual', async ({ page }) => {
     await page.context().clearCookies();
     await page.goto('/login');
-    await expect(page.getByText('CampaignFlow')).toBeVisible();
+    await expect(page.getByText('ai-offer')).toBeVisible();
     await expectStableScreenshot(page, 'login.png');
   });
 
@@ -51,10 +51,10 @@ test.describe('Visual regression @visual', () => {
     await expect(page.getByTestId('statistics-page')).toBeVisible();
     await expectStableScreenshot(page, 'statistics.png');
 
-    for (const route of ['/campaigns', '/templates', '/audiences', '/connections', '/profile']) {
+    for (const route of ['/?tab=campaign-list', '/templates', '/?tab=audiences', '/connections', '/profile']) {
       await page.goto(route);
       await page.waitForLoadState('networkidle').catch(() => undefined);
-      const name = route.replace(/^\//, '').replace(/\//g, '-') || 'home';
+      const name = route.replace(/^\//, '').replace(/\//g, '-').replace(/\?/g, '').replace(/=/g, '-') || 'home';
       await expectStableScreenshot(page, `${name}.png`);
     }
 

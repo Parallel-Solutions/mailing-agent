@@ -21,7 +21,7 @@ export function LoginPage() {
       }}
     >
       <LoginForm
-        title="CampaignFlow"
+        title="ai-offer"
         subTitle="Вход в систему рассылок"
         onFinish={async (values) => {
           try {

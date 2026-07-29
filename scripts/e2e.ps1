@@ -74,7 +74,19 @@ function Ensure-Dirs {
 }
 
 function Cmd-Build { Invoke-Compose -ComposeArgs @('--profile', 'playwright', 'build', 'playwright') }
-function Cmd-Up { Invoke-Compose -ComposeArgs @('up', '--detach', '--build') }
+function Cmd-Up {
+    param([switch]$BuildServices)
+    if ($BuildServices) {
+        Invoke-Compose -ComposeArgs @('up', '--detach', '--build', 'app', 'worker')
+    } else {
+        Invoke-Compose -ComposeArgs @('up', '--detach')
+    }
+}
+function Cmd-UpBuild { Invoke-Compose -ComposeArgs @('up', '--detach', '--build', 'app', 'worker') }
+function Cmd-UpFull {
+    Cmd-Down
+    Invoke-Compose -ComposeArgs @('up', '--detach', '--build')
+}
 function Cmd-Down { Invoke-Compose -ComposeArgs @('--profile', 'playwright', 'down') }
 function Cmd-Clean { Invoke-Compose -ComposeArgs @('--profile', 'playwright', 'down', '-v', '--remove-orphans') }
 
@@ -101,10 +113,8 @@ function Cmd-Report {
 
 function Cmd-Full {
   Ensure-Dirs
-  Write-Host "== e2e:clean volumes for isolated DB ==" -ForegroundColor Green
-  # Keep named volumes of prod stack if user wants; for full we recreate e2e overlay services.
-  Cmd-Down
-  Cmd-Up
+  Write-Host "== e2e:full (clean + rebuild) ==" -ForegroundColor Green
+  Cmd-UpFull
   Write-Host "== waiting for health ==" -ForegroundColor Green
   $deadline = (Get-Date).AddMinutes(5)
   $appHealthy = ''
@@ -145,6 +155,8 @@ if ($args.Count -gt 1) { $rest = $args[1..($args.Count - 1)] }
 switch ($cmd) {
   'build' { Cmd-Build }
   'up' { Cmd-Up }
+  'up:build' { Cmd-UpBuild }
+  'up:full' { Cmd-UpFull }
   'down' { Cmd-Down }
   'clean' { Cmd-Clean }
   'test' { Cmd-Test (@('npx', 'playwright', 'test') + $rest) }
@@ -159,7 +171,7 @@ switch ($cmd) {
   default {
     Write-Host @"
 Usage: .\scripts\e2e.ps1 <command>
-  build | up | test | smoke | email | visual | update-snapshots
+  build | up | up:build | up:full | test | smoke | email | visual | update-snapshots
   headed | debug | report | down | clean | full
 "@
     exit 2

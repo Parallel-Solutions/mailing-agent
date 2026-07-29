@@ -15,10 +15,16 @@ class Principal:
     username: str
     tenant_id: str
     role: str = "user"
+    company_id: str | None = None
+    company_role: str | None = None
 
     @property
     def is_admin(self) -> bool:
         return self.role.lower() == "admin"
+
+    @property
+    def is_company_admin(self) -> bool:
+        return str(self.company_role or "").lower() == "company_admin"
 
     @property
     def actor_id(self) -> str:
@@ -42,7 +48,17 @@ def coerce_principal(value: Any) -> Principal:
         username = _safe_identifier(value.get("username"), fallback="unknown")
         tenant_id = _safe_identifier(value.get("tenant_id") or username, fallback=username)
         role = _safe_identifier(value.get("role") or "user", fallback="user").lower()
-        return Principal(username=username, tenant_id=tenant_id, role=role)
+        company_id_raw = _safe_text(value.get("company_id"))
+        company_id = company_id_raw or None
+        company_role_raw = _safe_text(value.get("company_role"))
+        company_role = _safe_identifier(company_role_raw, fallback="").lower() or None
+        return Principal(
+            username=username,
+            tenant_id=tenant_id,
+            role=role,
+            company_id=company_id,
+            company_role=company_role,
+        )
 
     # Backward-compatible test/helper path: old check_auth stubs returned a plain
     # username string. Treat it as admin so existing focused router tests keep
@@ -136,15 +152,31 @@ def authenticate_basic_user(username: str, password: str, settings_obj: Any) -> 
 
 
 def authenticate_user(username: str, password: str) -> Principal | None:
-    from src.security.user_store import verify_user_password
+    from src.security.user_store import sync_imported_user, verify_user_password
+    from src.utils.config import settings
 
     record = verify_user_password(username, password)
     if record is None:
-        return None
+        # Env-configured users (APP_PASSWORD / APP_USERS) are normally synced at startup.
+        # If bootstrap has not run yet or the row was lost, accept them and repair the store.
+        basic = authenticate_basic_user(username, password, settings)
+        if basic is None:
+            return None
+        sync_imported_user(
+            basic.username,
+            password,
+            tenant_id=basic.tenant_id,
+            role=basic.role,
+        )
+        record = verify_user_password(username, password)
+        if record is None:
+            return basic
     return Principal(
         username=record.username,
         tenant_id=record.tenant_id,
         role=record.role,
+        company_id=record.company_id,
+        company_role=record.company_role,
     )
 
 
@@ -153,4 +185,6 @@ def principal_from_user_record(record: Any) -> Principal:
         username=str(getattr(record, "username", "") or ""),
         tenant_id=str(getattr(record, "tenant_id", "") or ""),
         role=str(getattr(record, "role", "user") or "user"),
+        company_id=getattr(record, "company_id", None) or None,
+        company_role=getattr(record, "company_role", None) or None,
     )

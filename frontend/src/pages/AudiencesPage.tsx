@@ -2,18 +2,23 @@ import { PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
 import { App, Button, Drawer, Space, Table, Upload } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
 import { audiencesApi } from '@/api/audiences';
 import type { Audience } from '@/api/types';
+import { advanceOnboarding } from '@/features/onboarding/events';
+import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { formatLocalDateTime } from '@/utils/dateTime';
+import { statusLabel } from '@/utils/presentation';
 
-export function AudiencesPage() {
+export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
-  const [selected, setSelected] = useState<Audience | null>(null);
+  const { searchParams, pushParams } = useUrlNavigation();
+  const audienceId = searchParams.get('audience');
   const { data, isLoading } = useQuery({
     queryKey: ['audiences'],
     queryFn: () => audiencesApi.list(),
   });
+  const selected = (data || []).find((item) => item.id === audienceId) || null;
   const membersQuery = useQuery({
     queryKey: ['audience-members', selected?.id],
     queryFn: () => audiencesApi.members(selected!.id, { limit: 50 }),
@@ -22,9 +27,11 @@ export function AudiencesPage() {
 
   const createMutation = useMutation({
     mutationFn: () => audiencesApi.create(`Аудитория ${new Date().toLocaleString('ru-RU')}`),
-    onSuccess: () => {
+    onSuccess: (audience) => {
       message.success('Аудитория создана');
       void queryClient.invalidateQueries({ queryKey: ['audiences'] });
+      pushParams({ audience: audience.id });
+      advanceOnboarding('audience-open');
     },
   });
 
@@ -34,12 +41,13 @@ export function AudiencesPage() {
         rowKey="id"
         loading={isLoading}
         search={false}
-        headerTitle="База получателей"
+        headerTitle={embedded ? undefined : 'База получателей'}
         toolBarRender={() => [
           <Button
             key="new"
             type="primary"
             icon={<PlusOutlined />}
+            data-onboarding-id="create-audience"
             loading={createMutation.isPending}
             onClick={() => createMutation.mutate()}
           >
@@ -50,15 +58,21 @@ export function AudiencesPage() {
         columns={[
           { title: 'Название', dataIndex: 'name' },
           { title: 'Записей', dataIndex: 'member_count' },
-          { title: 'Источник', dataIndex: 'source' },
+          {
+            title: 'Источник',
+            dataIndex: 'source',
+            render: (value) =>
+              ({ manual: 'Создано вручную', import: 'Импортировано' })[String(value)] ||
+              'Внешний источник',
+          },
           { title: 'Качество', dataIndex: 'quality_score' },
-          { title: 'Обновлена', dataIndex: 'updated_at', valueType: 'dateTime' },
+          { title: 'Обновлена', dataIndex: 'updated_at', render: (_, row) => formatLocalDateTime(row.updated_at) },
           {
             title: 'Действия',
             valueType: 'option',
             render: (_, row) => (
               <Space>
-                <a onClick={() => setSelected(row)}>Открыть</a>
+                <a onClick={() => pushParams({ audience: row.id })}>Открыть</a>
                 <a
                   onClick={async () => {
                     await audiencesApi.duplicate(row.id);
@@ -76,7 +90,7 @@ export function AudiencesPage() {
       <Drawer
         width={820}
         open={Boolean(selected)}
-        onClose={() => setSelected(null)}
+        onClose={() => pushParams({}, ['audience'])}
         title={selected?.name}
         extra={
           selected ? (
@@ -89,13 +103,14 @@ export function AudiencesPage() {
                   message.success('Импорт выполнен');
                   void queryClient.invalidateQueries({ queryKey: ['audience-members', selected.id] });
                   void queryClient.invalidateQueries({ queryKey: ['audiences'] });
+                  advanceOnboarding('audience-import', 'campaign-basics');
                   onSuccess?.({});
                 } catch (error) {
                   onError?.(error as Error);
                 }
               }}
             >
-              <Button>Импорт</Button>
+              <Button data-onboarding-id="audience-import">Импорт</Button>
             </Upload>
           ) : null
         }
@@ -109,7 +124,11 @@ export function AudiencesPage() {
             { title: 'Контакт', dataIndex: 'contact_name' },
             { title: 'Email', dataIndex: 'email' },
             { title: 'Регион', dataIndex: 'region' },
-            { title: 'Статус', dataIndex: 'validation_status' },
+            {
+              title: 'Статус',
+              dataIndex: 'validation_status',
+              render: (value) => statusLabel(String(value || '')),
+            },
           ]}
           pagination={{ pageSize: 20, total: membersQuery.data?.total }}
         />

@@ -25,6 +25,7 @@ from src.generator.generation.generator_agent import GENERATOR_STATE, get_genera
 from src.generator.philologist.philologist_agent import PHILOLOGIST_STATE, get_philologist_status
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignRecipient
+from src.security.company_access import can_access_owner
 from src.jobs.clients_store import import_clients_from_xlsx
 from src.jobs.json_store import read_json, write_json_atomic
 from src.jobs.state import save_agent_state
@@ -52,11 +53,11 @@ def _load_campaign_rows(
     campaign_id: str,
     owner_username: str,
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
 ) -> tuple[Campaign, list[CampaignRecipient]]:
     with session_scope() as session:
         campaign = session.get(Campaign, campaign_id)
-        if campaign is None or (not is_admin and campaign.owner_username != owner_username):
+        if campaign is None or not can_access_owner(visible_owners, campaign.owner_username):
             raise FileNotFoundError("Рассылка не найдена")
         recipients = session.scalars(
             select(CampaignRecipient)
@@ -211,9 +212,9 @@ def prepare_campaign_generation(
     campaign_id: str,
     owner_username: str,
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    campaign, recipients = _load_campaign_rows(campaign_id, owner_username, is_admin=is_admin)
+    campaign, recipients = _load_campaign_rows(campaign_id, owner_username, visible_owners=visible_owners)
     if not campaign.job_id:
         raise ValueError("У рассылки не создано рабочее пространство")
     if not recipients:
@@ -239,7 +240,7 @@ def prepare_campaign_generation(
         "prepared_at": _now_iso(),
     }
     write_json_atomic(_manifest_path(campaign.job_id), manifest)
-    return generation_status(campaign_id, owner_username, is_admin=is_admin)
+    return generation_status(campaign_id, owner_username, visible_owners=visible_owners)
 
 
 def _compact_status(job_id: str, document_mode: str) -> dict[str, Any]:
@@ -284,10 +285,10 @@ def ensure_campaign_workspace(
     campaign_id: str,
     owner_username: str,
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
 ) -> str:
     """Sync data.xlsx, template files, and manifest before send-time generation."""
-    result = prepare_campaign_generation(campaign_id, owner_username, is_admin=is_admin)
+    result = prepare_campaign_generation(campaign_id, owner_username, visible_owners=visible_owners)
     return str(result.get("job_id") or "")
 
 
@@ -299,10 +300,10 @@ def ensure_recipient_documents(
     job_id: str,
     document_mode: str | None = None,
     work_type: str | None = None,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
 ) -> None:
     """Generate personalized documents for one recipient if output is missing."""
-    campaign, _ = _load_campaign_rows(campaign_id, owner_username, is_admin=is_admin)
+    campaign, _ = _load_campaign_rows(campaign_id, owner_username, visible_owners=visible_owners)
     effective_mode = normalize_document_mode(document_mode or campaign.document_mode)
     effective_work_type = work_type if work_type is not None else (campaign.work_type or None)
     row_id = str(recipient_id)
@@ -371,9 +372,9 @@ def generation_status(
     campaign_id: str,
     owner_username: str,
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    campaign, recipients = _load_campaign_rows(campaign_id, owner_username, is_admin=is_admin)
+    campaign, recipients = _load_campaign_rows(campaign_id, owner_username, visible_owners=visible_owners)
     if not campaign.job_id:
         return {"prepared": False, "stale": False, "ready": False, "status": "not_prepared"}
     manifest = _load_manifest(campaign.job_id)

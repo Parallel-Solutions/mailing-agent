@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -17,6 +18,7 @@ from src.campaigns.chain_template_utils import inject_chain_buttons
 from src.campaigns.template_render_service import render_email_template_text, resolve_cached_attachment
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignRecipient
+from src.security.company_access import can_access_owner
 
 
 def iter_email_nodes_bfs(chain: dict[str, Any]) -> list[dict[str, Any]]:
@@ -49,6 +51,33 @@ def iter_email_nodes_bfs(chain: dict[str, Any]) -> list[dict[str, Any]]:
     return ordered
 
 
+_TEXT_PREVIEW_LIMIT = 1500
+
+
+def _content_type_for_filename(filename: str) -> str:
+    suffix = Path(str(filename or "")).suffix.lower()
+    if suffix == ".pdf":
+        return "application/pdf"
+    if suffix == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if suffix in {".html", ".htm"}:
+        return "text/html"
+    return "application/octet-stream"
+
+
+def _serialize_review_issue(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "token": str(item.get("fragment") or item.get("token") or ""),
+        "kind": str(item.get("kind") or "artifact"),
+        "field": str(item.get("field") or "body_html"),
+        "severity": str(item.get("severity") or "error"),
+        "message": str(item.get("message") or ""),
+        "fragment": str(item.get("fragment") or item.get("token") or ""),
+        "template_id": str(item.get("template_id") or "") or None,
+        "suggestion": str(item.get("suggestion") or ""),
+    }
+
+
 def _first_preview_recipient(session, campaign_id: str) -> CampaignRecipient | None:
     return session.scalar(
         select(CampaignRecipient)
@@ -61,13 +90,29 @@ def _first_preview_recipient(session, campaign_id: str) -> CampaignRecipient | N
     )
 
 
+def _resolve_recipient(session, campaign_id: str, recipient_id: int | None) -> CampaignRecipient:
+    if recipient_id is not None:
+        recipient = session.get(CampaignRecipient, int(recipient_id))
+        if recipient is None or recipient.campaign_id != campaign_id:
+            raise ValueError("Получатель не найден")
+        return recipient
+    recipient = _first_preview_recipient(session, campaign_id)
+    if recipient is None:
+        raise ValueError("Нет получателей для препросмотра")
+    return recipient
+
+
 def _preview_attachments(
     document_template_ids: list[str],
     *,
     campaign: Campaign,
     recipient: CampaignRecipient,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    from src.campaigns import template_service
+    from src.campaigns.template_text_review_service import review_document_text
+
     items: list[dict[str, Any]] = []
+    attachment_issues: list[dict[str, Any]] = []
     owner = campaign.owner_username
     job_id = campaign.job_id
     for template_id in document_template_ids:
@@ -82,12 +127,29 @@ def _preview_attachments(
                 recipient=recipient,
             )
             if resolved:
-                filename, _data = resolved
+                filename, data = resolved
+                tmpl = template_service.get_template(tid, owner)
+                template_name = str((tmpl or {}).get("name") or filename or tid)
+                try:
+                    doc_text = template_service._file_text(filename, data)  # noqa: SLF001
+                except Exception:
+                    doc_text = ""
+                per_attachment_issues = review_document_text(
+                    doc_text,
+                    template_id=tid,
+                    template_name=template_name,
+                    field="attachment",
+                )
+                attachment_issues.extend(per_attachment_issues)
+                text_preview = doc_text[:_TEXT_PREVIEW_LIMIT] if doc_text else ""
                 items.append(
                     {
                         "template_id": tid,
                         "filename": filename,
                         "has_content": True,
+                        "content_type": _content_type_for_filename(filename),
+                        "text_preview": text_preview,
+                        "issues": [_serialize_review_issue(issue) for issue in per_attachment_issues],
                     }
                 )
             else:
@@ -97,6 +159,7 @@ def _preview_attachments(
                         "filename": "",
                         "has_content": False,
                         "error": "Вложение не найдено",
+                        "issues": [],
                     }
                 )
         except Exception as exc:
@@ -106,9 +169,10 @@ def _preview_attachments(
                     "filename": "",
                     "has_content": False,
                     "error": str(exc),
+                    "issues": [],
                 }
             )
-    return items
+    return items, attachment_issues
 
 
 def _render_email_node_preview(
@@ -137,8 +201,40 @@ def _render_email_node_preview(
 
     edges = outgoing_edges(chain, node_id)
     node_by_id = {str(n["id"]): n for n in chain.get("nodes") or []}
-    buttons = [(resolve_button_label(edge, node_by_id), "#") for edge in edges]
+    buttons = [
+        (
+            resolve_button_label(edge, node_by_id),
+            "#",
+            str((node_by_id.get(str(edge.get("target_id") or "")) or {}).get("link_kind") or "custom"),
+        )
+        for edge in edges
+    ]
     html, _text = inject_chain_buttons(html, text, buttons)
+
+    from src.campaigns.template_text_review_service import review_rendered_template
+
+    review_issues = review_rendered_template(
+        template_id=email_template_id,
+        template_name=str(node.get("name") or "Письмо"),
+        subject_template=subject_template,
+        body_html_template=body_html_template,
+        body_text_template=body_text_template,
+        recipient=recipient,
+        campaign=campaign,
+        deep=False,
+        rendered_subject=subject,
+        rendered_html=html,
+        rendered_text=text,
+        include_placeholder_issues=True,
+        strict_preview=True,
+    )
+    attachments, attachment_issues = _preview_attachments(
+        list(node.get("document_template_ids") or []),
+        campaign=campaign,
+        recipient=recipient,
+    )
+    all_review_issues = [*review_issues, *attachment_issues]
+    issues = [_serialize_review_issue(item) for item in all_review_issues]
 
     return {
         "node_id": node_id,
@@ -146,11 +242,8 @@ def _render_email_node_preview(
         "subject": subject,
         "body_html": html,
         "email_template_id": email_template_id,
-        "attachments": _preview_attachments(
-            list(node.get("document_template_ids") or []),
-            campaign=campaign,
-            recipient=recipient,
-        ),
+        "issues": issues,
+        "attachments": attachments,
     }
 
 
@@ -158,16 +251,15 @@ def preview_chain_for_campaign(
     campaign_id: str,
     owner_username: str,
     *,
-    is_admin: bool = False,
+    recipient_id: int | None = None,
+    visible_owners: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise ValueError("Рассылка не найдена")
 
-        recipient = _first_preview_recipient(session, campaign_id)
-        if recipient is None:
-            raise ValueError("Нет получателей для препросмотра")
+        recipient = _resolve_recipient(session, campaign_id, recipient_id)
 
         chain = get_email_chain(camp, session=session)
         email_nodes = iter_email_nodes_bfs(chain)
@@ -195,11 +287,11 @@ def resolve_preview_attachment(
     template_id: str,
     owner_username: str,
     *,
-    is_admin: bool = False,
+    visible_owners: frozenset[str] | None = None,
 ) -> tuple[str, bytes] | None:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
-        if camp is None or (not is_admin and camp.owner_username != owner_username):
+        if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise ValueError("Рассылка не найдена")
         recipient = session.get(CampaignRecipient, int(recipient_id))
         if recipient is None or recipient.campaign_id != campaign_id:

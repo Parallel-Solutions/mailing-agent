@@ -1,7 +1,55 @@
+export type OnboardingStatus = 'active' | 'paused' | 'dismissed' | 'completed';
+
+export type OnboardingState = {
+  version: number;
+  status: OnboardingStatus;
+  current_step: number;
+  completed_steps: string[];
+  step_count: number;
+  available: boolean;
+  paused_at: string | null;
+  dismissed_at: string | null;
+  completed_at: string | null;
+  updated_at: string | null;
+};
+
+export type OnboardingUpdate = {
+  status: OnboardingStatus;
+  current_step?: number;
+  completed_steps?: string[];
+};
+
 export type User = {
   username: string;
   role?: string;
   tenant_id?: string;
+  company_id?: string | null;
+  company_role?: 'company_admin' | 'member' | null;
+  company?: { id: string; name: string; logo_url?: string | null };
+};
+
+export type Company = {
+  id: string;
+  name: string;
+  phone?: string;
+  contact_person_name?: string;
+  logo_url?: string | null;
+  member_count?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type CampaignDraftPayload = {
+  company_id?: string;
+  company_work_type_id?: string;
+  work_type_name?: string;
+  mapping_confirmed?: boolean;
+  mapping_confirmed_at?: string | null;
+  variable_mapping?: Record<string, string>;
+  email_body?: string;
+  price_total?: string | number;
+  valid_until_days?: number;
+  [key: string]: unknown;
 };
 
 export type Campaign = {
@@ -24,11 +72,24 @@ export type Campaign = {
   audience_id?: string | null;
   email_chain_id?: string | null;
   job_id?: string | null;
+  company_id?: string;
+  company_work_type_id?: string;
+  work_type_name?: string;
   sent_count?: number;
   total_count?: number;
   error_count?: number;
+  success_count?: number;
+  skipped_count?: number;
+  failed_recipient_count?: number;
+  processed_count?: number;
+  pending_count?: number;
+  attempt_count?: number;
+  attempt_error_count?: number;
+  success_rate?: number;
+  allowed_actions?: string[];
+  layout_error_count?: number;
   progress?: number;
-  draft_payload?: Record<string, unknown>;
+  draft_payload?: CampaignDraftPayload;
   launched_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -80,6 +141,54 @@ export type EmailChainPreviewAttachment = {
   filename: string;
   has_content: boolean;
   error?: string;
+  content_type?: string;
+  text_preview?: string;
+  issues?: TemplatePlaceholderIssue[];
+};
+
+export type TemplateReviewKind =
+  | 'artifact'
+  | 'malformed'
+  | 'unresolved'
+  | 'punctuation'
+  | 'grammar'
+  | 'case';
+
+export type TemplateReviewSeverity = 'error' | 'warning' | 'info';
+
+export type TemplatePlaceholderIssue = {
+  token: string;
+  kind: TemplateReviewKind;
+  field: string;
+  severity?: TemplateReviewSeverity;
+  message?: string;
+  fragment?: string;
+  template_id?: string | null;
+  suggestion?: string;
+  blocking?: boolean;
+};
+
+export type TemplateValidationIssue = {
+  template_id?: string | null;
+  template_name?: string;
+  token: string;
+  kind: TemplateReviewKind;
+  field?: string;
+  severity?: TemplateReviewSeverity;
+  message?: string;
+  fragment?: string;
+  suggestion?: string;
+  blocking?: boolean;
+};
+
+export type CampaignValidateResponse = {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  template_issues?: TemplateValidationIssue[];
+  active_recipients: number;
+  excluded_recipients: number;
+  mapping_confirmed?: boolean;
 };
 
 export type EmailChainPreviewItem = {
@@ -89,6 +198,7 @@ export type EmailChainPreviewItem = {
   body_html: string;
   email_template_id?: string | null;
   attachments: EmailChainPreviewAttachment[];
+  issues?: TemplatePlaceholderIssue[];
 };
 
 export type EmailChainPreviewResponse = {
@@ -101,6 +211,38 @@ export type EmailChainPreviewResponse = {
   items: EmailChainPreviewItem[];
 };
 
+export type DocumentLayoutReviewItem = {
+  template_id: string;
+  active_version_id: string;
+  template_name: string;
+  filename: string;
+  status: 'candidate' | 'already_applied' | 'skipped' | 'error';
+  message: string;
+  changes: string[];
+  before_image?: string;
+  after_image?: string;
+  can_apply: boolean;
+  layout_version?: string;
+};
+
+export type CampaignDocumentLayoutReview = {
+  campaign_id: string;
+  recipient: {
+    id: number;
+    company?: string;
+    contact_name?: string;
+  };
+  estimate_seconds: number;
+  documents: DocumentLayoutReviewItem[];
+};
+
+export type CampaignDocumentLayoutApplyResult = {
+  template_id: string;
+  template_version_id: string;
+  layout_version: string;
+  changes: string[];
+};
+
 export type CampaignList = { items: Campaign[]; total: number };
 
 export type ActiveSending = {
@@ -109,6 +251,9 @@ export type ActiveSending = {
   status: string;
   sent_count: number;
   total_count: number;
+  processed_count: number;
+  skipped_count: number;
+  failed_recipient_count: number;
   remaining: number;
   queued_batches: number;
   sending_now: number;
@@ -119,6 +264,7 @@ export type ActiveSending = {
   max_per_hour: number;
   max_per_day: number;
   progress: number;
+  success_rate: number;
 } | null;
 
 export type Recipient = {
@@ -133,6 +279,7 @@ export type Recipient = {
   excluded?: boolean;
   send_status?: string;
   last_error?: string | null;
+  layout_error_code?: string | null;
 };
 
 export type Schedule = {
@@ -202,8 +349,18 @@ export type Batch = {
   size: number;
   sent_count: number;
   error_count: number;
+  processed_count?: number;
+  skipped_count?: number;
+  failed_recipient_count?: number;
   remaining: number;
   status: string;
+  task_status?: string | null;
+  queue_position?: number | null;
+  is_current?: boolean;
+  available_at?: string | null;
+  attempt?: number;
+  max_attempts?: number;
+  wait_reason?: string;
   error?: string | null;
 };
 
@@ -232,9 +389,29 @@ export type PdfEditorState = {
   fields: PdfEditorField[];
 };
 
+export type ImportRefinementState = {
+  available?: boolean;
+  selected_source?: string;
+  stop_reason?: string;
+  best_score?: number;
+  rounds?: number;
+  spent_usd?: number;
+  source?: string;
+  qa?: {
+    winner?: string;
+    winner_score?: number;
+    candidate_scores?: Record<string, number>;
+    regenerated?: boolean;
+  };
+};
+
 export type EmailEditorState = {
   email_format?: 'simple' | 'visual';
   grapesjs_project?: Record<string, unknown>;
+  imported_layout?: boolean;
+  import_source?: string;
+  import_as_draft?: boolean;
+  import_refinement?: ImportRefinementState;
   brand?: { primaryColor?: string; logoUrl?: string };
   fields?: PdfEditorField[];
 };
@@ -246,6 +423,7 @@ export type Template = {
   template_type: string;
   status: string;
   is_template?: boolean;
+  attachment_output_format?: 'original' | 'pdf';
   tags?: string[];
   version?: {
     id: string;
@@ -266,6 +444,55 @@ export type Template = {
     };
     created_at?: string | null;
   };
+};
+
+export type FontAsset = {
+  id: string;
+  family: string;
+  family_normalized: string;
+  subfamily: string;
+  weight: number;
+  italic: boolean;
+  postscript_name?: string;
+  source: 'upload' | 'google_fonts' | string;
+  sha256: string;
+  size_bytes: number;
+  original_filename: string;
+  license_type?: string;
+  license_url?: string;
+  embedding_permissions: 'installable' | 'editable' | 'preview_print' | 'restricted' | 'unknown' | string;
+  glyph_coverage?: {
+    glyph_count?: number;
+    latin?: boolean;
+    cyrillic?: boolean;
+    digits?: boolean;
+  };
+  status: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type TemplateFontRequirement = {
+  family: string;
+  family_normalized: string;
+  weight: number;
+  italic: boolean;
+  source_parts?: string[];
+  document_has_embedded_fonts?: boolean;
+  status: 'resolved' | 'system' | 'missing';
+  source: string;
+  font_asset?: FontAsset | null;
+};
+
+export type TemplateFontsResult = {
+  template_id: string;
+  version_id: string;
+  requirements: TemplateFontRequirement[];
+  missing_count: number;
+  ready: boolean;
+  font_pack_hash: string;
+  attempted_families?: string[];
+  downloaded_fonts?: FontAsset[];
 };
 
 export type Audience = {
@@ -308,6 +535,40 @@ export type DeliveryConnection = {
   has_secret?: boolean;
   max_per_hour?: number;
   max_per_day?: number;
+  delivery_guard_enabled?: boolean;
+  delivery_error_rate_threshold?: number;
+  delivery_error_window_minutes?: number;
+  delivery_error_min_samples?: number;
+  delivery_error_critical_count?: number;
+  delivery_error_action?: 'throttle' | 'disable' | 'warmup';
+  delivery_throttled_max_per_hour?: number;
+  warmup_recipients?: string[];
+  warmup_percent_of_errors?: number;
+  delivery_guard?: {
+    enabled: boolean;
+    state: 'normal' | 'throttled' | 'disabled' | 'warmup';
+    reason: string;
+    error_rate_threshold: number;
+    window_minutes: number;
+    min_samples: number;
+    critical_error_count: number;
+    action: 'throttle' | 'disable' | 'warmup';
+    throttled_max_per_hour: number;
+    terminal_count: number;
+    error_count: number;
+    error_rate: number;
+    effective_max_per_hour: number;
+    triggered_at: string;
+    last_error_at: string;
+    warmup_recipients: string[];
+    warmup_percent_of_errors: number;
+    warmup_task_id: string;
+    warmup_status: string;
+    warmup_sent_count: number;
+    warmup_error_count: number;
+    warmup_started_at: string;
+    warmup_completed_at: string;
+  };
 };
 
 export type SmtpMailbox = DeliveryConnection;

@@ -89,6 +89,51 @@ class RuSenderEventsTests(unittest.TestCase):
         self.assertEqual(second["duplicates"], 1)
         self.assertEqual(len(records), 1)
 
+    def test_bounce_records_connection_guard_and_smtp_response(self) -> None:
+        payload = {
+            "eventId": "event-guard-1",
+            "trigger": "external_mail.hard_bounced",
+            "payload": {
+                "taskId": "task-guard-1",
+                "email": "missing@example.com",
+                "smtpServerResponse": "550 5.1.1 user unknown",
+            },
+        }
+        task_index = {
+            "task-guard-1": {
+                "job_id": "job-webhook",
+                "row_id": "77",
+                "recipient": "missing@example.com",
+                "connection_id": "connection-guard-1",
+            }
+        }
+        with (
+            patch.object(rusender_events, "_load_task_job_index", return_value=task_index),
+            patch("src.generator.delivery.suppression_store.upsert_from_provider_event") as suppress,
+            patch("src.generator.delivery.channel_guard.record_channel_outcome") as record_outcome,
+        ):
+            result = rusender_events.append_rusender_events(payload)
+
+        self.assertEqual(result["saved"], 1)
+        record = load_rusender_events("job-webhook")[-1]
+        self.assertEqual(record["connection_id"], "connection-guard-1")
+        self.assertEqual(record["smtp_response"], "550 5.1.1 user unknown")
+        suppress.assert_called_once_with(
+            recipient="missing@example.com",
+            provider_status="hard_bounced",
+            source="webhook_rusender",
+            job_id="job-webhook",
+            delivery_response="550 5.1.1 user unknown",
+        )
+        record_outcome.assert_called_once_with(
+            connection_id="connection-guard-1",
+            provider_message_id="task-guard-1",
+            provider_status="hard_bounced",
+            recipient="missing@example.com",
+            smtp_response="550 5.1.1 user unknown",
+            occurred_at="",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

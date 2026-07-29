@@ -53,12 +53,23 @@ export const statisticsApi = {
   consents: (params?: StatsParams) =>
     api.get<Record<string, unknown>>(withQuery('/api/sender/consents', params)),
 
+  chainSubscribes: (params?: StatsParams) =>
+    api.get<Record<string, unknown>>(withQuery('/api/sender/chain-subscribes', params)),
+
+  unsubscribes: (params?: StatsParams) =>
+    api.get<Record<string, unknown>>(withQuery('/api/sender/unsubscribes', params)),
+
   problems: (params?: StatsParams) =>
     api.get<Record<string, unknown>>(withQuery('/api/sender/email-problems', params)),
 
   campaignAnalytics: (jobId: string, params?: StatsParams) =>
     api.get<Record<string, unknown>>(
       withQuery(`/api/sender/campaign-analytics/${encodeURIComponent(jobId)}`, params),
+    ),
+
+  campaignFullAnalytics: (jobId: string, params?: StatsParams) =>
+    api.get<Record<string, unknown>>(
+      withQuery(`/api/sender/campaign-full-analytics/${encodeURIComponent(jobId)}`, params),
     ),
 
   reports: (params?: StatsParams) =>

@@ -1,0 +1,102 @@
+.add-template-wizard__format-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.add-template-wizard__upload-progress {
+  display: grid;
+  gap: 14px;
+  min-height: 320px;
+  align-content: center;
+}
+
+.add-template-wizard__upload-progress > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+@media (min-width: 860px) {
+  .add-template-wizard__format-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.add-template-wizard__gallery {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.starter-tile {
+  text-align: left;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+  cursor: pointer;
+  min-height: 160px;
+  display: grid;
+  gap: 8px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.starter-tile:hover:not(:disabled) {
+  border-color: #b8cbc0;
+  box-shadow: 0 4px 12px rgba(25, 28, 29, 0.08);
+}
+
+.starter-tile:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.starter-tile--upload {
+  border-style: dashed;
+  border-color: #b8cbc0;
+}
+
+.starter-tile--upload:hover:not(:disabled) {
+  border-color: #236348;
+  background: #f7faf8;
+}
+
+.starter-tile__upload-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  border-radius: 6px;
+  background: #f4f6f5;
+  color: #236348;
+  font-size: 28px;
+}
+
+.add-template-wizard__drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: rgba(35, 99, 72, 0.08);
+  border: 3px dashed #236348;
+  transition: opacity 0.15s ease;
+}
+
+.add-template-wizard__drop-overlay--active {
+  pointer-events: all;
+  background: rgba(35, 99, 72, 0.14);
+}
+
+.add-template-wizard__drop-overlay-text {
+  padding: 16px 24px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(25, 28, 29, 0.12);
+  font-size: 16px;
+  font-weight: 500;
+  color: #236348;
+}

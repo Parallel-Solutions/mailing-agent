@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from src.generator.delivery.suppression_store import upsert_suppression
+from src.campaigns.suppression_service import apply_global_email_suppression
 from src.infra.db import session_scope
 from src.infra.models import CampaignChainConsentEvent
 
@@ -99,7 +99,7 @@ def record_unsubscribe(
             )
         )
         session.flush()
-    upsert_suppression(
+    apply_global_email_suppression(
         normalized_email,
         reason="unsubscribe",
         source="chain",

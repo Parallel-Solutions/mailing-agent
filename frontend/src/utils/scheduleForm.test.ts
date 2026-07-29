@@ -20,7 +20,7 @@ describe('scheduleForm', () => {
   });
 
   it('builds API payload without UI-only fields', () => {
-    const start = dayjs('2026-07-16T12:00:00.000Z');
+    const start = dayjs().add(1, 'day');
     const payload = formValuesToSchedulePayload({
       batch_size: 25,
       start_at: start,
@@ -33,6 +33,18 @@ describe('scheduleForm', () => {
       send_immediately: false,
       interval_seconds: 86400,
     });
+  });
+
+  it('clamps past start_at to now in payload', () => {
+    const past = dayjs().subtract(2, 'year');
+    const payload = formValuesToSchedulePayload({
+      batch_size: 25,
+      start_at: past,
+      interval_value: 1,
+      interval_unit: 'hours',
+    });
+    expect(payload).not.toBeNull();
+    expect(dayjs(payload!.start_at).isBefore(dayjs().subtract(1, 'minute'))).toBe(false);
   });
 
   it('maps schedule to form values', () => {

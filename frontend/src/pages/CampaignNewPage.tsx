@@ -1,23 +1,52 @@
 import {
   ProCard,
-  ProForm,
-  ProFormDateTimePicker,
-  ProFormDigit,
-  ProFormSelect,
-  ProFormText,
 } from '@ant-design/pro-components';
-import { App, Button, Col, Collapse, Form, Row, Space, Steps, Table, Tag, Typography, Upload } from 'antd';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { SwapOutlined } from '@ant-design/icons';
+import { App, Alert, Button, Col, Collapse, Form, Row, Space, Spin, Steps, Tag, Typography } from 'antd';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
+import { ApiError } from '@/api/client';
 import { chainsApi } from '@/api/chains';
+import { companiesApi } from '@/api/companies';
 import { connectionsApi } from '@/api/connections';
 import { audiencesApi } from '@/api/audiences';
+import type { Campaign } from '@/api/types';
+import { CampaignDocumentLayoutReview } from '@/features/campaigns/CampaignDocumentLayoutReview';
+import { CampaignStepFixModal } from '@/features/campaigns/CampaignStepFixModal';
+import {
+  buildCampaignStepValidation,
+  CAMPAIGN_WIZARD_STEP_TITLES,
+  isMappingRelatedMessage,
+  type CampaignWizardStepIndex,
+} from '@/features/campaigns/campaignStepValidation';
+import { ONBOARDING_ENTER_EVENT } from '@/features/onboarding/events';
+import '@/features/campaigns/CampaignWizardSteps.css';
 import { RecipientGenerateModal } from '@/features/campaigns/RecipientGenerateModal';
 import { ChainEmailPreviewModal } from '@/features/campaigns/ChainEmailPreviewModal';
+import {
+  buildMappingInputsSignature,
+  buildValidationSignature,
+  campaignValidateQueryKey,
+  invalidateCampaignDerivedData,
+  invalidateCampaignMappingCache,
+  resolveLinkedChainId,
+  showAutoFixResultMessage,
+} from '@/features/campaigns/campaignQueryUtils';
+import { ValidationAutoFixButton } from '@/features/campaigns/ValidationAutoFixButton';
+import { useCampaignLaunchValidation } from '@/features/campaigns/useCampaignLaunchValidation';
+import { useCampaignMappingAutoSuggest } from '@/features/campaigns/useCampaignMappingAutoSuggest';
 import { VariableMappingModal } from '@/features/campaigns/VariableMappingModal';
+import { CampaignWizardBasicsStep } from '@/features/campaigns/wizard/CampaignWizardBasicsStep';
+import { CampaignWizardRecipientsStep } from '@/features/campaigns/wizard/CampaignWizardRecipientsStep';
+import { CampaignWizardScheduleStep } from '@/features/campaigns/wizard/CampaignWizardScheduleStep';
+import { CampaignWizardSenderStep } from '@/features/campaigns/wizard/CampaignWizardSenderStep';
+import { usePermissions } from '@/hooks/usePermissions';
+import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
+import { useAuthStore } from '@/stores/authStore';
+import { readIntParam } from '@/utils/urlState';
 import { validateCampaignBasics } from '@/utils/validators';
 import {
   formValuesToSchedulePayload,
@@ -25,27 +54,95 @@ import {
 } from '@/utils/scheduleForm';
 import { computeLocalSchedulePreview } from '@/utils/schedulePreview';
 
+function draftBasicsFields(draft: Partial<Campaign>) {
+  const payload = draft.draft_payload || {};
+  return {
+    company_id: draft.company_id || payload.company_id,
+    company_work_type_id: draft.company_work_type_id || payload.company_work_type_id,
+    work_type_name: draft.work_type_name || payload.work_type_name,
+  };
+}
+
+const CAMPAIGN_MODAL_KEYS = ['modal', 'fix_step', 'preview_node'] as const;
+
+const ONBOARDING_CAMPAIGN_STEPS: Record<string, number> = {
+  'campaign-basics': 0,
+  'campaign-sender': 1,
+  'campaign-recipients': 2,
+  'campaign-schedule': 3,
+  'campaign-launch': 4,
+};
+
+type CampaignModalKind = 'generate' | 'mapping' | 'preview' | 'layout' | 'fix';
+
 export function CampaignNewPage() {
   const [params] = useSearchParams();
+  const { pushParams, replaceParams } = useUrlNavigation();
   const existingId = params.get('id');
   const emailChainIdParam = params.get('email_chain_id');
+  const step = readIntParam(params, 'step', 0, 0, 4);
+  const modalKind = params.get('modal') as CampaignModalKind | null;
+  const generateModalOpen = modalKind === 'generate';
+  const mappingModalOpen = modalKind === 'mapping';
+  const chainPreviewOpen = modalKind === 'preview';
+  const layoutReviewOpen = modalKind === 'layout';
+  const fixModalStep =
+    modalKind === 'fix'
+      ? (readIntParam(params, 'fix_step', 0, 0, 3) as CampaignWizardStepIndex)
+      : null;
+  const previewNodeId = params.get('preview_node');
   const navigate = useNavigate();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const { campaignId, draft, setCampaignId, setDraft, replaceDraft, saveState, setSaveState } =
     useCampaignDraftStore();
-  const [step, setStep] = useState(0);
   const [basicsForm] = Form.useForm();
   const [senderForm] = Form.useForm();
   const [scheduleForm] = Form.useForm();
-  const [generateModalOpen, setGenerateModalOpen] = useState(false);
-  const [mappingModalOpen, setMappingModalOpen] = useState(false);
-  const [chainPreviewOpen, setChainPreviewOpen] = useState(false);
+  const [fixModalSaving, setFixModalSaving] = useState(false);
+  const [launchBusy, setLaunchBusy] = useState<{ active: boolean; label: string; progress: number }>({
+    active: false,
+    label: '',
+    progress: 0,
+  });
+  const { isAppAdmin, isCompanyAdmin } = usePermissions();
+  const user = useAuthStore((s) => s.user);
   const debounceRef = useRef<number | null>(null);
+  const pendingAutosaveRef = useRef<Record<string, unknown> | null>(null);
   const hydratedIdRef = useRef<string | null>(null);
+  const companyAutoSetRef = useRef<string | null>(null);
+  const suppressAutosaveRef = useRef(false);
+
+  const setWizardStep = useCallback(
+    (nextStep: number) => {
+      pushParams({ step: nextStep > 0 ? String(nextStep) : null });
+    },
+    [pushParams],
+  );
+
+  useEffect(() => {
+    const handleOnboardingEnter = (event: Event) => {
+      const stepId = (event as CustomEvent<{ stepId?: string }>).detail?.stepId;
+      const campaignStep = stepId ? ONBOARDING_CAMPAIGN_STEPS[stepId] : undefined;
+      if (campaignStep !== undefined) setWizardStep(campaignStep);
+    };
+    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+  }, [setWizardStep]);
+
+  const openWizardModal = useCallback(
+    (kind: CampaignModalKind, extra: Record<string, string | null | undefined> = {}) => {
+      pushParams({ modal: kind, ...extra });
+    },
+    [pushParams],
+  );
+
+  const closeWizardModal = useCallback(() => {
+    pushParams({}, [...CAMPAIGN_MODAL_KEYS]);
+  }, [pushParams]);
 
   const createMutation = useMutation({
-    mutationFn: () => campaignsApi.create({ name: 'Черновик рассылки', send_scenario: 'email_chain' }),
+    mutationFn: () => campaignsApi.create({ name: 'Черновик рассылки' }),
     onSuccess: (camp) => {
       setCampaignId(camp.id);
       replaceDraft(camp);
@@ -75,38 +172,51 @@ export function CampaignNewPage() {
       .update(id, { send_scenario: 'email_chain', email_chain_id: emailChainIdParam })
       .then((camp) => {
         replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
-        basicsForm.setFieldsValue({ email_chain_id: emailChainIdParam });
+        basicsForm.setFieldsValue({ email_chain_id: emailChainIdParam, send_scenario: 'email_chain' });
+        invalidateCampaignMappingCache(queryClient, id);
+        void queryClient.invalidateQueries({ queryKey: campaignValidateQueryKey(id) });
+        navigate(`/campaigns/new?id=${id}`, { replace: true });
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, emailChainIdParam]);
 
   const watchedChainId = Form.useWatch('email_chain_id', basicsForm);
-  const linkedChainId = emailChainIdParam || watchedChainId || draft.email_chain_id;
+  const linkedChainId = resolveLinkedChainId(watchedChainId, draft.email_chain_id);
 
   useEffect(() => {
     if (!id) return;
     if (hydratedIdRef.current === id) return;
     if (!draft.id && draft.name === undefined) return;
-    basicsForm.setFieldsValue(draft);
-    senderForm.setFieldsValue({
-      ...draft,
-      connection_ids:
-        draft.connection_ids?.length
-          ? draft.connection_ids
-          : draft.smtp_mailbox_id
-            ? [draft.smtp_mailbox_id]
-            : [],
-    });
+    basicsForm.setFieldsValue({ ...draft, ...draftBasicsFields(draft) });
+    senderForm.setFieldsValue(draft);
     hydratedIdRef.current = id;
-  }, [id, draft.id, draft.name, draft.smtp_mailbox_id, draft.connection_ids, draft, basicsForm, senderForm]);
+    companyAutoSetRef.current = null;
+  }, [id, draft.id, draft.name, draft.smtp_mailbox_id, draft, basicsForm, senderForm]);
+
+  const companiesQuery = useQuery({
+    queryKey: ['companies'],
+    queryFn: () => companiesApi.list(),
+    enabled: isAppAdmin,
+  });
+  const myCompanyQuery = useQuery({
+    queryKey: ['companies', 'me'],
+    queryFn: () => companiesApi.getMe(),
+    enabled: !isAppAdmin && !user?.company?.id,
+  });
+
+  const selectedCompanyId =
+    Form.useWatch('company_id', basicsForm) ||
+    draftBasicsFields(draft).company_id;
+
+  const workTypesQuery = useQuery({
+    queryKey: ['company-work-types', selectedCompanyId],
+    queryFn: () => companiesApi.workTypes.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
 
   const mailboxesQuery = useQuery({ queryKey: ['connections'], queryFn: () => connectionsApi.list() });
+  const chainsQuery = useQuery({ queryKey: ['chains'], queryFn: () => chainsApi.list({ limit: 100 }) });
   const audiencesQuery = useQuery({ queryKey: ['audiences'], queryFn: () => audiencesApi.list() });
-  const chainsQuery = useQuery({
-    queryKey: ['chains'],
-    queryFn: () => chainsApi.list({ limit: 100 }),
-    staleTime: 0,
-  });
   const recipientsQuery = useQuery({
     queryKey: ['campaign-recipients', id],
     queryFn: () => campaignsApi.recipients(id!, { limit: 100 }),
@@ -117,56 +227,172 @@ export function CampaignNewPage() {
     queryFn: () => campaignsApi.getSchedule(id!),
     enabled: Boolean(id),
   });
-  const validateQuery = useQuery({
-    queryKey: ['campaign-validate', id],
-    queryFn: () => campaignsApi.validate(id!),
-    enabled: Boolean(id),
-    refetchInterval: 15_000,
-  });
-
-  const selectedSenderEmails = useMemo(() => {
-    const ids =
-      draft.connection_ids?.length
-        ? draft.connection_ids
-        : draft.smtp_mailbox_id
-          ? [draft.smtp_mailbox_id]
-          : [];
-    return ids
-      .map((connectionId) => (mailboxesQuery.data || []).find((item) => item.id === connectionId)?.email)
-      .filter(Boolean);
-  }, [draft.connection_ids, draft.smtp_mailbox_id, mailboxesQuery.data]);
-
-  const recipientCount = recipientsQuery.data?.total || 0;
-
-  const persist = async (patch: Record<string, unknown>) => {
-    if (!id) return;
-    setSaveState('saving');
-    try {
-      const updated = await campaignsApi.update(id, {
-        ...patch,
-        draft_payload: { ...(draft.draft_payload || {}), ...patch },
-      });
-      setDraft(updated);
-      setSaveState('saved');
-    } catch {
-      setSaveState('error');
-    }
-  };
 
   useEffect(() => {
     if (!id) return;
-    if (draft.send_scenario === 'email_chain') return;
-    void persist({ send_scenario: 'email_chain' });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, draft.send_scenario]);
+    const refreshFromExternalEdits = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (suppressAutosaveRef.current) return;
+      invalidateCampaignDerivedData(queryClient, id);
+      void queryClient.invalidateQueries({ queryKey: ['chains'] });
+      void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
+      void campaignsApi.get(id).then((camp) => {
+        replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
+      });
+    };
+    window.addEventListener('focus', refreshFromExternalEdits);
+    document.addEventListener('visibilitychange', refreshFromExternalEdits);
+    return () => {
+      window.removeEventListener('focus', refreshFromExternalEdits);
+      document.removeEventListener('visibilitychange', refreshFromExternalEdits);
+    };
+  }, [id, queryClient, replaceDraft]);
+
+  const recipientCount = recipientsQuery.data?.total || 0;
+
+  const templateIds = useMemo(
+    () => ({
+      email: draft.email_template_id,
+      kp: draft.kp_template_id,
+      contract: draft.contract_template_id,
+    }),
+    [draft.contract_template_id, draft.email_template_id, draft.kp_template_id],
+  );
+
+  const draftMappingConfirmed = Boolean(
+    (draft.draft_payload as Record<string, unknown> | undefined)?.mapping_confirmed,
+  );
+
+  const mappingInputsSignature = useMemo(
+    () =>
+      buildMappingInputsSignature({
+        recipientCount,
+        emailChainId: draft.email_chain_id,
+        mappingConfirmed: draftMappingConfirmed,
+        templateIds,
+      }),
+    [draft.email_chain_id, draftMappingConfirmed, recipientCount, templateIds],
+  );
+
+  const validationSignature = useMemo(
+    () =>
+      buildValidationSignature({
+        recipientCount,
+        emailChainId: draft.email_chain_id,
+        mappingConfirmed: draftMappingConfirmed,
+        smtpMailboxId: draft.smtp_mailbox_id,
+        audienceId: draft.audience_id,
+        templateIds,
+      }),
+    [
+      draft.audience_id,
+      draft.email_chain_id,
+      draft.smtp_mailbox_id,
+      draftMappingConfirmed,
+      recipientCount,
+      templateIds,
+    ],
+  );
+
+  const invalidateMappingAndValidation = useCallback(
+    (campaignId: string) => {
+      invalidateCampaignDerivedData(queryClient, campaignId, {
+        includeMapping: true,
+        includeValidation: true,
+      });
+    },
+    [queryClient],
+  );
+  const chainOptions = (chainsQuery.data?.items ?? []).map((chain) => ({
+    label: chain.name,
+    value: chain.id,
+  }));
+
+  const companyOptions = useMemo(() => {
+    if (isAppAdmin) {
+      return (companiesQuery.data?.items ?? []).map((company) => ({
+        label: company.name,
+        value: company.id,
+      }));
+    }
+    const company = user?.company || myCompanyQuery.data;
+    return company ? [{ label: company.name, value: company.id }] : [];
+  }, [isAppAdmin, companiesQuery.data?.items, user?.company, myCompanyQuery.data]);
+
+  const workTypeOptions = (workTypesQuery.data ?? []).map((item) => ({
+    label: item.name,
+    value: item.id,
+  }));
+
+  const selectedCompanyLabel =
+    companyOptions.find((item) => item.value === selectedCompanyId)?.label || 'не выбрана';
+  const selectedWorkTypeLabel =
+    draft.work_type_name ||
+    workTypeOptions.find((item) => item.value === draftBasicsFields(draft).company_work_type_id)?.label ||
+    'не выбран';
+
+  const persist = useCallback(
+    async (patch: Record<string, unknown>) => {
+      if (!id) return;
+      setSaveState('saving');
+      try {
+        const updated = await campaignsApi.update(id, {
+          ...patch,
+          draft_payload: { ...(draft.draft_payload || {}), ...patch },
+        });
+        setDraft(updated);
+        setSaveState('saved');
+      } catch {
+        setSaveState('error');
+      }
+    },
+    [id, draft.draft_payload, setDraft, setSaveState],
+  );
+
+  const flushPendingChanges = useCallback(async () => {
+    if (debounceRef.current) {
+      window.clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    const patch = pendingAutosaveRef.current;
+    pendingAutosaveRef.current = null;
+    if (patch) {
+      await persist(patch);
+    }
+  }, [persist]);
+
+  const launchValidation = useCampaignLaunchValidation({
+    campaignId: id ?? undefined,
+    step,
+    validationSignature,
+    flushPendingChanges,
+    queryClient,
+  });
 
   const autosave = (patch: Record<string, unknown>) => {
+    if (suppressAutosaveRef.current) return;
     setDraft(patch);
+    pendingAutosaveRef.current = patch;
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
+      pendingAutosaveRef.current = null;
       void persist(patch);
     }, 700);
   };
+
+  useEffect(() => {
+    if (!id || hydratedIdRef.current !== id) return;
+    if (draftBasicsFields(draft).company_id) return;
+    if (companyAutoSetRef.current === id) return;
+    const defaultCompanyId = isAppAdmin
+      ? undefined
+      : user?.company_id || user?.company?.id || myCompanyQuery.data?.id;
+    if (!defaultCompanyId) return;
+    companyAutoSetRef.current = id;
+    basicsForm.setFieldValue('company_id', defaultCompanyId);
+    autosave({ company_id: defaultCompanyId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, isAppAdmin, user, myCompanyQuery.data, draft.company_id, draft.draft_payload]);
 
   const schedule = scheduleQuery.data;
   const scheduleSyncedIdRef = useRef<string | null>(null);
@@ -205,41 +431,311 @@ export function CampaignNewPage() {
     });
   }, [watchedSchedule, schedule, recipientsQuery.data?.total]);
   const batchCountPreview = schedulePreview.batchCount;
+  const scheduleInitialValues = scheduleToFormValues(schedule);
+
+  const stepValidation = useMemo(
+    () =>
+      buildCampaignStepValidation({
+        draft,
+        validate: launchValidation.hasChecked ? launchValidation.data : undefined,
+        scheduleValues: watchedSchedule || scheduleInitialValues,
+      }),
+    [draft, launchValidation.hasChecked, launchValidation.data, watchedSchedule, scheduleInitialValues],
+  );
+
+  const autoFixMutation = useMutation({
+    mutationFn: () => campaignsApi.autoFixValidation(id!),
+    onSuccess: (result) => {
+      if (id) {
+        queryClient.setQueryData(campaignValidateQueryKey(id), result.validation);
+        invalidateCampaignDerivedData(queryClient, id);
+        void campaignsApi.get(id).then((camp) => {
+          replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
+        });
+      }
+      showAutoFixResultMessage(result, message);
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : 'Не удалось выполнить автоисправление');
+    },
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: () => campaignsApi.reset(id!),
+    onSuccess: async (camp) => {
+      if (!id) return;
+      replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
+      replaceParams({}, ['step', ...CAMPAIGN_MODAL_KEYS]);
+      hydratedIdRef.current = null;
+      companyAutoSetRef.current = null;
+      scheduleSyncedIdRef.current = null;
+      basicsForm.resetFields();
+      senderForm.resetFields();
+      scheduleForm.resetFields();
+      const scheduleData = await campaignsApi.getSchedule(id);
+      scheduleForm.setFieldsValue(scheduleToFormValues(scheduleData));
+      basicsForm.setFieldsValue({ ...camp, ...draftBasicsFields(camp) });
+      senderForm.setFieldsValue(camp);
+      queryClient.removeQueries({ queryKey: campaignValidateQueryKey(id) });
+      invalidateCampaignDerivedData(queryClient, id, { includeMapping: true });
+      void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
+      message.success('Все поля очищены');
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : 'Не удалось очистить рассылку');
+    },
+  });
+
+  const runReset = async () => {
+    if (!id) return;
+    if (debounceRef.current) {
+      window.clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    suppressAutosaveRef.current = true;
+    try {
+      await resetMutation.mutateAsync();
+    } finally {
+      suppressAutosaveRef.current = false;
+    }
+  };
+
+  const handleClearCampaign = () => {
+    if (!id) return;
+    modal.confirm({
+      title: 'Очистить все поля и начать заново?',
+      okText: 'Очистить',
+      cancelText: 'Отмена',
+      okButtonProps: { danger: true },
+      onOk: () => runReset(),
+    });
+  };
+
+  const handleWizardStepClick = useCallback(
+    (nextStep: number) => {
+      const validation = stepValidation[nextStep as CampaignWizardStepIndex];
+      if (validation?.status === 'error' || validation?.status === 'warning') {
+        openWizardModal('fix', { fix_step: String(nextStep) });
+        return;
+      }
+      setWizardStep(nextStep);
+    },
+    [openWizardModal, setWizardStep, stepValidation],
+  );
+
+  const handleFixModalSave = async () => {
+    if (fixModalStep === null) return;
+    setFixModalSaving(true);
+    try {
+      if (fixModalStep === 0) {
+        await basicsForm.validateFields();
+        await persist(basicsForm.getFieldsValue());
+      } else if (fixModalStep === 1) {
+        await senderForm.validateFields();
+        await persist(senderForm.getFieldsValue());
+      } else if (fixModalStep === 3) {
+        await scheduleForm.validateFields();
+        const payload = formValuesToSchedulePayload(scheduleForm.getFieldsValue());
+        if (id && payload) {
+          await campaignsApi.putSchedule(id, payload);
+          void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
+        }
+      }
+      closeWizardModal();
+      message.success('Изменения сохранены');
+    } catch {
+      message.error('Заполните обязательные поля');
+    } finally {
+      setFixModalSaving(false);
+    }
+  };
 
   const readinessErrors = [
     ...validateCampaignBasics(draft),
-    ...(validateQuery.data?.errors || []),
+    ...(launchValidation.hasChecked ? launchValidation.data?.errors || [] : []),
   ];
+  const readinessWarnings = launchValidation.hasChecked ? launchValidation.data?.warnings || [] : [];
   const mappingConfirmed = Boolean(
-    validateQuery.data?.mapping_confirmed ??
+    launchValidation.data?.mapping_confirmed ??
       (draft.draft_payload as Record<string, unknown> | undefined)?.mapping_confirmed,
   );
-  const launchBlocked = readinessErrors.length > 0;
+
+  const refreshDraft = useCallback(async () => {
+    if (!id) return;
+    const camp = await campaignsApi.get(id);
+    replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
+  }, [id, replaceDraft]);
+
+  const handleMappingAutoSaved = useCallback(() => {
+    message.success('Сопоставление заполнено автоматически');
+  }, [message]);
+
+  const handleMappingNeedsReview = useCallback(() => {
+    if (mappingModalOpen) return;
+    openWizardModal('mapping');
+  }, [mappingModalOpen, openWizardModal]);
+
+  const mappingAutoSuggest = useCampaignMappingAutoSuggest({
+    campaignId: id ?? undefined,
+    step,
+    recipientCount,
+    mappingConfirmed,
+    mappingInputsSignature,
+    queryClient,
+    onDraftRefresh: refreshDraft,
+    onAutoSaved: handleMappingAutoSaved,
+    onNeedsReview: handleMappingNeedsReview,
+  });
+
+  const mappingStep4PromptedRef = useRef(false);
+  const launchMappingErrors = useMemo(
+    () => (launchValidation.data?.errors || []).filter(isMappingRelatedMessage),
+    [launchValidation.data?.errors],
+  );
+
+  useEffect(() => {
+    if (mappingConfirmed) {
+      mappingStep4PromptedRef.current = false;
+    }
+  }, [mappingConfirmed]);
+
+  useEffect(() => {
+    if (
+      step !== 4 ||
+      !id ||
+      mappingConfirmed ||
+      !launchValidation.hasChecked ||
+      launchMappingErrors.length === 0 ||
+      mappingModalOpen
+    ) {
+      return;
+    }
+    if (mappingStep4PromptedRef.current) {
+      return;
+    }
+    mappingStep4PromptedRef.current = true;
+    openWizardModal('mapping');
+  }, [
+    id,
+    launchMappingErrors.length,
+    launchValidation.hasChecked,
+    mappingConfirmed,
+    mappingModalOpen,
+    openWizardModal,
+    step,
+  ]);
+
+  const launchBlocked =
+    readinessErrors.length > 0 ||
+    launchValidation.isChecking ||
+    (step === 4 && !launchValidation.hasChecked);
+  const showAiFixButton = launchValidation.hasChecked && readinessErrors.length > 0;
+  const wizardLocked = launchBusy.active || launchValidation.isChecking;
+
+  const runLaunchAction = async (label: string, action: () => Promise<void>) => {
+    setLaunchBusy({ active: true, label, progress: 50 });
+    try {
+      await action();
+    } catch (err) {
+      const detail =
+        err instanceof ApiError
+          ? err.detail
+          : err instanceof Error
+            ? err.message
+            : 'Не удалось выполнить действие';
+      message.error(detail);
+    } finally {
+      setLaunchBusy({ active: false, label: '', progress: 0 });
+    }
+  };
+
+  const navigateAfterLaunch = async (campaignId: string, successMessage: string) => {
+    message.success(successMessage);
+    await new Promise((resolve) => window.setTimeout(resolve, 3000));
+    try {
+      const batches = await campaignsApi.batches(campaignId);
+      const hasErrors = (batches || []).some(
+        (batch) =>
+          batch.status === 'completed_with_errors' ||
+          batch.status === 'failed' ||
+          (batch.error_count ?? 0) > 0,
+      );
+      navigate(hasErrors ? `/campaigns/${campaignId}?tab=errors` : `/campaigns/${campaignId}`);
+    } catch {
+      navigate(`/campaigns/${campaignId}`);
+    }
+  };
 
   return (
-    <Row gutter={16}>
+    <div style={{ position: 'relative' }}>
+      <Row gutter={16} className={wizardLocked ? 'campaign-wizard--locked' : undefined}>
       <Col xs={24} xl={16}>
-        <ProCard bordered title="Создание рассылки" extra={<Tag>{saveState === 'saving' ? 'Сохранение…' : saveState === 'saved' ? 'Сохранено' : 'Черновик'}</Tag>}>
+        <ProCard
+          bordered
+          title="Создание рассылки"
+          extra={
+            <Space>
+              {id ? (
+                <Button
+                  danger
+                  loading={resetMutation.isPending}
+                  disabled={wizardLocked}
+                  onClick={handleClearCampaign}
+                >
+                  Очистить
+                </Button>
+              ) : null}
+              {showAiFixButton && id ? (
+                <ValidationAutoFixButton
+                  type="primary"
+                  ghost
+                  loading={autoFixMutation.isPending}
+                  onClick={() => autoFixMutation.mutate()}
+                />
+              ) : null}
+              <Tag>{saveState === 'saving' ? 'Сохранение…' : saveState === 'saved' ? 'Сохранено' : 'Черновик'}</Tag>
+            </Space>
+          }
+        >
           <Steps
+            className="campaign-wizard-steps"
             current={step}
-            onChange={setStep}
-            items={[
-              { title: 'Основное' },
-              { title: 'Отправитель' },
-              { title: 'Получатели' },
-              { title: 'Расписание' },
-              { title: 'Запуск' },
-            ]}
+            onChange={wizardLocked ? undefined : handleWizardStepClick}
+            items={CAMPAIGN_WIZARD_STEP_TITLES.map((title, index) => {
+              const validation = stepValidation[index];
+              const antStatus =
+                validation.status === 'error'
+                  ? 'error'
+                  : validation.status === 'warning'
+                    ? 'finish'
+                    : index < step
+                      ? 'finish'
+                      : index === step
+                        ? 'process'
+                        : 'wait';
+              return {
+                title,
+                status: antStatus as 'error' | 'finish' | 'process' | 'wait',
+                className: [
+                  validation.status === 'warning' ? 'campaign-step--warning' : '',
+                  validation.status !== 'ok' ? 'campaign-step--clickable' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' '),
+              };
+            })}
             style={{ marginBottom: 24 }}
           />
 
           <Collapse
             accordion
             activeKey={String(step)}
+            collapsible={wizardLocked ? 'disabled' : undefined}
             onChange={(key) => {
+              if (wizardLocked) return;
               const nextKey = Array.isArray(key) ? key[0] : key;
               if (nextKey !== undefined && nextKey !== '') {
-                setStep(Number(nextKey));
+                setWizardStep(Number(nextKey));
               }
             }}
             items={[
@@ -247,216 +743,97 @@ export function CampaignNewPage() {
                 key: '0',
                 label: 'Основная информация',
                 children: (
-                  <ProForm
+                  <div data-onboarding-id="campaign-step-basics">
+                    <CampaignWizardBasicsStep
                     form={basicsForm}
-                    submitter={false}
-                    initialValues={draft}
-                    onValuesChange={(_, values) => autosave(values)}
-                  >
-                    <ProFormText name="name" label="Название" rules={[{ required: true }]} />
-                    {id ? (
-                      <>
-                        <ProFormSelect
-                          name="email_chain_id"
-                          label="Цепочка писем"
-                          placeholder="Выберите цепочку"
-                          options={(chainsQuery.data?.items || []).map((chain) => ({
-                            label: chain.name,
-                            value: chain.id,
-                          }))}
-                          fieldProps={{
-                            loading: chainsQuery.isLoading,
-                            onChange: (value: string) =>
-                              autosave({ email_chain_id: value, send_scenario: 'email_chain' }),
-                          }}
-                          rules={[{ required: true, message: 'Выберите цепочку писем' }]}
-                        />
-                        <Space wrap>
-                          {linkedChainId ? (
-                            <Button
-                              type="link"
-                              onClick={() =>
-                                navigate(`/chains/${linkedChainId}`, { state: { campaignId: id } })
-                              }
-                            >
-                              Настроить цепочку писем
-                            </Button>
-                          ) : null}
-                          <Button
-                            type="link"
-                            onClick={() => navigate('/chains', { state: { campaignId: id } })}
-                          >
-                            Создать цепочку
-                          </Button>
-                        </Space>
-                      </>
-                    ) : null}
-                  </ProForm>
+                    draft={draft}
+                    chainOptions={chainOptions}
+                    companyOptions={companyOptions}
+                    workTypeOptions={workTypeOptions}
+                    selectedCompanyId={selectedCompanyId}
+                    linkedChainId={linkedChainId ?? undefined}
+                    campaignId={id ?? undefined}
+                    chainsLoading={chainsQuery.isLoading}
+                    companiesLoading={isAppAdmin ? companiesQuery.isLoading : myCompanyQuery.isLoading}
+                    workTypesLoading={workTypesQuery.isLoading}
+                    isAppAdmin={isAppAdmin}
+                    isCompanyAdmin={isCompanyAdmin}
+                    onAutosave={autosave}
+                    onNavigateChain={() => linkedChainId && navigate(`/chains/${linkedChainId}`)}
+                    onNavigateChainsList={() => navigate('/chains')}
+                    onNavigateCompanies={() => navigate('/companies')}
+                    />
+                  </div>
                 ),
               },
               {
                 key: '1',
                 label: 'Отправитель',
                 children: (
-                  <ProForm
+                  <div data-onboarding-id="campaign-step-sender">
+                    <CampaignWizardSenderStep
                     form={senderForm}
-                    submitter={false}
-                    initialValues={draft}
-                    onValuesChange={(_, values) => autosave(values)}
-                  >
-                    <ProFormSelect
-                      name="connection_ids"
-                      label="Подключения отправителя"
-                      placeholder="Выберите SMTP, RuSender или MailoPost"
-                      fieldProps={{
-                        mode: 'multiple',
-                        allowClear: true,
-                        showSearch: true,
-                        optionFilterProp: 'label',
-                        onChange: (values: string[]) => {
-                          autosave({
-                            connection_ids: values,
-                            smtp_mailbox_id: values[0] || null,
-                          });
-                        },
-                      }}
-                      options={(mailboxesQuery.data || []).map((m) => ({
-                        label: `${m.transport === 'smtp' ? 'SMTP' : m.transport === 'rusender' ? 'RuSender' : 'MailoPost'} · ${m.email}${m.is_default ? ' (по умолчанию)' : ''}`,
-                        value: m.id,
-                      }))}
-                      rules={[{ required: true, message: 'Выберите подключение отправителя' }]}
+                    draft={draft}
+                    mailboxes={mailboxesQuery.data || []}
+                    onAutosave={autosave}
+                    onNavigateConnections={() => navigate('/connections')}
                     />
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      Можно выбрать несколько. Отправка идёт через первое подключение; при достижении лимитов —
-                      через следующее.
-                    </Typography.Text>
-                    <Button onClick={() => navigate('/connections')}>Управлять подключениями</Button>
-                  </ProForm>
+                  </div>
                 ),
               },
               {
                 key: '2',
                 label: 'Получатели',
                 children: (
-                  <Space direction="vertical" style={{ width: '100%' }}>
-                    <ProFormSelect
-                      name="audience_id"
-                      label="Сохранённая аудитория"
-                      options={(audiencesQuery.data || []).map((a) => ({
-                        label: `${a.name} (${a.member_count})`,
-                        value: a.id,
-                      }))}
-                      fieldProps={{
-                        onChange: async (audienceId: string) => {
-                          if (!id || !audienceId) return;
-                          await audiencesApi.useInCampaign(audienceId, id);
-                          await persist({ audience_id: audienceId });
-                          void queryClient.invalidateQueries({ queryKey: ['campaign-recipients', id] });
-                          message.success('Аудитория загружена');
-                        },
-                      }}
+                  <div data-onboarding-id="campaign-step-recipients">
+                    <CampaignWizardRecipientsStep
+                    campaignId={id ?? undefined}
+                    draft={draft}
+                    audiences={audiencesQuery.data || []}
+                    recipients={recipientsQuery.data?.items || []}
+                    recipientsTotal={recipientsQuery.data?.total || 0}
+                    recipientsLoading={recipientsQuery.isFetching}
+                    onAudienceSelect={async (audienceId) => {
+                      if (!id) return;
+                      await audiencesApi.useInCampaign(audienceId, id);
+                      await persist({ audience_id: audienceId });
+                      invalidateMappingAndValidation(id);
+                      message.success('Аудитория загружена');
+                    }}
+                    onImportRecipients={async (file) => {
+                      if (!id) return;
+                      await campaignsApi.importRecipients(id, file);
+                      invalidateMappingAndValidation(id);
+                      message.success('Импорт выполнен');
+                    }}
+                    onOpenGenerate={() => openWizardModal('generate')}
                     />
-                    <Space wrap>
-                      <Upload
-                        accept=".csv,.xlsx"
-                        showUploadList={false}
-                        customRequest={async ({ file, onSuccess, onError }) => {
-                          try {
-                            if (!id) return;
-                            await campaignsApi.importRecipients(id, file as File);
-                            void queryClient.invalidateQueries({ queryKey: ['campaign-recipients', id] });
-                            message.success('Импорт выполнен');
-                            onSuccess?.({});
-                          } catch (error) {
-                            onError?.(error as Error);
-                          }
-                        }}
-                      >
-                        <Button>Загрузить Excel / CSV</Button>
-                      </Upload>
-                      <Button
-                        disabled={!id || !draft.job_id}
-                        onClick={() => setGenerateModalOpen(true)}
-                      >
-                        Сгенерировать список
-                      </Button>
-                    </Space>
-                    <Table
-                      rowKey="id"
-                      size="small"
-                      dataSource={recipientsQuery.data?.items || []}
-                      pagination={{ pageSize: 10 }}
-                      columns={[
-                        { title: 'Компания', dataIndex: 'company' },
-                        { title: 'Контакт', dataIndex: 'contact_name' },
-                        { title: 'Email', dataIndex: 'email' },
-                        {
-                          title: 'Проверка',
-                          dataIndex: 'validation_status',
-                          render: (v) => <Tag color={v === 'valid' ? 'green' : 'red'}>{v}</Tag>,
-                        },
-                        {
-                          title: 'Исключён',
-                          dataIndex: 'excluded',
-                          render: (v) => (v ? 'да' : 'нет'),
-                        },
-                      ]}
-                    />
-                  </Space>
+                  </div>
                 ),
               },
               {
                 key: '3',
                 label: 'Расписание',
                 children: (
-                  <ProForm
+                  <div data-onboarding-id="campaign-step-schedule">
+                    <CampaignWizardScheduleStep
                     form={scheduleForm}
-                    submitter={false}
-                    initialValues={scheduleToFormValues(schedule)}
-                    onValuesChange={async (_, values) => {
+                    initialValues={scheduleInitialValues}
+                    batchCountPreview={batchCountPreview}
+                    estimatedDurationHours={
+                      schedulePreview.estimatedDurationSeconds > 0
+                        ? Math.round(schedulePreview.estimatedDurationSeconds / 3600)
+                        : undefined
+                    }
+                    onValuesChange={async (values) => {
                       if (!id) return;
                       const payload = formValuesToSchedulePayload(values);
                       if (!payload) return;
                       await campaignsApi.putSchedule(id, payload);
                       void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
                     }}
-                  >
-                    <ProFormDigit name="batch_size" label="Размер пакета" min={1} fieldProps={{ precision: 0 }} />
-                    <ProFormDateTimePicker
-                      name="start_at"
-                      label="Дата и время старта"
-                      rules={[{ required: true, message: 'Укажите дату и время старта' }]}
-                      fieldProps={{ style: { width: '100%' }, format: 'DD.MM.YYYY HH:mm' }}
                     />
-                    <Form.Item label="Интервал между пакетами" required>
-                      <Space align="start">
-                        <ProFormDigit
-                          name="interval_value"
-                          min={1}
-                          width="sm"
-                          fieldProps={{ precision: 0 }}
-                          rules={[{ required: true, message: 'Укажите интервал' }]}
-                          formItemProps={{ style: { marginBottom: 0 } }}
-                        />
-                        <ProFormSelect
-                          name="interval_unit"
-                          width="sm"
-                          options={[
-                            { label: 'часы', value: 'hours' },
-                            { label: 'дни', value: 'days' },
-                          ]}
-                          rules={[{ required: true }]}
-                          formItemProps={{ style: { marginBottom: 0 } }}
-                        />
-                      </Space>
-                    </Form.Item>
-                    <Typography.Text>
-                      Прогноз: {schedulePreview.batchCount} пакетов
-                      {schedulePreview.estimatedDurationSeconds > 0
-                        ? `, длительность ≈ ${Math.round(schedulePreview.estimatedDurationSeconds / 3600)} ч`
-                        : ''}
-                    </Typography.Text>
-                  </ProForm>
+                  </div>
                 ),
               },
               {
@@ -464,68 +841,107 @@ export function CampaignNewPage() {
 
                 label: 'Проверка и запуск',
                 children: (
-                  <Space direction="vertical">
-                    {(validateQuery.data?.warnings || []).map((w) => (
-                      <Tag key={w} color="gold">
-                        {w}
-                      </Tag>
-                    ))}
-                    {readinessErrors.map((e) => (
-                      <Tag key={e} color="red">
-                        {e}
-                      </Tag>
-                    ))}
-                    <Space wrap>
-                      <Button
-                        type="primary"
-                        onClick={() => setMappingModalOpen(true)}
-                      >
-                        Сохранить
-                      </Button>
-                      <Button
-                        onClick={async () => {
-                          if (!id) return;
-                          const to = window.prompt('Email для теста');
-                          if (!to) return;
-                          await campaignsApi.testEmail(id, to);
-                          message.success('Тестовое письмо отправлено');
-                        }}
-                      >
-                        Тестовое письмо
-                      </Button>
-                      {linkedChainId ? (
-                        <Button
-                          disabled={recipientCount === 0}
-                          onClick={() => setChainPreviewOpen(true)}
-                        >
-                          Предпросмотр цепочки
-                        </Button>
-                      ) : null}
-                      <Button
-                        type="primary"
-                        disabled={launchBlocked}
-                        title={readinessErrors.join('; ') || undefined}
-                        onClick={async () => {
-                          if (!id) return;
-                          await campaignsApi.launch(id, true);
-                          message.success('Рассылка запущена');
-                          navigate(`/campaigns/${id}`);
-                        }}
-                      >
-                        Запустить сейчас
-                      </Button>
-                      <Button
-                        disabled={launchBlocked}
-                        onClick={async () => {
-                          if (!id) return;
-                          await campaignsApi.launch(id, false);
-                          message.success('Рассылка запланирована');
-                          navigate(`/campaigns/${id}`);
-                        }}
-                      >
-                        Запланировать
-                      </Button>
-                    </Space>
+                  <Space direction="vertical" style={{ width: '100%' }} data-onboarding-id="campaign-step-launch">
+                    {launchValidation.isChecking ? (
+                      <Spin tip="Проверка…" />
+                    ) : launchValidation.error ? (
+                      <Alert type="error" showIcon message="Не удалось выполнить проверку" description={launchValidation.error} />
+                    ) : launchValidation.hasChecked ? (
+                      <>
+                        {readinessWarnings.length > 0 ? (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message="Предупреждения"
+                            description={
+                              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                                {readinessWarnings.map((warning) => (
+                                  <li key={warning}>{warning}</li>
+                                ))}
+                              </ul>
+                            }
+                          />
+                        ) : null}
+                        {readinessErrors.length > 0 ? (
+                          <Alert
+                            type="error"
+                            showIcon
+                            message="Исправьте ошибки перед отправкой"
+                            description={
+                              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                                {readinessErrors.map((error) => (
+                                  <li key={error}>{error}</li>
+                                ))}
+                              </ul>
+                            }
+                          />
+                        ) : null}
+                        <Space wrap>
+                          <Button
+                            disabled={launchBlocked || wizardLocked}
+                            title={readinessErrors.join('; ') || undefined}
+                            onClick={async () => {
+                              if (!id) return;
+                              const to = window.prompt('Email для теста');
+                              if (!to) return;
+                              await runLaunchAction('Отправка тестового письма…', async () => {
+                                try {
+                                  const result = await campaignsApi.testEmail(id, to);
+                                  if (
+                                    result &&
+                                    typeof result === 'object' &&
+                                    'mode' in result &&
+                                    (result as { mode?: string }).mode === 'chain_test'
+                                  ) {
+                                    message.success(
+                                      `Тестовая цепочка запущена. Первое письмо отправлено на ${to}. Переходите по кнопкам в письме, чтобы получить следующие.`,
+                                    );
+                                  } else {
+                                    message.success('Тестовое письмо отправлено');
+                                  }
+                                } catch (error) {
+                                  message.error(
+                                    error instanceof Error ? error.message : 'Не удалось отправить тестовое письмо',
+                                  );
+                                  throw error;
+                                }
+                              });
+                            }}
+                          >
+                            Тестовое письмо
+                          </Button>
+                          {linkedChainId ? (
+                            <Button
+                              disabled={recipientCount === 0 || wizardLocked}
+                              onClick={() => openWizardModal('preview')}
+                            >
+                              Предпросмотр цепочки
+                            </Button>
+                          ) : null}
+                          <Button
+                            icon={<SwapOutlined />}
+                            disabled={recipientCount === 0 || wizardLocked}
+                            onClick={() => openWizardModal('layout')}
+                          >
+                            Проверить вёрстку документов
+                          </Button>
+                          <Button
+                            type="primary"
+                            disabled={launchBlocked || wizardLocked}
+                            title={readinessErrors.join('; ') || undefined}
+                            onClick={async () => {
+                              if (!id) return;
+                              await runLaunchAction('Запуск рассылки…', async () => {
+                                await campaignsApi.launch(id);
+                                await navigateAfterLaunch(id, 'Рассылка запущена');
+                              });
+                            }}
+                          >
+                            Старт
+                          </Button>
+                        </Space>
+                      </>
+                    ) : null}
                   </Space>
                 ),
               },
@@ -541,37 +957,54 @@ export function CampaignNewPage() {
         >
           <Space direction="vertical">
             <Typography.Text>Получателей: {recipientsQuery.data?.total || 0}</Typography.Text>
-            <Typography.Text>Исключено: {validateQuery.data?.excluded_recipients || 0}</Typography.Text>
+            <Typography.Text>Исключено: {launchValidation.data?.excluded_recipients ?? '—'}</Typography.Text>
             <Typography.Text>Пакетов (прогноз): {batchCountPreview}</Typography.Text>
             <Typography.Text>
-              Отправители:{' '}
-              {selectedSenderEmails.length > 0 ? selectedSenderEmails.join(', ') : 'не выбраны'}
+              Отправитель:{' '}
+              {(mailboxesQuery.data || []).find((item) => item.id === draft.smtp_mailbox_id)?.email ||
+                'не выбран'}
             </Typography.Text>
+            <Typography.Text>Компания: {selectedCompanyLabel}</Typography.Text>
+            <Typography.Text>Вид работ: {selectedWorkTypeLabel}</Typography.Text>
             <Typography.Text>
               Сопоставление переменных:{' '}
-              {mappingConfirmed ? (
+              {mappingAutoSuggest.isRunning ? (
+                <Tag color="processing">автозаполнение…</Tag>
+              ) : mappingConfirmed ? (
                 <Tag color="green">подтверждено</Tag>
               ) : (
-                <Tag color="gold">требуется</Tag>
+                <Tag
+                  color="gold"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => openWizardModal('mapping')}
+                >
+                  требуется
+                </Tag>
               )}
             </Typography.Text>
-            {readinessErrors.length === 0 ? (
-              <Tag color="green">Готово к запуску</Tag>
-            ) : (
-              <Tag color="red">Есть критические ошибки</Tag>
-            )}
+            {launchValidation.isChecking ? (
+              <Typography.Text type="secondary">Проверка…</Typography.Text>
+            ) : launchValidation.hasChecked ? (
+              readinessErrors.length === 0 ? (
+                <Tag color="green">Готово к запуску</Tag>
+              ) : (
+                <Tag color="red">Есть критические ошибки</Tag>
+              )
+            ) : step === 4 ? (
+              <Typography.Text type="secondary">Ожидание проверки…</Typography.Text>
+            ) : null}
           </Space>
         </ProCard>
       </Col>
+      </Row>
       {id && draft.job_id ? (
         <RecipientGenerateModal
           open={generateModalOpen}
           campaignId={id}
           jobId={draft.job_id}
-          onClose={() => setGenerateModalOpen(false)}
+          onClose={closeWizardModal}
           onImported={() => {
-            void queryClient.invalidateQueries({ queryKey: ['campaign-recipients', id] });
-            void queryClient.invalidateQueries({ queryKey: ['campaign-validate', id] });
+            if (id) invalidateMappingAndValidation(id);
           }}
         />
       ) : null}
@@ -579,9 +1012,11 @@ export function CampaignNewPage() {
         <VariableMappingModal
           open={mappingModalOpen}
           campaignId={id}
-          onClose={() => setMappingModalOpen(false)}
+          mappingInputsSignature={mappingInputsSignature}
+          onClose={closeWizardModal}
           onConfirmed={() => {
-            void queryClient.invalidateQueries({ queryKey: ['campaign-validate', id] });
+            if (!id) return;
+            invalidateMappingAndValidation(id);
             void campaignsApi.get(id).then((camp) => {
               replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
             });
@@ -593,9 +1028,80 @@ export function CampaignNewPage() {
         <ChainEmailPreviewModal
           open={chainPreviewOpen}
           campaignId={id}
-          onClose={() => setChainPreviewOpen(false)}
+          activeNodeId={previewNodeId}
+          onActiveNodeChange={(nodeId) => pushParams({ preview_node: nodeId })}
+          onClose={closeWizardModal}
         />
       ) : null}
-    </Row>
+      {id ? (
+        <CampaignDocumentLayoutReview
+          open={layoutReviewOpen}
+          campaignId={id}
+          onClose={closeWizardModal}
+          onApplied={() => {
+            void queryClient.invalidateQueries({ queryKey: campaignValidateQueryKey(id) });
+          }}
+        />
+      ) : null}
+      {fixModalStep !== null ? (
+        <CampaignStepFixModal
+          open={fixModalStep !== null}
+          step={fixModalStep}
+          validation={stepValidation[fixModalStep]}
+          campaignId={id ?? undefined}
+          draft={draft}
+          linkedChainId={linkedChainId ?? undefined}
+          basicsForm={basicsForm}
+          senderForm={senderForm}
+          scheduleForm={scheduleForm}
+          chainOptions={chainOptions}
+          companyOptions={companyOptions}
+          workTypeOptions={workTypeOptions}
+          selectedCompanyId={selectedCompanyId}
+          chainsLoading={chainsQuery.isLoading}
+          companiesLoading={isAppAdmin ? companiesQuery.isLoading : myCompanyQuery.isLoading}
+          workTypesLoading={workTypesQuery.isLoading}
+          isAppAdmin={isAppAdmin}
+          isCompanyAdmin={isCompanyAdmin}
+          mailboxes={mailboxesQuery.data || []}
+          audiences={audiencesQuery.data || []}
+          recipients={recipientsQuery.data?.items || []}
+          recipientsLoading={recipientsQuery.isFetching}
+          scheduleInitialValues={scheduleInitialValues}
+          batchCountPreview={batchCountPreview}
+          estimatedDurationHours={
+            schedulePreview.estimatedDurationSeconds > 0
+              ? Math.round(schedulePreview.estimatedDurationSeconds / 3600)
+              : undefined
+          }
+          saving={fixModalSaving}
+          onClose={closeWizardModal}
+          onSave={handleFixModalSave}
+          onAutosave={autosave}
+          onAudienceSelect={async (audienceId) => {
+            if (!id) return;
+            await audiencesApi.useInCampaign(audienceId, id);
+            await persist({ audience_id: audienceId });
+            invalidateMappingAndValidation(id);
+            message.success('Аудитория загружена');
+          }}
+          onImportRecipients={async (file) => {
+            if (!id) return;
+            await campaignsApi.importRecipients(id, file);
+            invalidateMappingAndValidation(id);
+            message.success('Импорт выполнен');
+          }}
+          onOpenGenerate={() => openWizardModal('generate')}
+          onScheduleChange={async (values) => {
+            if (!id) return;
+            const payload = formValuesToSchedulePayload(values);
+            if (!payload) return;
+            await campaignsApi.putSchedule(id, payload);
+            void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
+          }}
+          onOpenChainPreview={() => openWizardModal('preview')}
+        />
+      ) : null}
+    </div>
   );
 }

@@ -20,6 +20,11 @@ type SearchValues = {
 
 const DEFAULT_FIELDS = 'email, телефон, адрес, ИНН, ФИО руководителя';
 
+// Ждём не «всего N минут», а «N минут тишины»: пока сервер шлёт события
+// прогресса, таймер сбрасывается. Один лимит одинаково подходит и для 13 строк,
+// и для 400 — а жёсткий общий таймаут обрывал длинные сборы на полпути.
+const SILENCE_LIMIT_MS = 10 * 60 * 1000;
+
 function buildPrompt(values: SearchValues): string {
   return [
     `Найди ${values.what} в регионе: ${values.where}.`,
@@ -37,14 +42,18 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
   const [phase, setPhase] = useState<'form' | 'running' | 'done'>('form');
   const [logs, setLogs] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
+  const [hasFile, setHasFile] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const streamRef = useRef<EventSource | null>(null);
+  const timeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setPhase('form');
     setLogs([]);
     setRunning(false);
+    setHasFile(false);
     form.setFieldsValue({
       what: '',
       where: '',
@@ -57,6 +66,7 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
     return () => {
       abortRef.current?.abort();
       streamRef.current?.close();
+      if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
     };
   }, []);
 
@@ -79,6 +89,27 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
       cleanupRun();
     }
     onClose();
+  };
+
+  // Тот же файл, что модалка импортирует в таблицу, — отдаём пользователю.
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      const file = await parserApi.downloadResult(jobId);
+      const url = URL.createObjectURL(file);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = file.name || `recipients_${jobId}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Не удалось скачать файл';
+      message.error(detail);
+    } finally {
+      setDownloading(false);
+    }
   };
 
   const handleSubmit = async () => {
@@ -105,14 +136,23 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
 
     setPhase('running');
     setRunning(true);
+    setHasFile(false);
     setLogs(['Запрос отправлен агенту…']);
 
     const controller = new AbortController();
     abortRef.current = controller;
-    const timeout = window.setTimeout(() => controller.abort(), 10 * 60 * 1000);
+
+    const armTimeout = () => {
+      if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = window.setTimeout(() => controller.abort(), SILENCE_LIMIT_MS);
+    };
+    armTimeout();
 
     streamRef.current = parserApi.openProgressStream(jobId, (event) => {
-      if (event.text) appendLog(event.text);
+      if (event.text) {
+        appendLog(event.text);
+        armTimeout();   // сервер жив — отодвигаем обрыв
+      }
     });
 
     try {
@@ -120,6 +160,7 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
       if (result.reply) appendLog(result.reply);
 
       if (result.result_file) {
+        setHasFile(true);
         try {
           const file = await parserApi.downloadResult(jobId);
           const imported = await campaignsApi.importRecipients(campaignId, file);
@@ -148,7 +189,10 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
       message.error(aborted ? 'Генерация прервана' : 'Ошибка генерации списка');
       setPhase('done');
     } finally {
-      window.clearTimeout(timeout);
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
       cleanupRun();
     }
   };
@@ -173,6 +217,11 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
             {running ? (
               <Button danger onClick={() => abortRef.current?.abort()}>
                 Остановить ожидание
+              </Button>
+            ) : null}
+            {!running && hasFile ? (
+              <Button loading={downloading} onClick={() => void handleDownload()}>
+                Скачать таблицу
               </Button>
             ) : null}
             <Button type="primary" disabled={running} onClick={onClose}>

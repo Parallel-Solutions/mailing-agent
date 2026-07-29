@@ -409,6 +409,16 @@ def run_payload(payload: dict[str, Any]) -> None:
 
         run_chain_followup(kwargs)
         return
+    if task == "connection_warmup":
+        from src.generator.delivery.connection_warmup import run_connection_warmup
+
+        run_connection_warmup(kwargs)
+        return
+    if task == "template_text_extract":
+        from src.campaigns.template_text_cache_service import run_template_text_extraction
+
+        run_template_text_extraction(kwargs)
+        return
     raise ValueError(f"unknown worker task: {task}")
 
 

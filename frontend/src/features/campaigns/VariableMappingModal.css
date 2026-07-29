@@ -1,0 +1,73 @@
+.variable-mapping-modal__loading {
+  display: flex;
+  justify-content: center;
+  padding: 48px 0;
+}
+
+.variable-mapping-modal__success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 0;
+}
+
+.variable-mapping-modal__success-icon {
+  font-size: 48px;
+  color: #52c41a;
+}
+
+.variable-mapping-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.variable-mapping-modal__hint {
+  margin-bottom: 0;
+}
+
+.variable-mapping-modal__header-row,
+.variable-mapping-modal__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 16px;
+  align-items: center;
+}
+
+.variable-mapping-modal__header-row {
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.variable-mapping-modal__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.variable-mapping-modal__section-title {
+  margin-top: 4px;
+}
+
+.variable-mapping-modal__variable {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.variable-mapping-modal__variable-code {
+  font-size: 12px;
+}
+
+.variable-mapping-modal__input {
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .variable-mapping-modal__header-row,
+  .variable-mapping-modal__row {
+    grid-template-columns: 1fr;
+  }
+}

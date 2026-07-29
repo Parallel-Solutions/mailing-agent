@@ -8,7 +8,13 @@ from src.security.bearer_auth import resolve_request_username
 from src.security.session_store import SESSION_COOKIE_NAME, get_session_username
 from src.security.user_store import get_user_record
 from src.utils.logger import logger
-from src.utils.config import SecurityConfigurationError, require_configured_app_password, settings
+from src.utils.config import (
+    SecurityConfigurationError,
+    require_configured_app_password,
+    settings,
+    validate_public_base_url,
+    validate_runtime_database,
+)
 from src.jobs.access import read_job_owner
 from src.workers.process_manager import (
     _count_user_active_workers,
@@ -39,6 +45,7 @@ from src.web.sender_router import create_sender_router
 from src.web.statistics_router import create_statistics_router
 from src.web.smtp_router import create_smtp_router
 from src.web.auth_router import create_auth_router
+from src.web.companies_router import create_companies_router
 from src.web.v1_router import create_v1_router
 from src.web.workers_router import create_workers_router
 from src.web.sender_service import (
@@ -94,6 +101,8 @@ def _start_stats_cache_warm_thread() -> None:
 @app.on_event("startup")
 async def app_startup():
     require_configured_app_password(settings)
+    validate_public_base_url(settings)
+    validate_runtime_database(settings)
     from src.infra.db import init_db
     from src.infra.object_store import ensure_bucket
 
@@ -1353,6 +1362,7 @@ app.include_router(
     )
 )
 app.include_router(create_v1_router(check_auth=check_auth))
+app.include_router(create_companies_router(check_auth=check_auth))
 app.include_router(jobs_controller.router)
 app.include_router(create_consent_router())
 app.include_router(create_chain_router())
@@ -1542,6 +1552,7 @@ def spa_fallback(full_path: str, session_token: str | None = Cookie(default=None
         "api/",
         "public/",
         "consent/",
+        "chain/",
         "login",
         "register",
         "legacy",

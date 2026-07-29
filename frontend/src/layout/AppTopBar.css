@@ -1,0 +1,31 @@
+.app-top-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: #fff;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  box-sizing: border-box;
+}
+
+.app-layout-shell {
+  padding-top: var(--app-top-bar-height, 40px);
+}
+
+.app-layout-shell .ant-pro-layout .ant-layout-header {
+  top: var(--app-top-bar-height, 40px) !important;
+}
+
+.app-layout-shell .ant-pro-layout .ant-pro-sider.ant-layout-sider {
+  padding-top: var(--app-top-bar-height, 40px);
+}
+
+.app-layout-shell .ant-pro-layout .ant-pro-sider.ant-layout-sider-fixed {
+  inset-block-start: var(--app-top-bar-height, 40px) !important;
+  height: calc(100% - var(--app-top-bar-height, 40px)) !important;
+}
