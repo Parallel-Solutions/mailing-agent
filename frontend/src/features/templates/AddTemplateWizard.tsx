@@ -30,6 +30,24 @@ type Props = {
   onCreated: (template: Template) => void;
 };
 
+export function finishTemplateCreation({
+  template,
+  fromStepId,
+  onClose,
+  onCreated,
+}: {
+  template: Template;
+  fromStepId: string;
+  onClose: () => void;
+  onCreated: (template: Template) => void;
+}) {
+  // Close the wizard before either navigation. The onboarding route must be
+  // final while the tour is active; otherwise the editor route stays final.
+  onClose();
+  onCreated(template);
+  advanceOnboarding(fromStepId, 'audience-open');
+}
+
 const EMAIL_IMPORT_ACCEPT = '.docx,.pdf,.html,.htm,.txt';
 const DOCUMENT_UPLOAD_ACCEPT = '.docx,.pdf,.html,.htm';
 const SIMPLE_EMAIL_UPLOAD_ACCEPT = '.docx,.pdf,.html,.htm,.txt';
@@ -204,9 +222,12 @@ export function AddTemplateWizard({
     mutationFn: (starterId: string) => templatesApi.useStarter(starterId),
     onSuccess: (template) => {
       message.success('Шаблон добавлен из примера');
-      onCreated(template);
-      advanceOnboarding('template-source', 'audience-open');
-      onClose();
+      finishTemplateCreation({
+        template,
+        fromStepId: 'template-source',
+        onClose,
+        onCreated,
+      });
     },
     onError: (error) => {
       message.error(error instanceof Error ? error.message : 'Не удалось создать шаблон');
@@ -224,9 +245,12 @@ export function AddTemplateWizard({
           ? 'Черновик импортирован — доработайте в редакторе'
           : 'Шаблон загружен',
       );
-      onCreated(template);
-      advanceOnboarding(emailFormat === 'upload' ? 'template-format' : 'template-source', 'audience-open');
-      onClose();
+      finishTemplateCreation({
+        template,
+        fromStepId: emailFormat === 'upload' ? 'template-format' : 'template-source',
+        onClose,
+        onCreated,
+      });
     },
     onError: (error) => {
       if (templateType === 'document') {
@@ -252,9 +276,12 @@ export function AddTemplateWizard({
       }),
     onSuccess: (template) => {
       message.success('Создан пустой HTML-шаблон');
-      onCreated(template);
-      advanceOnboarding('template-source', 'audience-open');
-      onClose();
+      finishTemplateCreation({
+        template,
+        fromStepId: 'template-source',
+        onClose,
+        onCreated,
+      });
     },
     onError: (error) => {
       message.error(error instanceof Error ? error.message : 'Не удалось создать шаблон');
@@ -278,9 +305,12 @@ export function AddTemplateWizard({
     },
     onSuccess: (template) => {
       message.success(prompt.trim() ? 'Шаблон сгенерирован' : 'Шаблон создан из файлов');
-      onCreated(template);
-      advanceOnboarding('template-custom', 'audience-open');
-      onClose();
+      finishTemplateCreation({
+        template,
+        fromStepId: 'template-custom',
+        onClose,
+        onCreated,
+      });
     },
     onError: (error) => {
       message.error(error instanceof Error ? error.message : 'Не удалось создать шаблон');

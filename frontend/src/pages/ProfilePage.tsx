@@ -2,19 +2,19 @@ import { ProForm, ProFormSwitch, ProFormText, ProFormTextArea } from '@ant-desig
 import { App, Tabs, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { profileApi } from '@/api/profile';
-import { OnboardingSettings } from '@/features/onboarding/OnboardingSettings';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { readEnumParam } from '@/utils/urlState';
 import { ConnectionsPage } from './ConnectionsPage';
 
-const PROFILE_TABS = ['main', 'connections', 'onboarding', 'security', 'defaults', 'notifications'] as const;
+export const PROFILE_TABS = ['main', 'connections', 'security', 'defaults', 'notifications'] as const;
 
 export function ProfilePage() {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { searchParams, pushParams } = useUrlNavigation();
   const activeTab = readEnumParam(searchParams, 'tab', PROFILE_TABS, 'main');
-  const { data, isLoading } = useQuery({    queryKey: ['profile'],
+  const { data, isLoading } = useQuery({
+    queryKey: ['profile'],
     queryFn: () => profileApi.get(),
   });
 
@@ -36,30 +36,23 @@ export function ProfilePage() {
                 void queryClient.invalidateQueries({ queryKey: ['profile'] });
               }}
             >
-              <div data-onboarding-id="profile-sender">
-                <ProFormText name="display_name" label="Отображаемое имя" />
-                <ProFormText name="company" label="Компания" />
-                <ProFormText name="job_title" label="Должность" />
-              </div>
-              <div data-onboarding-id="profile-email">
-                <ProFormText name="email" label="Email" />
-              </div>
-              <div data-onboarding-id="profile-signature">
-                <ProFormTextArea name="signature" label="Подпись" />
-                <ProFormText name="timezone" label="Часовой пояс" />
-              </div>
+              <ProFormText name="display_name" label="Отображаемое имя" />
+              <ProFormText name="company" label="Компания" />
+              <ProFormText name="job_title" label="Должность" />
+              <ProFormText name="email" label="Email" />
+              <ProFormTextArea name="signature" label="Подпись" />
+              <ProFormText name="timezone" label="Часовой пояс" />
             </ProForm>
           ),
         },
         { key: 'connections', label: 'Подключения', children: <ConnectionsPage /> },
-        { key: 'onboarding', label: 'Обучение', children: <OnboardingSettings /> },
         {
           key: 'security',
           label: 'Безопасность',
           children: (
             <Typography.Paragraph type="secondary">
-              Смена пароля в этом интерфейсе недоступна. В локальном окружении создайте нового пользователя
-              через регистрацию или обратитесь к администратору.
+              Смена пароля в этом интерфейсе недоступна. В локальном окружении создайте нового
+              пользователя через регистрацию или обратитесь к администратору.
             </Typography.Paragraph>
           ),
         },

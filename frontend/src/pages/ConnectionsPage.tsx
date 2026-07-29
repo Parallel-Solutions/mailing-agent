@@ -467,6 +467,7 @@ export function ConnectionsPage() {
   };
 
   useEffect(() => {
+    let recoveryTimer = 0;
     const handleOnboardingEnter = (event: Event) => {
       const { stepId } = (event as CustomEvent<OnboardingEnterDetail>).detail || {};
       if (stepId === 'connection-open') {
@@ -479,24 +480,34 @@ export function ConnectionsPage() {
         setAddModalOpen(true);
         return;
       }
+
+      if (stepId === 'connection-details') {
+        resetAddModal();
+        setMethodKind('mailbox');
+        setAddModalOpen(true);
+        return;
+      }
+
+      if (stepId === 'connection-api-provider') {
+        resetAddModal();
+        setMethodKind('api_key');
+        setAddModalOpen(true);
+        return;
+      }
+
       if (
-        stepId === 'connection-details'
-        || stepId === 'connection-auth'
-        || stepId === 'connection-api-provider'
+        stepId === 'connection-auth'
         || stepId === 'connection-credentials'
         || stepId === 'connection-submit'
       ) {
         setAddModalOpen(true);
-        window.setTimeout(() => {
+        window.clearTimeout(recoveryTimer);
+        recoveryTimer = window.setTimeout(() => {
           const target = document.querySelector(`[data-onboarding-id="${stepId}"]`);
           if (target) return;
           resetAddModal();
-          const recoverApiProvider = stepId === 'connection-api-provider';
-          setMethodKind(recoverApiProvider ? 'api_key' : 'mailbox');
           setAddModalOpen(true);
-          if (stepId !== 'connection-details' && !recoverApiProvider) {
-            window.setTimeout(() => advanceOnboarding(stepId, 'connection-details'), 80);
-          }
+          advanceOnboarding(stepId, 'connection-method');
         }, 120);
         return;
       }
@@ -519,7 +530,10 @@ export function ConnectionsPage() {
     };
 
     window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
-    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => {
+      window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+      window.clearTimeout(recoveryTimer);
+    };
   }, [form, setAddModalOpen]);
 
   const enterLimitsStep = (connectionId: string, fromStepId = 'connection-submit') => {
@@ -746,7 +760,6 @@ export function ConnectionsPage() {
               type="primary"
               icon={<PlusOutlined />}
               data-onboarding-id="add-connection"
-              onClick={() => advanceOnboarding('connection-open')}
             >
               Добавить
             </Button>
@@ -768,7 +781,11 @@ export function ConnectionsPage() {
           }}
           onOpenChange={(open) => {
             setAddModalOpen(open);
-            if (!open) resetAddModal();
+            if (open) {
+              advanceOnboarding('connection-open');
+            } else {
+              resetAddModal();
+            }
           }}
           onFinish={async (values) => {
             if (limitsStepConnectionId) {

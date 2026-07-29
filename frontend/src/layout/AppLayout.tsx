@@ -12,6 +12,7 @@ import type { ProLayoutProps } from '@ant-design/pro-components';
 import { PageContainer, ProLayout } from '@ant-design/pro-components';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button, Dropdown, Tooltip } from 'antd';
+import { useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { onboardingApi } from '@/api/onboarding';
 import type { OnboardingState } from '@/api/types';
@@ -29,9 +30,13 @@ export function AppLayout() {
   const logout = useAuthStore((s) => s.logout);
   const { isAppAdmin } = usePermissions();
   const queryClient = useQueryClient();
+  const [onboardingSession, setOnboardingSession] = useState(0);
   const restartOnboarding = useMutation({
     mutationFn: onboardingApi.restart,
-    onSuccess: (state) => queryClient.setQueryData<OnboardingState>(['onboarding'], state),
+    onSuccess: (state) => {
+      queryClient.setQueryData<OnboardingState>(['onboarding'], state);
+      setOnboardingSession((current) => current + 1);
+    },
   });
 
   const routes: ProLayoutProps['route'] = {
@@ -115,7 +120,7 @@ export function AppLayout() {
           <Outlet />
         </PageContainer>
       </ProLayout>
-      <OnboardingTour />
+      <OnboardingTour key={onboardingSession} />
     </div>
   );
 }

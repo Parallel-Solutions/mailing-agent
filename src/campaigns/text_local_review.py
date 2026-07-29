@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from src.generator.generation.recipient_normalization import (
+    normalize_administration_mentions,
+)
+
 
 @dataclass(frozen=True)
 class LocalTextIssue:
@@ -16,6 +20,10 @@ class LocalTextIssue:
 
 
 SPACE_BEFORE_PUNCTUATION_RE = re.compile(r"\s+([,.!?;:])")
+MISSING_SPACE_BEFORE_MUNICIPALITY_QUOTE_RE = re.compile(
+    r'\b(муниципального\s+образования)(?P<quote>["«„“])(?=\s*[А-ЯЁа-яё])',
+    re.IGNORECASE,
+)
 DOUBLE_COMMA_RE = re.compile(r",,")
 TERRITORY_NOMINATIVE_RE = re.compile(
     r"для\s+территории\s+(?P<name>[А-ЯЁ][а-яё\-]+(?:\s+[а-яё\-]+){0,6})",
@@ -34,6 +42,44 @@ NESTED_ADMINISTRATION_RE = re.compile(
     r"\bадминистраци[ия]\s+муниципального\s+образования\s+[«\"]\s*администраци[ия]\b",
     re.IGNORECASE,
 )
+
+
+def _normalize_plain_generated_text(text: str) -> str:
+    normalized = normalize_administration_mentions(text)
+    normalized = MISSING_SPACE_BEFORE_MUNICIPALITY_QUOTE_RE.sub(
+        lambda match: f"{match.group(1)} {match.group('quote')}",
+        normalized,
+    )
+    normalized = ADMIN_NOMINATIVE_AFTER_FOR_RE.sub(
+        lambda match: re.sub(
+            r"администрация$",
+            "администрации",
+            match.group(0),
+            flags=re.IGNORECASE,
+        ),
+        normalized,
+    )
+    normalized = SPACE_BEFORE_PUNCTUATION_RE.sub(r"\1", normalized)
+    normalized = DOUBLE_COMMA_RE.sub(",", normalized)
+    normalized = re.sub(
+        r"\bпредмета\s+нормирование\b",
+        "предмета нормирования",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    return normalized
+
+
+def normalize_generated_correspondence_text(text: str) -> str:
+    """Apply only deterministic corrections, preserving HTML tags and attributes."""
+
+    parts = re.split(r"(<[^>]+>)", str(text or ""))
+    return "".join(
+        part
+        if part.startswith("<") and part.endswith(">")
+        else _normalize_plain_generated_text(part)
+        for part in parts
+    )
 
 
 def suggest_territory_genitive(name: str) -> str:
@@ -78,6 +124,17 @@ def review_email_text(text: str, *, field: str = "body") -> list[LocalTextIssue]
 
     issues: list[LocalTextIssue] = []
     location = field
+
+    for match in MISSING_SPACE_BEFORE_MUNICIPALITY_QUOTE_RE.finditer(text):
+        fragment = match.group(0)
+        _add_issue(
+            issues,
+            fragment=fragment,
+            message="Перед открывающей кавычкой в названии муниципального образования пропущен пробел.",
+            kind="punctuation",
+            severity="warning",
+            suggestion=f"{match.group(1)} {match.group('quote')}",
+        )
 
     for match in SPACE_BEFORE_PUNCTUATION_RE.finditer(text):
         punct = match.group(1)

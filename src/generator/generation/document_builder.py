@@ -27,6 +27,10 @@ from src.generator.generation.config_generator import (
     OUTPUT_DIR,
     TEMPLATES_DIR,
 )
+from src.generator.generation.recipient_normalization import (
+    format_administration_recipient,
+    normalize_administration_recipient,
+)
 from src.generator.generation.structured_kp import render_structured_kp_docx
 from src.generator.generation.html_kp import render_html_kp_pdf, should_use_html_kp_renderer
 from src.generator.generation.transforms import (
@@ -260,11 +264,7 @@ def replace_text_in_runs(paragraph, replacements: list[tuple[str, str]]) -> None
 
 
 def format_kp_recipient(value: object) -> str:
-    text = str(value or "").strip()
-    for index, char in enumerate(text):
-        if char.isalpha():
-            return f"{text[:index]}{char.upper()}{text[index + 1:]}"
-    return text
+    return format_administration_recipient(value)
 
 
 def build_head_greeting_name(context: dict) -> str:
@@ -2010,6 +2010,10 @@ def _local_name(element) -> str:
 
 
 def ensure_render_context(context: dict) -> dict:
+    if str(context.get("ADM_NAME") or "").strip():
+        context["ADM_NAME"] = normalize_administration_recipient(context["ADM_NAME"])
+    if str(context.get("ADM_NAME_1") or "").strip():
+        context["ADM_NAME_1"] = normalize_administration_recipient(context["ADM_NAME_1"])
     if context.get("DOCUMENT_ENTITY_TYPE") != "district":
         return context
     district_name = str(context.get("MUN_R_NAME") or context.get("MUN_NAME") or "").strip()
@@ -2020,7 +2024,11 @@ def ensure_render_context(context: dict) -> dict:
     if not str(context.get("ADM_NAME") or "").strip():
         context["ADM_NAME"] = build_district_admin_name(district_name)
     if not str(context.get("ADM_NAME_1") or "").strip():
-        context["ADM_NAME_1"] = f"Администрации муниципального образования {district_name}"
+        from src.generator.inflection.inflect import inflect_admin_name_genitive
+
+        context["ADM_NAME_1"] = inflect_admin_name_genitive(
+            context["ADM_NAME"]
+        ).value
     if not str(context.get("HEAD_MO_FRAGMENT") or "").strip():
         context["HEAD_MO_FRAGMENT"] = str(context.get("MUN_R_NAME_1") or district_name).strip()
     if not str(context.get("WORK_SCOPE_FRAGMENT") or "").strip():

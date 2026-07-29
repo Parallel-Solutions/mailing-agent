@@ -17,6 +17,9 @@ from src.campaigns.substitution_engine import (
     is_identifier_variable,
     resolve_context_value,
 )
+from src.generator.generation.recipient_normalization import (
+    format_administration_recipient,
+)
 from src.infra.db import session_scope
 from src.infra.models import MailTemplate, TemplateVersion
 from src.infra.object_store import delete as delete_object
@@ -554,7 +557,7 @@ def _normalize_official_name(value: str) -> str:
 
 
 def _normalize_official_recipient_name(value: str) -> str:
-    clean = _normalize_official_name(value)
+    clean = format_administration_recipient(_normalize_official_name(value))
     return re.sub(
         r"^администрация\b",
         "Администрации",

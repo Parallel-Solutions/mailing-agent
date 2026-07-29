@@ -31,13 +31,15 @@ class OnboardingApiTests(unittest.TestCase):
         self.assertEqual(initial.status_code, 200)
         self.assertEqual(initial.json()["result"]["status"], "active")
         self.assertEqual(initial.json()["result"]["current_step"], 0)
+        self.assertEqual(initial.json()["result"]["version"], 5)
+        self.assertEqual(initial.json()["result"]["step_count"], 24)
 
         paused = self.client.patch(
             "/api/v1/onboarding",
             json={
                 "status": "paused",
                 "current_step": 3,
-                "completed_steps": ["welcome", "profile", "connection"],
+                "completed_steps": ["welcome", "connection-open", "connection-method"],
             },
         )
         self.assertEqual(paused.status_code, 200)
