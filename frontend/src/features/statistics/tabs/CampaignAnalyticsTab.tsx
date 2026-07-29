@@ -1,35 +1,22 @@
-import { Button, Card, Col, Empty, List, Row, Select, Table, Typography } from 'antd';
+import { Button, Card, Col, Divider, Empty, List, Modal, Row, Select, Space, Table, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { statisticsApi } from '@/api/statistics';
 import { KpiGrid } from '../components/KpiGrid';
 import { FunnelRow } from '../components/FunnelRow';
 import { AnalyticsCharts } from '../components/StatsCharts';
 import { useStatistics } from '../StatisticsContext';
 import { asRecord, asRecordArray, fmt, fmtMetric } from '../utils';
+import { formatLocalDateTime } from '@/utils/dateTime';
 
 export function CampaignAnalyticsTab() {
   const {
-    apiBaseParams,
     filters,
-    setFilters,
-    campaigns,
-    setCampaigns,
     refreshNonce,
     openDrilldown,
     setError,
   } = useStatistics();
-
-  const campaignsQuery = useQuery({
-    queryKey: ['stats-campaigns-options', apiBaseParams],
-    queryFn: () => statisticsApi.campaigns(apiBaseParams),
-  });
-
-  useEffect(() => {
-    if (campaignsQuery.data) setCampaigns(asRecordArray(campaignsQuery.data.campaigns));
-  }, [campaignsQuery.data, setCampaigns]);
-
-  const jobId = filters.campaign || String(campaigns[0]?.job_id || '');
+  const jobId = filters.campaign || '';
 
   const query = useQuery({
     queryKey: ['stats-campaign-analytics', jobId, refreshNonce],
@@ -44,71 +31,222 @@ export function CampaignAnalyticsTab() {
     if (query.isError) setError('Не удалось загрузить аналитику рассылки.');
   }, [query.isError, setError]);
 
-  if (!jobId) {
-    return <Empty description="Выберите рассылку для детальной аналитики" />;
-  }
-
   const result = query.data || {};
-  const summary = asRecord(result.summary);
-  const rates = asRecord(result.rates);
   const campaign = asRecord(result.campaign);
+  const linkAnalytics = asRecord(result.link_analytics);
+  const linkSteps = asRecordArray(linkAnalytics.steps);
+  const [selectedStepId, setSelectedStepId] = useState('');
+  const [selectedLink, setSelectedLink] = useState<Record<string, unknown> | null>(null);
+  const isChain = linkAnalytics.mode === 'chain';
+  const selectedChainStep =
+    isChain && selectedStepId
+      ? linkSteps.find(
+          (step) => String(step.node_id || step.id || '') === selectedStepId,
+        )
+      : undefined;
+  const selectedStep = (isChain ? selectedChainStep : linkSteps[0]) || {};
+  const isAllChainSteps = isChain && !selectedChainStep;
+  const activeStepId = String(selectedStep.node_id || selectedStep.id || '');
+  const stepAnalytics = asRecord(selectedStep.analytics);
+  const analyticsView = Object.keys(stepAnalytics).length ? stepAnalytics : result;
+  const activeLinks = asRecordArray(selectedStep.links);
+  const activeDocuments = asRecordArray(selectedStep.documents);
 
-  const kpis = [
-    { title: 'Принято провайдером', value: fmtMetric(summary.sent), drill: 'sent' },
-    {
-      title: 'Доставлено',
-      value: `${fmtMetric(summary.delivered)} / ${rates.delivery_rate ?? 0}%`,
-      drill: 'delivered',
-    },
-    {
-      title: 'Открыто',
-      value: `${fmtMetric(summary.opened)} / ${rates.open_rate ?? 0}%`,
-      drill: 'opened',
-    },
-    {
-      title: 'Переходы',
-      value: `${fmtMetric(summary.clicked)} / ${rates.ctr ?? 0}%`,
-      drill: 'clicked',
-    },
-    { title: 'Недоставлено', value: fmtMetric(summary.errors), drill: 'errors' },
-    {
-      title: 'КП не влезло',
-      value: fmtMetric(summary.layout_errors),
-      drill: 'kp_layout',
-    },
-    {
-      title: 'Отписки и спам',
-      value: fmtMetric(Number(summary.unsubscribed || 0) + Number(summary.spam || 0)),
-      drill: 'unsub_spam',
-    },
+  useEffect(() => {
+    setSelectedLink(null);
+    setSelectedStepId('');
+  }, [jobId]);
+
+  useEffect(() => {
+    setSelectedLink(null);
+  }, [activeStepId]);
+
+  const activeLinkEntries = activeLinks.map((link, linkIndex) => ({
+    link,
+    key: String(link.id || link.edge_id || link.url || linkIndex),
+    label: String(link.label || link.url || `Ссылка ${linkIndex + 1}`),
+    clickers: Number(link.unique_clickers || 0),
+  }));
+  const activeDocumentEntries = activeDocuments.map((document, documentIndex) => ({
+    document,
+    key: String(document.id || document.template_id || documentIndex),
+    label: String(document.label || `Документ ${documentIndex + 1}`),
+    openers: Number(document.unique_openers || 0),
+  }));
+
+  const resourceGroups = linkSteps.map((step, stepIndex) => {
+    const groupAnalytics = asRecord(step.analytics);
+    return {
+      step,
+      key: String(step.node_id || step.id || stepIndex),
+      name: String(step.name || `Письмо ${stepIndex + 1}`),
+      analytics: groupAnalytics,
+      linkEntries: asRecordArray(step.links).map((link, linkIndex) => ({
+        link,
+        key: String(link.id || link.edge_id || link.url || linkIndex),
+        label: String(link.label || link.url || `Ссылка ${linkIndex + 1}`),
+        clickers: Number(link.unique_clickers || 0),
+      })),
+      documentEntries: asRecordArray(step.documents).map((document, documentIndex) => ({
+        document,
+        key: String(document.id || document.template_id || documentIndex),
+        label: String(document.label || `Документ ${documentIndex + 1}`),
+        openers: Number(document.unique_openers || 0),
+      })),
+    };
+  });
+
+  const buildResourceKpis = (
+    linkEntries: typeof activeLinkEntries,
+    documentEntries: typeof activeDocumentEntries,
+    denominator: number,
+    testPrefix = 'campaign-analytics',
+  ) => [
+    ...linkEntries.map((entry) => ({
+      title: entry.label,
+      value: `${fmtMetric(entry.clickers)} / ${
+        denominator > 0
+          ? Math.round((entry.clickers / denominator) * 1000) / 10
+          : 0
+      }%`,
+      drill: `link:${entry.key}`,
+      metricId:
+        String(entry.link.kind || entry.link.link_kind || '').toLowerCase() === 'unsubscribe'
+          ? 'chain_unsubscribe'
+          : String(entry.link.kind || entry.link.link_kind || '').toLowerCase() === 'subscribe'
+            ? 'chain_subscribe'
+            : 'tracked_link',
+      testId: `${testPrefix}-link-card-${entry.key}`,
+    })),
+    ...documentEntries.map((entry) => ({
+      title: `Документ: ${entry.label}`,
+      value: `${fmtMetric(entry.openers)} / ${
+        denominator > 0
+          ? Math.round((entry.openers / denominator) * 1000) / 10
+          : 0
+      }%`,
+      drill: `document:${entry.key}`,
+      metricId: 'tracked_document',
+      testId: `${testPrefix}-document-card-${entry.key}`,
+    })),
   ];
+
+  const buildKpis = (
+    analytics: Record<string, unknown>,
+    linkEntries: typeof activeLinkEntries,
+    documentEntries: typeof activeDocumentEntries,
+    testPrefix = 'campaign-analytics',
+  ) => {
+    const kpiSummary = asRecord(analytics.summary);
+    const kpiRates = asRecord(analytics.rates);
+    const kpiTotalAttempts = Number(kpiSummary.total_attempts || 0);
+    const kpiSentToProvider = Number(kpiSummary.sent || 0);
+    return [
+      {
+        title: 'Всего',
+        value: fmtMetric(kpiTotalAttempts),
+        drill: 'all_attempts',
+        metricId: 'all_attempts',
+        testId: `${testPrefix}-total-card`,
+      },
+      {
+        title: 'Не дошло до отправки',
+        value: fmtMetric(
+          kpiSummary.not_sent ??
+            Math.max(0, kpiTotalAttempts - kpiSentToProvider),
+        ),
+        drill: 'not_sent',
+        testId: `${testPrefix}-not-sent-card`,
+      },
+      {
+        title: 'Отправлено в почтовый провайдер',
+        value: fmtMetric(kpiSentToProvider),
+        drill: 'sent',
+        testId: `${testPrefix}-sent-card`,
+      },
+      {
+        title: 'Ошибки почтового провайдера',
+        value: fmtMetric(kpiSummary.provider_errors ?? kpiSummary.errors),
+        drill: 'errors',
+        testId: `${testPrefix}-provider-errors-card`,
+      },
+      {
+        title: 'Доставлено реальное письмо',
+        value: `${fmtMetric(kpiSummary.delivered)} / ${kpiRates.delivery_rate ?? 0}%`,
+        drill: 'delivered',
+        testId: `${testPrefix}-delivered-card`,
+      },
+      {
+        title: 'Открыто',
+        value: `${fmtMetric(kpiSummary.opened)} / ${kpiRates.open_rate ?? 0}%`,
+        drill: 'opened',
+        testId: `${testPrefix}-opened-card`,
+      },
+      ...buildResourceKpis(
+        linkEntries,
+        documentEntries,
+        kpiSentToProvider,
+        testPrefix,
+      ),
+      {
+        title: 'Отписались у почтового провайдера',
+        value: fmtMetric(kpiSummary.unsubscribed),
+        drill: 'unsubscribed',
+        testId: `${testPrefix}-unsubscribed-card`,
+      },
+      {
+        title: 'Добавили в спам',
+        value: fmtMetric(kpiSummary.spam),
+        drill: 'spam',
+        testId: `${testPrefix}-spam-card`,
+      },
+    ];
+  };
+
+  const kpis = buildKpis(
+    analyticsView,
+    activeLinkEntries,
+    activeDocumentEntries,
+  );
 
   return (
     <div>
       <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 16 }}>
         <Col flex="auto">
-          <Select
-            style={{ minWidth: 280 }}
-            showSearch
-            optionFilterProp="label"
-            value={jobId}
-            onChange={(value) => setFilters({ campaign: value })}
-            options={(campaigns.length ? campaigns : asRecordArray(campaignsQuery.data?.campaigns)).map(
-              (item) => ({
-                value: String(item.job_id),
-                label: String(item.title || 'Рассылка без названия'),
-              }),
-            )}
-          />
-          <div style={{ marginTop: 8 }}>
-            <Typography.Text strong>{String(campaign.title || 'Рассылка')}</Typography.Text>
-            <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
-              {String(result.period_from || '')}
-              {result.period_to ? ` — ${String(result.period_to)}` : ''}
-            </Typography.Text>
-          </div>
+          {jobId ? (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap',
+              }}
+            >
+              <Space size={12} wrap>
+                <Typography.Text strong>{String(campaign.title || 'Рассылка')}</Typography.Text>
+                <Typography.Text type="secondary">
+                  {String(result.period_from || '')}
+                  {result.period_to ? ` — ${String(result.period_to)}` : ''}
+                </Typography.Text>
+              </Space>
+              {isChain && linkSteps.length ? (
+                <Select
+                  data-testid="campaign-chain-step-selector"
+                  style={{ minWidth: 140 }}
+                  allowClear
+                  placeholder="Все письма"
+                  value={activeStepId || undefined}
+                  onChange={(value) => setSelectedStepId(value || '')}
+                  options={linkSteps.map((step, stepIndex) => ({
+                    value: String(step.node_id || step.id || stepIndex),
+                    label: String(step.name || `Письмо ${stepIndex + 1}`),
+                  }))}
+                />
+              ) : null}
+            </div>
+          ) : null}
         </Col>
-        <Col>
+        {jobId ? <Col>
           <Button
             onClick={() => {
               window.location.href = statisticsApi.autoCallContactsUrl(jobId);
@@ -116,83 +254,245 @@ export function CampaignAnalyticsTab() {
           >
             Выгрузить для обзвона
           </Button>
-        </Col>
+        </Col> : null}
       </Row>
 
-      <KpiGrid items={kpis} loading={query.isLoading} onDrill={(key) => void openDrilldown(key)} />
-      <FunnelRow funnel={result.funnel} />
-      <AnalyticsCharts
-        daily={result.daily}
-        reasons={result.undelivery_reasons}
-        providerEff={result.provider_effectiveness}
-      />
-
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24} lg={12}>
-          <Card title="Высокий интерес" size="small">
-            <Table
-              size="small"
-              pagination={false}
-              rowKey={(row) => String(row.organization)}
-              dataSource={asRecordArray(result.high_interest_companies)}
-              locale={{ emptyText: 'Нет компаний с высоким интересом' }}
-              onRow={(row) => ({
-                onClick: () =>
-                  void openDrilldown('sent', {
-                    title: String(row.organization),
-                    params: { organization: String(row.organization) },
-                  }),
-                style: { cursor: 'pointer' },
-              })}
-              columns={[
-                { title: 'Компания', dataIndex: 'organization' },
-                { title: 'Отправлено', dataIndex: 'sent', render: (v) => fmt(v) },
-                { title: 'Open %', dataIndex: 'open_rate', render: (v) => `${v}%` },
-                { title: 'Клики', dataIndex: 'clicked', render: (v) => fmt(v) },
-              ]}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
-          <Card title="Проблемные адреса" size="small">
-            <Table
-              size="small"
-              pagination={false}
-              rowKey={(row, index) => String(row.email || row.organization || index)}
-              dataSource={asRecordArray(result.problem_addresses)}
-              locale={{ emptyText: 'Нет проблемных адресов' }}
-              onRow={(row) => ({
-                onClick: () => {
-                  if (row.organization) {
-                    void openDrilldown('problems', {
-                      title: String(row.organization),
-                      params: { organization: String(row.organization) },
+      {!jobId ? (
+        <Empty description="Выберите рассылку для детальной аналитики" />
+      ) : (
+        <>
+          {!isAllChainSteps ? (
+            <KpiGrid
+              items={kpis}
+              loading={query.isLoading}
+              onDrill={(key) => {
+                if (key.startsWith('link:')) {
+                  const linkKey = key.slice('link:'.length);
+                  const entry = activeLinkEntries.find((item) => item.key === linkKey);
+                  if (entry) {
+                    setSelectedLink({
+                      ...entry.link,
+                      step_name: String(selectedStep.name || 'Письмо'),
+                      resource_type: 'link',
                     });
                   }
-                },
-                style: { cursor: 'pointer' },
+                  return;
+                }
+                if (key.startsWith('document:')) {
+                  const documentKey = key.slice('document:'.length);
+                  const entry = activeDocumentEntries.find(
+                    (item) => item.key === documentKey,
+                  );
+                  if (entry) {
+                    setSelectedLink({
+                      ...entry.document,
+                      label: entry.label,
+                      step_name: String(selectedStep.name || 'Письмо'),
+                      resource_type: 'document',
+                    });
+                  }
+                  return;
+                }
+                void openDrilldown(
+                  key,
+                  { params: { campaign: jobId } },
+                );
+              }}
+            />
+          ) : (
+            <div
+              data-testid="campaign-all-step-resource-groups"
+            >
+              {resourceGroups.map((group) => {
+                const groupKpis = buildKpis(
+                  group.analytics,
+                  group.linkEntries,
+                  group.documentEntries,
+                  `campaign-analytics-step-${group.key}`,
+                );
+                return (
+                  <div
+                    key={group.key}
+                    data-testid={`campaign-step-resource-group-${group.key}`}
+                  >
+                    <Divider orientation="left" plain>
+                      {group.name}
+                    </Divider>
+                    {groupKpis.length ? (
+                      <KpiGrid
+                        items={groupKpis}
+                        loading={query.isLoading}
+                        onDrill={(key) => {
+                          if (key.startsWith('link:')) {
+                            const linkKey = key.slice('link:'.length);
+                            const entry = group.linkEntries.find(
+                              (item) => item.key === linkKey,
+                            );
+                            if (entry) {
+                              setSelectedLink({
+                                ...entry.link,
+                                step_name: group.name,
+                                resource_type: 'link',
+                              });
+                            }
+                            return;
+                          }
+                          if (key.startsWith('document:')) {
+                            const documentKey = key.slice('document:'.length);
+                            const entry = group.documentEntries.find(
+                              (item) => item.key === documentKey,
+                            );
+                            if (entry) {
+                              setSelectedLink({
+                                ...entry.document,
+                                label: entry.label,
+                                step_name: group.name,
+                                resource_type: 'document',
+                              });
+                            }
+                            return;
+                          }
+                          void openDrilldown(
+                            key,
+                            { params: { campaign: jobId } },
+                          );
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                );
               })}
-              columns={[
-                {
-                  title: 'Компания / email',
-                  render: (_, r) => String(r.organization || r.email || '—'),
-                },
-                { title: 'Причина', dataIndex: 'reason_label' },
-                { title: 'Провайдер', dataIndex: 'provider_label' },
-                { title: 'Писем', dataIndex: 'attempts', render: (v) => fmt(v) },
-              ]}
+            </div>
+          )}
+          <FunnelRow
+            funnel={asRecordArray(analyticsView.funnel).filter(
+              (step) => String(step.id || '') !== 'clicked',
+            )}
+          />
+          <AnalyticsCharts
+            daily={analyticsView.daily}
+            reasons={analyticsView.undelivery_reasons}
+            providerEff={analyticsView.provider_effectiveness}
+          />
+
+          <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+            <Col xs={24} lg={12}>
+              <Card title="Высокий интерес" size="small">
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey={(row) => String(row.organization)}
+                  dataSource={asRecordArray(analyticsView.high_interest_companies)}
+                  locale={{ emptyText: 'Нет компаний с высоким интересом' }}
+                  onRow={(row) => ({
+                    onClick: () =>
+                      void openDrilldown('sent', {
+                        title: String(row.organization),
+                        params: { organization: String(row.organization) },
+                      }),
+                    style: { cursor: 'pointer' },
+                  })}
+                  columns={[
+                    { title: 'Компания', dataIndex: 'organization' },
+                    { title: 'Принято провайдером', dataIndex: 'sent', render: (v) => fmt(v) },
+                    { title: 'Open %', dataIndex: 'open_rate', render: (v) => `${v}%` },
+                    { title: 'Клики', dataIndex: 'clicked', render: (v) => fmt(v) },
+                  ]}
+                />
+              </Card>
+            </Col>
+            <Col xs={24} lg={12}>
+              <Card title="Проблемные адреса" size="small">
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey={(row, index) => String(row.email || row.organization || index)}
+                  dataSource={asRecordArray(analyticsView.problem_addresses)}
+                  locale={{ emptyText: 'Нет проблемных адресов' }}
+                  onRow={(row) => ({
+                    onClick: () => {
+                      if (row.organization) {
+                        void openDrilldown('problems', {
+                          title: String(row.organization),
+                          params: { organization: String(row.organization) },
+                        });
+                      }
+                    },
+                    style: { cursor: 'pointer' },
+                  })}
+                  columns={[
+                    {
+                      title: 'Компания / email',
+                      render: (_, r) => String(r.organization || r.email || '—'),
+                    },
+                    { title: 'Причина', dataIndex: 'reason_label' },
+                    { title: 'Провайдер', dataIndex: 'provider_label' },
+                    { title: 'Писем', dataIndex: 'attempts', render: (v) => fmt(v) },
+                  ]}
+                />
+              </Card>
+            </Col>
+          </Row>
+
+          <Card title="Рекомендации" size="small" style={{ marginTop: 16 }}>
+            <List
+              dataSource={(analyticsView.recommendations as string[] | undefined) || []}
+              locale={{ emptyText: 'Нет рекомендаций' }}
+              renderItem={(item) => <List.Item>{item}</List.Item>}
             />
           </Card>
-        </Col>
-      </Row>
-
-      <Card title="Рекомендации" size="small" style={{ marginTop: 16 }}>
-        <List
-          dataSource={(result.recommendations as string[] | undefined) || []}
-          locale={{ emptyText: 'Нет рекомендаций' }}
-          renderItem={(item) => <List.Item>{item}</List.Item>}
+        </>
+      )}
+      <Modal
+        open={Boolean(selectedLink)}
+        onCancel={() => setSelectedLink(null)}
+        footer={null}
+        width={820}
+        title={
+          selectedLink
+            ? `${String(selectedLink.step_name || 'Письмо')}: ${String(selectedLink.label || selectedLink.url || 'Ссылка')}`
+            : 'Переходы по ссылке'
+        }
+      >
+        {selectedLink?.url ? (
+          <Typography.Paragraph type="secondary" copyable style={{ marginBottom: 12 }}>
+            {String(selectedLink.url)}
+          </Typography.Paragraph>
+        ) : null}
+        <Table
+          size="small"
+          rowKey={(row, index) =>
+            String(row.recipient_id || row.email || row.row_id || `${row.clicked_at || ''}-${index}`)
+          }
+          dataSource={asRecordArray(selectedLink?.clickers)}
+          pagination={{ pageSize: 20, hideOnSinglePage: true }}
+          locale={{
+            emptyText:
+              selectedLink?.resource_type === 'document'
+                ? 'Этот документ пока никто не открывал'
+                : 'По этой ссылке пока никто не переходил',
+          }}
+          columns={[
+            {
+              title:
+                selectedLink?.resource_type === 'document'
+                  ? 'Кто открыл'
+                  : 'Кто нажал',
+              render: (_, row) =>
+                String(row.company || row.contact_name || row.email || 'Получатель'),
+            },
+            { title: 'Email', dataIndex: 'email', render: (value) => String(value || '—') },
+            {
+              title:
+                selectedLink?.resource_type === 'document'
+                  ? 'Дата открытия'
+                  : 'Дата перехода',
+              dataIndex: 'clicked_at',
+              render: (value) => formatLocalDateTime(String(value || '')),
+            },
+          ]}
         />
-      </Card>
+      </Modal>
     </div>
   );
 }

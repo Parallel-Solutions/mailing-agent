@@ -1,5 +1,5 @@
 import { Card, Col, Row, Typography } from 'antd';
-import { asRecordArray } from '../utils';
+import { asRecordArray, fmtMetric } from '../utils';
 
 type Props = {
   funnel: unknown;
@@ -8,16 +8,19 @@ type Props = {
 
 export function FunnelRow({ funnel, title = 'Воронка рассылки' }: Props) {
   const steps = asRecordArray(funnel);
+  const baseLabel = String(steps[0]?.base_label || '');
   return (
     <Card title={title} size="small" style={{ marginTop: 16 }}>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-        Доля от базы воронки на каждом этапе
+        {baseLabel ? `Доля от ${baseLabel} на каждом этапе` : 'Доля от базы воронки на каждом этапе'}
       </Typography.Paragraph>
       <Row gutter={[12, 12]}>
         {steps.map((step) => (
           <Col key={String(step.label)} flex="1 1 120px">
             <div style={{ textAlign: 'center', padding: '8px 4px' }}>
-              <div style={{ fontSize: 22, fontWeight: 600 }}>{Number(step.percent ?? 0)}%</div>
+              <div style={{ fontSize: 22, fontWeight: 600 }}>
+                {fmtMetric(step.value)} · {Number(step.percent ?? 0)}%
+              </div>
               <Typography.Text type="secondary">{String(step.label || '')}</Typography.Text>
             </div>
           </Col>

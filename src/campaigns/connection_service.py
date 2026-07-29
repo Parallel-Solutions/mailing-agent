@@ -29,7 +29,11 @@ from src.generator.delivery.smtp_mailboxes import (
 from src.generator.delivery.smtp_oauth import OAuthTokens
 from src.infra.db import session_scope
 from src.infra.models import Campaign, Company, SmtpMailbox
-from src.security.company_access import apply_owner_filter, can_access_owner
+from src.security.company_access import (
+    TEMPORARY_GLOBAL_ORGANIZATION_ACCESS,
+    apply_owner_filter,
+    can_access_owner,
+)
 from src.security.credential_vault import decrypt_secret, encrypt_secret
 from src.utils.config import settings
 
@@ -568,7 +572,10 @@ def pick_available_connection(
     with session_scope() as session:
         for connection_id in ids:
             row = session.get(SmtpMailbox, connection_id)
-            if row is None or row.owner_username != owner_username:
+            if row is None or (
+                row.owner_username != owner_username
+                and not TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
+            ):
                 continue
             if row.delivery_guard_state == "disabled" or row.status == "disabled_by_guard":
                 continue

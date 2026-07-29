@@ -19,6 +19,7 @@ from src.generator.delivery.manager_stats import (
     _group_rows_into_companies,
     _pct,
     build_campaign_analytics,
+    build_campaign_attempts,
     build_campaign_full_analytics,
     build_campaigns,
     build_consents_view,
@@ -26,6 +27,7 @@ from src.generator.delivery.manager_stats import (
     build_funnels,
     build_insights,
     build_manager_dashboard,
+    build_recipient_detail,
     build_recipients,
     build_reports_view,
     build_work_lists,
@@ -121,12 +123,34 @@ class FunnelTests(unittest.TestCase):
     def test_labels_and_percentages(self) -> None:
         funnel = build_funnels(counts={"consents": 10, "sent": 20, "delivered": 18, "opened": 9, "clicked": 3})
         labels = [step["label"] for step in funnel]
-        self.assertEqual(labels, ["Согласие", "Отправлено", "Доставлено", "Открыто", "Переходы"])
+        self.assertEqual(
+            labels,
+            ["Согласие", "Принято провайдером", "Доставлено", "Открыто", "Переходы"],
+        )
         self.assertNotIn("Клик", labels)
         # Percent is computed against sent (companies in the mailing).
         self.assertEqual(funnel[0]["percent"], 50.0)
         self.assertEqual(funnel[1]["percent"], 100.0)
         self.assertEqual(funnel[-1]["value"], 3)
+
+    def test_campaign_funnel_uses_all_attempts_as_its_base(self) -> None:
+        funnel = build_funnels(
+            counts={
+                "total_attempts": 25,
+                "consents": 2,
+                "sent": 20,
+                "delivered": 18,
+                "opened": 9,
+                "clicked": 3,
+            }
+        )
+        by_id = {step["id"]: step for step in funnel}
+
+        self.assertEqual(by_id["sent"]["percent"], 80.0)
+        self.assertEqual(by_id["delivered"]["percent"], 72.0)
+        self.assertEqual(by_id["opened"]["percent"], 36.0)
+        self.assertEqual(by_id["sent"]["base"], 25)
+        self.assertEqual(by_id["sent"]["base_label"], "всех попыток отправки")
 
     def test_funnel_percentages_never_exceed_100_for_mailing_steps(self) -> None:
         funnel = build_funnels(
@@ -307,6 +331,149 @@ class CampaignsTests(unittest.TestCase):
 
 
 class CampaignAnalyticsTests(unittest.TestCase):
+    def test_generic_delivery_failure_uses_status_label_as_error(self) -> None:
+        label = manager_stats._delivery_failure_error_label(
+            {"bounce_reason": "other", "bounce_reason_label": "Прочее"},
+            normalize_manager_status("err_delivery_failed"),
+        )
+
+        self.assertEqual(label, "Ошибка доставки")
+
+    def test_delivery_failure_includes_provider_response(self) -> None:
+        label = manager_stats._delivery_failure_error_label(
+            {
+                "bounce_reason": "email_not_exists",
+                "bounce_reason_label": "Email не существует",
+                "delivery_response": "550 5.1.1 user unknown",
+            },
+            normalize_manager_status("err_delivery_failed"),
+        )
+
+        self.assertEqual(
+            label,
+            "Email не существует: 550 5.1.1 user unknown",
+        )
+
+    def test_generic_delivery_failure_includes_provider_response(self) -> None:
+        label = manager_stats._delivery_failure_error_label(
+            {
+                "bounce_reason": "other",
+                "bounce_reason_label": "Прочее",
+                "delivery_response": "554 transaction failed",
+            },
+            normalize_manager_status("err_delivery_failed"),
+        )
+
+        self.assertEqual(label, "Ошибка доставки: 554 transaction failed")
+
+    def test_attempt_union_deduplicates_sent_log_by_provider_message_id(self) -> None:
+        database_attempts = [
+            {
+                "row_id": "1",
+                "delivery_email": "sent@x.ru",
+                "status": "sent",
+                "provider_message_id": "provider-1",
+            },
+            {
+                "row_id": "2",
+                "delivery_email": "failed@x.ru",
+                "status": "failed",
+                "error": "temporary",
+            },
+        ]
+        sent_log = [
+            {
+                "row_id": "1",
+                "recipient": "sent@x.ru",
+                "provider_message_id": "provider-1",
+            },
+            {
+                "row_id": "3",
+                "recipient": "legacy@x.ru",
+                "provider_message_id": "provider-2",
+            },
+        ]
+
+        unmatched = manager_stats._unmatched_sent_log_indexes(
+            database_attempts,
+            sent_log,
+        )
+
+        self.assertEqual(unmatched, [1])
+
+    def test_current_campaign_attempts_do_not_add_extra_sent_log_rows(self) -> None:
+        database_attempts = [
+            {
+                "id": 1,
+                "row_id": "1",
+                "delivery_email": "primary@x.ru",
+                "status": "sent",
+                "provider_message_id": "provider-1",
+                "organization": "Орг1",
+            }
+        ]
+        sent_log = [
+            {
+                "row_id": "1",
+                "recipient": "primary@x.ru",
+                "status": "sent",
+                "provider_message_id": "provider-1",
+            },
+            {
+                "row_id": "1",
+                "recipient": "fallback@x.ru",
+                "status": "sent",
+                "provider_message_id": "provider-2",
+            },
+        ]
+
+        with unittest.mock.patch.object(
+            manager_stats,
+            "_load_campaign_delivery_attempts",
+            return_value=("campaign-1", database_attempts),
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "_load_delivery_for_jobs",
+            return_value=[],
+        ), unittest.mock.patch(
+            "src.jobs.job_docs.read_sent_mail_log",
+            return_value=sent_log,
+        ):
+            attempts = manager_stats._campaign_attempt_rows("job-1")
+            total = manager_stats._campaign_attempt_total("job-1")
+
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(total, 1)
+        self.assertEqual(attempts[0]["provider_message_id"], "provider-1")
+
+    def test_legacy_campaign_attempts_fall_back_to_sent_log(self) -> None:
+        sent_log = [
+            {
+                "row_id": "1",
+                "recipient": "legacy@x.ru",
+                "status": "sent",
+                "provider_message_id": "provider-1",
+            }
+        ]
+
+        with unittest.mock.patch.object(
+            manager_stats,
+            "_load_campaign_delivery_attempts",
+            return_value=("", []),
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "_load_delivery_for_jobs",
+            return_value=[],
+        ), unittest.mock.patch(
+            "src.jobs.job_docs.read_sent_mail_log",
+            return_value=sent_log,
+        ):
+            attempts = manager_stats._campaign_attempt_rows("job-legacy")
+            total = manager_stats._campaign_attempt_total("job-legacy")
+
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(total, 1)
+
     def test_problem_addresses_carry_row_key_and_org(self) -> None:
         rows = [
             _delivery_row("job-1", "1", "Орг1", "a@x.ru", "rusender", "delivered"),
@@ -316,13 +483,20 @@ class CampaignAnalyticsTests(unittest.TestCase):
              unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=[]), \
              unittest.mock.patch.object(manager_stats, "_trigger_provider_refresh", return_value=(False, False)), \
              unittest.mock.patch.object(manager_stats, "_campaign_metadata", return_value={"title": "Кампания"}), \
-             unittest.mock.patch.object(manager_stats, "_campaign_period", return_value=("2026-05-01", "2026-05-02")):
+             unittest.mock.patch.object(manager_stats, "_campaign_period", return_value=("2026-05-01", "2026-05-02")), \
+             unittest.mock.patch.object(manager_stats, "_campaign_status", return_value="completed"), \
+             unittest.mock.patch.object(manager_stats, "_campaign_attempt_total", return_value=3), \
+             unittest.mock.patch("src.campaigns.service.get_campaign_by_job_id", return_value=None):
             result = build_campaign_analytics("job-1")
         self.assertTrue(result["problem_addresses"], "Expected at least one problem address")
         problem = result["problem_addresses"][0]
         self.assertEqual(problem["email"], "b@x.ru")
         self.assertEqual(problem["organization"], "Орг2")
         self.assertEqual(problem["row_key"], make_row_key("job-1", "2", "b@x.ru"))
+        self.assertEqual(result["summary"]["total_attempts"], 3)
+        self.assertEqual(result["summary"]["not_sent"], 1)
+        self.assertEqual(result["summary"]["provider_errors"], 1)
+        self.assertFalse(result["link_analytics"]["has_links"])
 
 
 class CampaignFullAnalyticsTests(unittest.TestCase):
@@ -335,6 +509,8 @@ class CampaignFullAnalyticsTests(unittest.TestCase):
              unittest.mock.patch.object(manager_stats, "_trigger_provider_refresh", return_value=(False, False)), \
              unittest.mock.patch.object(manager_stats, "_campaign_metadata", return_value={"title": "Кампания"}), \
              unittest.mock.patch.object(manager_stats, "_campaign_period", return_value=("2026-05-01", "2026-05-02")), \
+             unittest.mock.patch.object(manager_stats, "_campaign_status", return_value="completed"), \
+             unittest.mock.patch.object(manager_stats, "_campaign_attempt_total", return_value=1), \
              unittest.mock.patch("src.jobs.job_docs.read_sent_mail_log", return_value=sent_log), \
              unittest.mock.patch("src.campaigns.service.get_campaign_by_job_id", return_value=None), \
              unittest.mock.patch.object(manager_stats, "build_domain_delivery_stats", return_value={"providers": []}):
@@ -403,6 +579,163 @@ class CompanyAggregationTests(unittest.TestCase):
         self.assertEqual(item["company"]["fields"]["region"]["display"], COMPANY_DATA_PLACEHOLDER)
         # opened outranks delivered, so the company's best status is "opened".
         self.assertEqual(item["manager_status"]["key"], "opened")
+
+    def test_campaign_attempts_group_only_the_current_campaign_by_company(self) -> None:
+        rows = [
+            _delivery_row("job-1", "1", "ООО Альфа", "one@alpha.ru", "rusender", "delivered"),
+            _delivery_row("job-1", "1", "ООО Альфа", "two@alpha.ru", "rusender", "opened"),
+        ]
+        companies = _group_rows_into_companies(rows)
+        attempts = [
+            {
+                "id": 1,
+                "row_id": "1",
+                "email": "one@alpha.ru",
+                "status": "sent",
+                "status_label": "Принято провайдером",
+                "provider_label": "RuSender",
+                "provider_message_id": "msg-1",
+                "updated_at": "2026-05-01T10:00:00",
+                "manager_status": normalize_manager_status("delivered"),
+            },
+            {
+                "id": 2,
+                "row_id": "1",
+                "email": "two@alpha.ru",
+                "status": "sent",
+                "status_label": "Принято провайдером",
+                "provider_label": "RuSender",
+                "provider_message_id": "msg-2",
+                "updated_at": "2026-05-01T10:01:00",
+                "manager_status": normalize_manager_status("opened"),
+            },
+            {
+                "id": 3,
+                "row_id": "1",
+                "email": "two@alpha.ru",
+                "status": "failed",
+                "status_label": "Ошибка",
+                "provider_label": "RuSender",
+                "error": "temporary",
+                "updated_at": "2026-05-01T09:59:00",
+                "manager_status": normalize_manager_status("failed"),
+            },
+            {
+                "id": 4,
+                "row_id": "1",
+                "email": "one@alpha.ru",
+                "status": "sent",
+                "status_label": "Принято провайдером",
+                "provider_label": "RuSender",
+                "provider_message_id": "msg-3",
+                "updated_at": "2026-05-01T10:02:00",
+                "manager_status": normalize_manager_status("err_delivery_failed"),
+            },
+        ]
+
+        with unittest.mock.patch.object(
+            manager_stats,
+            "_load_companies_for_jobs",
+            return_value=companies,
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "_campaign_attempt_rows",
+            return_value=attempts,
+        ):
+            result = build_campaign_attempts("job-1", page=1, per_page=20)
+
+        self.assertEqual(result["summary"]["companies"], 1)
+        self.assertEqual(result["summary"]["total_attempts"], 4)
+        self.assertEqual(result["summary"]["sent"], 3)
+        self.assertEqual(result["summary"]["accepted_recipients"], 1)
+        self.assertEqual(result["summary"]["delivered"], 1)
+        self.assertEqual(result["summary"]["errors"], 1)
+        self.assertEqual(result["summary"]["send_errors"], 1)
+        self.assertEqual(result["summary"]["provider_errors"], 0)
+        self.assertEqual(result["summary"]["pending"], 0)
+        item = result["items"][0]
+        self.assertEqual(item["attempts_total"], 4)
+        self.assertEqual(item["sent_count"], 3)
+        self.assertEqual(item["delivered_count"], 1)
+        self.assertEqual(item["error_count"], 1)
+        self.assertEqual(item["pending_count"], 0)
+        self.assertEqual(item["email_count"], 2)
+        self.assertEqual(item["organization"], "ООО Альфа")
+
+    def test_send_failure_is_not_counted_again_as_provider_delivery_error(self) -> None:
+        attempts = [
+            {
+                "id": 1,
+                "row_id": "1",
+                "email": "failed@alpha.ru",
+                "status": "failed",
+                "error": "provider request was not accepted",
+                "manager_status": normalize_manager_status("failed"),
+            }
+        ]
+
+        with unittest.mock.patch.object(
+            manager_stats,
+            "_load_companies_for_jobs",
+            return_value=[],
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "_campaign_attempt_rows",
+            return_value=attempts,
+        ):
+            result = build_campaign_attempts("job-1", page=1, per_page=20)
+
+        self.assertEqual(result["summary"]["errors"], 1)
+        self.assertEqual(result["summary"]["send_errors"], 1)
+        self.assertEqual(result["summary"]["provider_errors"], 0)
+
+    def test_company_detail_contains_current_campaign_attempts_emails_and_documents(self) -> None:
+        rows = [
+            _delivery_row("job-1", "1", "ООО Альфа", "one@alpha.ru", "rusender", "delivered"),
+        ]
+        companies = _group_rows_into_companies(rows)
+        attempts = [{"id": 1, "row_id": "1", "email": "one@alpha.ru", "status": "sent"}]
+        sent_emails = [{"row_id": "1", "email": "one@alpha.ru", "subject": "Первое письмо"}]
+        documents = [{"job_id": "job-1", "path": "1/offer.pdf", "label": "КП"}]
+
+        with unittest.mock.patch.object(
+            manager_stats,
+            "_load_companies_for_jobs",
+            return_value=companies,
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "_company_documents",
+            return_value=documents,
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "_company_sent_emails",
+            return_value=sent_emails,
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "_campaign_attempt_rows",
+            return_value=attempts,
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "_load_consents_for_jobs",
+            return_value=[],
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "load_manager_actions",
+            return_value=[],
+        ):
+            detail = build_recipient_detail(str(companies[0]["row_key"]))
+
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertEqual(detail["job_id"], "job-1")
+        self.assertEqual(detail["summary"]["attempts"], 1)
+        self.assertEqual(detail["summary"]["accepted"], 1)
+        self.assertEqual(detail["summary"]["delivered"], 1)
+        self.assertEqual(detail["summary"]["errors"], 0)
+        self.assertEqual(detail["summary"]["pending"], 1)
+        self.assertEqual(detail["summary"]["sent_emails"], 1)
+        self.assertEqual(detail["summary"]["documents"], 1)
+        self.assertEqual(detail["sent_emails"][0]["subject"], "Первое письмо")
 
 
 class ReportsViewTests(unittest.TestCase):

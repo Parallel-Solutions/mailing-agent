@@ -1,4 +1,4 @@
-import { Alert, Card, Col, Collapse, Empty, List, Row, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Card, Col, Collapse, Empty, List, Row, Space, Table, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { statisticsApi } from '@/api/statistics';
@@ -8,7 +8,6 @@ import { useStatistics } from '../StatisticsContext';
 import { asRecord, asRecordArray, fmt, fmtMetric } from '../utils';
 import { FullAnalyticsDocumentsSection, FullAnalyticsEmailsSection } from './FullAnalyticsMaterialsSections';
 import { MetricInfo } from './MetricInfo';
-import { useCampaignJobSelector } from './useCampaignJobSelector';
 import { formatLocalDateTime } from '@/utils/dateTime';
 import { errorLabel, providerLabel, statusLabel } from '@/utils/presentation';
 
@@ -24,8 +23,8 @@ function ratePair(count: unknown, rate: unknown): string {
 }
 
 export function CampaignFullAnalyticsTab() {
-  const { refreshNonce, setError } = useStatistics();
-  const { jobId, options, setJobId } = useCampaignJobSelector();
+  const { filters, refreshNonce, setError } = useStatistics();
+  const jobId = filters.campaign || '';
   const [deliveryPage, setDeliveryPage] = useState(1);
   const [sentLogPage, setSentLogPage] = useState(1);
   const [attemptsPage, setAttemptsPage] = useState(1);
@@ -99,25 +98,13 @@ export function CampaignFullAnalyticsTab() {
 
   return (
     <div data-testid="campaign-full-analytics-tab">
-      <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 16 }}>
-        <Col flex="auto">
-          <Select
-            style={{ minWidth: 280 }}
-            showSearch
-            optionFilterProp="label"
-            value={jobId}
-            onChange={setJobId}
-            options={options}
-          />
-          <div style={{ marginTop: 8 }}>
-            <Typography.Text strong>{String(campaign.title || campaign.name || 'Рассылка')}</Typography.Text>
-            <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
-              {String(result.period_from || '')}
-              {result.period_to ? ` — ${String(result.period_to)}` : ''}
-            </Typography.Text>
-          </div>
-        </Col>
-      </Row>
+      <div style={{ marginBottom: 16 }}>
+        <Typography.Text strong>{String(campaign.title || campaign.name || 'Рассылка')}</Typography.Text>
+        <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
+          {String(result.period_from || '')}
+          {result.period_to ? ` — ${String(result.period_to)}` : ''}
+        </Typography.Text>
+      </div>
 
       {refreshFlags.length ? (
         <Alert

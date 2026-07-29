@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import mimetypes
 from html import escape
+from urllib.parse import quote
 
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from src.campaigns.chain_consent_service import record_subscribe, record_unsubscribe
 from src.campaigns.chain_send_service import dispatch_chain_followup
@@ -18,6 +20,7 @@ from src.campaigns.chain_service import (
     is_email_node,
     is_link_node,
     record_branch_click,
+    record_tracked_resource_open,
 )
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignRecipient
@@ -60,6 +63,55 @@ def _resolve_target_node(campaign_id: str, target_node_id: str) -> dict | None:
 
 def create_chain_router() -> APIRouter:
     router = APIRouter()
+
+    @router.get("/chain/content/{token}")
+    def tracked_content_click(token: str):
+        try:
+            result = record_tracked_resource_open(token, kind="link")
+        except ValueError as exc:
+            return _page("Ссылка недоступна", str(exc))
+        target_url = str(result.get("target_url") or "").strip()
+        if not target_url.lower().startswith(("http://", "https://")):
+            return _page("Ссылка недоступна", "URL не настроен.")
+        return RedirectResponse(url=target_url, status_code=302)
+
+    @router.get("/chain/document/{token}")
+    def tracked_document_open(token: str):
+        try:
+            result = record_tracked_resource_open(token, kind="document")
+        except ValueError as exc:
+            return _page("Документ недоступен", str(exc))
+        with session_scope() as session:
+            campaign = session.get(Campaign, str(result.get("campaign_id") or ""))
+            recipient = session.get(
+                CampaignRecipient,
+                int(result.get("recipient_id") or 0),
+            )
+            if campaign is None or recipient is None:
+                return _page("Документ недоступен", "Получатель или рассылка не найдены.")
+            from src.campaigns.template_render_service import resolve_cached_attachment
+
+            resolved = resolve_cached_attachment(
+                template_id=str(result.get("template_id") or ""),
+                recipient_id=int(recipient.id),
+                job_id=campaign.job_id,
+                owner_username=campaign.owner_username,
+                campaign=campaign,
+                recipient=recipient,
+            )
+        if not resolved:
+            return _page("Документ недоступен", "Файл не найден.")
+        filename, data = resolved
+        media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": (
+                    "inline; filename*=UTF-8''" + quote(filename)
+                ),
+            },
+        )
 
     @router.get("/chain/branch/{token}", response_class=HTMLResponse)
     def chain_branch_click(token: str):

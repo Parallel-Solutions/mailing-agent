@@ -404,7 +404,14 @@ def resolve_smtp_credentials(
     if mailbox_key and owner:
         with session_scope() as session:
             row = session.get(SmtpMailbox, mailbox_key)
-            if row is not None and row.owner_username == owner:
+            # TODO(security): replace this temporary global-use path with
+            # organization-owned credentials and explicit membership checks.
+            from src.security.company_access import TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
+
+            can_use_mailbox = row is not None and (
+                row.owner_username == owner or TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
+            )
+            if can_use_mailbox:
                 if row.status == "auth_failed":
                     raise RuntimeError(row.last_error or "SMTP-ящик недоступен: ошибка авторизации.")
                 credentials = _credentials_from_row(row)

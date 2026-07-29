@@ -201,9 +201,7 @@ export function useStatisticsState() {
       if (
         nextTab !== 'campaigns' &&
         nextTab !== 'recipients' &&
-        nextTab !== 'consents' &&
-        nextTab !== 'marketing-consents' &&
-        nextTab !== 'problems'
+        nextTab !== 'marketing-consents'
       ) {
         delete nextFilters.q;
       }

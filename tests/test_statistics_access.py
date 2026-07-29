@@ -192,6 +192,24 @@ class StatisticsAccessTests(unittest.TestCase):
         self.assertEqual(len(captured[0]), 250)
         self.assertEqual(list(captured[0]), many_jobs)
 
+    def test_user_cannot_access_other_campaign_attempts(self) -> None:
+        owners = {"job-bob": "bob"}
+        with (
+            patch(
+                "src.web.statistics_router.authorize_job_access",
+                side_effect=_authorize_for(owners),
+            ),
+            patch(
+                "src.web.statistics_router.build_campaign_attempts",
+                return_value={"items": [], "summary": {}, "pagination": {}},
+            ),
+        ):
+            response = _make_client(Principal("alice", "tenant-a", "user")).get(
+                "/api/sender/campaign-attempts/job-bob"
+            )
+
+        self.assertEqual(response.status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()
