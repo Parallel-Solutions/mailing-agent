@@ -154,6 +154,54 @@ class DistrictTableTests(unittest.TestCase):
         self.assertIn("Жигаловского муниципального округа Иркутской области", rendered_text)
         self.assertNotIn("Жигаловский муниципальный округ Иркутская область", rendered_text)
 
+    def test_kp_render_inflects_single_district_placeholder_after_work_title(self) -> None:
+        row = {
+            "ID": 1,
+            "SUB_RF": "Республика Адыгея",
+            "MUN_R_NAME": "Тахтамукайский муниципальный район",
+            "MUN_NAME": "Яблоновское городское поселение",
+            "ADM_NAME": "Администрация Яблоновского городского поселения",
+            "HEAD_FIO": "Иванов Иван Иванович",
+        }
+        context = build_document_context(row, outgoing_number=186)
+        template_path = self.tmp_dir / "uploaded-single-district-template.docx"
+        output_path = self.tmp_dir / "uploaded-single-district-output.docx"
+        document = Document()
+        document.add_paragraph("Район: MUN_R_NAME")
+        table = document.add_table(rows=2, cols=2)
+        table.rows[0].cells[0].text = "Вид работ"
+        paragraph = table.rows[1].cells[0].paragraphs[0]
+        paragraph.add_run(
+            "Выполнение работ по разработке проекта местных нормативов "
+            "градостроительного проектирования "
+        )
+        district_run = paragraph.add_run("MUN_R_NAME")
+        district_run.bold = False
+        document.save(template_path)
+
+        render_docx(
+            template_path,
+            build_kp_replacements(context),
+            output_path,
+            context,
+        )
+
+        rendered = Document(output_path)
+        self.assertEqual(
+            rendered.paragraphs[0].text,
+            "Район: Тахтамукайский муниципальный район",
+        )
+        rendered_work = rendered.tables[0].rows[1].cells[0].paragraphs[0]
+        self.assertIn(
+            "Тахтамукайского муниципального района",
+            rendered_work.text,
+        )
+        self.assertNotIn(
+            "Тахтамукайский муниципальный район",
+            rendered_work.text,
+        )
+        self.assertFalse(rendered_work.runs[-1].bold)
+
     def test_municipality_contract_replacements_inflect_district_scope(self) -> None:
         row = {
             "ID": 1,

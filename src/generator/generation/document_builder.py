@@ -263,6 +263,41 @@ def replace_text_in_runs(paragraph, replacements: list[tuple[str, str]]) -> None
             break
 
 
+def work_scope_replacements_for_paragraph(
+    paragraph_text: str,
+    replacements: list[tuple[str, str]],
+    context: dict,
+) -> list[tuple[str, str]]:
+    placeholder_positions = [
+        position
+        for token in ("MUN_NAME", "MUN_R_NAME", "SUB_RF")
+        if (position := paragraph_text.find(token)) >= 0
+    ]
+    if not placeholder_positions:
+        return replacements
+
+    prefix = paragraph_text[: min(placeholder_positions)].rstrip()
+    prefix_folded = prefix.casefold()
+    work_title = str(context.get("WORK_TITLE") or "").strip()
+    follows_work_title = (
+        "work_title" in prefix_folded
+        or "выполнение работ по" in prefix_folded
+        or bool(work_title and work_title.casefold() in prefix_folded)
+    )
+    if not follows_work_title:
+        return replacements
+
+    overrides = {
+        "MUN_NAME": str(context.get("MUN_NAME_2") or context.get("MUN_NAME_1") or ""),
+        "MUN_R_NAME": str(context.get("MUN_R_NAME_1") or ""),
+        "SUB_RF": str(context.get("SUB_RF_1") or ""),
+    }
+    return [
+        (target, overrides.get(target) or replacement)
+        for target, replacement in replacements
+    ]
+
+
 def format_kp_recipient(value: object) -> str:
     return format_administration_recipient(value)
 
@@ -1828,12 +1863,17 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
     if doc is None:
         raise last_exc  # type: ignore[misc]
 
-    for paragraph in iter_paragraphs(doc):
-        replace_text_in_runs(paragraph, replacements)
-
     from src.generator.generation.pdf_safe import is_kp_docx
 
     is_kp = is_kp_docx(template_path)
+    for paragraph in iter_paragraphs(doc):
+        paragraph_replacements = work_scope_replacements_for_paragraph(
+            paragraph.text,
+            replacements,
+            context,
+        )
+        replace_text_in_runs(paragraph, paragraph_replacements)
+
     if is_kp:
         stabilize_kp_pdf_layout(doc, context)
 
