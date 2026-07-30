@@ -29,7 +29,11 @@ from src.generator.delivery.smtp_mailboxes import (
 from src.generator.delivery.smtp_oauth import OAuthTokens
 from src.infra.db import session_scope
 from src.infra.models import Campaign, Company, SmtpMailbox
-from src.security.company_access import apply_owner_filter, can_access_owner
+from src.security.company_access import (
+    TEMPORARY_GLOBAL_ORGANIZATION_ACCESS,
+    apply_owner_filter,
+    can_access_owner,
+)
 from src.security.credential_vault import decrypt_secret, encrypt_secret
 from src.utils.config import settings
 
@@ -154,6 +158,8 @@ def connection_transport(row: SmtpMailbox) -> str:
 
 
 def _public_connection(row: SmtpMailbox) -> dict[str, Any]:
+    from src.generator.delivery.channel_guard import guard_snapshot
+
     transport = connection_transport(row)
     auth_method = _safe_text(row.auth_method) or "password"
     return {
@@ -175,9 +181,32 @@ def _public_connection(row: SmtpMailbox) -> dict[str, Any]:
         "has_secret": bool(row.password_encrypted) or bool(row.oauth_tokens_encrypted),
         "max_per_hour": int(row.max_per_hour or 0),
         "max_per_day": int(row.max_per_day or 0),
+        "delivery_guard_enabled": bool(row.delivery_guard_enabled),
+        "delivery_error_rate_threshold": float(row.delivery_error_rate_threshold or 0.05),
+        "delivery_error_window_minutes": int(row.delivery_error_window_minutes or 60),
+        "delivery_error_min_samples": int(row.delivery_error_min_samples or 20),
+        "delivery_error_critical_count": int(row.delivery_error_critical_count or 0),
+        "delivery_error_action": str(row.delivery_error_action or "warmup"),
+        "delivery_throttled_max_per_hour": int(row.delivery_throttled_max_per_hour or 50),
+        "warmup_recipients": list(row.warmup_recipients or []),
+        "warmup_percent_of_errors": int(row.warmup_percent_of_errors or 100),
+        "delivery_guard": guard_snapshot(row),
         "created_at": row.created_at.isoformat(timespec="seconds") if row.created_at else "",
         "updated_at": row.updated_at.isoformat(timespec="seconds") if row.updated_at else "",
     }
+
+
+def _apply_guard_settings_and_public(connection_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    from src.generator.delivery.channel_guard import apply_guard_settings
+
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection_id)
+        if row is None:
+            raise LookupError("Delivery connection not found.")
+        apply_guard_settings(row, data)
+        row.updated_at = _now()
+        session.flush()
+        return _public_connection(row)
 
 
 def list_connections(owner_username: str, *, visible_owners: frozenset[str] | None = None) -> list[dict[str, Any]]:
@@ -230,7 +259,7 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
                 row = session.get(SmtpMailbox, mailbox["id"])
                 if row is None:
                     raise LookupError("Подключение не найдено после создания.")
-                return _public_connection(row)
+            return _apply_guard_settings_and_public(mailbox["id"], data)
         if provider == "mailru":
             email = _normalize_mailru_email(data.get("email"))
             password = _safe_text(data.get("password"))
@@ -250,8 +279,7 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
                 max_per_hour=max_per_hour,
                 max_per_day=max_per_day,
             )
-            mailbox["transport"] = "smtp"
-            return mailbox
+            return _apply_guard_settings_and_public(mailbox["id"], data)
         mailbox = create_mailbox(
             owner_username=owner_username,
             provider=provider,
@@ -267,8 +295,7 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
             max_per_hour=max_per_hour,
             max_per_day=max_per_day,
         )
-        mailbox["transport"] = "smtp"
-        return mailbox
+        return _apply_guard_settings_and_public(mailbox["id"], data)
 
     email = _safe_text(data.get("email")).lower()
     token = _safe_text(data.get("api_token"))
@@ -316,6 +343,9 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
             created_at=now,
             updated_at=now,
         )
+        from src.generator.delivery.channel_guard import apply_guard_settings
+
+        apply_guard_settings(row, data)
         session.add(row)
         session.flush()
         return _public_connection(row)
@@ -371,8 +401,7 @@ def update_connection(
                 max_per_hour=_optional_rate_limit(data, "max_per_hour"),
                 max_per_day=_optional_rate_limit(data, "max_per_day"),
             )
-            mailbox["transport"] = "smtp"
-            return mailbox
+            return _apply_guard_settings_and_public(mailbox["id"], data)
         mailbox = update_mailbox(
             connection_id,
             owner_username=owner_username,
@@ -388,8 +417,7 @@ def update_connection(
             max_per_hour=_optional_rate_limit(data, "max_per_hour"),
             max_per_day=_optional_rate_limit(data, "max_per_day"),
         )
-        mailbox["transport"] = "smtp"
-        return mailbox
+        return _apply_guard_settings_and_public(mailbox["id"], data)
 
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
@@ -414,8 +442,12 @@ def update_connection(
             row.max_per_hour = _rate_limit_value(data.get("max_per_hour"))
         if "max_per_day" in data and data.get("max_per_day") is not None:
             row.max_per_day = _rate_limit_value(data.get("max_per_day"))
-        row.status = "active"
-        row.last_error = None
+        from src.generator.delivery.channel_guard import apply_guard_settings
+
+        apply_guard_settings(row, data)
+        if row.delivery_guard_state != "disabled":
+            row.status = "active"
+            row.last_error = None
         row.updated_at = _now()
         session.flush()
         return _public_connection(row)
@@ -435,6 +467,26 @@ def delete_connection(
     delete_mailbox(connection_id, owner_username=target_owner)
 
 
+def reset_connection_guard(
+    connection_id: str,
+    owner_username: str,
+    *,
+    visible_owners: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection_id)
+        if row is None or not can_access_owner(visible_owners, row.owner_username):
+            raise LookupError("Delivery connection not found.")
+    from src.generator.delivery.channel_guard import reset_channel_guard
+
+    reset_channel_guard(connection_id, enable=True)
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection_id)
+        if row is None:
+            raise LookupError("Delivery connection not found.")
+        return _public_connection(row)
+
+
 def resolve_connection(
     connection_id: str,
     owner_username: str,
@@ -446,6 +498,8 @@ def resolve_connection(
         row = session.get(SmtpMailbox, connection_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
             raise LookupError("Подключение не найдено.")
+        if row.delivery_guard_state == "disabled" or row.status == "disabled_by_guard":
+            raise RuntimeError(row.delivery_guard_reason or "Delivery channel is disabled.")
         transport = connection_transport(row)
         sender_name = resolve_sender_name(
             row.owner_username,
@@ -518,7 +572,12 @@ def pick_available_connection(
     with session_scope() as session:
         for connection_id in ids:
             row = session.get(SmtpMailbox, connection_id)
-            if row is None or row.owner_username != owner_username:
+            if row is None or (
+                row.owner_username != owner_username
+                and not TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
+            ):
+                continue
+            if row.delivery_guard_state == "disabled" or row.status == "disabled_by_guard":
                 continue
             if _connection_at_limit(
                 row,
@@ -552,7 +611,7 @@ def validate_connection_ids(ids: list[str], owner_username: str) -> str | None:
     for connection_id in normalized:
         try:
             resolve_connection(connection_id, owner_username)
-        except LookupError:
+        except (LookupError, RuntimeError):
             return "Выбранное подключение не найдено"
     return None
 
@@ -562,7 +621,7 @@ def validate_connection_choice(connection_id: str | None, owner_username: str, t
         return "Выберите подключение отправителя"
     try:
         connection = resolve_connection(connection_id, owner_username)
-    except LookupError:
+    except (LookupError, RuntimeError):
         return "Выбранное подключение не найдено"
     normalized = _safe_text(transport or connection.transport).lower()
     if normalized != connection.transport:
@@ -585,11 +644,16 @@ def test_connection(
             message = "SMTP-подключение успешно проверено."
         else:
             from src.campaigns.batch_worker import _send_delivery_message
+            from src.campaigns.recipient_email_service import validate_delivery_email
+
+            email_validation = validate_delivery_email(connection.email)
+            if not email_validation.is_valid:
+                raise ValueError(email_validation.reason or "Email не прошёл проверку SMTP.BZ.")
 
             _send_delivery_message(
                 connection_id=connection.id,
                 owner_username=owner_username,
-                to_email=connection.email,
+                to_email=email_validation.normalized_email,
                 subject="Проверка подключения ai-offer",
                 html="<p>Подключение успешно. Это тестовое письмо ai-offer.</p>",
                 text="Подключение успешно. Это тестовое письмо ai-offer.",

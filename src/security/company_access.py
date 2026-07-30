@@ -15,6 +15,13 @@ COMPANY_ADMIN_ROLE = "company_admin"
 COMPANY_MEMBER_ROLE = "member"
 COMPANY_ROLES = {COMPANY_ADMIN_ROLE, COMPANY_MEMBER_ROLE}
 
+# TODO(security): remove this temporary compatibility switch and restore
+# organization/owner scoping after the shared-organization rollout has a
+# first-class organization selector and organization-owned delivery
+# connections. The temporary mode is intentionally read/use-only: destructive
+# company and credential-management operations remain role/owner restricted.
+TEMPORARY_GLOBAL_ORGANIZATION_ACCESS = True
+
 
 def _actor(value: Any) -> Principal:
     return coerce_principal(value)
@@ -53,6 +60,8 @@ def can_view_company(actor: Any, company_id: str) -> bool:
     safe_company_id = str(company_id or "").strip()
     if not safe_company_id:
         return False
+    if TEMPORARY_GLOBAL_ORGANIZATION_ACCESS:
+        return True
     if principal.is_admin:
         return True
     if principal.company_id == safe_company_id:
@@ -96,6 +105,8 @@ def apply_owner_filter(stmt, owner_column, visible_owners: frozenset[str] | None
 def visible_owner_usernames(actor: Any) -> frozenset[str] | None:
     """Return None for app admin (no filter), else allowed owner usernames."""
     principal = _actor(actor)
+    if TEMPORARY_GLOBAL_ORGANIZATION_ACCESS:
+        return None
     if principal.is_admin:
         return None
     if is_company_admin(principal) and principal.company_id:

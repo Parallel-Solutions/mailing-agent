@@ -22,6 +22,8 @@ services:
     volumes:
       - ./migrations:/app/migrations:ro
     environment:
+      APP_ENVIRONMENT: development
+      DATABASE_EXPECTED_NAME: mailing
       # Off when local DB holds imported test-stand stats; seed re-adds SMTP demo rows and shifts KPI.
       SEED_DEMO_DATA_ON_STARTUP: "0"
       APP_ALLOW_REGISTRATION: "1"
@@ -46,6 +48,8 @@ services:
       - ./main.py:/app/main.py:ro
       - ./migrations:/app/migrations:ro
     environment:
+      APP_ENVIRONMENT: development
+      DATABASE_EXPECTED_NAME: mailing
       BACKGROUND_QUEUE_ENABLED: "true"
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"

@@ -46,15 +46,14 @@ def append_kp_layout_sent_mail_log(
                 "recipient": recipient.email,
                 "organization": recipient.company,
                 "mun_name": recipient.company,
-                "row_id": str(
-                    (recipient.row_index + 1) if recipient.row_index is not None else recipient.id
-                ),
+                "row_id": str(recipient.id),
                 "status": "failed",
                 "error": message,
                 "layout_error_code": layout_error_code,
                 "transport": transport or campaign.transport or "smtp",
                 "campaign_name": campaign.name,
                 "campaign_id": campaign.id,
+                "recipient_id": recipient.id,
                 "sent_at": datetime.now(timezone.utc).isoformat(),
                 "subject": subject,
                 "send_mode": send_mode,

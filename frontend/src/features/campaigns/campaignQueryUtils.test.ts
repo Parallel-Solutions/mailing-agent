@@ -1,13 +1,61 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildCampaignAutosavePayload,
+  buildValidationSignature,
   campaignValidateQueryKey,
   invalidateCampaignDerivedData,
   resolveLinkedChainId,
 } from '@/features/campaigns/campaignQueryUtils';
 
+describe('buildCampaignAutosavePayload', () => {
+  it('sends only the current patch to draft_payload', () => {
+    expect(buildCampaignAutosavePayload({ name: 'Updated campaign' })).toEqual({
+      name: 'Updated campaign',
+      draft_payload: { name: 'Updated campaign' },
+    });
+  });
+
+  it('does not forward a stale nested draft snapshot', () => {
+    expect(
+      buildCampaignAutosavePayload({
+        description: 'Updated',
+        draft_payload: {
+          mapping_confirmed: false,
+          variable_mapping: {},
+        },
+      }),
+    ).toEqual({
+      description: 'Updated',
+      draft_payload: { description: 'Updated' },
+    });
+  });
+});
+
 describe('campaignValidateQueryKey', () => {
   it('builds stable query key', () => {
     expect(campaignValidateQueryKey('camp-1')).toEqual(['campaign-validate', 'camp-1']);
+  });
+});
+
+describe('buildValidationSignature', () => {
+  it('changes when company work type changes', () => {
+    const base = {
+      recipientCount: 1,
+      emailChainId: 'chain-1',
+      companyId: 'company-1',
+    };
+
+    expect(
+      buildValidationSignature({ ...base, companyWorkTypeId: 'work-1' }),
+    ).not.toBe(
+      buildValidationSignature({ ...base, companyWorkTypeId: 'work-2' }),
+    );
+  });
+
+  it('changes when company changes', () => {
+    const first = buildValidationSignature({ recipientCount: 1, companyId: 'company-1' });
+    const second = buildValidationSignature({ recipientCount: 1, companyId: 'company-2' });
+    expect(first).not.toBe(second);
   });
 });
 

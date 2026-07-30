@@ -43,7 +43,7 @@ export function DashboardTab() {
   const insights = asRecordArray(result.insights);
 
   const kpis = [
-    { title: 'Компаний в рассылке', value: fmt(summary.sent), drill: 'sent' },
+    { title: 'Принято провайдером', value: fmt(summary.sent), drill: 'sent' },
     {
       title: 'Доставлено',
       value: `${fmt(summary.delivered)} / ${rates.delivery_rate ?? 0}%`,
@@ -97,7 +97,10 @@ export function DashboardTab() {
             title="Проблемы с email"
             size="small"
             extra={
-              <Button size="small" onClick={() => setTab('problems')}>
+              <Button
+                size="small"
+                onClick={() => setTab('recipients', { quick_filter: 'problems' })}
+              >
                 Посмотреть все
               </Button>
             }

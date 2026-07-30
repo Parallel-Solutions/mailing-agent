@@ -60,7 +60,7 @@ Write-Section "Docker disk"
 docker system df
 
 Write-Section "Compose services"
-docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+docker compose --env-file .env.docker --profile onlyoffice -f docker-compose.yml -f docker-compose.prod.yml ps
 
 Write-Section "Health"
 try {
@@ -72,6 +72,11 @@ try {
     curl.exe -sf "$PublicBaseUrl/ready" | Write-Output
 } catch {
     Write-Warning "Public /ready failed: $_"
+}
+try {
+    curl.exe -sf "$PublicBaseUrl/onlyoffice/healthcheck" | Write-Output
+} catch {
+    Write-Warning "Public OnlyOffice healthcheck failed: $_"
 }
 
 Write-Section "App stability"
@@ -103,7 +108,16 @@ foreach ($path in @("./tmp", "./logs", "./storage")) {
 }
 
 Write-Section "Docker volumes"
-foreach ($vol in @("mailing-agent_pgdata", "mailing-agent_minio-data", "mailing-agent_redis-data", "mailing-agent_chroma-data")) {
+foreach ($vol in @(
+    "mailing-agent_pgdata",
+    "mailing-agent_minio-data",
+    "mailing-agent_redis-data",
+    "mailing-agent_chroma-data",
+    "mailing-agent_onlyoffice-data",
+    "mailing-agent_onlyoffice-lib",
+    "mailing-agent_onlyoffice-logs",
+    "mailing-agent_onlyoffice-db"
+)) {
     $inspect = docker volume inspect $vol --format "{{.Mountpoint}}" 2>$null
     if ($inspect) {
         Write-Host "$vol -> $inspect"
@@ -112,12 +126,20 @@ foreach ($vol in @("mailing-agent_pgdata", "mailing-agent_minio-data", "mailing-
 
 Write-Section "PUBLIC_BASE_URL"
 foreach ($svc in @("app", "worker")) {
-    $val = docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T $svc printenv PUBLIC_BASE_URL 2>$null
+    $val = docker compose --env-file .env.docker --profile onlyoffice -f docker-compose.yml -f docker-compose.prod.yml exec -T $svc printenv PUBLIC_BASE_URL 2>$null
     Write-Host "$svc PUBLIC_BASE_URL=$val"
 }
 
-Write-Section "Optional profiles (should be stopped on prod unless needed)"
-foreach ($name in @("mailing-agent-onlyoffice-1", "mailing-agent-gotenberg-2-1")) {
+Write-Section "OnlyOffice"
+$onlyofficeState = docker inspect mailing-agent-onlyoffice-1 --format "{{.State.Status}}" 2>$null
+$onlyofficeHealth = docker inspect mailing-agent-onlyoffice-1 --format "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" 2>$null
+Write-Host "onlyoffice state=$onlyofficeState health=$onlyofficeHealth"
+if ($onlyofficeState -ne "running" -or $onlyofficeHealth -ne "healthy") {
+    Write-Warning "OnlyOffice must be running and healthy on production."
+}
+
+Write-Section "Optional profiles (should be stopped on prod)"
+foreach ($name in @("mailing-agent-gotenberg-2-1")) {
     $state = docker inspect $name --format "{{.State.Status}}" 2>$null
     if ($state -eq "running") {
         Write-Warning "$name is running — consider stopping to save RAM/disk."

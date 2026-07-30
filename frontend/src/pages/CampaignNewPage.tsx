@@ -1,6 +1,7 @@
 import {
   ProCard,
 } from '@ant-design/pro-components';
+import { SwapOutlined } from '@ant-design/icons';
 import { App, Alert, Button, Col, Collapse, Form, Row, Space, Spin, Steps, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -12,6 +13,7 @@ import { companiesApi } from '@/api/companies';
 import { connectionsApi } from '@/api/connections';
 import { audiencesApi } from '@/api/audiences';
 import type { Campaign } from '@/api/types';
+import { CampaignDocumentLayoutReview } from '@/features/campaigns/CampaignDocumentLayoutReview';
 import { CampaignStepFixModal } from '@/features/campaigns/CampaignStepFixModal';
 import {
   buildCampaignStepValidation,
@@ -19,10 +21,12 @@ import {
   isMappingRelatedMessage,
   type CampaignWizardStepIndex,
 } from '@/features/campaigns/campaignStepValidation';
+import { ONBOARDING_ENTER_EVENT } from '@/features/onboarding/events';
 import '@/features/campaigns/CampaignWizardSteps.css';
 import { RecipientGenerateModal } from '@/features/campaigns/RecipientGenerateModal';
 import { ChainEmailPreviewModal } from '@/features/campaigns/ChainEmailPreviewModal';
 import {
+  buildCampaignAutosavePayload,
   buildMappingInputsSignature,
   buildValidationSignature,
   campaignValidateQueryKey,
@@ -62,7 +66,15 @@ function draftBasicsFields(draft: Partial<Campaign>) {
 
 const CAMPAIGN_MODAL_KEYS = ['modal', 'fix_step', 'preview_node'] as const;
 
-type CampaignModalKind = 'generate' | 'mapping' | 'preview' | 'fix';
+const ONBOARDING_CAMPAIGN_STEPS: Record<string, number> = {
+  'campaign-basics': 0,
+  'campaign-sender': 1,
+  'campaign-recipients': 2,
+  'campaign-schedule': 3,
+  'campaign-launch': 4,
+};
+
+type CampaignModalKind = 'generate' | 'mapping' | 'preview' | 'layout' | 'fix';
 
 export function CampaignNewPage() {
   const [params] = useSearchParams();
@@ -74,6 +86,7 @@ export function CampaignNewPage() {
   const generateModalOpen = modalKind === 'generate';
   const mappingModalOpen = modalKind === 'mapping';
   const chainPreviewOpen = modalKind === 'preview';
+  const layoutReviewOpen = modalKind === 'layout';
   const fixModalStep =
     modalKind === 'fix'
       ? (readIntParam(params, 'fix_step', 0, 0, 3) as CampaignWizardStepIndex)
@@ -99,6 +112,8 @@ export function CampaignNewPage() {
   const pendingAutosaveRef = useRef<Record<string, unknown> | null>(null);
   const hydratedIdRef = useRef<string | null>(null);
   const companyAutoSetRef = useRef<string | null>(null);
+  const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const persistRequestRef = useRef(0);
   const suppressAutosaveRef = useRef(false);
 
   const setWizardStep = useCallback(
@@ -107,6 +122,16 @@ export function CampaignNewPage() {
     },
     [pushParams],
   );
+
+  useEffect(() => {
+    const handleOnboardingEnter = (event: Event) => {
+      const stepId = (event as CustomEvent<{ stepId?: string }>).detail?.stepId;
+      const campaignStep = stepId ? ONBOARDING_CAMPAIGN_STEPS[stepId] : undefined;
+      if (campaignStep !== undefined) setWizardStep(campaignStep);
+    };
+    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+  }, [setWizardStep]);
 
   const openWizardModal = useCallback(
     (kind: CampaignModalKind, extra: Record<string, string | null | undefined> = {}) => {
@@ -159,6 +184,12 @@ export function CampaignNewPage() {
   }, [id, emailChainIdParam]);
 
   const watchedChainId = Form.useWatch('email_chain_id', basicsForm);
+  const watchedBasics = Form.useWatch([], basicsForm);
+  const draftForValidation = useMemo(
+    () => ({ ...draft, ...draftBasicsFields(draft), ...(watchedBasics || {}) }),
+    [draft, watchedBasics],
+  );
+
   const linkedChainId = resolveLinkedChainId(watchedChainId, draft.email_chain_id);
 
   useEffect(() => {
@@ -182,9 +213,7 @@ export function CampaignNewPage() {
     enabled: !isAppAdmin && !user?.company?.id,
   });
 
-  const selectedCompanyId =
-    Form.useWatch('company_id', basicsForm) ||
-    draftBasicsFields(draft).company_id;
+  const selectedCompanyId = draftForValidation.company_id;
 
   const workTypesQuery = useQuery({
     queryKey: ['company-work-types', selectedCompanyId],
@@ -258,6 +287,8 @@ export function CampaignNewPage() {
         recipientCount,
         emailChainId: draft.email_chain_id,
         mappingConfirmed: draftMappingConfirmed,
+        companyId: draftForValidation.company_id,
+        companyWorkTypeId: draftForValidation.company_work_type_id,
         smtpMailboxId: draft.smtp_mailbox_id,
         audienceId: draft.audience_id,
         templateIds,
@@ -268,6 +299,8 @@ export function CampaignNewPage() {
       draft.smtp_mailbox_id,
       draftMappingConfirmed,
       recipientCount,
+      draftForValidation.company_id,
+      draftForValidation.company_work_type_id,
       templateIds,
     ],
   );
@@ -302,29 +335,37 @@ export function CampaignNewPage() {
     value: item.id,
   }));
 
+  const selectedWorkTypeId = draftBasicsFields(draftForValidation).company_work_type_id;
   const selectedCompanyLabel =
     companyOptions.find((item) => item.value === selectedCompanyId)?.label || 'не выбрана';
   const selectedWorkTypeLabel =
-    draft.work_type_name ||
-    workTypeOptions.find((item) => item.value === draftBasicsFields(draft).company_work_type_id)?.label ||
+    (selectedWorkTypeId &&
+      (workTypeOptions.find((item) => item.value === selectedWorkTypeId)?.label ||
+        draftBasicsFields(draftForValidation).work_type_name)) ||
     'не выбран';
 
   const persist = useCallback(
     async (patch: Record<string, unknown>) => {
       if (!id) return;
       setSaveState('saving');
+      const requestId = ++persistRequestRef.current;
       try {
-        const updated = await campaignsApi.update(id, {
-          ...patch,
-          draft_payload: { ...(draft.draft_payload || {}), ...patch },
-        });
-        setDraft(updated);
-        setSaveState('saved');
+        const request = persistQueueRef.current.then(() =>
+          campaignsApi.update(id, buildCampaignAutosavePayload(patch)),
+        );
+        persistQueueRef.current = request.then(() => undefined, () => undefined);
+        const updated = await request;
+        if (requestId === persistRequestRef.current) {
+          replaceDraft({ ...updated, ...(updated.draft_payload || {}) });
+          setSaveState('saved');
+        }
       } catch {
-        setSaveState('error');
+        if (requestId === persistRequestRef.current) {
+          setSaveState('error');
+        }
       }
     },
-    [id, draft.draft_payload, setDraft, setSaveState],
+    [id, replaceDraft, setSaveState],
   );
 
   const flushPendingChanges = useCallback(async () => {
@@ -347,14 +388,28 @@ export function CampaignNewPage() {
     queryClient,
   });
 
+  const handleMappingConfirmed = useCallback(async () => {
+    if (!id) return;
+    invalidateCampaignMappingCache(queryClient, id);
+    const camp = await campaignsApi.get(id);
+    replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
+    await queryClient.fetchQuery({
+      queryKey: campaignValidateQueryKey(id),
+      queryFn: () => campaignsApi.validate(id, { deep: true }),
+      staleTime: 0,
+    });
+    message.success('Сопоставление переменных сохранено');
+  }, [id, message, queryClient, replaceDraft]);
+
   const autosave = (patch: Record<string, unknown>) => {
     if (suppressAutosaveRef.current) return;
     setDraft(patch);
-    pendingAutosaveRef.current = patch;
+    pendingAutosaveRef.current = { ...(pendingAutosaveRef.current || {}), ...patch };
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
+      const pendingPatch = pendingAutosaveRef.current;
       pendingAutosaveRef.current = null;
-      void persist(patch);
+      if (pendingPatch) void persist(pendingPatch);
     }, 700);
   };
 
@@ -414,11 +469,11 @@ export function CampaignNewPage() {
   const stepValidation = useMemo(
     () =>
       buildCampaignStepValidation({
-        draft,
+        draft: draftForValidation,
         validate: launchValidation.hasChecked ? launchValidation.data : undefined,
         scheduleValues: watchedSchedule || scheduleInitialValues,
       }),
-    [draft, launchValidation.hasChecked, launchValidation.data, watchedSchedule, scheduleInitialValues],
+    [draftForValidation, launchValidation.hasChecked, launchValidation.data, watchedSchedule, scheduleInitialValues],
   );
 
   const autoFixMutation = useMutation({
@@ -529,7 +584,7 @@ export function CampaignNewPage() {
   };
 
   const readinessErrors = [
-    ...validateCampaignBasics(draft),
+    ...validateCampaignBasics(draftForValidation),
     ...(launchValidation.hasChecked ? launchValidation.data?.errors || [] : []),
   ];
   const readinessWarnings = launchValidation.hasChecked ? launchValidation.data?.warnings || [] : [];
@@ -720,8 +775,9 @@ export function CampaignNewPage() {
               {
                 key: '0',
                 label: 'Основная информация',
-                children: (
-                  <CampaignWizardBasicsStep
+                children: fixModalStep === 0 ? null : (
+                  <div data-onboarding-id="campaign-step-basics">
+                    <CampaignWizardBasicsStep
                     form={basicsForm}
                     draft={draft}
                     chainOptions={chainOptions}
@@ -739,27 +795,31 @@ export function CampaignNewPage() {
                     onNavigateChain={() => linkedChainId && navigate(`/chains/${linkedChainId}`)}
                     onNavigateChainsList={() => navigate('/chains')}
                     onNavigateCompanies={() => navigate('/companies')}
-                  />
+                    />
+                  </div>
                 ),
               },
               {
                 key: '1',
                 label: 'Отправитель',
-                children: (
-                  <CampaignWizardSenderStep
+                children: fixModalStep === 1 ? null : (
+                  <div data-onboarding-id="campaign-step-sender">
+                    <CampaignWizardSenderStep
                     form={senderForm}
                     draft={draft}
                     mailboxes={mailboxesQuery.data || []}
                     onAutosave={autosave}
                     onNavigateConnections={() => navigate('/connections')}
-                  />
+                    />
+                  </div>
                 ),
               },
               {
                 key: '2',
                 label: 'Получатели',
                 children: (
-                  <CampaignWizardRecipientsStep
+                  <div data-onboarding-id="campaign-step-recipients">
+                    <CampaignWizardRecipientsStep
                     campaignId={id ?? undefined}
                     draft={draft}
                     audiences={audiencesQuery.data || []}
@@ -780,14 +840,16 @@ export function CampaignNewPage() {
                       message.success('Импорт выполнен');
                     }}
                     onOpenGenerate={() => openWizardModal('generate')}
-                  />
+                    />
+                  </div>
                 ),
               },
               {
                 key: '3',
                 label: 'Расписание',
-                children: (
-                  <CampaignWizardScheduleStep
+                children: fixModalStep === 3 ? null : (
+                  <div data-onboarding-id="campaign-step-schedule">
+                    <CampaignWizardScheduleStep
                     form={scheduleForm}
                     initialValues={scheduleInitialValues}
                     batchCountPreview={batchCountPreview}
@@ -803,7 +865,8 @@ export function CampaignNewPage() {
                       await campaignsApi.putSchedule(id, payload);
                       void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
                     }}
-                  />
+                    />
+                  </div>
                 ),
               },
               {
@@ -811,7 +874,7 @@ export function CampaignNewPage() {
 
                 label: 'Проверка и запуск',
                 children: (
-                  <Space direction="vertical" style={{ width: '100%' }}>
+                  <Space direction="vertical" style={{ width: '100%' }} data-onboarding-id="campaign-step-launch">
                     {launchValidation.isChecking ? (
                       <Spin tip="Проверка…" />
                     ) : launchValidation.error ? (
@@ -888,6 +951,13 @@ export function CampaignNewPage() {
                               Предпросмотр цепочки
                             </Button>
                           ) : null}
+                          <Button
+                            icon={<SwapOutlined />}
+                            disabled={recipientCount === 0 || wizardLocked}
+                            onClick={() => openWizardModal('layout')}
+                          >
+                            Проверить вёрстку документов
+                          </Button>
                           <Button
                             type="primary"
                             disabled={launchBlocked || wizardLocked}
@@ -977,14 +1047,7 @@ export function CampaignNewPage() {
           campaignId={id}
           mappingInputsSignature={mappingInputsSignature}
           onClose={closeWizardModal}
-          onConfirmed={() => {
-            if (!id) return;
-            invalidateMappingAndValidation(id);
-            void campaignsApi.get(id).then((camp) => {
-              replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
-            });
-            message.success('Сопоставление переменных сохранено');
-          }}
+          onConfirmed={handleMappingConfirmed}
         />
       ) : null}
       {id && linkedChainId ? (
@@ -994,6 +1057,16 @@ export function CampaignNewPage() {
           activeNodeId={previewNodeId}
           onActiveNodeChange={(nodeId) => pushParams({ preview_node: nodeId })}
           onClose={closeWizardModal}
+        />
+      ) : null}
+      {id ? (
+        <CampaignDocumentLayoutReview
+          open={layoutReviewOpen}
+          campaignId={id}
+          onClose={closeWizardModal}
+          onApplied={() => {
+            void queryClient.invalidateQueries({ queryKey: campaignValidateQueryKey(id) });
+          }}
         />
       ) : null}
       {fixModalStep !== null ? (

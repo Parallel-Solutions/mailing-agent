@@ -35,7 +35,7 @@ class ValidationAutoFixDocxTests(unittest.TestCase):
         document.save(docx_buffer)
 
         with patch(
-            "src.campaigns.template_service._build_kp_pdf_artifact",
+            "src.campaigns.template_service._build_document_pdf_artifact",
             return_value=(b"%PDF-1.4 test", "legal.pdf"),
         ):
             uploaded = self.client.post(
@@ -53,7 +53,7 @@ class ValidationAutoFixDocxTests(unittest.TestCase):
         document_id = uploaded.json()["result"]["id"]
 
         with patch(
-            "src.campaigns.template_service._build_kp_pdf_artifact",
+            "src.campaigns.template_service._build_document_pdf_artifact",
             return_value=(b"%PDF-1.4 test", "legal.pdf"),
         ):
             applied, skipped = _apply_philologist_docx_fixes(document_id, self.username)

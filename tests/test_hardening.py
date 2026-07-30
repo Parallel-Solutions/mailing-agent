@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,7 @@ from src.infra.db import _database_name_from_url
 from src.jobs.state import _safe_agent_name
 from src.jobs.workspace import _safe_local_path
 from src.security.passwords import dummy_verify_password, hash_password, verify_password
+from tests import bootstrap
 
 
 class SafeLocalPathTests(unittest.TestCase):
@@ -70,6 +72,131 @@ class DatabaseNameTests(unittest.TestCase):
     def test_rejects_missing_name(self) -> None:
         with self.assertRaises(ValueError):
             _database_name_from_url("postgresql://u:p@host:5432/")
+
+
+class TestDatabaseResetGuardTests(unittest.TestCase):
+    def test_requires_explicit_test_mode(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "MAILING_AGENT_TEST_MODE=1"):
+                bootstrap.assert_test_database_is_safe()
+
+    def test_rejects_working_database_even_in_test_mode(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MAILING_AGENT_TEST_MODE": "1",
+                    "MAILING_AGENT_TEST_DATABASE": "mailing_test",
+                },
+                clear=True,
+            ),
+            patch.object(bootstrap.engine, "url") as engine_url,
+        ):
+            engine_url.database = "mailing"
+            with self.assertRaisesRegex(RuntimeError, "non-test database"):
+                bootstrap.assert_test_database_is_safe()
+
+    def test_accepts_explicit_matching_test_database(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MAILING_AGENT_TEST_MODE": "1",
+                    "MAILING_AGENT_TEST_DATABASE": "mailing_test",
+                },
+                clear=True,
+            ),
+            patch.object(bootstrap.engine, "url") as engine_url,
+        ):
+            engine_url.database = "mailing_test"
+            bootstrap.assert_test_database_is_safe()
+
+
+class DatabaseRuntimeGuardTests(unittest.TestCase):
+    def test_database_creation_path_validates_runtime_contour_first(self) -> None:
+        from src.infra import db
+
+        with (
+            patch.object(db, "validate_runtime_database") as validate,
+            patch.object(db, "create_engine") as create_engine,
+        ):
+            db.ensure_database_exists()
+
+        validate.assert_called_once_with(db.settings)
+        create_engine.assert_called_once()
+
+    def test_database_creation_stops_when_runtime_contour_is_invalid(self) -> None:
+        from src.infra import db
+
+        with (
+            patch.object(
+                db,
+                "validate_runtime_database",
+                side_effect=RuntimeError("unsafe contour"),
+            ),
+            patch.object(db, "create_engine") as create_engine,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "unsafe contour"):
+                db.ensure_database_exists()
+
+        create_engine.assert_not_called()
+
+    def test_migration_lock_is_released_after_failure(self) -> None:
+        from src.infra import db
+
+        connection = MagicMock()
+        connection.dialect.name = "postgresql"
+        mocked_engine = MagicMock()
+        mocked_engine.connect.return_value.__enter__.return_value = connection
+
+        with patch.object(db, "engine", mocked_engine):
+            with self.assertRaisesRegex(RuntimeError, "migration failed"):
+                with db._migration_lock():
+                    raise RuntimeError("migration failed")
+
+        statements = [str(call.args[0]) for call in connection.execute.call_args_list]
+        self.assertEqual(
+            statements,
+            [
+                "SELECT pg_advisory_lock(:lock_id)",
+                "SELECT pg_advisory_unlock(:lock_id)",
+            ],
+        )
+
+    def test_detects_current_merged_schema_when_stamp_lags(self) -> None:
+        from src.infra import db
+
+        with (
+            patch.object(
+                db,
+                "_template_version_column_names",
+                return_value=set(db._TEMPLATE_SOURCE_TEXT_COLUMNS),
+            ),
+            patch.object(
+                db,
+                "_has_table",
+                side_effect=lambda _connection, table: table
+                == "user_onboarding_states",
+            ),
+        ):
+            revision = db._detect_schema_revision(MagicMock())
+
+        self.assertEqual(revision, "0031_merge_onboarding_main")
+
+    def test_detects_main_schema_without_onboarding_branch(self) -> None:
+        from src.infra import db
+
+        with (
+            patch.object(
+                db,
+                "_template_version_column_names",
+                return_value=set(db._TEMPLATE_SOURCE_TEXT_COLUMNS),
+            ),
+            patch.object(db, "_has_table", return_value=False),
+        ):
+            revision = db._detect_schema_revision(MagicMock())
+
+        self.assertEqual(revision, "0030_template_source_text_cache")
 
 
 class PasswordHardeningTests(unittest.TestCase):

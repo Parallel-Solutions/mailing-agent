@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 import uuid
 from io import BytesIO
@@ -12,10 +13,10 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from sqlalchemy import select
 
-from src.campaigns import template_render_service
-from src.campaigns.service import create_campaign, replace_recipients
+from src.campaigns import template_render_service, template_service
+from src.campaigns.service import create_campaign, replace_recipients, validate_campaign_for_launch
 from src.infra.db import session_scope
-from src.infra.models import Campaign, CampaignRecipient, MailTemplate
+from src.infra.models import Campaign, CampaignRecipient, MailTemplate, TemplateVersion
 from src.security.auth import Principal
 from src.security.user_store import create_user
 from src.web.v1_router import create_v1_router
@@ -81,6 +82,82 @@ class TemplateRenderServiceTests(unittest.TestCase):
             )
         assert self.recipient_id is not None
 
+    def test_launch_validation_uses_persisted_pdf_text(self) -> None:
+        with session_scope() as session:
+            template = session.get(MailTemplate, self.template_id)
+            assert template is not None and template.active_version_id
+            version = session.get(TemplateVersion, template.active_version_id)
+            assert version is not None
+            self.assertEqual(version.source_text, "")
+            self.assertEqual(version.text_extraction_status, "ready")
+            self.assertEqual(len(str(version.source_sha256 or "")), 64)
+
+        with patch.object(
+            template_service,
+            "_file_text",
+            side_effect=AssertionError("launch validation must not parse the source PDF"),
+        ):
+            result = validate_campaign_for_launch(self.campaign_id, self.username)
+
+        self.assertIn("errors", result)
+
+    def test_launch_validation_reports_pending_legacy_pdf_cache(self) -> None:
+        with session_scope() as session:
+            template = session.get(MailTemplate, self.template_id)
+            assert template is not None and template.active_version_id
+            version = session.get(TemplateVersion, template.active_version_id)
+            assert version is not None
+            version.source_text = None
+            version.text_extraction_status = "pending"
+            session.flush()
+
+        with patch.object(
+            template_service,
+            "_file_text",
+            side_effect=AssertionError("launch validation must not parse a pending source PDF"),
+        ):
+            result = validate_campaign_for_launch(self.campaign_id, self.username)
+
+        self.assertTrue(any("\u043e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442\u0441\u044f" in error for error in result["errors"]))
+
+    def test_background_task_backfills_legacy_pdf_text_once(self) -> None:
+        with session_scope() as session:
+            template = session.get(MailTemplate, self.template_id)
+            assert template is not None and template.active_version_id
+            version_id = template.active_version_id
+            version = session.get(TemplateVersion, version_id)
+            assert version is not None
+            version.source_text = None
+            version.source_sha256 = None
+            version.text_extraction_status = "pending"
+            session.flush()
+
+        from src.campaigns.template_text_cache_service import run_template_text_extraction
+
+        run_template_text_extraction({"version_id": version_id})
+
+        with session_scope() as session:
+            version = session.get(TemplateVersion, version_id)
+            assert version is not None
+            self.assertEqual(version.source_text, "")
+            self.assertEqual(version.text_extraction_status, "ready")
+            self.assertEqual(len(str(version.source_sha256 or "")), 64)
+
+    def test_pending_pdf_backfill_tasks_are_deduplicated(self) -> None:
+        with session_scope() as session:
+            template = session.get(MailTemplate, self.template_id)
+            assert template is not None and template.active_version_id
+            version = session.get(TemplateVersion, template.active_version_id)
+            assert version is not None
+            version.source_text = None
+            version.text_extraction_status = "pending"
+            session.flush()
+
+        from src.campaigns.template_text_cache_service import enqueue_pending_template_text_extractions
+
+        self.assertEqual(enqueue_pending_template_text_extractions(), 1)
+        self.assertEqual(enqueue_pending_template_text_extractions(), 0)
+
     def test_static_attachment_when_not_template(self) -> None:
         with session_scope() as session:
             tmpl = session.get(MailTemplate, self.template_id)
@@ -133,6 +210,8 @@ class TemplateRenderServiceTests(unittest.TestCase):
         )
         self.assertTrue(cache_path.exists())
         self.assertEqual(cache_path.name, f"{self.template_id}.pdf")
+        meta_path = template_render_service._meta_cache_path(cache_path)
+        self.assertTrue(meta_path.exists())
 
         with patch(
             "src.campaigns.template_render_service.get_bytes",
@@ -147,6 +226,49 @@ class TemplateRenderServiceTests(unittest.TestCase):
         self.assertEqual(cached_filename, delivery_name)
         self.assertNotEqual(cached_filename, f"{self.template_id}.pdf")
         self.assertTrue(cached_data)
+
+    def test_personalized_original_pdf_invalidates_stale_renderer_cache(self) -> None:
+        with session_scope() as session:
+            recipient = session.get(CampaignRecipient, int(self.recipient_id))
+            campaign = session.get(Campaign, self.campaign_id)
+            assert recipient is not None and campaign is not None
+            session.expunge(recipient)
+            session.expunge(campaign)
+
+        _filename, first_data = template_render_service.render_document_template_for_recipient(
+            template_id=self.template_id,
+            recipient=recipient,
+            campaign=campaign,
+            job_id=self.job_id,
+        )
+        cache_path = template_render_service._cache_path(
+            self.job_id,
+            int(self.recipient_id),
+            self.template_id,
+            ".pdf",
+        )
+        meta_path = template_render_service._meta_cache_path(cache_path)
+        stale_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        stale_meta["renderer_version"] = "stale-renderer"
+        meta_path.write_text(json.dumps(stale_meta), encoding="utf-8")
+
+        with patch(
+            "src.campaigns.template_render_service.get_bytes",
+            return_value=first_data,
+        ) as get_bytes_mock:
+            template_render_service.render_document_template_for_recipient(
+                template_id=self.template_id,
+                recipient=recipient,
+                campaign=campaign,
+                job_id=self.job_id,
+            )
+
+        get_bytes_mock.assert_called_once()
+        refreshed_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            refreshed_meta["renderer_version"],
+            template_render_service.DOCUMENT_RENDERER_VERSION,
+        )
 
     def test_pre_generate_batch_creates_manifest(self) -> None:
         result = template_render_service.pre_generate_batch_templates(
@@ -254,7 +376,7 @@ class TemplateRenderServiceTests(unittest.TestCase):
     @patch("src.generator.generation.pdf_safe.is_kp_docx", return_value=True)
     @patch("src.campaigns.template_render_service._convert_kp_docx_to_pdf")
     @patch("src.campaigns.template_render_service.render_docx")
-    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_docx_render_returns_stored_delivery_filename(
         self,
         mock_build_pdf,
@@ -297,6 +419,14 @@ class TemplateRenderServiceTests(unittest.TestCase):
         template_id = uploaded.json()["result"]["id"]
         delivery_name = uploaded.json()["result"]["version"]["rendered_pdf_filename"]
         self.assertEqual(delivery_name, "КП_СТП_районы.pdf")
+        updated = self.client.patch(
+            f"/api/v1/templates/{template_id}",
+            json={
+                "is_template": True,
+                "attachment_output_format": "pdf",
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
 
         with session_scope() as session:
             recipient = session.get(CampaignRecipient, int(self.recipient_id))
@@ -315,3 +445,40 @@ class TemplateRenderServiceTests(unittest.TestCase):
         self.assertEqual(filename, delivery_name)
         self.assertNotEqual(filename, f"{template_id}.pdf")
         self.assertTrue(data.startswith(b"%PDF"))
+
+    def test_docx_attachment_keeps_original_format_by_default(self) -> None:
+        source_docx = Document()
+        source_docx.add_paragraph("Документ без конвертации")
+        payload = BytesIO()
+        source_docx.save(payload)
+        uploaded = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document", "name": "Original DOCX"},
+            files={
+                "file": (
+                    "original.docx",
+                    payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        item = uploaded.json()["result"]
+        self.assertEqual(item["attachment_output_format"], "original")
+
+        with session_scope() as session:
+            recipient = session.get(CampaignRecipient, int(self.recipient_id))
+            campaign = session.get(Campaign, self.campaign_id)
+            assert recipient is not None and campaign is not None
+            session.expunge(recipient)
+            session.expunge(campaign)
+
+        filename, data = template_render_service.render_document_template_for_recipient(
+            template_id=item["id"],
+            recipient=recipient,
+            campaign=campaign,
+            job_id=self.job_id,
+            force=True,
+        )
+        self.assertEqual(filename, "original.docx")
+        self.assertTrue(data.startswith(b"PK"))

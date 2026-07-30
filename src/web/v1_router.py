@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
@@ -15,8 +15,11 @@ from src.campaigns import (
     chain_preview_service,
     chain_service,
     connection_service,
+    document_layout_service,
     document_editor_service,
+    font_service,
     generation_service,
+    onboarding_service,
     pdf_overlay_service,
     profile_service,
     sent_email_preview_service,
@@ -32,6 +35,7 @@ from src.campaigns import (
 )
 from src.campaigns.assistants import run_editor_assistant
 from src.campaigns.schedule_planner import plan_batches
+from src.campaigns.state import CampaignStateConflict
 from src.jobs.access import coerce_principal
 from src.security.auth import Principal
 from src.security.company_access import visible_owner_usernames
@@ -155,6 +159,12 @@ class ProfileUpdateBody(BaseModel):
     notifications: dict[str, Any] | None = None
 
 
+class OnboardingUpdateBody(BaseModel):
+    status: Literal["active", "paused", "dismissed", "completed"]
+    current_step: int | None = Field(default=None, ge=0, le=100)
+    completed_steps: list[str] | None = None
+
+
 class TemplateCreateBody(BaseModel):
     name: str
     template_type: str
@@ -174,6 +184,7 @@ class TemplateSaveBody(BaseModel):
     editor_state: dict[str, Any] | None = None
     is_template: bool | None = None
     rendered_pdf_filename: str | None = None
+    attachment_output_format: str | None = None
 
 
 class KpPreviewBody(BaseModel):
@@ -218,6 +229,10 @@ class TestEmailBody(BaseModel):
     smtp_mailbox_id: str | None = None
 
 
+class DocumentLayoutApplyBody(BaseModel):
+    template_id: str = Field(min_length=1, max_length=200)
+
+
 class WorkTypeCreateBody(BaseModel):
     name: str
     mail_subject: str
@@ -242,6 +257,15 @@ class ConnectionCreateBody(BaseModel):
     oauth_tokens: dict[str, object] | None = None
     max_per_hour: int = 0
     max_per_day: int = 0
+    delivery_guard_enabled: bool = False
+    delivery_error_rate_threshold: float = 0.05
+    delivery_error_window_minutes: int = 60
+    delivery_error_min_samples: int = 20
+    delivery_error_critical_count: int = 10
+    delivery_error_action: str = "warmup"
+    delivery_throttled_max_per_hour: int = 50
+    warmup_recipients: list[str] = Field(default_factory=list)
+    warmup_percent_of_errors: int = 100
 
 
 class ConnectionUpdateBody(BaseModel):
@@ -258,6 +282,15 @@ class ConnectionUpdateBody(BaseModel):
     use_starttls: bool | None = None
     max_per_hour: int | None = None
     max_per_day: int | None = None
+    delivery_guard_enabled: bool | None = None
+    delivery_error_rate_threshold: float | None = None
+    delivery_error_window_minutes: int | None = None
+    delivery_error_min_samples: int | None = None
+    delivery_error_critical_count: int | None = None
+    delivery_error_action: str | None = None
+    delivery_throttled_max_per_hour: int | None = None
+    warmup_recipients: list[str] | None = None
+    warmup_percent_of_errors: int | None = None
 
 
 def _ok(result: Any) -> dict[str, Any]:
@@ -354,6 +387,20 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Проверка подключения не пройдена: {exc}") from exc
 
+    @router.post("/connections/{connection_id}/guard/reset")
+    def reset_connection_guard(connection_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                connection_service.reset_connection_guard(
+                    connection_id,
+                    actor.username,
+                    visible_owners=_visibility(actor),
+                )
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     # --- Profile ---
     @router.get("/profile")
     def get_profile(principal: object = Depends(check_auth)):
@@ -364,6 +411,27 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def patch_profile(body: ProfileUpdateBody, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         return _ok(profile_service.update_profile(actor.username, body.model_dump(exclude_none=True)))
+
+    # --- Onboarding ---
+    @router.get("/onboarding")
+    def get_onboarding(principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        return _ok(onboarding_service.get_onboarding(actor.username))
+
+    @router.patch("/onboarding")
+    def patch_onboarding(body: OnboardingUpdateBody, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                onboarding_service.update_onboarding(actor.username, body.model_dump(exclude_none=True))
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/onboarding/restart")
+    def restart_onboarding(principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        return _ok(onboarding_service.restart_onboarding(actor.username))
 
     # --- Work types ---
     @router.get("/work-types")
@@ -778,6 +846,48 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             status = 404 if "не найден" in message.lower() else 400
             raise HTTPException(status_code=status, detail=message) from exc
 
+    @router.post("/campaigns/{campaign_id}/document-layout/inspect")
+    def post_campaign_document_layout_inspect(
+        campaign_id: str,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                document_layout_service.inspect_campaign_layout(
+                    campaign_id,
+                    actor.username,
+                    visible_owners=_visibility(actor),
+                )
+            )
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "не найден" in message.lower() else 400
+            raise HTTPException(status_code=status, detail=message) from exc
+
+    @router.post("/campaigns/{campaign_id}/document-layout/apply")
+    def post_campaign_document_layout_apply(
+        campaign_id: str,
+        body: DocumentLayoutApplyBody,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                document_layout_service.apply_campaign_layout(
+                    campaign_id,
+                    body.template_id,
+                    actor.username,
+                    visible_owners=_visibility(actor),
+                )
+            )
+        except pdf_overlay_service.PdfOverlayLayoutError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "не найден" in message.lower() else 400
+            raise HTTPException(status_code=status, detail=message) from exc
+
     @router.get("/campaigns/{campaign_id}/email-chain/preview/attachment")
     def get_email_chain_preview_attachment(
         campaign_id: str,
@@ -892,6 +1002,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                     campaign_id, actor.username, visible_owners=_visibility(actor), force_now=force_now
                 )
             )
+        except CampaignStateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except PermissionError as exc:
@@ -902,6 +1014,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(service.pause_campaign(campaign_id, actor.username, visible_owners=_visibility(actor)))
+        except CampaignStateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -910,7 +1024,11 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(service.resume_campaign(campaign_id, actor.username, visible_owners=_visibility(actor)))
-        except (PermissionError, ValueError) as exc:
+        except CampaignStateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/campaigns/{campaign_id}/cancel")
@@ -918,6 +1036,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(service.cancel_campaign(campaign_id, actor.username, visible_owners=_visibility(actor)))
+        except CampaignStateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -972,8 +1092,17 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             return _ok(result)
 
         from src.campaigns.batch_worker import _send_delivery_message
+        from src.campaigns.recipient_email_service import validate_delivery_email
         from src.infra.db import session_scope
         from src.infra.models import MailTemplate, TemplateVersion
+
+        email_validation = validate_delivery_email(body.to_email)
+        if not email_validation.is_valid:
+            raise HTTPException(
+                status_code=400,
+                detail=email_validation.reason or "Email не прошёл проверку SMTP.BZ.",
+            )
+        delivery_email = email_validation.normalized_email
 
         subject = camp.get("mail_subject") or camp.get("name") or "Тестовое письмо"
         html = str((camp.get("draft_payload") or {}).get("email_body") or f"<p>Тест: {camp.get('name')}</p>")
@@ -990,7 +1119,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             message_id = _send_delivery_message(
                 connection_id=connection_id,
                 owner_username=actor.username,
-                to_email=body.to_email,
+                to_email=delivery_email,
                 subject=f"[TEST] {subject}",
                 html=html,
                 text=html,
@@ -999,7 +1128,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Не удалось отправить: {exc}") from exc
-        return _ok({"message_id": message_id, "to": body.to_email})
+        return _ok({"message_id": message_id, "to": delivery_email})
 
     # --- Editor assistants ---
     @router.post("/assistants/chat")
@@ -1024,6 +1153,94 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"Ассистент недоступен: {exc}") from exc
 
     # --- Templates ---
+    @router.get("/fonts")
+    def get_fonts(principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        return _ok(font_service.list_fonts(actor.username))
+
+    @router.post("/fonts/upload")
+    def post_font_upload(
+        file: UploadFile = File(...),
+        license_confirmed: bool = Form(default=False),
+        template_id: str | None = Form(default=None),
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        original_name = validate_uploaded_file(
+            file,
+            allowed_extensions=(".ttf", ".otf"),
+            max_bytes=settings.upload_font_max_bytes,
+            human_name="шрифта",
+        )
+        try:
+            item = font_service.upload_font(
+                actor.username,
+                filename=original_name,
+                data=file.file.read(),
+                license_confirmed=license_confirmed,
+                created_by=actor.username,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        affected_ids = set(
+            font_service.template_ids_requiring_family(
+                actor.username,
+                str(item.get("family_normalized") or ""),
+            )
+        )
+        if template_id:
+            affected_ids.add(template_id)
+        for affected_id in affected_ids:
+            template_service.invalidate_template_font_cache(affected_id, actor.username)
+        return _ok(item)
+
+    @router.delete("/fonts/{font_id}")
+    def delete_font(
+        font_id: str,
+        template_id: str | None = Query(default=None),
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        fonts = font_service.list_fonts(actor.username)
+        font = next((item for item in fonts if item["id"] == font_id), None)
+        if font is None:
+            raise HTTPException(status_code=404, detail="Шрифт не найден")
+        affected_ids = set(
+            font_service.template_ids_requiring_family(
+                actor.username,
+                str(font.get("family_normalized") or ""),
+            )
+        )
+        if template_id:
+            affected_ids.add(template_id)
+        if not font_service.delete_font(actor.username, font_id):
+            raise HTTPException(status_code=404, detail="Шрифт не найден")
+        for affected_id in affected_ids:
+            template_service.invalidate_template_font_cache(affected_id, actor.username)
+        return _ok({"deleted": True, "id": font_id})
+
+    @router.get("/templates/{template_id}/fonts")
+    def get_template_fonts(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(font_service.get_template_fonts(template_id, actor.username))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/templates/{template_id}/fonts/resolve")
+    def post_template_fonts_resolve(template_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            result = font_service.resolve_template_fonts(template_id, actor.username)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        template_service.invalidate_template_font_cache(template_id, actor.username)
+        return _ok(result)
+
     @router.get("/templates")
     def get_templates(
         principal: object = Depends(check_auth),
@@ -1081,6 +1298,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except template_service.DocumentConversionError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_detail()) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return _ok(item)
@@ -1207,6 +1426,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             item = template_service.get_template_delivery_file(template_id, actor.username)
+        except template_service.DocumentConversionError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_detail()) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if item is None:
@@ -1229,6 +1450,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             item = template_service.build_file_preview(template_id, actor.username)
+        except template_service.DocumentConversionError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_detail()) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if item is None:
@@ -1373,6 +1596,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                     editor_state=body.editor_state,
                     is_template=body.is_template,
                     rendered_pdf_filename=body.rendered_pdf_filename,
+                    attachment_output_format=body.attachment_output_format,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

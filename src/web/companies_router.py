@@ -11,6 +11,7 @@ from src.campaigns import company_service
 from src.campaigns.company_service import CompanyServiceError
 from src.jobs.access import coerce_principal, principal_payload
 from src.security.company_access import (
+    TEMPORARY_GLOBAL_ORGANIZATION_ACCESS,
     can_manage_company,
     can_view_company,
     require_app_admin,
@@ -85,7 +86,10 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
         limit: int = Query(default=100, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
     ):
-        require_app_admin(_actor(principal))
+        # TODO(security): restore app-admin scoping together with
+        # TEMPORARY_GLOBAL_ORGANIZATION_ACCESS.
+        if not TEMPORARY_GLOBAL_ORGANIZATION_ACCESS:
+            require_app_admin(_actor(principal))
         return _ok(company_service.list_companies(limit=limit, offset=offset))
 
     @router.post("/companies")
@@ -122,6 +126,13 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
         if company is None:
             raise HTTPException(status_code=404, detail="Компания не найдена.")
         return _ok(company)
+
+    @router.delete("/companies/{company_id}")
+    def delete_company(company_id: str, principal: object = Depends(check_auth)):
+        require_app_admin(_actor(principal))
+        if not company_service.delete_company(company_id):
+            raise HTTPException(status_code=404, detail="Компания не найдена.")
+        return _ok({"removed": True})
 
     @router.post("/companies/{company_id}/logo")
     def upload_logo(company_id: str, file: UploadFile = File(...), principal: object = Depends(check_auth)):

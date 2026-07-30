@@ -66,18 +66,31 @@ class ConnectionRateLimitsTests(unittest.TestCase):
                 "api_token": "rs_ck_secret",
                 "max_per_hour": 30,
                 "max_per_day": 200,
+                "delivery_error_critical_count": 7,
+                "delivery_error_action": "disable",
+                "delivery_throttled_max_per_hour": 50,
             },
         )
         self.assertEqual(created["max_per_hour"], 30)
         self.assertEqual(created["max_per_day"], 200)
+        self.assertEqual(created["delivery_error_critical_count"], 7)
+        self.assertEqual(created["delivery_error_action"], "disable")
+        self.assertEqual(created["delivery_guard"]["state"], "normal")
 
         updated = update_connection(
             created["id"],
             self.owner,
-            {"max_per_hour": 10, "max_per_day": 50},
+            {
+                "max_per_hour": 10,
+                "max_per_day": 50,
+                "delivery_error_critical_count": 3,
+                "delivery_error_action": "throttle",
+            },
         )
         self.assertEqual(updated["max_per_hour"], 10)
         self.assertEqual(updated["max_per_day"], 50)
+        self.assertEqual(updated["delivery_error_critical_count"], 3)
+        self.assertEqual(updated["delivery_error_action"], "throttle")
 
     def test_negative_rate_limits_clamped_to_zero(self) -> None:
         created = create_connection(

@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { asRecordArray, companyEmailsText, companyField, fmt } from './utils';
+import { asRecordArray, companyEmailsText, companyField, fmt, fmtMetric } from './utils';
 
 describe('statistics utils', () => {
-  it('formats numbers', () => {
+  it('formats numbers and missing values', () => {
     expect(fmt(1200)).toMatch(/1/);
-    expect(fmt(null)).toBe('0');
+    expect(fmt(0)).toBe('0');
+    expect(fmt(null)).toBe('—');
+    expect(fmt(undefined)).toBe('—');
+    expect(fmtMetric(null)).toBe('—');
+    expect(fmtMetric(0)).toBe('0');
   });
 
   it('reads company fields and emails', () => {

@@ -27,6 +27,10 @@ from src.generator.generation.config_generator import (
     OUTPUT_DIR,
     TEMPLATES_DIR,
 )
+from src.generator.generation.recipient_normalization import (
+    format_administration_recipient,
+    normalize_administration_recipient,
+)
 from src.generator.generation.structured_kp import render_structured_kp_docx
 from src.generator.generation.html_kp import render_html_kp_pdf, should_use_html_kp_renderer
 from src.generator.generation.transforms import (
@@ -45,7 +49,7 @@ CONTRACT_TEMPLATE_FILENAME = "contract_template_source.docx"
 KP_TEMPLATE_PATH = TEMPLATES_DIR / KP_TEMPLATE_FILENAME
 KP_TEMPLATE_PDF_PATH = TEMPLATES_DIR / KP_TEMPLATE_PDF_FILENAME
 CONTRACT_TEMPLATE_PATH = TEMPLATES_DIR / CONTRACT_TEMPLATE_FILENAME
-DOCUMENT_RENDERER_VERSION = "2026-07-21-campaign-kp-font-only-v1"
+DOCUMENT_RENDERER_VERSION = "2026-07-28-formal-correspondence-v4"
 OUTPUT_FOLDER_MANIFEST_FILENAME = ".mailing_agent_output.json"
 
 SVG_BLIP_PATTERN = re.compile(
@@ -259,12 +263,43 @@ def replace_text_in_runs(paragraph, replacements: list[tuple[str, str]]) -> None
             break
 
 
+def work_scope_replacements_for_paragraph(
+    paragraph_text: str,
+    replacements: list[tuple[str, str]],
+    context: dict,
+) -> list[tuple[str, str]]:
+    placeholder_positions = [
+        position
+        for token in ("MUN_NAME", "MUN_R_NAME", "SUB_RF")
+        if (position := paragraph_text.find(token)) >= 0
+    ]
+    if not placeholder_positions:
+        return replacements
+
+    prefix = paragraph_text[: min(placeholder_positions)].rstrip()
+    prefix_folded = prefix.casefold()
+    work_title = str(context.get("WORK_TITLE") or "").strip()
+    follows_work_title = (
+        "work_title" in prefix_folded
+        or "выполнение работ по" in prefix_folded
+        or bool(work_title and work_title.casefold() in prefix_folded)
+    )
+    if not follows_work_title:
+        return replacements
+
+    overrides = {
+        "MUN_NAME": str(context.get("MUN_NAME_2") or context.get("MUN_NAME_1") or ""),
+        "MUN_R_NAME": str(context.get("MUN_R_NAME_1") or ""),
+        "SUB_RF": str(context.get("SUB_RF_1") or ""),
+    }
+    return [
+        (target, overrides.get(target) or replacement)
+        for target, replacement in replacements
+    ]
+
+
 def format_kp_recipient(value: object) -> str:
-    text = str(value or "").strip()
-    for index, char in enumerate(text):
-        if char.isalpha():
-            return f"{text[:index]}{char.upper()}{text[index + 1:]}"
-    return text
+    return format_administration_recipient(value)
 
 
 def build_head_greeting_name(context: dict) -> str:
@@ -1828,12 +1863,17 @@ def render_docx(template_path: Path, replacements: list[tuple[str, str]], output
     if doc is None:
         raise last_exc  # type: ignore[misc]
 
-    for paragraph in iter_paragraphs(doc):
-        replace_text_in_runs(paragraph, replacements)
-
     from src.generator.generation.pdf_safe import is_kp_docx
 
     is_kp = is_kp_docx(template_path)
+    for paragraph in iter_paragraphs(doc):
+        paragraph_replacements = work_scope_replacements_for_paragraph(
+            paragraph.text,
+            replacements,
+            context,
+        )
+        replace_text_in_runs(paragraph, paragraph_replacements)
+
     if is_kp:
         stabilize_kp_pdf_layout(doc, context)
 
@@ -2010,6 +2050,10 @@ def _local_name(element) -> str:
 
 
 def ensure_render_context(context: dict) -> dict:
+    if str(context.get("ADM_NAME") or "").strip():
+        context["ADM_NAME"] = normalize_administration_recipient(context["ADM_NAME"])
+    if str(context.get("ADM_NAME_1") or "").strip():
+        context["ADM_NAME_1"] = normalize_administration_recipient(context["ADM_NAME_1"])
     if context.get("DOCUMENT_ENTITY_TYPE") != "district":
         return context
     district_name = str(context.get("MUN_R_NAME") or context.get("MUN_NAME") or "").strip()
@@ -2020,7 +2064,11 @@ def ensure_render_context(context: dict) -> dict:
     if not str(context.get("ADM_NAME") or "").strip():
         context["ADM_NAME"] = build_district_admin_name(district_name)
     if not str(context.get("ADM_NAME_1") or "").strip():
-        context["ADM_NAME_1"] = f"Администрации муниципального образования {district_name}"
+        from src.generator.inflection.inflect import inflect_admin_name_genitive
+
+        context["ADM_NAME_1"] = inflect_admin_name_genitive(
+            context["ADM_NAME"]
+        ).value
     if not str(context.get("HEAD_MO_FRAGMENT") or "").strip():
         context["HEAD_MO_FRAGMENT"] = str(context.get("MUN_R_NAME_1") or district_name).strip()
     if not str(context.get("WORK_SCOPE_FRAGMENT") or "").strip():

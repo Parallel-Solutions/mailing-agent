@@ -227,6 +227,44 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(reimported.status_code, 200, reimported.text)
         self.assertEqual(reimported.json()["result"]["import"]["total"], 2)
 
+    def test_import_recipients_preserves_long_fallback_email_list(self) -> None:
+        from openpyxl import Workbook
+
+        created = self.client.post("/api/v1/campaigns", json={"name": "Long fallback emails"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+        fallback_emails = ", ".join(
+            f"fallback-{index:02d}@example.com" for index in range(20)
+        )
+        self.assertGreater(len(fallback_emails), 320)
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append(["Organization", "Primary email", "Fallback emails"])
+        worksheet.append(["ADM_NAME", "EMAIL_OSN", "EMAIL_DOP"])
+        worksheet.append(["Administration", "primary@example.com", fallback_emails])
+        buffer = BytesIO()
+        workbook.save(buffer)
+
+        imported = self.client.post(
+            f"/api/v1/campaigns/{campaign_id}/recipients/import",
+            files={
+                "file": (
+                    "recipients.xlsx",
+                    buffer.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        self.assertEqual(imported.status_code, 200, imported.text)
+        self.assertEqual(imported.json()["result"]["import"]["total"], 1)
+
+        listed = self.client.get(f"/api/v1/campaigns/{campaign_id}/recipients")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        recipient = listed.json()["result"]["items"][0]
+        self.assertEqual(recipient["email"], "primary@example.com")
+        self.assertEqual(recipient["email_fallback"], fallback_emails)
+
     def test_create_list_and_test_provider_connections(self) -> None:
         rusender = self.client.post(
             "/api/v1/connections",
@@ -392,10 +430,17 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(duplicate.status_code, 400)
 
-    def _fake_docx_pdf_artifact(self, filename: str, data: bytes) -> tuple[bytes, str]:
+    def _fake_docx_pdf_artifact(
+        self,
+        filename: str,
+        data: bytes,
+        *,
+        owner_username: str | None = None,
+    ) -> tuple[bytes, str]:
+        del data, owner_username
         return (b"%PDF-1.4 delivery copy", f"{Path(filename).stem}.pdf")
 
-    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_upload_file_template_and_download_active_version(self, mock_build_pdf) -> None:
         mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
         source_docx = Document()
@@ -484,10 +529,105 @@ class CampaignV1ApiTests(unittest.TestCase):
         contract_template = contract.json()["result"]
         self.assertEqual(contract_template["template_type"], "document")
         self.assertEqual(contract_template["name"], "Own document")
-        self.assertEqual(contract_template["version"]["filename"], "Договор_МНГП.docx")
+        self.assertEqual(contract_template["version"]["filename"], "contract.docx")
         self.assertEqual(contract_template["version"]["rendered_pdf_filename"], "Договор_МНГП.pdf")
 
-    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
+    def test_upload_incidental_kp_phrase_uses_generic_document_builder(self, mock_build_pdf) -> None:
+        mock_build_pdf.return_value = (b"%PDF-1.4 delivery copy", "document.pdf")
+        source_docx = Document()
+        source_docx.add_paragraph(
+            "В случае заинтересованности готовы оперативно представить коммерческое предложение."
+        )
+        source_docx.add_paragraph("Подготовка границ территориальных зон.")
+        source_payload = BytesIO()
+        source_docx.save(source_payload)
+
+        created = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document"},
+            files={
+                "file": (
+                    "Шаблон письма Администрациям.docx",
+                    source_payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+
+        self.assertEqual(created.status_code, 200, created.text)
+        template = created.json()["result"]
+        self.assertEqual(template["version"]["filename"], "Шаблон письма Администрациям.docx")
+        self.assertEqual(template["version"]["rendered_pdf_filename"], "КП_Территориальные_зоны.pdf")
+        mock_build_pdf.assert_called_once_with(
+            "Шаблон письма Администрациям.docx",
+            source_payload.getvalue(),
+        )
+
+    def test_upload_conversion_error_returns_structured_422(self) -> None:
+        from src.campaigns import template_service
+
+        source_docx = Document()
+        source_docx.add_paragraph("Документ")
+        source_payload = BytesIO()
+        source_docx.save(source_payload)
+        before = self.client.get("/api/v1/templates", params={"template_type": "document"}).json()["result"]
+
+        with patch(
+            "src.campaigns.template_service._build_document_pdf_artifact",
+            side_effect=template_service.DocumentConversionError(),
+        ):
+            response = self.client.post(
+                "/api/v1/templates/upload",
+                data={"template_type": "document"},
+                files={
+                    "file": (
+                        "document.docx",
+                        source_payload.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(
+            response.json()["detail"],
+            {
+                "code": "document_conversion_failed",
+                "title": "Не удалось преобразовать документ",
+                "message": "Документ не удалось преобразовать в PDF.",
+                "hint": "Проверьте, что файл открывается корректно, и повторите загрузку.",
+            },
+        )
+        after = self.client.get("/api/v1/templates", params={"template_type": "document"}).json()["result"]
+        self.assertEqual(len(after), len(before))
+
+    def test_delivery_conversion_errors_return_structured_422(self) -> None:
+        from src.campaigns import template_service
+
+        expected_detail = template_service.DocumentConversionError().to_detail()
+        cases = (
+            (
+                "src.campaigns.template_service.get_template_delivery_file",
+                "/api/v1/templates/document-id/delivery-file",
+            ),
+            (
+                "src.campaigns.template_service.build_file_preview",
+                "/api/v1/templates/document-id/preview-file",
+            ),
+        )
+
+        for target, endpoint in cases:
+            with self.subTest(endpoint=endpoint), patch(
+                target,
+                side_effect=template_service.DocumentConversionError(),
+            ):
+                response = self.client.get(endpoint)
+
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertEqual(response.json()["detail"], expected_detail)
+
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_upload_infers_delivery_filename_from_document_content(self, mock_build_pdf) -> None:
         mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
         source_docx = Document()
@@ -510,11 +650,11 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 200, created.text)
         template = created.json()["result"]
-        self.assertEqual(template["version"]["filename"], "КП_СТП_районы.docx")
+        self.assertEqual(template["version"]["filename"], "КП_СТП_районы (1) (1).docx")
         self.assertEqual(template["version"]["rendered_pdf_filename"], "КП_СТП_районы.pdf")
         self.assertEqual(template["name"], "КП СТП районы")
 
-    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_patch_delivery_filename_without_new_version(self, mock_build_pdf) -> None:
         mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
         source_docx = Document()
@@ -561,7 +701,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(empty.status_code, 400, empty.text)
 
-    @patch("src.campaigns.template_service._build_kp_pdf_artifact")
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_template_starters_and_models(self, mock_build_pdf) -> None:
         mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
         models = self.client.get("/api/v1/templates/models")
@@ -819,11 +959,12 @@ class CampaignV1ApiTests(unittest.TestCase):
             json={"name": "KP gate", "template_type": "kp"},
         )
         self.assertEqual(kp.status_code, 200, kp.text)
+        kp_id = kp.json()["result"]["id"]
         self.client.patch(
             f"/api/v1/campaigns/{campaign_id}",
             json={
                 "email_template_id": email_id,
-                "kp_template_id": kp.json()["result"]["id"],
+                "kp_template_id": kp_id,
             },
         )
 
@@ -883,6 +1024,39 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(saved.status_code, 200, saved.text)
         self.assertTrue(saved.json()["result"]["mapping_confirmed"])
 
+        stale_autosave = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={
+                "description": "autosaved after mapping",
+                "email_template_id": email_id,
+                "kp_template_id": kp_id,
+                "draft_payload": {
+                    "description": "autosaved after mapping",
+                    "mapping_confirmed": False,
+                    "mapping_confirmed_at": None,
+                    "variable_mapping": {},
+                    "system_variables": {},
+                    "recipient_columns": [],
+                },
+            },
+        )
+        self.assertEqual(stale_autosave.status_code, 200, stale_autosave.text)
+        stale_draft = stale_autosave.json()["result"]["draft_payload"]
+        self.assertTrue(stale_draft["mapping_confirmed"])
+        self.assertEqual(stale_draft["variable_mapping"].get("ADM_NAME"), "adm_name")
+
+        repeated_import = self.client.post(
+            f"/api/v1/campaigns/{campaign_id}/recipients/import",
+            files={
+                "file": (
+                    "recipients.xlsx",
+                    buffer.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        self.assertEqual(repeated_import.status_code, 200, repeated_import.text)
+
         validate_after = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
         self.assertEqual(validate_after.status_code, 200)
         self.assertTrue(validate_after.json()["result"]["mapping_confirmed"])
@@ -894,7 +1068,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         launched = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch?force_now=true")
         self.assertEqual(launched.status_code, 200, launched.text)
 
-    def test_validate_does_not_block_launch_on_template_artifact(self) -> None:
+    def test_validate_blocks_launch_on_unresolved_template_artifact(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "Artifact Campaign"})
         self.assertEqual(created.status_code, 200)
         campaign_id = created.json()["result"]["id"]
@@ -961,10 +1135,10 @@ class CampaignV1ApiTests(unittest.TestCase):
         validate_fast = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
         self.assertEqual(validate_fast.status_code, 200, validate_fast.text)
         payload = validate_fast.json()["result"]
-        self.assertFalse(any(issue.get("kind") == "artifact" for issue in payload["template_issues"]))
-        self.assertFalse(
+        self.assertTrue(any(issue.get("kind") == "artifact" for issue in payload["template_issues"]))
+        self.assertTrue(
             any("артефакт" in error.lower() for error in payload["errors"]),
-            payload["errors"],
+            payload,
         )
 
         preview = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/preview")
@@ -976,7 +1150,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
 
         launch = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch?force_now=true")
-        self.assertEqual(launch.status_code, 200, launch.text)
+        self.assertEqual(launch.status_code, 400, launch.text)
 
     def test_email_chain_crud_and_publish(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "Chain API"})
@@ -1171,7 +1345,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         campaign_id = created.json()["result"]["id"]
 
         with patch(
-            "src.campaigns.template_service._build_kp_pdf_artifact",
+            "src.campaigns.template_service._build_document_pdf_artifact",
             return_value=(b"%PDF-1.4 test", "legal.pdf"),
         ):
             uploaded = self.client.post(

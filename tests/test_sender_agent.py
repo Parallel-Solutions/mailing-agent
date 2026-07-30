@@ -27,6 +27,45 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         tmpdir.mkdir(parents=True, exist_ok=True)
         return tmpdir
 
+    def test_unresolved_philology_blocks_send_without_handoffs(self) -> None:
+        state = {
+            "status": "completed",
+            "row_reviews": [
+                {
+                    "row_id": "17",
+                    "issue_count": 2,
+                    "verification_warning_count": 0,
+                    "unresolved_issue_count": 2,
+                }
+            ],
+        }
+
+        with patch.object(
+            sender_agent.settings,
+            "inter_agent_handoffs_enabled",
+            False,
+        ), patch.object(
+            sender_agent,
+            "get_philologist_status",
+            return_value=state,
+        ):
+            task = sender_agent._active_sender_review_task("17", job_id="job-1")
+
+        self.assertIsNotNone(task)
+        assert task is not None
+        self.assertTrue(task["blocking"])
+        self.assertEqual(task["details"]["unresolved_issue_count"], 2)
+
+    def test_clean_philology_allows_send_without_handoffs(self) -> None:
+        state = {
+            "status": "completed",
+            "row_reviews": [{"row_id": "17", "unresolved_issue_count": 0}],
+        }
+        with patch.object(sender_agent.settings, "inter_agent_handoffs_enabled", False), patch.object(
+            sender_agent, "get_philologist_status", return_value=state
+        ):
+            self.assertIsNone(sender_agent._active_sender_review_task("17", job_id="job-1"))
+
     def test_state_rows_snapshot_keeps_recent_entries(self) -> None:
         rows = [{"id": index} for index in range(sender_agent.SENDER_STATE_ROWS_LIMIT + 25)]
 
@@ -757,7 +796,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
         with patch.object(
             sender_agent,
-            "validate_email_address",
+            "validate_configured_email_address",
             side_effect=lambda email, **kwargs: fake_result(email, email == "backup@example.com"),
         ):
             valid_recipients, attempts = sender_agent._filter_validated_recipients(candidates, {})

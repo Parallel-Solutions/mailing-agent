@@ -11,6 +11,7 @@ from typing import Any, Iterable, List
 from docx import Document
 
 try:
+    from src.campaigns.text_local_review import review_email_text
     from src.generator.generation.config_generator import DOCUMENT_REVIEW_MODEL, ENABLE_DOCUMENT_REVIEW_AI
     from src.generator.inflection.ai_case_agent import (
         _extract_json_payload,
@@ -19,6 +20,7 @@ try:
     )
     from src.generator.knowledge.philology_knowledge import find_relevant_rules, format_rules_context
 except ImportError:  # pragma: no cover
+    from campaigns.text_local_review import review_email_text
     from generator.generation.config_generator import DOCUMENT_REVIEW_MODEL, ENABLE_DOCUMENT_REVIEW_AI
     from generator.inflection.ai_case_agent import (
         _extract_json_payload,
@@ -306,6 +308,20 @@ def _add_local_replacement_issue(
 def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
     issues: list[ReviewIssue] = []
     for location, text in blocks:
+        for item in review_email_text(
+            text,
+            field=location,
+            check_terminal_punctuation=False,
+        ):
+            _add_local_issue(
+                issues,
+                location=location,
+                fragment=item.fragment,
+                issue=item.message,
+                suggestion=item.suggestion,
+                severity=item.severity,
+            )
+
         placeholder_match = PLACEHOLDER_PATTERN.search(text)
         if placeholder_match:
             placeholder = placeholder_match.group(0)
@@ -333,12 +349,12 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
                 )
 
         if "  " in text:
-            _add_local_issue(
+            _add_local_replacement_issue(
                 issues,
                 location=location,
-                fragment=text,
+                fragment="  ",
                 issue="Обнаружены двойные пробелы.",
-                suggestion="Убрать лишние пробелы.",
+                replacement=" ",
                 severity="info",
             )
 
@@ -471,7 +487,20 @@ def _run_local_checks(blocks: Iterable[tuple[str, str]]) -> list[ReviewIssue]:
                 issue="Нарушено согласование сказуемого со словом 'сопровождение'.",
                 severity="warning",
             )
-    return issues
+    deduplicated: list[ReviewIssue] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for item in issues:
+        key = (
+            item.location,
+            item.fragment.casefold(),
+            item.suggestion.casefold(),
+            item.issue.casefold(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(item)
+    return deduplicated
 
 
 def _build_ai_prompt(blocks: list[tuple[str, str]]) -> str:

@@ -663,9 +663,8 @@ def _build_delivery_rows(
     for item in items:
         provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
         message_id = _message_id(item)
-        # Test stand (pr-29) uses provider.status only; keep SMTP helper for unit tests
-        # and future deploy, but do not change dashboard KPI vs current test.
-        accepted_status = _safe_text(provider.get("status")) or "accepted"
+        # Prefer helper so SMTP sent→delivered; provider APIs keep accepted until webhooks.
+        accepted_status = _initial_log_provider_status(item) or "accepted"
         provider_status = accepted_status
         checked_at = _safe_text(provider.get("checked_at"))
         if message_id and message_id in provider_statuses:
@@ -707,6 +706,8 @@ def _build_delivery_rows(
                 "subject": _safe_text(item.get("subject")),
                 "work_type": _safe_text(item.get("work_type")),
                 "campaign_name": _safe_text(item.get("campaign_name")),
+                "send_mode": _safe_text(item.get("send_mode")),
+                "chain_node_id": _safe_text(item.get("chain_node_id")),
                 "accepted_status": accepted_status,
                 "provider": _provider_name(item),
                 "provider_status": _normalize_provider_status(provider_status),
@@ -841,13 +842,16 @@ def _wait_unisender_go_dump_files(dump_id: str, *, api_key: str) -> list[dict[st
 def _import_unisender_go_dump_files(job_id: str, files: list[dict[str, Any]], items: list[dict[str, Any]]) -> int:
     path = resolve_job_paths(job_id).root_dir / "state" / "unisender_go_events.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
+
     existing_events = load_unisender_go_events(job_id)
     existing_keys = {_unisender_go_event_record_key(item) for item in existing_events if isinstance(item, dict)}
-    provider_job_ids = {
-        _safe_text(item.get("provider_job_id") or item.get("message_id"))
-        for item in items
-        if _safe_text(item.get("provider_job_id") or item.get("message_id"))
-    }
+    provider_job_ids: set[str] = set()
+    for item in items:
+        for key in provider_message_id_lookup_keys(
+            item.get("provider_job_id") or item.get("provider_message_id") or item.get("message_id")
+        ):
+            provider_job_ids.add(key)
     recipient_row_pairs = {
         (_safe_text(item.get("recipient")).lower(), _safe_text(item.get("row_id")))
         for item in items
@@ -1372,17 +1376,30 @@ def _unisender_go_status_priority(status: str, priority: dict[str, int]) -> int:
 
 
 def _match_unisender_go_event(item: dict[str, Any], events: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    from src.generator.delivery.provider_ids import normalize_provider_message_id, provider_message_id_lookup_keys
+
     provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
-    provider_job_id = _safe_text(item.get("provider_job_id") or item.get("message_id") or provider.get("job_id"))
+    raw_job_id = (
+        item.get("provider_job_id")
+        or item.get("provider_message_id")
+        or item.get("message_id")
+        or provider.get("job_id")
+    )
     recipient = _safe_text(item.get("recipient")).lower()
     row_id = _safe_text(item.get("row_id"))
-    if provider_job_id:
+    for provider_job_id in provider_message_id_lookup_keys(raw_job_id):
         precise_provider_match = events.get(f"provider_job_email:{provider_job_id}:{recipient}") if recipient else None
         if precise_provider_match:
             return precise_provider_match
         provider_match = events.get(f"provider_job:{provider_job_id}") if not recipient else None
         if provider_match:
             return provider_match
+    # Also try bare provider_message_id when only message_id-shaped fields exist.
+    bare = normalize_provider_message_id(item.get("provider_message_id"))
+    if bare and recipient:
+        precise = events.get(f"provider_job_email:{bare}:{recipient}")
+        if precise:
+            return precise
 
     keys = [
         f"row_email:{row_id}:{recipient}",
@@ -1397,8 +1414,10 @@ def _match_unisender_go_event(item: dict[str, Any], events: dict[str, dict[str, 
 def _match_mailopost_event(item: dict[str, Any], events: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     if _provider_name(item) != "mailopost":
         return None
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
+
     provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
-    message_id = _safe_text(
+    raw_message_id = (
         item.get("provider_message_id")
         or item.get("message_id")
         or provider.get("message_id")
@@ -1406,11 +1425,12 @@ def _match_mailopost_event(item: dict[str, Any], events: dict[str, dict[str, Any
     )
     recipient = _safe_text(item.get("recipient")).lower()
     row_id = _safe_text(item.get("row_id"))
-    keys = []
-    if message_id and recipient:
-        keys.append(f"message_email:{message_id}:{recipient}")
-    if message_id:
-        keys.append(f"message:{message_id}")
+    keys: list[str] = []
+    for message_id in provider_message_id_lookup_keys(raw_message_id):
+        if message_id and recipient:
+            keys.append(f"message_email:{message_id}:{recipient}")
+        if message_id:
+            keys.append(f"message:{message_id}")
     if row_id and recipient:
         keys.append(f"row_email:{row_id}:{recipient}")
     if recipient:
@@ -1420,11 +1440,14 @@ def _match_mailopost_event(item: dict[str, Any], events: dict[str, dict[str, Any
             return events[key]
     return None
 
+
 def _match_rusender_event(item: dict[str, Any], events: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     if _provider_name(item) != "rusender":
         return None
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
+
     provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
-    task_id = _safe_text(
+    raw_task_id = (
         item.get("provider_message_id")
         or item.get("message_id")
         or item.get("provider_job_id")
@@ -1432,11 +1455,12 @@ def _match_rusender_event(item: dict[str, Any], events: dict[str, dict[str, Any]
         or provider.get("uuid")
     )
     recipient = _safe_text(item.get("recipient")).lower()
-    keys = []
-    if task_id and recipient:
-        keys.append(f"task_email:{task_id}:{recipient}")
-    if task_id:
-        keys.append(f"task:{task_id}")
+    keys: list[str] = []
+    for task_id in provider_message_id_lookup_keys(raw_task_id):
+        if task_id and recipient:
+            keys.append(f"task_email:{task_id}:{recipient}")
+        if task_id:
+            keys.append(f"task:{task_id}")
     if recipient:
         keys.append(f"email:{recipient}")
     for key in keys:
@@ -1898,8 +1922,12 @@ def _provider_name(item: dict[str, Any]) -> str:
 
 
 def _message_id(item: dict[str, Any]) -> str:
+    from src.generator.delivery.provider_ids import normalize_provider_message_id
+
     provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
-    return _safe_text(item.get("provider_message_id") or provider.get("message_id") or provider.get("uuid"))
+    return normalize_provider_message_id(
+        item.get("provider_message_id") or provider.get("message_id") or provider.get("uuid")
+    )
 
 
 def _comment_text(item: dict[str, Any], refresh_error: str) -> str:

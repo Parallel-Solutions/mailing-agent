@@ -13,7 +13,12 @@ from uuid import uuid4
 
 from src.infra.db import init_db
 from src.jobs.workspace import pull_job, push_job
-from src.utils.config import SecurityConfigurationError, settings, validate_public_base_url
+from src.utils.config import (
+    SecurityConfigurationError,
+    settings,
+    validate_public_base_url,
+    validate_runtime_database,
+)
 from src.utils.logger import logger
 from src.workers.healthcheck import touch_heartbeat
 from src.workers.task_queue import (
@@ -53,13 +58,48 @@ def _terminate_process(process: subprocess.Popen[Any]) -> None:
 def _task_timeout_seconds(task_type: str) -> int:
     if task_type == "documents":
         return max(0, int(settings.documents_worker_timeout_seconds or 0))
-    if task_type in {"sender", "sender_batch", "chain_followup", "campaign_pre_generate"}:
+    if task_type == "template_text_extract":
+        return max(1, int(settings.template_text_extraction_timeout_seconds or 120))
+    if task_type in {
+        "sender",
+        "sender_batch",
+        "chain_followup",
+        "campaign_pre_generate",
+        "connection_warmup",
+    }:
         return max(0, int(settings.sender_worker_timeout_seconds or 0))
     return 0
 
 
 def _mark_terminal_failure(task: dict[str, Any], message: str) -> None:
     task_type = str(task.get("task_type") or "")
+    if task_type == "template_text_extract":
+        try:
+            from src.campaigns.template_text_cache_service import mark_template_text_extraction_failed
+
+            mark_template_text_extraction_failed(
+                str((task.get("payload") or {}).get("version_id") or ""),
+                message,
+            )
+        except Exception:
+            logger.exception("queue_worker_finalize_template_text_extraction_failed", task_id=task.get("id"))
+        return
+    if task_type == "connection_warmup":
+        try:
+            from src.generator.delivery.connection_warmup import (
+                finalize_connection_warmup_failure,
+            )
+
+            finalize_connection_warmup_failure(
+                str((task.get("payload") or {}).get("connection_id") or ""),
+                message,
+            )
+        except Exception:
+            logger.exception(
+                "queue_worker_finalize_connection_warmup_failed",
+                task_id=task.get("id"),
+            )
+        return
     if task_type == "sender_batch":
         try:
             from src.campaigns.batch_worker import finalize_sender_batch_task_failure
@@ -163,6 +203,10 @@ def _run_claimed_task(task: dict[str, Any], worker_id: str) -> None:
             except subprocess.TimeoutExpired:
                 pass
 
+            # Long-running sender/document tasks execute in a child process.
+            # Keep the container-level heartbeat fresh while the parent is
+            # supervising that child, not only while polling for new tasks.
+            touch_heartbeat()
             if process.poll() is not None:
                 break
             if is_cancel_requested(task_id):
@@ -222,12 +266,55 @@ def _run_consent_recovery_if_due(last_run: float) -> float:
     return now
 
 
+def _run_campaign_state_reconciliation_if_due(last_run: float) -> float:
+    interval = 60
+    now = time.monotonic()
+    if now - last_run < interval:
+        return last_run
+    try:
+        from src.campaigns.state import reconcile_inactive_campaigns
+        from src.infra.db import session_scope
+
+        with session_scope() as session:
+            reports = reconcile_inactive_campaigns(
+                session,
+                repair=True,
+                actor="queue_worker_reconciler",
+            )
+        if reports:
+            logger.warning(
+                "queue_worker_campaign_states_reconciled",
+                count=len(reports),
+                campaign_ids=[str(report["campaign_id"]) for report in reports],
+            )
+    except Exception:
+        logger.exception("queue_worker_campaign_state_reconciliation_failed")
+    return now
+
+
+def _run_template_text_backfill_if_due(last_run: float) -> float:
+    interval = 30
+    now = time.monotonic()
+    if now - last_run < interval:
+        return last_run
+    try:
+        from src.campaigns.template_text_cache_service import enqueue_pending_template_text_extractions
+
+        created = enqueue_pending_template_text_extractions(limit=10)
+        if created:
+            logger.info("template_source_text_backfill_enqueued", count=created)
+    except Exception:
+        logger.exception("template_source_text_backfill_enqueue_failed")
+    return now
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, _request_stop)
     if hasattr(signal, "SIGINT"):
         signal.signal(signal.SIGINT, _request_stop)
 
     validate_public_base_url(settings)
+    validate_runtime_database(settings)
     init_db()
     reconciled = reconcile_orphaned_agent_states()
     if reconciled:
@@ -240,6 +327,8 @@ def main() -> None:
         int(settings.background_queue_lease_seconds),
     )
     last_consent_recovery = 0.0
+    last_campaign_reconciliation = 0.0
+    last_template_text_backfill = 0.0
     logger.info("queue_worker_started", worker_id=worker_id)
     last_orphan_reconciliation = time.monotonic()
     touch_heartbeat()
@@ -247,6 +336,10 @@ def main() -> None:
     while not _STOP_REQUESTED:
         touch_heartbeat()
         last_consent_recovery = _run_consent_recovery_if_due(last_consent_recovery)
+        last_campaign_reconciliation = _run_campaign_state_reconciliation_if_due(
+            last_campaign_reconciliation
+        )
+        last_template_text_backfill = _run_template_text_backfill_if_due(last_template_text_backfill)
         try:
             from src.generator.delivery.send_guard import is_sending_paused
 

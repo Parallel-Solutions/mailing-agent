@@ -13,7 +13,6 @@ from src.campaigns.variable_match_ai import default_model, suggest_mappings_with
 from src.generator.generation.template_analysis import _mapping_suggestions, _norm_token
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignRecipient, MailTemplate, TemplateVersion
-from src.infra.object_store import get_bytes
 from src.security.company_access import can_access_owner
 
 USER_INPUT_VARIABLES = frozenset(
@@ -144,15 +143,7 @@ def _merge_document_template_variables(
     if version is None:
         return
     _merge_variables(variables, [item for item in (version.variables or []) if isinstance(item, dict)])
-    text = version.body_html or ""
-    if version.storage_key and version.filename:
-        try:
-            text = template_service._file_text(  # noqa: SLF001
-                version.filename,
-                get_bytes(version.storage_key),
-            )
-        except Exception:
-            text = text or ""
+    text = template_service.cached_version_source_text(version)
     for item in template_service._extract_variables(text):  # noqa: SLF001
         name = str(item.get("name") or "").strip()
         if name and name not in variables:
@@ -572,6 +563,56 @@ def mapping_validation_errors(campaign: Campaign) -> list[str]:
     return []
 
 
+def empty_variable_validation_errors(campaign: Campaign) -> list[str]:
+    """Validate variable values for every active recipient."""
+    template_variables = collect_template_variables(campaign)
+    variable_names = [
+        str(item.get("name") or "").strip()
+        for item in template_variables
+        if str(item.get("name") or "").strip()
+    ]
+    if not variable_names:
+        return []
+
+    from src.campaigns.substitution_context import build_substitution_context
+    from src.campaigns.substitution_engine import resolve_context_value
+
+    template_text = "\n".join(_collect_template_texts_for_validation(campaign))
+    missing_by_variable: dict[str, list[str]] = {}
+    with session_scope() as session:
+        recipients = session.scalars(
+            select(CampaignRecipient)
+            .where(
+                CampaignRecipient.campaign_id == campaign.id,
+                CampaignRecipient.excluded.is_(False),
+            )
+            .order_by(CampaignRecipient.row_index.asc())
+        ).all()
+        for recipient in recipients:
+            context = build_substitution_context(
+                recipient=recipient,
+                campaign=campaign,
+                outgoing_number=recipient.row_index or 1,
+                template_text=template_text,
+            )
+            for variable_name in variable_names:
+                if str(resolve_context_value(context, variable_name) or "").strip():
+                    continue
+                label = (
+                    str(recipient.company or "").strip()
+                    or str(recipient.email or recipient.email_fallback or "").strip()
+                    or f"строка {int(recipient.row_index or 0) + 1}"
+                )
+                bucket = missing_by_variable.setdefault(variable_name, [])
+                if len(bucket) < 5:
+                    bucket.append(label)
+
+    return [
+        f"Не заполнена переменная «{variable}» для получателей: {', '.join(labels)}"
+        for variable, labels in missing_by_variable.items()
+    ]
+
+
 def resolve_recipient_value(recipient: CampaignRecipient, column: str) -> str:
     raw = str(column or "").strip()
     if _is_literal_value(raw):
@@ -643,6 +684,7 @@ def _collect_templates_for_validation(campaign: Campaign) -> list[dict[str, str 
                 {
                     "template_id": str(template_id),
                     "template_name": str(tmpl.name if tmpl else campaign.name or "email"),
+                    "template_kind": "email",
                     "text": text,
                     "subject": version.subject or "",
                     "body_html": version.body_html or "",
@@ -656,6 +698,7 @@ def _collect_templates_for_validation(campaign: Campaign) -> list[dict[str, str 
                 {
                     "template_id": None,
                     "template_name": str(campaign.name or "email"),
+                    "template_kind": "email",
                     "text": body,
                     "subject": "",
                     "body_html": body,
@@ -668,17 +711,13 @@ def _collect_templates_for_validation(campaign: Campaign) -> list[dict[str, str 
             version = _load_template_version(session, template_id)
             if version is None:
                 continue
-            text = version.body_html or ""
-            if version.storage_key and version.filename:
-                try:
-                    text = template_service._file_text(version.filename, get_bytes(version.storage_key))  # noqa: SLF001
-                except Exception:
-                    text = text or ""
+            text = template_service.cached_version_source_text(version)
             if text:
                 items.append(
                     {
                         "template_id": str(template_id),
                         "template_name": str(tmpl.name if tmpl else campaign.name or "document"),
+                        "template_kind": "document",
                         "text": text,
                     }
                 )
@@ -688,6 +727,53 @@ def _collect_templates_for_validation(campaign: Campaign) -> list[dict[str, str 
 
 def _collect_template_texts_for_validation(campaign: Campaign) -> list[str]:
     return [str(item.get("text") or "") for item in _collect_templates_for_validation(campaign) if item.get("text")]
+
+
+def template_text_cache_validation_errors(campaign: Campaign) -> list[str]:
+    """Report document versions whose persistent text cache is not ready."""
+    from src.campaigns.template_render_service import collect_campaign_template_ids
+
+    _email_ids, document_ids = collect_campaign_template_ids(campaign)
+    if not document_ids:
+        document_mode = str(campaign.document_mode or "kp").lower()
+        if document_mode in {"kp", "both"} and campaign.kp_template_id:
+            document_ids.append(campaign.kp_template_id)
+        if document_mode in {"contract", "both"} and campaign.contract_template_id:
+            if campaign.contract_template_id not in document_ids:
+                document_ids.append(campaign.contract_template_id)
+
+    errors: list[str] = []
+    with session_scope() as session:
+        for template_id in document_ids:
+            tmpl = session.get(MailTemplate, template_id) if template_id else None
+            version = _load_template_version(session, template_id)
+            if version is None or not version.storage_key or version.source_text is not None:
+                continue
+            name = str(tmpl.name if tmpl else template_id or "document")
+            if version.text_extraction_status == "failed":
+                detail = str(version.text_extraction_error or "").strip()
+                suffix = f" \u041f\u0440\u0438\u0447\u0438\u043d\u0430: {detail}" if detail else ""
+                errors.append(f"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0442\u0435\u043a\u0441\u0442 \u0448\u0430\u0431\u043b\u043e\u043d\u0430 \u00ab{name}\u00bb.{suffix}")
+            else:
+                errors.append(f"\u0428\u0430\u0431\u043b\u043e\u043d \u00ab{name}\u00bb \u0435\u0449\u0451 \u043e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442\u0441\u044f. \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443 \u0447\u0435\u0440\u0435\u0437 \u043c\u0438\u043d\u0443\u0442\u0443.")
+    return errors
+
+
+def _validation_recipients(campaign: Campaign) -> list[CampaignRecipient]:
+    with session_scope() as session:
+        recipients = list(
+            session.scalars(
+                select(CampaignRecipient)
+                .where(
+                    CampaignRecipient.campaign_id == campaign.id,
+                    CampaignRecipient.excluded.is_(False),
+                )
+                .order_by(CampaignRecipient.row_index.asc())
+            ).all()
+        )
+        for recipient in recipients:
+            session.expunge(recipient)
+        return recipients
 
 
 def _first_validation_recipient(campaign: Campaign) -> CampaignRecipient | None:

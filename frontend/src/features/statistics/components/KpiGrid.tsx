@@ -1,9 +1,12 @@
 import { Card, Col, Row, Typography } from 'antd';
+import { MetricInfo } from '../fullAnalytics/MetricInfo';
 
 export type KpiItem = {
   title: string;
   value: string | number;
   drill?: string;
+  metricId?: string;
+  testId?: string;
 };
 
 type Props = {
@@ -20,6 +23,7 @@ export function KpiGrid({ items, onDrill, loading }: Props) {
         return (
           <Col key={`${item.title}-${item.drill || ''}`} xs={12} sm={8} md={6} lg={6} xl={3}>
             <Card
+              data-testid={item.testId}
               size="small"
               loading={loading}
               hoverable={clickable}
@@ -32,8 +36,11 @@ export function KpiGrid({ items, onDrill, loading }: Props) {
                 borderColor: '#e2e7d8',
               }}
             >
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {item.title}
+              <Typography.Text
+                type="secondary"
+                style={{ display: 'block', fontSize: 12, lineHeight: 1.35, minHeight: 32 }}
+              >
+                <MetricInfo metricId={item.metricId || item.drill || ''} label={item.title} />
               </Typography.Text>
               <div style={{ fontSize: 20, fontWeight: 600, marginTop: 4 }}>{item.value}</div>
             </Card>

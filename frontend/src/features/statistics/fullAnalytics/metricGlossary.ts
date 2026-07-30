@@ -7,40 +7,68 @@ export type MetricGlossaryEntry = {
 };
 
 export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
+  all_attempts: {
+    id: 'all_attempts',
+    title: 'Всего',
+    description:
+      'Все зарегистрированные попытки отправить выбранное письмо. Если одному получателю выполнялась повторная попытка, она учитывается отдельно.',
+    formula: 'Количество всех попыток отправки, включая неудачные и повторные.',
+    source: 'Журнал попыток доставки; для старых рассылок — журнал отправок.',
+  },
   sent: {
     id: 'sent',
-    title: 'Компаний в рассылке',
-    description: 'Число компаний (получателей), по которым зафиксирована хотя бы одна отправка письма.',
-    formula: 'Количество уникальных row_id в журнале отправок sent_mail_log.',
-    source: 'PostgreSQL job_events → stream sent_mail_log.',
+    title: 'Отправлено в почтовый провайдер',
+    description:
+      'Получатели, для которых почтовый провайдер принял письмо в обработку. Это ещё не подтверждает доставку в почтовый ящик.',
+    formula: 'Учитывается один получатель, если провайдер принял хотя бы одну отправку.',
+    source: 'Журнал фактических отправок.',
+  },
+  not_sent: {
+    id: 'not_sent',
+    title: 'Не дошло до отправки',
+    description:
+      'Попытки, по которым письмо не было принято почтовым провайдером: например, адрес заблокирован стоп-листом, некорректен или отправка завершилась до обращения к провайдеру.',
+    formula: '«Всего» минус «Отправлено в почтовый провайдер», но не меньше нуля.',
+    source: 'Журнал попыток доставки и журнал фактических отправок.',
+  },
+  attempts: {
+    id: 'attempts',
+    title: 'Попытки отправки',
+    description:
+      'Все технические попытки отправить письмо, включая неудачи и повторы одному получателю.',
+    formula: 'Количество строк delivery_attempts.',
+    source: 'PostgreSQL delivery_attempts.',
   },
   delivered: {
     id: 'delivered',
-    title: 'Доставлено',
-    description: 'Компании, у которых провайдер подтвердил доставку или более высокий статус (открытие, клик).',
-    formula: 'manager_status ∈ {delivered, opened, clicked}.',
-    source: 'Объединение sent_mail_log и webhook-событий провайдера (JSONL).',
+    title: 'Доставлено реальное письмо',
+    description:
+      'Получатели, для которых провайдер подтвердил доставку письма. Открытие или переход по ссылке также означает, что письмо было доставлено.',
+    formula: 'Количество доставленных ÷ количество принятых провайдером × 100%.',
+    source: 'События доставки, открытия и перехода от почтового провайдера.',
   },
   opened: {
     id: 'opened',
     title: 'Открыто',
-    description: 'Компании, у которых зафиксировано открытие письма или переход по ссылке.',
-    formula: 'manager_status ∈ {opened, clicked}.',
-    source: 'Webhook провайдера (RuSender, MailoPost, UniSender Go).',
+    description:
+      'Получатели, для которых провайдер зафиксировал открытие письма. Переход по ссылке также считается открытием.',
+    formula: 'Количество открывших ÷ количество доставленных × 100%. Если данных о доставке нет — от числа принятых провайдером.',
+    source: 'События открытия и перехода от почтового провайдера.',
   },
   clicked: {
     id: 'clicked',
-    title: 'Переходы',
+    title: 'Кликнули по ссылке',
     description: 'Компании, по которым был клик по ссылке в письме (провайдерский click-tracking).',
     formula: 'manager_status = clicked.',
     source: 'Webhook провайдера; собственный click-proxy не используется.',
   },
   errors: {
     id: 'errors',
-    title: 'Ошибки доставки',
-    description: 'Недоставленные письма: hard/soft bounce, ошибка доставки, жалоба на спам.',
-    formula: 'manager_status ∈ {email_broken, soft_bounce, delivery_error, spam}.',
-    source: 'Webhook провайдера и ошибки в sent_mail_log.',
+    title: 'Ошибки почтового провайдера',
+    description:
+      'Письма, которые провайдер принял, но не смог доставить: адрес не существует, ящик переполнен, сервер получателя отклонил письмо или произошла другая ошибка доставки.',
+    formula: 'Учитываются постоянные, временные и прочие ошибки доставки. Отписки и жалобы на спам сюда не входят.',
+    source: 'Ответы и события ошибок от почтового провайдера.',
   },
   layout_errors: {
     id: 'layout_errors',
@@ -52,9 +80,10 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
   pending: {
     id: 'pending',
     title: 'Ожидают статуса',
-    description: 'Отправка принята, но финальный статус доставки от провайдера ещё не получен.',
+    description:
+      'Отправка принята, но финальный статус доставки от провайдера ещё не получен. Для SMTP без DSN успешная отправка считается доставленной; открытия/клики без tracking недоступны.',
     formula: 'manager_status ∈ {pending, no_data}.',
-    source: 'Для SMTP часто остаётся 100% до появления bounce-handler.',
+    source: 'Для SMTP: log status→delivered; для API-провайдеров — webhook/JSONL.',
   },
   pending_rate: {
     id: 'pending_rate',
@@ -66,30 +95,65 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
   consents: {
     id: 'consents',
     title: 'Согласия',
-    description: 'Подтверждённые согласия на получение коммерческих материалов (сценарий consent).',
-    formula: 'consent_status = confirmed в consents.json.',
-    source: 'Файл {job}/state/consents.json.',
+    description:
+      'Подтверждённые согласия: legacy consent flow и подписки через кнопки email-цепочки.',
+    formula: 'consent_status = confirmed (consents.json) + chain subscribe events.',
+    source: '{job}/state/consents.json и campaign_chain_consent_events.',
   },
   materials_sent: {
     id: 'materials_sent',
     title: 'Материалы отправлены',
     description: 'После подтверждения согласия материалы (КП) успешно отправлены получателю.',
     formula: 'materials_status = sent или заполнено materials_sent_at.',
-    source: 'consents.json.',
+    source: 'consents.json (legacy consent flow).',
   },
   unsubscribed: {
     id: 'unsubscribed',
-    title: 'Отписки',
-    description: 'Получатели, отписавшиеся от рассылки через провайдера или цепочку.',
-    formula: 'manager_status = unsubscribed.',
-    source: 'Webhook + campaign_chain_consent_events + suppression_entries.',
+    title: 'Отписались у почтового провайдера',
+    description:
+      'Получатели, для которых почтовый провайдер сообщил об отписке. Например, RuSender присылает событие external_mail.unsubscribe. После получения события email добавляется в глобальный стоп-лист, поэтому следующие письма через нашу систему ему не отправляются.',
+    formula: 'Учитываются получатели с итоговым статусом отписки у провайдера.',
+    source: 'Событие отписки от почтового провайдера.',
   },
   spam: {
     id: 'spam',
-    title: 'Жалобы на спам',
-    description: 'Жалобы (complaint) от почтовых провайдеров или получателей.',
-    formula: 'manager_status = spam.',
-    source: 'Webhook провайдера → suppression_entries.',
+    title: 'Добавили в спам',
+    description:
+      'Получатели, которые пожаловались на письмо или пометили его как спам. Это отдельное действие, не отписка. Email добавляется в глобальный стоп-лист, и следующие письма через нашу систему ему не отправляются.',
+    formula: 'Учитываются получатели с итоговым статусом жалобы на спам.',
+    source: 'Событие complaint от почтового провайдера.',
+  },
+  tracked_link: {
+    id: 'tracked_link',
+    title: 'Переходы по ссылке',
+    description:
+      'Уникальные получатели, которые перешли именно по этой ссылке в выбранном письме.',
+    formula: 'Количество перешедших ÷ количество принятых провайдером писем × 100%. Повторные переходы одного получателя не увеличивают показатель.',
+    source: 'Персональные отслеживаемые ссылки нашей системы.',
+  },
+  tracked_document: {
+    id: 'tracked_document',
+    title: 'Открытия документа',
+    description:
+      'Уникальные получатели, которые открыли этот документ по персональной ссылке из выбранного письма.',
+    formula: 'Количество открывших ÷ количество принятых провайдером писем × 100%. Повторные открытия одного получателя не увеличивают показатель.',
+    source: 'Персональные ссылки открытия документов нашей системы.',
+  },
+  chain_unsubscribe: {
+    id: 'chain_unsubscribe',
+    title: 'Отписались по ссылке в письме',
+    description:
+      'Уникальные получатели, которые нажали нашу кнопку отписки в выбранном письме. Отписка фиксируется сразу, а email добавляется в глобальный стоп-лист. Это отдельный показатель от отписки, о которой сообщил почтовый провайдер.',
+    formula: 'Количество нажавших ÷ количество принятых провайдером писем × 100%. Повторный переход одного получателя не увеличивает показатель.',
+    source: 'Персональная кнопка отписки нашей системы.',
+  },
+  chain_subscribe: {
+    id: 'chain_subscribe',
+    title: 'Подписались по ссылке в письме',
+    description:
+      'Уникальные получатели, которые нажали кнопку подписки в выбранном письме. Система сохраняет согласие на рассылку на один год. Если email ранее был в стоп-листе, одно нажатие не снимает блокировку автоматически.',
+    formula: 'Количество нажавших ÷ количество принятых провайдером писем × 100%. Повторный переход одного получателя не увеличивает показатель.',
+    source: 'Персональная кнопка подписки нашей системы.',
   },
   delivery_rate: {
     id: 'delivery_rate',
@@ -186,7 +250,7 @@ export const METRIC_GLOSSARY: Record<string, MetricGlossaryEntry> = {
     id: 'operational_progress',
     title: 'Прогресс отправки',
     description: 'Операционные счётчики CampaignFlow: сколько получателей обработано worker.',
-    formula: 'sent_count / total_count, error_count.',
+    formula: 'processed_count / total_count; успешность = success_count / total_count.',
     source: 'PostgreSQL campaigns + campaign_recipients.',
   },
   live_send: {

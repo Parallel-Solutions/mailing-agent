@@ -88,6 +88,23 @@ class AuthSessionTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_email_login_is_normalized_consistently(self) -> None:
+        email = "l.snisarenko@parresh.ru"
+        password = "Email-pass-123"
+        record = create_user(email, password)
+        self.assertEqual(record.username, "l.snisarenko-parresh.ru")
+
+        response = self.client.post(
+            "/api/auth/login",
+            json={"username": email, "password": password},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["result"]["user"]["username"],
+            "l.snisarenko-parresh.ru",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

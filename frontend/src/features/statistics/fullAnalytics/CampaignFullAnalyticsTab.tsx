@@ -1,27 +1,34 @@
-import { Alert, Card, Col, Collapse, Empty, Row, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Card, Col, Collapse, Empty, List, Row, Space, Table, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { statisticsApi } from '@/api/statistics';
 import { AnalyticsCharts } from '../components/StatsCharts';
 import { FunnelRow } from '../components/FunnelRow';
 import { useStatistics } from '../StatisticsContext';
-import { asRecord, asRecordArray, fmt } from '../utils';
+import { asRecord, asRecordArray, fmt, fmtMetric } from '../utils';
 import { FullAnalyticsDocumentsSection, FullAnalyticsEmailsSection } from './FullAnalyticsMaterialsSections';
 import { MetricInfo } from './MetricInfo';
-import { useCampaignJobSelector } from './useCampaignJobSelector';
+import { formatLocalDateTime } from '@/utils/dateTime';
+import { errorLabel, providerLabel, statusLabel } from '@/utils/presentation';
 
 function metricValue(summary: Record<string, unknown>, key: string): string {
-  return fmt(summary[key]);
+  return fmtMetric(summary[key]);
+}
+
+function ratePair(count: unknown, rate: unknown): string {
+  const left = fmtMetric(count);
+  if (left === '—') return '—';
+  const rateText = rate === null || rate === undefined || rate === '' ? '—' : `${rate}%`;
+  return `${left} / ${rateText}`;
 }
 
 export function CampaignFullAnalyticsTab() {
-  const { refreshNonce, setError } = useStatistics();
-  const { jobId, options, setJobId } = useCampaignJobSelector();
+  const { filters, refreshNonce, setError } = useStatistics();
+  const jobId = filters.campaign || '';
   const [deliveryPage, setDeliveryPage] = useState(1);
   const [sentLogPage, setSentLogPage] = useState(1);
   const [attemptsPage, setAttemptsPage] = useState(1);
   const [documentFilter, setDocumentFilter] = useState('');
-  const [selectedRecipientId, setSelectedRecipientId] = useState<number | undefined>();
 
   const query = useQuery({
     queryKey: [
@@ -31,7 +38,6 @@ export function CampaignFullAnalyticsTab() {
       deliveryPage,
       sentLogPage,
       attemptsPage,
-      documentFilter,
     ],
     enabled: Boolean(jobId),
     queryFn: () =>
@@ -40,7 +46,6 @@ export function CampaignFullAnalyticsTab() {
         delivery_page: deliveryPage,
         sent_log_page: sentLogPage,
         attempts_page: attemptsPage,
-        documents_q: documentFilter || undefined,
         per_page: 20,
       }),
   });
@@ -63,37 +68,23 @@ export function CampaignFullAnalyticsTab() {
   const deliveryAttempts = asRecord(result.delivery_attempts);
   const recipients = asRecordArray(result.recipients);
   const campaignId = String(result.campaign_id || '');
-
-  useEffect(() => {
-    if (recipients.length && !selectedRecipientId) {
-      setSelectedRecipientId(Number(recipients[0].id));
-    }
-  }, [recipients, selectedRecipientId]);
-
-  useEffect(() => {
-    if (selectedRecipientId) {
-      const recipient = recipients.find((row) => Number(row.id) === selectedRecipientId);
-      if (recipient?.company) {
-        setDocumentFilter(String(recipient.id));
-      }
-    }
-  }, [selectedRecipientId, recipients]);
+  const hasSummary = Object.keys(summary).length > 0;
 
   const kpiItems = useMemo(
     () => [
-      { id: 'sent', value: metricValue(summary, 'sent') },
-      { id: 'delivered', value: `${metricValue(summary, 'delivered')} / ${rates.delivery_rate ?? 0}%` },
-      { id: 'opened', value: `${metricValue(summary, 'opened')} / ${rates.open_rate ?? 0}%` },
-      { id: 'clicked', value: `${metricValue(summary, 'clicked')} / ${rates.ctr ?? 0}%` },
-      { id: 'errors', value: `${metricValue(summary, 'errors')} / ${rates.error_rate ?? 0}%` },
-      { id: 'layout_errors', value: metricValue(summary, 'layout_errors') },
-      { id: 'pending', value: `${metricValue(summary, 'pending')} / ${rates.pending_rate ?? 0}%` },
-      { id: 'consents', value: metricValue(summary, 'consents') },
-      { id: 'materials_sent', value: metricValue(summary, 'materials_sent') },
-      { id: 'unsubscribed', value: metricValue(summary, 'unsubscribed') },
-      { id: 'spam', value: metricValue(summary, 'spam') },
+      { id: 'sent', value: hasSummary ? metricValue(summary, 'sent') : '—' },
+      { id: 'delivered', value: hasSummary ? ratePair(summary.delivered, rates.delivery_rate) : '—' },
+      { id: 'opened', value: hasSummary ? ratePair(summary.opened, rates.open_rate) : '—' },
+      { id: 'clicked', value: hasSummary ? ratePair(summary.clicked, rates.ctr) : '—' },
+      { id: 'errors', value: hasSummary ? ratePair(summary.errors, rates.error_rate) : '—' },
+      { id: 'layout_errors', value: hasSummary ? metricValue(summary, 'layout_errors') : '—' },
+      { id: 'pending', value: hasSummary ? ratePair(summary.pending, rates.pending_rate) : '—' },
+      { id: 'consents', value: hasSummary ? metricValue(summary, 'consents') : '—' },
+      { id: 'materials_sent', value: hasSummary ? metricValue(summary, 'materials_sent') : '—' },
+      { id: 'unsubscribed', value: hasSummary ? metricValue(summary, 'unsubscribed') : '—' },
+      { id: 'spam', value: hasSummary ? metricValue(summary, 'spam') : '—' },
     ],
-    [summary, rates],
+    [summary, rates, hasSummary],
   );
 
   if (!jobId) {
@@ -107,25 +98,13 @@ export function CampaignFullAnalyticsTab() {
 
   return (
     <div data-testid="campaign-full-analytics-tab">
-      <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 16 }}>
-        <Col flex="auto">
-          <Select
-            style={{ minWidth: 280 }}
-            showSearch
-            optionFilterProp="label"
-            value={jobId}
-            onChange={setJobId}
-            options={options}
-          />
-          <div style={{ marginTop: 8 }}>
-            <Typography.Text strong>{String(campaign.title || campaign.name || 'Рассылка')}</Typography.Text>
-            <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
-              {String(result.period_from || '')}
-              {result.period_to ? ` — ${String(result.period_to)}` : ''}
-            </Typography.Text>
-          </div>
-        </Col>
-      </Row>
+      <div style={{ marginBottom: 16 }}>
+        <Typography.Text strong>{String(campaign.title || campaign.name || 'Рассылка')}</Typography.Text>
+        <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
+          {String(result.period_from || '')}
+          {result.period_to ? ` — ${String(result.period_to)}` : ''}
+        </Typography.Text>
+      </div>
 
       {refreshFlags.length ? (
         <Alert
@@ -167,16 +146,21 @@ export function CampaignFullAnalyticsTab() {
                 <Row gutter={16}>
                   <Col>
                     <MetricInfo metricId="operational_progress" label="Прогресс" />:{' '}
-                    {fmt(operational.sent_count)} / {fmt(operational.total_count)} (
+                    {fmt(operational.processed_count)} / {fmt(operational.total_count)} (
                     {Number(operational.progress ?? 0)}%)
                   </Col>
                   <Col>
-                    Ошибки: {fmt(operational.error_count)} · КП не влезло:{' '}
+                    Принято провайдером: {fmt(operational.success_count)} ({Number(operational.success_rate ?? 0)}%) ·{' '}
+                    Пропущено: {fmt(operational.skipped_count)} · Итоговые ошибки:{' '}
+                    {fmt(operational.failed_recipient_count)}
+                  </Col>
+                  <Col>
+                    Технические ошибки попыток: {fmt(operational.attempt_error_count)} · КП не влезло:{' '}
                     {fmt(operational.layout_error_count)}
                   </Col>
                   <Col>
-                    Транспорт: {String(operational.transport || '—')} · Статус:{' '}
-                    <Tag>{String(operational.status || '—')}</Tag>
+                    Почтовый сервис: {providerLabel(String(operational.transport || ''))} · Статус:{' '}
+                    <Tag>{statusLabel(String(operational.status || ''))}</Tag>
                   </Col>
                 </Row>
                 {operational.live_send ? (
@@ -199,11 +183,11 @@ export function CampaignFullAnalyticsTab() {
                   dataSource={asRecordArray(operational.batches)}
                   columns={[
                     { title: '№', dataIndex: 'batch_index', width: 60 },
-                    { title: 'Запланирован', dataIndex: 'scheduled_at' },
+                    { title: 'Запланирован', dataIndex: 'scheduled_at', render: (v) => formatLocalDateTime(String(v || '')) },
                     { title: 'Размер', dataIndex: 'size', render: (v) => fmt(v) },
-                    { title: 'Отправлено', dataIndex: 'sent_count', render: (v) => fmt(v) },
-                    { title: 'Ошибки', dataIndex: 'error_count', render: (v) => fmt(v) },
-                    { title: 'Статус', dataIndex: 'status' },
+                    { title: 'Принято провайдером', dataIndex: 'sent_count', render: (v) => fmt(v) },
+                    { title: 'Неудачные попытки', dataIndex: 'error_count', render: (v) => fmt(v) },
+                    { title: 'Статус', dataIndex: 'status', render: (v) => statusLabel(String(v || '')) },
                   ]}
                 />
               </Space>
@@ -228,11 +212,59 @@ export function CampaignFullAnalyticsTab() {
                     dataSource={asRecordArray(domainStats.providers)}
                     columns={[
                       { title: 'Домен', dataIndex: 'provider' },
-                      { title: 'Отправлено', dataIndex: 'sent', render: (v) => fmt(v) },
+                        { title: 'Принято провайдером', dataIndex: 'sent', render: (v) => fmt(v) },
                       { title: 'Доставлено', dataIndex: 'delivered', render: (v) => fmt(v) },
                       { title: 'Открыто', dataIndex: 'opened', render: (v) => fmt(v) },
                       { title: 'Bounce', dataIndex: 'bounced', render: (v) => fmt(v) },
+                      { title: 'Отписки', dataIndex: 'unsubscribed', render: (v) => fmt(v) },
+                      { title: 'Спам', dataIndex: 'spam', render: (v) => fmt(v) },
                     ]}
+                  />
+                </Card>
+                <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+                  <Col xs={24} lg={12}>
+                    <Card title="Высокий интерес" size="small">
+                      <Table
+                        size="small"
+                        pagination={false}
+                        rowKey={(row) => String(row.organization)}
+                        dataSource={asRecordArray(delivery.high_interest_companies)}
+                        locale={{ emptyText: 'Нет компаний с высоким интересом' }}
+                        columns={[
+                          { title: 'Компания', dataIndex: 'organization' },
+                          { title: 'Принято провайдером', dataIndex: 'sent', render: (v) => fmt(v) },
+                          { title: 'Open %', dataIndex: 'open_rate', render: (v) => `${v ?? 0}%` },
+                          { title: 'Клики', dataIndex: 'clicked', render: (v) => fmt(v) },
+                        ]}
+                      />
+                    </Card>
+                  </Col>
+                  <Col xs={24} lg={12}>
+                    <Card title="Проблемные адреса" size="small">
+                      <Table
+                        size="small"
+                        pagination={false}
+                        rowKey={(row, index) => String(row.email || row.organization || index)}
+                        dataSource={asRecordArray(delivery.problem_addresses)}
+                        locale={{ emptyText: 'Нет проблемных адресов' }}
+                        columns={[
+                          {
+                            title: 'Компания / email',
+                            render: (_, r) => String(r.organization || r.email || '—'),
+                          },
+                          { title: 'Причина', dataIndex: 'reason_label' },
+                          { title: 'Провайдер', dataIndex: 'provider_label' },
+                          { title: 'Писем', dataIndex: 'attempts', render: (v) => fmt(v) },
+                        ]}
+                      />
+                    </Card>
+                  </Col>
+                </Row>
+                <Card title="Рекомендации" size="small" style={{ marginTop: 16 }}>
+                  <List
+                    dataSource={(delivery.recommendations as string[] | undefined) || []}
+                    locale={{ emptyText: 'Нет рекомендаций' }}
+                    renderItem={(item) => <List.Item>{item}</List.Item>}
                   />
                 </Card>
               </>
@@ -248,10 +280,10 @@ export function CampaignFullAnalyticsTab() {
                     <Table
                       size="small"
                       pagination={false}
-                      rowKey={(row) => String(row.edge_id)}
+                      rowKey={(row, index) => String(row.edge_id || index)}
                       dataSource={asRecordArray(chain.edges)}
                       columns={[
-                        { title: 'Ветка', dataIndex: 'edge_id' },
+                        { title: 'Ветка', render: (_value, _row, index) => `Переход ${index + 1}` },
                         { title: 'Токенов', dataIndex: 'tokens', render: (v) => fmt(v) },
                         { title: 'Кликов', dataIndex: 'clicks', render: (v) => fmt(v) },
                       ]}
@@ -294,7 +326,7 @@ export function CampaignFullAnalyticsTab() {
                     title: <MetricInfo metricId="provider" />,
                     dataIndex: 'provider',
                     width: 100,
-                    render: (v) => String(v || '—'),
+                    render: (v) => providerLabel(String(v || '')),
                   },
                   {
                     title: 'Статус',
@@ -306,14 +338,8 @@ export function CampaignFullAnalyticsTab() {
                     dataIndex: 'bounce_reason_label',
                     width: 140,
                   },
-                  {
-                    title: <MetricInfo metricId="message_id" />,
-                    dataIndex: 'email_id',
-                    width: 120,
-                    ellipsis: true,
-                  },
-                  { title: 'Отправлено', dataIndex: 'sent_at', width: 140 },
-                  { title: 'Проверено', dataIndex: 'checked_at', width: 140 },
+                  { title: 'Принято провайдером', dataIndex: 'sent_at', width: 160, render: (v) => formatLocalDateTime(String(v || '')) },
+                  { title: 'Проверено', dataIndex: 'checked_at', width: 160, render: (v) => formatLocalDateTime(String(v || '')) },
                 ]}
               />
             ),
@@ -335,13 +361,12 @@ export function CampaignFullAnalyticsTab() {
                   onChange: setSentLogPage,
                 }}
                 columns={[
-                  { title: 'Дата', dataIndex: 'sent_at', width: 160 },
+                  { title: 'Дата', dataIndex: 'sent_at', width: 160, render: (v) => formatLocalDateTime(String(v || '')) },
                   { title: 'Email', dataIndex: 'recipient', width: 180 },
                   { title: 'Компания', dataIndex: 'organization' },
                   { title: 'Тема', dataIndex: 'subject' },
-                  { title: 'Транспорт', dataIndex: 'transport', width: 100 },
-                  { title: 'Статус', dataIndex: 'status', width: 90 },
-                  { title: 'ID провайдера', dataIndex: 'provider_message_id', ellipsis: true },
+                  { title: 'Почтовый сервис', dataIndex: 'transport', width: 120, render: (v) => providerLabel(String(v || '')) },
+                  { title: 'Статус', dataIndex: 'status', width: 150, render: (v) => statusLabel(String(v || '')) },
                 ]}
               />
             ),
@@ -365,9 +390,9 @@ export function CampaignFullAnalyticsTab() {
                   { title: '№', dataIndex: 'attempt_number', width: 60 },
                   { title: 'Компания', dataIndex: 'company' },
                   { title: 'Email', dataIndex: 'delivery_email' },
-                  { title: 'Статус', dataIndex: 'status' },
-                  { title: 'Ошибка', dataIndex: 'error', ellipsis: true },
-                  { title: 'Создано', dataIndex: 'created_at', width: 160 },
+                  { title: 'Статус', dataIndex: 'status', render: (v) => statusLabel(String(v || '')) },
+                  { title: 'Ошибка', dataIndex: 'error', ellipsis: true, render: (v) => errorLabel(String(v || '')) },
+                  { title: 'Создано', dataIndex: 'created_at', width: 160, render: (v) => formatLocalDateTime(String(v || '')) },
                 ]}
               />
             ),

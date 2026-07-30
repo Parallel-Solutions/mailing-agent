@@ -1,11 +1,16 @@
 import { PlusOutlined } from '@ant-design/icons';
-import { ModalForm, ProFormDigit, ProFormSelect, ProFormText, ProTable } from '@ant-design/pro-components';
+import { ModalForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProFormTextArea, ProTable } from '@ant-design/pro-components';
 import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { connectionsApi } from '@/api/connections';
 import type { SmtpSetupAnalysis, SmtpSetupSettings } from '@/api/connections';
 import type { DeliveryConnection } from '@/api/types';
+import {
+  advanceOnboarding,
+  ONBOARDING_ENTER_EVENT,
+  type OnboardingEnterDetail,
+} from '@/features/onboarding/events';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { readBoolParam, readEnumParam } from '@/utils/urlState';
 import {
@@ -17,6 +22,7 @@ import {
 } from '@/utils/connectionAuthKind';
 import { selectSmtpSetupSettings, smtpSetupSecurity } from '@/utils/smtpSetup';
 import { SmtpSetupInstructions } from '@/features/connections/SmtpSetupInstructions';
+import { errorLabel } from '@/utils/presentation';
 
 type ConnectionTransport = 'smtp' | 'rusender' | 'mailopost';
 type ApiTransport = 'rusender' | 'mailopost';
@@ -89,6 +95,73 @@ function ConnectionRateLimitFields() {
       />
     </>
   );
+}
+
+function ConnectionDeliveryGuardFields() {
+  return (
+    <>
+      <Alert
+        type="warning"
+        showIcon
+        message="Прогрев при ошибках"
+        description="Если доля ошибок превысит порог, активные рассылки этого подключения будут поставлены на паузу. Система отправит прогревочные письма на указанные адреса, но не будет ограничивать скорость подключения."
+        style={{ marginTop: 16, marginBottom: 16 }}
+      />
+      <ProFormSwitch
+        name="delivery_guard_enabled"
+        label="Запускать прогрев при ошибках"
+      />
+      <ProFormDigit
+        name="delivery_error_rate_percent"
+        label="Критическая доля ошибок, %"
+        fieldProps={{ min: 0.1, max: 100, precision: 1 }}
+        extra="По умолчанию 5%. Срабатывание происходит при превышении значения."
+      />
+      <ProFormDigit
+        name="delivery_error_window_minutes"
+        label="Окно расчёта, минут"
+        fieldProps={{ min: 5, max: 10080, precision: 0 }}
+      />
+      <ProFormDigit
+        name="delivery_error_min_samples"
+        label="Минимум завершённых доставок для расчёта"
+        fieldProps={{ min: 1, precision: 0 }}
+      />
+      <ProFormTextArea
+        name="warmup_recipients_text"
+        label="Адреса получателей прогрева"
+        placeholder={'warmup-1@example.ru\nwarmup-2@example.ru'}
+        fieldProps={{ autoSize: { minRows: 2, maxRows: 6 } }}
+        extra="По одному адресу в строке или через запятую."
+      />
+      <ProFormDigit
+        name="warmup_percent_of_errors"
+        label="Количество писем прогрева, % от числа ошибок"
+        fieldProps={{ min: 1, max: 10000, precision: 0 }}
+        extra="Например, при 20 ошибках и значении 50% будет отправлено 10 прогревочных писем."
+      />
+    </>
+  );
+}
+
+function deliveryGuardPayload(values: Record<string, unknown>) {
+  const warmupRecipients = String(values.warmup_recipients_text || '')
+    .split(/[,;\n]+/)
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  return {
+    delivery_guard_enabled: values.delivery_guard_enabled === true,
+    delivery_error_rate_threshold: Math.max(
+      0.001,
+      Math.min(1, (Number(values.delivery_error_rate_percent) || 5) / 100),
+    ),
+    delivery_error_window_minutes: Number(values.delivery_error_window_minutes) || 60,
+    delivery_error_min_samples: Number(values.delivery_error_min_samples) || 20,
+    delivery_error_critical_count: 0,
+    delivery_error_action: 'warmup',
+    warmup_recipients: warmupRecipients,
+    warmup_percent_of_errors: Number(values.warmup_percent_of_errors) || 100,
+  };
 }
 
 function EditConnectionAction({
@@ -176,18 +249,26 @@ function EditConnectionAction({
         api_token: '',
         max_per_hour: connection.max_per_hour ?? 0,
         max_per_day: connection.max_per_day ?? 0,
+        delivery_guard_enabled: connection.delivery_guard_enabled ?? false,
+        delivery_error_rate_percent: (connection.delivery_error_rate_threshold ?? 0.05) * 100,
+        delivery_error_window_minutes: connection.delivery_error_window_minutes ?? 60,
+        delivery_error_min_samples: connection.delivery_error_min_samples ?? 20,
+        warmup_recipients_text: (connection.warmup_recipients || []).join('\n'),
+        warmup_percent_of_errors: connection.warmup_percent_of_errors ?? 100,
       }}
       onFinish={async (values) => {
         const rateLimits = {
           max_per_hour: Number(values.max_per_hour) || 0,
           max_per_day: Number(values.max_per_day) || 0,
         };
+        const guardSettings = deliveryGuardPayload(values);
         if (isMail) {
           await connectionsApi.update(connection.id, {
             transport: 'smtp',
             email: values.email,
             ...(isSecretEditing ? { password: values.password } : {}),
             ...rateLimits,
+            ...guardSettings,
           });
         } else {
           const security = values.security as SmtpSecurity | undefined;
@@ -197,6 +278,8 @@ function EditConnectionAction({
             api_token: _apiToken,
             max_per_hour: _maxPerHour,
             max_per_day: _maxPerDay,
+            delivery_error_rate_percent: _deliveryErrorRatePercent,
+            warmup_recipients_text: _warmupRecipientsText,
             ...connectionValues
           } = values;
           await connectionsApi.update(connection.id, {
@@ -211,6 +294,7 @@ function EditConnectionAction({
               ? { api_token: values.api_token }
               : {}),
             ...rateLimits,
+            ...guardSettings,
           });
         }
         message.success('Подключение обновлено');
@@ -312,6 +396,7 @@ function EditConnectionAction({
         </>
       )}
       <ConnectionRateLimitFields />
+      <ConnectionDeliveryGuardFields />
     </ModalForm>
   );
 }
@@ -381,9 +466,80 @@ export function ConnectionsPage() {
     form.resetFields();
   };
 
-  const enterLimitsStep = (connectionId: string) => {
+  useEffect(() => {
+    let recoveryTimer = 0;
+    const handleOnboardingEnter = (event: Event) => {
+      const { stepId } = (event as CustomEvent<OnboardingEnterDetail>).detail || {};
+      if (stepId === 'connection-open') {
+        setAddModalOpen(false);
+        resetAddModal();
+        return;
+      }
+      if (stepId === 'connection-method') {
+        resetAddModal();
+        setAddModalOpen(true);
+        return;
+      }
+
+      if (stepId === 'connection-details') {
+        resetAddModal();
+        setMethodKind('mailbox');
+        setAddModalOpen(true);
+        return;
+      }
+
+      if (stepId === 'connection-api-provider') {
+        resetAddModal();
+        setMethodKind('api_key');
+        setAddModalOpen(true);
+        return;
+      }
+
+      if (
+        stepId === 'connection-auth'
+        || stepId === 'connection-credentials'
+        || stepId === 'connection-submit'
+      ) {
+        setAddModalOpen(true);
+        window.clearTimeout(recoveryTimer);
+        recoveryTimer = window.setTimeout(() => {
+          const target = document.querySelector(`[data-onboarding-id="${stepId}"]`);
+          if (target) return;
+          resetAddModal();
+          setAddModalOpen(true);
+          advanceOnboarding(stepId, 'connection-method');
+        }, 120);
+        return;
+      }
+      if (stepId === 'connection-limits') {
+        void connectionsApi.list().then((connections) => {
+          const connection = connections.length ? connections[connections.length - 1] : null;
+          if (!connection) {
+            advanceOnboarding('connection-limits', 'template-open');
+            return;
+          }
+          setLimitsStepConnectionId(connection.id);
+          setMethodKind(connection.transport === 'smtp' ? 'mailbox' : 'api_key');
+          form.setFieldsValue({
+            max_per_hour: connection.max_per_hour || 0,
+            max_per_day: connection.max_per_day || 0,
+          });
+          setAddModalOpen(true);
+        });
+      }
+    };
+
+    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => {
+      window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+      window.clearTimeout(recoveryTimer);
+    };
+  }, [form, setAddModalOpen]);
+
+  const enterLimitsStep = (connectionId: string, fromStepId = 'connection-submit') => {
     setLimitsStepConnectionId(connectionId);
     form.setFieldsValue({ max_per_hour: 0, max_per_day: 0 });
+    advanceOnboarding(fromStepId);
     refreshConnections();
   };
 
@@ -468,6 +624,7 @@ export function ConnectionsPage() {
       setRecommendedAuthKind('password');
     } finally {
       setIsAnalyzingSmtp(false);
+      advanceOnboarding('connection-details', 'connection-auth');
     }
   };
 
@@ -507,7 +664,7 @@ export function ConnectionsPage() {
         make_default: false,
       });
       message.success('Почтовый ящик подключён через OAuth');
-      enterLimitsStep(created.id);
+      enterLimitsStep(created.id, 'connection-credentials');
     } catch (error) {
       setSmtpSetupError(
         error instanceof Error ? error.message : 'Не удалось завершить OAuth.',
@@ -520,6 +677,7 @@ export function ConnectionsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['connections'],
     queryFn: () => connectionsApi.list(),
+    refetchInterval: 30_000,
   });
 
   const removeMutation = useMutation({
@@ -573,6 +731,7 @@ export function ConnectionsPage() {
             submitButtonProps: {
               disabled: submitDisabled,
               loading: isAnalyzingSmtp || isOAuthConnecting || isVerifyingSmtp,
+              'data-onboarding-id': 'connection-submit',
               style:
                 !onLimitsStep && methodKind === 'mailbox' && authKind === 'oauth'
                   ? { display: 'none' }
@@ -587,6 +746,7 @@ export function ConnectionsPage() {
                     message.success('Подключение сохранено без лимитов');
                     setAddModalOpen(false);
                     resetAddModal();
+                    advanceOnboarding('connection-limits', 'template-open');
                   }}
                 >
                   Пропустить
@@ -596,7 +756,11 @@ export function ConnectionsPage() {
             },
           }}
           trigger={
-            <Button type="primary" icon={<PlusOutlined />}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              data-onboarding-id="add-connection"
+            >
               Добавить
             </Button>
           }
@@ -608,20 +772,32 @@ export function ConnectionsPage() {
             port: 587,
             max_per_hour: 0,
             max_per_day: 0,
+            delivery_guard_enabled: false,
+            delivery_error_rate_percent: 5,
+            delivery_error_window_minutes: 60,
+            delivery_error_min_samples: 20,
+            warmup_recipients_text: '',
+            warmup_percent_of_errors: 100,
           }}
           onOpenChange={(open) => {
             setAddModalOpen(open);
-            if (!open) resetAddModal();
+            if (open) {
+              advanceOnboarding('connection-open');
+            } else {
+              resetAddModal();
+            }
           }}
           onFinish={async (values) => {
             if (limitsStepConnectionId) {
               await connectionsApi.update(limitsStepConnectionId, {
                 max_per_hour: Number(values.max_per_hour) || 0,
                 max_per_day: Number(values.max_per_day) || 0,
+                ...deliveryGuardPayload(values),
               });
               message.success('Лимиты отправки сохранены');
               refreshConnections();
               resetAddModal();
+              advanceOnboarding('connection-limits', 'template-open');
               return true;
             }
 
@@ -737,7 +913,7 @@ export function ConnectionsPage() {
           }}
         >
           {onLimitsStep ? (
-            <>
+            <div data-onboarding-id="connection-limits">
               {methodKind === 'mailbox' ? (
                 <Steps
                   size="small"
@@ -758,9 +934,11 @@ export function ConnectionsPage() {
                 style={{ marginBottom: 16 }}
               />
               <ConnectionRateLimitFields />
-            </>
+              <ConnectionDeliveryGuardFields />
+            </div>
           ) : (
             <>
+          <div data-onboarding-id="connection-method">
           <ProFormSelect
             name="method_kind"
             label="Способ отправки"
@@ -773,6 +951,10 @@ export function ConnectionsPage() {
               placeholder: 'Выберите способ отправки',
               onChange: (value: MethodKind | null) => {
                 setMethodKind(value || null);
+                advanceOnboarding(
+                  'connection-method',
+                  value === 'api_key' ? 'connection-api-provider' : undefined,
+                );
                 setApiTransport(null);
                 resetSmtpWizard();
                 form.setFieldsValue({
@@ -786,6 +968,7 @@ export function ConnectionsPage() {
             }}
             rules={[{ required: true, message: 'Выберите способ отправки' }]}
           />
+          </div>
 
           {methodKind === 'mailbox' ? (
             <>
@@ -811,7 +994,12 @@ export function ConnectionsPage() {
               />
 
               {onMailboxEmailStep ? (
-                <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <Space
+                  direction="vertical"
+                  size={12}
+                  style={{ width: '100%' }}
+                  data-onboarding-id="connection-details"
+                >
                   <Alert
                     type="info"
                     showIcon
@@ -827,7 +1015,7 @@ export function ConnectionsPage() {
                   </Button>
                 </Space>
               ) : (
-                <>
+                <div data-onboarding-id="connection-credentials">
                   {smtpSetupError ? (
                     <Alert
                       type="error"
@@ -839,7 +1027,7 @@ export function ConnectionsPage() {
                   ) : null}
 
                   {showAuthKindPicker ? (
-                    <Form.Item label="Тип входа" required style={{ marginBottom: 16 }}>
+                    <Form.Item data-onboarding-id="connection-auth" label="Тип входа" required style={{ marginBottom: 16 }}>
                       <Radio.Group
                         value={authKind || undefined}
                         onChange={(event) => {
@@ -896,6 +1084,7 @@ export function ConnectionsPage() {
                       type="link"
                       style={{ padding: 0, marginBottom: 16 }}
                       onClick={() => setShowAuthKindPicker(true)}
+                      data-onboarding-id="connection-auth"
                     >
                       Изменить тип входа
                     </Button>
@@ -989,13 +1178,14 @@ export function ConnectionsPage() {
                       )}
                     </>
                   ) : null}
-                </>
+                </div>
               )}
             </>
           ) : null}
 
           {methodKind === 'api_key' ? (
             <>
+              <div data-onboarding-id="connection-api-provider">
               <ProFormSelect
                 name="transport"
                 label="Провайдер"
@@ -1007,6 +1197,7 @@ export function ConnectionsPage() {
                   placeholder: 'Выберите провайдера',
                   onChange: (value: ApiTransport) => {
                     setApiTransport(value || null);
+                    if (value) advanceOnboarding('connection-api-provider', 'connection-credentials');
                     if (value) {
                       form.setFieldsValue({ api_base_url: API_BASE_URLS[value] });
                     }
@@ -1014,8 +1205,9 @@ export function ConnectionsPage() {
                 }}
                 rules={[{ required: true, message: 'Выберите провайдера' }]}
               />
+              </div>
               {apiTransport ? (
-                <>
+                <div data-onboarding-id="connection-credentials">
                   <ProFormText.Password
                     name="api_token"
                     label={apiTransport === 'rusender' ? 'API-ключ RuSender' : 'API-токен MailoPost'}
@@ -1032,7 +1224,7 @@ export function ConnectionsPage() {
                     message="Перед подключением подтвердите адрес отправителя у провайдера"
                     description="Токен хранится в зашифрованном виде и не отображается после сохранения. Кнопка «Проверить» отправит тестовое письмо на этот адрес. Имя отправителя берётся из названия компании в рассылке."
                   />
-                </>
+                </div>
               ) : null}
             </>
           ) : null}
@@ -1075,7 +1267,28 @@ export function ConnectionsPage() {
               <Tag color={row.status === 'active' ? 'green' : 'red'}>
                 {row.status === 'active' ? 'Подключено' : 'Ошибка'}
               </Tag>
-              {row.last_error ? <Typography.Text type="danger">{row.last_error}</Typography.Text> : null}
+              {row.delivery_guard?.state === 'warmup' &&
+              ['queued', 'running'].includes(row.delivery_guard?.warmup_status || '') ? (
+                <Tag color="processing">Выполняется прогрев</Tag>
+              ) : null}
+              {row.delivery_guard?.warmup_status === 'failed' ? (
+                <Tag color="error">Прогрев завершился с ошибкой</Tag>
+              ) : null}
+              {row.delivery_guard && row.delivery_guard.terminal_count > 0 ? (
+                <Typography.Text type="secondary">
+                  Ошибки: {row.delivery_guard.error_count}/{row.delivery_guard.terminal_count}
+                  {' '}({(row.delivery_guard.error_rate * 100).toFixed(1)}%)
+                </Typography.Text>
+              ) : null}
+              {row.delivery_guard?.warmup_status === 'running' ||
+              row.delivery_guard?.warmup_status === 'completed' ||
+              row.delivery_guard?.warmup_status === 'completed_with_errors' ? (
+                <Typography.Text type="secondary">
+                  Прогрев: отправлено {row.delivery_guard.warmup_sent_count}, ошибок{' '}
+                  {row.delivery_guard.warmup_error_count}
+                </Typography.Text>
+              ) : null}
+              {row.last_error ? <Typography.Text type="danger">{errorLabel(row.last_error)}</Typography.Text> : null}
             </Space>
           ),
         },
@@ -1099,6 +1312,27 @@ export function ConnectionsPage() {
               >
                 Проверить
               </a>
+              {row.delivery_guard && row.delivery_guard.state !== 'normal' ? (
+                <Popconfirm
+                  title="Сбросить состояние прогрева?"
+                  description="Счётчики и состояние будут сброшены. Поставленные на паузу рассылки автоматически не возобновятся."
+                  okText="Сбросить"
+                  cancelText="Отмена"
+                  onConfirm={async () => {
+                    try {
+                      await connectionsApi.resetGuard(row.id);
+                      message.success('Состояние прогрева сброшено');
+                      refreshConnections();
+                    } catch (error) {
+                      message.error(
+                        error instanceof Error ? error.message : 'Не удалось сбросить состояние прогрева',
+                      );
+                    }
+                  }}
+                >
+                  <a>Сбросить прогрев</a>
+                </Popconfirm>
+              ) : null}
               <Popconfirm
                 title="Удалить подключение?"
                 description="Кампании с этим отправителем нельзя будет запустить."

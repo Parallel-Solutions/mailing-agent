@@ -24,7 +24,7 @@ export function useCampaignLaunchValidation(input: CampaignLaunchValidationInput
 
   const validateQuery = useQuery({
     queryKey: campaignId ? campaignValidateQueryKey(campaignId) : ['campaign-validate'],
-    queryFn: () => campaignsApi.validate(campaignId!),
+    queryFn: () => campaignsApi.validate(campaignId!, { deep: true }),
     enabled: false,
     staleTime: Infinity,
   });
@@ -59,7 +59,7 @@ export function useCampaignLaunchValidation(input: CampaignLaunchValidationInput
 
         await queryClient.fetchQuery<CampaignValidateResponse>({
           queryKey: campaignValidateQueryKey(campaignId),
-          queryFn: () => campaignsApi.validate(campaignId),
+          queryFn: () => campaignsApi.validate(campaignId, { deep: true }),
           staleTime: Infinity,
         });
 

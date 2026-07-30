@@ -12,6 +12,16 @@ from typing import Any
 from sqlalchemy import delete, func, select
 
 from src.campaigns.schedule_planner import plan_batches
+from src.campaigns.state import (
+    CAMPAIGN_STATUSES,
+    CampaignStateConflict,
+    active_work_counts,
+    allowed_actions,
+    recipient_metrics,
+    recipient_metrics_many,
+    reconcile_campaign_state,
+    transition_campaign_status,
+)
 from src.campaigns.suppression_service import is_email_suppressed_for_import
 from src.security.company_access import apply_owner_filter, can_access_owner
 from src.infra.db import session_scope
@@ -21,6 +31,7 @@ from src.infra.models import (
     CampaignRecipient,
     CampaignSchedule,
     DeliveryAttempt,
+    BackgroundTask,
     SmtpMailbox,
 )
 
@@ -43,6 +54,44 @@ _RECIPIENT_ROW_RESERVED = frozenset(
         "validation_status",
     }
 )
+
+_MAPPING_DRAFT_STATE_KEYS = frozenset(
+    {
+        "mapping_confirmed",
+        "mapping_confirmed_at",
+        "variable_mapping",
+        "system_variables",
+        "recipient_columns",
+    }
+)
+
+
+def _merge_draft_payload_update(
+    current: dict[str, Any] | None,
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(current or {})
+    merged.update(
+        {
+            key: value
+            for key, value in incoming.items()
+            if key not in _MAPPING_DRAFT_STATE_KEYS
+        }
+    )
+    return merged
+
+
+def _recipient_columns_signature(columns: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                str(column or "").strip().lower()
+                for column in columns
+                if str(column or "").strip()
+            }
+        )
+    )
+
 
 _CORE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "company": (
@@ -72,17 +121,6 @@ _CORE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "email_fallback": ("email_fallback", "email2", "email_dop", "эл. адрес (доп)"),
     "region": ("region", "регион", "sub_rf", "субъект рф"),
 }
-
-CAMPAIGN_STATUSES = {
-    "draft",
-    "scheduled",
-    "running",
-    "paused",
-    "completed",
-    "completed_with_errors",
-    "cancelled",
-}
-
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -211,7 +249,32 @@ def _invalidate_variable_mapping(camp: Campaign) -> None:
     camp.draft_payload = draft
 
 
-def campaign_to_dict(row: Campaign, *, include_draft: bool = True) -> dict[str, Any]:
+def campaign_to_dict(
+    row: Campaign,
+    *,
+    include_draft: bool = True,
+    metrics: dict[str, Any] | None = None,
+    has_active_work: bool | None = None,
+) -> dict[str, Any]:
+    campaign_metrics = metrics or {
+        "success_count": int(row.sent_count or 0),
+        "skipped_count": 0,
+        "failed_recipient_count": 0,
+        "processed_count": int(row.sent_count or 0),
+        "pending_count": max(0, int(row.total_count or 0) - int(row.sent_count or 0)),
+        "attempt_count": int(row.sent_count or 0) + int(row.error_count or 0),
+        "attempt_error_count": int(row.error_count or 0),
+        "progress": (
+            round(100.0 * int(row.sent_count or 0) / int(row.total_count or 0), 1)
+            if row.total_count
+            else 0.0
+        ),
+        "success_rate": (
+            round(100.0 * int(row.sent_count or 0) / int(row.total_count or 0), 1)
+            if row.total_count
+            else 0.0
+        ),
+    }
     payload = {
         "id": row.id,
         "owner_username": row.owner_username,
@@ -236,14 +299,25 @@ def campaign_to_dict(row: Campaign, *, include_draft: bool = True) -> dict[str, 
         "sent_count": row.sent_count,
         "total_count": row.total_count,
         "error_count": row.error_count,
+        "success_count": int(campaign_metrics["success_count"]),
+        "skipped_count": int(campaign_metrics["skipped_count"]),
+        "failed_recipient_count": int(campaign_metrics["failed_recipient_count"]),
+        "processed_count": int(campaign_metrics["processed_count"]),
+        "pending_count": int(campaign_metrics["pending_count"]),
+        "attempt_count": int(campaign_metrics["attempt_count"]),
+        "attempt_error_count": int(campaign_metrics["attempt_error_count"]),
+        "success_rate": float(campaign_metrics["success_rate"]),
+        "allowed_actions": allowed_actions(
+            row,
+            campaign_metrics,
+            has_active_work=has_active_work,
+        ),
         "archived": bool(row.archived),
         "launched_at": row.launched_at.isoformat() if row.launched_at else None,
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-        "progress": (
-            round(100.0 * row.sent_count / row.total_count, 1) if row.total_count else 0.0
-        ),
+        "progress": float(campaign_metrics["progress"]),
     }
     if include_draft:
         payload["draft_payload"] = dict(row.draft_payload or {})
@@ -271,7 +345,7 @@ def create_campaign(owner_username: str, data: dict[str, Any] | None = None) -> 
             document_mode=str(data.get("document_mode") or "kp"),
             mail_subject=str(data.get("mail_subject") or ""),
             description=str(data.get("description") or ""),
-            send_scenario=str(data.get("send_scenario") or "email_chain"),
+            send_scenario=str(data.get("send_scenario") or "consent_then_materials"),
             tags=list(data.get("tags") or []),
             internal_comment=str(data.get("internal_comment") or ""),
             status="draft",
@@ -296,7 +370,7 @@ def create_campaign(owner_username: str, data: dict[str, Any] | None = None) -> 
         )
         session.add(schedule)
         session.flush()
-        return campaign_to_dict(row)
+        return campaign_to_dict(row, metrics=recipient_metrics(session, row))
 
 
 def get_campaign_by_job_id(job_id: str) -> dict[str, Any] | None:
@@ -305,7 +379,11 @@ def get_campaign_by_job_id(job_id: str) -> dict[str, Any] | None:
         row = session.scalar(select(Campaign).where(Campaign.job_id == job_id).limit(1))
         if row is None:
             return None
-        payload = campaign_to_dict(row, include_draft=False)
+        payload = campaign_to_dict(
+            row,
+            include_draft=False,
+            metrics=recipient_metrics(session, row),
+        )
         payload["layout_error_count"] = _layout_error_count(session, row.id)
         return payload
 
@@ -373,7 +451,13 @@ def get_campaign(campaign_id: str, owner_username: str, *, visible_owners: froze
             return None
         if not can_access_owner(visible_owners, row.owner_username):
             return None
-        payload = campaign_to_dict(row)
+        metrics = recipient_metrics(session, row)
+        work = active_work_counts(session, campaign_id)
+        payload = campaign_to_dict(
+            row,
+            metrics=metrics,
+            has_active_work=bool(work["active_batches"] or work["active_tasks"]),
+        )
         payload["layout_error_count"] = _layout_error_count(session, campaign_id)
         return payload
 
@@ -412,7 +496,18 @@ def list_campaigns(
             stmt = stmt.where(Campaign.name.ilike(like))
         total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
         rows = session.scalars(stmt.order_by(Campaign.updated_at.desc()).limit(limit).offset(offset)).all()
-        return {"items": [campaign_to_dict(r, include_draft=False) for r in rows], "total": int(total)}
+        metrics_by_id = recipient_metrics_many(session, rows)
+        return {
+            "items": [
+                campaign_to_dict(
+                    row,
+                    include_draft=False,
+                    metrics=metrics_by_id[str(row.id)],
+                )
+                for row in rows
+            ],
+            "total": int(total),
+        }
 
 
 def update_campaign(
@@ -434,6 +529,8 @@ def update_campaign(
                 pass
 
         old_email_chain_id = row.email_chain_id
+        template_fields = ("email_template_id", "kp_template_id", "contract_template_id")
+        old_template_ids = {field: getattr(row, field) for field in template_fields}
         if "email_chain_id" in data and data["email_chain_id"] is not None:
             from src.campaigns.chain_service import _ensure_chain_access
             from src.infra.models import EmailChainRecord
@@ -461,13 +558,18 @@ def update_campaign(
             _apply_sender_fields(row, data)
         if "tags" in data:
             row.tags = list(data.get("tags") or [])
-        template_fields = ("email_template_id", "kp_template_id", "contract_template_id")
-        template_changed = any(field in data and data[field] is not None for field in template_fields)
+        template_changed = any(
+            field in data
+            and data[field] is not None
+            and data[field] != old_template_ids[field]
+            for field in template_fields
+        )
         chain_changed = "email_chain_id" in data and data["email_chain_id"] != old_email_chain_id
         if "draft_payload" in data and isinstance(data["draft_payload"], dict):
-            merged = dict(row.draft_payload or {})
-            merged.update(data["draft_payload"])
-            row.draft_payload = merged
+            row.draft_payload = _merge_draft_payload_update(
+                dict(row.draft_payload or {}),
+                data["draft_payload"],
+            )
         # Merge top-level known fields into draft for autosave recovery
         draft = dict(row.draft_payload or {})
         for key in ("name", "work_type", "document_mode", "mail_subject", "description", "send_scenario", "tags", "internal_comment"):
@@ -478,7 +580,7 @@ def update_campaign(
             _invalidate_variable_mapping(row)
         row.updated_at = _now()
         session.flush()
-        return campaign_to_dict(row)
+        return campaign_to_dict(row, metrics=recipient_metrics(session, row))
 
 
 def reset_campaign_draft(
@@ -532,14 +634,14 @@ def reset_campaign_draft(
         schedule.pause_between_messages_ms = 0
         schedule.max_per_hour = 0
         schedule.max_per_day = 0
-        schedule.on_error = "pause"
+        schedule.on_error = "skip"
         schedule.max_retries = 0
         schedule.preview = {}
         schedule.updated_at = _now()
 
         row.updated_at = _now()
         session.flush()
-        return campaign_to_dict(row)
+        return campaign_to_dict(row, metrics=recipient_metrics(session, row))
 
 
 def duplicate_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any] | None:
@@ -601,7 +703,7 @@ def archive_campaign(campaign_id: str, owner_username: str, *, visible_owners: f
         row.archived = True
         row.updated_at = _now()
         session.flush()
-        return campaign_to_dict(row)
+        return campaign_to_dict(row, metrics=recipient_metrics(session, row))
 
 
 def list_recipients(
@@ -720,9 +822,11 @@ def replace_recipients(
         camp.total_count = added
         columns = list(recipient_columns or extract_recipient_columns(recipients[:500]))
         draft = dict(camp.draft_payload or {})
+        previous_columns = list(draft.get("recipient_columns") or [])
         draft["recipient_columns"] = columns
-        draft["mapping_confirmed"] = False
-        draft.pop("mapping_confirmed_at", None)
+        if _recipient_columns_signature(previous_columns) != _recipient_columns_signature(columns):
+            draft["mapping_confirmed"] = False
+            draft.pop("mapping_confirmed_at", None)
         camp.draft_payload = draft
         camp.updated_at = _now()
         session.flush()
@@ -1052,6 +1156,43 @@ def _sender_batch_task_payload(
     }
 
 
+MAX_SENDER_BATCH_WORKER_RECOVERIES = 5
+SENDER_BATCH_WORKER_RECOVERY_BACKOFF_SECONDS = 30
+
+
+def enqueue_sender_batch_task(
+    session: Any,
+    *,
+    campaign_id: str,
+    camp: Campaign,
+    batch: CampaignBatch,
+    schedule: CampaignSchedule,
+    owner_username: str,
+    available_at: datetime,
+    idempotency_suffix: str,
+) -> str:
+    """Enqueue a sender_batch task and attach task_id to the batch row."""
+    from src.workers.task_queue import enqueue_task
+
+    task, _created = enqueue_task(
+        task_type="sender_batch",
+        job_id=camp.job_id or campaign_id,
+        owner_username=owner_username,
+        payload=_sender_batch_task_payload(
+            campaign_id=campaign_id,
+            batch_id=batch.id,
+            camp=camp,
+            schedule=schedule,
+        ),
+        available_at=available_at,
+        idempotency_key=f"sender_batch:{batch.id}:{idempotency_suffix}",
+        active_key=f"sender_batch:{batch.id}:{idempotency_suffix}",
+        max_attempts=max(1, int(schedule.max_retries or 3)),
+    )
+    batch.task_id = str(task.get("id") or "")
+    return batch.task_id
+
+
 def validate_campaign_for_launch(
     campaign_id: str,
     owner_username: str,
@@ -1102,19 +1243,34 @@ def validate_campaign_for_launch(
 
         from src.campaigns.template_text_review_service import partition_review_messages
         from src.campaigns.variable_match_service import (
+            empty_variable_validation_errors,
             mapping_validation_errors,
             substitution_validation_issues,
+            template_text_cache_validation_errors,
         )
 
-        errors.extend(mapping_validation_errors(camp))
-        template_issues = substitution_validation_issues(camp, deep=False, advisory=False)
+        mapping_errors = mapping_validation_errors(camp)
+        errors.extend(mapping_errors)
+        if not mapping_errors:
+            errors.extend(empty_variable_validation_errors(camp))
+        errors.extend(template_text_cache_validation_errors(camp))
+        template_issues = substitution_validation_issues(
+            camp,
+            deep=deep,
+            advisory=False,
+            include_placeholder_issues=True,
+            strict_preview=True,
+        )
         template_errors, template_warnings = partition_review_messages(template_issues)
         errors.extend(template_errors)
         warnings.extend(template_warnings)
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         draft = dict(camp.draft_payload or {})
         schedule_payload = schedule_to_dict(schedule) if schedule else None
-        campaign_payload = campaign_to_dict(camp)
+        campaign_payload = campaign_to_dict(
+            camp,
+            metrics=recipient_metrics(session, camp),
+        )
         send_scenario = camp.send_scenario
 
     return {
@@ -1135,18 +1291,35 @@ def launch_campaign(
     visible_owners: frozenset[str] | None = None,
     force_now: bool = False,
 ) -> dict[str, Any]:
+    # Reject invalid lifecycle actions before expensive/deep launch validation.
+    # The status is checked again under a row lock below to close the race.
+    with session_scope() as session:
+        existing_campaign = session.get(Campaign, campaign_id)
+        if (
+            existing_campaign is not None
+            and can_access_owner(visible_owners, existing_campaign.owner_username)
+            and existing_campaign.status != "draft"
+        ):
+            raise CampaignStateConflict(
+                "Only a draft campaign can be launched. Duplicate a completed campaign to send it again."
+            )
+
     validation = validate_campaign_for_launch(
         campaign_id,
         owner_username,
         visible_owners=visible_owners,
-        deep=False,
+        deep=True,
     )
     if not validation["ok"]:
         raise ValueError("; ".join(validation["errors"]))
 
     with session_scope() as session:
-        camp = session.get(Campaign, campaign_id)
+        camp = session.get(Campaign, campaign_id, with_for_update=True)
         assert camp is not None
+        if camp.status != "draft":
+            raise CampaignStateConflict(
+                "Only a draft campaign can be launched. Duplicate a completed campaign to send it again."
+            )
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         assert schedule is not None
 
@@ -1179,6 +1352,17 @@ def launch_campaign(
             .order_by(CampaignRecipient.row_index)
         ).all()
         recipient_ids = [r.id for r in recipients]
+        intended_recipient_count = int(
+            session.scalar(
+                select(func.count())
+                .select_from(CampaignRecipient)
+                .where(
+                    CampaignRecipient.campaign_id == campaign_id,
+                    CampaignRecipient.excluded.is_(False),
+                )
+            )
+            or 0
+        )
         conn_hour, conn_day = _pool_rate_limits(session, _campaign_connection_ids(camp))
         launch_now = _now()
         immediate = force_now or _schedule_requires_immediate_start(schedule, now=launch_now)
@@ -1270,17 +1454,28 @@ def launch_campaign(
                 }
             )
 
-        camp.status = "running" if immediate else "scheduled"
-        if camp.status == "running" or immediate:
+        target_status = "running" if immediate else "scheduled"
+        if target_status == "running" or immediate:
             # If first batch is in the future, keep scheduled
             first_at = preview.get("first_batch_at")
             if first_at:
                 first_dt = datetime.fromisoformat(str(first_at).replace("Z", "+00:00"))
                 if first_dt > _now() + __import__("datetime").timedelta(seconds=5):
-                    camp.status = "scheduled"
+                    target_status = "scheduled"
+        camp.sent_count = 0
+        camp.error_count = 0
+        camp.completed_at = None
         camp.launched_at = _now()
-        camp.total_count = len(recipient_ids)
-        camp.updated_at = _now()
+        camp.total_count = intended_recipient_count
+        transition_campaign_status(
+            session,
+            camp,
+            target_status,
+            reason="campaign_launch",
+            actor=owner_username,
+        )
+        if not created_batches:
+            reconcile_campaign_state(session, camp, repair=True, actor="launch_reconciler")
         session.flush()
 
         # Heal missing JobOwner so statistics scoping matches Campaign ownership.
@@ -1295,7 +1490,10 @@ def launch_campaign(
             )
 
         return {
-            "campaign": campaign_to_dict(camp),
+            "campaign": campaign_to_dict(
+                camp,
+                metrics=recipient_metrics(session, camp),
+            ),
             "batches": created_batches,
             "preview": preview,
         }
@@ -1303,11 +1501,20 @@ def launch_campaign(
 
 def pause_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     with session_scope() as session:
-        camp = session.get(Campaign, campaign_id)
+        camp = session.get(Campaign, campaign_id, with_for_update=True)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
-        camp.status = "paused"
-        camp.updated_at = _now()
+        if camp.status not in {"running", "scheduled"}:
+            raise CampaignStateConflict(
+                f"Campaign cannot be paused from status {camp.status}"
+            )
+        transition_campaign_status(
+            session,
+            camp,
+            "paused",
+            reason="campaign_pause",
+            actor=owner_username,
+        )
         batches = session.scalars(
             select(CampaignBatch).where(
                 CampaignBatch.campaign_id == campaign_id,
@@ -1324,18 +1531,20 @@ def pause_campaign(campaign_id: str, owner_username: str, *, visible_owners: fro
                 except Exception:
                     pass
         session.flush()
-        return campaign_to_dict(camp)
+        return campaign_to_dict(camp, metrics=recipient_metrics(session, camp))
 
 
 def resume_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     with session_scope() as session:
-        camp = session.get(Campaign, campaign_id)
+        camp = session.get(Campaign, campaign_id, with_for_update=True)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
-        if camp.status not in {"paused", "running"}:
-            raise ValueError("Campaign is not paused")
-
-        from src.workers.task_queue import enqueue_task
+        if camp.status != "paused":
+            raise CampaignStateConflict("Campaign is not paused")
+        if camp.completed_at is not None:
+            raise CampaignStateConflict(
+                "A completed campaign cannot be resumed. Duplicate it to send again."
+            )
 
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         if schedule is None:
@@ -1349,6 +1558,8 @@ def resume_campaign(campaign_id: str, owner_username: str, *, visible_owners: fr
             )
             .order_by(CampaignBatch.batch_index)
         ).all()
+        if not batches:
+            raise CampaignStateConflict("Campaign has no unfinished batches to resume")
         now = _now()
         for batch in batches:
             scheduled_at = batch.scheduled_at if batch.scheduled_at > now else now
@@ -1357,36 +1568,44 @@ def resume_campaign(campaign_id: str, owner_username: str, *, visible_owners: fr
             batch.started_at = None
             batch.completed_at = None
             batch.error = None
-            task, _created = enqueue_task(
-                task_type="sender_batch",
-                job_id=camp.job_id or campaign_id,
+            enqueue_sender_batch_task(
+                session,
+                campaign_id=campaign_id,
+                camp=camp,
+                batch=batch,
+                schedule=schedule,
                 owner_username=owner_username,
-                payload=_sender_batch_task_payload(
-                    campaign_id=campaign_id,
-                    batch_id=batch.id,
-                    camp=camp,
-                    schedule=schedule,
-                ),
                 available_at=scheduled_at,
-                idempotency_key=f"sender_batch:{batch.id}:resume:{int(now.timestamp())}",
-                active_key=f"sender_batch:{batch.id}:resume:{int(now.timestamp())}",
-                max_attempts=max(1, int(schedule.max_retries or 3)),
+                idempotency_suffix=f"resume:{int(now.timestamp())}",
             )
-            batch.task_id = str(task.get("id") or "")
-        camp.status = "running"
-        camp.updated_at = now
+        transition_campaign_status(
+            session,
+            camp,
+            "running",
+            reason="campaign_resume",
+            actor=owner_username,
+            at=now,
+        )
         session.flush()
-        return campaign_to_dict(camp)
+        return campaign_to_dict(camp, metrics=recipient_metrics(session, camp))
 
 
 def cancel_campaign(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
     with session_scope() as session:
-        camp = session.get(Campaign, campaign_id)
+        camp = session.get(Campaign, campaign_id, with_for_update=True)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
-        camp.status = "cancelled"
-        camp.completed_at = _now()
-        camp.updated_at = _now()
+        if camp.status not in {"running", "scheduled", "paused"}:
+            raise CampaignStateConflict(
+                f"Campaign cannot be cancelled from status {camp.status}"
+            )
+        transition_campaign_status(
+            session,
+            camp,
+            "cancelled",
+            reason="campaign_cancel",
+            actor=owner_username,
+        )
         from src.workers.task_queue import request_cancel
 
         batches = session.scalars(
@@ -1404,7 +1623,7 @@ def cancel_campaign(campaign_id: str, owner_username: str, *, visible_owners: fr
                 except Exception:
                     pass
         session.flush()
-        return campaign_to_dict(camp)
+        return campaign_to_dict(camp, metrics=recipient_metrics(session, camp))
 
 
 def list_batches(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> list[dict[str, Any]]:
@@ -1415,23 +1634,136 @@ def list_batches(campaign_id: str, owner_username: str, *, visible_owners: froze
         rows = session.scalars(
             select(CampaignBatch).where(CampaignBatch.campaign_id == campaign_id).order_by(CampaignBatch.batch_index)
         ).all()
-        return [
-            {
-                "id": b.id,
-                "batch_index": b.batch_index,
-                "scheduled_at": b.scheduled_at.isoformat() if b.scheduled_at else None,
-                "size": b.size,
-                "sent_count": b.sent_count,
-                "error_count": b.error_count,
-                "remaining": max(0, b.size - b.sent_count - b.error_count),
-                "status": b.status,
-                "task_id": b.task_id,
-                "error": b.error,
-                "started_at": b.started_at.isoformat() if b.started_at else None,
-                "completed_at": b.completed_at.isoformat() if b.completed_at else None,
+        task_ids = [str(batch.task_id) for batch in rows if batch.task_id]
+        tasks_by_id = {
+            str(task.id): task
+            for task in (
+                session.scalars(
+                    select(BackgroundTask).where(BackgroundTask.id.in_(task_ids))
+                ).all()
+                if task_ids
+                else []
+            )
+        }
+        active_tasks = session.scalars(
+            select(BackgroundTask)
+            .where(
+                BackgroundTask.status.in_(("queued", "running", "retry")),
+                BackgroundTask.cancel_requested_at.is_(None),
+            )
+        ).all()
+        now = _now()
+        active_tasks.sort(
+            key=lambda task: (
+                0 if task.status == "running" else 1,
+                0 if task.available_at <= now else 1,
+                (
+                    -int(task.priority or 0)
+                    if task.available_at <= now
+                    else task.available_at
+                ),
+                (
+                    task.created_at
+                    if task.available_at <= now
+                    else -int(task.priority or 0)
+                ),
+                task.created_at,
+            )
+        )
+        waiting_positions: dict[str, int] = {}
+        waiting_index = 0
+        for task in active_tasks:
+            if task.status == "running":
+                continue
+            waiting_index += 1
+            waiting_positions[str(task.id)] = waiting_index
+        running_task_ids = {
+            str(task.id) for task in active_tasks if task.status == "running"
+        }
+        recipient_status_by_id = {
+            int(recipient_id): str(send_status or "pending")
+            for recipient_id, send_status in session.execute(
+                select(CampaignRecipient.id, CampaignRecipient.send_status).where(
+                    CampaignRecipient.campaign_id == campaign_id
+                )
+            ).all()
+        }
+
+        def _batch_metrics(batch: CampaignBatch) -> dict[str, int]:
+            statuses = [
+                recipient_status_by_id.get(int(recipient_id), "pending")
+                for recipient_id in list(batch.recipient_ids or [])
+            ]
+            success = sum(1 for status in statuses if status in {"sent", "in_chain"})
+            skipped = sum(1 for status in statuses if status == "skipped")
+            failed = sum(1 for status in statuses if status == "failed")
+            processed = success + skipped + failed
+            return {
+                "processed": processed,
+                "skipped": skipped,
+                "failed": failed,
+                "remaining": max(0, int(batch.size or 0) - processed),
             }
-            for b in rows
-        ]
+
+        result: list[dict[str, Any]] = []
+        for batch in rows:
+            metrics = _batch_metrics(batch)
+            task = tasks_by_id.get(str(batch.task_id or ""))
+            task_status = str(task.status) if task is not None else ""
+            queue_position = waiting_positions.get(str(batch.task_id or ""))
+            if camp.status == "paused" or batch.status == "paused":
+                wait_reason = "Рассылка приостановлена"
+            elif task is not None and task.status == "running":
+                wait_reason = "Идёт отправка"
+            elif task is not None and task.status == "retry":
+                wait_reason = "Ожидает повторной попытки после ошибки"
+            elif task is not None and task.available_at and task.available_at > now:
+                wait_reason = "Ожидает запланированного времени"
+            elif task is not None and task.status == "queued":
+                wait_reason = "Ожидает свободного отправщика"
+            elif batch.status == "completed":
+                wait_reason = "Отправка завершена"
+            elif batch.status == "cancelled":
+                wait_reason = "Отправка отменена"
+            elif batch.status in {"failed", "completed_with_errors"}:
+                wait_reason = "Завершено с ошибками"
+            else:
+                wait_reason = "Ожидает запуска"
+            result.append(
+                {
+                    "id": batch.id,
+                    "batch_index": batch.batch_index,
+                    "scheduled_at": batch.scheduled_at.isoformat() if batch.scheduled_at else None,
+                    "size": batch.size,
+                    "sent_count": batch.sent_count,
+                    "error_count": batch.error_count,
+                    "processed_count": metrics["processed"],
+                    "skipped_count": metrics["skipped"],
+                    "failed_recipient_count": metrics["failed"],
+                    "remaining": metrics["remaining"],
+                    "status": batch.status,
+                    "task_id": batch.task_id,
+                    "task_status": task_status or None,
+                    "queue_position": queue_position,
+                    "is_current": bool(
+                        batch.task_id and str(batch.task_id) in running_task_ids
+                    ),
+                    "available_at": (
+                        task.available_at.isoformat()
+                        if task is not None and task.available_at
+                        else batch.scheduled_at.isoformat()
+                        if batch.scheduled_at
+                        else None
+                    ),
+                    "attempt": int(task.attempt or 0) if task is not None else 0,
+                    "max_attempts": int(task.max_attempts or 0) if task is not None else 0,
+                    "wait_reason": wait_reason,
+                    "error": batch.error,
+                    "started_at": batch.started_at.isoformat() if batch.started_at else None,
+                    "completed_at": batch.completed_at.isoformat() if batch.completed_at else None,
+                }
+            )
+        return result
 
 
 def cancel_batch(campaign_id: str, batch_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
@@ -1476,7 +1808,8 @@ def active_sending(owner_username: str, *, visible_owners: frozenset[str] | None
                 .select_from(CampaignBatch)
                 .where(CampaignBatch.campaign_id == camp.id, CampaignBatch.status == "pending")
             ) or 0
-            remaining = max(0, camp.total_count - camp.sent_count)
+            metrics = recipient_metrics(session, camp)
+            remaining = int(metrics["pending_count"])
             # Finished / stuck-paused campaigns with nothing left to send stay out of the dashboard card.
             if remaining == 0 and int(queued) == 0 and running_batch is None:
                 continue
@@ -1486,6 +1819,9 @@ def active_sending(owner_username: str, *, visible_owners: frozenset[str] | None
                 "status": camp.status,
                 "sent_count": camp.sent_count,
                 "total_count": camp.total_count,
+                "processed_count": int(metrics["processed_count"]),
+                "skipped_count": int(metrics["skipped_count"]),
+                "failed_recipient_count": int(metrics["failed_recipient_count"]),
                 "remaining": remaining,
                 "queued_batches": int(queued),
                 "sending_now": running_batch.size if running_batch else 0,
@@ -1495,7 +1831,8 @@ def active_sending(owner_username: str, *, visible_owners: frozenset[str] | None
                 "interval_seconds": schedule.interval_seconds if schedule else 0,
                 "max_per_hour": schedule.max_per_hour if schedule else 0,
                 "max_per_day": schedule.max_per_day if schedule else 0,
-                "progress": round(100.0 * camp.sent_count / camp.total_count, 1) if camp.total_count else 0.0,
+                "progress": float(metrics["progress"]),
+                "success_rate": float(metrics["success_rate"]),
             }
         return None
 

@@ -1,23 +1,58 @@
-# Production overlay: force the public URL used in email chain/consent links.
-# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d app worker
+# Production overlay for mailing-agent (offer.parresh.ru).
 #
-# Removes dev bind-mounts of ./src and ./main.py so prod runs an immutable image
-# built from the checked-out git ref (rebuild required on deploy).
+# Usage:
+#   docker compose --env-file .env.docker --profile onlyoffice -f docker-compose.yml -f docker-compose.prod.yml up -d app worker
+#   MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> ./scripts/deploy.sh --pull
+#
+# Allowlist (long-lived on prod):
+#   app, worker, postgres, minio, redis, gotenberg, onlyoffice
+# One-shot OK: minio-init
+# Must NOT run: gotenberg-2, mailpit, playwright, e2e/test stacks
+#
+# - Forces PUBLIC_BASE_URL used in email chain/consent links
+# - Disables RuSender click-tracking
+# - Removes dev bind-mounts of ./src and ./main.py (immutable GHCR image)
+# - Binds MinIO API/console to localhost only (not world-reachable)
+
 services:
   app:
     environment:
+      APP_ENVIRONMENT: production
+      DATABASE_EXPECTED_NAME: mailing
       PUBLIC_BASE_URL: https://offer.parresh.ru
       RUSENDER_TRACK_LINKS: "0"
+      ONLYOFFICE_EDITOR_PUBLIC_URL: https://offer.parresh.ru/onlyoffice
+      ONLYOFFICE_APP_INTERNAL_URL: http://app:9806
+      ONLYOFFICE_EDITOR_INTERNAL_URL: http://onlyoffice
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:?Set ONLYOFFICE_JWT_SECRET in .env.docker}
     volumes: !reset
       - ./logs:/app/logs
       - ./tmp:/app/tmp
       - ./storage:/app/legacy/storage:ro
       - chroma-data:/app/src/parser_new/memory/vectors
+    depends_on:
+      onlyoffice:
+        condition: service_healthy
   worker:
     environment:
+      APP_ENVIRONMENT: production
+      DATABASE_EXPECTED_NAME: mailing
       PUBLIC_BASE_URL: https://offer.parresh.ru
       RUSENDER_TRACK_LINKS: "0"
     volumes: !reset
       - ./logs:/app/logs
       - ./tmp:/app/tmp
       - chroma-data:/app/src/parser_new/memory/vectors
+  minio:
+    ports: !reset
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+  onlyoffice:
+    image: ${ONLYOFFICE_IMAGE:-ghcr.io/parallel-solutions/mailing-agent:onlyoffice-9.4.0.1}
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:?Set ONLYOFFICE_JWT_SECRET in .env.docker}
+      JWT_HEADER: Authorization
+      JWT_IN_BODY: "false"
+      ALLOW_PRIVATE_IP_ADDRESS: "true"
+    ports: !reset []

@@ -1,5 +1,6 @@
 import {
   InboxOutlined,
+  DeleteOutlined,
   CopyOutlined,
   DownloadOutlined,
   EditOutlined,
@@ -17,16 +18,23 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { templatesApi } from '@/api/templates';
 import type { Template } from '@/api/types';
+import {
+  advanceOnboarding,
+  ONBOARDING_ENTER_EVENT,
+  type OnboardingEnterDetail,
+} from '@/features/onboarding/events';
 import { AddTemplateWizard, type WizardStep } from '@/features/templates/AddTemplateWizard';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { readBoolParam, readEnumParam } from '@/utils/urlState';
 import { TemplatePreviewImage } from '@/features/templates/TemplatePreviewImage';
+import { showDocumentUploadError } from '@/features/templates/documentUploadError';
 import {
   buildEmailPreviewDocument,
   downloadEmailHtml,
   getEmailFormat,
 } from '@/features/templates/emailTemplateUtils';
 import './TemplatesPage.css';
+import { statusLabel } from '@/utils/presentation';
 
 type TemplateKind = 'email' | 'document';
 
@@ -43,7 +51,7 @@ function TemplateFileUpload({
   compact?: boolean;
   onUploaded: (template: Template) => void;
 }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [uploading, setUploading] = useState(false);
 
   const button = (
@@ -73,7 +81,7 @@ function TemplateFileUpload({
           onUploaded(uploaded);
           onSuccess?.(uploaded);
         } catch (error) {
-          message.error(error instanceof Error ? error.message : 'Не удалось загрузить шаблон');
+          showDocumentUploadError(modal, error);
           onError?.(error as Error);
         } finally {
           setUploading(false);
@@ -103,6 +111,8 @@ function TemplateCard({
   onPreview?: (templateId: string) => void;
 }) {
   const navigate = useNavigate();
+  const { message, modal } = App.useApp();
+  const [archiving, setArchiving] = useState(false);
   const isFileTemplate = type !== 'email';
   const variables = template.version?.variables || [];
   const filename = template.version?.filename || '';
@@ -121,6 +131,32 @@ function TemplateCard({
     }
     onPreview?.(template.id);
   };
+  const archiveDocument = () => {
+    modal.confirm({
+      title: `Удалить документ «${template.name}»?`,
+      content: 'Документ будет перемещён в архив и исчезнет из списка.',
+      okText: 'Удалить',
+      okType: 'danger',
+      cancelText: 'Отмена',
+      onOk: async () => {
+        setArchiving(true);
+        try {
+          await templatesApi.archive(template.id);
+          message.success('Документ удалён');
+          onSelectedChange?.(false);
+          onRefresh();
+        } catch (error) {
+          message.error(
+            error instanceof Error ? error.message : 'Не удалось удалить документ',
+          );
+          throw error;
+        } finally {
+          setArchiving(false);
+        }
+      },
+    });
+  };
+
 
   const moreItems: MenuProps['items'] = [];
   if (isFileTemplate && hasFile) {
@@ -160,7 +196,7 @@ function TemplateCard({
         onRefresh();
       },
     },
-    {
+    !isFileTemplate ? {
       key: 'archive',
       icon: <InboxOutlined />,
       label: 'Переместить в архив',
@@ -170,7 +206,7 @@ function TemplateCard({
         onSelectedChange?.(false);
         onRefresh();
       },
-    },
+    } : null,
   );
 
   return (
@@ -195,7 +231,7 @@ function TemplateCard({
           </Typography.Title>
           <Space size={6} wrap>
             <Tag color={isFileTemplate && !hasFile ? 'orange' : template.status === 'ready' ? 'green' : 'gold'}>
-              {isFileTemplate && !hasFile ? 'Требуется файл' : template.status === 'ready' ? 'Готов' : template.status}
+              {isFileTemplate && !hasFile ? 'Требуется файл' : template.status === 'ready' ? 'Готов' : statusLabel(template.status)}
             </Tag>
             {emailFormat && <Tag color={emailFormat === 'visual' ? 'blue' : 'default'}>{emailFormat === 'visual' ? 'HTML' : 'Текст'}</Tag>}
             {extension && <Tag>{extension}</Tag>}
@@ -227,7 +263,7 @@ function TemplateCard({
             </>
           ) : (
             <Typography.Paragraph type="secondary" ellipsis={{ rows: 3 }}>
-              {template.version?.subject || template.status}
+              {template.version?.subject || statusLabel(template.status)}
             </Typography.Paragraph>
           )}
         </div>
@@ -251,6 +287,17 @@ function TemplateCard({
               compact
               onUploaded={onRefresh}
             />
+          )}
+          {isFileTemplate && (
+            <Tooltip title="Удалить документ">
+              <Button
+                danger
+                icon={<DeleteOutlined />}
+                loading={archiving}
+                aria-label={`Удалить документ ${template.name}`}
+                onClick={archiveDocument}
+              />
+            </Tooltip>
           )}
           <Dropdown menu={{ items: moreItems }} trigger={['click']} placement="bottomRight">
             <Tooltip title="Другие действия">
@@ -289,6 +336,29 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
   const allSelected = templates.length > 0 && selectedCount === templates.length;
 
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: ['templates', type] }); };
+
+  useEffect(() => {
+    if (type !== 'email') return;
+    const handleOnboardingEnter = (event: Event) => {
+      const { stepId } = (event as CustomEvent<OnboardingEnterDetail>).detail || {};
+      const nextStep: WizardStep | undefined =
+        stepId === 'template-format'
+          ? 'format'
+          : stepId === 'template-source'
+            ? 'gallery'
+            : stepId === 'template-custom'
+              ? 'custom'
+              : undefined;
+      if (!nextStep) return;
+      pushParams({
+        tab: 'email',
+        wizard: '1',
+        wizard_step: nextStep === 'format' ? null : nextStep,
+      });
+    };
+    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
+  }, [pushParams, type]);
 
   useEffect(() => {
     if (!previewTemplateId || type !== 'email') {
@@ -369,15 +439,16 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
         <Button
           type="primary"
           icon={<PlusOutlined />}
-          onClick={() => pushParams({ tab: type, wizard: '1' })}
+          data-onboarding-id="add-template"
+          onClick={() => {
+            pushParams({ tab: type, wizard: '1' });
+            advanceOnboarding('template-open');
+          }}
         >
           {isFileTemplate ? 'Добавить документ' : 'Добавить письмо'}
         </Button>
         {isFileTemplate && (
-          <>
-            <TemplateFileUpload primary onUploaded={refresh} />
-            <Typography.Text type="secondary">Форматы: DOCX, PDF, HTML</Typography.Text>
-          </>
+          <Typography.Text type="secondary">Форматы: DOCX, PDF, HTML</Typography.Text>
         )}
         {canBulkSelect && selectedCount > 0 && (
           <div className="template-library-bulk">

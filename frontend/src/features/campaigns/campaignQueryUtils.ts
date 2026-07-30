@@ -36,6 +36,8 @@ export type MappingInputsSignatureInput = {
 export type ValidationSignatureInput = {
   recipientCount: number;
   emailChainId?: string | null;
+  companyId?: string | null;
+  companyWorkTypeId?: string | null;
   mappingConfirmed?: boolean;
   smtpMailboxId?: string | null;
   audienceId?: string | null;
@@ -45,6 +47,14 @@ export type ValidationSignatureInput = {
     contract?: string | null;
   };
 };
+
+export function buildCampaignAutosavePayload(patch: Record<string, unknown>) {
+  const { draft_payload: _ignoredDraftPayload, ...draftPatch } = patch;
+  return {
+    ...patch,
+    draft_payload: draftPatch,
+  };
+}
 
 export function buildMappingInputsSignature(input: MappingInputsSignatureInput): string {
   return JSON.stringify({
@@ -63,6 +73,8 @@ export function buildValidationSignature(input: ValidationSignatureInput): strin
   return JSON.stringify({
     r: input.recipientCount,
     c: input.emailChainId || '',
+    co: input.companyId || '',
+    w: input.companyWorkTypeId || '',
     m: Boolean(input.mappingConfirmed),
     s: input.smtpMailboxId || '',
     a: input.audienceId || '',

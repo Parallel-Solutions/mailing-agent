@@ -1,5 +1,6 @@
 import { Alert, Button, Drawer, Empty, Input, Select, Space, Spin, Table, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
+import { formatLocalDateTime } from '@/utils/dateTime';
 import { useMemo, useState } from 'react';
 import { campaignsApi } from '@/api/campaigns';
 import { previewApi } from '@/api/preview';
@@ -83,7 +84,7 @@ export function FullAnalyticsEmailsSection({ campaignId, recipients }: Props) {
             {String(activeItem.subject || '—')}
             {activeItem.sent_at ? (
               <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
-                Отправлено: {String(activeItem.sent_at)}
+                Принято провайдером: {formatLocalDateTime(String(activeItem.sent_at))}
               </Typography.Text>
             ) : null}
           </Typography.Paragraph>

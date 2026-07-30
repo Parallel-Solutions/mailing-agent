@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
   Checkbox,
   DatePicker,
   Descriptions,
+  Drawer,
   Form,
   Input,
   Modal,
@@ -15,9 +16,14 @@ import {
   Tag,
   Typography,
 } from 'antd';
+import { useQuery } from '@tanstack/react-query';
 import dayjs from 'dayjs';
+import { campaignsApi } from '@/api/campaigns';
+import { previewApi } from '@/api/preview';
 import { statisticsApi } from '@/api/statistics';
+import { buildEmailPreviewDocument } from '@/features/templates/emailTemplateUtils';
 import { useAuthStore } from '@/stores/authStore';
+import { formatLocalDateTime } from '@/utils/dateTime';
 import { ACTION_TYPES, EXPORT_TYPES, PROVIDER_OPTIONS } from '../constants';
 import { useStatistics } from '../StatisticsContext';
 import { asRecord, asRecordArray, downloadCsv, fmt, statusLabel } from '../utils';
@@ -123,7 +129,7 @@ function AdvancedFiltersModal() {
             optionFilterProp="label"
             options={campaigns.map((item) => ({
               value: String(item.job_id),
-              label: String(item.title || item.job_id),
+              label: String(item.title || 'Рассылка без названия'),
             }))}
           />
         </Form.Item>
@@ -240,7 +246,7 @@ function ExportReportModal() {
             onChange={setJobId}
             options={campaigns.map((item) => ({
               value: String(item.job_id),
-              label: String(item.title || item.job_id),
+              label: String(item.title || 'Рассылка без названия'),
             }))}
             placeholder="Текущая / первая доступная"
           />
@@ -492,119 +498,405 @@ function CompanyDetailModal() {
   const detail = companyDetail;
   const fields = asRecord(asRecord(detail?.company).fields);
   const emails = asRecordArray(detail?.emails);
+  const attempts = asRecordArray(detail?.attempts);
+  const acceptedEmails = asRecordArray(detail?.sent_emails);
+  const documents = asRecordArray(detail?.documents);
   const statusHistory = asRecordArray(detail?.status_history);
   const consents = asRecordArray(detail?.consents);
   const actions = asRecordArray(detail?.action_history);
+  const summary = asRecord(detail?.summary);
+  const [emailPreview, setEmailPreview] = useState<{
+    campaignId: string;
+    recipientId: number;
+  } | null>(null);
+  const [emailPreviewIndex, setEmailPreviewIndex] = useState(0);
+  const [documentPreview, setDocumentPreview] = useState<{
+    jobId: string;
+    path: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (modal !== 'company') {
+      setEmailPreview(null);
+      setEmailPreviewIndex(0);
+      setDocumentPreview(null);
+    }
+  }, [modal]);
+
+  const emailPreviewQuery = useQuery({
+    queryKey: [
+      'statistics-company-sent-email-preview',
+      emailPreview?.campaignId,
+      emailPreview?.recipientId,
+    ],
+    enabled: Boolean(emailPreview),
+    queryFn: () =>
+      campaignsApi.sentEmailPreview(
+        String(emailPreview?.campaignId),
+        Number(emailPreview?.recipientId),
+      ),
+  });
+  const previewItems = asRecordArray(emailPreviewQuery.data?.items);
+  const activePreview = asRecord(
+    previewItems[emailPreviewIndex] || previewItems[0],
+  );
+  const previewHtml = useMemo(
+    () => buildEmailPreviewDocument(String(activePreview.body_html || '')),
+    [activePreview.body_html],
+  );
 
   return (
-    <Modal
-      title={String(detail?.organization || 'Компания')}
-      open={modal === 'company'}
-      onCancel={closeModal}
-      width={900}
-      footer={[
-        <Button key="close" onClick={closeModal}>
-          Закрыть
-        </Button>,
-        <Button
-          key="action"
-          danger
-          type="primary"
-          onClick={() => {
-            if (detail?.row_key) void openActionModal(String(detail.row_key));
-          }}
-        >
-          Действие по компании
-        </Button>,
-      ]}
-    >
-      <Space style={{ marginBottom: 12 }}>
-        <Tag>{statusLabel(detail?.manager_status)}</Tag>
-        <Typography.Text type="secondary">
-          {statusLabel(detail?.interest)}
-        </Typography.Text>
-      </Space>
-      <Typography.Paragraph>
-        <strong>Следующее действие:</strong> {statusLabel(detail?.next_action)}
-      </Typography.Paragraph>
-      <Typography.Paragraph>
-        <strong>Рекомендация:</strong> {statusLabel(detail?.recommended_action)}
-      </Typography.Paragraph>
-
-      <Typography.Title level={5}>Данные из документа</Typography.Title>
-      <Descriptions size="small" column={1} bordered>
-        {Object.entries(fields).map(([key, field]) => {
-          const f = asRecord(field);
-          return (
-            <Descriptions.Item key={key} label={String(f.label || key)}>
-              {String(f.display || '—')}
+    <>
+      <Modal
+        title={String(detail?.organization || 'Компания')}
+        open={modal === 'company'}
+        onCancel={closeModal}
+        width={1100}
+        footer={[
+          <Button key="close" onClick={closeModal}>
+            Закрыть
+          </Button>,
+          <Button
+            key="action"
+            danger
+            type="primary"
+            onClick={() => {
+              if (detail?.row_key) void openActionModal(String(detail.row_key));
+            }}
+          >
+            Действие по компании
+          </Button>,
+        ]}
+      >
+        <div style={{ maxHeight: '72vh', overflowY: 'auto', paddingRight: 4 }}>
+          <Space style={{ marginBottom: 12 }}>
+            <Tag>{statusLabel(detail?.manager_status)}</Tag>
+            <Typography.Text type="secondary">
+              {statusLabel(detail?.interest)}
+            </Typography.Text>
+          </Space>
+          <Descriptions size="small" column={3} bordered style={{ marginBottom: 16 }}>
+            <Descriptions.Item label="Попыток">{fmt(summary.attempts)}</Descriptions.Item>
+            <Descriptions.Item label="Принято провайдером">
+              {fmt(summary.accepted ?? summary.sent_emails)}
             </Descriptions.Item>
-          );
-        })}
-      </Descriptions>
+            <Descriptions.Item label="Доставлено">{fmt(summary.delivered)}</Descriptions.Item>
+            <Descriptions.Item label="Ошибок">{fmt(summary.errors)}</Descriptions.Item>
+            <Descriptions.Item label="Ожидает статуса">{fmt(summary.pending)}</Descriptions.Item>
+            <Descriptions.Item label="Документов">{fmt(summary.documents)}</Descriptions.Item>
+          </Descriptions>
+          <Typography.Paragraph>
+            <strong>Следующее действие:</strong> {statusLabel(detail?.next_action)}
+          </Typography.Paragraph>
+          <Typography.Paragraph>
+            <strong>Рекомендация:</strong> {statusLabel(detail?.recommended_action)}
+          </Typography.Paragraph>
 
-      <Typography.Title level={5} style={{ marginTop: 16 }}>
-        Email-адреса и статусы
-      </Typography.Title>
-      {emails.length ? (
-        emails.map((entry, index) => (
-          <div key={index} style={{ marginBottom: 8 }}>
-            <div>
-              {String(entry.email || '—')}
-              {entry.role_label ? (
-                <Typography.Text type="secondary"> ({String(entry.role_label)})</Typography.Text>
-              ) : null}
-            </div>
-            <Tag>{statusLabel(entry.manager_status)}</Tag>
-            {entry.bounce_reason_label ? (
-              <Typography.Text type="secondary"> {String(entry.bounce_reason_label)}</Typography.Text>
-            ) : null}
-          </div>
-        ))
-      ) : (
-        <Typography.Text type="secondary">Нет отправленных писем</Typography.Text>
-      )}
+          <Typography.Title level={5}>Данные из документа</Typography.Title>
+          <Descriptions size="small" column={1} bordered>
+            {Object.entries(fields).map(([key, field]) => {
+              const f = asRecord(field);
+              return (
+                <Descriptions.Item key={key} label={String(f.label || key)}>
+                  {String(f.display || '—')}
+                </Descriptions.Item>
+              );
+            })}
+          </Descriptions>
 
-      <Typography.Title level={5} style={{ marginTop: 16 }}>
-        История статусов
-      </Typography.Title>
-      {statusHistory.length ? (
-        statusHistory.map((entry, index) => (
-          <div key={index}>
-            {String(entry.label || '—')}{' '}
-            <Typography.Text type="secondary">{String(entry.at || '')}</Typography.Text>
-          </div>
-        ))
-      ) : (
-        <Typography.Text type="secondary">Нет истории статусов</Typography.Text>
-      )}
+          <Typography.Title level={5} style={{ marginTop: 16 }}>
+            Email-адреса и статусы
+          </Typography.Title>
+          {emails.length ? (
+            emails.map((entry, index) => (
+              <div key={index} style={{ marginBottom: 8 }}>
+                <div>
+                  {String(entry.email || '—')}
+                  {entry.role_label ? (
+                    <Typography.Text type="secondary">
+                      {' '}({String(entry.role_label)})
+                    </Typography.Text>
+                  ) : null}
+                </div>
+                <Tag>{statusLabel(entry.manager_status)}</Tag>
+                {entry.bounce_reason_label ? (
+                  <Typography.Text type="secondary">
+                    {' '}{String(entry.bounce_reason_label)}
+                  </Typography.Text>
+                ) : null}
+              </div>
+            ))
+          ) : (
+            <Typography.Text type="secondary">Нет email-адресов</Typography.Text>
+          )}
 
-      <Typography.Title level={5} style={{ marginTop: 16 }}>
-        Согласия
-      </Typography.Title>
-      {consents.length ? (
-        consents.map((entry, index) => (
-          <div key={index}>
-            {String(entry.contact || entry.email || '—')} — {String(entry.consent_status_label || '—')}
-          </div>
-        ))
-      ) : (
-        <Typography.Text type="secondary">Нет данных по согласиям</Typography.Text>
-      )}
+          <Typography.Title level={5} style={{ marginTop: 16 }}>
+            Все попытки
+          </Typography.Title>
+          <Table
+            size="small"
+            rowKey={(row, index) => String(row.id || index)}
+            dataSource={attempts}
+            locale={{ emptyText: 'Нет зарегистрированных попыток' }}
+            pagination={attempts.length > 10 ? { pageSize: 10 } : false}
+            columns={[
+              { title: 'Email', dataIndex: 'email', render: (value) => String(value || '—') },
+              {
+                title: 'Попытка',
+                dataIndex: 'attempt_number',
+                width: 90,
+                render: (value) => fmt(value),
+              },
+              {
+                title: 'Статус отправки',
+                dataIndex: 'status_label',
+                render: (value) => String(value || '—'),
+              },
+              {
+                title: 'Статус доставки',
+                dataIndex: 'delivery_status_label',
+                render: (value) => String(value || '—'),
+              },
+              {
+                title: 'Провайдер',
+                dataIndex: 'provider_label',
+                render: (value) => String(value || '—'),
+              },
+              {
+                title: 'Дата',
+                dataIndex: 'created_at',
+                render: (value) => formatLocalDateTime(String(value || '')),
+              },
+              {
+                title: 'Ошибка',
+                dataIndex: 'error',
+                render: (value) => (
+                  <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+                    {String(value || '—')}
+                  </span>
+                ),
+              },
+            ]}
+          />
 
-      <Typography.Title level={5} style={{ marginTop: 16 }}>
-        История действий
-      </Typography.Title>
-      {actions.length ? (
-        actions.map((entry, index) => (
-          <div key={index}>
-            {String(entry.action_type_label || entry.action_type || '—')}
-            {entry.comment ? ` — ${String(entry.comment)}` : ''}
-          </div>
-        ))
-      ) : (
-        <Typography.Text type="secondary">Нет истории действий</Typography.Text>
-      )}
-    </Modal>
+          <Typography.Title level={5} style={{ marginTop: 16 }}>
+            Письма, принятые провайдером
+          </Typography.Title>
+          <Table
+            size="small"
+            rowKey={(row, index) =>
+              String(row.provider_message_id || `${row.email || ''}-${row.sent_at || index}`)
+            }
+            dataSource={acceptedEmails}
+            locale={{ emptyText: 'Нет писем, принятых провайдером' }}
+            pagination={acceptedEmails.length > 10 ? { pageSize: 10 } : false}
+            columns={[
+              { title: 'Email', dataIndex: 'email', render: (value) => String(value || '—') },
+              {
+                title: 'Тема',
+                dataIndex: 'subject',
+                render: (value) => String(value || '—'),
+              },
+              {
+                title: 'Статус доставки',
+                dataIndex: 'manager_status',
+                render: (value) => statusLabel(value),
+              },
+              {
+                title: 'Ошибка доставки',
+                render: (_, row) => String(row.error || row.bounce_reason_label || '—'),
+              },
+              {
+                title: 'Провайдер',
+                dataIndex: 'provider_label',
+                render: (value) => String(value || '—'),
+              },
+              {
+                title: 'Принято провайдером',
+                dataIndex: 'sent_at',
+                render: (value) => formatLocalDateTime(String(value || '')),
+              },
+              {
+                title: '',
+                width: 110,
+                render: (_, row) =>
+                  row.preview_available ? (
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        setEmailPreview({
+                          campaignId: String(row.campaign_id),
+                          recipientId: Number(row.recipient_id),
+                        });
+                        setEmailPreviewIndex(0);
+                      }}
+                    >
+                      Просмотр
+                    </Button>
+                  ) : null,
+              },
+            ]}
+          />
+
+          <Typography.Title level={5} style={{ marginTop: 16 }}>
+            Документы
+          </Typography.Title>
+          <Table
+            size="small"
+            rowKey={(row, index) => String(row.path || index)}
+            dataSource={documents}
+            locale={{ emptyText: 'Нет документов для этой компании' }}
+            pagination={documents.length > 10 ? { pageSize: 10 } : false}
+            columns={[
+              {
+                title: 'Документ',
+                dataIndex: 'label',
+                render: (value, row) => String(value || row.name || '—'),
+              },
+              { title: 'Тип', dataIndex: 'ext', width: 80 },
+              {
+                title: 'Размер',
+                dataIndex: 'size',
+                width: 110,
+                render: (value) => `${fmt(Math.round(Number(value || 0) / 1024))} КБ`,
+              },
+              {
+                title: '',
+                width: 110,
+                render: (_, row) =>
+                  String(row.ext || '').toLowerCase() === '.pdf' ? (
+                    <Button
+                      size="small"
+                      onClick={() =>
+                        setDocumentPreview({
+                          jobId: String(row.job_id || detail?.job_id || ''),
+                          path: String(row.path),
+                        })
+                      }
+                    >
+                      Просмотр
+                    </Button>
+                  ) : (
+                    <Button
+                      size="small"
+                      href={previewApi.fileUrl(
+                        String(row.job_id || detail?.job_id || ''),
+                        String(row.path),
+                      )}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Скачать
+                    </Button>
+                  ),
+              },
+            ]}
+          />
+
+          <Typography.Title level={5} style={{ marginTop: 16 }}>
+            История статусов
+          </Typography.Title>
+          {statusHistory.length ? (
+            statusHistory.map((entry, index) => (
+              <div key={index}>
+                {String(entry.label || '—')}{' '}
+                <Typography.Text type="secondary">
+                  {formatLocalDateTime(String(entry.at || ''))}
+                </Typography.Text>
+              </div>
+            ))
+          ) : (
+            <Typography.Text type="secondary">Нет истории статусов</Typography.Text>
+          )}
+
+          <Typography.Title level={5} style={{ marginTop: 16 }}>
+            Согласия
+          </Typography.Title>
+          {consents.length ? (
+            consents.map((entry, index) => (
+              <div key={index}>
+                {String(entry.contact || entry.email || '—')} —{' '}
+                {String(entry.consent_status_label || '—')}
+              </div>
+            ))
+          ) : (
+            <Typography.Text type="secondary">Нет данных по согласиям</Typography.Text>
+          )}
+
+          <Typography.Title level={5} style={{ marginTop: 16 }}>
+            История действий
+          </Typography.Title>
+          {actions.length ? (
+            actions.map((entry, index) => (
+              <div key={index}>
+                {String(entry.action_type_label || entry.action_type || '—')}
+                {entry.comment ? ` — ${String(entry.comment)}` : ''}
+              </div>
+            ))
+          ) : (
+            <Typography.Text type="secondary">Нет истории действий</Typography.Text>
+          )}
+        </div>
+      </Modal>
+
+      <Drawer
+        title="Просмотр отправленного письма"
+        width="80%"
+        open={Boolean(emailPreview)}
+        onClose={() => setEmailPreview(null)}
+        destroyOnClose
+      >
+        {emailPreviewQuery.isLoading ? <Typography.Text>Загрузка…</Typography.Text> : null}
+        {emailPreviewQuery.isError ? (
+          <Alert type="error" showIcon message="Не удалось загрузить письмо" />
+        ) : null}
+        {previewItems.length > 1 ? (
+          <Select
+            style={{ minWidth: 260, marginBottom: 16 }}
+            value={emailPreviewIndex}
+            options={previewItems.map((item, index) => ({
+              value: index,
+              label: String(item.node_name || `Письмо ${index + 1}`),
+            }))}
+            onChange={setEmailPreviewIndex}
+          />
+        ) : null}
+        {previewItems.length ? (
+          <>
+            <Typography.Paragraph>
+              <Typography.Text strong>Тема: </Typography.Text>
+              {String(activePreview.subject || '—')}
+            </Typography.Paragraph>
+            <iframe
+              title="Превью отправленного письма"
+              srcDoc={previewHtml}
+              sandbox=""
+              style={{
+                width: '100%',
+                minHeight: '70vh',
+                border: '1px solid #e2e7d8',
+                borderRadius: 8,
+              }}
+            />
+          </>
+        ) : null}
+      </Drawer>
+
+      <Drawer
+        title="Просмотр документа"
+        width="80%"
+        open={Boolean(documentPreview)}
+        onClose={() => setDocumentPreview(null)}
+        destroyOnClose
+      >
+        {documentPreview ? (
+          <iframe
+            title="Просмотр документа"
+            src={previewApi.fileUrl(documentPreview.jobId, documentPreview.path)}
+            style={{ width: '100%', height: '80vh', border: 0 }}
+          />
+        ) : null}
+      </Drawer>
+    </>
   );
 }

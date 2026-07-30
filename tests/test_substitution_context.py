@@ -8,6 +8,7 @@ from unittest.mock import patch
 from src.campaigns.substitution_context import build_substitution_context, _resolve_director_name
 from src.campaigns.substitution_engine import (
     build_replacement_pairs,
+    discover_placeholders,
     find_unresolved_placeholders,
     render_text,
 )
@@ -54,6 +55,48 @@ class SubstitutionContextTests(unittest.TestCase):
         scope = context.get("MUN_R_SCOPE_FRAGMENT", "")
         self.assertTrue(scope)
         self.assertNotEqual(scope, "District")
+
+    def test_adm_name_mapping_uses_inflected_recipient_and_normalizes_quote_spacing(self) -> None:
+        raw_adm_name = (
+            "\u0410\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f "
+            "\u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u043e\u0431\u0440\u0430\u0437\u043e\u0432\u0430\u043d\u0438\u044f\""
+            "\u042f\u0431\u043b\u043e\u043d\u043e\u0432\u0441\u043a\u043e\u0435 \u0433\u043e\u0440\u043e\u0434\u0441\u043a\u043e\u0435 \u043f\u043e\u0441\u0435\u043b\u0435\u043d\u0438\u0435\""
+        )
+        recipient = CampaignRecipient(
+            id=9,
+            campaign_id="camp-1",
+            row_index=1,
+            company=raw_adm_name,
+            email="test@example.com",
+            extra={
+                "adm_name": raw_adm_name,
+                "mun_name": "\u042f\u0431\u043b\u043e\u043d\u043e\u0432\u0441\u043a\u043e\u0435 \u0433\u043e\u0440\u043e\u0434\u0441\u043a\u043e\u0435 \u043f\u043e\u0441\u0435\u043b\u0435\u043d\u0438\u0435",
+            },
+        )
+        campaign = Campaign(
+            id="camp-1",
+            owner_username="owner",
+            name="Recipient case campaign",
+            work_type="stp_mo",
+            draft_payload={"variable_mapping": {"ADM_NAME": "adm_name"}},
+        )
+
+        context = build_substitution_context(
+            recipient=recipient,
+            campaign=campaign,
+            template_text="{{ADM_NAME}}",
+        )
+        rendered = render_text("{{ADM_NAME}}", context)
+
+        self.assertEqual(context["ADM_NAME_RAW"], raw_adm_name)
+        self.assertEqual(context["ADM_NAME"], context["ADM_NAME_1"])
+        self.assertEqual(context["ADM"], context["ADM_NAME_1"])
+        self.assertTrue(
+            rendered.startswith("\u0410\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u0438 ")
+        )
+        education = "\u043e\u0431\u0440\u0430\u0437\u043e\u0432\u0430\u043d\u0438\u044f"
+        self.assertIn(f'{education} "', rendered)
+        self.assertNotIn(f'{education}"', rendered)
 
     def test_uses_draft_company_for_director_name(self) -> None:
         company = company_service.create_company(
@@ -260,6 +303,13 @@ class SubstitutionContextTests(unittest.TestCase):
 
 
 class SubstitutionEngineTests(unittest.TestCase):
+    def test_braced_token_is_not_discovered_again_as_bare(self) -> None:
+        placeholders = discover_placeholders("Дата: {{current_date}}")
+        self.assertEqual(
+            [(item.token, item.kind) for item in placeholders],
+            [("{{current_date}}", "brace")],
+        )
+
     def test_render_text_replaces_brace_and_bare_tokens(self) -> None:
         context = {
             "DATE": "21.07.2026",
@@ -274,6 +324,53 @@ class SubstitutionEngineTests(unittest.TestCase):
         self.assertIn("District Test Region", rendered)
         self.assertNotIn("{{current_date}}", rendered)
         self.assertNotIn("ADM_NAME", rendered)
+
+    def test_render_text_keeps_generic_territory_phrase_lowercase_inside_sentence(self) -> None:
+        context = {
+            "MUN_R_NAME_1": "\u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u043e\u043a\u0440\u0443\u0433\u0430",
+        }
+
+        rendered = render_text("project {{MUN_R_NAME_1}}", context)
+
+        self.assertEqual(rendered, "project \u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u043e\u043a\u0440\u0443\u0433\u0430")
+
+    def test_render_district_name_uses_genitive_after_work_title(self) -> None:
+        context = {
+            "WORK_TITLE": (
+                "\u0440\u0430\u0437\u0440\u0430\u0431\u043e\u0442\u043a\u0435 \u043f\u0440\u043e\u0435\u043a\u0442\u0430 "
+                "\u043c\u0435\u0441\u0442\u043d\u044b\u0445 \u043d\u043e\u0440\u043c\u0430\u0442\u0438\u0432\u043e\u0432 "
+                "\u0433\u0440\u0430\u0434\u043e\u0441\u0442\u0440\u043e\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0433\u043e "
+                "\u043f\u0440\u043e\u0435\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f"
+            ),
+            "MUN_R_NAME": (
+                "\u0422\u0430\u0445\u0442\u0430\u043c\u0443\u043a\u0430\u0439\u0441\u043a\u0438\u0439 "
+                "\u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u044b\u0439 "
+                "\u0440\u0430\u0439\u043e\u043d"
+            ),
+            "MUN_R_NAME_1": (
+                "\u0422\u0430\u0445\u0442\u0430\u043c\u0443\u043a\u0430\u0439\u0441\u043a\u043e\u0433\u043e "
+                "\u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e "
+                "\u0440\u0430\u0439\u043e\u043d\u0430"
+            ),
+        }
+        expected = (
+            "\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0440\u0430\u0431\u043e\u0442 \u043f\u043e "
+            f"{context['WORK_TITLE']} {context['MUN_R_NAME_1']}."
+        )
+
+        for template in (
+            "\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0440\u0430\u0431\u043e\u0442 \u043f\u043e "
+            f"{context['WORK_TITLE']} {{{{MUN_R_NAME}}}}.",
+            "\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0440\u0430\u0431\u043e\u0442 \u043f\u043e "
+            "{{WORK_TITLE}} {{MUN_R_NAME}}.",
+        ):
+            with self.subTest(template=template):
+                self.assertEqual(render_text(template, context), expected)
+
+        self.assertEqual(
+            render_text("\u0420\u0430\u0439\u043e\u043d: {{MUN_R_NAME}}.", context),
+            f"\u0420\u0430\u0439\u043e\u043d: {context['MUN_R_NAME']}.",
+        )
 
     def test_build_replacement_pairs_sorts_longest_first(self) -> None:
         context = {"MUN_R_SCOPE_FRAGMENT": "Scope", "MUN_R_NAME": "District", "SUB_RF": "Region"}
@@ -377,7 +474,7 @@ class SubstitutionEngineTests(unittest.TestCase):
         rendered = render_text("{{mun_name}} предлагает выполнить работы.", context)
         self.assertEqual(rendered, "Энемское городское поселение предлагает выполнить работы.")
 
-    def test_render_mun_name_mid_sentence_uses_lowercase_leading_letter(self) -> None:
+    def test_render_mun_name_mid_sentence_keeps_proper_name_capitalized(self) -> None:
         context = {
             "MUN_NAME": "Энемское городское поселение",
             "mun_name": "Энемское городское поселение",
@@ -386,7 +483,7 @@ class SubstitutionEngineTests(unittest.TestCase):
         self.assertTrue(rendered.startswith("Работы выполняются для "))
         self.assertTrue(rendered.endswith("."))
         self.assertIn("городское поселение", rendered)
-        self.assertNotEqual(rendered.split(" для ", 1)[1][0], "Э")
+        self.assertEqual(rendered.split(" \u0434\u043b\u044f ", 1)[1][0], "\u042d")
 
     def test_render_mun_name_normalizes_all_caps_source(self) -> None:
         context = {
@@ -419,8 +516,7 @@ class SubstitutionEngineTests(unittest.TestCase):
             context,
         )
         self.assertIn(
-            "для территории администрации муниципального образования "
-            "Дмитровского района Орловской области.",
+            "для территории администрации Дмитровского муниципального района.",
             rendered,
         )
 
@@ -433,6 +529,35 @@ class SubstitutionEngineTests(unittest.TestCase):
             rendered,
             "Администрации муниципального образования Дмитровского района",
         )
+
+    def test_render_company_after_for_uses_canonical_admin_genitive(self) -> None:
+        context = {
+            "company": "Администрация Дятьковского района",
+            "ADM_NAME_1": "администрации Дятьковского муниципального района",
+        }
+
+        rendered = render_text(
+            "Разработка Генплана и ПЗЗ для {{company}} от ООО «Параллельные решения».",
+            context,
+        )
+
+        self.assertEqual(
+            rendered,
+            (
+                "Разработка Генплана и ПЗЗ для администрации "
+                "Дятьковского муниципального района от ООО «Параллельные решения»."
+            ),
+        )
+
+    def test_render_regular_company_after_for_stays_unchanged(self) -> None:
+        context = {
+            "company": "ООО «Ромашка»",
+            "ADM_NAME_1": "администрации муниципального района",
+        }
+
+        rendered = render_text("Предложение для {{company}}.", context)
+
+        self.assertEqual(rendered, "Предложение для ООО «Ромашка».")
 
     def test_renders_cyrillic_identifier_alias(self) -> None:
         context = {

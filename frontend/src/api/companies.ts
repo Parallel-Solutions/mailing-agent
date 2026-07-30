@@ -13,6 +13,7 @@ export const companiesApi = {
     api.post<Company>('/api/v1/companies', body),
   update: (id: string, body: Partial<{ name: string; phone: string; contact_person_name: string }>) =>
     api.patch<Company>(`/api/v1/companies/${id}`, body),
+  remove: (id: string) => api.delete<{ removed: boolean }>(`/api/v1/companies/${id}`),
   uploadLogo: async (id: string, file: File) => {
     const form = new FormData();
     form.append('file', file);

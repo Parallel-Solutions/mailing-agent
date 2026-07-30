@@ -3,6 +3,8 @@ import type {
   ActiveSending,
   Batch,
   Campaign,
+  CampaignDocumentLayoutApplyResult,
+  CampaignDocumentLayoutReview,
   CampaignGeneration,
   CampaignList,
   CampaignValidateResponse,
@@ -41,6 +43,8 @@ export type VariableMappingState = {
   template_variables: TemplateVariableItem[];
   recipient_template_variables?: TemplateVariableItem[];
 };
+
+const CAMPAIGN_VALIDATE_TIMEOUT_MS = 30_000;
 
 export const campaignsApi = {
   list: (params?: { status?: string; q?: string; limit?: number; offset?: number }) => {
@@ -99,9 +103,23 @@ export const campaignsApi = {
     template_analysis_confirmed: boolean;
     mode?: string;
   }) => api.post<Record<string, unknown>>('/api/documents/start', body),
-  validate: (id: string, opts?: { deep?: boolean }) => {
+  validate: async (id: string, opts?: { deep?: boolean }) => {
     const suffix = opts?.deep ? '?deep=1' : '';
-    return api.get<CampaignValidateResponse>(`/api/v1/campaigns/${id}/validate${suffix}`);
+    const controller = new AbortController();
+    const timeout = globalThis.setTimeout(() => controller.abort(), CAMPAIGN_VALIDATE_TIMEOUT_MS);
+    try {
+      return await api.get<CampaignValidateResponse>(
+        `/api/v1/campaigns/${id}/validate${suffix}`,
+        { signal: controller.signal },
+      );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error('\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0437\u0430\u043d\u044f\u043b\u0430 \u0431\u043e\u043b\u044c\u0448\u0435 30 \u0441\u0435\u043a\u0443\u043d\u0434. \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u043e\u043f\u044b\u0442\u043a\u0443.');
+      }
+      throw error;
+    } finally {
+      globalThis.clearTimeout(timeout);
+    }
   },
   autoFixValidation: (id: string) =>
     api.post<{
@@ -139,6 +157,13 @@ export const campaignsApi = {
     api.get<EmailChainStats>(`/api/v1/campaigns/${id}/email-chain/stats`),
   previewEmailChain: (id: string) =>
     api.post<EmailChainPreviewResponse>(`/api/v1/campaigns/${id}/email-chain/preview`),
+  inspectDocumentLayout: (id: string) =>
+    api.post<CampaignDocumentLayoutReview>(`/api/v1/campaigns/${id}/document-layout/inspect`),
+  applyDocumentLayout: (id: string, templateId: string) =>
+    api.post<CampaignDocumentLayoutApplyResult>(
+      `/api/v1/campaigns/${id}/document-layout/apply`,
+      { template_id: templateId },
+    ),
   sentEmailPreview: (id: string, recipientId: number) =>
     api.get<EmailChainPreviewResponse>(
       `/api/v1/campaigns/${id}/sent-email-preview?recipient_id=${recipientId}`,

@@ -138,6 +138,7 @@ def resend_campaign_recipient_email(
                 subject=rendered_subject,
                 campaign_name=camp.name,
                 sent_at=_now().isoformat(),
+                connection_id=connection_id,
             )
 
     record_delivery_attempt(

@@ -89,7 +89,7 @@ class RecipientEmailServiceTests(unittest.TestCase):
                 )
 
             with patch(
-                "src.campaigns.recipient_email_service.validate_email_address",
+                "src.campaigns.recipient_email_service.validate_configured_email_address",
                 side_effect=lambda email, **kwargs: fake_result(email, email == "backup@example.com"),
             ):
                 delivery_email, attempts = resolve_delivery_email(recipient)

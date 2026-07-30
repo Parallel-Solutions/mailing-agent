@@ -33,6 +33,12 @@ setup('prepare e2e auth and clean mailpit @setup', async ({ request }) => {
   const user = meBody?.result?.user || meBody?.user;
   expect(user?.username || USERNAME).toBeTruthy();
 
+  const onboarding = await request.patch(`${API_URL}/api/v1/onboarding`, {
+    headers: { Cookie: session.cookie },
+    data: { status: 'dismissed' },
+  });
+  expect(onboarding.ok(), `onboarding setup failed: ${onboarding.status()}`).toBeTruthy();
+
   const token = session.cookie.split('=')[1];
   const base = new URL(API_URL);
   const storage = {

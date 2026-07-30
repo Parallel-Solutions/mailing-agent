@@ -49,6 +49,8 @@ def _try_convert(
     file_kind: str | None,
     template_docx: Path | None,
     max_body_font_half_points: int,
+    fontconfig_path: Path | str | None,
+    prefer_local: bool,
 ) -> bool:
     from src.generator.generation.template_preview import convert_docx_to_delivery_pdf
 
@@ -58,6 +60,8 @@ def _try_convert(
         file_kind=file_kind,
         template_docx=template_docx,
         max_body_font_half_points=max_body_font_half_points,
+        fontconfig_path=fontconfig_path,
+        prefer_local=prefer_local,
     )
     validation = validate_kp_pdf(output_pdf)
     if validation.get("ok"):
@@ -84,6 +88,8 @@ def fit_docx_to_one_page_pdf(
     file_kind: str | None = "kp",
     template_docx: Path | None = None,
     company: str = "",
+    fontconfig_path: Path | str | None = None,
+    prefer_local: bool = False,
 ) -> KpFitResult:
     """Return a one-page KP PDF or raise ``KpLayoutError``."""
     template_source = template_docx if template_docx and template_docx.exists() else source_docx
@@ -100,6 +106,8 @@ def fit_docx_to_one_page_pdf(
             file_kind=file_kind,
             template_docx=template_source,
             max_body_font_half_points=font_half_points,
+            fontconfig_path=fontconfig_path,
+            prefer_local=prefer_local,
         ):
             return KpFitResult(
                 pdf_path=output_pdf,

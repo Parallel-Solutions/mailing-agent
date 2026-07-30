@@ -88,6 +88,8 @@ class ChainSendServiceTests(unittest.TestCase):
 
     @patch("src.campaigns.batch_worker._send_delivery_message", return_value="rusender:uuid-root")
     def test_root_send_uses_chain_root_send_mode(self, mock_send) -> None:
+        from src.jobs.job_docs import read_sent_mail_log
+
         result = send_chain_node_email(
             campaign_id=self.campaign["id"],
             recipient_id=self.recipient_id,
@@ -101,6 +103,78 @@ class ChainSendServiceTests(unittest.TestCase):
         self.assertEqual(kwargs["send_mode"], "chain_root")
         self.assertIsNone(kwargs["send_run_id"])
         self.assertIs(kwargs["track_links"], False)
+        sent_log = read_sent_mail_log(self.campaign["job_id"])
+        self.assertEqual(sent_log[-1]["chain_node_id"], self.root_node_id)
+
+    @patch("src.campaigns.batch_worker._send_delivery_message", return_value="rusender:uuid-tracked")
+    def test_template_links_and_documents_get_personal_tracking_tokens(self, mock_send) -> None:
+        from src.campaigns.chain_service import (
+            TRACKED_CONTENT_EDGE_PREFIX,
+            TRACKED_DOCUMENT_EDGE_PREFIX,
+            get_chain_click_stats,
+            record_tracked_resource_open,
+        )
+        from src.campaigns.template_service import create_template
+
+        template = create_template(
+            self.username,
+            name="Письмо со ссылкой",
+            template_type="email",
+            subject="Тема",
+            body_html='<p><a href="https://inside.example.test/page">Внутренняя ссылка</a></p>',
+        )
+        self.chain["nodes"][0]["email_template_id"] = template["id"]
+        self.chain["nodes"][0]["document_template_ids"] = ["doc-template-1"]
+        save_email_chain(self.campaign["id"], self.username, self.chain)
+
+        with patch(
+            "src.campaigns.chain_send_service._resolve_document_attachments",
+            return_value=(
+                [("proposal.pdf", b"%PDF-test")],
+                [("doc-template-1", "proposal.pdf")],
+            ),
+        ):
+            send_chain_node_email(
+                campaign_id=self.campaign["id"],
+                recipient_id=self.recipient_id,
+                node_id=self.root_node_id,
+                connection_id=self.connection_id,
+            )
+
+        html = mock_send.call_args.kwargs["html"]
+        self.assertIn("/chain/content/", html)
+        self.assertIn("/chain/document/", html)
+        with session_scope() as session:
+            tokens = session.scalars(
+                select(CampaignChainToken).where(
+                    CampaignChainToken.campaign_id == self.campaign["id"]
+                )
+            ).all()
+            content_token = next(
+                item
+                for item in tokens
+                if item.edge_id.startswith(TRACKED_CONTENT_EDGE_PREFIX)
+            )
+            document_token = next(
+                item
+                for item in tokens
+                if item.edge_id.startswith(TRACKED_DOCUMENT_EDGE_PREFIX)
+            )
+
+        first_link_open = record_tracked_resource_open(content_token.token, kind="link")
+        second_link_open = record_tracked_resource_open(content_token.token, kind="link")
+        record_tracked_resource_open(document_token.token, kind="document")
+        self.assertFalse(first_link_open["already_opened"])
+        self.assertTrue(second_link_open["already_opened"])
+
+        stats = get_chain_click_stats(self.campaign["id"])
+        content_link = next(
+            item
+            for item in stats["steps"][0]["links"]
+            if item["kind"] == "template"
+        )
+        self.assertEqual(content_link["unique_clickers"], 1)
+        self.assertEqual(stats["steps"][0]["documents"][0]["unique_openers"], 1)
 
     @patch("src.campaigns.chain_send_service._finalize_chain_send_success")
     @patch("src.campaigns.batch_worker._send_delivery_message", return_value="rusender:uuid-root")

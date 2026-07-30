@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from src.campaigns import company_service, service as campaign_service
+from src.campaigns import company_service, connection_service, service as campaign_service
+from src.campaigns.batch_worker import _send_delivery_message
+from src.generator.delivery.smtp_mailboxes import create_mailbox, resolve_smtp_credentials
 from src.security.auth import Principal
-from src.security.company_access import can_view_owned_resource, visible_owner_usernames
+from src.security.company_access import can_manage_company, can_view_owned_resource, visible_owner_usernames
 from src.security.user_store import create_user, get_user_record
+from src.utils.config import settings
 from src.web.companies_router import create_companies_router
 from src.web.v1_router import create_v1_router
 from tests.bootstrap import bootstrap_test_runtime
@@ -89,7 +96,7 @@ class CompanyAccessTests(unittest.TestCase):
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["result"]["phone"], "+7 900 111-11-11")
 
-    def test_company_admin_manages_members_but_not_other_company(self) -> None:
+    def test_company_admin_manages_members_and_can_view_other_company(self) -> None:
         added = self.ca_client.post(
             f"/api/v1/companies/{self.company['id']}/members",
             json={"username": self.outsider, "password": "Pass12345!", "role": "member"},
@@ -102,8 +109,8 @@ class CompanyAccessTests(unittest.TestCase):
         self.assertIn(self.outsider, usernames)
 
         other = company_service.create_company(name="Other Org")
-        forbidden = self.ca_client.get(f"/api/v1/companies/{other['id']}")
-        self.assertEqual(forbidden.status_code, 403)
+        visible = self.ca_client.get(f"/api/v1/companies/{other['id']}")
+        self.assertEqual(visible.status_code, 200)
 
     def test_campaign_visibility_by_role(self) -> None:
         member_campaign = campaign_service.create_campaign(self.member, {"name": "Member campaign"})
@@ -113,7 +120,7 @@ class CompanyAccessTests(unittest.TestCase):
         self.assertEqual(member_list.status_code, 200)
         member_ids = {item["id"] for item in member_list.json()["result"]["items"]}
         self.assertIn(member_campaign["id"], member_ids)
-        self.assertNotIn(admin_campaign["id"], member_ids)
+        self.assertIn(admin_campaign["id"], member_ids)
 
         ca_list = self.ca_client.get("/api/v1/campaigns")
         self.assertEqual(ca_list.status_code, 200)
@@ -131,16 +138,14 @@ class CompanyAccessTests(unittest.TestCase):
         self.assertTrue(can_view_owned_resource(self.ca_principal, self.company_admin))
         self.assertFalse(can_view_owned_resource(self.member_principal, self.company_admin))
         self.assertTrue(can_view_owned_resource(Principal(self.admin, "root", "admin"), self.member))
+        self.assertFalse(can_manage_company(self.member_principal, self.company["id"]))
 
     def test_visible_owner_usernames(self) -> None:
         self.assertIsNone(visible_owner_usernames(Principal(self.admin, "root", "admin")))
-        ca_visible = visible_owner_usernames(self.ca_principal)
-        self.assertIsNotNone(ca_visible)
-        assert ca_visible is not None
-        self.assertIn(self.member, ca_visible)
-        self.assertIn(self.company_admin, ca_visible)
+        self.assertIsNone(visible_owner_usernames(self.ca_principal))
+        self.assertIsNone(visible_owner_usernames(self.member_principal))
 
-    def test_member_cannot_list_companies(self) -> None:
+    def test_member_can_list_companies(self) -> None:
         outsider_app = FastAPI()
         outsider_app.include_router(
             create_companies_router(
@@ -149,7 +154,110 @@ class CompanyAccessTests(unittest.TestCase):
         )
         client = TestClient(outsider_app)
         response = client.get("/api/v1/companies")
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(response.json()["result"]["total"], 1)
+
+    def test_unauthenticated_user_cannot_list_companies(self) -> None:
+        def reject_auth() -> None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        app = FastAPI()
+        app.include_router(create_companies_router(check_auth=reject_auth))
+        response = TestClient(app).get("/api/v1/companies")
+        self.assertEqual(response.status_code, 401)
+
+    def test_four_users_can_send_concurrently_through_one_shared_smtp_connection(self) -> None:
+        users = [self.company_admin, self.member, self.outsider]
+        fourth = f"mb{uuid.uuid4().hex[:6]}"
+        create_user(fourth, "Pass12345!")
+        company_service.add_member(self.company["id"], self.outsider, role="member")
+        company_service.add_member(self.company["id"], fourth, role="member")
+        users.append(fourth)
+
+        key = Fernet.generate_key().decode("ascii")
+        with patch.object(settings, "smtp_credentials_key", key):
+            mailbox = create_mailbox(
+                owner_username=self.company_admin,
+                provider="custom",
+                email="shared-sender@example.test",
+                password="shared-smtp-password",
+                host="mailpit",
+                port=1025,
+                use_ssl=False,
+                use_starttls=False,
+            )
+
+            for username in users:
+                visible_connections = connection_service.list_connections(
+                    username,
+                    visible_owners=visible_owner_usernames(Principal(username, username)),
+                )
+                self.assertIn(mailbox["id"], {item["id"] for item in visible_connections})
+                credentials = resolve_smtp_credentials(
+                    mailbox_id=mailbox["id"],
+                    owner_username=username,
+                )
+                self.assertEqual(credentials.email, "shared-sender@example.test")
+
+            def fake_smtp_send(**kwargs) -> str:
+                credentials = resolve_smtp_credentials(
+                    mailbox_id=kwargs["mailbox_id"],
+                    owner_username=kwargs["owner_username"],
+                )
+                self.assertEqual(credentials.email, "shared-sender@example.test")
+                return f"smtp:{kwargs['to_email']}"
+
+            with (
+                patch(
+                    "src.generator.delivery.channel_guard.wait_for_channel_send_slot",
+                    return_value=None,
+                ),
+                patch(
+                    "src.campaigns.batch_worker._send_smtp_message",
+                    side_effect=fake_smtp_send,
+                ),
+                patch("src.campaigns.batch_worker._record_smtp_accept"),
+                ThreadPoolExecutor(max_workers=4) as pool,
+            ):
+                futures = [
+                    pool.submit(
+                        _send_delivery_message,
+                        connection_id=mailbox["id"],
+                        owner_username=username,
+                        to_email=f"recipient-{index}@example.test",
+                        subject="Concurrent shared SMTP test",
+                        html="<p>test</p>",
+                        text="test",
+                    )
+                    for index, username in enumerate(users)
+                ]
+                results = [future.result(timeout=10) for future in futures]
+
+        self.assertEqual(len(results), 4)
+        self.assertEqual(len(set(results)), 4)
+
+    def test_only_app_admin_can_delete_company(self) -> None:
+        other = company_service.create_company(name="Disposable Org")
+        company_service.add_member(
+            other["id"],
+            self.outsider,
+            role="member",
+        )
+
+        forbidden = self.ca_client.delete(f"/api/v1/companies/{other['id']}")
+        self.assertEqual(forbidden.status_code, 403)
+
+        deleted = self.admin_client.delete(f"/api/v1/companies/{other['id']}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()["result"], {"removed": True})
+        self.assertIsNone(company_service.get_company(other["id"]))
+
+        surviving_user = get_user_record(self.outsider)
+        self.assertIsNotNone(surviving_user)
+        self.assertIsNone(surviving_user.company_id)
+
+        missing = self.admin_client.delete(f"/api/v1/companies/{other['id']}")
+        self.assertEqual(missing.status_code, 404)
 
     def test_company_work_types_crud_and_permissions(self) -> None:
         company_id = self.company["id"]

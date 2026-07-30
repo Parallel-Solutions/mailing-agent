@@ -12,9 +12,11 @@ from src.campaigns.template_text_review_service import (
     partition_review_messages,
     review_document_text,
     review_document_text_for_placeholders,
+    review_campaign_templates,
     review_rendered_template,
 )
 from src.campaigns.text_local_review import review_email_text
+from src.generator.philologist.document_review_agent import _run_local_checks
 from tests.bootstrap import bootstrap_test_runtime
 
 
@@ -82,6 +84,15 @@ class TemplateTextReviewTests(unittest.TestCase):
         self.assertTrue(any(item.get("kind") == "punctuation" for item in issues))
         self.assertTrue(all(item.get("field") == "attachment" for item in issues))
 
+    def test_review_document_text_does_not_require_terminal_punctuation(self) -> None:
+        issues = review_document_text(
+            "Document footer",
+            template_id="doc-1",
+            template_name="Doc",
+        )
+
+        self.assertFalse(any(item.get("kind") == "punctuation" for item in issues))
+
     def test_review_document_text_for_placeholders_keeps_placeholder_only(self) -> None:
         issues = review_document_text_for_placeholders(
             "Текст .",
@@ -101,6 +112,84 @@ class TemplateTextReviewTests(unittest.TestCase):
         self.assertIn("Энемского городского поселения", case_issues[0].suggestion)
         self.assertNotIn("Энемское городское поселение.", case_issues[0].suggestion)
 
+    def test_review_email_text_detects_admin_nominative_after_for(self) -> None:
+        issues = review_email_text(
+            "Разработка Генплана и ПЗЗ для администрация Дятьковского района.",
+            field="subject",
+        )
+
+        case_issue = next(item for item in issues if item.kind == "case")
+        self.assertEqual(case_issue.fragment, "для администрация")
+        self.assertEqual(case_issue.suggestion, "для администрации")
+
+    def test_review_email_text_detects_nested_administration_name(self) -> None:
+        issues = review_email_text(
+            (
+                "Администрации муниципального образования "
+                "«Администрация Дятьковского района»."
+            ),
+            field="body",
+        )
+
+        self.assertTrue(
+            any(
+                item.kind == "grammar"
+                and "повтор" in item.message.casefold()
+                for item in issues
+            )
+        )
+
+    def test_docx_review_reuses_campaign_case_and_administration_rules(self) -> None:
+        issues = _run_local_checks(
+            [
+                (
+                    "paragraph:1",
+                    "Разработка Генплана и ПЗЗ для администрация Дятьковского района.",
+                ),
+                (
+                    "paragraph:2",
+                    "Администрации муниципального образования "
+                    "«Администрация Любимского муниципального округа Ярославской области».",
+                ),
+            ]
+        )
+
+        self.assertTrue(
+            any(
+                item.fragment == "для администрация"
+                and item.suggestion == "для администрации"
+                for item in issues
+            )
+        )
+        self.assertTrue(
+            any(
+                "повторяется слово" in item.issue.casefold()
+                and "Администрация Любимского" not in item.suggestion
+                for item in issues
+            )
+        )
+
+    def test_rendered_review_runs_new_local_rules_without_advisory_mode(self) -> None:
+        issues = review_rendered_template(
+            template_id=None,
+            template_name="Mail",
+            subject_template="",
+            body_html_template="",
+            body_text_template="",
+            recipient=MagicMock(),
+            campaign=MagicMock(),
+            rendered_subject="Разработка для администрация Дятьковского района.",
+            rendered_html=(
+                "<p>Администрации муниципального образования "
+                "«Администрация Дятьковского района».</p>"
+            ),
+            rendered_text="",
+            advisory=False,
+        )
+
+        self.assertTrue(any(item.get("kind") == "case" for item in issues))
+        self.assertTrue(any(item.get("kind") == "grammar" for item in issues))
+
     def test_review_email_text_detects_single_brace_artifact(self) -> None:
         issues = review_email_text(
             "разработку {разработке схемы территориального планирования для территории.",
@@ -118,6 +207,8 @@ class TemplateTextReviewTests(unittest.TestCase):
 
     def test_partition_review_messages_splits_severity(self) -> None:
         issues = [
+            {"template_name": "A", "message": "error one", "kind": "artifact", "severity": "error"},
+            {"template_name": "A", "message": "warn one", "kind": "punctuation", "severity": "warning"},
             {"template_name": "A", "message": "error one", "kind": "artifact", "severity": "error"},
             {"template_name": "A", "message": "warn one", "kind": "punctuation", "severity": "warning"},
         ]
@@ -230,7 +321,7 @@ class TemplateTextReviewTests(unittest.TestCase):
 
     @patch("src.campaigns.template_text_review_service._append_ai_issues")
     @patch("src.campaigns.template_text_review_service._append_case_issues")
-    def test_deep_flag_does_not_run_advisory_checks(
+    def test_deep_flag_runs_advisory_checks(
         self,
         mock_case: MagicMock,
         mock_ai: MagicMock,
@@ -271,8 +362,87 @@ class TemplateTextReviewTests(unittest.TestCase):
             deep=True,
             advisory=False,
         )
-        mock_case.assert_not_called()
-        mock_ai.assert_not_called()
+        mock_case.assert_called_once()
+        mock_ai.assert_called_once()
+
+    @patch("src.campaigns.variable_match_service._collect_templates_for_validation")
+    @patch("src.campaigns.variable_match_service._validation_recipients")
+    @patch("src.campaigns.template_text_review_service.render_template_text")
+    def test_campaign_review_checks_each_unique_recipient_render(
+        self,
+        mock_render: MagicMock,
+        mock_recipients: MagicMock,
+        mock_templates: MagicMock,
+    ) -> None:
+        first = MagicMock(id="r1", row_index=1, company="Первая")
+        second = MagicMock(id="r2", row_index=2, company="Вторая")
+        mock_recipients.return_value = [first, second]
+        mock_templates.return_value = [
+            {
+                "template_id": "mail-1",
+                "template_name": "Письмо",
+                "subject": "для администрация {{company}}.",
+                "body_html": "<p>Текст.</p>",
+                "body_text": "",
+                "text": "",
+            }
+        ]
+
+        def render(text: str, *, recipient, **_kwargs) -> str:
+            return text.replace("{{company}}", recipient.company)
+
+        mock_render.side_effect = render
+        issues = review_campaign_templates(MagicMock(), deep=False)
+
+        subject_issues = [item for item in issues if item.get("field") == "subject"]
+        self.assertEqual(
+            {item.get("recipient_row_index") for item in subject_issues},
+            {1, 2},
+        )
+
+        with patch(
+            "src.campaigns.template_text_review_service._append_case_issues"
+        ), patch(
+            "src.campaigns.template_text_review_service._append_ai_issues"
+        ):
+            deep_issues = review_campaign_templates(MagicMock(), deep=True)
+
+        blocking_case_issues = [
+            item for item in deep_issues if item.get("kind") == "case"
+        ]
+        self.assertEqual(
+            {item.get("recipient_row_index") for item in blocking_case_issues},
+            {1, 2},
+        )
+        self.assertTrue(all(item.get("severity") == "error" for item in blocking_case_issues))
+        self.assertTrue(all(item.get("blocking") is True for item in blocking_case_issues))
+
+    @patch("src.campaigns.variable_match_service._collect_templates_for_validation")
+    @patch("src.campaigns.variable_match_service._validation_recipients")
+    @patch("src.campaigns.template_text_review_service.render_template_text")
+    def test_campaign_document_skips_terminal_punctuation_warning(
+        self,
+        mock_render: MagicMock,
+        mock_recipients: MagicMock,
+        mock_templates: MagicMock,
+    ) -> None:
+        mock_recipients.return_value = [MagicMock(id="r1", row_index=1)]
+        mock_templates.return_value = [
+            {
+                "template_id": "doc-1",
+                "template_name": "Document",
+                "template_kind": "document",
+                "subject": "",
+                "body_html": "",
+                "body_text": "",
+                "text": "Document footer",
+            }
+        ]
+        mock_render.side_effect = lambda text, **_kwargs: text
+
+        issues = review_campaign_templates(MagicMock(), deep=False)
+
+        self.assertFalse(any(item.get("kind") == "punctuation" for item in issues))
 
     @patch("src.campaigns.template_text_review_service._append_ai_issues")
     @patch("src.campaigns.template_text_review_service._append_case_issues")
@@ -318,6 +488,133 @@ class TemplateTextReviewTests(unittest.TestCase):
         )
         mock_case.assert_called_once()
         mock_ai.assert_called_once()
+
+    def test_deep_review_keeps_ai_and_case_agent_feedback_non_blocking(self) -> None:
+        from src.campaigns.template_text_review_service import _promote_deep_blocking_issue
+
+        for source in ("ai", "case_agent"):
+            issue = {
+                "kind": "grammar" if source == "ai" else "case",
+                "severity": "warning",
+                "suggestion": "corrected",
+                "source": source,
+                "blocking": False,
+            }
+            _promote_deep_blocking_issue(issue)
+            self.assertEqual(issue["severity"], "warning")
+            self.assertFalse(issue["blocking"])
+
+    def test_deep_review_keeps_local_deterministic_errors_blocking(self) -> None:
+        from src.campaigns.template_text_review_service import _promote_deep_blocking_issue
+
+        issue = {
+            "kind": "case",
+            "severity": "warning",
+            "suggestion": "corrected",
+            "source": "local",
+        }
+        _promote_deep_blocking_issue(issue)
+        self.assertEqual(issue["severity"], "error")
+        self.assertTrue(issue["blocking"])
+
+    def test_template_case_fields_only_returns_used_context_fields(self) -> None:
+        from src.campaigns.template_text_review_service import _template_case_fields
+
+        self.assertEqual(_template_case_fields("<p>{{ADM_NAME}}</p>{{company}}"), {"ADM_NAME_1"})
+        self.assertEqual(_template_case_fields("<p>{{company}}</p>"), set())
+
+    def test_case_value_comparison_normalizes_quotes_and_spacing(self) -> None:
+        from src.campaigns.template_text_review_service import _case_values_equivalent
+
+        self.assertTrue(
+            _case_values_equivalent(
+                'Administration  \u00abExample district\u00bb',
+                'administration "Example district"',
+            )
+        )
+
+    def test_case_agent_reports_only_fields_used_by_template(self) -> None:
+        from src.campaigns.template_text_review_service import _append_case_issues
+
+        context = {"ADM_NAME_1": "Administration", "HEAD_FIO_1": "Person"}
+        result = {
+            "items": [
+                {
+                    "field": "ADM_NAME_1",
+                    "status": "needs_review",
+                    "generated_value": "Administration",
+                    "corrected_value": "Correct administration",
+                    "comment": "Check administration case",
+                },
+                {
+                    "field": "HEAD_FIO_1",
+                    "status": "needs_review",
+                    "generated_value": "Person",
+                    "corrected_value": "Correct person",
+                    "comment": "Check name case",
+                },
+            ]
+        }
+        issues: list[dict[str, object]] = []
+        with patch(
+            "src.generator.generation.config_generator.ENABLE_CASE_AGENT", True
+        ), patch(
+            "src.campaigns.substitution_context.recipient_row", return_value={}
+        ), patch(
+            "src.generator.generation.transforms.build_document_context", return_value=context
+        ), patch(
+            "src.generator.inflection.ai_case_agent.run_case_validation_agent", return_value=result
+        ):
+            _append_case_issues(
+                issues,
+                template_id="template-1",
+                template_name="Template",
+                recipient=MagicMock(row_index=1),
+                campaign=MagicMock(work_type="test"),
+                template_text="{{ADM_NAME}}",
+            )
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["fragment"], "Administration")
+        self.assertEqual(issues[0]["source"], "case_agent")
+        self.assertFalse(issues[0]["blocking"])
+
+
+    def test_case_agent_skips_fix_already_present_in_context(self) -> None:
+        from src.campaigns.template_text_review_service import _append_case_issues
+
+        context = {"ADM_NAME_1": "Correct administration"}
+        result = {
+            "items": [
+                {
+                    "field": "ADM_NAME_1",
+                    "status": "fix",
+                    "generated_value": "Old administration",
+                    "corrected_value": "Correct administration",
+                    "comment": "Administration form changed",
+                }
+            ]
+        }
+        issues: list[dict[str, object]] = []
+        with patch(
+            "src.generator.generation.config_generator.ENABLE_CASE_AGENT", True
+        ), patch(
+            "src.campaigns.substitution_context.recipient_row", return_value={}
+        ), patch(
+            "src.generator.generation.transforms.build_document_context", return_value=context
+        ), patch(
+            "src.generator.inflection.ai_case_agent.run_case_validation_agent", return_value=result
+        ):
+            _append_case_issues(
+                issues,
+                template_id="template-1",
+                template_name="Template",
+                recipient=MagicMock(row_index=1),
+                campaign=MagicMock(work_type="test"),
+                template_text="{{ADM_NAME_1}}",
+            )
+
+        self.assertEqual(issues, [])
 
 
 if __name__ == "__main__":

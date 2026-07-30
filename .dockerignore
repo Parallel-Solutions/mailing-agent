@@ -5,7 +5,7 @@ __pycache__
 .pytest_cache
 .mypy_cache
 .ruff_cache
-.test-runtime
+/.test-runtime/
 
 .env
 .env.local
@@ -13,6 +13,7 @@ __pycache__
 
 **/node_modules
 frontend/node_modules
+/frontend/dist/
 build
 dist
 wheels
@@ -24,10 +25,10 @@ e2e
 design-input
 service_docs
 
-logs
-storage
-tmp
-tmp*
+/logs/
+/storage/
+/tmp/
+/tmp*/
 pytest-cache-files-*
 
 *.xlsx

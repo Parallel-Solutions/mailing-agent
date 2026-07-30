@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     app_username: str = "admin"
     app_password: str = ""
+    app_environment: str = "local"
+    database_expected_name: str = ""
     app_users: str = ""
     app_admin_tenant_id: str = "admin"
     app_session_ttl_days: int = 7
@@ -74,6 +76,9 @@ class Settings(BaseSettings):
     public_base_url: str = "https://31-130-150-209.sslip.io"
     upload_data_max_bytes: int = 25 * 1024 * 1024
     upload_template_max_bytes: int = 10 * 1024 * 1024
+    upload_font_max_bytes: int = 20 * 1024 * 1024
+    trusted_font_download_enabled: bool = True
+    trusted_font_download_timeout_seconds: float = 15.0
     municipality_upload_auto_verify_max_bytes: int = 4 * 1024 * 1024
 
     openai_api_key: str = ""
@@ -113,15 +118,17 @@ class Settings(BaseSettings):
     sender_delay_max_seconds: float = 0.0
     sender_transport: str = "smtp"
     sender_unisender_concurrency: int = 1
-    email_validation_mode: str = "domain"
-    email_validation_timeout_seconds: float = 3.0
+    email_validation_mode: str = "smtpbz"
+    email_validation_timeout_seconds: float = 20.0
     smtpbz_api_key: str = ""
     smtpbz_api_base_url: str = "https://api.smtp.bz/v1"
+    smtpbz_fail_open: bool = False
     documents_worker_max_processes: int = 1
     sender_worker_max_processes: int = 1
     user_worker_max_processes_per_task: int = 1
     user_inprocess_max_tasks: int = 1
     documents_worker_timeout_seconds: int = 21600
+    template_text_extraction_timeout_seconds: int = 120
     sender_worker_timeout_seconds: int = 0
     background_queue_enabled: bool = True
     background_queue_poll_seconds: float = 1.0
@@ -189,6 +196,64 @@ def require_configured_app_password(settings_obj: Any) -> None:
     if not password:
         raise SecurityConfigurationError(
             "APP_PASSWORD must be set to a non-empty value before starting the service."
+        )
+
+
+_KNOWN_APP_ENVIRONMENTS = frozenset(
+    {"local", "development", "test", "e2e", "production"}
+)
+
+
+def _database_name_from_settings(settings_obj: Any) -> str:
+    raw = str(getattr(settings_obj, "database_url", "") or "").strip()
+    parsed = urlparse(raw)
+    database_name = parsed.path.lstrip("/").split("?", 1)[0].strip()
+    if not database_name:
+        raise SecurityConfigurationError("DATABASE_URL must include a database name.")
+    return database_name
+
+
+def validate_runtime_database(settings_obj: Any) -> None:
+    environment = str(
+        getattr(settings_obj, "app_environment", "local") or "local"
+    ).strip().lower()
+    if environment not in _KNOWN_APP_ENVIRONMENTS:
+        raise SecurityConfigurationError(
+            f"APP_ENVIRONMENT must be one of {sorted(_KNOWN_APP_ENVIRONMENTS)}, "
+            f"got {environment!r}."
+        )
+
+    database_name = _database_name_from_settings(settings_obj)
+    expected_name = str(
+        getattr(settings_obj, "database_expected_name", "") or ""
+    ).strip()
+    if not expected_name:
+        expected_name = {
+            "test": "mailing_test",
+            "e2e": "mailing_e2e",
+            "production": "mailing",
+            "development": "mailing",
+            "local": "mailing",
+        }[environment]
+    if database_name != expected_name:
+        raise SecurityConfigurationError(
+            f"Refusing to start {environment!r} against database "
+            f"{database_name!r}; expected {expected_name!r}."
+        )
+
+    if environment == "test" and not database_name.endswith("_test"):
+        raise SecurityConfigurationError(
+            "Test runtime requires a database whose name ends with '_test'."
+        )
+    if environment == "e2e" and not database_name.endswith("_e2e"):
+        raise SecurityConfigurationError(
+            "E2E runtime requires a database whose name ends with '_e2e'."
+        )
+    if environment in {"local", "development", "production"} and database_name.endswith(
+        ("_test", "_e2e")
+    ):
+        raise SecurityConfigurationError(
+            f"{environment!r} runtime cannot use a test or E2E database."
         )
 
 

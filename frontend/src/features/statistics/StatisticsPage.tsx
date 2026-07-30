@@ -11,13 +11,10 @@ import { CampaignsTab } from './tabs/CampaignsTab';
 import { RecipientsTab } from './tabs/RecipientsTab';
 import { CampaignAnalyticsTab } from './tabs/CampaignAnalyticsTab';
 import { CampaignFullAnalyticsTab } from './fullAnalytics/CampaignFullAnalyticsTab';
-import { ConsentsTab } from './tabs/ConsentsTab';
 import { MarketingConsentsTab } from './tabs/MarketingConsentsTab';
-import { ProblemsTab } from './tabs/ProblemsTab';
-import { ReportsTab } from './tabs/ReportsTab';
 import { CampaignsListPage } from '@/pages/CampaignsListPage';
-import { AudiencesPage } from '@/pages/AudiencesPage';
 import { asRecordArray } from './utils';
+import { formatLocalDateTime } from '@/utils/dateTime';
 
 export function StatisticsPage() {
   return (
@@ -41,12 +38,11 @@ function StatisticsPageInner() {
     error,
     setError,
     openFiltersModal,
-    openExportModal,
   } = useStatistics();
 
   const campaignsQuery = useQuery({
-    queryKey: ['stats-campaigns-shell', apiBaseParams],
-    queryFn: () => statisticsApi.campaigns(apiBaseParams),
+    queryKey: ['stats-campaigns-shell', refreshNonce],
+    queryFn: () => statisticsApi.campaigns(),
   });
 
   useEffect(() => {
@@ -68,11 +64,11 @@ function StatisticsPageInner() {
 
   const generatedAt =
     tab === 'dashboard'
-      ? String(metaQuery.data?.generated_at_label || metaQuery.data?.generated_at || '—')
+      ? formatLocalDateTime(String(metaQuery.data?.generated_at || ''))
       : '—';
 
   return (
-    <div data-testid="statistics-page">
+    <div data-testid="statistics-page" data-onboarding-id="statistics-overview">
       <div
         style={{
           display: 'flex',
@@ -108,16 +104,17 @@ function StatisticsPageInner() {
               }
             />
             <Select
+              data-testid="statistics-campaign-filter"
               allowClear
               showSearch
               optionFilterProp="label"
               placeholder="Все рассылки"
               style={{ minWidth: 200 }}
-              value={filters.campaign}
+              value={filters.campaign || undefined}
               onChange={(value) => setFilters({ campaign: value || undefined }, { resetPages: true })}
               options={campaigns.map((item) => ({
                 value: String(item.job_id),
-                label: String(item.title || item.job_id),
+                label: String(item.title || 'Рассылка без названия'),
               }))}
             />
             <Select
@@ -133,11 +130,7 @@ function StatisticsPageInner() {
               }
               options={PROVIDER_OPTIONS.filter((item) => item.value)}
             />
-            {tab !== 'reports' ? (
-              <Button onClick={openFiltersModal}>Расширенные фильтры</Button>
-            ) : (
-              <Button onClick={() => openExportModal()}>Экспорт отчёта</Button>
-            )}
+            <Button onClick={openFiltersModal}>Расширенные фильтры</Button>
             <Button type="primary" onClick={() => requestRefresh()}>
               Обновить
             </Button>
@@ -190,22 +183,14 @@ function TabBody({ tabKey }: { tabKey: string }) {
       return <CampaignsListPage embedded />;
     case 'campaigns':
       return <CampaignsTab />;
-    case 'audiences':
-      return <AudiencesPage embedded />;
     case 'recipients':
       return <RecipientsTab />;
     case 'campaign-analytics':
       return <CampaignAnalyticsTab />;
     case 'campaign-full-analytics':
       return <CampaignFullAnalyticsTab />;
-    case 'consents':
-      return <ConsentsTab />;
     case 'marketing-consents':
       return <MarketingConsentsTab />;
-    case 'problems':
-      return <ProblemsTab />;
-    case 'reports':
-      return <ReportsTab />;
     default:
       return null;
   }

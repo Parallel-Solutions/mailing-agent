@@ -33,6 +33,7 @@ RUN apt-get update \
         fonts-tlwg-loma-otf \
         fonts-unifont \
         fonts-wqy-zenhei \
+        libreoffice-writer \
         libasound2 \
         libatk-bridge2.0-0 \
         libatk1.0-0 \

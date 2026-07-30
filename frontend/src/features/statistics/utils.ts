@@ -1,7 +1,16 @@
 export function fmt(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '0';
+  if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'number') return value.toLocaleString('ru-RU');
   return String(value);
+}
+
+/** Format KPI counts: missing → em dash; real zero stays "0". */
+export function fmtMetric(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'number') return value.toLocaleString('ru-RU');
+  const text = String(value).trim();
+  if (!text) return '—';
+  return text;
 }
 
 export function companyField(item: Record<string, unknown>, field: string): string {
