@@ -46,6 +46,14 @@ export type ValidationSignatureInput = {
   };
 };
 
+export function buildCampaignAutosavePayload(patch: Record<string, unknown>) {
+  const { draft_payload: _ignoredDraftPayload, ...draftPatch } = patch;
+  return {
+    ...patch,
+    draft_payload: draftPatch,
+  };
+}
+
 export function buildMappingInputsSignature(input: MappingInputsSignatureInput): string {
   return JSON.stringify({
     r: input.recipientCount,
