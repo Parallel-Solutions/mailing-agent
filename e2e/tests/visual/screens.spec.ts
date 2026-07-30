@@ -51,7 +51,7 @@ test.describe('Visual regression @visual', () => {
     await expect(page.getByTestId('statistics-page')).toBeVisible();
     await expectStableScreenshot(page, 'statistics.png');
 
-    for (const route of ['/?tab=campaign-list', '/templates', '/?tab=audiences', '/connections', '/profile']) {
+    for (const route of ['/?tab=campaign-list', '/templates', '/connections', '/profile']) {
       await page.goto(route);
       await page.waitForLoadState('networkidle').catch(() => undefined);
       const name = route.replace(/^\//, '').replace(/\//g, '-').replace(/\?/g, '').replace(/=/g, '-') || 'home';

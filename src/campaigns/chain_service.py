@@ -11,7 +11,13 @@ from urllib.parse import urlparse
 from sqlalchemy import func, select
 
 from src.infra.db import session_scope
-from src.infra.models import Campaign, CampaignChainToken, CampaignRecipient, EmailChainRecord
+from src.infra.models import (
+    Campaign,
+    CampaignChainToken,
+    CampaignRecipient,
+    EmailChainRecord,
+    MailTemplate,
+)
 from src.security.company_access import apply_owner_filter, can_access_owner
 
 CHAIN_VERSION = 2
@@ -21,6 +27,8 @@ NODE_KIND_LINK = "link"
 LINK_KIND_CUSTOM = "custom"
 LINK_KIND_UNSUBSCRIBE = "unsubscribe"
 LINK_KIND_SUBSCRIBE = "subscribe"
+TRACKED_CONTENT_EDGE_PREFIX = "content:"
+TRACKED_DOCUMENT_EDGE_PREFIX = "document:"
 VALID_NODE_KINDS = {NODE_KIND_EMAIL, NODE_KIND_LINK}
 VALID_LINK_KINDS = {LINK_KIND_CUSTOM, LINK_KIND_UNSUBSCRIBE, LINK_KIND_SUBSCRIBE}
 
@@ -522,6 +530,37 @@ def record_branch_click(token: str) -> dict[str, Any]:
         }
 
 
+def record_tracked_resource_open(token: str, *, kind: str) -> dict[str, Any]:
+    expected_prefix = (
+        TRACKED_DOCUMENT_EDGE_PREFIX
+        if kind == "document"
+        else TRACKED_CONTENT_EDGE_PREFIX
+    )
+    with session_scope() as session:
+        row = session.get(CampaignChainToken, token)
+        if row is None or not str(row.edge_id or "").startswith(expected_prefix):
+            raise ValueError("Ссылка не найдена")
+        recipient = session.get(CampaignRecipient, int(row.recipient_id))
+        if recipient is None:
+            raise ValueError("Получатель не найден")
+        already_opened = row.clicked_at is not None
+        if not already_opened and not row.test_email:
+            row.clicked_at = _now()
+            session.flush()
+        return {
+            "token": row.token,
+            "campaign_id": row.campaign_id,
+            "recipient_id": row.recipient_id,
+            "source_node_id": row.source_node_id,
+            "template_id": (
+                row.target_node_id if kind == "document" else ""
+            ),
+            "target_url": str(row.error or "") if kind == "link" else "",
+            "already_opened": already_opened,
+            "test_email": row.test_email,
+        }
+
+
 def mark_token_sent(token: str, *, error: str | None = None, status: str | None = None) -> None:
     with session_scope() as session:
         row = session.get(CampaignChainToken, token)
@@ -542,20 +581,266 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
     from src.campaigns.chain_consent_service import get_consent_stats
 
     with session_scope() as session:
-        rows = session.execute(
-            select(
-                CampaignChainToken.edge_id,
-                func.count(CampaignChainToken.token).label("total"),
-                func.count(CampaignChainToken.clicked_at).label("clicks"),
+        campaign = session.get(Campaign, campaign_id)
+        chain = get_email_chain(campaign, session=session) if campaign is not None else empty_chain()
+        tokens = session.scalars(
+            select(CampaignChainToken)
+            .where(
+                CampaignChainToken.campaign_id == campaign_id,
+                CampaignChainToken.test_email.is_(None),
             )
-            .where(CampaignChainToken.campaign_id == campaign_id)
-            .group_by(CampaignChainToken.edge_id)
+            .order_by(CampaignChainToken.created_at.asc())
         ).all()
+        recipient_ids = {int(token.recipient_id) for token in tokens if token.recipient_id is not None}
+        recipients: dict[int, CampaignRecipient] = {}
+        if recipient_ids:
+            recipients = {
+                int(recipient.id): recipient
+                for recipient in session.scalars(
+                    select(CampaignRecipient).where(CampaignRecipient.id.in_(recipient_ids))
+                ).all()
+            }
+
+        tokens_by_edge: dict[str, list[CampaignChainToken]] = {}
+        for token in tokens:
+            tokens_by_edge.setdefault(str(token.edge_id), []).append(token)
+
+        nodes = list(chain.get("nodes") or [])
+        edges = list(chain.get("edges") or [])
+        node_by_id = {str(node.get("id") or ""): node for node in nodes}
+        email_nodes = [node for node in nodes if is_email_node(node)]
+        root_node_id = str(chain.get("root_node_id") or "")
+        email_nodes.sort(
+            key=lambda node: (
+                0 if str(node.get("id") or "") == root_node_id else 1,
+                nodes.index(node),
+            )
+        )
+
+        edge_stats: list[dict[str, Any]] = []
+        steps: list[dict[str, Any]] = []
+        for step_index, node in enumerate(email_nodes, start=1):
+            node_id = str(node.get("id") or "")
+            step_links: list[dict[str, Any]] = []
+            step_documents: list[dict[str, Any]] = []
+            for edge in (item for item in edges if str(item.get("source_id") or "") == node_id):
+                edge_id = str(edge.get("id") or "")
+                edge_tokens = tokens_by_edge.get(edge_id, [])
+                clicked_tokens = [token for token in edge_tokens if token.clicked_at is not None]
+                target = node_by_id.get(str(edge.get("target_id") or ""), {})
+                clickers: list[dict[str, Any]] = []
+                seen_recipient_ids: set[int] = set()
+                for token in sorted(
+                    clicked_tokens,
+                    key=lambda item: item.clicked_at or item.created_at,
+                    reverse=True,
+                ):
+                    recipient_id = int(token.recipient_id)
+                    if recipient_id in seen_recipient_ids:
+                        continue
+                    seen_recipient_ids.add(recipient_id)
+                    recipient = recipients.get(recipient_id)
+                    clickers.append(
+                        {
+                            "recipient_id": recipient_id,
+                            "row_id": str(recipient.row_index) if recipient is not None else "",
+                            "email": str(recipient.email or "") if recipient is not None else "",
+                            "company": str(recipient.company or "") if recipient is not None else "",
+                            "contact_name": str(recipient.contact_name or "") if recipient is not None else "",
+                            "clicked_at": token.clicked_at.isoformat() if token.clicked_at else "",
+                        }
+                    )
+
+                target_kind = str(target.get("kind") or NODE_KIND_EMAIL)
+                link_kind = (
+                    str(target.get("link_kind") or LINK_KIND_CUSTOM)
+                    if target_kind == NODE_KIND_LINK
+                    else "chain_step"
+                )
+                link_url = (
+                    str(target.get("link_url") or "")
+                    if target_kind == NODE_KIND_LINK and link_kind == LINK_KIND_CUSTOM
+                    else ""
+                )
+                link_stats = {
+                    "id": edge_id,
+                    "edge_id": edge_id,
+                    "label": resolve_button_label(edge, node_by_id),
+                    "kind": link_kind,
+                    "url": link_url,
+                    "target_node_id": str(edge.get("target_id") or ""),
+                    "target_name": str(target.get("name") or ""),
+                    "tokens": len(edge_tokens),
+                    "clicks": len(clicked_tokens),
+                    "unique_clickers": len(clickers),
+                    "clickers": clickers,
+                }
+                step_links.append(link_stats)
+                edge_stats.append(
+                    {
+                        "edge_id": edge_id,
+                        "tokens": len(edge_tokens),
+                        "clicks": len(clicked_tokens),
+                        "unique_clickers": len(clickers),
+                        "source_node_id": node_id,
+                        "label": link_stats["label"],
+                    }
+                )
+            content_tokens_by_url: dict[str, list[CampaignChainToken]] = {}
+            for token in tokens:
+                if (
+                    str(token.source_node_id or "") == node_id
+                    and str(token.edge_id or "").startswith(TRACKED_CONTENT_EDGE_PREFIX)
+                    and str(token.error or "").strip()
+                ):
+                    content_tokens_by_url.setdefault(str(token.error).strip(), []).append(token)
+            for url, content_tokens in content_tokens_by_url.items():
+                clicked_tokens = [
+                    token for token in content_tokens if token.clicked_at is not None
+                ]
+                clickers: list[dict[str, Any]] = []
+                seen_recipient_ids: set[int] = set()
+                for token in sorted(
+                    clicked_tokens,
+                    key=lambda item: item.clicked_at or item.created_at,
+                    reverse=True,
+                ):
+                    recipient_id = int(token.recipient_id)
+                    if recipient_id in seen_recipient_ids:
+                        continue
+                    seen_recipient_ids.add(recipient_id)
+                    recipient = recipients.get(recipient_id)
+                    clickers.append(
+                        {
+                            "recipient_id": recipient_id,
+                            "row_id": (
+                                str(recipient.row_index)
+                                if recipient is not None
+                                else ""
+                            ),
+                            "email": (
+                                str(recipient.email or "")
+                                if recipient is not None
+                                else ""
+                            ),
+                            "company": (
+                                str(recipient.company or "")
+                                if recipient is not None
+                                else ""
+                            ),
+                            "contact_name": (
+                                str(recipient.contact_name or "")
+                                if recipient is not None
+                                else ""
+                            ),
+                            "clicked_at": (
+                                token.clicked_at.isoformat()
+                                if token.clicked_at
+                                else ""
+                            ),
+                        }
+                    )
+                content_id = str(content_tokens[0].edge_id or "")
+                step_links.append(
+                    {
+                        "id": content_id,
+                        "edge_id": content_id,
+                        "label": url,
+                        "kind": "template",
+                        "url": url,
+                        "tokens": len(content_tokens),
+                        "clicks": len(clicked_tokens),
+                        "unique_clickers": len(clickers),
+                        "clickers": clickers,
+                    }
+                )
+
+            for document_template_id in node.get("document_template_ids") or []:
+                template_id = str(document_template_id or "")
+                if not template_id:
+                    continue
+                document_tokens = tokens_by_edge.get(
+                    f"{TRACKED_DOCUMENT_EDGE_PREFIX}{template_id}",
+                    [],
+                )
+                opened_tokens = [
+                    token for token in document_tokens if token.clicked_at is not None
+                ]
+                openers: list[dict[str, Any]] = []
+                seen_recipient_ids: set[int] = set()
+                for token in sorted(
+                    opened_tokens,
+                    key=lambda item: item.clicked_at or item.created_at,
+                    reverse=True,
+                ):
+                    recipient_id = int(token.recipient_id)
+                    if recipient_id in seen_recipient_ids:
+                        continue
+                    seen_recipient_ids.add(recipient_id)
+                    recipient = recipients.get(recipient_id)
+                    openers.append(
+                        {
+                            "recipient_id": recipient_id,
+                            "row_id": (
+                                str(recipient.row_index)
+                                if recipient is not None
+                                else ""
+                            ),
+                            "email": (
+                                str(recipient.email or "")
+                                if recipient is not None
+                                else ""
+                            ),
+                            "company": (
+                                str(recipient.company or "")
+                                if recipient is not None
+                                else ""
+                            ),
+                            "contact_name": (
+                                str(recipient.contact_name or "")
+                                if recipient is not None
+                                else ""
+                            ),
+                            "clicked_at": (
+                                token.clicked_at.isoformat()
+                                if token.clicked_at
+                                else ""
+                            ),
+                        }
+                    )
+                document_template = session.get(MailTemplate, template_id)
+                step_documents.append(
+                    {
+                        "id": template_id,
+                        "template_id": template_id,
+                        "label": str(
+                            document_template.name
+                            if document_template is not None
+                            else f"Документ {len(step_documents) + 1}"
+                        ),
+                        "tokens": len(document_tokens),
+                        "opens": len(opened_tokens),
+                        "unique_openers": len(openers),
+                        "clickers": openers,
+                    }
+                )
+            steps.append(
+                {
+                    "id": node_id,
+                    "node_id": node_id,
+                    "name": str(node.get("name") or f"Письмо {step_index}"),
+                    "email_template_id": str(node.get("email_template_id") or ""),
+                    "links": step_links,
+                    "documents": step_documents,
+                }
+            )
+
         return {
-            "edges": [
-                {"edge_id": r.edge_id, "tokens": int(r.total), "clicks": int(r.clicks or 0)}
-                for r in rows
-            ],
+            "mode": "chain",
+            "has_links": any(bool(step.get("links")) for step in steps),
+            "has_documents": any(bool(step.get("documents")) for step in steps),
+            "steps": steps,
+            "edges": edge_stats,
             "consents": get_consent_stats(campaign_id, session=session),
         }
 

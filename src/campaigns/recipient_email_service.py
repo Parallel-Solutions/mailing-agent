@@ -178,6 +178,7 @@ def build_campaign_sent_mail_log_record(
     sent_at: str,
     fallback_candidates: list[str] | None = None,
     connection_id: str = "",
+    chain_node_id: str = "",
 ) -> dict[str, Any]:
     remaining = fallback_candidates
     if remaining is None:
@@ -198,6 +199,7 @@ def build_campaign_sent_mail_log_record(
         "sent_at": sent_at,
         "subject": subject,
         "send_mode": send_mode,
+        "chain_node_id": chain_node_id,
         "provider_message_id": provider_message_id,
         "recipient_strategy": RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
         "fallback_candidates": remaining,
@@ -219,6 +221,7 @@ def append_campaign_sent_mail_log(
     sent_at: str,
     fallback_candidates: list[str] | None = None,
     connection_id: str = "",
+    chain_node_id: str = "",
 ) -> bool:
     if not job_id:
         return False
@@ -238,6 +241,7 @@ def append_campaign_sent_mail_log(
             sent_at=sent_at,
             fallback_candidates=fallback_candidates,
             connection_id=connection_id,
+            chain_node_id=chain_node_id,
         )
         seq = append_event(job_id, "sent_mail_log", record)
         return seq is not None

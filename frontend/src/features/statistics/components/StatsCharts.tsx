@@ -110,7 +110,7 @@ export function AnalyticsCharts({
   const effItems = asRecordArray(providerEff);
 
   const dailyData = dailyItems.flatMap((item) => [
-    { date: String(item.date), type: 'Отправлено', value: Number(item.sent || 0) },
+    { date: String(item.date), type: 'Принято провайдером', value: Number(item.sent || 0) },
     { date: String(item.date), type: 'Доставлено', value: Number(item.delivered || 0) },
     { date: String(item.date), type: 'Открыто', value: Number(item.opened || 0) },
   ]);

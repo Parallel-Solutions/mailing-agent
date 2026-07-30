@@ -706,6 +706,8 @@ def _build_delivery_rows(
                 "subject": _safe_text(item.get("subject")),
                 "work_type": _safe_text(item.get("work_type")),
                 "campaign_name": _safe_text(item.get("campaign_name")),
+                "send_mode": _safe_text(item.get("send_mode")),
+                "chain_node_id": _safe_text(item.get("chain_node_id")),
                 "accepted_status": accepted_status,
                 "provider": _provider_name(item),
                 "provider_status": _normalize_provider_status(provider_status),

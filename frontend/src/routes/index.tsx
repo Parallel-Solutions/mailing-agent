@@ -117,7 +117,7 @@ export function AppRoutes() {
               </Lazy>
             }
           />
-          <Route path="/audiences" element={<Navigate to="/?tab=audiences" replace />} />
+          <Route path="/audiences" element={<Navigate to="/" replace />} />
           <Route
             path="/connections"
             element={

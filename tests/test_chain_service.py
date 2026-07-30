@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from datetime import datetime, timezone
 
 from src.campaigns.chain_service import (
     create_chain,
     empty_chain,
+    get_chain_click_stats,
     load_chain,
     normalize_chain,
     publish_chain,
@@ -130,6 +132,244 @@ class ChainServiceTests(unittest.TestCase):
         self.assertFalse(first["already_clicked"])
         self.assertTrue(second["already_clicked"])
         self.assertEqual(first["recipient_id"], recipient_id)
+
+    def test_click_stats_group_links_by_email_chain_step(self) -> None:
+        from src.infra.db import session_scope
+        from src.infra.models import CampaignChainToken, CampaignRecipient
+
+        chain = empty_chain()
+        root = chain["root_node_id"]
+        second_node = "node-second"
+        link_node = "node-link"
+        chain["nodes"][0]["name"] = "Первое письмо"
+        chain["nodes"][0]["email_template_id"] = "tmpl-1"
+        chain["nodes"].extend(
+            [
+                {
+                    "id": second_node,
+                    "name": "Второе письмо",
+                    "kind": "email",
+                    "email_template_id": "tmpl-2",
+                    "document_template_ids": [],
+                },
+                {
+                    "id": link_node,
+                    "name": "Перейти на сайт",
+                    "kind": "link",
+                    "link_kind": "custom",
+                    "link_url": "https://example.test/offer",
+                },
+            ]
+        )
+        chain["edges"] = [
+            {
+                "id": "edge-next",
+                "source_id": root,
+                "target_id": second_node,
+                "button_label": "Второе письмо",
+            },
+            {
+                "id": "edge-site",
+                "source_id": second_node,
+                "target_id": link_node,
+                "button_label": "Перейти на сайт",
+            },
+        ]
+        save_email_chain(self.campaign["id"], self.username, chain)
+
+        clicked_at = datetime.now(timezone.utc)
+        with session_scope() as session:
+            recipient = CampaignRecipient(
+                campaign_id=self.campaign["id"],
+                row_index=0,
+                company="ООО Альфа",
+                contact_name="Иван",
+                email="ivan@example.test",
+            )
+            session.add(recipient)
+            session.flush()
+            session.add_all(
+                [
+                    CampaignChainToken(
+                        token=str(uuid.uuid4()),
+                        campaign_id=self.campaign["id"],
+                        recipient_id=recipient.id,
+                        edge_id="edge-next",
+                        source_node_id=root,
+                        target_node_id=second_node,
+                        clicked_at=clicked_at,
+                    ),
+                    CampaignChainToken(
+                        token=str(uuid.uuid4()),
+                        campaign_id=self.campaign["id"],
+                        recipient_id=recipient.id,
+                        edge_id="edge-site",
+                        source_node_id=second_node,
+                        target_node_id=link_node,
+                        clicked_at=clicked_at,
+                    ),
+                ]
+            )
+
+        stats = get_chain_click_stats(self.campaign["id"])
+
+        self.assertTrue(stats["has_links"])
+        self.assertEqual([step["name"] for step in stats["steps"]], ["Первое письмо", "Второе письмо"])
+        self.assertEqual(stats["steps"][0]["links"][0]["label"], "Второе письмо")
+        self.assertEqual(stats["steps"][1]["links"][0]["url"], "https://example.test/offer")
+        self.assertEqual(stats["steps"][1]["links"][0]["unique_clickers"], 1)
+        self.assertEqual(
+            stats["steps"][1]["links"][0]["clickers"][0]["email"],
+            "ivan@example.test",
+        )
+
+    def test_click_stats_keep_email_steps_without_links(self) -> None:
+        chain = empty_chain()
+        chain["nodes"][0]["name"] = "Письмо 1"
+        chain["nodes"].append(
+            {
+                "id": "node-second",
+                "name": "Письмо 2",
+                "kind": "email",
+                "email_template_id": "tmpl-2",
+                "document_template_ids": [],
+            }
+        )
+        chain["edges"] = []
+        save_email_chain(self.campaign["id"], self.username, chain)
+
+        stats = get_chain_click_stats(self.campaign["id"])
+
+        self.assertFalse(stats["has_links"])
+        self.assertEqual(
+            [step["name"] for step in stats["steps"]],
+            ["Письмо 1", "Письмо 2"],
+        )
+        self.assertEqual(stats["steps"][1]["links"], [])
+
+    def test_chain_step_analytics_are_attached_per_email_node(self) -> None:
+        from src.campaigns.service import record_delivery_attempt
+        from src.generator.delivery import manager_stats
+        from src.infra.db import session_scope
+        from src.infra.models import CampaignChainToken, CampaignRecipient
+
+        chain = empty_chain()
+        root = chain["root_node_id"]
+        second_node = "node-second"
+        chain["nodes"][0]["name"] = "Письмо 1"
+        chain["nodes"].append(
+            {
+                "id": second_node,
+                "name": "Письмо 2",
+                "kind": "email",
+                "email_template_id": "tmpl-2",
+                "document_template_ids": [],
+            }
+        )
+        chain["edges"] = [
+            {
+                "id": "edge-next",
+                "source_id": root,
+                "target_id": second_node,
+                "button_label": "Продолжить",
+            }
+        ]
+        save_email_chain(self.campaign["id"], self.username, chain)
+
+        event_at = datetime.now(timezone.utc)
+        with session_scope() as session:
+            recipient = CampaignRecipient(
+                campaign_id=self.campaign["id"],
+                row_index=0,
+                company="ООО Альфа",
+                contact_name="Иван",
+                email="ivan@example.test",
+            )
+            session.add(recipient)
+            session.flush()
+            recipient_id = int(recipient.id)
+            session.add(
+                CampaignChainToken(
+                    token=str(uuid.uuid4()),
+                    campaign_id=self.campaign["id"],
+                    recipient_id=recipient_id,
+                    edge_id="edge-next",
+                    source_node_id=root,
+                    target_node_id=second_node,
+                    clicked_at=event_at,
+                    sent_at=event_at,
+                    send_status="sent",
+                )
+            )
+        record_delivery_attempt(
+            campaign_id=self.campaign["id"],
+            recipient_id=recipient_id,
+            batch_id="batch-root",
+            status="sent",
+            delivery_email="ivan@example.test",
+            provider_message_id="root-message",
+        )
+
+        def delivery_row(
+            node_id: str,
+            status: str,
+            send_mode: str,
+            *,
+            row_id: str | None = None,
+        ) -> dict:
+            manager_status = manager_stats.normalize_manager_status(status)
+            effective_row_id = row_id or str(recipient_id)
+            return {
+                "job_id": self.campaign["job_id"],
+                "row_id": effective_row_id,
+                "email": f"{effective_row_id}@example.test",
+                "organization": f"Компания {effective_row_id}",
+                "provider": "rusender",
+                "manager_status": manager_status,
+                "interest": manager_stats.interest_for(manager_status["key"]),
+                "sent_at": event_at.isoformat(),
+                "sent_at_timestamp": event_at.isoformat(),
+                "chain_node_id": node_id,
+                "send_mode": send_mode,
+            }
+
+        stats = get_chain_click_stats(self.campaign["id"])
+        manager_stats._attach_chain_step_analytics(
+            self.campaign["job_id"],
+            [
+                delivery_row(root, "delivered", "chain_root"),
+                delivery_row(root, "spam", "chain_root", row_id="spam-root"),
+                delivery_row(second_node, "opened", "chain_followup"),
+                delivery_row(
+                    second_node,
+                    "unsubscribed",
+                    "chain_followup",
+                    row_id="unsubscribed-second",
+                ),
+            ],
+            stats,
+        )
+
+        first = stats["steps"][0]["analytics"]["summary"]
+        second = stats["steps"][1]["analytics"]["summary"]
+        self.assertEqual(
+            (
+                first["total_attempts"],
+                first["sent"],
+                first["delivered"],
+                first["spam"],
+            ),
+            (2, 2, 1, 1),
+        )
+        self.assertEqual(
+            (
+                second["total_attempts"],
+                second["sent"],
+                second["opened"],
+                second["unsubscribed"],
+            ),
+            (2, 2, 1, 1),
+        )
 
     def test_normalize_chain_defaults_kind_email(self) -> None:
         chain = empty_chain()
