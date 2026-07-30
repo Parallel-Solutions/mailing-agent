@@ -41,7 +41,6 @@ from src.generator.generation.config_generator import (
     PHILOLOGIST_LLM_FIX_STRATEGY,
     PHILOLOGIST_LLM_ROUTER,
     PHILOLOGIST_MODE,
-    PHILOLOGIST_REBUILD_PDF,
 )
 from src.generator.philologist.document_review_agent import review_docx
 from src.generator.inflection.inflection_report import format_inflection_report, load_inflection_log
@@ -96,6 +95,7 @@ PHILOLOGIST_STATE: dict[str, Any] = {
     "fixed_documents": 0,
     "documents_with_issues": 0,
     "documents": [],
+    "row_reviews": [],
     "summary_text": "Проверка текстов ещё не запускалась.",
     "tool_manifest": build_philologist_tool_manifest(),
     "tool_trace": [],
@@ -702,6 +702,7 @@ PHILOLOGIST_REACT_ACTIONS = (
     "snapshot_docx",
     "apply_safe_fixes",
     "verify_safe_fixes",
+    "recheck_docx",
     "rebuild_pdf",
     "finish_document",
 )
@@ -858,6 +859,8 @@ def _available_react_actions(context: dict[str, Any]) -> list[str]:
         return ["finish_document"]
     if not context.get("verify_done"):
         return ["verify_safe_fixes"]
+    if not context.get("recheck_done"):
+        return ["recheck_docx"]
     if (
         context.get("rebuild_pdf_enabled")
         and context.get("applied_fix_count", 0) > 0
@@ -886,8 +889,10 @@ def _compact_react_context(context: dict[str, Any]) -> dict[str, Any]:
         "snapshot_done": bool(context.get("snapshot_done")),
         "fix_done": bool(context.get("fix_done")),
         "verify_done": bool(context.get("verify_done")),
+        "recheck_done": bool(context.get("recheck_done")),
         "pdf_rebuilt": bool(context.get("pdf_rebuilt")),
         "issue_count": int(context.get("issue_count", 0) or 0),
+        "remaining_issue_count": int(context.get("remaining_issue_count", 0) or 0),
         "applied_fix_count": int(context.get("applied_fix_count", 0) or 0),
         "skipped_fix_count": int(context.get("skipped_fix_count", 0) or 0),
         "verification_warning_count": int(context.get("verification_warning_count", 0) or 0),
@@ -970,8 +975,10 @@ def _run_docx_react_loop(
         "snapshot_done": False,
         "fix_done": False,
         "verify_done": False,
+        "recheck_done": False,
         "pdf_rebuilt": False,
         "issue_count": 0,
+        "remaining_issue_count": 0,
         "applied_fix_count": 0,
         "skipped_fix_count": 0,
         "verification_warning_count": 0,
@@ -979,6 +986,7 @@ def _run_docx_react_loop(
     }
     trace: list[dict[str, Any]] = []
     review_result: dict[str, Any] = {"issues": [], "issue_count": 0, "local_issue_count": 0, "ai_issue_count": 0}
+    post_fix_review_result: dict[str, Any] | None = None
     before_snapshot: dict[str, Any] = {}
     fix_result: dict[str, Any] = {
         "applied_fix_count": 0,
@@ -1072,6 +1080,23 @@ def _run_docx_react_loop(
             context["verify_done"] = True
             context["verification_warning_count"] = int(verification_result.get("warning_count", 0) or 0)
             observation = f"Самопроверка завершена, предупреждений: {context['verification_warning_count']}."
+        elif action == "recheck_docx":
+            post_fix_review_result = tool_runner.call(
+                "recheck_docx",
+                {"path": str(docx_path), "ai_enabled": ai_enabled},
+                lambda docx_path=docx_path: review_docx(
+                    docx_path,
+                    ai_enabled=ai_enabled,
+                    template_memory=None,
+                    force_full_review=True,
+                ),
+            )
+            context["recheck_done"] = True
+            context["remaining_issue_count"] = int(post_fix_review_result.get("issue_count", 0) or 0)
+            observation = (
+                "Повторная языковая проверка завершена, "
+                f"осталось замечаний: {context['remaining_issue_count']}."
+            )
         elif action == "rebuild_pdf":
             pdf_path = tool_runner.call(
                 "rebuild_pdf",
@@ -1079,6 +1104,16 @@ def _run_docx_react_loop(
                 lambda docx_path=docx_path: _rebuild_pdf_for_docx(docx_path),
             )
             context["pdf_rebuilt"] = True
+            if not pdf_path:
+                warning = {
+                    "location": str(docx_path),
+                    "reason": "pdf_rebuild_failed",
+                    "message": "Не удалось пересобрать PDF после правок DOCX.",
+                }
+                verification_result.setdefault("warnings", []).append(warning)
+                verification_result["warning_count"] = len(verification_result["warnings"])
+                verification_result["verified"] = False
+                context["verification_warning_count"] = int(verification_result["warning_count"])
             observation = f"PDF пересобран: {bool(pdf_path)}."
         elif action == "finish_document":
             observation = "Документальный цикл завершен."
@@ -1113,8 +1148,11 @@ def _run_docx_react_loop(
             }
         )
 
+    effective_review_result = post_fix_review_result or review_result
     return {
-        "review_result": review_result,
+        "review_result": effective_review_result,
+        "initial_review_result": review_result,
+        "post_fix_review_result": post_fix_review_result,
         "fix_result": fix_result,
         "verification_result": verification_result,
         "pdf_path": pdf_path,
@@ -2047,7 +2085,6 @@ def run_philologist(
                 and not effective_ai_enabled
                 and not PHILOLOGIST_LLM_ROUTER
                 and not PHILOLOGIST_LLM_FIX_STRATEGY
-                and not PHILOLOGIST_REBUILD_PDF
             ):
                 react_result = _run_docx_react_loop(
                     docx_path=docx_path,
@@ -2056,7 +2093,7 @@ def run_philologist(
                     client=None,
                     use_llm_router=False,
                     use_llm_fix_strategy=False,
-                    rebuild_pdf_enabled=False,
+                    rebuild_pdf_enabled=True,
                     use_rag_decisions=False,
                     template_memory=template_memory,
                 )
@@ -2066,7 +2103,7 @@ def run_philologist(
                     ai_enabled=effective_ai_enabled,
                     use_llm_router=PHILOLOGIST_LLM_ROUTER,
                     use_llm_fix_strategy=PHILOLOGIST_LLM_FIX_STRATEGY,
-                    rebuild_pdf_enabled=PHILOLOGIST_REBUILD_PDF,
+                    rebuild_pdf_enabled=True,
                     use_rag_decisions=run_mode == "deep",
                     template_memory=template_memory,
                     timeout_seconds=PHILOLOGIST_DOC_TIMEOUT_SECONDS,
@@ -2074,6 +2111,7 @@ def run_philologist(
         except Exception as exc:
             logger.exception("philologist_document_failed", job_id=job_id, path=str(docx_path))
             react_result = _failed_docx_react_result(docx_path, f"{type(exc).__name__}: {exc}")
+        initial_review_result = react_result.get("initial_review_result") or react_result["review_result"]
         review_result = react_result["review_result"]
         fix_result = react_result["fix_result"]
         verification_result = react_result["verification_result"]
@@ -2081,7 +2119,7 @@ def run_philologist(
         template_memory = _update_template_memory(
             template_memory,
             document_name=docx_path.name,
-            review_result=review_result,
+            review_result=initial_review_result,
             fix_result=fix_result,
         )
         if effective_ai_enabled and _is_llm_auth_error(review_result.get("ai_error")):
@@ -2102,6 +2140,7 @@ def run_philologist(
             "row_id": _extract_row_id_from_docx_path(docx_path),
             "mun_name": _extract_mun_name_from_docx_path(docx_path),
             "document_type": _docx_resume_key(docx_path)[1],
+            "initial_issue_count": int(initial_review_result.get("issue_count", 0)),
             "issue_count": int(review_result.get("issue_count", 0)),
             "local_issue_count": int(review_result.get("local_issue_count", 0)),
             "ai_issue_count": int(review_result.get("ai_issue_count", 0)),
@@ -2190,6 +2229,17 @@ def run_philologist(
             ),
             data={"verification_warnings": verification_warnings},
         )
+        remaining_issues = sum(int(item.get("issue_count", 0) or 0) for item in processed_documents)
+        agent_loop.mark_step(
+            "recheck_docx",
+            "done" if remaining_issues == 0 else "blocked",
+            (
+                "Повторная языковая проверка не нашла остаточных замечаний."
+                if remaining_issues == 0
+                else f"После автоправок осталось замечаний: {remaining_issues}."
+            ),
+            data={"remaining_issues": remaining_issues},
+        )
         rebuilt_pdfs = sum(1 for item in processed_documents if item.get("updated_pdf"))
         agent_loop.mark_step(
             "rebuild_pdf",
@@ -2205,6 +2255,7 @@ def run_philologist(
         agent_loop.mark_step("review_docx", "blocked", "DOCX-файлы не найдены.")
         agent_loop.mark_step("apply_safe_fixes", "blocked", "Нет документов для применения правок.")
         agent_loop.mark_step("verify_safe_fixes", "blocked", "Нет документов для самопроверки правок.")
+        agent_loop.mark_step("recheck_docx", "blocked", "Нет документов для повторной языковой проверки.")
         agent_loop.mark_step("rebuild_pdf", "blocked", "Нет документов для пересборки PDF.")
 
     state["status"] = "finalizing"
@@ -2242,7 +2293,8 @@ def run_philologist(
         issue_count = int(row_entry["issue_count"])
         applied_fix_count = int(row_entry["applied_fix_count"])
         verification_warning_count = int(row_entry.get("verification_warning_count", 0))
-        unresolved_issue_count = max(0, issue_count - applied_fix_count, verification_warning_count)
+        unresolved_issue_count = max(issue_count, verification_warning_count)
+        row_entry["unresolved_issue_count"] = unresolved_issue_count
         note = (
             "Филолог завершил проверку документов."
             if unresolved_issue_count == 0
@@ -2345,6 +2397,7 @@ def run_philologist(
                 job_id=job_id,
             )
 
+    state["row_reviews"] = list(row_rollups.values())
     state["elapsed_seconds"] = round(perf_counter() - started_at, 2)
     state["task_stats"] = count_tasks_for_agent("philologist", job_id)
     state["tasks"] = get_tasks_for_agent("philologist", job_id)[:20]

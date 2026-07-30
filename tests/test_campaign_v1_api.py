@@ -1034,7 +1034,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         launched = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch?force_now=true")
         self.assertEqual(launched.status_code, 200, launched.text)
 
-    def test_validate_does_not_block_launch_on_template_artifact(self) -> None:
+    def test_validate_blocks_launch_on_unresolved_template_artifact(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "Artifact Campaign"})
         self.assertEqual(created.status_code, 200)
         campaign_id = created.json()["result"]["id"]
@@ -1101,10 +1101,10 @@ class CampaignV1ApiTests(unittest.TestCase):
         validate_fast = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
         self.assertEqual(validate_fast.status_code, 200, validate_fast.text)
         payload = validate_fast.json()["result"]
-        self.assertFalse(any(issue.get("kind") == "artifact" for issue in payload["template_issues"]))
-        self.assertFalse(
+        self.assertTrue(any(issue.get("kind") == "artifact" for issue in payload["template_issues"]))
+        self.assertTrue(
             any("артефакт" in error.lower() for error in payload["errors"]),
-            payload["errors"],
+            payload,
         )
 
         preview = self.client.post(f"/api/v1/campaigns/{campaign_id}/email-chain/preview")
@@ -1116,7 +1116,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
 
         launch = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch?force_now=true")
-        self.assertEqual(launch.status_code, 200, launch.text)
+        self.assertEqual(launch.status_code, 400, launch.text)
 
     def test_email_chain_crud_and_publish(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "Chain API"})

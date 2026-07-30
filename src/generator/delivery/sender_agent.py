@@ -53,7 +53,7 @@ from src.generator.delivery.email_validation import (
 )
 from src.generator.case_engine import build_inflected_fields_with_trace
 from src.generator.inflection.inflect import inflect_mun_name_genitive
-from src.generator.philologist.philologist_agent import run_philologist
+from src.generator.philologist.philologist_agent import get_philologist_status, run_philologist
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
 from src.jobs import load_agent_state, normalize_job_id, resolve_job_paths, save_agent_state
@@ -1464,17 +1464,37 @@ def clear_sender_stop_request(job_id: str | None = None) -> None:
 
 
 def _active_sender_review_task(row_id: Any, *, job_id: str | None = None) -> dict[str, Any] | None:
-    if not settings.inter_agent_handoffs_enabled:
-        return None
     row_id_text = _safe_text(row_id)
-    for item in get_tasks_for_agent("sender", job_id):
-        if _safe_text(item.get("task_type")) != "review_before_send":
+    if settings.inter_agent_handoffs_enabled:
+        for item in get_tasks_for_agent("sender", job_id):
+            if _safe_text(item.get("task_type")) != "review_before_send":
+                continue
+            if _safe_text(item.get("row_id")) != row_id_text:
+                continue
+            if _safe_text(item.get("status")) not in {"pending", "in_progress"}:
+                continue
+            return item
+
+    philologist_state = get_philologist_status(job_id, include_details=False)
+    for row_review in philologist_state.get("row_reviews") or []:
+        if _safe_text(row_review.get("row_id")) != row_id_text:
             continue
-        if _safe_text(item.get("row_id")) != row_id_text:
-            continue
-        if _safe_text(item.get("status")) not in {"pending", "in_progress"}:
-            continue
-        return item
+        unresolved = int(row_review.get("unresolved_issue_count") or 0)
+        if unresolved <= 0:
+            return None
+        return {
+            "task_type": "review_before_send",
+            "row_id": row_id_text,
+            "status": "pending",
+            "blocking": True,
+            "details": {
+                **dict(row_review),
+                "note": (
+                    f"Филолог нашёл {unresolved} нерешённых замечаний. "
+                    "Отправка заблокирована до повторной успешной проверки."
+                ),
+            },
+        }
     return None
 
 

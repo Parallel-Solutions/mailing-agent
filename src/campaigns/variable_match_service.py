@@ -756,6 +756,23 @@ def template_text_cache_validation_errors(campaign: Campaign) -> list[str]:
     return errors
 
 
+def _validation_recipients(campaign: Campaign) -> list[CampaignRecipient]:
+    with session_scope() as session:
+        recipients = list(
+            session.scalars(
+                select(CampaignRecipient)
+                .where(
+                    CampaignRecipient.campaign_id == campaign.id,
+                    CampaignRecipient.excluded.is_(False),
+                )
+                .order_by(CampaignRecipient.row_index.asc())
+            ).all()
+        )
+        for recipient in recipients:
+            session.expunge(recipient)
+        return recipients
+
+
 def _first_validation_recipient(campaign: Campaign) -> CampaignRecipient | None:
     with session_scope() as session:
         recipient = session.scalar(

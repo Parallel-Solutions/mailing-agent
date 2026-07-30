@@ -215,6 +215,12 @@ def _normalize_mo_name_case(value: str) -> str:
     return _capitalize_phrase_if_lower(text)
 
 
+def normalize_municipality_name_case(value: str) -> str:
+    """Normalize capitalization in municipality names and administrative phrases."""
+
+    return normalize_russian_geo_admin_case(_normalize_mo_name_case(value))
+
+
 def _trim_administrative_tail(value: str) -> str:
     text = normalize_display_text(value).strip()
     if not text:

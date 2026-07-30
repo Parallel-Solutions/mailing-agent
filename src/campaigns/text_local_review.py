@@ -118,7 +118,12 @@ def _guillemet_balance(text: str) -> int:
     return text.count("«") - text.count("»")
 
 
-def review_email_text(text: str, *, field: str = "body") -> list[LocalTextIssue]:
+def review_email_text(
+    text: str,
+    *,
+    field: str = "body",
+    check_terminal_punctuation: bool = True,
+) -> list[LocalTextIssue]:
     if not (text or "").strip():
         return []
 
@@ -197,13 +202,16 @@ def review_email_text(text: str, *, field: str = "body") -> list[LocalTextIssue]
         )
 
     for match in NESTED_ADMINISTRATION_RE.finditer(text):
+        normalized_text = normalize_administration_mentions(text)
         _add_issue(
             issues,
-            fragment=match.group(0),
+            fragment=text if normalized_text != text else match.group(0),
             message="В названии получателя повторяется слово «Администрация».",
             kind="grammar",
             severity="warning",
+            suggestion=normalized_text if normalized_text != text else "",
         )
+        break
 
     if "предмета нормирование" in text.casefold():
         _add_issue(
@@ -238,7 +246,7 @@ def review_email_text(text: str, *, field: str = "body") -> list[LocalTextIssue]
             severity="error",
         )
 
-    if text.strip() and not re.search(r"[.!?…]$", text.strip()):
+    if check_terminal_punctuation and text.strip() and not re.search(r"[.!?…]$", text.strip()):
         _add_issue(
             issues,
             fragment=text.strip()[-20:],

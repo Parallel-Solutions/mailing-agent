@@ -176,6 +176,29 @@ class PhilologistAgenticTests(unittest.TestCase):
         )
         self.assertTrue(all(step.get("observation") for step in result["react_trace"]))
 
+    def test_document_react_loop_rechecks_language_after_safe_fixes(self) -> None:
+        path = self._docx(
+            "recheck.docx",
+            "Разработка Генплана и ПЗЗ для администрация Дятьковского района.",
+        )
+        runner = PhilologistToolRunner()
+
+        result = _run_docx_react_loop(
+            docx_path=path,
+            ai_enabled=False,
+            tool_runner=runner,
+            client=None,
+        )
+        actions = [step["action"] for step in result["react_trace"]]
+
+        self.assertIn("recheck_docx", actions)
+        self.assertEqual(result["review_result"]["issue_count"], 0)
+        self.assertGreater(result["initial_review_result"]["issue_count"], 0)
+        self.assertIn(
+            "для администрации Дятьковского муниципального района",
+            Document(path).paragraphs[0].text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
