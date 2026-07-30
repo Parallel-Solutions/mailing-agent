@@ -1207,7 +1207,13 @@ def validate_campaign_for_launch(
         if not mapping_errors:
             errors.extend(empty_variable_validation_errors(camp))
         errors.extend(template_text_cache_validation_errors(camp))
-        template_issues = substitution_validation_issues(camp, deep=False, advisory=False)
+        template_issues = substitution_validation_issues(
+            camp,
+            deep=deep,
+            advisory=False,
+            include_placeholder_issues=True,
+            strict_preview=True,
+        )
         template_errors, template_warnings = partition_review_messages(template_issues)
         errors.extend(template_errors)
         warnings.extend(template_warnings)
@@ -1255,7 +1261,7 @@ def launch_campaign(
         campaign_id,
         owner_username,
         visible_owners=visible_owners,
-        deep=False,
+        deep=True,
     )
     if not validation["ok"]:
         raise ValueError("; ".join(validation["errors"]))

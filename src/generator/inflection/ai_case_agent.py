@@ -21,7 +21,10 @@ from src.generator.inflection.inflect import (
     inflect_mun_name_prepositional,
     inflect_mun_name_project_form,
 )
-from src.generator.generation.transforms import ensure_official_district_wording
+from src.generator.generation.transforms import (
+    ensure_official_district_wording,
+    normalize_municipality_name_case,
+)
 from src.utils.env import resolve_env_value
 
 try:
@@ -221,6 +224,7 @@ def _extract_canonical_from_adm_name(adm_name: str) -> Optional[str]:
                         if locality:
                             return f"Городское поселение поселок {locality}"
                 return _normalize_name_candidate(candidate)
+
     return None
 
 
@@ -377,8 +381,16 @@ def _apply_canonical_mo_name(context: dict, canonical_name: str) -> dict:
     canonical = _normalize_display_phrase(canonical_name)
     if not canonical:
         return context
+    canonical = normalize_municipality_name_case(canonical)
 
-    adm_name = f'Администрация муниципального образования "{canonical}"'
+    is_district_context = context.get("DOCUMENT_ENTITY_TYPE") == "district"
+    if is_district_context:
+        from src.generator.generation.transforms import build_district_admin_name
+
+        canonical = ensure_official_district_wording(canonical)
+        adm_name = build_district_admin_name(canonical)
+    else:
+        adm_name = f'Администрация муниципального образования "{canonical}"'
     mun_gen = inflect_mun_name_genitive(canonical)
     mun_project = inflect_mun_name_project_form(canonical)
     mun_prep = inflect_mun_name_prepositional(canonical)
@@ -1043,6 +1055,8 @@ def apply_case_agent_result(context: dict, agent_result: dict) -> dict:
             and corrected_value
             and confidence >= CASE_AGENT_AUTO_FIX_MIN_CONFIDENCE
         ):
+            if field in {"MUN_NAME_1", "MUN_NAME_2", "ADM_NAME_1"}:
+                corrected_value = normalize_municipality_name_case(corrected_value)
             context[field] = corrected_value
             applied = True
         elif status == "needs_review":

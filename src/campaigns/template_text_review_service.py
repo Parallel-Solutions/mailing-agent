@@ -164,7 +164,11 @@ def _append_local_language_issues(
     plain = html_to_review_text(rendered_text) if rendered_text else ""
     if not plain:
         return
-    for item in review_email_text(plain, field=field):
+    for item in review_email_text(
+        plain,
+        field=field,
+        check_terminal_punctuation=field != "subject",
+    ):
         issues.append(
             _issue_dict(
                 template_id=template_id,
@@ -360,7 +364,7 @@ def review_rendered_template(
         rendered_text=rendered_html,
     )
 
-    if advisory:
+    if advisory or deep:
         _append_case_issues(
             issues,
             template_id=template_id,
@@ -385,6 +389,14 @@ def review_rendered_template(
     return issues
 
 
+def _promote_deep_blocking_issue(issue: dict[str, Any]) -> None:
+    kind = str(issue.get("kind") or "")
+    suggestion = str(issue.get("suggestion") or "").strip()
+    if kind in {"grammar", "case"} or (kind == "punctuation" and suggestion):
+        issue["severity"] = "error"
+        issue["blocking"] = True
+
+
 def review_campaign_templates(
     campaign: Campaign,
     *,
@@ -393,10 +405,10 @@ def review_campaign_templates(
     include_placeholder_issues: bool = False,
     strict_preview: bool = False,
 ) -> list[dict[str, Any]]:
-    from src.campaigns.variable_match_service import _collect_templates_for_validation, _first_validation_recipient
+    from src.campaigns.variable_match_service import _collect_templates_for_validation, _validation_recipients
 
-    recipient = _first_validation_recipient(campaign)
-    if recipient is None:
+    recipients = _validation_recipients(campaign)
+    if not recipients:
         return []
 
     all_issues: list[dict[str, Any]] = []
@@ -409,8 +421,48 @@ def review_campaign_templates(
         combined = str(template_info.get("text") or "")
         if not body_html and combined:
             body_html = combined
-        all_issues.extend(
-            review_rendered_template(
+
+        template_text = "\n".join([subject, body_html, body_text])
+        seen_rendered: set[tuple[str, str, str]] = set()
+        advisory_done = False
+        strict_preview_done = False
+        for recipient in recipients:
+            rendered_subject = render_template_text(
+                subject,
+                recipient=recipient,
+                campaign=campaign,
+                template_id=template_id,
+                template_name=template_name,
+                template_text=template_text,
+            )
+            rendered_html = render_template_text(
+                body_html,
+                recipient=recipient,
+                campaign=campaign,
+                template_id=template_id,
+                template_name=template_name,
+                template_text=template_text,
+            )
+            rendered_text = (
+                render_template_text(
+                    body_text,
+                    recipient=recipient,
+                    campaign=campaign,
+                    template_id=template_id,
+                    template_name=template_name,
+                    template_text=template_text,
+                )
+                if body_text.strip()
+                else html_to_review_text(rendered_html)
+            )
+            rendered_signature = (rendered_subject, rendered_html, rendered_text)
+            if rendered_signature in seen_rendered:
+                continue
+            seen_rendered.add(rendered_signature)
+
+            run_deep = bool(deep and not advisory_done)
+            run_advisory = bool(advisory and not advisory_done)
+            rendered_issues = review_rendered_template(
                 template_id=template_id,
                 template_name=template_name,
                 subject_template=subject,
@@ -418,12 +470,23 @@ def review_campaign_templates(
                 body_text_template=body_text,
                 recipient=recipient,
                 campaign=campaign,
-                deep=deep,
-                advisory=advisory,
+                deep=run_deep,
+                advisory=run_advisory,
+                rendered_subject=rendered_subject,
+                rendered_html=rendered_html,
+                rendered_text=rendered_text,
                 include_placeholder_issues=include_placeholder_issues,
-                strict_preview=strict_preview,
+                strict_preview=strict_preview and not strict_preview_done,
             )
-        )
+            strict_preview_done = True
+            if run_deep or run_advisory:
+                advisory_done = True
+            for issue in rendered_issues:
+                if deep:
+                    _promote_deep_blocking_issue(issue)
+                issue.setdefault("recipient_id", str(recipient.id))
+                issue.setdefault("recipient_row_index", int(recipient.row_index or 0))
+            all_issues.extend(rendered_issues)
     return all_issues
 
 

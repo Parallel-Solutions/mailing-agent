@@ -53,12 +53,11 @@ RAG_SEMANTIC_WEIGHT = int(_read_env_override("RAG_SEMANTIC_WEIGHT", "30"))
 
 # AI-ревью готового документа
 ENABLE_DOCUMENT_REVIEW_AI = _read_env_override("ENABLE_DOCUMENT_REVIEW_AI", "1") == "1"
-ENABLE_EMAIL_LANGUAGE_AI = _read_env_override("ENABLE_EMAIL_LANGUAGE_AI", "0") == "1"
+ENABLE_EMAIL_LANGUAGE_AI = _read_env_override("ENABLE_EMAIL_LANGUAGE_AI", "1") == "1"
 DOCUMENT_REVIEW_MODEL = _read_env_override("DOCUMENT_REVIEW_MODEL", CASE_AGENT_MODEL)
 PHILOLOGIST_MODE = _read_env_override("PHILOLOGIST_MODE", "fast").strip().lower() or "fast"
 PHILOLOGIST_LLM_ROUTER = _read_env_override("PHILOLOGIST_LLM_ROUTER", "0") == "1"
 PHILOLOGIST_LLM_FIX_STRATEGY = _read_env_override("PHILOLOGIST_LLM_FIX_STRATEGY", "0") == "1"
-PHILOLOGIST_REBUILD_PDF = _read_env_override("PHILOLOGIST_REBUILD_PDF", "0") == "1"
 PHILOLOGIST_DOC_TIMEOUT_SECONDS = max(30, int(_read_env_override("PHILOLOGIST_DOC_TIMEOUT_SECONDS", "180")))
 PHILOLOGIST_CONTEXT_LLM = _read_env_override("PHILOLOGIST_CONTEXT_LLM", "1") == "1"
 PHILOLOGIST_CONTEXT_LLM_MAX_ITEMS = max(0, int(_read_env_override("PHILOLOGIST_CONTEXT_LLM_MAX_ITEMS", "60")))

@@ -78,6 +78,12 @@ def build_philologist_tool_manifest() -> list[dict[str, Any]]:
             "output_schema": {"verified": "bool", "warning_count": "int"},
         },
         {
+            "name": "recheck_docx",
+            "description": "Run a full linguistic review again after automatic DOCX fixes.",
+            "input_schema": {"path": "str", "ai_enabled": "bool"},
+            "output_schema": {"issue_count": "int", "issues": "list[dict]"},
+        },
+        {
             "name": "rebuild_pdf",
             "description": "Rebuild PDF after DOCX fixes.",
             "input_schema": {"path": "str"},

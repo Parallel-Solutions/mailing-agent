@@ -77,7 +77,7 @@ describe('useCampaignLaunchValidation', () => {
     });
 
     expect(flush).toHaveBeenCalledTimes(1);
-    expect(campaignsApi.validate).toHaveBeenCalledWith('camp-1');
+    expect(campaignsApi.validate).toHaveBeenCalledWith('camp-1', { deep: true });
     expect(result.current.data?.warnings).toEqual(['warn']);
   });
 
