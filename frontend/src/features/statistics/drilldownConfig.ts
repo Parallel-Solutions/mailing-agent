@@ -1,7 +1,17 @@
 import { companyEmailsText, companyField } from './utils';
 import { formatLocalDateTime } from '@/utils/dateTime';
 
-export type DrillColumn = [string, (item: Record<string, unknown>) => unknown];
+export type DrillColumnOptions = {
+  width?: number;
+  display?: 'text' | 'status' | 'date';
+  ellipsis?: boolean;
+};
+
+export type DrillColumn = [
+  string,
+  (item: Record<string, unknown>) => unknown,
+  DrillColumnOptions?,
+];
 
 export type DrillConfig = {
   title: string;
@@ -13,6 +23,7 @@ export type DrillConfig = {
     | 'campaign-attempts'
     | 'reports';
   columns: DrillColumn[];
+  tableWidth?: number;
   params?: Record<string, string>;
   filter?: (item: Record<string, unknown>) => boolean;
 };
@@ -48,15 +59,27 @@ const CAMPAIGN_ATTEMPT_COLUMNS: DrillColumn[] = [
 ];
 
 const CONSENT_COLUMNS: DrillColumn[] = [
-  ['Компания', (item) => item.organization],
-  ['Контакт', (item) => item.contact],
-  ['Email', (item) => item.email],
-  ['Статус согласия', (item) => item.consent_status_label],
-  ['Материалы', (item) => item.materials_label],
-  ['Последнее действие', (item) => item.last_action_label],
-  ['Дата', (item) => formatLocalDateTime(String(item.last_action_at || ''))],
-  ['Интерес', (item) => (item.interest as { label?: string } | undefined)?.label],
-  ['Следующее действие', (item) => (item.next_action as { label?: string } | undefined)?.label],
+  ['Компания', (item) => item.organization, { width: 190, ellipsis: true }],
+  ['Контакт', (item) => item.contact, { width: 180, ellipsis: true }],
+  ['Email', (item) => item.email, { width: 220, ellipsis: true }],
+  ['Статус согласия', (item) => item.consent_status_label, { width: 180, display: 'status' }],
+  ['Материалы', (item) => item.materials_label, { width: 190, display: 'status' }],
+  ['Последнее действие', (item) => item.last_action_label, { width: 200 }],
+  [
+    'Дата',
+    (item) => formatLocalDateTime(String(item.last_action_at || '')),
+    { width: 140, display: 'date' },
+  ],
+  [
+    'Интерес',
+    (item) => (item.interest as { label?: string } | undefined)?.label,
+    { width: 110, display: 'status' },
+  ],
+  [
+    'Следующее действие',
+    (item) => (item.next_action as { label?: string } | undefined)?.label,
+    { width: 170, display: 'status' },
+  ],
 ];
 
 const CAMPAIGN_COLUMNS: DrillColumn[] = [
@@ -146,11 +169,18 @@ export const DRILLDOWN_CONFIG: Record<string, DrillConfig> = {
     columns: RECIPIENT_COLUMNS,
     params: { quick_filter: 'pending' },
   },
-  consents: { title: 'Согласия', source: 'consents', columns: CONSENT_COLUMNS, params: {} },
+  consents: {
+    title: 'Согласия',
+    source: 'consents',
+    columns: CONSENT_COLUMNS,
+    tableWidth: 1580,
+    params: {},
+  },
   materials: {
     title: 'Материалы отправлены',
     source: 'consents',
     columns: CONSENT_COLUMNS,
+    tableWidth: 1580,
     params: {},
     filter: (item) => item.materials_label === 'Материалы отправлены',
   },

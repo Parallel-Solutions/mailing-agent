@@ -1,6 +1,9 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
-import { invalidateCampaignDerivedData } from '@/features/campaigns/campaignQueryUtils';
+import {
+  campaignValidateQueryKey,
+  invalidateCampaignDerivedData,
+} from '@/features/campaigns/campaignQueryUtils';
 import { runMappingAutoSuggest } from '@/features/campaigns/mappingAutoSuggestUtils';
 
 export type MappingAutoSuggestInput = {
@@ -58,7 +61,9 @@ export function useCampaignMappingAutoSuggest(input: MappingAutoSuggestInput): {
         if (cancelled || runIdRef.current !== runId) return;
 
         if (saved) {
-          invalidateCampaignDerivedData(queryClient, campaignId);
+          await queryClient.cancelQueries({ queryKey: campaignValidateQueryKey(campaignId) });
+          queryClient.removeQueries({ queryKey: campaignValidateQueryKey(campaignId) });
+          invalidateCampaignDerivedData(queryClient, campaignId, { includeValidation: true });
           await onDraftRefresh?.();
           onAutoSaved?.();
           reviewPromptedRef.current = null;

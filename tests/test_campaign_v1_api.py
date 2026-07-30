@@ -1007,6 +1007,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         validate_before = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
         self.assertEqual(validate_before.status_code, 200)
         self.assertFalse(validate_before.json()["result"]["mapping_confirmed"])
+        self.assertEqual(validate_before.json()["result"]["template_issues"], [])
         self.assertIn("сопоставление переменных", " ".join(validate_before.json()["result"]["errors"]).lower())
 
         suggest = self.client.post(f"/api/v1/campaigns/{campaign_id}/variable-mapping/suggest")

@@ -10,8 +10,10 @@ export type AutoFixValidationResult = {
   validation: CampaignValidateResponse;
 };
 
-export function campaignValidateQueryKey(campaignId: string) {
-  return ['campaign-validate', campaignId] as const;
+export function campaignValidateQueryKey(campaignId: string, validationSignature?: string) {
+  return validationSignature
+    ? (['campaign-validate', campaignId, validationSignature] as const)
+    : (['campaign-validate', campaignId] as const);
 }
 
 export function campaignVariableMappingQueryKey(campaignId: string) {
@@ -39,6 +41,7 @@ export type ValidationSignatureInput = {
   companyId?: string | null;
   companyWorkTypeId?: string | null;
   mappingConfirmed?: boolean;
+  mappingConfirmedAt?: string | null;
   smtpMailboxId?: string | null;
   audienceId?: string | null;
   templateIds?: {
@@ -76,6 +79,7 @@ export function buildValidationSignature(input: ValidationSignatureInput): strin
     co: input.companyId || '',
     w: input.companyWorkTypeId || '',
     m: Boolean(input.mappingConfirmed),
+    mv: input.mappingConfirmedAt || '',
     s: input.smtpMailboxId || '',
     a: input.audienceId || '',
     t: [

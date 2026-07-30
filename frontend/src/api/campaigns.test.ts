@@ -28,4 +28,21 @@ describe('campaignsApi.validate', () => {
     await rejection;
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+  it('uses the caller signal to cancel a stale validation without reporting a timeout', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+
+    const validation = campaignsApi.validate('campaign-1', { signal: controller.signal });
+    controller.abort();
+
+    await expect(validation).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

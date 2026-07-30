@@ -269,6 +269,9 @@ export function CampaignNewPage() {
   const draftMappingConfirmed = Boolean(
     (draft.draft_payload as Record<string, unknown> | undefined)?.mapping_confirmed,
   );
+  const draftMappingConfirmedAt = String(
+    (draft.draft_payload as Record<string, unknown> | undefined)?.mapping_confirmed_at || '',
+  );
 
   const mappingInputsSignature = useMemo(
     () =>
@@ -287,6 +290,7 @@ export function CampaignNewPage() {
         recipientCount,
         emailChainId: draft.email_chain_id,
         mappingConfirmed: draftMappingConfirmed,
+        mappingConfirmedAt: draftMappingConfirmedAt,
         companyId: draftForValidation.company_id,
         companyWorkTypeId: draftForValidation.company_work_type_id,
         smtpMailboxId: draft.smtp_mailbox_id,
@@ -298,6 +302,7 @@ export function CampaignNewPage() {
       draft.email_chain_id,
       draft.smtp_mailbox_id,
       draftMappingConfirmed,
+      draftMappingConfirmedAt,
       recipientCount,
       draftForValidation.company_id,
       draftForValidation.company_work_type_id,
@@ -390,15 +395,12 @@ export function CampaignNewPage() {
 
   const handleMappingConfirmed = useCallback(async () => {
     if (!id) return;
+    await queryClient.cancelQueries({ queryKey: campaignValidateQueryKey(id) });
+    queryClient.removeQueries({ queryKey: campaignValidateQueryKey(id) });
     invalidateCampaignMappingCache(queryClient, id);
     const camp = await campaignsApi.get(id);
     replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
-    await queryClient.fetchQuery({
-      queryKey: campaignValidateQueryKey(id),
-      queryFn: () => campaignsApi.validate(id, { deep: true }),
-      staleTime: 0,
-    });
-    message.success('Сопоставление переменных сохранено');
+    message.success('Сопоставление переменных сохранено. Перепроверяем рассылку');
   }, [id, message, queryClient, replaceDraft]);
 
   const autosave = (patch: Record<string, unknown>) => {
@@ -589,8 +591,9 @@ export function CampaignNewPage() {
   ];
   const readinessWarnings = launchValidation.hasChecked ? launchValidation.data?.warnings || [] : [];
   const mappingConfirmed = Boolean(
-    launchValidation.data?.mapping_confirmed ??
-      (draft.draft_payload as Record<string, unknown> | undefined)?.mapping_confirmed,
+    launchValidation.hasChecked
+      ? launchValidation.data?.mapping_confirmed
+      : (draft.draft_payload as Record<string, unknown> | undefined)?.mapping_confirmed,
   );
 
   const refreshDraft = useCallback(async () => {

@@ -77,7 +77,10 @@ describe('useCampaignLaunchValidation', () => {
     });
 
     expect(flush).toHaveBeenCalledTimes(1);
-    expect(campaignsApi.validate).toHaveBeenCalledWith('camp-1', { deep: true });
+    expect(campaignsApi.validate).toHaveBeenCalledWith(
+      'camp-1',
+      expect.objectContaining({ deep: true, signal: expect.any(AbortSignal) }),
+    );
     expect(result.current.data?.warnings).toEqual(['warn']);
   });
 
@@ -92,7 +95,7 @@ describe('useCampaignLaunchValidation', () => {
       excluded_recipients: 0,
     });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    queryClient.setQueryData(campaignValidateQueryKey('camp-1'), {
+    queryClient.setQueryData(campaignValidateQueryKey('camp-1', validationSignature), {
       ok: true,
       errors: [],
       warnings: ['cached'],
@@ -135,6 +138,119 @@ describe('useCampaignLaunchValidation', () => {
     });
 
     expect(campaignsApi.validate).not.toHaveBeenCalled();
+  });
+  it('does not let an older in-flight validation overwrite a newer mapping revision', async () => {
+
+    let resolveFirst:
+
+      | ((value: Awaited<ReturnType<typeof campaignsApi.validate>>) => void)
+
+      | undefined;
+
+    const firstValidation = new Promise<Awaited<ReturnType<typeof campaignsApi.validate>>>((resolve) => {
+
+      resolveFirst = resolve;
+
+    });
+
+    vi.mocked(campaignsApi.validate)
+
+      .mockReturnValueOnce(firstValidation)
+
+      .mockResolvedValueOnce({
+
+        ok: true,
+
+        errors: [],
+
+        warnings: ['fresh'],
+
+        template_issues: [],
+
+        active_recipients: 1,
+
+        mapping_confirmed: true,
+
+        excluded_recipients: 0,
+
+      });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    const flush = vi.fn().mockResolvedValue(undefined);
+
+    const { result, rerender } = renderHook(
+
+      ({ signature }) =>
+
+        useCampaignLaunchValidation({
+
+          campaignId: 'camp-1',
+
+          step: 4,
+
+          validationSignature: signature,
+
+          flushPendingChanges: flush,
+
+          queryClient,
+
+        }),
+
+      {
+
+        wrapper: createWrapper(queryClient),
+
+        initialProps: { signature: '{"m":false,"mv":""}' },
+
+      },
+
+    );
+
+    await waitFor(() => {
+
+      expect(campaignsApi.validate).toHaveBeenCalledTimes(1);
+
+    });
+
+    rerender({ signature: '{"m":true,"mv":"2026-07-30T12:01:00+00:00"}' });
+
+    await waitFor(() => {
+
+      expect(campaignsApi.validate).toHaveBeenCalledTimes(2);
+
+      expect(result.current.hasChecked).toBe(true);
+
+      expect(result.current.data?.warnings).toEqual(['fresh']);
+
+    });
+
+    resolveFirst?.({
+
+      ok: false,
+
+      errors: ['Заполните сопоставление переменных'],
+
+      warnings: ['old'],
+
+      template_issues: [],
+
+      active_recipients: 1,
+
+      mapping_confirmed: false,
+
+      excluded_recipients: 0,
+
+    });
+
+    await waitFor(() => {
+
+      expect(result.current.data?.warnings).toEqual(['fresh']);
+
+      expect(result.current.data?.mapping_confirmed).toBe(true);
+
+    });
+
   });
 });
 

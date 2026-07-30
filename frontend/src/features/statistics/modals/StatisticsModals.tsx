@@ -14,6 +14,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
 import { useQuery } from '@tanstack/react-query';
@@ -381,18 +382,54 @@ function DrilldownModal() {
   }, [modal, drill?.kind]);
 
   const columns =
-    drill?.config.columns.map(([title, getter], index) => ({
+    drill?.config.columns.map(([title, getter, options], index) => ({
       title,
       key: String(index),
-      render: (_: unknown, row: Record<string, unknown>) => String(getter(row) ?? '—'),
+      width: options?.width,
+      ellipsis: options?.ellipsis ? { showTitle: false } : undefined,
+      onCell: () => ({ style: { verticalAlign: 'top' as const } }),
+      render: (_: unknown, row: Record<string, unknown>) => {
+        const value = String(getter(row) ?? '—');
+        if (options?.display === 'status') {
+          return (
+            <Tooltip title={value}>
+              <Tag
+                color={drillStatusColor(value)}
+                style={{
+                  marginInlineEnd: 0,
+                  maxWidth: '100%',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {value}
+              </Tag>
+            </Tooltip>
+          );
+        }
+        if (options?.ellipsis) {
+          return (
+            <Typography.Text
+              ellipsis={{ tooltip: value }}
+              style={{ display: 'block', width: '100%' }}
+            >
+              {value}
+            </Typography.Text>
+          );
+        }
+        return value;
+      },
     })) || [];
+  const tableWidth = drill?.config.tableWidth || Math.max(960, columns.length * 150);
 
   return (
     <Modal
       title={drill?.config.title || 'Детализация'}
       open={modal === 'drill'}
       onCancel={closeModal}
-      width={960}
+      width={1360}
+      style={{ top: 24, maxWidth: 'calc(100vw - 32px)' }}
       footer={[
         <Button key="close" onClick={closeModal}>
           Закрыть
@@ -428,7 +465,16 @@ function DrilldownModal() {
         rowKey={(row, index) => String(row.row_key || row.job_id || index)}
         dataSource={drill?.rows || []}
         columns={columns}
-        pagination={{ current: page, pageSize: 20, onChange: setPage }}
+        tableLayout="fixed"
+        sticky
+        scroll={{ x: tableWidth, y: 'calc(100vh - 320px)' }}
+        pagination={{
+          current: page,
+          pageSize: 20,
+          showSizeChanger: false,
+          showTotal: (total) => `Всего: ${total}`,
+          onChange: setPage,
+        }}
         onRow={(row) => ({
           onClick: () => {
             if (row.row_key) void openCompanyModal(String(row.row_key));
@@ -438,6 +484,18 @@ function DrilldownModal() {
       />
     </Modal>
   );
+}
+
+function drillStatusColor(value: string) {
+  const normalized = value.toLocaleLowerCase('ru');
+  if (/ошиб|отказ|спам|заблок|не достав/.test(normalized)) return 'red';
+  if (/ожида|ещё не|еще не|не отправ|запрос согласия отправлен|низк/.test(normalized)) {
+    return 'gold';
+  }
+  if (/согласие получено|подтвержд|материалы отправлены|открыт|высок/.test(normalized)) {
+    return 'green';
+  }
+  return 'blue';
 }
 
 function CampaignSummaryModal() {

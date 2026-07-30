@@ -32,8 +32,16 @@ describe('buildCampaignAutosavePayload', () => {
 });
 
 describe('campaignValidateQueryKey', () => {
-  it('builds stable query key', () => {
+  it('builds a prefix key for invalidating every campaign validation', () => {
     expect(campaignValidateQueryKey('camp-1')).toEqual(['campaign-validate', 'camp-1']);
+  });
+
+  it('isolates cached validation results by state signature', () => {
+    expect(campaignValidateQueryKey('camp-1', 'revision-2')).toEqual([
+      'campaign-validate',
+      'camp-1',
+      'revision-2',
+    ]);
   });
 });
 
@@ -55,6 +63,19 @@ describe('buildValidationSignature', () => {
   it('changes when company changes', () => {
     const first = buildValidationSignature({ recipientCount: 1, companyId: 'company-1' });
     const second = buildValidationSignature({ recipientCount: 1, companyId: 'company-2' });
+    expect(first).not.toBe(second);
+  });
+  it('changes every time a confirmed mapping is saved', () => {
+    const first = buildValidationSignature({
+      recipientCount: 1,
+      mappingConfirmed: true,
+      mappingConfirmedAt: '2026-07-30T12:00:00+00:00',
+    });
+    const second = buildValidationSignature({
+      recipientCount: 1,
+      mappingConfirmed: true,
+      mappingConfirmedAt: '2026-07-30T12:01:00+00:00',
+    });
     expect(first).not.toBe(second);
   });
 });

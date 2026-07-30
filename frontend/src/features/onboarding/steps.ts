@@ -15,7 +15,7 @@ export const ONBOARDING_STEPS: OnboardingStepDefinition[] = [
   {
     id: 'welcome',
     route: '/',
-    title: 'Добро пожаловать в CampaignFlow',
+    title: 'Добро пожаловать в ai offer',
     description: 'Пройдём основные настройки вместе. На каждом шаге мы подсветим нужное действие и сохраним результат.',
   },
   {
