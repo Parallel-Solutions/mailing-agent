@@ -112,6 +112,8 @@ export function CampaignNewPage() {
   const pendingAutosaveRef = useRef<Record<string, unknown> | null>(null);
   const hydratedIdRef = useRef<string | null>(null);
   const companyAutoSetRef = useRef<string | null>(null);
+  const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const persistRequestRef = useRef(0);
   const suppressAutosaveRef = useRef(false);
 
   const setWizardStep = useCallback(
@@ -182,6 +184,12 @@ export function CampaignNewPage() {
   }, [id, emailChainIdParam]);
 
   const watchedChainId = Form.useWatch('email_chain_id', basicsForm);
+  const watchedBasics = Form.useWatch([], basicsForm);
+  const draftForValidation = useMemo(
+    () => ({ ...draft, ...draftBasicsFields(draft), ...(watchedBasics || {}) }),
+    [draft, watchedBasics],
+  );
+
   const linkedChainId = resolveLinkedChainId(watchedChainId, draft.email_chain_id);
 
   useEffect(() => {
@@ -205,9 +213,7 @@ export function CampaignNewPage() {
     enabled: !isAppAdmin && !user?.company?.id,
   });
 
-  const selectedCompanyId =
-    Form.useWatch('company_id', basicsForm) ||
-    draftBasicsFields(draft).company_id;
+  const selectedCompanyId = draftForValidation.company_id;
 
   const workTypesQuery = useQuery({
     queryKey: ['company-work-types', selectedCompanyId],
@@ -281,6 +287,8 @@ export function CampaignNewPage() {
         recipientCount,
         emailChainId: draft.email_chain_id,
         mappingConfirmed: draftMappingConfirmed,
+        companyId: draftForValidation.company_id,
+        companyWorkTypeId: draftForValidation.company_work_type_id,
         smtpMailboxId: draft.smtp_mailbox_id,
         audienceId: draft.audience_id,
         templateIds,
@@ -291,6 +299,8 @@ export function CampaignNewPage() {
       draft.smtp_mailbox_id,
       draftMappingConfirmed,
       recipientCount,
+      draftForValidation.company_id,
+      draftForValidation.company_work_type_id,
       templateIds,
     ],
   );
@@ -325,26 +335,37 @@ export function CampaignNewPage() {
     value: item.id,
   }));
 
+  const selectedWorkTypeId = draftBasicsFields(draftForValidation).company_work_type_id;
   const selectedCompanyLabel =
     companyOptions.find((item) => item.value === selectedCompanyId)?.label || 'не выбрана';
   const selectedWorkTypeLabel =
-    draft.work_type_name ||
-    workTypeOptions.find((item) => item.value === draftBasicsFields(draft).company_work_type_id)?.label ||
+    (selectedWorkTypeId &&
+      (workTypeOptions.find((item) => item.value === selectedWorkTypeId)?.label ||
+        draftBasicsFields(draftForValidation).work_type_name)) ||
     'не выбран';
 
   const persist = useCallback(
     async (patch: Record<string, unknown>) => {
       if (!id) return;
       setSaveState('saving');
+      const requestId = ++persistRequestRef.current;
       try {
-        const updated = await campaignsApi.update(id, buildCampaignAutosavePayload(patch));
-        setDraft(updated);
-        setSaveState('saved');
+        const request = persistQueueRef.current.then(() =>
+          campaignsApi.update(id, buildCampaignAutosavePayload(patch)),
+        );
+        persistQueueRef.current = request.then(() => undefined, () => undefined);
+        const updated = await request;
+        if (requestId === persistRequestRef.current) {
+          replaceDraft({ ...updated, ...(updated.draft_payload || {}) });
+          setSaveState('saved');
+        }
       } catch {
-        setSaveState('error');
+        if (requestId === persistRequestRef.current) {
+          setSaveState('error');
+        }
       }
     },
-    [id, setDraft, setSaveState],
+    [id, replaceDraft, setSaveState],
   );
 
   const flushPendingChanges = useCallback(async () => {
@@ -383,11 +404,12 @@ export function CampaignNewPage() {
   const autosave = (patch: Record<string, unknown>) => {
     if (suppressAutosaveRef.current) return;
     setDraft(patch);
-    pendingAutosaveRef.current = patch;
+    pendingAutosaveRef.current = { ...(pendingAutosaveRef.current || {}), ...patch };
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
+      const pendingPatch = pendingAutosaveRef.current;
       pendingAutosaveRef.current = null;
-      void persist(patch);
+      if (pendingPatch) void persist(pendingPatch);
     }, 700);
   };
 
@@ -447,11 +469,11 @@ export function CampaignNewPage() {
   const stepValidation = useMemo(
     () =>
       buildCampaignStepValidation({
-        draft,
+        draft: draftForValidation,
         validate: launchValidation.hasChecked ? launchValidation.data : undefined,
         scheduleValues: watchedSchedule || scheduleInitialValues,
       }),
-    [draft, launchValidation.hasChecked, launchValidation.data, watchedSchedule, scheduleInitialValues],
+    [draftForValidation, launchValidation.hasChecked, launchValidation.data, watchedSchedule, scheduleInitialValues],
   );
 
   const autoFixMutation = useMutation({
@@ -562,7 +584,7 @@ export function CampaignNewPage() {
   };
 
   const readinessErrors = [
-    ...validateCampaignBasics(draft),
+    ...validateCampaignBasics(draftForValidation),
     ...(launchValidation.hasChecked ? launchValidation.data?.errors || [] : []),
   ];
   const readinessWarnings = launchValidation.hasChecked ? launchValidation.data?.warnings || [] : [];
@@ -753,7 +775,7 @@ export function CampaignNewPage() {
               {
                 key: '0',
                 label: 'Основная информация',
-                children: (
+                children: fixModalStep === 0 ? null : (
                   <div data-onboarding-id="campaign-step-basics">
                     <CampaignWizardBasicsStep
                     form={basicsForm}
@@ -780,7 +802,7 @@ export function CampaignNewPage() {
               {
                 key: '1',
                 label: 'Отправитель',
-                children: (
+                children: fixModalStep === 1 ? null : (
                   <div data-onboarding-id="campaign-step-sender">
                     <CampaignWizardSenderStep
                     form={senderForm}
@@ -825,7 +847,7 @@ export function CampaignNewPage() {
               {
                 key: '3',
                 label: 'Расписание',
-                children: (
+                children: fixModalStep === 3 ? null : (
                   <div data-onboarding-id="campaign-step-schedule">
                     <CampaignWizardScheduleStep
                     form={scheduleForm}

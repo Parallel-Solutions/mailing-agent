@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from src.generator.generation.document_builder import build_kp_replacements
+from src.campaigns.substitution_engine import render_text
 from src.generator.generation.transforms import build_document_context
 from src.generator.inflection.ai_case_agent import (
     _apply_canonical_mo_name,
@@ -97,6 +98,18 @@ class MunicipalOkrugRecipientTests(unittest.TestCase):
                 self.assertEqual(context["MUN_NAME_2"], expected_scope)
                 self.assertEqual(context["WORK_SCOPE_FRAGMENT"], expected_scope)
                 self.assertEqual(replacements["ADM_NAME"], expected_recipient)
+
+    def test_final_render_keeps_municipality_capitalized_inside_sentence(self) -> None:
+        context = build_document_context(self._row(), 168)
+
+        rendered = render_text("project {{MUN_NAME_2}}", context)
+
+        self.assertEqual(
+            rendered,
+            "project \u0411\u0430\u0431\u044b\u043d\u0438\u043d\u0441\u043a\u043e\u0433\u043e "
+            "\u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e "
+            "\u043e\u043a\u0440\u0443\u0433\u0430",
+        )
 
     @patch("src.generator.inflection.ai_case_agent.CASE_AGENT_MODE", "auto_fix")
     def test_ai_correction_cannot_restore_lowercase_geo_name(self) -> None:

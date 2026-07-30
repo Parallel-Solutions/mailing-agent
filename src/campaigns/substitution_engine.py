@@ -394,24 +394,23 @@ def _adapt_territory_value_case(value: str, *, name: str, text: str, token: str)
         return clean
 
     if _placeholder_in_territory_genitive_context(text, token):
-        if canonical in {"MUN_NAME", "MUN_NAME"} or name.lower() == "mun_name":
-            return _normalize_mo_name_case(clean)
+        if canonical == "MUN_NAME" or name.lower() == "mun_name":
+            return normalize_russian_geo_admin_case(
+                _normalize_mo_name_case(clean)
+            )
         return normalize_russian_geo_admin_case(clean)
 
-    if canonical in {"MUN_NAME"} or name.lower() == "mun_name":
-        normalized = _normalize_mo_name_case(clean)
+    if canonical == "MUN_NAME" or name.lower() == "mun_name":
+        normalized = normalize_russian_geo_admin_case(
+            _normalize_mo_name_case(clean)
+        )
     elif canonical in {"MUN_R_NAME", "SUB_RF", "MUN_R_NAME_1", "SUB_RF_1", "MUN_NAME_1", "MUN_NAME_2"}:
         normalized = normalize_russian_geo_admin_case(clean)
     else:
         normalized = clean
 
     if _placeholder_is_sentence_start(text, token):
-        if normalized == normalized.lower():
-            return normalized[:1].upper() + normalized[1:]
-        return normalized
-
-    if normalized and normalized[0].isupper():
-        return normalized[0].lower() + normalized[1:]
+        return normalized[:1].upper() + normalized[1:]
     return normalized
 
 

@@ -325,6 +325,15 @@ class SubstitutionEngineTests(unittest.TestCase):
         self.assertNotIn("{{current_date}}", rendered)
         self.assertNotIn("ADM_NAME", rendered)
 
+    def test_render_text_keeps_generic_territory_phrase_lowercase_inside_sentence(self) -> None:
+        context = {
+            "MUN_R_NAME_1": "\u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u043e\u043a\u0440\u0443\u0433\u0430",
+        }
+
+        rendered = render_text("project {{MUN_R_NAME_1}}", context)
+
+        self.assertEqual(rendered, "project \u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u043e\u043a\u0440\u0443\u0433\u0430")
+
     def test_build_replacement_pairs_sorts_longest_first(self) -> None:
         context = {"MUN_R_SCOPE_FRAGMENT": "Scope", "MUN_R_NAME": "District", "SUB_RF": "Region"}
         text = "MUN_R_NAME SUB_RF and MUN_R_NAME"
@@ -427,7 +436,7 @@ class SubstitutionEngineTests(unittest.TestCase):
         rendered = render_text("{{mun_name}} предлагает выполнить работы.", context)
         self.assertEqual(rendered, "Энемское городское поселение предлагает выполнить работы.")
 
-    def test_render_mun_name_mid_sentence_uses_lowercase_leading_letter(self) -> None:
+    def test_render_mun_name_mid_sentence_keeps_proper_name_capitalized(self) -> None:
         context = {
             "MUN_NAME": "Энемское городское поселение",
             "mun_name": "Энемское городское поселение",
@@ -436,7 +445,7 @@ class SubstitutionEngineTests(unittest.TestCase):
         self.assertTrue(rendered.startswith("Работы выполняются для "))
         self.assertTrue(rendered.endswith("."))
         self.assertIn("городское поселение", rendered)
-        self.assertNotEqual(rendered.split(" для ", 1)[1][0], "Э")
+        self.assertEqual(rendered.split(" \u0434\u043b\u044f ", 1)[1][0], "\u042d")
 
     def test_render_mun_name_normalizes_all_caps_source(self) -> None:
         context = {
