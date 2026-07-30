@@ -451,6 +451,133 @@ class TemplateTextReviewTests(unittest.TestCase):
         mock_case.assert_called_once()
         mock_ai.assert_called_once()
 
+    def test_deep_review_keeps_ai_and_case_agent_feedback_non_blocking(self) -> None:
+        from src.campaigns.template_text_review_service import _promote_deep_blocking_issue
+
+        for source in ("ai", "case_agent"):
+            issue = {
+                "kind": "grammar" if source == "ai" else "case",
+                "severity": "warning",
+                "suggestion": "corrected",
+                "source": source,
+                "blocking": False,
+            }
+            _promote_deep_blocking_issue(issue)
+            self.assertEqual(issue["severity"], "warning")
+            self.assertFalse(issue["blocking"])
+
+    def test_deep_review_keeps_local_deterministic_errors_blocking(self) -> None:
+        from src.campaigns.template_text_review_service import _promote_deep_blocking_issue
+
+        issue = {
+            "kind": "case",
+            "severity": "warning",
+            "suggestion": "corrected",
+            "source": "local",
+        }
+        _promote_deep_blocking_issue(issue)
+        self.assertEqual(issue["severity"], "error")
+        self.assertTrue(issue["blocking"])
+
+    def test_template_case_fields_only_returns_used_context_fields(self) -> None:
+        from src.campaigns.template_text_review_service import _template_case_fields
+
+        self.assertEqual(_template_case_fields("<p>{{ADM_NAME}}</p>{{company}}"), {"ADM_NAME_1"})
+        self.assertEqual(_template_case_fields("<p>{{company}}</p>"), set())
+
+    def test_case_value_comparison_normalizes_quotes_and_spacing(self) -> None:
+        from src.campaigns.template_text_review_service import _case_values_equivalent
+
+        self.assertTrue(
+            _case_values_equivalent(
+                'Administration  \u00abExample district\u00bb',
+                'administration "Example district"',
+            )
+        )
+
+    def test_case_agent_reports_only_fields_used_by_template(self) -> None:
+        from src.campaigns.template_text_review_service import _append_case_issues
+
+        context = {"ADM_NAME_1": "Administration", "HEAD_FIO_1": "Person"}
+        result = {
+            "items": [
+                {
+                    "field": "ADM_NAME_1",
+                    "status": "needs_review",
+                    "generated_value": "Administration",
+                    "corrected_value": "Correct administration",
+                    "comment": "Check administration case",
+                },
+                {
+                    "field": "HEAD_FIO_1",
+                    "status": "needs_review",
+                    "generated_value": "Person",
+                    "corrected_value": "Correct person",
+                    "comment": "Check name case",
+                },
+            ]
+        }
+        issues: list[dict[str, object]] = []
+        with patch(
+            "src.generator.generation.config_generator.ENABLE_CASE_AGENT", True
+        ), patch(
+            "src.campaigns.substitution_context.recipient_row", return_value={}
+        ), patch(
+            "src.generator.generation.transforms.build_document_context", return_value=context
+        ), patch(
+            "src.generator.inflection.ai_case_agent.run_case_validation_agent", return_value=result
+        ):
+            _append_case_issues(
+                issues,
+                template_id="template-1",
+                template_name="Template",
+                recipient=MagicMock(row_index=1),
+                campaign=MagicMock(work_type="test"),
+                template_text="{{ADM_NAME}}",
+            )
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["fragment"], "Administration")
+        self.assertEqual(issues[0]["source"], "case_agent")
+        self.assertFalse(issues[0]["blocking"])
+
+
+    def test_case_agent_skips_fix_already_present_in_context(self) -> None:
+        from src.campaigns.template_text_review_service import _append_case_issues
+
+        context = {"ADM_NAME_1": "Correct administration"}
+        result = {
+            "items": [
+                {
+                    "field": "ADM_NAME_1",
+                    "status": "fix",
+                    "generated_value": "Old administration",
+                    "corrected_value": "Correct administration",
+                    "comment": "Administration form changed",
+                }
+            ]
+        }
+        issues: list[dict[str, object]] = []
+        with patch(
+            "src.generator.generation.config_generator.ENABLE_CASE_AGENT", True
+        ), patch(
+            "src.campaigns.substitution_context.recipient_row", return_value={}
+        ), patch(
+            "src.generator.generation.transforms.build_document_context", return_value=context
+        ), patch(
+            "src.generator.inflection.ai_case_agent.run_case_validation_agent", return_value=result
+        ):
+            _append_case_issues(
+                issues,
+                template_id="template-1",
+                template_name="Template",
+                recipient=MagicMock(row_index=1),
+                campaign=MagicMock(work_type="test"),
+                template_text="{{ADM_NAME_1}}",
+            )
+
+        self.assertEqual(issues, [])
+
 
 if __name__ == "__main__":
     unittest.main()

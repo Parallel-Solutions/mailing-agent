@@ -2,15 +2,28 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from src.campaigns.substitution_context import build_substitution_context
-from src.campaigns.substitution_engine import find_template_defects, html_to_review_text, is_blocking_placeholder_defect
+from src.campaigns.substitution_engine import (
+    discover_placeholders,
+    find_template_defects,
+    html_to_review_text,
+    is_blocking_placeholder_defect,
+)
 from src.campaigns.text_local_review import review_email_text
 from src.campaigns.variable_match_service import render_template_text
 from src.infra.models import Campaign, CampaignRecipient
 
 _LANGUAGE_KINDS = frozenset({"punctuation", "grammar", "case"})
+_CASE_FIELD_ALIASES: dict[str, frozenset[str]] = {
+    "HEAD_FIO_1": frozenset({"HEAD_FIO", "HEAD_FIO_1"}),
+    "HEAD_FIO_2": frozenset({"HEAD_FIO", "HEAD_FIO_2"}),
+    "MUN_NAME_1": frozenset({"MUN_NAME", "MUN_NAME_1"}),
+    "MUN_NAME_2": frozenset({"MUN_NAME", "MUN_NAME_2"}),
+    "ADM_NAME_1": frozenset({"ADM", "ADM_NAME", "ADM_NAME_1"}),
+}
 
 
 def _normalize_issue_severity(kind: str, severity: str) -> str:
@@ -29,9 +42,11 @@ def _issue_dict(
     fragment: str,
     message: str,
     suggestion: str = "",
+    source: str = "local",
+    blocking: bool | None = None,
 ) -> dict[str, Any]:
     severity = _normalize_issue_severity(kind, severity)
-    return {
+    issue = {
         "template_id": template_id,
         "template_name": template_name,
         "field": field,
@@ -41,7 +56,46 @@ def _issue_dict(
         "message": message,
         "suggestion": suggestion,
         "token": fragment,
+        "source": source,
     }
+    if blocking is not None:
+        issue["blocking"] = blocking
+    return issue
+
+
+def _template_case_fields(template_text: str) -> set[str]:
+    placeholder_names = {
+        str(item.name or "").strip().upper()
+        for item in discover_placeholders(template_text or "")
+    }
+    if not placeholder_names:
+        placeholder_names = {
+            token.upper()
+            for token in re.findall(r"\b[A-Z][A-Z0-9_]+\b", template_text or "")
+        }
+    return {
+        field
+        for field, aliases in _CASE_FIELD_ALIASES.items()
+        if placeholder_names.intersection(aliases)
+    }
+
+
+def _case_values_equivalent(first: str, second: str) -> bool:
+    def normalize(value: str) -> str:
+        text = str(value or "").translate(
+            str.maketrans(
+                {
+                    "\u00ab": '"',
+                    "\u00bb": '"',
+                    "\u201c": '"',
+                    "\u201d": '"',
+                }
+            )
+        )
+        text = re.sub(r"\s+", " ", text).strip()
+        return text.casefold()
+
+    return normalize(first) == normalize(second)
 
 
 def _artifact_message(kind: str, token: str) -> str:
@@ -80,6 +134,8 @@ def _append_placeholder_issues(
                 severity="error",
                 fragment=defect.token,
                 message=_artifact_message(defect.kind, defect.token),
+                source="placeholder",
+                blocking=True,
             )
         )
 
@@ -190,6 +246,7 @@ def _append_case_issues(
     template_name: str,
     recipient: CampaignRecipient,
     campaign: Campaign,
+    template_text: str,
 ) -> None:
     from src.campaigns.substitution_context import recipient_row
     from src.generator.generation.config_generator import ENABLE_CASE_AGENT
@@ -197,6 +254,9 @@ def _append_case_issues(
     from src.generator.inflection.ai_case_agent import run_case_validation_agent
 
     if not ENABLE_CASE_AGENT:
+        return
+    relevant_fields = _template_case_fields(template_text)
+    if not relevant_fields:
         return
 
     row = recipient_row(recipient)
@@ -209,9 +269,16 @@ def _append_case_issues(
         if status == "ok":
             continue
         field_name = str(item.get("field") or "context")
+        if field_name not in relevant_fields:
+            continue
         comment = str(item.get("comment") or "Возможная ошибка падежа").strip()
         corrected = str(item.get("corrected_value") or "").strip()
         generated = str(item.get("generated_value") or "").strip()
+        if (
+            status == "fix"
+            and _case_values_equivalent(corrected, str(context.get(field_name) or ""))
+        ):
+            continue
         fragment = generated or corrected or field_name
         issues.append(
             _issue_dict(
@@ -223,6 +290,8 @@ def _append_case_issues(
                 fragment=fragment,
                 message=comment,
                 suggestion=corrected,
+                source="case_agent",
+                blocking=False,
             )
         )
 
@@ -261,6 +330,8 @@ def _append_ai_issues(
                 fragment=str(item.fragment or ""),
                 message=str(item.issue or "Грамматическая ошибка"),
                 suggestion=str(item.suggestion or ""),
+                source="ai",
+                blocking=False,
             )
         )
 
@@ -371,6 +442,7 @@ def review_rendered_template(
             template_name=template_name,
             recipient=recipient,
             campaign=campaign,
+            template_text=template_text,
         )
         blocks: list[tuple[str, str]] = []
         if rendered_subject.strip():
@@ -392,6 +464,17 @@ def review_rendered_template(
 def _promote_deep_blocking_issue(issue: dict[str, Any]) -> None:
     kind = str(issue.get("kind") or "")
     suggestion = str(issue.get("suggestion") or "").strip()
+    source = str(issue.get("source") or "local")
+    if issue.get("blocking") is True:
+        issue["severity"] = "error"
+        return
+
+    if source in {"ai", "case_agent"}:
+        if kind in _LANGUAGE_KINDS:
+            issue["severity"] = "warning"
+            issue["blocking"] = False
+        return
+
     if kind in {"grammar", "case"} or (kind == "punctuation" and suggestion):
         issue["severity"] = "error"
         issue["blocking"] = True
