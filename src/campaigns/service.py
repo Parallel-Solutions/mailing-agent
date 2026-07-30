@@ -55,6 +55,44 @@ _RECIPIENT_ROW_RESERVED = frozenset(
     }
 )
 
+_MAPPING_DRAFT_STATE_KEYS = frozenset(
+    {
+        "mapping_confirmed",
+        "mapping_confirmed_at",
+        "variable_mapping",
+        "system_variables",
+        "recipient_columns",
+    }
+)
+
+
+def _merge_draft_payload_update(
+    current: dict[str, Any] | None,
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(current or {})
+    merged.update(
+        {
+            key: value
+            for key, value in incoming.items()
+            if key not in _MAPPING_DRAFT_STATE_KEYS
+        }
+    )
+    return merged
+
+
+def _recipient_columns_signature(columns: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                str(column or "").strip().lower()
+                for column in columns
+                if str(column or "").strip()
+            }
+        )
+    )
+
+
 _CORE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "company": (
         "company",
@@ -491,6 +529,8 @@ def update_campaign(
                 pass
 
         old_email_chain_id = row.email_chain_id
+        template_fields = ("email_template_id", "kp_template_id", "contract_template_id")
+        old_template_ids = {field: getattr(row, field) for field in template_fields}
         if "email_chain_id" in data and data["email_chain_id"] is not None:
             from src.campaigns.chain_service import _ensure_chain_access
             from src.infra.models import EmailChainRecord
@@ -518,13 +558,18 @@ def update_campaign(
             _apply_sender_fields(row, data)
         if "tags" in data:
             row.tags = list(data.get("tags") or [])
-        template_fields = ("email_template_id", "kp_template_id", "contract_template_id")
-        template_changed = any(field in data and data[field] is not None for field in template_fields)
+        template_changed = any(
+            field in data
+            and data[field] is not None
+            and data[field] != old_template_ids[field]
+            for field in template_fields
+        )
         chain_changed = "email_chain_id" in data and data["email_chain_id"] != old_email_chain_id
         if "draft_payload" in data and isinstance(data["draft_payload"], dict):
-            merged = dict(row.draft_payload or {})
-            merged.update(data["draft_payload"])
-            row.draft_payload = merged
+            row.draft_payload = _merge_draft_payload_update(
+                dict(row.draft_payload or {}),
+                data["draft_payload"],
+            )
         # Merge top-level known fields into draft for autosave recovery
         draft = dict(row.draft_payload or {})
         for key in ("name", "work_type", "document_mode", "mail_subject", "description", "send_scenario", "tags", "internal_comment"):
@@ -777,9 +822,11 @@ def replace_recipients(
         camp.total_count = added
         columns = list(recipient_columns or extract_recipient_columns(recipients[:500]))
         draft = dict(camp.draft_payload or {})
+        previous_columns = list(draft.get("recipient_columns") or [])
         draft["recipient_columns"] = columns
-        draft["mapping_confirmed"] = False
-        draft.pop("mapping_confirmed_at", None)
+        if _recipient_columns_signature(previous_columns) != _recipient_columns_signature(columns):
+            draft["mapping_confirmed"] = False
+            draft.pop("mapping_confirmed_at", None)
         camp.draft_payload = draft
         camp.updated_at = _now()
         session.flush()

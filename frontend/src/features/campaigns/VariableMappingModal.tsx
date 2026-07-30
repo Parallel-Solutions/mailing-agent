@@ -19,7 +19,7 @@ type Props = {
   mappingInputsSignature: string;
   skipSuggestIfConfirmed?: boolean;
   onClose: () => void;
-  onConfirmed: () => void;
+  onConfirmed: () => void | Promise<void>;
 };
 
 function stateToSuggestResult(state: Awaited<ReturnType<typeof campaignsApi.getVariableMapping>>): VariableMappingSuggestResult {
@@ -70,22 +70,23 @@ export function VariableMappingModal({
   );
 
   const saveMapping = useCallback(
-    async (nextMapping: Record<string, string>, options?: { auto?: boolean }) => {
+    async (nextMapping: Record<string, string>) => {
       setSaving(true);
       try {
         const stored = mappingToStorageValues(nextMapping, recipientColumns);
-        await campaignsApi.saveVariableMapping(campaignId, stored);
-        void queryClient.removeQueries({ queryKey: campaignVariableMappingQueryKey(campaignId) });
-        if (options?.auto) {
-          onConfirmed();
-          onClose();
-          return;
-        }
-        setPhase('success');
-        window.setTimeout(() => {
-          onConfirmed();
-          onClose();
-        }, 1500);
+        await campaignsApi.saveVariableMapping(campaignId, stored);
+        void queryClient.removeQueries({ queryKey: campaignVariableMappingQueryKey(campaignId) });
+        setPhase('success');
+        try {
+          await onConfirmed();
+        } catch (error) {
+          message.warning(
+            error instanceof Error
+              ? `Сопоставление сохранено, но проверка не обновилась: ${error.message}`
+              : 'Сопоставление сохранено, но не удалось обновить проверку',
+          );
+        }
+        onClose();
       } catch (error) {
         message.error(error instanceof Error ? error.message : 'Не удалось сохранить сопоставление');
       } finally {
@@ -133,7 +134,7 @@ export function VariableMappingModal({
         setMapping(mappingToDisplayValues(suggest.suggested_mapping || {}));
 
         if (suggest.status === 'complete') {
-          await saveMapping(mappingToDisplayValues(suggest.suggested_mapping || {}), { auto: true });
+          await saveMapping(mappingToDisplayValues(suggest.suggested_mapping || {}));
           if (cancelled) return;
           return;
         }

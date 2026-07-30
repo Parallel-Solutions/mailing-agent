@@ -1,9 +1,34 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildCampaignAutosavePayload,
   campaignValidateQueryKey,
   invalidateCampaignDerivedData,
   resolveLinkedChainId,
 } from '@/features/campaigns/campaignQueryUtils';
+
+describe('buildCampaignAutosavePayload', () => {
+  it('sends only the current patch to draft_payload', () => {
+    expect(buildCampaignAutosavePayload({ name: 'Updated campaign' })).toEqual({
+      name: 'Updated campaign',
+      draft_payload: { name: 'Updated campaign' },
+    });
+  });
+
+  it('does not forward a stale nested draft snapshot', () => {
+    expect(
+      buildCampaignAutosavePayload({
+        description: 'Updated',
+        draft_payload: {
+          mapping_confirmed: false,
+          variable_mapping: {},
+        },
+      }),
+    ).toEqual({
+      description: 'Updated',
+      draft_payload: { description: 'Updated' },
+    });
+  });
+});
 
 describe('campaignValidateQueryKey', () => {
   it('builds stable query key', () => {

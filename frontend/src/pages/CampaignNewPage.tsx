@@ -26,6 +26,7 @@ import '@/features/campaigns/CampaignWizardSteps.css';
 import { RecipientGenerateModal } from '@/features/campaigns/RecipientGenerateModal';
 import { ChainEmailPreviewModal } from '@/features/campaigns/ChainEmailPreviewModal';
 import {
+  buildCampaignAutosavePayload,
   buildMappingInputsSignature,
   buildValidationSignature,
   campaignValidateQueryKey,
@@ -336,17 +337,14 @@ export function CampaignNewPage() {
       if (!id) return;
       setSaveState('saving');
       try {
-        const updated = await campaignsApi.update(id, {
-          ...patch,
-          draft_payload: { ...(draft.draft_payload || {}), ...patch },
-        });
+        const updated = await campaignsApi.update(id, buildCampaignAutosavePayload(patch));
         setDraft(updated);
         setSaveState('saved');
       } catch {
         setSaveState('error');
       }
     },
-    [id, draft.draft_payload, setDraft, setSaveState],
+    [id, setDraft, setSaveState],
   );
 
   const flushPendingChanges = useCallback(async () => {
@@ -368,6 +366,19 @@ export function CampaignNewPage() {
     flushPendingChanges,
     queryClient,
   });
+
+  const handleMappingConfirmed = useCallback(async () => {
+    if (!id) return;
+    invalidateCampaignMappingCache(queryClient, id);
+    const camp = await campaignsApi.get(id);
+    replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
+    await queryClient.fetchQuery({
+      queryKey: campaignValidateQueryKey(id),
+      queryFn: () => campaignsApi.validate(id, { deep: true }),
+      staleTime: 0,
+    });
+    message.success('Сопоставление переменных сохранено');
+  }, [id, message, queryClient, replaceDraft]);
 
   const autosave = (patch: Record<string, unknown>) => {
     if (suppressAutosaveRef.current) return;
@@ -1014,14 +1025,7 @@ export function CampaignNewPage() {
           campaignId={id}
           mappingInputsSignature={mappingInputsSignature}
           onClose={closeWizardModal}
-          onConfirmed={() => {
-            if (!id) return;
-            invalidateMappingAndValidation(id);
-            void campaignsApi.get(id).then((camp) => {
-              replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
-            });
-            message.success('Сопоставление переменных сохранено');
-          }}
+          onConfirmed={handleMappingConfirmed}
         />
       ) : null}
       {id && linkedChainId ? (

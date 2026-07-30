@@ -959,11 +959,12 @@ class CampaignV1ApiTests(unittest.TestCase):
             json={"name": "KP gate", "template_type": "kp"},
         )
         self.assertEqual(kp.status_code, 200, kp.text)
+        kp_id = kp.json()["result"]["id"]
         self.client.patch(
             f"/api/v1/campaigns/{campaign_id}",
             json={
                 "email_template_id": email_id,
-                "kp_template_id": kp.json()["result"]["id"],
+                "kp_template_id": kp_id,
             },
         )
 
@@ -1022,6 +1023,39 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(saved.status_code, 200, saved.text)
         self.assertTrue(saved.json()["result"]["mapping_confirmed"])
+
+        stale_autosave = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={
+                "description": "autosaved after mapping",
+                "email_template_id": email_id,
+                "kp_template_id": kp_id,
+                "draft_payload": {
+                    "description": "autosaved after mapping",
+                    "mapping_confirmed": False,
+                    "mapping_confirmed_at": None,
+                    "variable_mapping": {},
+                    "system_variables": {},
+                    "recipient_columns": [],
+                },
+            },
+        )
+        self.assertEqual(stale_autosave.status_code, 200, stale_autosave.text)
+        stale_draft = stale_autosave.json()["result"]["draft_payload"]
+        self.assertTrue(stale_draft["mapping_confirmed"])
+        self.assertEqual(stale_draft["variable_mapping"].get("ADM_NAME"), "adm_name")
+
+        repeated_import = self.client.post(
+            f"/api/v1/campaigns/{campaign_id}/recipients/import",
+            files={
+                "file": (
+                    "recipients.xlsx",
+                    buffer.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        self.assertEqual(repeated_import.status_code, 200, repeated_import.text)
 
         validate_after = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
         self.assertEqual(validate_after.status_code, 200)

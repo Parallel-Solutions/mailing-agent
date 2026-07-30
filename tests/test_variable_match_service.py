@@ -20,6 +20,34 @@ from tests.bootstrap import bootstrap_test_runtime
 
 
 class VariableMatchServiceTests(unittest.TestCase):
+    def test_generic_autosave_patch_preserves_mapping_state(self) -> None:
+        from src.campaigns.service import _merge_draft_payload_update
+
+        current = {
+            "mapping_confirmed": True,
+            "mapping_confirmed_at": "2026-07-30T12:00:00+00:00",
+            "variable_mapping": {"ADM_NAME": "adm_name"},
+            "system_variables": {"WORK_TITLE": "work_title"},
+            "recipient_columns": ["adm_name", "email"],
+            "description": "old",
+        }
+        incoming = {
+            "mapping_confirmed": False,
+            "mapping_confirmed_at": None,
+            "variable_mapping": {},
+            "system_variables": {},
+            "recipient_columns": [],
+            "description": "new",
+        }
+
+        merged = _merge_draft_payload_update(current, incoming)
+
+        self.assertTrue(merged["mapping_confirmed"])
+        self.assertEqual(merged["variable_mapping"], {"ADM_NAME": "adm_name"})
+        self.assertEqual(merged["system_variables"], {"WORK_TITLE": "work_title"})
+        self.assertEqual(merged["recipient_columns"], ["adm_name", "email"])
+        self.assertEqual(merged["description"], "new")
+
     def test_collect_template_variables_from_email_chain_nodes(self) -> None:
         bootstrap_test_runtime(reset_db=True)
         from src.campaigns.chain_service import empty_chain

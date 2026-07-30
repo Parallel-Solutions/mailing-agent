@@ -196,6 +196,30 @@ def _stringify_context(raw: dict[str, Any]) -> dict[str, str]:
     return result
 
 
+def _apply_administration_recipient_aliases(string_context: dict[str, str]) -> None:
+    """Keep legacy administration placeholders on the generated recipient form."""
+
+    from src.generator.generation.recipient_normalization import normalize_administration_recipient
+    from src.generator.generation.transforms import normalize_russian_geo_admin_case
+
+    inflected = str(string_context.get("ADM_NAME_1") or "").strip()
+    recipient_name = inflected or str(string_context.get("ADM_NAME") or "").strip()
+    if not recipient_name:
+        return
+
+    normalized = normalize_administration_recipient(
+        normalize_russian_geo_admin_case(recipient_name)
+    )
+    if not normalized:
+        return
+
+    normalized = normalized[:1].upper() + normalized[1:]
+    string_context["ADM_NAME"] = normalized
+    string_context["ADM"] = normalized
+    if inflected:
+        string_context["ADM_NAME_1"] = normalized
+
+
 def _apply_document_id(
     string_context: dict[str, str],
     *,
@@ -311,6 +335,11 @@ def build_substitution_context(
         string_context[str(var_name)] = value
         string_context[upper] = value
 
+    # ADM_NAME and ADM are legacy recipient placeholders. Their explicit
+    # spreadsheet mappings must not replace the already generated ADM_NAME_1
+    # form; the untouched source value remains available as ADM_NAME_RAW.
+    _apply_administration_recipient_aliases(string_context)
+
     company_work_type_name = _resolve_company_work_type_name(campaign)
     if company_work_type_name:
         string_context["WORK_TITLE"] = company_work_type_name
@@ -381,3 +410,5 @@ def _normalize_territory_context_values(string_context: dict[str, str]) -> None:
     adm_name = str(string_context.get("ADM_NAME") or "").strip()
     if adm_name:
         string_context["ADM_NAME"] = normalize_russian_geo_admin_case(adm_name)
+
+    _apply_administration_recipient_aliases(string_context)

@@ -56,6 +56,48 @@ class SubstitutionContextTests(unittest.TestCase):
         self.assertTrue(scope)
         self.assertNotEqual(scope, "District")
 
+    def test_adm_name_mapping_uses_inflected_recipient_and_normalizes_quote_spacing(self) -> None:
+        raw_adm_name = (
+            "\u0410\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f "
+            "\u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u043e\u0431\u0440\u0430\u0437\u043e\u0432\u0430\u043d\u0438\u044f\""
+            "\u042f\u0431\u043b\u043e\u043d\u043e\u0432\u0441\u043a\u043e\u0435 \u0433\u043e\u0440\u043e\u0434\u0441\u043a\u043e\u0435 \u043f\u043e\u0441\u0435\u043b\u0435\u043d\u0438\u0435\""
+        )
+        recipient = CampaignRecipient(
+            id=9,
+            campaign_id="camp-1",
+            row_index=1,
+            company=raw_adm_name,
+            email="test@example.com",
+            extra={
+                "adm_name": raw_adm_name,
+                "mun_name": "\u042f\u0431\u043b\u043e\u043d\u043e\u0432\u0441\u043a\u043e\u0435 \u0433\u043e\u0440\u043e\u0434\u0441\u043a\u043e\u0435 \u043f\u043e\u0441\u0435\u043b\u0435\u043d\u0438\u0435",
+            },
+        )
+        campaign = Campaign(
+            id="camp-1",
+            owner_username="owner",
+            name="Recipient case campaign",
+            work_type="stp_mo",
+            draft_payload={"variable_mapping": {"ADM_NAME": "adm_name"}},
+        )
+
+        context = build_substitution_context(
+            recipient=recipient,
+            campaign=campaign,
+            template_text="{{ADM_NAME}}",
+        )
+        rendered = render_text("{{ADM_NAME}}", context)
+
+        self.assertEqual(context["ADM_NAME_RAW"], raw_adm_name)
+        self.assertEqual(context["ADM_NAME"], context["ADM_NAME_1"])
+        self.assertEqual(context["ADM"], context["ADM_NAME_1"])
+        self.assertTrue(
+            rendered.startswith("\u0410\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u0438 ")
+        )
+        education = "\u043e\u0431\u0440\u0430\u0437\u043e\u0432\u0430\u043d\u0438\u044f"
+        self.assertIn(f'{education} "', rendered)
+        self.assertNotIn(f'{education}"', rendered)
+
     def test_uses_draft_company_for_director_name(self) -> None:
         company = company_service.create_company(
             name="Sender Org",
