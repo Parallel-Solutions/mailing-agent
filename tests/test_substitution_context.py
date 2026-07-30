@@ -334,6 +334,44 @@ class SubstitutionEngineTests(unittest.TestCase):
 
         self.assertEqual(rendered, "project \u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u043e\u043a\u0440\u0443\u0433\u0430")
 
+    def test_render_district_name_uses_genitive_after_work_title(self) -> None:
+        context = {
+            "WORK_TITLE": (
+                "\u0440\u0430\u0437\u0440\u0430\u0431\u043e\u0442\u043a\u0435 \u043f\u0440\u043e\u0435\u043a\u0442\u0430 "
+                "\u043c\u0435\u0441\u0442\u043d\u044b\u0445 \u043d\u043e\u0440\u043c\u0430\u0442\u0438\u0432\u043e\u0432 "
+                "\u0433\u0440\u0430\u0434\u043e\u0441\u0442\u0440\u043e\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0433\u043e "
+                "\u043f\u0440\u043e\u0435\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f"
+            ),
+            "MUN_R_NAME": (
+                "\u0422\u0430\u0445\u0442\u0430\u043c\u0443\u043a\u0430\u0439\u0441\u043a\u0438\u0439 "
+                "\u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u044b\u0439 "
+                "\u0440\u0430\u0439\u043e\u043d"
+            ),
+            "MUN_R_NAME_1": (
+                "\u0422\u0430\u0445\u0442\u0430\u043c\u0443\u043a\u0430\u0439\u0441\u043a\u043e\u0433\u043e "
+                "\u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e "
+                "\u0440\u0430\u0439\u043e\u043d\u0430"
+            ),
+        }
+        expected = (
+            "\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0440\u0430\u0431\u043e\u0442 \u043f\u043e "
+            f"{context['WORK_TITLE']} {context['MUN_R_NAME_1']}."
+        )
+
+        for template in (
+            "\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0440\u0430\u0431\u043e\u0442 \u043f\u043e "
+            f"{context['WORK_TITLE']} {{{{MUN_R_NAME}}}}.",
+            "\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0440\u0430\u0431\u043e\u0442 \u043f\u043e "
+            "{{WORK_TITLE}} {{MUN_R_NAME}}.",
+        ):
+            with self.subTest(template=template):
+                self.assertEqual(render_text(template, context), expected)
+
+        self.assertEqual(
+            render_text("\u0420\u0430\u0439\u043e\u043d: {{MUN_R_NAME}}.", context),
+            f"\u0420\u0430\u0439\u043e\u043d: {context['MUN_R_NAME']}.",
+        )
+
     def test_build_replacement_pairs_sorts_longest_first(self) -> None:
         context = {"MUN_R_SCOPE_FRAGMENT": "Scope", "MUN_R_NAME": "District", "SUB_RF": "Region"}
         text = "MUN_R_NAME SUB_RF and MUN_R_NAME"
