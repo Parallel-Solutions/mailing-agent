@@ -363,6 +363,54 @@ def _placeholder_in_territory_genitive_context(text: str, token: str) -> bool:
     return text[:index].rstrip().casefold().endswith("для территории")
 
 
+def _placeholder_follows_work_title(
+    text: str,
+    token: str,
+    context: dict[str, str],
+) -> bool:
+    index = text.find(token)
+    if index < 0:
+        return False
+    prefix = text[:index].rstrip()
+    if re.search(
+        r"(?:\{\{\s*)?WORK_TITLE(?:_1)?(?:\s*\}\})?$",
+        prefix,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    prefix_folded = prefix.casefold()
+    return any(
+        prefix_folded.endswith(str(context.get(field) or "").strip().casefold())
+        for field in ("WORK_TITLE", "WORK_TITLE_1")
+        if str(context.get(field) or "").strip()
+    )
+
+
+def _territory_value_for_context(
+    value: str,
+    *,
+    name: str,
+    text: str,
+    token: str,
+    context: dict[str, str],
+) -> str:
+    if not (
+        _placeholder_in_territory_genitive_context(text, token)
+        or _placeholder_follows_work_title(text, token, context)
+    ):
+        return value
+
+    canonical = _resolve_territory_canonical(name)
+    genitive_field = {
+        "MUN_NAME": "MUN_NAME_2",
+        "MUN_R_NAME": "MUN_R_NAME_1",
+        "SUB_RF": "SUB_RF_1",
+    }.get(canonical)
+    if not genitive_field:
+        return value
+    return _context_value(context, genitive_field) or value
+
+
 def _admin_value_for_context(
     value: str,
     *,
@@ -442,6 +490,13 @@ def build_replacement_pairs(context: dict[str, str], text: str) -> list[tuple[st
             continue
         value = _context_value(context, item.name)
         if _is_territory_placeholder(item.name):
+            value = _territory_value_for_context(
+                value,
+                name=item.name,
+                text=text,
+                token=item.token,
+                context=context,
+            )
             value = _adapt_territory_value_case(value, name=item.name, text=text, token=item.token)
         elif _should_apply_admin_case(item.name, value):
             value = _admin_value_for_context(
@@ -459,6 +514,13 @@ def build_replacement_pairs(context: dict[str, str], text: str) -> list[tuple[st
             continue
         value = _artifact_replacement_value(context, item)
         if value and _is_territory_placeholder(item.name):
+            value = _territory_value_for_context(
+                value,
+                name=item.name,
+                text=text,
+                token=item.token,
+                context=context,
+            )
             value = _adapt_territory_value_case(value, name=item.name, text=text, token=item.token)
         elif value and _should_apply_admin_case(item.name, value):
             value = _admin_value_for_context(
