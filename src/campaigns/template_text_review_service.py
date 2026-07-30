@@ -216,14 +216,17 @@ def _append_local_language_issues(
     template_name: str,
     field: str,
     rendered_text: str,
+    check_terminal_punctuation: bool | None = None,
 ) -> None:
     plain = html_to_review_text(rendered_text) if rendered_text else ""
     if not plain:
         return
+    if check_terminal_punctuation is None:
+        check_terminal_punctuation = field not in {"subject", "attachment"}
     for item in review_email_text(
         plain,
         field=field,
-        check_terminal_punctuation=field != "subject",
+        check_terminal_punctuation=check_terminal_punctuation,
     ):
         issues.append(
             _issue_dict(
@@ -352,6 +355,7 @@ def review_rendered_template(
     rendered_text: str | None = None,
     include_placeholder_issues: bool = False,
     strict_preview: bool = False,
+    check_body_terminal_punctuation: bool = True,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     template_text = "\n".join([subject_template or "", body_html_template or "", body_text_template or ""])
@@ -433,6 +437,7 @@ def review_rendered_template(
         template_name=template_name,
         field="body_html",
         rendered_text=rendered_html,
+        check_terminal_punctuation=check_body_terminal_punctuation,
     )
 
     if advisory or deep:
@@ -502,6 +507,7 @@ def review_campaign_templates(
         body_html = str(template_info.get("body_html") or "")
         body_text = str(template_info.get("body_text") or "")
         combined = str(template_info.get("text") or "")
+        template_kind = str(template_info.get("template_kind") or "email")
         if not body_html and combined:
             body_html = combined
 
@@ -560,6 +566,7 @@ def review_campaign_templates(
                 rendered_text=rendered_text,
                 include_placeholder_issues=include_placeholder_issues,
                 strict_preview=strict_preview and not strict_preview_done,
+                check_body_terminal_punctuation=template_kind != "document",
             )
             strict_preview_done = True
             if run_deep or run_advisory:
@@ -576,10 +583,14 @@ def review_campaign_templates(
 def partition_review_messages(issues: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
+    seen_messages: set[str] = set()
     for issue in issues:
         template_name = str(issue.get("template_name") or "шаблон")
         message = str(issue.get("message") or issue.get("token") or "Ошибка шаблона")
         line = f"Шаблон «{template_name}»: {message}"
+        if line in seen_messages:
+            continue
+        seen_messages.add(line)
         severity = str(issue.get("severity") or "error")
         if severity == "error":
             errors.append(line)

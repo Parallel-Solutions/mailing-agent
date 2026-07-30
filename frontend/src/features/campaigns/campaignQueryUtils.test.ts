@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildCampaignAutosavePayload,
+  buildValidationSignature,
   campaignValidateQueryKey,
   invalidateCampaignDerivedData,
   resolveLinkedChainId,
@@ -33,6 +34,28 @@ describe('buildCampaignAutosavePayload', () => {
 describe('campaignValidateQueryKey', () => {
   it('builds stable query key', () => {
     expect(campaignValidateQueryKey('camp-1')).toEqual(['campaign-validate', 'camp-1']);
+  });
+});
+
+describe('buildValidationSignature', () => {
+  it('changes when company work type changes', () => {
+    const base = {
+      recipientCount: 1,
+      emailChainId: 'chain-1',
+      companyId: 'company-1',
+    };
+
+    expect(
+      buildValidationSignature({ ...base, companyWorkTypeId: 'work-1' }),
+    ).not.toBe(
+      buildValidationSignature({ ...base, companyWorkTypeId: 'work-2' }),
+    );
+  });
+
+  it('changes when company changes', () => {
+    const first = buildValidationSignature({ recipientCount: 1, companyId: 'company-1' });
+    const second = buildValidationSignature({ recipientCount: 1, companyId: 'company-2' });
+    expect(first).not.toBe(second);
   });
 });
 

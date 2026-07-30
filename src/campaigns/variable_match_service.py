@@ -684,6 +684,7 @@ def _collect_templates_for_validation(campaign: Campaign) -> list[dict[str, str 
                 {
                     "template_id": str(template_id),
                     "template_name": str(tmpl.name if tmpl else campaign.name or "email"),
+                    "template_kind": "email",
                     "text": text,
                     "subject": version.subject or "",
                     "body_html": version.body_html or "",
@@ -697,6 +698,7 @@ def _collect_templates_for_validation(campaign: Campaign) -> list[dict[str, str 
                 {
                     "template_id": None,
                     "template_name": str(campaign.name or "email"),
+                    "template_kind": "email",
                     "text": body,
                     "subject": "",
                     "body_html": body,
@@ -715,6 +717,7 @@ def _collect_templates_for_validation(campaign: Campaign) -> list[dict[str, str 
                     {
                         "template_id": str(template_id),
                         "template_name": str(tmpl.name if tmpl else campaign.name or "document"),
+                        "template_kind": "document",
                         "text": text,
                     }
                 )

@@ -84,6 +84,15 @@ class TemplateTextReviewTests(unittest.TestCase):
         self.assertTrue(any(item.get("kind") == "punctuation" for item in issues))
         self.assertTrue(all(item.get("field") == "attachment" for item in issues))
 
+    def test_review_document_text_does_not_require_terminal_punctuation(self) -> None:
+        issues = review_document_text(
+            "Document footer",
+            template_id="doc-1",
+            template_name="Doc",
+        )
+
+        self.assertFalse(any(item.get("kind") == "punctuation" for item in issues))
+
     def test_review_document_text_for_placeholders_keeps_placeholder_only(self) -> None:
         issues = review_document_text_for_placeholders(
             "Текст .",
@@ -198,6 +207,8 @@ class TemplateTextReviewTests(unittest.TestCase):
 
     def test_partition_review_messages_splits_severity(self) -> None:
         issues = [
+            {"template_name": "A", "message": "error one", "kind": "artifact", "severity": "error"},
+            {"template_name": "A", "message": "warn one", "kind": "punctuation", "severity": "warning"},
             {"template_name": "A", "message": "error one", "kind": "artifact", "severity": "error"},
             {"template_name": "A", "message": "warn one", "kind": "punctuation", "severity": "warning"},
         ]
@@ -405,6 +416,33 @@ class TemplateTextReviewTests(unittest.TestCase):
         )
         self.assertTrue(all(item.get("severity") == "error" for item in blocking_case_issues))
         self.assertTrue(all(item.get("blocking") is True for item in blocking_case_issues))
+
+    @patch("src.campaigns.variable_match_service._collect_templates_for_validation")
+    @patch("src.campaigns.variable_match_service._validation_recipients")
+    @patch("src.campaigns.template_text_review_service.render_template_text")
+    def test_campaign_document_skips_terminal_punctuation_warning(
+        self,
+        mock_render: MagicMock,
+        mock_recipients: MagicMock,
+        mock_templates: MagicMock,
+    ) -> None:
+        mock_recipients.return_value = [MagicMock(id="r1", row_index=1)]
+        mock_templates.return_value = [
+            {
+                "template_id": "doc-1",
+                "template_name": "Document",
+                "template_kind": "document",
+                "subject": "",
+                "body_html": "",
+                "body_text": "",
+                "text": "Document footer",
+            }
+        ]
+        mock_render.side_effect = lambda text, **_kwargs: text
+
+        issues = review_campaign_templates(MagicMock(), deep=False)
+
+        self.assertFalse(any(item.get("kind") == "punctuation" for item in issues))
 
     @patch("src.campaigns.template_text_review_service._append_ai_issues")
     @patch("src.campaigns.template_text_review_service._append_case_issues")
