@@ -516,7 +516,10 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.post("/campaigns/{campaign_id}/archive")
     def post_archive(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = service.archive_campaign(campaign_id, actor.username, visible_owners=_visibility(actor))
+        try:
+            item = service.archive_campaign(campaign_id, actor.username, visible_owners=_visibility(actor))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not item:
             raise HTTPException(status_code=404, detail="Рассылка не найдена")
         return _ok(item)

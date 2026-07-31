@@ -700,10 +700,19 @@ def archive_campaign(campaign_id: str, owner_username: str, *, visible_owners: f
         row = session.get(Campaign, campaign_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
             return None
+        metrics = recipient_metrics(session, row)
+        work = active_work_counts(session, campaign_id)
+        actions = allowed_actions(
+            row,
+            metrics,
+            has_active_work=bool(work["active_batches"] or work["active_tasks"]),
+        )
+        if "archive" not in actions:
+            raise ValueError("Активную рассылку нельзя удалить. Сначала отмените её.")
         row.archived = True
         row.updated_at = _now()
         session.flush()
-        return campaign_to_dict(row, metrics=recipient_metrics(session, row))
+        return campaign_to_dict(row, metrics=metrics, has_active_work=False)
 
 
 def list_recipients(
