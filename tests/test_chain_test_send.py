@@ -123,7 +123,7 @@ class ChainTestSendApiTests(unittest.TestCase):
                 "transport": "rusender",
                 "email": "sender@example.com",
                 "sender_name": "Sender",
-                "api_token": "rs_test_token",
+                "sending_key_id": 123,
             },
         )
         self.assertEqual(connection.status_code, 200, connection.text)

@@ -41,7 +41,7 @@ class ChainSendServiceTests(unittest.TestCase):
                 "transport": "rusender",
                 "email": "sender@example.com",
                 "sender_name": "Sender",
-                "api_token": "rs_test_token",
+                "sending_key_id": 123,
             },
         )
         update_campaign(
@@ -273,7 +273,7 @@ class ChainFollowupDispatchTests(unittest.TestCase):
                 "transport": "rusender",
                 "email": "sender@example.com",
                 "sender_name": "Sender",
-                "api_token": "rs_test_token",
+                "sending_key_id": 123,
             },
         )
         update_campaign(

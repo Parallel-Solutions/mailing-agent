@@ -30,11 +30,12 @@ class MigrationGuardTests(unittest.TestCase):
         )
 
     def test_older_ancestor_is_accepted_for_forward_migration(self) -> None:
+        expected_heads = migration_heads(load_revision_graph(VERSIONS_DIR))
         heads = assert_database_revision_is_upgradeable(
             "0001_initial",
             versions_dir=VERSIONS_DIR,
         )
-        self.assertEqual(heads, ("0031_merge_onboarding_main",))
+        self.assertEqual(heads, expected_heads)
 
     def test_unknown_or_ahead_database_revision_is_rejected(self) -> None:
         with self.assertRaisesRegex(
