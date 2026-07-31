@@ -52,6 +52,7 @@ class ResolvedConnection:
     sender_name: str
     secret: str
     api_base_url: str
+    sending_key_id: int | None = None
 
 
 def _now() -> datetime:
@@ -74,6 +75,23 @@ def _optional_rate_limit(data: dict[str, Any], key: str) -> int | None:
     if key not in data or data.get(key) is None:
         return None
     return _rate_limit_value(data.get(key))
+
+
+def _optional_sending_key_id(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ID ключа отправки RuSender должен быть целым числом.") from exc
+    if parsed <= 0:
+        raise ValueError("ID ключа отправки RuSender должен быть больше нуля.")
+    return parsed
+
+
+def _validate_rusender_sending_key_id(sending_key_id: int | None) -> None:
+    if sending_key_id is None:
+        raise ValueError("Укажите ID ключа отправки RuSender.")
 
 
 def _company_name_for_sender(owner_username: str, *, campaign: Campaign | None = None) -> str:
@@ -173,12 +191,15 @@ def _public_connection(row: SmtpMailbox) -> dict[str, Any]:
         "use_ssl": bool(row.use_ssl) if transport == "smtp" else None,
         "use_starttls": bool(row.use_starttls) if transport == "smtp" else None,
         "api_base_url": row.host if transport in API_PROVIDERS else "",
+        "sending_key_id": row.sending_key_id if transport == "rusender" else None,
         "auth_method": auth_method,
         "oauth_provider": row.oauth_provider or "",
         "status": row.status,
         "last_error": row.last_error or "",
         "is_default": bool(row.is_default),
-        "has_secret": bool(row.password_encrypted) or bool(row.oauth_tokens_encrypted),
+        "has_secret": (
+            transport != "rusender" and (bool(row.password_encrypted) or bool(row.oauth_tokens_encrypted))
+        ),
         "max_per_hour": int(row.max_per_hour or 0),
         "max_per_day": int(row.max_per_day or 0),
         "delivery_guard_enabled": bool(row.delivery_guard_enabled),
@@ -298,11 +319,16 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
         return _apply_guard_settings_and_public(mailbox["id"], data)
 
     email = _safe_text(data.get("email")).lower()
-    token = _safe_text(data.get("api_token"))
+    token = _safe_text(data.get("api_token")) if transport == "mailopost" else ""
     if not email or "@" not in email:
         raise ValueError("Укажите подтверждённый email отправителя.")
-    if not token:
-        raise ValueError("Укажите API-токен провайдера.")
+    if transport == "rusender":
+        sending_key_id = _optional_sending_key_id(data.get("sending_key_id"))
+        _validate_rusender_sending_key_id(sending_key_id)
+    else:
+        sending_key_id = None
+        if not token:
+            raise ValueError("Укажите API-токен провайдера.")
     default_base = (
         settings.rusender_api_base_url if transport == "rusender" else settings.mailopost_api_base_url
     )
@@ -332,10 +358,11 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
             port=443,
             use_ssl=True,
             use_starttls=False,
-            auth_method="token",
+            auth_method="environment" if transport == "rusender" else "token",
             smtp_username=None,
-            password_encrypted=encrypt_secret(token),
+            password_encrypted="" if transport == "rusender" else encrypt_secret(token),
             status="active",
+            sending_key_id=sending_key_id,
             last_error=None,
             is_default=make_default,
             max_per_hour=max_per_hour,
@@ -435,9 +462,14 @@ def update_connection(
             if not api_base_url.startswith(("https://", "http://")):
                 raise ValueError("Адрес API должен начинаться с https:// или http://.")
             row.host = api_base_url
-        api_token = _safe_text(data.get("api_token"))
-        if api_token:
-            row.password_encrypted = encrypt_secret(api_token)
+        if transport == "rusender":
+            if "sending_key_id" in data:
+                row.sending_key_id = _optional_sending_key_id(data.get("sending_key_id"))
+            _validate_rusender_sending_key_id(row.sending_key_id)
+        else:
+            api_token = _safe_text(data.get("api_token"))
+            if api_token:
+                row.password_encrypted = encrypt_secret(api_token)
         if "max_per_hour" in data and data.get("max_per_hour") is not None:
             row.max_per_hour = _rate_limit_value(data.get("max_per_hour"))
         if "max_per_day" in data and data.get("max_per_day") is not None:
@@ -513,8 +545,9 @@ def resolve_connection(
             transport=transport,
             email=row.email,
             sender_name=sender_name,
-            secret=decrypt_secret(row.password_encrypted),
+            secret="" if transport == "rusender" else decrypt_secret(row.password_encrypted),
             api_base_url=row.host,
+            sending_key_id=row.sending_key_id,
         )
 
 
@@ -598,8 +631,9 @@ def pick_available_connection(
                 transport=transport,
                 email=row.email,
                 sender_name=sender_name,
-                secret=decrypt_secret(row.password_encrypted),
+                secret="" if transport == "rusender" else decrypt_secret(row.password_encrypted),
                 api_base_url=row.host,
+                sending_key_id=row.sending_key_id,
             )
     return None
 

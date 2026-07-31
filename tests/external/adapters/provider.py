@@ -84,7 +84,12 @@ class RuSenderAdapter:
         self.base_url = base_url.rstrip("/")
 
     def _headers(self) -> dict[str, str]:
-        return {"X-Api-Key": self.api_key, "Content-Type": "application/json"}
+        auth = (
+            {"Authorization": f"Bearer {self.api_key}"}
+            if self.api_key.startswith("rs_ck_")
+            else {"X-Api-Key": self.api_key}
+        )
+        return {**auth, "Content-Type": "application/json"}
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}/{path.lstrip('/')}"

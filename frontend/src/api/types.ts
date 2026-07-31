@@ -525,6 +525,7 @@ export type DeliveryConnection = {
   host?: string;
   port?: number | null;
   api_base_url?: string;
+  sending_key_id?: number | null;
   auth_method?: string;
   oauth_provider?: string;
   status: string;
@@ -571,4 +572,55 @@ export type DeliveryConnection = {
   };
 };
 
+export type ConnectionWarmupRecipient = {
+  id: string;
+  email: string;
+  provider: 'gmail' | 'yandex' | 'mailru' | 'outlook' | 'other';
+  status: 'active' | 'disabled';
+  sent_count: number;
+  error_count: number;
+  last_sent_at: string;
+  last_error: string;
+  created_at: string;
+};
+
+export type ConnectionWarmupCheck = {
+  key: string;
+  status: 'pass' | 'warning' | 'fail';
+  detail: string;
+};
+
+export type ConnectionWarmupProgram = {
+  id: string;
+  connection_id: string;
+  status: 'draft' | 'running' | 'paused' | 'completed' | 'blocked' | 'cancelled';
+  timezone: string;
+  daily_start_time: string;
+  daily_end_time: string;
+  pause_campaigns_during_warmup: boolean;
+  max_growth_percent: number;
+  current_day: number;
+  run_number: number;
+  daily_plan: number[];
+  effective_daily_plan: number[];
+  recipients_consent_confirmed: boolean;
+  recipients_consent_confirmed_at: string;
+  subject_templates: string[];
+  body_templates: string[];
+  pause_reason: string;
+  diagnostics_status: 'not_checked' | 'ready' | 'warning' | 'blocked';
+  diagnostics: {
+    checked_at?: string;
+    from_domain?: string;
+    checks?: ConnectionWarmupCheck[];
+    outbound_ips?: string[];
+  };
+  recipients: ConnectionWarmupRecipient[];
+  recipient_count: number;
+  active_recipient_count: number;
+  delivery_counts: Record<string, number>;
+  started_at: string;
+  paused_at: string;
+  completed_at: string;
+};
 export type SmtpMailbox = DeliveryConnection;

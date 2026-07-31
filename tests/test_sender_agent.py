@@ -1090,7 +1090,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
     def test_saved_connection_credentials_are_used_for_api_providers(self) -> None:
         cases = [
-            ("rusender", "_send_via_rusender", "credential_api_key"),
+            ("rusender", "_send_via_rusender", None),
             ("mailopost", "_send_via_mailopost", "credential_api_token"),
         ]
         for transport, sender_name, secret_argument in cases:
@@ -1101,6 +1101,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                     secret="saved-secret",
                     sender_name="Saved sender",
                     api_base_url="https://provider.example.test",
+                    sending_key_id=42,
                 )
                 with (
                     patch(
@@ -1125,10 +1126,15 @@ class SenderAgentScalabilityTests(unittest.TestCase):
 
                 self.assertEqual(result["recipients"], ["user@example.com"])
                 kwargs = send_mock.call_args.kwargs
-                self.assertEqual(kwargs[secret_argument], "saved-secret")
+                if secret_argument:
+                    self.assertEqual(kwargs[secret_argument], "saved-secret")
+                else:
+                    self.assertNotIn("credential_api_key", kwargs)
                 self.assertEqual(kwargs["credential_sender_name"], "Saved sender")
                 self.assertEqual(kwargs["credential_api_base_url"], "https://provider.example.test")
                 self.assertEqual(kwargs["sender_email"], "saved-sender@example.com")
+                if transport == "rusender":
+                    self.assertEqual(kwargs["credential_sending_key_id"], 42)
 
     def test_smtp_transport_waits_between_each_recipient(self) -> None:
         sent: list[str] = []
@@ -1237,11 +1243,13 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 send_run_id="send-test",
                 send_mode="consent_request",
                 attachment_mode="kp",
+                credential_sending_key_id=42,
             )
 
         request = captured["request"]
         self.assertEqual(request.get_header("Authorization"), "Bearer rs_ck_v1_secret")
         self.assertIsNone(request.get_header("X-api-key"))
+        self.assertEqual(request.full_url, "https://api.rusender.ru/api/v1/external-mails/send/42")
         self.assertEqual(result["message_id"], "message-1")
 
     def test_rusender_disables_track_links_when_requested(self) -> None:
@@ -1265,11 +1273,27 @@ class SenderAgentScalabilityTests(unittest.TestCase):
                 "Тема",
                 body_override="Текст письма",
                 track_links=False,
+                credential_sending_key_id=42,
             )
 
         payload = json.loads(captured["request"].data.decode("utf-8"))
         self.assertEqual(payload.get("trackLinks"), 0)
         self.assertEqual(payload["mail"].get("trackLinks"), 0)
+
+    def test_rusender_current_key_requires_sending_key_id(self) -> None:
+        with (
+            patch.object(sender_agent.settings, "rusender_api_key", "rs_ck_v1_secret"),
+            patch.object(sender_agent.settings, "rusender_sender_email", "sender@example.com"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "ID ключа отправки"):
+                sender_agent._send_via_rusender(
+                    {"ID": "1", "MUN_NAME": "Тестовое МО"},
+                    "recipient@example.com",
+                    [],
+                    "Тема",
+                    body_override="Текст письма",
+                )
+
 
     def test_rusender_uses_x_api_key_for_legacy_jwt_keys(self) -> None:
         captured: dict[str, Request] = {}
@@ -1299,6 +1323,7 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         request = captured["request"]
         self.assertIsNone(request.get_header("Authorization"))
         self.assertEqual(request.get_header("X-api-key"), legacy_key)
+        self.assertEqual(request.full_url, "https://api.rusender.ru/api/v1/external-mails/send")
         self.assertEqual(result["message_id"], "message-1")
 
     def test_mailopost_builds_json_send_request(self) -> None:

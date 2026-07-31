@@ -141,7 +141,7 @@
 | `SMTP_USE_SSL` | SMTP | TLS/SSL | `false` для Mailpit |
 | `SMTP_SENDER_EMAIL` | SMTP | От кого |  |
 | `SMTP_SENDER_PASSWORD` | SMTP | Пароль |  |
-| `RUSENDER_API_KEY` | RuSender | API-ключ для отправки | Обязателен для transport=rusender |
+| `RUSENDER_API_KEY` | RuSender | Общий API-ключ доступа для отправки | Один ключ на приложение; ID ключа отправки хранится в подключении |
 | `RUSENDER_API_BASE_URL` | RuSender | Базовый URL API | `https://api.rusender.ru/api/v1` |
 | `RUSENDER_SENDER_NAME` | RuSender | Имя отправителя |  |
 | `RUSENDER_SENDER_EMAIL` | RuSender | Email отправителя |  |

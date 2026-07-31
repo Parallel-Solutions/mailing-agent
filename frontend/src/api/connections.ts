@@ -1,5 +1,5 @@
 import { api, apiRequest } from './client';
-import type { DeliveryConnection } from './types';
+import type { ConnectionWarmupProgram, DeliveryConnection } from './types';
 
 export type SmtpSetupSettings = {
   provider: string;
@@ -192,4 +192,18 @@ export const connectionsApi = {
     api.post<{ status: string; message: string }>(`/api/v1/connections/${id}/test`),
   resetGuard: (id: string) =>
     api.post<DeliveryConnection>(`/api/v1/connections/${id}/guard/reset`),
+  getWarmup: (id: string) =>
+    api.get<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup`),
+  updateWarmup: (id: string, body: Record<string, unknown>) =>
+    api.patch<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup`, body),
+  diagnoseWarmup: (id: string, headers = '') =>
+    api.post<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/diagnostics`, { headers }),
+  addWarmupRecipients: (id: string, emails: string[]) =>
+    api.post<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/recipients`, { emails }),
+  setWarmupRecipientStatus: (id: string, recipientId: string, status: 'active' | 'disabled') =>
+    api.patch<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/recipients/${recipientId}`, { status }),
+  removeWarmupRecipient: (id: string, recipientId: string) =>
+    api.delete<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/recipients/${recipientId}`),
+  changeWarmupStatus: (id: string, action: 'start' | 'pause' | 'resume' | 'stop') =>
+    api.post<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/${action}`),
 };

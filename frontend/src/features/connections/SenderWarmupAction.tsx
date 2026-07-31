@@ -1,0 +1,183 @@
+import { Alert, App, Button, Checkbox, Input, Modal, Popconfirm, Space, Tag, Typography } from 'antd';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { connectionsApi } from '@/api/connections';
+import type { DeliveryConnection } from '@/api/types';
+
+const STATUS_LABELS: Record<string, string> = {
+  draft: 'Не запущен', running: 'Выполняется', paused: 'На паузе',
+  completed: 'Завершён', blocked: 'Заблокирован', cancelled: 'Остановлен',
+};
+const CHECK_LABELS: Record<string, string> = {
+  spf_record: 'SPF', dmarc_record: 'DMARC', spf_result: 'SPF в письме',
+  dkim_record: 'DKIM в DNS', ptr: 'PTR/rDNS', template_variation: 'Варианты писем', content_links: 'Ссылки', short_links: 'Сокращатели', reputation: 'Репутация', dkim_result: 'DKIM в письме', alignment: 'Совпадение доменов', sample_headers: 'Заголовки письма',
+};
+
+export function SenderWarmupAction({ connection }: { connection: DeliveryConnection }) {
+  const { message } = App.useApp();
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [recipientText, setRecipientText] = useState('');
+  const [headers, setHeaders] = useState('');
+  const [busy, setBusy] = useState(false);  const [dailyStartTime, setDailyStartTime] = useState('10:00');
+  const [dailyEndTime, setDailyEndTime] = useState('18:00');
+  const [growthPercent, setGrowthPercent] = useState('25');
+  const [pauseCampaigns, setPauseCampaigns] = useState(true);
+  const [subjectTemplatesText, setSubjectTemplatesText] = useState('');
+  const [bodyTemplatesText, setBodyTemplatesText] = useState('');
+  const queryKey = ['connection-sender-warmup', connection.id];
+  const query = useQuery({
+    queryKey,
+    queryFn: () => connectionsApi.getWarmup(connection.id),
+    enabled: open,
+    refetchInterval: open ? 10_000 : false,
+  });
+  const warmup = query.data;
+  useEffect(() => {
+    if (!warmup) return;
+    setDailyStartTime(warmup.daily_start_time);
+    setDailyEndTime(warmup.daily_end_time);
+    setGrowthPercent(String(warmup.max_growth_percent));
+    setPauseCampaigns(warmup.pause_campaigns_during_warmup);
+    setSubjectTemplatesText(warmup.subject_templates.join('\n'));
+    setBodyTemplatesText(warmup.body_templates.join('\n---\n'));
+  }, [warmup?.id]);
+
+  const run = async (action: () => Promise<unknown>, success: string) => {
+    setBusy(true);
+    try {
+      await action();
+      await queryClient.invalidateQueries({ queryKey });
+      message.success(success);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : 'Не удалось выполнить действие');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <>
+    <a onClick={() => setOpen(true)}>Прогрев</a>
+    <Modal open={open} title={`Прогрев отправителя ${connection.email}`} onCancel={() => setOpen(false)} footer={null} width={860} destroyOnClose>
+      {query.isLoading ? <Typography.Text>Загрузка…</Typography.Text> : null}
+      {warmup ? <Space direction="vertical" size="large" style={{ width: '100%' }}>
+        <Alert type="info" showIcon message="Сначала техническая проверка, затем постепенный рост объёма" description="Письма отправляются только на добавленные адреса. Один активный адрес получает не более одного письма за дневной этап." />
+
+        <Space wrap>
+          <Typography.Title level={5} style={{ margin: 0 }}>Состояние</Typography.Title>
+          <Tag color={warmup.status === 'running' ? 'processing' : warmup.status === 'completed' ? 'success' : 'default'}>{STATUS_LABELS[warmup.status] || warmup.status}</Tag>
+          <Typography.Text type="secondary">День {Math.min(warmup.current_day, warmup.daily_plan.length)} из {warmup.daily_plan.length}</Typography.Text>
+        </Space>
+        <Space wrap>
+          <Typography.Text type="secondary">Принято: {warmup.delivery_counts.accepted || 0}</Typography.Text>
+          <Typography.Text type="secondary">Доставлено: {warmup.delivery_counts.delivered || 0}</Typography.Text>
+          <Typography.Text type="secondary">Hard bounce: {warmup.delivery_counts.hard_bounced || 0}</Typography.Text>
+          <Typography.Text type="secondary">Soft bounce: {warmup.delivery_counts.soft_bounced || 0}</Typography.Text>
+          <Typography.Text type="secondary">Жалобы: {warmup.delivery_counts.complaint || 0}</Typography.Text>
+        </Space>
+
+        <div>
+          <Typography.Title level={5}>1. Техническая проверка</Typography.Title>
+          <Input.TextArea value={headers} onChange={(event) => setHeaders(event.target.value)} placeholder="Вставьте технические заголовки тестового письма. Можно сначала выполнить только DNS-проверку." autoSize={{ minRows: 3, maxRows: 8 }} />
+          <Button style={{ marginTop: 8 }} loading={busy} onClick={() => run(() => connectionsApi.diagnoseWarmup(connection.id, headers), 'Техническая проверка завершена')}>Выполнить проверку</Button>
+          <Space wrap style={{ marginTop: 12 }}>
+            {(warmup.diagnostics.checks || []).map((check) => <Tag key={check.key} color={check.status === 'pass' ? 'success' : check.status === 'warning' ? 'warning' : 'error'}>{CHECK_LABELS[check.key] || check.key}: {check.detail}</Tag>)}
+          </Space>
+        </div>
+
+        <div>
+          <Typography.Title level={5}>2. Адреса получателей</Typography.Title>
+          <Space.Compact block>
+            <Input.TextArea value={recipientText} onChange={(event) => setRecipientText(event.target.value)} placeholder={'friend@gmail.com\ncolleague@yandex.ru\ntest@mail.ru'} autoSize={{ minRows: 2, maxRows: 5 }} />
+            <Button type="primary" loading={busy} onClick={() => {
+              const emails = recipientText.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean);
+              void run(() => connectionsApi.addWarmupRecipients(connection.id, emails), `Добавлено адресов: ${emails.length}`).then(() => setRecipientText(''));
+            }}>Добавить</Button>
+          </Space.Compact>
+          <Typography.Text type="secondary">Активно: {warmup.active_recipient_count}. Дневной объём автоматически ограничивается количеством активных адресов.</Typography.Text>
+          <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 12 }}>
+            {warmup.recipients.map((recipient) => <Space key={recipient.id} wrap style={{ justifyContent: 'space-between', width: '100%' }}>
+              <Space wrap>
+                <Typography.Text>{recipient.email}</Typography.Text><Tag>{recipient.provider}</Tag>
+                <Tag color={recipient.status === 'active' ? 'success' : 'default'}>{recipient.status === 'active' ? 'Активен' : 'Отключён'}</Tag>
+                <Typography.Text type="secondary">отправлено {recipient.sent_count}, ошибок {recipient.error_count}</Typography.Text>
+              </Space>
+              <Space>
+                <a onClick={() => void run(() => connectionsApi.setWarmupRecipientStatus(connection.id, recipient.id, recipient.status === 'active' ? 'disabled' : 'active'), recipient.status === 'active' ? 'Адрес отключён' : 'Адрес включён')}>{recipient.status === 'active' ? 'Отключить' : 'Включить'}</a>
+                <Popconfirm title="Удалить адрес из прогрева?" onConfirm={() => run(() => connectionsApi.removeWarmupRecipient(connection.id, recipient.id), 'Адрес удалён')}><a>Удалить</a></Popconfirm>
+              </Space>
+            </Space>)}
+            {!warmup.recipients.length ? <Typography.Text type="secondary">Адреса пока не добавлены.</Typography.Text> : null}
+          </Space>
+        </div>
+
+        <div>
+          <Typography.Title level={5}>3. Настройки отправки</Typography.Title>
+          <Space wrap align="start">
+            <label>
+              <Typography.Text type="secondary">Начало дня</Typography.Text>
+              <Input value={dailyStartTime} onChange={(event) => setDailyStartTime(event.target.value)} placeholder="10:00" style={{ width: 110, display: 'block' }} />
+            </label>
+            <label>
+              <Typography.Text type="secondary">Конец дня</Typography.Text>
+              <Input value={dailyEndTime} onChange={(event) => setDailyEndTime(event.target.value)} placeholder="18:00" style={{ width: 110, display: 'block' }} />
+            </label>
+            <label>
+              <Typography.Text type="secondary">Рост в день, %</Typography.Text>
+              <Input type="number" min={20} max={30} value={growthPercent} onChange={(event) => setGrowthPercent(event.target.value)} style={{ width: 110, display: 'block' }} />
+            </label>
+          </Space>
+          <Checkbox checked={pauseCampaigns} onChange={(event) => setPauseCampaigns(event.target.checked)} style={{ marginTop: 12 }}>
+            При запуске поставить обычные кампании подключения на паузу (возобновление вручную)
+          </Checkbox>
+          <Typography.Text strong style={{ display: 'block', marginTop: 12 }}>Темы — по одной в строке</Typography.Text>
+          <Input.TextArea value={subjectTemplatesText} onChange={(event) => setSubjectTemplatesText(event.target.value)} autoSize={{ minRows: 3, maxRows: 8 }} />
+          <Typography.Text strong style={{ display: 'block', marginTop: 12 }}>Тексты — разделитель ---</Typography.Text>
+          <Input.TextArea value={bodyTemplatesText} onChange={(event) => setBodyTemplatesText(event.target.value)} autoSize={{ minRows: 6, maxRows: 14 }} />
+          <Button
+            style={{ marginTop: 8 }}
+            loading={busy}
+            disabled={warmup.status === 'running'}
+            onClick={() => void run(
+              () => connectionsApi.updateWarmup(connection.id, {
+                daily_start_time: dailyStartTime,
+                daily_end_time: dailyEndTime,
+                max_growth_percent: Number(growthPercent),
+                pause_campaigns_during_warmup: pauseCampaigns,
+                subject_templates: subjectTemplatesText.split('\n').map((item) => item.trim()).filter(Boolean),
+                body_templates: bodyTemplatesText.split(/\n---\n/).map((item) => item.trim()).filter(Boolean),
+              }),
+              'Настройки прогрева сохранены',
+            )}
+          >
+            Сохранить настройки
+          </Button>
+        </div>
+
+        <div>
+          <Typography.Title level={5}>4. План</Typography.Title>
+          <Space wrap>{warmup.daily_plan.map((planned, index) => <Tag key={index} color={index + 1 === warmup.current_day ? 'processing' : 'default'}>День {index + 1}: {Math.min(planned, warmup.active_recipient_count)} из {planned}</Tag>)}</Space>
+          {warmup.active_recipient_count < Math.max(...warmup.daily_plan) ? <Alert style={{ marginTop: 12 }} type="warning" showIcon message="Адресов меньше максимального дневного объёма — количество писем будет снижено автоматически." /> : null}
+        </div>
+
+        {warmup.pause_reason ? <Alert type="warning" showIcon message="Причина паузы" description={warmup.pause_reason} /> : null}
+        <Checkbox
+          checked={warmup.recipients_consent_confirmed}
+          disabled={busy || warmup.status === 'running'}
+          onChange={(event) => void run(
+            () => connectionsApi.updateWarmup(connection.id, { recipients_consent_confirmed: event.target.checked }),
+            event.target.checked ? 'Согласие подтверждено' : 'Подтверждение согласия снято',
+          )}
+        >
+          Подтверждаю, что владельцы добавленных адресов согласны получать эти письма
+        </Checkbox>
+        <Space wrap>
+          {['draft', 'completed', 'cancelled'].includes(warmup.status) ? <Button type="primary" disabled={!warmup.recipients_consent_confirmed} loading={busy} onClick={() => run(() => connectionsApi.changeWarmupStatus(connection.id, 'start'), 'Прогрев запущен')}>Запустить прогрев</Button> : null}
+          {warmup.status === 'running' ? <Button loading={busy} onClick={() => run(() => connectionsApi.changeWarmupStatus(connection.id, 'pause'), 'Прогрев поставлен на паузу')}>Пауза</Button> : null}
+          {warmup.status === 'paused' ? <Button type="primary" loading={busy} onClick={() => run(() => connectionsApi.changeWarmupStatus(connection.id, 'resume'), 'Прогрев продолжен')}>Продолжить</Button> : null}
+          {['running', 'paused'].includes(warmup.status) ? <Popconfirm title="Полностью остановить прогрев?" onConfirm={() => run(() => connectionsApi.changeWarmupStatus(connection.id, 'stop'), 'Прогрев остановлен')}><Button danger loading={busy}>Остановить</Button></Popconfirm> : null}
+        </Space>
+      </Space> : null}
+    </Modal>
+  </>;
+}

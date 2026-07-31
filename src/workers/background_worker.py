@@ -419,6 +419,16 @@ def run_payload(payload: dict[str, Any]) -> None:
 
         run_connection_warmup(kwargs)
         return
+    if task == "connection_sender_warmup":
+        from src.campaigns.connection_sender_warmup_service import run_warmup_day
+
+        run_warmup_day(kwargs)
+        return
+    if task == "connection_sender_warmup_message":
+        from src.campaigns.connection_sender_warmup_service import run_warmup_message
+
+        run_warmup_message(kwargs)
+        return
     if task == "template_text_extract":
         from src.campaigns.template_text_cache_service import run_template_text_extraction
 
