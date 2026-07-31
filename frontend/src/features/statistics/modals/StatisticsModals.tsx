@@ -429,13 +429,19 @@ function DrilldownModal() {
       title={drill?.config.title || 'Детализация'}
       open={modal === 'drill'}
       onCancel={closeModal}
-      width="calc(100vw - 32px)"
-      style={{ top: 16, maxWidth: 1360, paddingBottom: 0 }}
+      width="calc(100vw - 48px)"
+      style={{ top: 24, maxWidth: 1760, paddingBottom: 0 }}
       styles={{
+        content: {
+          height: 'calc(100vh - 48px)',
+          display: 'flex',
+          flexDirection: 'column',
+        },
         body: {
-          maxHeight: 'calc(100vh - 176px)',
+          flex: '1 1 auto',
+          minHeight: 0,
           overflowX: 'hidden',
-          overflowY: 'auto',
+          overflowY: usesCardLayout || usesErrorCardLayout ? 'auto' : 'hidden',
         },
       }}
       footer={[
@@ -499,7 +505,7 @@ function DrilldownModal() {
           columns={columns}
           tableLayout="fixed"
           sticky
-          scroll={{ x: tableWidth, y: 'calc(100vh - 320px)' }}
+          scroll={{ x: tableWidth, y: 'calc(100vh - 312px)' }}
           pagination={{
             current: page,
             pageSize: 20,

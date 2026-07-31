@@ -156,6 +156,33 @@ class CampaignLifecycleTests(unittest.TestCase):
             response = self.client.post(f"/api/v1/campaigns/{campaign_id}/{action}")
             self.assertEqual(response.status_code, 409, (action, response.text))
 
+    def test_archive_draft_hides_campaign_from_list(self) -> None:
+        campaign_id = self._create_campaign()
+
+        loaded = self.client.get(f"/api/v1/campaigns/{campaign_id}")
+        self.assertEqual(loaded.status_code, 200, loaded.text)
+        self.assertIn("archive", loaded.json()["result"]["allowed_actions"])
+
+        archived = self.client.post(f"/api/v1/campaigns/{campaign_id}/archive")
+        self.assertEqual(archived.status_code, 200, archived.text)
+        self.assertTrue(archived.json()["result"]["archived"])
+
+        campaigns = self.client.get("/api/v1/campaigns")
+        self.assertEqual(campaigns.status_code, 200, campaigns.text)
+        campaign_ids = {item["id"] for item in campaigns.json()["result"]["items"]}
+        self.assertNotIn(campaign_id, campaign_ids)
+
+    def test_archive_rejects_active_campaign(self) -> None:
+        campaign_id = self._create_campaign()
+        with session_scope() as session:
+            campaign = session.get(Campaign, campaign_id)
+            assert campaign is not None
+            campaign.status = "running"
+
+        archived = self.client.post(f"/api/v1/campaigns/{campaign_id}/archive")
+        self.assertEqual(archived.status_code, 409, archived.text)
+        self.assertIn("нельзя удалить", archived.json()["detail"])
+
     def test_resume_requires_unfinished_batches(self) -> None:
         campaign_id = self._create_campaign()
         with session_scope() as session:
