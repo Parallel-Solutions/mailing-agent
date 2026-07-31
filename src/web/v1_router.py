@@ -780,6 +780,19 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             status = 404 if detail == "Цепочка не найдена" else 400
             raise HTTPException(status_code=status, detail=detail) from exc
 
+    @router.delete("/chains/{chain_id}")
+    def delete_chain(chain_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            chain_service.delete_chain(
+                chain_id,
+                actor.username,
+                visible_owners=_visibility(actor),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _ok({"deleted": True, "id": chain_id})
+
     @router.post("/chains/{chain_id}/publish")
     def post_chain_publish(chain_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)

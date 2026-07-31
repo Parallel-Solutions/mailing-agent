@@ -199,7 +199,7 @@ function TemplateCard({
     !isFileTemplate ? {
       key: 'archive',
       icon: <InboxOutlined />,
-      label: 'Переместить в архив',
+      label: 'Удалить',
       danger: true,
       onClick: async () => {
         await templatesApi.archive(template.id);

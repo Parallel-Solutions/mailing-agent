@@ -29,7 +29,7 @@ export function OnboardingSettings() {
       <Alert
         type="info"
         showIcon
-        message="Обучение по CampaignFlow"
+        message="Обучение по ai offer"
         description="Пошаговая подсветка покажет, где заполнить профиль, подключить почту, создать шаблон, аудиторию и первую рассылку."
       />
       <Typography.Text>

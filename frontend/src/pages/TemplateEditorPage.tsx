@@ -6,6 +6,7 @@ import {
   BoldOutlined,
   CheckCircleFilled,
   CopyOutlined,
+  DeleteOutlined,
   DownloadOutlined,
   EyeOutlined,
   FilePdfOutlined,
@@ -221,6 +222,30 @@ function EditorHeader({
   saveDisabled?: boolean;
 }) {
   const section = template.template_type === 'email' ? 'Письма' : template.template_type === 'kp' ? 'Коммерческие предложения' : 'Документы';
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { message, modal } = App.useApp();
+  const deleteMutation = useMutation({
+    mutationFn: () => templatesApi.archive(template.id),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ['template', template.id] });
+      void queryClient.invalidateQueries({ queryKey: ['templates'] });
+      message.success(template.template_type === 'email' ? 'Шаблон удалён' : 'Документ удалён');
+      navigate(template.template_type === 'email' ? '/templates?tab=email' : '/templates?tab=document');
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+  const handleDelete = () => {
+    const entityLabel = template.template_type === 'email' ? 'шаблон' : 'документ';
+    modal.confirm({
+      title: `Удалить ${entityLabel} «${template.name}»?`,
+      content: 'Элемент будет перемещён в архив и исчезнет из списка. История версий сохранится.',
+      okText: 'Удалить',
+      okType: 'danger',
+      cancelText: 'Отмена',
+      onOk: () => deleteMutation.mutateAsync(),
+    });
+  };
   return (
     <>
       <Breadcrumb items={[{ title: 'Шаблоны и документы' }, { title: section }, { title: 'Редактирование' }]} />
@@ -240,6 +265,15 @@ function EditorHeader({
           {onDownloadHtml && (
             <Button icon={<DownloadOutlined />} onClick={onDownloadHtml}>Скачать HTML</Button>
           )}
+          <Button
+            danger
+            icon={<DeleteOutlined />}
+            loading={deleteMutation.isPending}
+            disabled={saving}
+            onClick={handleDelete}
+          >
+            Удалить
+          </Button>
           <Button icon={<EyeOutlined />} onClick={onPreview}>Предпросмотр</Button>
           <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={saveDisabled} onClick={onSave}>{saveLabel}</Button>
         </Space>

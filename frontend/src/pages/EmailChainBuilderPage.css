@@ -32,7 +32,7 @@
 
 .email-chain-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) clamp(420px, 38vw, 560px);
   gap: 16px;
   align-items: stretch;
   height: calc(100vh - 200px);

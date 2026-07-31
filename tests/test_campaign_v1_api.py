@@ -758,6 +758,32 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(ai.json()["result"]["name"], "AI Letter")
         mock_llm.assert_called_once()
 
+    def test_archive_template_hides_it_but_preserves_history(self) -> None:
+        created = self.client.post(
+            "/api/v1/templates",
+            json={
+                "name": "Disposable template",
+                "template_type": "email",
+                "subject": "Archive me",
+                "body_html": "<p>Archive me</p>",
+                "body_text": "Archive me",
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        template_id = created.json()["result"]["id"]
+
+        archived = self.client.post(f"/api/v1/templates/{template_id}/archive")
+        self.assertEqual(archived.status_code, 200, archived.text)
+        self.assertTrue(archived.json()["result"]["archived"])
+
+        listed = self.client.get("/api/v1/templates", params={"template_type": "email"})
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertFalse(any(item["id"] == template_id for item in listed.json()["result"]))
+
+        preserved = self.client.get(f"/api/v1/templates/{template_id}")
+        self.assertEqual(preserved.status_code, 200, preserved.text)
+        self.assertEqual(preserved.json()["result"]["version"]["body_text"], "Archive me")
+
     def test_visual_email_template_editor_state_and_assets(self) -> None:
         created = self.client.post(
             "/api/v1/templates",
@@ -1007,6 +1033,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         validate_before = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
         self.assertEqual(validate_before.status_code, 200)
         self.assertFalse(validate_before.json()["result"]["mapping_confirmed"])
+        self.assertEqual(validate_before.json()["result"]["template_issues"], [])
         self.assertIn("сопоставление переменных", " ".join(validate_before.json()["result"]["errors"]).lower())
 
         suggest = self.client.post(f"/api/v1/campaigns/{campaign_id}/variable-mapping/suggest")
@@ -1203,6 +1230,15 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(linked.status_code, 200, linked.text)
         self.assertEqual(linked.json()["result"]["email_chain_id"], chain_id)
+        deleted = self.client.delete(f"/api/v1/chains/{chain_id}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()["result"], {"deleted": True, "id": chain_id})
+        self.assertEqual(self.client.get(f"/api/v1/chains/{chain_id}").status_code, 404)
+        self.assertEqual(self.client.delete(f"/api/v1/chains/{chain_id}").status_code, 404)
+
+        detached = self.client.get(f"/api/v1/campaigns/{campaign_id}")
+        self.assertEqual(detached.status_code, 200, detached.text)
+        self.assertIsNone(detached.json()["result"]["email_chain_id"])
 
     def test_standalone_chain_rename(self) -> None:
         created = self.client.post("/api/v1/chains", json={"name": "Старое название"})

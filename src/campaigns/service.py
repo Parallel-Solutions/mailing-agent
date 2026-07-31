@@ -1251,19 +1251,20 @@ def validate_campaign_for_launch(
 
         mapping_errors = mapping_validation_errors(camp)
         errors.extend(mapping_errors)
+        errors.extend(template_text_cache_validation_errors(camp))
+        template_issues: list[dict[str, Any]] = []
         if not mapping_errors:
             errors.extend(empty_variable_validation_errors(camp))
-        errors.extend(template_text_cache_validation_errors(camp))
-        template_issues = substitution_validation_issues(
-            camp,
-            deep=deep,
-            advisory=False,
-            include_placeholder_issues=True,
-            strict_preview=True,
-        )
-        template_errors, template_warnings = partition_review_messages(template_issues)
-        errors.extend(template_errors)
-        warnings.extend(template_warnings)
+            template_issues = substitution_validation_issues(
+                camp,
+                deep=deep,
+                advisory=False,
+                include_placeholder_issues=True,
+                strict_preview=True,
+            )
+            template_errors, template_warnings = partition_review_messages(template_issues)
+            errors.extend(template_errors)
+            warnings.extend(template_warnings)
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         draft = dict(camp.draft_payload or {})
         schedule_payload = schedule_to_dict(schedule) if schedule else None

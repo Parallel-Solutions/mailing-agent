@@ -103,21 +103,32 @@ export const campaignsApi = {
     template_analysis_confirmed: boolean;
     mode?: string;
   }) => api.post<Record<string, unknown>>('/api/documents/start', body),
-  validate: async (id: string, opts?: { deep?: boolean }) => {
+  validate: async (id: string, opts?: { deep?: boolean; signal?: AbortSignal }) => {
     const suffix = opts?.deep ? '?deep=1' : '';
     const controller = new AbortController();
-    const timeout = globalThis.setTimeout(() => controller.abort(), CAMPAIGN_VALIDATE_TIMEOUT_MS);
+    const abortFromCaller = () => controller.abort(opts?.signal?.reason);
+    if (opts?.signal?.aborted) {
+      abortFromCaller();
+    } else {
+      opts?.signal?.addEventListener('abort', abortFromCaller, { once: true });
+    }
+    let timedOut = false;
+    const timeout = globalThis.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, CAMPAIGN_VALIDATE_TIMEOUT_MS);
     try {
       return await api.get<CampaignValidateResponse>(
         `/api/v1/campaigns/${id}/validate${suffix}`,
         { signal: controller.signal },
       );
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
+      if (error instanceof DOMException && error.name === 'AbortError' && timedOut) {
         throw new Error('\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0437\u0430\u043d\u044f\u043b\u0430 \u0431\u043e\u043b\u044c\u0448\u0435 30 \u0441\u0435\u043a\u0443\u043d\u0434. \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u043e\u043f\u044b\u0442\u043a\u0443.');
       }
       throw error;
     } finally {
+      opts?.signal?.removeEventListener('abort', abortFromCaller);
       globalThis.clearTimeout(timeout);
     }
   },

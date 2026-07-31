@@ -409,6 +409,11 @@ def run_payload(payload: dict[str, Any]) -> None:
 
         run_chain_followup(kwargs)
         return
+    if task == "recipient_resend":
+        from src.campaigns.recipient_resend_service import run_recipient_resend
+
+        run_recipient_resend(kwargs)
+        return
     if task == "connection_warmup":
         from src.generator.delivery.connection_warmup import run_connection_warmup
 

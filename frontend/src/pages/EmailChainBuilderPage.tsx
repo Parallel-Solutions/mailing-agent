@@ -1,4 +1,10 @@
-import { FullscreenExitOutlined, FullscreenOutlined, RedoOutlined, UndoOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined,
+  FullscreenExitOutlined,
+  FullscreenOutlined,
+  RedoOutlined,
+  UndoOutlined,
+} from '@ant-design/icons';
 import { App, Button, Input, Space, Spin, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -227,6 +233,23 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
     onError: (error: Error) => message.error(error.message),
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (debounceRef.current) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+      return chainsApi.remove(id);
+    },
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ['chain', id] });
+      void queryClient.invalidateQueries({ queryKey: ['chains'] });
+      message.success('Цепочка удалена');
+      navigate('/chains');
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+
   useEffect(() => {
     if (!dirty || !id) return;
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
@@ -266,6 +289,17 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
         applyChain(next);
         selectNode(next.root_node_id);
       },
+    });
+  };
+
+  const handleDeleteChain = () => {
+    modal.confirm({
+      title: `Удалить цепочку «${chainName.trim() || 'Без названия'}»?`,
+      content: 'Цепочка исчезнет из списка. В связанных рассылках потребуется выбрать новую цепочку.',
+      okText: 'Удалить',
+      okType: 'danger',
+      cancelText: 'Отмена',
+      onOk: () => deleteMutation.mutateAsync(),
     });
   };
 
@@ -344,6 +378,16 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
           <Button icon={<UndoOutlined />} onClick={undo} disabled={!history.length} />
           <Button icon={<RedoOutlined />} onClick={redo} disabled={!future.length} />
           <Button onClick={() => navigate(campaignLink)}>К рассылке</Button>
+          {!legacyCampaign && (
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              loading={deleteMutation.isPending}
+              onClick={handleDeleteChain}
+            >
+              Удалить цепочку
+            </Button>
+          )}
           {selectedNodeId && selectedNodeId !== chain.root_node_id && (
             <Button danger onClick={handleDeleteNode}>
               Удалить блок

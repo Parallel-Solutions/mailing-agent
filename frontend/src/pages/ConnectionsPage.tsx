@@ -1,4 +1,4 @@
-import { PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { ModalForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProFormTextArea, ProTable } from '@ant-design/pro-components';
 import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -167,11 +167,16 @@ function deliveryGuardPayload(values: Record<string, unknown>) {
 function EditConnectionAction({
   connection,
   onSaved,
+  onDelete,
+  deleting,
 }: {
   connection: DeliveryConnection;
   onSaved: () => void;
+  onDelete: (id: string) => Promise<unknown>;
+  deleting: boolean;
 }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
+  const [open, setOpen] = useState(false);
   const [editForm] = Form.useForm();
   const [isSecretEditing, setIsSecretEditing] = useState(false);
 
@@ -231,9 +236,37 @@ function EditConnectionAction({
       form={editForm}
       title={`Редактировать ${connectionLabel(connection)}`}
       modalProps={{ okText: 'Сохранить', cancelText: 'Отмена', destroyOnHidden: true }}
+      submitter={{
+        render: (_, dom) => [
+          <Button
+            key="delete"
+            danger
+            icon={<DeleteOutlined />}
+            loading={deleting}
+            onClick={() => {
+              modal.confirm({
+                title: `Удалить подключение ${connection.email}?`,
+                content: 'Рассылки с этим отправителем нельзя будет запустить, пока не выбрано новое подключение.',
+                okText: 'Удалить',
+                okType: 'danger',
+                cancelText: 'Отмена',
+                onOk: async () => {
+                  await onDelete(connection.id);
+                  setOpen(false);
+                },
+              });
+            }}
+          >
+            Удалить
+          </Button>,
+          ...dom,
+        ],
+      }}
       trigger={<a>Редактировать</a>}
-      onOpenChange={(open) => {
-        if (!open) {
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) {
           editForm.resetFields(['password', 'api_token']);
           setIsSecretEditing(false);
         }
@@ -404,7 +437,7 @@ function EditConnectionAction({
 const SMTP_SETUP_STAGES = ['email', 'credentials', 'manual'] as const;
 
 export function ConnectionsPage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const { searchParams, pushParams } = useUrlNavigation();
   const addModalOpen = readBoolParam(searchParams, 'add');
@@ -682,7 +715,11 @@ export function ConnectionsPage() {
 
   const removeMutation = useMutation({
     mutationFn: (id: string) => connectionsApi.remove(id),
-    onSuccess: () => {
+    onSuccess: (_, deletedId) => {
+      if (limitsStepConnectionId === deletedId) {
+        setAddModalOpen(false);
+        resetAddModal();
+      }
       message.success('Подключение удалено');
       refreshConnections();
     },
@@ -740,6 +777,25 @@ export function ConnectionsPage() {
             render: (_, dom) => {
               if (!onLimitsStep) return dom;
               return [
+                <Button
+                  key="delete"
+                  danger
+                  icon={<DeleteOutlined />}
+                  loading={removeMutation.isPending}
+                  onClick={() => {
+                    if (!limitsStepConnectionId) return;
+                    modal.confirm({
+                      title: 'Удалить созданное подключение?',
+                      content: 'Подключение будет удалено полностью, мастер создания закроется.',
+                      okText: 'Удалить',
+                      okType: 'danger',
+                      cancelText: 'Отмена',
+                      onOk: () => removeMutation.mutateAsync(limitsStepConnectionId),
+                    });
+                  }}
+                >
+                  Удалить подключение
+                </Button>,
                 <Button
                   key="skip"
                   onClick={() => {
@@ -1297,7 +1353,12 @@ export function ConnectionsPage() {
           valueType: 'option',
           render: (_, row) => (
             <Space>
-              <EditConnectionAction connection={row} onSaved={refreshConnections} />
+              <EditConnectionAction
+                connection={row}
+                onSaved={refreshConnections}
+                onDelete={(id) => removeMutation.mutateAsync(id)}
+                deleting={removeMutation.isPending && removeMutation.variables === row.id}
+              />
               <a
                 onClick={async () => {
                   try {

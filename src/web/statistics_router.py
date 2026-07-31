@@ -7,6 +7,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from src.campaigns.recipient_resend_service import (
+    RecipientResendNotAllowed,
+    enqueue_recipient_resend,
+)
+
 from src.generator.delivery.chain_consent_stats import (
     ChainConsentStatsContext,
     build_chain_subscribes_view,
@@ -271,6 +276,38 @@ def create_statistics_router(
             raise internal_server_error("Не удалось сохранить действие менеджера.") from exc
         updated = build_recipient_detail(row_key)
         return {"status": "ok", "result": {"action": record, "recipient": updated}}
+
+    @router.post("/api/sender/recipients/{row_key}/resend", status_code=202)
+    def sender_recipient_resend(
+        row_key: str,
+        principal: object = Depends(check_auth),
+    ):
+        try:
+            job_id, row_id, _email = parse_row_key(row_key)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Некорректный идентификатор получателя.") from exc
+        ensure_job_access(job_id, principal, allow_missing=False)
+        detail = build_recipient_detail(row_key)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Получатель не найден.")
+        manager_status = str((detail.get("manager_status") or {}).get("key") or "")
+        failed_email = str(detail.get("email") or "")
+        for item in list(detail.get("emails") or []):
+            if str((item.get("manager_status") or {}).get("key") or "") == manager_status:
+                failed_email = str(item.get("email") or failed_email)
+                break
+        try:
+            result = enqueue_recipient_resend(
+                job_id=job_id,
+                row_id=row_id,
+                manager_status=manager_status,
+                failed_email=failed_email,
+                last_event_at=str(detail.get("last_event_at") or ""),
+                requested_by=_principal_name(principal),
+            )
+        except RecipientResendNotAllowed as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"status": "ok", "result": result}
 
     @router.get("/api/sender/consents")
     def sender_consents(

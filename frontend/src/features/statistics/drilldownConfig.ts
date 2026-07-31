@@ -13,6 +13,7 @@ export type DrillConfig = {
     | 'campaign-attempts'
     | 'reports';
   columns: DrillColumn[];
+  layout?: 'table' | 'cards' | 'error-cards';
   params?: Record<string, string>;
   filter?: (item: Record<string, unknown>) => boolean;
 };
@@ -138,6 +139,7 @@ export const DRILLDOWN_CONFIG: Record<string, DrillConfig> = {
     title: 'Ошибки',
     source: 'recipients',
     columns: RECIPIENT_COLUMNS,
+    layout: 'error-cards',
     params: { quick_filter: 'problems' },
   },
   pending: {
@@ -146,11 +148,18 @@ export const DRILLDOWN_CONFIG: Record<string, DrillConfig> = {
     columns: RECIPIENT_COLUMNS,
     params: { quick_filter: 'pending' },
   },
-  consents: { title: 'Согласия', source: 'consents', columns: CONSENT_COLUMNS, params: {} },
+  consents: {
+    title: 'Согласия',
+    source: 'consents',
+    columns: CONSENT_COLUMNS,
+    layout: 'cards',
+    params: {},
+  },
   materials: {
     title: 'Материалы отправлены',
     source: 'consents',
     columns: CONSENT_COLUMNS,
+    layout: 'cards',
     params: {},
     filter: (item) => item.materials_label === 'Материалы отправлены',
   },
@@ -158,6 +167,7 @@ export const DRILLDOWN_CONFIG: Record<string, DrillConfig> = {
     title: 'Ошибки почтового провайдера',
     source: 'recipients',
     columns: RECIPIENT_COLUMNS,
+    layout: 'error-cards',
     params: {},
     filter: (i) => ['email_broken', 'soft_bounce', 'delivery_error'].includes(statusKey(i) || ''),
   },

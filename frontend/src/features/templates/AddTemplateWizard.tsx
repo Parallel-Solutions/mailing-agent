@@ -162,6 +162,8 @@ export function AddTemplateWizard({
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
+  const wasOpenRef = useRef(false);
+  const previousTemplateTypeRef = useRef<TemplateKind>(templateType);
 
   const acceptString = useMemo(
     () => getAcceptString(templateType, emailFormat),
@@ -182,7 +184,11 @@ export function AddTemplateWizard({
   });
 
   useEffect(() => {
-    if (!open) return;
+    const isNewSession =
+      open && (!wasOpenRef.current || previousTemplateTypeRef.current !== templateType);
+    wasOpenRef.current = open;
+    previousTemplateTypeRef.current = templateType;
+    if (!isNewSession) return;
     if (!controlledStep) setInternalStep(defaultStep);
     setEmailFormat('simple');
     setPrompt('');
