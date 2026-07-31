@@ -143,6 +143,7 @@ class StatisticsSurfaceCharacterizationTests(unittest.TestCase):
         expected = {
             "/api/sender/campaigns",
             "/api/sender/recipients",
+            "/api/sender/recipients/{row_key}/resend",
             "/api/sender/consents",
             "/api/sender/email-problems",
             "/api/sender/manager-dashboard",

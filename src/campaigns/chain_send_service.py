@@ -422,6 +422,8 @@ def send_chain_node_email(
     day_counts: dict[str, int] | None = None,
     test_email: str | None = None,
     connection_id: str | None = None,
+    delivery_email_override: str | None = None,
+    send_run_id: str | None = None,
 ) -> dict[str, Any]:
     from src.campaigns.batch_worker import _send_delivery_message
 
@@ -443,7 +445,7 @@ def send_chain_node_email(
             if token_row is not None and token_row.test_email:
                 active_test_email = token_row.test_email
 
-        delivery_email = active_test_email
+        delivery_email = active_test_email or delivery_email_override
         if delivery_email:
             from src.campaigns.recipient_email_service import validate_delivery_email
 
@@ -451,6 +453,10 @@ def send_chain_node_email(
             if not validation_result.is_valid:
                 raise ValueError(validation_result.reason or "Email не прошёл проверку SMTP.BZ.")
             delivery_email = validation_result.normalized_email
+            if not active_test_email:
+                from src.campaigns.recipient_email_service import persist_delivery_email_state
+
+                persist_delivery_email_state(recipient, delivery_email)
         else:
             from src.campaigns.recipient_email_service import (
                 persist_delivery_email_state,
@@ -619,7 +625,7 @@ def send_chain_node_email(
             row_id=str(recipient_id),
             attachments=attachments,
             send_mode="chain_followup" if followup_token else "chain_root",
-            send_run_id=followup_token,
+            send_run_id=send_run_id or followup_token,
             campaign=campaign_for_send,
             track_links=False,
         )

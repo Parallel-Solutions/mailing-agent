@@ -122,6 +122,8 @@ export function CompaniesPage() {
             void queryClient.invalidateQueries({ queryKey: ['companies'] });
             pushParams({}, ['edit']);
           }}
+          onDelete={() => deleteCompany.mutateAsync(editCompany.id)}
+          deleting={deleteCompany.isPending && deleteCompany.variables === editCompany.id}
         />
       ) : null}
 

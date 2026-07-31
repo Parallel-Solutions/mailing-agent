@@ -1,20 +1,23 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  App,
   Button,
+  Card,
   Checkbox,
   DatePicker,
   Descriptions,
   Drawer,
   Form,
   Input,
+  List,
   Modal,
+  Pagination,
   Radio,
   Select,
   Space,
   Table,
   Tag,
-  Tooltip,
   Typography,
 } from 'antd';
 import { useQuery } from '@tanstack/react-query';
@@ -375,61 +378,66 @@ function ManagerActionModal() {
 
 function DrilldownModal() {
   const { modal, closeModal, drill, openCompanyModal } = useStatistics();
+  const { message, modal: appModal } = App.useApp();
   const [page, setPage] = useState(1);
+  const [resendingKey, setResendingKey] = useState('');
+  const [queuedResends, setQueuedResends] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     if (modal === 'drill') setPage(1);
   }, [modal, drill?.kind]);
 
   const columns =
-    drill?.config.columns.map(([title, getter, options], index) => ({
+    drill?.config.columns.map(([title, getter], index) => ({
       title,
       key: String(index),
-      width: options?.width,
-      ellipsis: options?.ellipsis ? { showTitle: false } : undefined,
       onCell: () => ({ style: { verticalAlign: 'top' as const } }),
-      render: (_: unknown, row: Record<string, unknown>) => {
-        const value = String(getter(row) ?? '—');
-        if (options?.display === 'status') {
-          return (
-            <Tooltip title={value}>
-              <Tag
-                color={drillStatusColor(value)}
-                style={{
-                  marginInlineEnd: 0,
-                  maxWidth: '100%',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {value}
-              </Tag>
-            </Tooltip>
-          );
-        }
-        if (options?.ellipsis) {
-          return (
-            <Typography.Text
-              ellipsis={{ tooltip: value }}
-              style={{ display: 'block', width: '100%' }}
-            >
-              {value}
-            </Typography.Text>
-          );
-        }
-        return value;
-      },
+      render: (_: unknown, row: Record<string, unknown>) => String(getter(row) ?? '—'),
     })) || [];
-  const tableWidth = drill?.config.tableWidth || Math.max(960, columns.length * 150);
+  const tableWidth = Math.max(960, columns.length * 150);
+  const usesCardLayout = drill?.config.layout === 'cards';
+  const usesErrorCardLayout = drill?.config.layout === 'error-cards';
+
+  const confirmResend = (row: Record<string, unknown>) => {
+    const rowKey = String(row.row_key || '');
+    if (!rowKey || resendingKey || queuedResends.has(rowKey)) return;
+    const organization = String(row.organization || row.email || 'получателю');
+    appModal.confirm({
+      title: 'Направить письмо повторно?',
+      content: `Для «${organization}» сервер ещё раз проверит статус, стоп-лист и доступный email. Отправка выполнится в фоне.`,
+      okText: 'Поставить в очередь',
+      cancelText: 'Отмена',
+      onOk: async () => {
+        setResendingKey(rowKey);
+        try {
+          const result = await statisticsApi.resendRecipient(rowKey);
+          setQueuedResends((current) => new Set(current).add(rowKey));
+          const target = result.target_email ? ` Адрес: ${result.target_email}.` : '';
+          message.success(`${result.reason || 'Повторная отправка поставлена в очередь.'}${target}`);
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : 'Не удалось поставить письмо в очередь.');
+          throw error;
+        } finally {
+          setResendingKey('');
+        }
+      },
+    });
+  };
 
   return (
     <Modal
       title={drill?.config.title || 'Детализация'}
       open={modal === 'drill'}
       onCancel={closeModal}
-      width={1360}
-      style={{ top: 24, maxWidth: 'calc(100vw - 32px)' }}
+      width="calc(100vw - 32px)"
+      style={{ top: 16, maxWidth: 1360, paddingBottom: 0 }}
+      styles={{
+        body: {
+          maxHeight: 'calc(100vh - 176px)',
+          overflowX: 'hidden',
+          overflowY: 'auto',
+        },
+      }}
       footer={[
         <Button key="close" onClick={closeModal}>
           Закрыть
@@ -459,30 +467,402 @@ function DrilldownModal() {
           message="Показаны первые 2000 строк"
         />
       ) : null}
-      <Table
-        size="small"
-        loading={drill?.loading}
-        rowKey={(row, index) => String(row.row_key || row.job_id || index)}
-        dataSource={drill?.rows || []}
-        columns={columns}
-        tableLayout="fixed"
-        sticky
-        scroll={{ x: tableWidth, y: 'calc(100vh - 320px)' }}
-        pagination={{
-          current: page,
-          pageSize: 20,
-          showSizeChanger: false,
-          showTotal: (total) => `Всего: ${total}`,
-          onChange: setPage,
-        }}
-        onRow={(row) => ({
-          onClick: () => {
+      {usesCardLayout ? (
+        <ConsentDrilldownCards
+          loading={drill?.loading}
+          rows={drill?.rows || []}
+          page={page}
+          onPageChange={setPage}
+          onOpen={(row) => {
             if (row.row_key) void openCompanyModal(String(row.row_key));
-          },
-          style: row.row_key ? { cursor: 'pointer' } : undefined,
-        })}
-      />
+          }}
+        />
+      ) : usesErrorCardLayout ? (
+        <ProblemDrilldownCards
+          loading={drill?.loading}
+          rows={drill?.rows || []}
+          page={page}
+          onPageChange={setPage}
+          onOpen={(row) => {
+            if (row.row_key) void openCompanyModal(String(row.row_key));
+          }}
+          onResend={confirmResend}
+          resendingKey={resendingKey}
+          queuedResends={queuedResends}
+        />
+      ) : (
+        <Table
+          size="small"
+          loading={drill?.loading}
+          rowKey={(row, index) => String(row.row_key || row.job_id || index)}
+          dataSource={drill?.rows || []}
+          columns={columns}
+          tableLayout="fixed"
+          sticky
+          scroll={{ x: tableWidth, y: 'calc(100vh - 320px)' }}
+          pagination={{
+            current: page,
+            pageSize: 20,
+            showSizeChanger: false,
+            showTotal: (total) => `Всего: ${total}`,
+            onChange: setPage,
+          }}
+          onRow={(row) => ({
+            onClick: () => {
+              if (row.row_key) void openCompanyModal(String(row.row_key));
+            },
+            style: row.row_key ? { cursor: 'pointer' } : undefined,
+          })}
+        />
+      )}
     </Modal>
+  );
+}
+
+type ProblemDrilldownCardsProps = {
+  loading?: boolean;
+  rows: Record<string, unknown>[];
+  page: number;
+  onPageChange: (page: number) => void;
+  onOpen: (row: Record<string, unknown>) => void;
+  onResend: (row: Record<string, unknown>) => void;
+  resendingKey: string;
+  queuedResends: Set<string>;
+};
+
+export function ProblemDrilldownCards({
+  loading,
+  rows,
+  page,
+  onPageChange,
+  onOpen,
+  onResend,
+  resendingKey,
+  queuedResends,
+}: ProblemDrilldownCardsProps) {
+  const pageSize = 12;
+  const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
+
+  return (
+    <>
+      <List
+        loading={loading}
+        locale={{ emptyText: 'Ошибок доставки нет' }}
+        grid={{ gutter: 12, xs: 1, sm: 1, md: 2, lg: 2, xl: 2, xxl: 3 }}
+        dataSource={pageRows}
+        rowKey={(row) => String(row.row_key || row.email || JSON.stringify(row))}
+        renderItem={(row) => {
+          const rowKey = String(row.row_key || '');
+          const organization = String(row.organization || 'Без названия');
+          const status = row.manager_status as { key?: string; label?: string } | undefined;
+          const statusKey = String(status?.key || '');
+          const statusLabel = String(status?.label || 'Ошибка доставки');
+          const emails = Array.isArray(row.emails)
+            ? row.emails
+                .map((item) => String((item as { email?: string }).email || '').trim())
+                .filter(Boolean)
+            : [String(row.email || '').trim()].filter(Boolean);
+          const lastEventAt = formatLocalDateTime(String(row.last_event_at || ''));
+          const reason = String(
+            row.bounce_reason_label ||
+              (row.next_action as { label?: string } | undefined)?.label ||
+              'Причина уточняется у почтового провайдера',
+          );
+          const queued = queuedResends.has(rowKey);
+          const isAutomaticRetry = statusKey === 'soft_bounce';
+          const canRequest = Boolean(rowKey) && !isAutomaticRetry && !queued;
+
+          return (
+            <List.Item style={{ height: '100%' }}>
+              <Card
+                size="small"
+                hoverable={Boolean(rowKey)}
+                onClick={rowKey ? () => onOpen(row) : undefined}
+                style={{ height: '100%', borderColor: '#f0d5d5' }}
+                styles={{ body: { padding: 16, height: '100%' } }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    marginBottom: 14,
+                  }}
+                >
+                  <Typography.Text
+                    strong
+                    ellipsis={{ tooltip: organization }}
+                    style={{ minWidth: 0, display: 'block', fontSize: 15 }}
+                  >
+                    {organization}
+                  </Typography.Text>
+                  <Tag color={statusKey === 'soft_bounce' ? 'gold' : 'red'} style={{ margin: 0 }}>
+                    {statusLabel}
+                  </Tag>
+                </div>
+
+                <Descriptions
+                  size="small"
+                  column={1}
+                  colon={false}
+                  styles={{ label: { width: 124, color: '#667085' } }}
+                  items={[
+                    {
+                      key: 'emails',
+                      label: 'Email',
+                      children: emails.length ? emails.join(', ') : '—',
+                    },
+                    {
+                      key: 'reason',
+                      label: 'Что произошло',
+                      children: reason,
+                    },
+                    {
+                      key: 'last-event',
+                      label: 'Последнее событие',
+                      children: lastEventAt,
+                    },
+                  ]}
+                />
+
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    marginTop: 14,
+                    paddingTop: 12,
+                    borderTop: '1px solid #f2e7e7',
+                  }}
+                >
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {isAutomaticRetry
+                      ? 'Повтор выполняется автоматически'
+                      : queued
+                        ? 'Письмо поставлено в очередь'
+                        : 'Перед отправкой адрес проверится ещё раз'}
+                  </Typography.Text>
+                  <Button
+                    type="primary"
+                    danger
+                    disabled={!canRequest}
+                    loading={resendingKey === rowKey}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onResend(row);
+                    }}
+                  >
+                    {queued ? 'В очереди' : isAutomaticRetry ? 'Автоповтор' : 'Направить повторно'}
+                  </Button>
+                </div>
+              </Card>
+            </List.Item>
+          );
+        }}
+      />
+      {rows.length > pageSize ? (
+        <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 4 }}>
+          <Pagination
+            current={page}
+            pageSize={pageSize}
+            total={rows.length}
+            showSizeChanger={false}
+            showTotal={(total) => `Всего: ${total}`}
+            onChange={onPageChange}
+          />
+        </div>
+      ) : null}
+    </>
+  );
+}
+type ConsentDrilldownCardsProps = {
+  loading?: boolean;
+  rows: Record<string, unknown>[];
+  page: number;
+  onPageChange: (page: number) => void;
+  onOpen: (row: Record<string, unknown>) => void;
+};
+
+export function ConsentDrilldownCards({
+  loading,
+  rows,
+  page,
+  onPageChange,
+  onOpen,
+}: ConsentDrilldownCardsProps) {
+  const pageSize = 12;
+  const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
+
+  return (
+    <>
+      <List
+        loading={loading}
+        locale={{ emptyText: 'Нет данных по согласиям' }}
+        grid={{ gutter: 12, xs: 1, sm: 1, md: 2, lg: 2, xl: 2, xxl: 3 }}
+        dataSource={pageRows}
+        rowKey={(row) => String(row.row_key || row.email || row.contact || JSON.stringify(row))}
+        renderItem={(row) => {
+          const organization = String(row.organization || '').trim();
+          const contact = String(row.contact || '').trim();
+          const email = String(row.email || '').trim();
+          const title = organization || contact || email || 'Без названия';
+          const consentStatus = String(row.consent_status_label || 'Статус не указан');
+          const materials = String(row.materials_label || 'Нет данных');
+          const interest = String(
+            (row.interest as { label?: string } | undefined)?.label || 'Не указан',
+          );
+          const nextAction = String(
+            (row.next_action as { label?: string } | undefined)?.label || 'Не запланировано',
+          );
+          const lastAction = String(row.last_action_label || 'Действий ещё не было');
+          const lastActionAt = formatLocalDateTime(String(row.last_action_at || ''));
+          const isClickable = Boolean(row.row_key);
+
+          return (
+            <List.Item style={{ height: '100%' }}>
+              <Card
+                size="small"
+                hoverable={isClickable}
+                onClick={isClickable ? () => onOpen(row) : undefined}
+                onKeyDown={
+                  isClickable
+                    ? (event) => {
+                        if (event.key === 'Enter' || event.key === ' ') onOpen(row);
+                      }
+                    : undefined
+                }
+                tabIndex={isClickable ? 0 : undefined}
+                style={{ height: '100%', borderColor: '#dfe6e2' }}
+                styles={{ body: { padding: 16 } }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    marginBottom: 14,
+                  }}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <Typography.Text
+                      strong
+                      ellipsis={{ tooltip: title }}
+                      style={{ display: 'block', fontSize: 15 }}
+                    >
+                      {title}
+                    </Typography.Text>
+                    {contact && contact !== title ? (
+                      <Typography.Text
+                        type="secondary"
+                        ellipsis={{ tooltip: contact }}
+                        style={{ display: 'block', marginTop: 2 }}
+                      >
+                        {contact}
+                      </Typography.Text>
+                    ) : null}
+                  </div>
+                  <Tag
+                    color={drillStatusColor(consentStatus)}
+                    style={{ margin: 0, whiteSpace: 'normal', textAlign: 'center' }}
+                  >
+                    {consentStatus}
+                  </Tag>
+                </div>
+
+                <Descriptions
+                  size="small"
+                  column={1}
+                  colon={false}
+                  styles={{ label: { width: 130, color: '#667085' } }}
+                  items={[
+                    {
+                      key: 'email',
+                      label: 'Email',
+                      children: (
+                        <Typography.Text
+                          ellipsis={{ tooltip: email || '—' }}
+                          style={{ display: 'block', maxWidth: 280 }}
+                        >
+                          {email || '—'}
+                        </Typography.Text>
+                      ),
+                    },
+                    {
+                      key: 'last-action',
+                      label: 'Последнее действие',
+                      children: (
+                        <div>
+                          <div>{lastAction}</div>
+                          {lastActionAt !== '—' ? (
+                            <Typography.Text type="secondary">{lastActionAt}</Typography.Text>
+                          ) : null}
+                        </div>
+                      ),
+                    },
+                    {
+                      key: 'next-action',
+                      label: 'Следующее действие',
+                      children: nextAction,
+                    },
+                  ]}
+                />
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+                    gap: 8,
+                    marginTop: 14,
+                    paddingTop: 12,
+                    borderTop: '1px solid #edf0ee',
+                  }}
+                >
+                  <ConsentStatusField label="Материалы" value={materials} />
+                  <ConsentStatusField label="Интерес" value={interest} />
+                </div>
+              </Card>
+            </List.Item>
+          );
+        }}
+      />
+      {rows.length > pageSize ? (
+        <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 4 }}>
+          <Pagination
+            current={page}
+            pageSize={pageSize}
+            total={rows.length}
+            showSizeChanger={false}
+            showTotal={(total) => `Всего: ${total}`}
+            onChange={onPageChange}
+          />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function ConsentStatusField({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+        {label}
+      </Typography.Text>
+      <Tag
+        color={drillStatusColor(value)}
+        style={{
+          margin: '4px 0 0',
+          maxWidth: '100%',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {value}
+      </Tag>
+    </div>
   );
 }
 

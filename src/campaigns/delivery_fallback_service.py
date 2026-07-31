@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.campaigns.recipient_email_service import (
     RECIPIENT_STRATEGY_PRIMARY_THEN_FALLBACK,
@@ -16,7 +17,7 @@ from src.campaigns.recipient_email_service import (
 )
 from src.campaigns.service import record_delivery_attempt
 from src.infra.db import session_scope
-from src.infra.models import Campaign, CampaignRecipient
+from src.infra.models import Campaign, CampaignRecipient, DeliveryAttempt
 from src.utils.logger import logger
 
 _CAMPAIGN_FALLBACK_LOCK = threading.Lock()
@@ -62,6 +63,8 @@ def resend_campaign_recipient_email(
     connection_id: str,
     owner_username: str,
     job_id: str | None,
+    send_run_id: str = "",
+    attempt_number: int | None = None,
 ) -> str:
     from src.campaigns.batch_worker import _load_email_template, _render_body, _send_delivery_message
     from src.campaigns.chain_template_utils import strip_chain_button_placeholder
@@ -70,7 +73,9 @@ def resend_campaign_recipient_email(
     rendered_subject = subject
     html = ""
     text = ""
+    attachments: list[tuple[str, bytes]] = []
     campaign_for_send: Campaign | None = None
+    consent_token = ""
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
         recipient = session.get(CampaignRecipient, int(recipient_id))
@@ -93,30 +98,121 @@ def resend_campaign_recipient_email(
             template_id=camp.email_template_id,
         )
 
+        if attempt_number is None:
+            latest_attempt = session.scalar(
+                select(func.max(DeliveryAttempt.attempt_number)).where(
+                    DeliveryAttempt.campaign_id == campaign_id,
+                    DeliveryAttempt.recipient_id == int(recipient_id),
+                )
+            )
+            attempt_number = int(latest_attempt or 0) + 1
         record_delivery_attempt(
             campaign_id=campaign_id,
             recipient_id=int(recipient_id),
             batch_id=None,
             status="sending",
             delivery_email=delivery_email,
+            attempt_number=attempt_number,
         )
         persist_delivery_email_state(recipient, delivery_email)
+
+        if send_mode == "consent_request" and job_id:
+            from src.campaigns.connection_service import resolve_connection
+            from src.generator.delivery.consent_store import prepare_consent_request
+
+            connection = resolve_connection(connection_id, owner_username, campaign=camp)
+            consent = prepare_consent_request(
+                job_id=job_id,
+                row={
+                    "ID": str(recipient.id),
+                    "Организация": recipient.company,
+                    "Контакт": recipient.contact_name,
+                    "Email": delivery_email,
+                },
+                recipient=delivery_email,
+                transport=transport,
+                attachment_mode=camp.document_mode or "kp",
+                subject_template=rendered_subject,
+                campaign_name=camp.name,
+                sender_email=connection.email,
+                connection_id=connection.id,
+                owner_username=owner_username,
+            )
+            consent_token = str((consent or {}).get("token") or "")
+            consent_link = str((consent or {}).get("consent_url") or "")
+            if not consent_token or not consent_link:
+                raise RuntimeError("Consent request was not persisted and has no public URL.")
+            html = f'{html}<p><a href="{consent_link}">Подтвердить согласие</a></p>'
+            text = f"{text}\n\nПодтвердить согласие: {consent_link}"
+
+        if send_mode == "materials" and job_id:
+            from src.campaigns.generation_service import ensure_recipient_documents
+            from src.generator.delivery.sender_agent import (
+                _resolve_output_folder,
+                _resolve_pdf_attachments,
+            )
+            from src.jobs.storage import resolve_job_paths
+
+            ensure_recipient_documents(
+                campaign_id=campaign_id,
+                recipient_id=int(recipient.id),
+                owner_username=owner_username,
+                job_id=job_id,
+                document_mode=camp.document_mode or "kp",
+                work_type=camp.work_type,
+            )
+            folder, folder_error = _resolve_output_folder(
+                recipient.id,
+                output_dir=resolve_job_paths(job_id).output_dir,
+            )
+            if folder_error:
+                raise RuntimeError(folder_error)
+            attachment_paths, attachment_error = _resolve_pdf_attachments(
+                folder,
+                attachment_mode=camp.document_mode or "kp",
+            )
+            if attachment_error:
+                raise RuntimeError(attachment_error)
+            attachments = [
+                (Path(raw_path).name, Path(raw_path).read_bytes())
+                for raw_path in attachment_paths
+            ]
+
         session.flush()
         session.expunge(camp)
         campaign_for_send = camp
 
-    message_id = _send_delivery_message(
-        connection_id=connection_id,
-        owner_username=owner_username,
-        to_email=delivery_email,
-        subject=rendered_subject,
-        html=html,
-        text=text,
-        job_id=job_id,
-        row_id=str(recipient_id),
-        send_mode=send_mode,
-        campaign=campaign_for_send,
-    )
+    try:
+        message_id = _send_delivery_message(
+            connection_id=connection_id,
+            owner_username=owner_username,
+            to_email=delivery_email,
+            subject=rendered_subject,
+            html=html,
+            text=text,
+            job_id=job_id,
+            row_id=str(recipient_id),
+            attachments=attachments,
+            send_mode=send_mode,
+            send_run_id=send_run_id,
+            campaign=campaign_for_send,
+        )
+    except Exception as exc:
+        record_delivery_attempt(
+            campaign_id=campaign_id,
+            recipient_id=int(recipient_id),
+            batch_id=None,
+            status="failed",
+            error=str(exc),
+            delivery_email=delivery_email,
+            attempt_number=attempt_number,
+        )
+        with session_scope() as session:
+            recipient = session.get(CampaignRecipient, int(recipient_id))
+            if recipient is not None:
+                recipient.send_status = "failed"
+                recipient.last_error = str(exc)
+        raise
 
     with session_scope() as session:
         recipient = session.get(CampaignRecipient, int(recipient_id))
@@ -148,9 +244,23 @@ def resend_campaign_recipient_email(
         status="sent",
         provider_message_id=message_id,
         delivery_email=delivery_email,
+        attempt_number=attempt_number,
     )
-    return message_id
+    if consent_token and job_id:
+        from src.generator.delivery.consent_store import mark_consent_request_sent
 
+        mark_consent_request_sent(
+            job_id=job_id,
+            row_id=str(recipient_id),
+            recipient=delivery_email,
+            provider={
+                "message_id": message_id,
+                "transport": transport,
+                "connection_id": connection_id,
+            },
+            attachment_mode=campaign_for_send.document_mode if campaign_for_send else None,
+        )
+    return message_id
 
 def process_campaign_delivery_fallbacks(
     *,

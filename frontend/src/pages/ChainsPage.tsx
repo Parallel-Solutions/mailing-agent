@@ -1,6 +1,6 @@
-import { PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
-import { App, Button, Empty, Tag } from 'antd';
+import { App, Button, Empty, Popconfirm, Tag } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { chainsApi, type ChainListItem } from '@/api/chains';
@@ -33,6 +33,15 @@ export function ChainsPage() {
     onSuccess: (chain) => {
       void queryClient.invalidateQueries({ queryKey: ['chains'] });
       navigate(`/chains/${chain.id}`, { state: chainNavigationState });
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+
+  const deleteChain = useMutation({
+    mutationFn: (id: string) => chainsApi.remove(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['chains'] });
+      message.success('Цепочка удалена');
     },
     onError: (error: Error) => message.error(error.message),
   });
@@ -103,6 +112,24 @@ export function ChainsPage() {
             <a key="campaign" onClick={() => navigate(campaignUrl(row.id))}>
               К рассылке
             </a>,
+            <Popconfirm
+              key="delete"
+              title={`Удалить цепочку «${row.name}»?`}
+              description="Цепочка исчезнет из списка. В связанных рассылках потребуется выбрать новую цепочку."
+              okText="Удалить"
+              cancelText="Отмена"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => deleteChain.mutateAsync(row.id)}
+            >
+              <Button
+                type="link"
+                danger
+                icon={<DeleteOutlined />}
+                loading={deleteChain.isPending && deleteChain.variables === row.id}
+              >
+                Удалить
+              </Button>
+            </Popconfirm>,
           ],
         },
       ]}

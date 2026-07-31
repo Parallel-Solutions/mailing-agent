@@ -18,6 +18,8 @@ type CompanyFormModalProps = {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   onSuccess?: () => void;
+  onDelete?: () => Promise<unknown>;
+  deleting?: boolean;
 };
 
 function resetLogoState(
@@ -41,8 +43,10 @@ export function CompanyFormModal({
   open,
   onOpenChange,
   onSuccess,
+  onDelete,
+  deleting = false,
 }: CompanyFormModalProps) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [removeLogo, setRemoveLogo] = useState(false);
@@ -84,6 +88,34 @@ export function CompanyFormModal({
         cancelText: 'Отмена',
         destroyOnHidden: true,
         confirmLoading: saving,
+      }}
+      submitter={{
+        render: (_, dom) => {
+          if (mode !== 'edit' || !company || !onDelete) return dom;
+          return [
+            <Button
+              key="delete"
+              danger
+              htmlType="button"
+              icon={<DeleteOutlined />}
+              loading={deleting}
+              disabled={saving}
+              onClick={() => {
+                modal.confirm({
+                  title: `Удалить компанию «${company.name}»?`,
+                  content: 'Компания и её настройки будут удалены. Аккаунты участников и их данные сохранятся.',
+                  okText: 'Удалить',
+                  okType: 'danger',
+                  cancelText: 'Отмена',
+                  onOk: onDelete,
+                });
+              }}
+            >
+              Удалить компанию
+            </Button>,
+            ...dom,
+          ];
+        },
       }}
       initialValues={
         mode === 'edit' && company

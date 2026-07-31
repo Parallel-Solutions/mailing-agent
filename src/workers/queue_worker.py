@@ -64,6 +64,7 @@ def _task_timeout_seconds(task_type: str) -> int:
         "sender",
         "sender_batch",
         "chain_followup",
+        "recipient_resend",
         "campaign_pre_generate",
         "connection_warmup",
     }:
