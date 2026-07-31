@@ -70,6 +70,19 @@ def append_rusender_events(payload: Any) -> dict[str, Any]:
             record["event_key"] = event_key
             append_jsonl(path, record)
             existing_keys.add(event_key)
+        try:
+            from src.campaigns.connection_sender_warmup_service import record_warmup_delivery_outcome
+
+            record_warmup_delivery_outcome(
+                provider_message_id=task_id,
+                provider_status=str(record.get("provider_status") or ""),
+                smtp_response=str(record.get("smtp_response") or ""),
+            )
+        except Exception:
+            logger.exception(
+                "rusender_sender_warmup_feedback_failed",
+                task_id=task_id,
+            )
         if job_id:
             jobs.add(job_id)
             saved += 1

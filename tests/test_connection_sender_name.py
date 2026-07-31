@@ -34,7 +34,7 @@ class ConnectionSenderNameFromCompanyTests(unittest.TestCase):
             {
                 "transport": "rusender",
                 "email": "verified@example.com",
-                "api_token": "rs_ck_secret",
+                "sending_key_id": 42,
             },
         )
         self.assertEqual(created["sender_name"], "ООО Отправитель")
@@ -60,7 +60,7 @@ class ConnectionSenderNameFromCompanyTests(unittest.TestCase):
             {
                 "transport": "rusender",
                 "email": "verified@example.com",
-                "api_token": "rs_ck_secret",
+                "sending_key_id": 42,
                 "sender_name": "Из подключения",
             },
         )
@@ -74,7 +74,7 @@ class ConnectionSenderNameFromCompanyTests(unittest.TestCase):
             {
                 "transport": "rusender",
                 "email": "verified@example.com",
-                "api_token": "rs_ck_secret",
+                "sending_key_id": 42,
                 "sender_name": "Из подключения",
             },
         )
@@ -98,7 +98,7 @@ class ConnectionSenderNameFromCompanyTests(unittest.TestCase):
             {
                 "transport": "rusender",
                 "email": "verified@example.com",
-                "api_token": "rs_ck_secret",
+                "sending_key_id": 42,
                 "sender_name": "Из подключения",
             },
         )

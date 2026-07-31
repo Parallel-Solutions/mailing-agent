@@ -208,7 +208,7 @@ def _send_delivery_message(
                 send_run_id=send_run_id or "",
                 send_mode=send_mode or "",
                 sender_email=connection.email,
-                credential_api_key=connection.secret,
+                credential_sending_key_id=connection.sending_key_id,
                 credential_sender_name=connection.sender_name,
                 credential_api_base_url=connection.api_base_url,
                 track_links=track_links,

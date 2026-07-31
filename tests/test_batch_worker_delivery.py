@@ -27,8 +27,9 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
             transport="rusender",
             email="sender@example.com",
             sender_name="Sender",
-            secret="key",
+            secret="",
             api_base_url="https://api.example.test",
+            sending_key_id=42,
         )
 
         result = _send_delivery_message(
@@ -45,6 +46,8 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
         kwargs = send_mock.call_args.kwargs
         self.assertEqual(kwargs["html_override"], self._chain_html())
         self.assertEqual(kwargs["body_override"], self._chain_text())
+        self.assertEqual(kwargs["credential_sending_key_id"], 42)
+        self.assertNotIn("credential_api_key", kwargs)
 
     @patch("src.generator.delivery.channel_guard.wait_for_channel_send_slot")
     @patch("src.generator.delivery.sender_agent._send_via_mailopost", return_value={"uuid": "msg-2"})

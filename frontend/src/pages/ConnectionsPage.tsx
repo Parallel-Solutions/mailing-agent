@@ -22,6 +22,7 @@ import {
 } from '@/utils/connectionAuthKind';
 import { selectSmtpSetupSettings, smtpSetupSecurity } from '@/utils/smtpSetup';
 import { SmtpSetupInstructions } from '@/features/connections/SmtpSetupInstructions';
+import { SenderWarmupAction } from '@/features/connections/SenderWarmupAction';
 import { errorLabel } from '@/utils/presentation';
 
 type ConnectionTransport = 'smtp' | 'rusender' | 'mailopost';
@@ -103,13 +104,13 @@ function ConnectionDeliveryGuardFields() {
       <Alert
         type="warning"
         showIcon
-        message="Прогрев при ошибках"
-        description="Если доля ошибок превысит порог, активные рассылки этого подключения будут поставлены на паузу. Система отправит прогревочные письма на указанные адреса, но не будет ограничивать скорость подключения."
+        message="Автовосстановление после ошибок"
+        description="Если доля ошибок превысит порог, активные рассылки этого подключения будут поставлены на паузу. Система отправит восстановительные проверочные письма на указанные адреса, но не будет ограничивать скорость подключения."
         style={{ marginTop: 16, marginBottom: 16 }}
       />
       <ProFormSwitch
         name="delivery_guard_enabled"
-        label="Запускать прогрев при ошибках"
+        label="Запускать автовосстановление при ошибках"
       />
       <ProFormDigit
         name="delivery_error_rate_percent"
@@ -280,6 +281,7 @@ function EditConnectionAction({
         api_base_url: connection.api_base_url,
         password: '',
         api_token: '',
+        sending_key_id: connection.sending_key_id,
         max_per_hour: connection.max_per_hour ?? 0,
         max_per_day: connection.max_per_day ?? 0,
         delivery_guard_enabled: connection.delivery_guard_enabled ?? false,
@@ -323,7 +325,7 @@ function EditConnectionAction({
             ...(isSecretEditing && connection.transport === 'smtp' && !isOAuth
               ? { password: values.password }
               : {}),
-            ...(isSecretEditing && connection.transport !== 'smtp'
+            ...(isSecretEditing && connection.transport === 'mailopost'
               ? { api_token: values.api_token }
               : {}),
             ...rateLimits,
@@ -414,13 +416,29 @@ function EditConnectionAction({
         )
       ) : (
         <>
-          {renderSecretEditor(
-            'api_token',
-            connection.transport === 'rusender'
-              ? `${isSecretEditing ? 'Новый ' : ''}API-ключ RuSender`
-              : `${isSecretEditing ? 'Новый ' : ''}API-токен MailoPost`,
-            connection.transport === 'rusender' ? 'Изменить ключ' : 'Изменить токен',
+          {connection.transport === 'mailopost' ? (
+            renderSecretEditor(
+              'api_token',
+              `${isSecretEditing ? 'Новый ' : ''}API-токен MailoPost`,
+              'Изменить токен',
+            )
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              message="API-ключ RuSender берётся из настроек сервера"
+              description="Для этого подключения хранится только ID ключа отправки."
+            />
           )}
+          {connection.transport === 'rusender' ? (
+            <ProFormDigit
+              name="sending_key_id"
+              label="ID ключа отправки"
+              fieldProps={{ min: 1, precision: 0 }}
+              rules={[{ required: true, message: 'Укажите ID ключа отправки RuSender' }]}
+              extra="API-ключ доступа задаётся один раз в RUSENDER_API_KEY на сервере"
+            />
+          ) : null}
           <ProFormText
             name="api_base_url"
             label="Адрес API"
@@ -862,8 +880,10 @@ export function ConnectionsPage() {
               const created = await connectionsApi.create({
                 transport: apiTransport,
                 email: values.email,
-                api_token: values.api_token,
+                api_token: apiTransport === 'mailopost' ? values.api_token : undefined,
                 api_base_url: API_BASE_URLS[apiTransport],
+                sending_key_id:
+                  apiTransport === 'rusender' && values.sending_key_id ? Number(values.sending_key_id) : undefined,
                 make_default: false,
               });
               message.success(PROVIDER_LABELS[apiTransport] + ' подключён');
@@ -1255,7 +1275,11 @@ export function ConnectionsPage() {
                     setApiTransport(value || null);
                     if (value) advanceOnboarding('connection-api-provider', 'connection-credentials');
                     if (value) {
-                      form.setFieldsValue({ api_base_url: API_BASE_URLS[value] });
+                      form.setFieldsValue({
+                        api_base_url: API_BASE_URLS[value],
+                        api_token: undefined,
+                        sending_key_id: undefined,
+                      });
                     }
                   },
                 }}
@@ -1264,11 +1288,22 @@ export function ConnectionsPage() {
               </div>
               {apiTransport ? (
                 <div data-onboarding-id="connection-credentials">
-                  <ProFormText.Password
-                    name="api_token"
-                    label={apiTransport === 'rusender' ? 'API-ключ RuSender' : 'API-токен MailoPost'}
-                    rules={[{ required: true }]}
-                  />
+                  {apiTransport === 'mailopost' ? (
+                    <ProFormText.Password
+                      name="api_token"
+                      label="API-токен MailoPost"
+                      rules={[{ required: true }]}
+                    />
+                  ) : null}
+                  {apiTransport === 'rusender' ? (
+                    <ProFormDigit
+                      name="sending_key_id"
+                      label="ID ключа отправки"
+                      fieldProps={{ min: 1, precision: 0 }}
+                      rules={[{ required: true, message: 'Укажите ID ключа отправки RuSender' }]}
+                      extra="API-ключ доступа берётся из RUSENDER_API_KEY на сервере"
+                    />
+                  ) : null}
                   <ProFormText
                     name="email"
                     label="Подтверждённый email отправителя"
@@ -1278,7 +1313,11 @@ export function ConnectionsPage() {
                     type="info"
                     showIcon
                     message="Перед подключением подтвердите адрес отправителя у провайдера"
-                    description="Токен хранится в зашифрованном виде и не отображается после сохранения. Кнопка «Проверить» отправит тестовое письмо на этот адрес. Имя отправителя берётся из названия компании в рассылке."
+                    description={
+                      apiTransport === 'rusender'
+                        ? 'Укажите ID активного ключа отправки. Общий API-ключ RuSender с правом external_mail.send задаётся администратором в конфигурации сервера.'
+                        : 'Токен хранится в зашифрованном виде и не отображается после сохранения. Кнопка «Проверить» отправит тестовое письмо на этот адрес. Имя отправителя берётся из названия компании в рассылке.'
+                    }
                   />
                 </div>
               ) : null}
@@ -1325,10 +1364,10 @@ export function ConnectionsPage() {
               </Tag>
               {row.delivery_guard?.state === 'warmup' &&
               ['queued', 'running'].includes(row.delivery_guard?.warmup_status || '') ? (
-                <Tag color="processing">Выполняется прогрев</Tag>
+                <Tag color="processing">Автовосстановление подключения</Tag>
               ) : null}
               {row.delivery_guard?.warmup_status === 'failed' ? (
-                <Tag color="error">Прогрев завершился с ошибкой</Tag>
+                <Tag color="error">Автовосстановление завершилось с ошибкой</Tag>
               ) : null}
               {row.delivery_guard && row.delivery_guard.terminal_count > 0 ? (
                 <Typography.Text type="secondary">
@@ -1340,7 +1379,7 @@ export function ConnectionsPage() {
               row.delivery_guard?.warmup_status === 'completed' ||
               row.delivery_guard?.warmup_status === 'completed_with_errors' ? (
                 <Typography.Text type="secondary">
-                  Прогрев: отправлено {row.delivery_guard.warmup_sent_count}, ошибок{' '}
+                  Автовосстановление: отправлено {row.delivery_guard.warmup_sent_count}, ошибок{' '}
                   {row.delivery_guard.warmup_error_count}
                 </Typography.Text>
               ) : null}
@@ -1359,6 +1398,7 @@ export function ConnectionsPage() {
                 onDelete={(id) => removeMutation.mutateAsync(id)}
                 deleting={removeMutation.isPending && removeMutation.variables === row.id}
               />
+              <SenderWarmupAction connection={row} />
               <a
                 onClick={async () => {
                   try {
@@ -1375,23 +1415,23 @@ export function ConnectionsPage() {
               </a>
               {row.delivery_guard && row.delivery_guard.state !== 'normal' ? (
                 <Popconfirm
-                  title="Сбросить состояние прогрева?"
+                  title="Сбросить состояние защиты доставки?"
                   description="Счётчики и состояние будут сброшены. Поставленные на паузу рассылки автоматически не возобновятся."
                   okText="Сбросить"
                   cancelText="Отмена"
                   onConfirm={async () => {
                     try {
                       await connectionsApi.resetGuard(row.id);
-                      message.success('Состояние прогрева сброшено');
+                      message.success('Состояние защиты доставки сброшено');
                       refreshConnections();
                     } catch (error) {
                       message.error(
-                        error instanceof Error ? error.message : 'Не удалось сбросить состояние прогрева',
+                        error instanceof Error ? error.message : 'Не удалось сбросить состояние защиты доставки',
                       );
                     }
                   }}
                 >
-                  <a>Сбросить прогрев</a>
+                  <a>Сбросить защиту доставки</a>
                 </Popconfirm>
               ) : null}
               <Popconfirm

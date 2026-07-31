@@ -452,6 +452,22 @@ def record_channel_outcome(
                     )
                     row.updated_at = _now()
             snapshot["warmup_status"] = "failed"
+    try:
+        from src.campaigns.connection_sender_warmup_service import record_warmup_delivery_outcome
+
+        warmup_result = record_warmup_delivery_outcome(
+            provider_message_id=message_id,
+            provider_status=provider_status,
+            smtp_response=smtp_response,
+        )
+        if warmup_result is not None:
+            snapshot["sender_warmup"] = warmup_result
+    except Exception:
+        logger.exception(
+            "connection_sender_warmup_outcome_record_failed",
+            connection_id=connection_id,
+            provider_message_id=message_id,
+        )
     return snapshot
 
 

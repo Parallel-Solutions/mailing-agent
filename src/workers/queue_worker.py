@@ -67,6 +67,8 @@ def _task_timeout_seconds(task_type: str) -> int:
         "recipient_resend",
         "campaign_pre_generate",
         "connection_warmup",
+        "connection_sender_warmup",
+        "connection_sender_warmup_message",
     }:
         return max(0, int(settings.sender_worker_timeout_seconds or 0))
     return 0
