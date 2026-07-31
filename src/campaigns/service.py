@@ -888,10 +888,12 @@ def delete_recipients(
     *,
     visible_owners: frozenset[str] | None = None,
 ) -> int:
+    job_id = ""
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             return 0
+        job_id = str(camp.job_id or "")
         deleted = 0
         for rid in recipient_ids:
             row = session.get(CampaignRecipient, rid)
@@ -902,7 +904,12 @@ def delete_recipients(
             select(func.count()).select_from(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign_id)
         ) or 0
         camp.total_count = int(remaining)
-        return deleted
+
+    if deleted and job_id:
+        from src.generator.delivery.manager_stats import invalidate_stats_cache
+
+        invalidate_stats_cache(job_id)
+    return deleted
 
 
 def parse_recipients_csv(content: bytes) -> tuple[list[dict[str, Any]], list[str]]:

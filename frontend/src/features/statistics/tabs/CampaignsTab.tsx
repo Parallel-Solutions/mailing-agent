@@ -1,15 +1,19 @@
-import { Button, Input, Table } from 'antd';
-import { useQuery } from '@tanstack/react-query';
+import { DeleteOutlined } from '@ant-design/icons';
+import { App, Button, Input, Space, Table } from 'antd';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
+import { campaignsApi } from '@/api/campaigns';
 import { statisticsApi } from '@/api/statistics';
 import { KpiGrid } from '../components/KpiGrid';
 import { useStatistics } from '../StatisticsContext';
 import { asRecord, asRecordArray, fmt } from '../utils';
 
 export function CampaignsTab() {
+  const { message, modal } = App.useApp();
   const {
     apiBaseParams,
     refreshNonce,
+    requestRefresh,
     openDrilldown,
     openCampaignSummary,
     setTab,
@@ -27,6 +31,28 @@ export function CampaignsTab() {
         refresh: refreshNonce > 0 ? true : undefined,
       }),
   });
+
+  const archiveCampaign = useMutation({
+    mutationFn: (campaignId: string) => campaignsApi.archive(campaignId),
+    onSuccess: () => {
+      message.success('Рассылка удалена');
+      requestRefresh();
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+
+  const confirmDelete = (row: Record<string, unknown>) => {
+    const campaignId = String(row.campaign_id || '');
+    if (!campaignId) return;
+    modal.confirm({
+      title: 'Удалить рассылку?',
+      content: `Рассылка «${String(row.title || 'Без названия')}» исчезнет из общего списка и статистики. История отправки сохранится.`,
+      okText: 'Удалить',
+      cancelText: 'Отмена',
+      okButtonProps: { danger: true },
+      onOk: () => archiveCampaign.mutateAsync(campaignId),
+    });
+  };
 
   useEffect(() => {
     if (query.isError) setError('Не удалось загрузить рассылки.');
@@ -101,20 +127,42 @@ export function CampaignsTab() {
           { title: 'Согласия', dataIndex: 'consents', render: (v) => fmt(v) },
           { title: 'Статус', dataIndex: 'status_label' },
           {
-            title: '',
-            key: 'analytics',
+            title: 'Действия',
+            key: 'actions',
+            fixed: 'right',
+            width: 190,
             render: (_, r) => (
-              <Button
-                size="small"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const jobId = String(r.job_id);
-                  setFilters({ campaign: jobId });
-                  setTab('campaign-analytics', { campaign: jobId });
-                }}
-              >
-                Аналитика
-              </Button>
+              <Space size={4}>
+                <Button
+                  size="small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const jobId = String(r.job_id);
+                    setFilters({ campaign: jobId });
+                    setTab('campaign-analytics', { campaign: jobId });
+                  }}
+                >
+                  Аналитика
+                </Button>
+                {r.can_delete && r.campaign_id ? (
+                  <Button
+                    type="link"
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined />}
+                    loading={
+                      archiveCampaign.isPending &&
+                      archiveCampaign.variables === String(r.campaign_id)
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      confirmDelete(r);
+                    }}
+                  >
+                    Удалить
+                  </Button>
+                ) : null}
+              </Space>
             ),
           },
         ]}

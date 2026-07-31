@@ -636,10 +636,76 @@ def _company_view(company_entry: dict[str, Any] | None, row_id: str, fallback_or
     return {"row_id": row_id, "name": name, "fields": fields}
 
 
+def _campaign_recipient_lookup(job_id: str) -> dict[str, Any] | None:
+    """Resolve historical CampaignFlow rows to current recipient ids."""
+
+    from sqlalchemy import select
+
+    from src.campaigns.recipient_email_service import parse_email_candidates
+    from src.infra.db import session_scope
+    from src.infra.models import Campaign, CampaignRecipient
+
+    with session_scope() as session:
+        campaign = session.scalar(select(Campaign).where(Campaign.job_id == job_id).limit(1))
+        if campaign is None:
+            return None
+        recipients = session.scalars(
+            select(CampaignRecipient).where(
+                CampaignRecipient.campaign_id == campaign.id,
+                CampaignRecipient.excluded.is_(False),
+            )
+        ).all()
+        by_id: dict[str, int] = {}
+        by_source_row: dict[str, int] = {}
+        by_email: dict[str, int] = {}
+        duplicate_emails: set[str] = set()
+        for recipient in recipients:
+            recipient_id = int(recipient.id)
+            by_id[str(recipient_id)] = recipient_id
+            by_source_row[str(int(recipient.row_index) + 1)] = recipient_id
+            for email in parse_email_candidates(recipient.email, recipient.email_fallback):
+                key = _safe_text(email).lower()
+                if not key:
+                    continue
+                if key in by_email and by_email[key] != recipient_id:
+                    duplicate_emails.add(key)
+                else:
+                    by_email[key] = recipient_id
+        for email in duplicate_emails:
+            by_email.pop(email, None)
+        return {
+            "campaign_id": _safe_text(campaign.id),
+            "by_id": by_id,
+            "by_source_row": by_source_row,
+            "by_email": by_email,
+        }
+
+
 def _build_delivery_rows_for_job(job_id: str, *, refresh: bool) -> list[dict[str, Any]]:
     # CampaignFlow writes sent_mail_log without legacy sender-state / send_run scope.
     # Manager statistics must aggregate the full mailing history from job_events.
     delivery_rows, _ = _build_delivery_rows(job_id, refresh=refresh, for_statistics=True)
+    recipient_lookup = _campaign_recipient_lookup(job_id)
+    if recipient_lookup is not None:
+        current_rows: list[dict[str, Any]] = []
+        for row in delivery_rows:
+            email = _safe_text(row.get("recipient") or row.get("email")).lower()
+            recipient_id = recipient_lookup["by_email"].get(email) if email else None
+            if recipient_id is None and not email:
+                source_row_id = _safe_text(row.get("row_id"))
+                recipient_id = recipient_lookup["by_id"].get(source_row_id)
+                if recipient_id is None:
+                    recipient_id = recipient_lookup["by_source_row"].get(source_row_id)
+            if recipient_id is None:
+                continue
+            current_rows.append(
+                {
+                    **row,
+                    "row_id": str(recipient_id),
+                    "campaign_id": recipient_lookup["campaign_id"],
+                }
+            )
+        delivery_rows = current_rows
     latest_actions = latest_action_by_recipient(job_id)
     company_data = _load_company_data_for_job(job_id)
     rows: list[dict[str, Any]] = []
@@ -911,6 +977,7 @@ def _build_company_row(group: list[dict[str, Any]]) -> dict[str, Any]:
             break
     return {
         "job_id": job_id,
+        "campaign_id": _safe_text(first.get("campaign_id")),
         "row_id": row_id,
         "row_key": _safe_text(primary_row.get("row_key")) or _safe_text(representative.get("row_key")),
         "company": company,
@@ -1386,9 +1453,15 @@ def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
         period_from, period_to = _campaign_period(job_id, rows)
         provider_counter = Counter(_safe_text(row.get("provider")) or "unknown" for row in rows)
         provider_key = provider_counter.most_common(1)[0][0] if provider_counter else ""
+        campaign_id = next(
+            (_safe_text(row.get("campaign_id")) for row in rows if _safe_text(row.get("campaign_id"))),
+            "",
+        )
         campaigns.append(
             {
                 "job_id": job_id,
+                "campaign_id": campaign_id,
+                "can_delete": bool(campaign_id) and status in {"completed", "draft"},
                 "title": campaign["title"],
                 "period_from": period_from,
                 "period_to": period_to,
@@ -1428,7 +1501,9 @@ def _company_item(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "row_key": row.get("row_key"),
         "job_id": row.get("job_id"),
+        "campaign_id": row.get("campaign_id"),
         "row_id": row.get("row_id"),
+        "can_delete": bool(row.get("campaign_id") and row.get("row_id")),
         "organization": row.get("organization"),
         "recipient_name": row.get("recipient_name"),
         "email": row.get("email"),
