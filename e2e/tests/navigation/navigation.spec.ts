@@ -22,7 +22,7 @@ test.describe('Navigation @smoke', () => {
     await expect(page.getByTestId('statistics-page')).toBeVisible();
 
     await page.goto('/audiences', { waitUntil: 'domcontentloaded' });
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/\?tab=audiences$/);
     await expect(page.getByTestId('statistics-page')).toBeVisible();
 
     for (const item of MENU) {
