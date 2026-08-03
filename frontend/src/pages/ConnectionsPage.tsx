@@ -1,15 +1,13 @@
-import { PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { ModalForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProFormTextArea, ProTable } from '@ant-design/pro-components';
 import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { connectionsApi } from '@/api/connections';
 import type { SmtpSetupAnalysis, SmtpSetupSettings } from '@/api/connections';
 import type { DeliveryConnection } from '@/api/types';
 import {
-  advanceOnboarding,
-  ONBOARDING_ENTER_EVENT,
-  type OnboardingEnterDetail,
+  useActiveOnboardingStep,
 } from '@/features/onboarding/events';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { readBoolParam, readEnumParam } from '@/utils/urlState';
@@ -22,6 +20,7 @@ import {
 } from '@/utils/connectionAuthKind';
 import { selectSmtpSetupSettings, smtpSetupSecurity } from '@/utils/smtpSetup';
 import { SmtpSetupInstructions } from '@/features/connections/SmtpSetupInstructions';
+import { SenderWarmupAction } from '@/features/connections/SenderWarmupAction';
 import { errorLabel } from '@/utils/presentation';
 
 type ConnectionTransport = 'smtp' | 'rusender' | 'mailopost';
@@ -73,11 +72,11 @@ function formatRateLimit(value?: number | null) {
 
 function ConnectionRateLimitFields() {
   return (
-    <>
+    <div>
       <Alert
         type="info"
         showIcon
-        message="Лимиты отправки"
+        message={<span data-onboarding-id="connection-rate-limits">Лимиты отправки</span>}
         description="Ограничение для этого подключения действует во всех кампаниях. 0 или пусто — без лимита."
         style={{ marginBottom: 16 }}
       />
@@ -93,23 +92,23 @@ function ConnectionRateLimitFields() {
         fieldProps={{ min: 0, precision: 0 }}
         extra="0 = без лимита"
       />
-    </>
+    </div>
   );
 }
 
 function ConnectionDeliveryGuardFields() {
   return (
-    <>
+    <div>
       <Alert
         type="warning"
         showIcon
-        message="Прогрев при ошибках"
-        description="Если доля ошибок превысит порог, активные рассылки этого подключения будут поставлены на паузу. Система отправит прогревочные письма на указанные адреса, но не будет ограничивать скорость подключения."
+        message={<span data-onboarding-id="connection-delivery-guard">Автовосстановление после ошибок</span>}
+        description="Если доля ошибок превысит порог, активные рассылки этого подключения будут поставлены на паузу. Система отправит восстановительные проверочные письма на указанные адреса, но не будет ограничивать скорость подключения."
         style={{ marginTop: 16, marginBottom: 16 }}
       />
       <ProFormSwitch
         name="delivery_guard_enabled"
-        label="Запускать прогрев при ошибках"
+        label="Запускать автовосстановление при ошибках"
       />
       <ProFormDigit
         name="delivery_error_rate_percent"
@@ -140,7 +139,7 @@ function ConnectionDeliveryGuardFields() {
         fieldProps={{ min: 1, max: 10000, precision: 0 }}
         extra="Например, при 20 ошибках и значении 50% будет отправлено 10 прогревочных писем."
       />
-    </>
+    </div>
   );
 }
 
@@ -167,11 +166,16 @@ function deliveryGuardPayload(values: Record<string, unknown>) {
 function EditConnectionAction({
   connection,
   onSaved,
+  onDelete,
+  deleting,
 }: {
   connection: DeliveryConnection;
   onSaved: () => void;
+  onDelete: (id: string) => Promise<unknown>;
+  deleting: boolean;
 }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
+  const [open, setOpen] = useState(false);
   const [editForm] = Form.useForm();
   const [isSecretEditing, setIsSecretEditing] = useState(false);
 
@@ -231,9 +235,37 @@ function EditConnectionAction({
       form={editForm}
       title={`Редактировать ${connectionLabel(connection)}`}
       modalProps={{ okText: 'Сохранить', cancelText: 'Отмена', destroyOnHidden: true }}
+      submitter={{
+        render: (_, dom) => [
+          <Button
+            key="delete"
+            danger
+            icon={<DeleteOutlined />}
+            loading={deleting}
+            onClick={() => {
+              modal.confirm({
+                title: `Удалить подключение ${connection.email}?`,
+                content: 'Рассылки с этим отправителем нельзя будет запустить, пока не выбрано новое подключение.',
+                okText: 'Удалить',
+                okType: 'danger',
+                cancelText: 'Отмена',
+                onOk: async () => {
+                  await onDelete(connection.id);
+                  setOpen(false);
+                },
+              });
+            }}
+          >
+            Удалить
+          </Button>,
+          ...dom,
+        ],
+      }}
       trigger={<a>Редактировать</a>}
-      onOpenChange={(open) => {
-        if (!open) {
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) {
           editForm.resetFields(['password', 'api_token']);
           setIsSecretEditing(false);
         }
@@ -247,6 +279,7 @@ function EditConnectionAction({
         api_base_url: connection.api_base_url,
         password: '',
         api_token: '',
+        sending_key_id: connection.sending_key_id,
         max_per_hour: connection.max_per_hour ?? 0,
         max_per_day: connection.max_per_day ?? 0,
         delivery_guard_enabled: connection.delivery_guard_enabled ?? false,
@@ -290,7 +323,7 @@ function EditConnectionAction({
             ...(isSecretEditing && connection.transport === 'smtp' && !isOAuth
               ? { password: values.password }
               : {}),
-            ...(isSecretEditing && connection.transport !== 'smtp'
+            ...(isSecretEditing && connection.transport === 'mailopost'
               ? { api_token: values.api_token }
               : {}),
             ...rateLimits,
@@ -381,13 +414,29 @@ function EditConnectionAction({
         )
       ) : (
         <>
-          {renderSecretEditor(
-            'api_token',
-            connection.transport === 'rusender'
-              ? `${isSecretEditing ? 'Новый ' : ''}API-ключ RuSender`
-              : `${isSecretEditing ? 'Новый ' : ''}API-токен MailoPost`,
-            connection.transport === 'rusender' ? 'Изменить ключ' : 'Изменить токен',
+          {connection.transport === 'mailopost' ? (
+            renderSecretEditor(
+              'api_token',
+              `${isSecretEditing ? 'Новый ' : ''}API-токен MailoPost`,
+              'Изменить токен',
+            )
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              message="API-ключ RuSender берётся из настроек сервера"
+              description="Для этого подключения хранится только ID ключа отправки."
+            />
           )}
+          {connection.transport === 'rusender' ? (
+            <ProFormDigit
+              name="sending_key_id"
+              label="ID ключа отправки"
+              fieldProps={{ min: 1, precision: 0 }}
+              rules={[{ required: true, message: 'Укажите ID ключа отправки RuSender' }]}
+              extra="API-ключ доступа задаётся один раз в RUSENDER_API_KEY на сервере"
+            />
+          ) : null}
           <ProFormText
             name="api_base_url"
             label="Адрес API"
@@ -404,7 +453,7 @@ function EditConnectionAction({
 const SMTP_SETUP_STAGES = ['email', 'credentials', 'manual'] as const;
 
 export function ConnectionsPage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const { searchParams, pushParams } = useUrlNavigation();
   const addModalOpen = readBoolParam(searchParams, 'add');
@@ -422,6 +471,9 @@ export function ConnectionsPage() {
   const [isVerifyingSmtp, setIsVerifyingSmtp] = useState(false);
   const [showAuthKindPicker, setShowAuthKindPicker] = useState(false);
   const [limitsStepConnectionId, setLimitsStepConnectionId] = useState<string | null>(null);
+  const [onboardingPreviewStep, setOnboardingPreviewStep] = useState<string | null>(null);
+  const activeOnboardingStep = useActiveOnboardingStep();
+  const previousOnboardingStepRef = useRef<string | null>(null);
 
   const setSmtpSetupStage = useCallback(
     (stage: SmtpSetupStage) => {
@@ -446,7 +498,6 @@ export function ConnectionsPage() {
   };
 
   const resetSmtpWizard = () => {
-    setSmtpSetupStage('email');
     setSmtpAnalysis(null);
     setSmtpSetupSettings(null);
     setSmtpSetupError('');
@@ -467,79 +518,94 @@ export function ConnectionsPage() {
   };
 
   useEffect(() => {
-    let recoveryTimer = 0;
-    const handleOnboardingEnter = (event: Event) => {
-      const { stepId } = (event as CustomEvent<OnboardingEnterDetail>).detail || {};
-      if (stepId === 'connection-open') {
+    const previousStep = previousOnboardingStepRef.current;
+    previousOnboardingStepRef.current = activeOnboardingStep;
+    const stepId = activeOnboardingStep;
+
+    if (!stepId?.startsWith('connection-')) {
+      if (previousStep?.startsWith('connection-')) {
+        setOnboardingPreviewStep(null);
         setAddModalOpen(false);
         resetAddModal();
-        return;
       }
-      if (stepId === 'connection-method') {
-        resetAddModal();
-        setAddModalOpen(true);
-        return;
-      }
+      return;
+    }
 
-      if (stepId === 'connection-details') {
-        resetAddModal();
-        setMethodKind('mailbox');
-        setAddModalOpen(true);
-        return;
-      }
+    setOnboardingPreviewStep(stepId);
+    resetAddModal();
 
-      if (stepId === 'connection-api-provider') {
-        resetAddModal();
-        setMethodKind('api_key');
-        setAddModalOpen(true);
-        return;
-      }
+    if (stepId === 'connection-open') {
+      setAddModalOpen(false);
+      return;
+    }
 
-      if (
-        stepId === 'connection-auth'
-        || stepId === 'connection-credentials'
-        || stepId === 'connection-submit'
-      ) {
-        setAddModalOpen(true);
-        window.clearTimeout(recoveryTimer);
-        recoveryTimer = window.setTimeout(() => {
-          const target = document.querySelector(`[data-onboarding-id="${stepId}"]`);
-          if (target) return;
-          resetAddModal();
-          setAddModalOpen(true);
-          advanceOnboarding(stepId, 'connection-method');
-        }, 120);
-        return;
-      }
-      if (stepId === 'connection-limits') {
-        void connectionsApi.list().then((connections) => {
-          const connection = connections.length ? connections[connections.length - 1] : null;
-          if (!connection) {
-            advanceOnboarding('connection-limits', 'template-open');
-            return;
-          }
-          setLimitsStepConnectionId(connection.id);
-          setMethodKind(connection.transport === 'smtp' ? 'mailbox' : 'api_key');
-          form.setFieldsValue({
-            max_per_hour: connection.max_per_hour || 0,
-            max_per_day: connection.max_per_day || 0,
-          });
-          setAddModalOpen(true);
-        });
-      }
-    };
+    if (stepId === 'connection-method') {
+      setAddModalOpen(true);
+      return;
+    }
 
-    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
-    return () => {
-      window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
-      window.clearTimeout(recoveryTimer);
-    };
-  }, [form, setAddModalOpen]);
+    if (stepId === 'connection-details') {
+      setMethodKind('mailbox');
+      form.setFieldsValue({ method_kind: 'mailbox', email: '' });
+      setAddModalOpen(true);
+      return;
+    }
 
-  const enterLimitsStep = (connectionId: string, fromStepId = 'connection-submit') => {
+    if (stepId === 'connection-auth') {
+      setMethodKind('mailbox');
+      setAuthKind('app_password');
+      setRecommendedAuthKind('app_password');
+      setShowAuthKindPicker(true);
+      form.setFieldsValue({
+        method_kind: 'mailbox',
+        email: 'sender@example.ru',
+        password: '',
+      });
+      pushParams({ add: '1', smtp_stage: 'credentials' });
+      return;
+    }
+
+    if (stepId === 'connection-api-provider') {
+      setMethodKind('api_key');
+      form.setFieldsValue({ method_kind: 'api_key' });
+      setAddModalOpen(true);
+      return;
+    }
+
+    if (stepId === 'connection-credentials' || stepId === 'connection-submit') {
+      setMethodKind('api_key');
+      setApiTransport('rusender');
+      form.setFieldsValue({
+        method_kind: 'api_key',
+        transport: 'rusender',
+        api_token: '',
+        api_base_url: API_BASE_URLS.rusender,
+        email: 'sender@example.ru',
+      });
+      setAddModalOpen(true);
+      return;
+    }
+
+    if (stepId === 'connection-limits' || stepId === 'connection-delivery-guard') {
+      setMethodKind('mailbox');
+      form.setFieldsValue({
+        method_kind: 'mailbox',
+        max_per_hour: 100,
+        max_per_day: 500,
+        delivery_guard_enabled: true,
+        delivery_error_rate_percent: 5,
+        delivery_error_window_minutes: 60,
+        delivery_error_min_samples: 20,
+        warmup_recipients_text: '',
+        warmup_percent_of_errors: 100,
+      });
+      setAddModalOpen(true);
+    }
+  }, [activeOnboardingStep, form, pushParams, setAddModalOpen]);
+
+  const enterLimitsStep = (connectionId: string) => {
     setLimitsStepConnectionId(connectionId);
     form.setFieldsValue({ max_per_hour: 0, max_per_day: 0 });
-    advanceOnboarding(fromStepId);
     refreshConnections();
   };
 
@@ -624,7 +690,6 @@ export function ConnectionsPage() {
       setRecommendedAuthKind('password');
     } finally {
       setIsAnalyzingSmtp(false);
-      advanceOnboarding('connection-details', 'connection-auth');
     }
   };
 
@@ -664,7 +729,7 @@ export function ConnectionsPage() {
         make_default: false,
       });
       message.success('Почтовый ящик подключён через OAuth');
-      enterLimitsStep(created.id, 'connection-credentials');
+      enterLimitsStep(created.id);
     } catch (error) {
       setSmtpSetupError(
         error instanceof Error ? error.message : 'Не удалось завершить OAuth.',
@@ -682,7 +747,11 @@ export function ConnectionsPage() {
 
   const removeMutation = useMutation({
     mutationFn: (id: string) => connectionsApi.remove(id),
-    onSuccess: () => {
+    onSuccess: (_, deletedId) => {
+      if (limitsStepConnectionId === deletedId) {
+        setAddModalOpen(false);
+        resetAddModal();
+      }
       message.success('Подключение удалено');
       refreshConnections();
     },
@@ -691,13 +760,18 @@ export function ConnectionsPage() {
 
   const onMailboxEmailStep =
     methodKind === 'mailbox' && (smtpSetupStage === 'email' || authKind === null);
-  const onLimitsStep = Boolean(limitsStepConnectionId);
+  const isOnboardingPreview = Boolean(onboardingPreviewStep?.startsWith('connection-'));
+  const onLimitsStep =
+    Boolean(limitsStepConnectionId)
+    || onboardingPreviewStep === 'connection-limits'
+    || onboardingPreviewStep === 'connection-delivery-guard';
   const submitDisabled =
-    !onLimitsStep
+    isOnboardingPreview
+    || (!onLimitsStep
     && (methodKind === null
       || (methodKind === 'mailbox'
         && (onMailboxEmailStep || authKind === 'oauth' || isOAuthConnecting))
-      || (methodKind === 'api_key' && apiTransport === null));
+      || (methodKind === 'api_key' && apiTransport === null)));
 
   return (
     <ProTable<DeliveryConnection>
@@ -741,12 +815,31 @@ export function ConnectionsPage() {
               if (!onLimitsStep) return dom;
               return [
                 <Button
+                  key="delete"
+                  danger
+                  icon={<DeleteOutlined />}
+                  loading={removeMutation.isPending}
+                  onClick={() => {
+                    if (!limitsStepConnectionId) return;
+                    modal.confirm({
+                      title: 'Удалить созданное подключение?',
+                      content: 'Подключение будет удалено полностью, мастер создания закроется.',
+                      okText: 'Удалить',
+                      okType: 'danger',
+                      cancelText: 'Отмена',
+                      onOk: () => removeMutation.mutateAsync(limitsStepConnectionId),
+                    });
+                  }}
+                >
+                  Удалить подключение
+                </Button>,
+                <Button
                   key="skip"
+                  disabled={isOnboardingPreview}
                   onClick={() => {
                     message.success('Подключение сохранено без лимитов');
                     setAddModalOpen(false);
                     resetAddModal();
-                    advanceOnboarding('connection-limits', 'template-open');
                   }}
                 >
                   Пропустить
@@ -780,14 +873,15 @@ export function ConnectionsPage() {
             warmup_percent_of_errors: 100,
           }}
           onOpenChange={(open) => {
+            if (isOnboardingPreview) return;
             setAddModalOpen(open);
-            if (open) {
-              advanceOnboarding('connection-open');
-            } else {
+            if (!open) {
               resetAddModal();
             }
           }}
           onFinish={async (values) => {
+            if (isOnboardingPreview) return false;
+
             if (limitsStepConnectionId) {
               await connectionsApi.update(limitsStepConnectionId, {
                 max_per_hour: Number(values.max_per_hour) || 0,
@@ -797,7 +891,6 @@ export function ConnectionsPage() {
               message.success('Лимиты отправки сохранены');
               refreshConnections();
               resetAddModal();
-              advanceOnboarding('connection-limits', 'template-open');
               return true;
             }
 
@@ -806,8 +899,10 @@ export function ConnectionsPage() {
               const created = await connectionsApi.create({
                 transport: apiTransport,
                 email: values.email,
-                api_token: values.api_token,
+                api_token: apiTransport === 'mailopost' ? values.api_token : undefined,
                 api_base_url: API_BASE_URLS[apiTransport],
+                sending_key_id:
+                  apiTransport === 'rusender' && values.sending_key_id ? Number(values.sending_key_id) : undefined,
                 make_default: false,
               });
               message.success(PROVIDER_LABELS[apiTransport] + ' подключён');
@@ -927,10 +1022,14 @@ export function ConnectionsPage() {
                 />
               ) : null}
               <Alert
-                type="success"
+                type={isOnboardingPreview ? 'info' : 'success'}
                 showIcon
-                message="Подключение создано"
-                description="Укажите лимиты отправки для этого ящика или пропустите шаг."
+                message={isOnboardingPreview ? 'Пример настроек подключения' : 'Подключение создано'}
+                description={
+                  isOnboardingPreview
+                    ? 'Поля показаны для знакомства. Значения не будут сохранены.'
+                    : 'Укажите лимиты отправки для этого ящика или пропустите шаг.'
+                }
                 style={{ marginBottom: 16 }}
               />
               <ConnectionRateLimitFields />
@@ -951,11 +1050,8 @@ export function ConnectionsPage() {
               placeholder: 'Выберите способ отправки',
               onChange: (value: MethodKind | null) => {
                 setMethodKind(value || null);
-                advanceOnboarding(
-                  'connection-method',
-                  value === 'api_key' ? 'connection-api-provider' : undefined,
-                );
                 setApiTransport(null);
+                setSmtpSetupStage('email');
                 resetSmtpWizard();
                 form.setFieldsValue({
                   transport: undefined,
@@ -971,7 +1067,7 @@ export function ConnectionsPage() {
           </div>
 
           {methodKind === 'mailbox' ? (
-            <>
+            <div data-onboarding-id="connection-details">
               <Steps
                 size="small"
                 current={onMailboxEmailStep ? 0 : 1}
@@ -988,7 +1084,10 @@ export function ConnectionsPage() {
                 rules={[{ required: true, type: 'email' }]}
                 fieldProps={{
                   onChange: () => {
-                    if (!onMailboxEmailStep) resetSmtpWizard();
+                    if (!onMailboxEmailStep) {
+                      setSmtpSetupStage('email');
+                      resetSmtpWizard();
+                    }
                   },
                 }}
               />
@@ -998,7 +1097,6 @@ export function ConnectionsPage() {
                   direction="vertical"
                   size={12}
                   style={{ width: '100%' }}
-                  data-onboarding-id="connection-details"
                 >
                   <Alert
                     type="info"
@@ -1180,7 +1278,7 @@ export function ConnectionsPage() {
                   ) : null}
                 </div>
               )}
-            </>
+            </div>
           ) : null}
 
           {methodKind === 'api_key' ? (
@@ -1197,9 +1295,12 @@ export function ConnectionsPage() {
                   placeholder: 'Выберите провайдера',
                   onChange: (value: ApiTransport) => {
                     setApiTransport(value || null);
-                    if (value) advanceOnboarding('connection-api-provider', 'connection-credentials');
                     if (value) {
-                      form.setFieldsValue({ api_base_url: API_BASE_URLS[value] });
+                      form.setFieldsValue({
+                        api_base_url: API_BASE_URLS[value],
+                        api_token: undefined,
+                        sending_key_id: undefined,
+                      });
                     }
                   },
                 }}
@@ -1208,11 +1309,22 @@ export function ConnectionsPage() {
               </div>
               {apiTransport ? (
                 <div data-onboarding-id="connection-credentials">
-                  <ProFormText.Password
-                    name="api_token"
-                    label={apiTransport === 'rusender' ? 'API-ключ RuSender' : 'API-токен MailoPost'}
-                    rules={[{ required: true }]}
-                  />
+                  {apiTransport === 'mailopost' ? (
+                    <ProFormText.Password
+                      name="api_token"
+                      label="API-токен MailoPost"
+                      rules={[{ required: true }]}
+                    />
+                  ) : null}
+                  {apiTransport === 'rusender' ? (
+                    <ProFormDigit
+                      name="sending_key_id"
+                      label="ID ключа отправки"
+                      fieldProps={{ min: 1, precision: 0 }}
+                      rules={[{ required: true, message: 'Укажите ID ключа отправки RuSender' }]}
+                      extra="API-ключ доступа берётся из RUSENDER_API_KEY на сервере"
+                    />
+                  ) : null}
                   <ProFormText
                     name="email"
                     label="Подтверждённый email отправителя"
@@ -1222,7 +1334,11 @@ export function ConnectionsPage() {
                     type="info"
                     showIcon
                     message="Перед подключением подтвердите адрес отправителя у провайдера"
-                    description="Токен хранится в зашифрованном виде и не отображается после сохранения. Кнопка «Проверить» отправит тестовое письмо на этот адрес. Имя отправителя берётся из названия компании в рассылке."
+                    description={
+                      apiTransport === 'rusender'
+                        ? 'Укажите ID активного ключа отправки. Общий API-ключ RuSender с правом external_mail.send задаётся администратором в конфигурации сервера.'
+                        : 'Токен хранится в зашифрованном виде и не отображается после сохранения. Кнопка «Проверить» отправит тестовое письмо на этот адрес. Имя отправителя берётся из названия компании в рассылке.'
+                    }
                   />
                 </div>
               ) : null}
@@ -1269,10 +1385,10 @@ export function ConnectionsPage() {
               </Tag>
               {row.delivery_guard?.state === 'warmup' &&
               ['queued', 'running'].includes(row.delivery_guard?.warmup_status || '') ? (
-                <Tag color="processing">Выполняется прогрев</Tag>
+                <Tag color="processing">Автовосстановление подключения</Tag>
               ) : null}
               {row.delivery_guard?.warmup_status === 'failed' ? (
-                <Tag color="error">Прогрев завершился с ошибкой</Tag>
+                <Tag color="error">Автовосстановление завершилось с ошибкой</Tag>
               ) : null}
               {row.delivery_guard && row.delivery_guard.terminal_count > 0 ? (
                 <Typography.Text type="secondary">
@@ -1284,7 +1400,7 @@ export function ConnectionsPage() {
               row.delivery_guard?.warmup_status === 'completed' ||
               row.delivery_guard?.warmup_status === 'completed_with_errors' ? (
                 <Typography.Text type="secondary">
-                  Прогрев: отправлено {row.delivery_guard.warmup_sent_count}, ошибок{' '}
+                  Автовосстановление: отправлено {row.delivery_guard.warmup_sent_count}, ошибок{' '}
                   {row.delivery_guard.warmup_error_count}
                 </Typography.Text>
               ) : null}
@@ -1297,7 +1413,13 @@ export function ConnectionsPage() {
           valueType: 'option',
           render: (_, row) => (
             <Space>
-              <EditConnectionAction connection={row} onSaved={refreshConnections} />
+              <EditConnectionAction
+                connection={row}
+                onSaved={refreshConnections}
+                onDelete={(id) => removeMutation.mutateAsync(id)}
+                deleting={removeMutation.isPending && removeMutation.variables === row.id}
+              />
+              <SenderWarmupAction connection={row} />
               <a
                 onClick={async () => {
                   try {
@@ -1314,23 +1436,23 @@ export function ConnectionsPage() {
               </a>
               {row.delivery_guard && row.delivery_guard.state !== 'normal' ? (
                 <Popconfirm
-                  title="Сбросить состояние прогрева?"
+                  title="Сбросить состояние защиты доставки?"
                   description="Счётчики и состояние будут сброшены. Поставленные на паузу рассылки автоматически не возобновятся."
                   okText="Сбросить"
                   cancelText="Отмена"
                   onConfirm={async () => {
                     try {
                       await connectionsApi.resetGuard(row.id);
-                      message.success('Состояние прогрева сброшено');
+                      message.success('Состояние защиты доставки сброшено');
                       refreshConnections();
                     } catch (error) {
                       message.error(
-                        error instanceof Error ? error.message : 'Не удалось сбросить состояние прогрева',
+                        error instanceof Error ? error.message : 'Не удалось сбросить состояние защиты доставки',
                       );
                     }
                   }}
                 >
-                  <a>Сбросить прогрев</a>
+                  <a>Сбросить защиту доставки</a>
                 </Popconfirm>
               ) : null}
               <Popconfirm

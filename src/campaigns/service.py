@@ -700,10 +700,19 @@ def archive_campaign(campaign_id: str, owner_username: str, *, visible_owners: f
         row = session.get(Campaign, campaign_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
             return None
+        metrics = recipient_metrics(session, row)
+        work = active_work_counts(session, campaign_id)
+        actions = allowed_actions(
+            row,
+            metrics,
+            has_active_work=bool(work["active_batches"] or work["active_tasks"]),
+        )
+        if "archive" not in actions:
+            raise ValueError("Активную рассылку нельзя удалить. Сначала отмените её.")
         row.archived = True
         row.updated_at = _now()
         session.flush()
-        return campaign_to_dict(row, metrics=recipient_metrics(session, row))
+        return campaign_to_dict(row, metrics=metrics, has_active_work=False)
 
 
 def list_recipients(
@@ -879,10 +888,12 @@ def delete_recipients(
     *,
     visible_owners: frozenset[str] | None = None,
 ) -> int:
+    job_id = ""
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             return 0
+        job_id = str(camp.job_id or "")
         deleted = 0
         for rid in recipient_ids:
             row = session.get(CampaignRecipient, rid)
@@ -893,7 +904,12 @@ def delete_recipients(
             select(func.count()).select_from(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign_id)
         ) or 0
         camp.total_count = int(remaining)
-        return deleted
+
+    if deleted and job_id:
+        from src.generator.delivery.manager_stats import invalidate_stats_cache
+
+        invalidate_stats_cache(job_id)
+    return deleted
 
 
 def parse_recipients_csv(content: bytes) -> tuple[list[dict[str, Any]], list[str]]:
@@ -1251,19 +1267,20 @@ def validate_campaign_for_launch(
 
         mapping_errors = mapping_validation_errors(camp)
         errors.extend(mapping_errors)
+        errors.extend(template_text_cache_validation_errors(camp))
+        template_issues: list[dict[str, Any]] = []
         if not mapping_errors:
             errors.extend(empty_variable_validation_errors(camp))
-        errors.extend(template_text_cache_validation_errors(camp))
-        template_issues = substitution_validation_issues(
-            camp,
-            deep=deep,
-            advisory=False,
-            include_placeholder_issues=True,
-            strict_preview=True,
-        )
-        template_errors, template_warnings = partition_review_messages(template_issues)
-        errors.extend(template_errors)
-        warnings.extend(template_warnings)
+            template_issues = substitution_validation_issues(
+                camp,
+                deep=deep,
+                advisory=False,
+                include_placeholder_issues=True,
+                strict_preview=True,
+            )
+            template_errors, template_warnings = partition_review_messages(template_issues)
+            errors.extend(template_errors)
+            warnings.extend(template_warnings)
         schedule = session.scalar(select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id))
         draft = dict(camp.draft_payload or {})
         schedule_payload = schedule_to_dict(schedule) if schedule else None

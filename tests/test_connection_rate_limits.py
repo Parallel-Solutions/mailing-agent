@@ -63,7 +63,7 @@ class ConnectionRateLimitsTests(unittest.TestCase):
             {
                 "transport": "rusender",
                 "email": "verified@example.com",
-                "api_token": "rs_ck_secret",
+                "sending_key_id": 42,
                 "max_per_hour": 30,
                 "max_per_day": 200,
                 "delivery_error_critical_count": 7,
@@ -112,7 +112,7 @@ class ConnectionRateLimitsTests(unittest.TestCase):
             {
                 "transport": "rusender",
                 "email": "verified@example.com",
-                "api_token": "rs_ck_secret",
+                "sending_key_id": 42,
                 "max_per_hour": 5,
                 "max_per_day": 0,
             },
@@ -181,7 +181,7 @@ class MultiSenderConnectionTests(unittest.TestCase):
             {
                 "transport": "rusender",
                 "email": "primary@example.com",
-                "api_token": "rs_primary",
+                "sending_key_id": 42,
                 "max_per_hour": 1,
             },
         )

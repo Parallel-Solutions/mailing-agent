@@ -15,6 +15,7 @@ from src.campaigns import (
     chain_preview_service,
     chain_service,
     connection_service,
+    connection_sender_warmup_service,
     document_layout_service,
     document_editor_service,
     font_service,
@@ -243,6 +244,7 @@ class ConnectionCreateBody(BaseModel):
     email: str
     sender_name: str = ""
     api_token: str = ""
+    sending_key_id: int | None = Field(default=None, ge=1)
     api_base_url: str = ""
     provider: str = "custom"
     password: str = ""
@@ -273,6 +275,7 @@ class ConnectionUpdateBody(BaseModel):
     email: str | None = None
     sender_name: str | None = None
     api_token: str | None = None
+    sending_key_id: int | None = Field(default=None, ge=1)
     api_base_url: str | None = None
     password: str | None = None
     smtp_username: str | None = None
@@ -292,6 +295,28 @@ class ConnectionUpdateBody(BaseModel):
     warmup_recipients: list[str] | None = None
     warmup_percent_of_errors: int | None = None
 
+
+class ConnectionWarmupSettingsBody(BaseModel):
+    timezone: str | None = None
+    daily_start_time: str | None = None
+    daily_end_time: str | None = None
+    pause_campaigns_during_warmup: bool | None = None
+    subject_templates: list[str] | None = None
+    body_templates: list[str] | None = None
+    max_growth_percent: int | None = Field(default=None, ge=20, le=30)
+    recipients_consent_confirmed: bool | None = None
+
+
+class ConnectionWarmupRecipientsBody(BaseModel):
+    emails: list[str] = Field(default_factory=list, max_length=500)
+
+
+class ConnectionWarmupRecipientStatusBody(BaseModel):
+    status: Literal["active", "disabled"]
+
+
+class ConnectionWarmupDiagnosticsBody(BaseModel):
+    headers: str = Field(default="", max_length=200_000)
 
 def _ok(result: Any) -> dict[str, Any]:
     return {"status": "ok", "result": result}
@@ -401,6 +426,128 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @router.get("/connections/{connection_id}/sender-warmup")
+    def get_connection_sender_warmup(connection_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            return _ok(connection_sender_warmup_service.get_program(
+                connection_id, actor.username, visible_owners=_visibility(actor)
+            ))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.patch("/connections/{connection_id}/sender-warmup")
+    def patch_connection_sender_warmup(
+        connection_id: str,
+        body: ConnectionWarmupSettingsBody,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(connection_sender_warmup_service.update_program(
+                connection_id,
+                actor.username,
+                body.model_dump(exclude_none=True),
+                visible_owners=_visibility(actor),
+            ))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/connections/{connection_id}/sender-warmup/diagnostics")
+    def diagnose_connection_sender_warmup(
+        connection_id: str,
+        body: ConnectionWarmupDiagnosticsBody,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(connection_sender_warmup_service.run_diagnostics(
+                connection_id,
+                actor.username,
+                headers=body.headers,
+                visible_owners=_visibility(actor),
+            ))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/connections/{connection_id}/sender-warmup/recipients")
+    def add_connection_sender_warmup_recipients(
+        connection_id: str,
+        body: ConnectionWarmupRecipientsBody,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(connection_sender_warmup_service.add_recipients(
+                connection_id, actor.username, body.emails, visible_owners=_visibility(actor)
+            ))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.patch("/connections/{connection_id}/sender-warmup/recipients/{recipient_id}")
+    def patch_connection_sender_warmup_recipient(
+        connection_id: str,
+        recipient_id: str,
+        body: ConnectionWarmupRecipientStatusBody,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(connection_sender_warmup_service.set_recipient_status(
+                connection_id,
+                recipient_id,
+                actor.username,
+                body.status,
+                visible_owners=_visibility(actor),
+            ))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.delete("/connections/{connection_id}/sender-warmup/recipients/{recipient_id}")
+    def delete_connection_sender_warmup_recipient(
+        connection_id: str,
+        recipient_id: str,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(connection_sender_warmup_service.set_recipient_status(
+                connection_id,
+                recipient_id,
+                actor.username,
+                "removed",
+                visible_owners=_visibility(actor),
+            ))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/connections/{connection_id}/sender-warmup/{action}")
+    def change_connection_sender_warmup_status(
+        connection_id: str,
+        action: Literal["start", "pause", "resume", "stop"],
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        handlers = {
+            "start": connection_sender_warmup_service.start_program,
+            "pause": connection_sender_warmup_service.pause_program,
+            "resume": connection_sender_warmup_service.resume_program,
+            "stop": connection_sender_warmup_service.stop_program,
+        }
+        try:
+            return _ok(handlers[action](
+                connection_id, actor.username, visible_owners=_visibility(actor)
+            ))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     # --- Profile ---
     @router.get("/profile")
     def get_profile(principal: object = Depends(check_auth)):
@@ -516,7 +663,10 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.post("/campaigns/{campaign_id}/archive")
     def post_archive(campaign_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        item = service.archive_campaign(campaign_id, actor.username, visible_owners=_visibility(actor))
+        try:
+            item = service.archive_campaign(campaign_id, actor.username, visible_owners=_visibility(actor))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not item:
             raise HTTPException(status_code=404, detail="Рассылка не найдена")
         return _ok(item)
@@ -783,6 +933,19 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             detail = str(exc)
             status = 404 if detail == "Цепочка не найдена" else 400
             raise HTTPException(status_code=status, detail=detail) from exc
+
+    @router.delete("/chains/{chain_id}")
+    def delete_chain(chain_id: str, principal: object = Depends(check_auth)):
+        actor = _actor(principal)
+        try:
+            chain_service.delete_chain(
+                chain_id,
+                actor.username,
+                visible_owners=_visibility(actor),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _ok({"deleted": True, "id": chain_id})
 
     @router.post("/chains/{chain_id}/publish")
     def post_chain_publish(chain_id: str, principal: object = Depends(check_auth)):

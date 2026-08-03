@@ -78,6 +78,7 @@ class DeliveryChannelGuardTests(unittest.TestCase):
             "transport": "rusender",
             "email": "verified@example.com",
             "api_token": "rs_guard_secret",
+            "sending_key_id": 123,
             "delivery_error_rate_threshold": 0.05,
             "delivery_error_min_samples": 3,
             "delivery_error_critical_count": 0,

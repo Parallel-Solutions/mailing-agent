@@ -1,5 +1,3 @@
-import type { OnboardingStepDefinition } from './steps';
-
 const OVERLAY_LAYER_SELECTOR = '.ant-modal-wrap, .ant-drawer-content-wrapper';
 
 function isRendered(element: HTMLElement) {
@@ -27,42 +25,6 @@ export function findVisibleOnboardingTarget(selector?: string) {
     if (!isRendered(element)) return false;
     return overlayLayers.length === 0 || overlayLayers.some((layer) => layer.contains(element));
   });
-}
-
-export function resolveAvailableOnboardingStep(
-  steps: OnboardingStepDefinition[],
-  index: number,
-  current: number,
-) {
-  const direction = index >= current ? 1 : -1;
-  let candidate = index;
-
-  while (candidate >= 0 && candidate < steps.length) {
-    const step = steps[candidate];
-    if (!step.skipIfTargetMissing || !step.target || findVisibleOnboardingTarget(step.target)) {
-      return candidate;
-    }
-    candidate += direction;
-  }
-
-  return Math.max(0, Math.min(index, steps.length - 1));
-}
-
-export function findVisibleOnboardingSuccessor(
-  steps: OnboardingStepDefinition[],
-  current: number,
-) {
-  let candidate = current + 1;
-
-  while (candidate < steps.length) {
-    const step = steps[candidate];
-    if (!step.target) return undefined;
-    if (findVisibleOnboardingTarget(step.target)) return candidate;
-    if (!step.skipIfTargetMissing) return undefined;
-    candidate += 1;
-  }
-
-  return undefined;
 }
 
 export function isOnboardingRouteActive(

@@ -60,34 +60,38 @@ export function ProfilePage() {
           key: 'defaults',
           label: 'Настройки рассылок',
           children: (
-            <ProForm
-              initialValues={data?.mailing_defaults || {}}
-              onFinish={async (values) => {
-                await profileApi.update({ mailing_defaults: values });
-                message.success('Настройки сохранены');
-                void queryClient.invalidateQueries({ queryKey: ['profile'] });
-              }}
-            >
-              <ProFormText name="default_subject" label="Тема по умолчанию" />
-              <ProFormText name="default_batch_size" label="Размер пакета по умолчанию" />
-            </ProForm>
+            <div data-onboarding-id="profile-defaults">
+              <ProForm
+                initialValues={data?.mailing_defaults || {}}
+                onFinish={async (values) => {
+                  await profileApi.update({ mailing_defaults: values });
+                  message.success('Настройки сохранены');
+                  void queryClient.invalidateQueries({ queryKey: ['profile'] });
+                }}
+              >
+                <ProFormText name="default_subject" label="Тема по умолчанию" />
+                <ProFormText name="default_batch_size" label="Размер пакета по умолчанию" />
+              </ProForm>
+            </div>
           ),
         },
         {
           key: 'notifications',
           label: 'Уведомления',
           children: (
-            <ProForm
-              initialValues={data?.notifications || { email_on_complete: true, email_on_error: true }}
-              onFinish={async (values) => {
-                await profileApi.update({ notifications: values });
-                message.success('Уведомления сохранены');
-                void queryClient.invalidateQueries({ queryKey: ['profile'] });
-              }}
-            >
-              <ProFormSwitch name="email_on_complete" label="Письмо при завершении рассылки" />
-              <ProFormSwitch name="email_on_error" label="Письмо при ошибке отправки" />
-            </ProForm>
+            <div data-onboarding-id="profile-notifications">
+              <ProForm
+                initialValues={data?.notifications || { email_on_complete: true, email_on_error: true }}
+                onFinish={async (values) => {
+                  await profileApi.update({ notifications: values });
+                  message.success('Уведомления сохранены');
+                  void queryClient.invalidateQueries({ queryKey: ['profile'] });
+                }}
+              >
+                <ProFormSwitch name="email_on_complete" label="Письмо при завершении рассылки" />
+                <ProFormSwitch name="email_on_error" label="Письмо при ошибке отправки" />
+              </ProForm>
+            </div>
           ),
         },
       ]}

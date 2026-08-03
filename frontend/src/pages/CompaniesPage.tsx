@@ -2,6 +2,7 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
 import { App, Button, Popconfirm, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { companiesApi } from '@/api/companies';
 import type { Company } from '@/api/types';
@@ -9,6 +10,16 @@ import { CompanyFormModal } from '@/features/companies/CompanyFormModal';
 import { CompanyWorkTypesModal } from '@/features/companies/CompanyWorkTypesModal';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import {
+  useActiveOnboardingStep,
+} from '@/features/onboarding/events';
+
+const ONBOARDING_COMPANY: Company = {
+  id: 'onboarding-preview',
+  name: 'Пример компании',
+  phone: '+7 (000) 000-00-00',
+  contact_person_name: 'Ответственный сотрудник',
+};
 
 export function CompaniesPage() {
   const queryClient = useQueryClient();
@@ -17,6 +28,9 @@ export function CompaniesPage() {
   const { searchParams, pushParams } = useUrlNavigation();
   const editId = searchParams.get('edit');
   const workTypesId = searchParams.get('work_types');
+  const [onboardingPreviewStep, setOnboardingPreviewStep] = useState<string | null>(null);
+  const activeOnboardingStep = useActiveOnboardingStep();
+  const previousOnboardingStepRef = useRef<string | null>(null);
   const deleteCompany = useMutation({
     mutationFn: companiesApi.remove,
     onSuccess: (_, companyId) => {
@@ -40,6 +54,16 @@ export function CompaniesPage() {
     enabled: isAppAdmin,
   });
 
+  useEffect(() => {
+    const previousStep = previousOnboardingStepRef.current;
+    previousOnboardingStepRef.current = activeOnboardingStep;
+    if (activeOnboardingStep?.startsWith('company-')) {
+      setOnboardingPreviewStep(activeOnboardingStep);
+    } else if (previousStep?.startsWith('company-')) {
+      setOnboardingPreviewStep(null);
+    }
+  }, [activeOnboardingStep]);
+
   if (!isAppAdmin) {
     return <Navigate to="/" replace />;
   }
@@ -48,9 +72,11 @@ export function CompaniesPage() {
   const workTypesCompany = data?.items.find((item) => item.id === workTypesId);
 
   return (
-    <>
-      <Typography.Title level={3}>Компании</Typography.Title>
-      <Typography.Paragraph type="secondary">Управление организациями.</Typography.Paragraph>
+    <div>
+      <div data-onboarding-id="companies-overview">
+        <Typography.Title level={3}>Компании</Typography.Title>
+        <Typography.Paragraph type="secondary">Управление организациями.</Typography.Paragraph>
+      </div>
       <ProTable<Company>
         rowKey="id"
         loading={isLoading}
@@ -63,7 +89,11 @@ export function CompaniesPage() {
             key="create"
             mode="create"
             trigger={
-              <Button type="primary" icon={<PlusOutlined />}>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                data-onboarding-id="company-create"
+              >
                 Создать компанию
               </Button>
             }
@@ -122,6 +152,8 @@ export function CompaniesPage() {
             void queryClient.invalidateQueries({ queryKey: ['companies'] });
             pushParams({}, ['edit']);
           }}
+          onDelete={() => deleteCompany.mutateAsync(editCompany.id)}
+          deleting={deleteCompany.isPending && deleteCompany.variables === editCompany.id}
         />
       ) : null}
 
@@ -134,6 +166,24 @@ export function CompaniesPage() {
           }}
         />
       ) : null}
-    </>
+
+      {onboardingPreviewStep === 'company-details' ? (
+        <CompanyFormModal
+          mode="create"
+          open
+          onboardingPreview
+          onOpenChange={() => undefined}
+        />
+      ) : null}
+
+      {onboardingPreviewStep === 'company-work-types' ? (
+        <CompanyWorkTypesModal
+          company={ONBOARDING_COMPANY}
+          open
+          onboardingPreview
+          onOpenChange={() => undefined}
+        />
+      ) : null}
+    </div>
   );
 }

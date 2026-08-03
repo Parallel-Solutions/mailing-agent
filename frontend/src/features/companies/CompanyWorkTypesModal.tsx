@@ -21,10 +21,13 @@ type CompanyWorkTypesModalProps = {
   trigger?: ReactElement<TriggerProps>;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  onboardingPreview?: boolean;
 };
 
 function createEmptyRow(): Row {
-  return { clientKey: crypto.randomUUID(), name: '' };
+  const clientKey = globalThis.crypto?.randomUUID?.()
+    ?? `work-type-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return { clientKey, name: '' };
 }
 
 function ensureTrailingEmptyRow(rows: Row[]): Row[] {
@@ -39,6 +42,7 @@ export function CompanyWorkTypesModal({
   trigger,
   open: controlledOpen,
   onOpenChange,
+  onboardingPreview = false,
 }: CompanyWorkTypesModalProps) {
   const { message } = App.useApp();
   const [internalOpen, setInternalOpen] = useState(false);
@@ -120,12 +124,13 @@ export function CompanyWorkTypesModal({
 
   const scheduleSave = useCallback(
     (clientKey: string) => {
+      if (onboardingPreview) return;
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       debounceRef.current = window.setTimeout(() => {
         void persistRow(clientKey);
       }, 700);
     },
-    [persistRow],
+    [onboardingPreview, persistRow],
   );
 
   const handleNameChange = (clientKey: string, value: string) => {
@@ -191,14 +196,26 @@ export function CompanyWorkTypesModal({
           })
         : null}
       <Modal
-        title={`Виды работ — ${company.name}`}
+        title={(
+          <span data-onboarding-id="company-work-types">
+            Виды работ — {company.name}
+          </span>
+        )}
         open={open}
         onCancel={() => setOpen(false)}
         footer={null}
         destroyOnHidden
         afterOpenChange={(nextOpen) => {
           if (nextOpen) {
-            void loadRows();
+            if (onboardingPreview) {
+              setRows([
+                { clientKey: 'preview-audit', name: 'Аудит бизнес-процесса' },
+                { clientKey: 'preview-automation', name: 'Автоматизация отчётности' },
+                { clientKey: 'preview-empty', name: '' },
+              ]);
+            } else {
+              void loadRows();
+            }
           } else {
             if (debounceRef.current) window.clearTimeout(debounceRef.current);
             setRows([createEmptyRow()]);
@@ -206,7 +223,11 @@ export function CompanyWorkTypesModal({
           }
         }}
       >
-        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+        <Space
+          direction="vertical"
+          size="middle"
+          style={{ width: '100%' }}
+        >
           <Typography.Text type="secondary">
             Введите название вида работ. Новая строка появится автоматически, изменения сохраняются сами.
           </Typography.Text>
@@ -217,12 +238,13 @@ export function CompanyWorkTypesModal({
                 value={row.name}
                 placeholder="Название вида работ"
                 disabled={loading}
+                readOnly={onboardingPreview}
                 onChange={(event) => handleNameChange(row.clientKey, event.target.value)}
               />
               <Button
                 aria-label="Удалить вид работ"
                 icon={<CloseOutlined />}
-                disabled={loading}
+                disabled={loading || onboardingPreview}
                 onClick={() => {
                   void handleDelete(row.clientKey);
                 }}

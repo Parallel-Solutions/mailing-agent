@@ -82,12 +82,12 @@ function StatisticsPageInner() {
           <Typography.Title level={3} style={{ marginBottom: 4 }}>
             {PAGE_TITLES[tab]}
           </Typography.Title>
-          {!isManagementTab ? (
+          {tab === 'dashboard' ? (
             <Typography.Text type="secondary">Обновлено: {generatedAt}</Typography.Text>
           ) : null}
         </div>
         {!isManagementTab ? (
-          <Space wrap>
+          <Space wrap data-onboarding-id="statistics-filters">
             <DatePicker.RangePicker
               value={[
                 filters.period_from ? dayjs(filters.period_from) : null,
@@ -176,22 +176,37 @@ function StatisticsPageInner() {
 }
 
 function TabBody({ tabKey }: { tabKey: string }) {
+  let body: React.ReactNode = null;
+
   switch (tabKey) {
     case 'dashboard':
-      return <DashboardTab />;
+      body = <DashboardTab />;
+      break;
     case 'campaign-list':
-      return <CampaignsListPage embedded />;
+      body = <CampaignsListPage embedded />;
+      break;
     case 'campaigns':
-      return <CampaignsTab />;
+      body = <CampaignsTab />;
+      break;
     case 'recipients':
-      return <RecipientsTab />;
+      body = <RecipientsTab />;
+      break;
     case 'campaign-analytics':
-      return <CampaignAnalyticsTab />;
+      body = <CampaignAnalyticsTab />;
+      break;
     case 'campaign-full-analytics':
-      return <CampaignFullAnalyticsTab />;
+      body = <CampaignFullAnalyticsTab />;
+      break;
     case 'marketing-consents':
-      return <MarketingConsentsTab />;
+      body = <MarketingConsentsTab />;
+      break;
     default:
-      return null;
+      body = null;
   }
+
+  return (
+    <div data-onboarding-id={`statistics-body-${tabKey}`}>
+      {body}
+    </div>
+  );
 }

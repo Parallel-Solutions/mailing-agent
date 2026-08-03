@@ -161,7 +161,7 @@ def allowed_actions(
     status = str(campaign.status or "draft")
     actions = ["duplicate"]
     if status == "draft":
-        return ["edit", "launch", *actions]
+        return ["edit", "launch", *actions, "archive"]
     if status in {"scheduled", "running"}:
         if has_active_work is False:
             return actions

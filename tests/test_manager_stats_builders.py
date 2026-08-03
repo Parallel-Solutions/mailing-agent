@@ -308,15 +308,72 @@ class EmailProblemsTests(unittest.TestCase):
         self.assertEqual(result["summary"]["soft_bounce"], 1)
 
 
+class CampaignRecipientHistoryTests(unittest.TestCase):
+    def test_history_uses_current_recipient_id_for_deletion(self) -> None:
+        raw_row = {
+            "row_id": "1",
+            "recipient": "person@example.com",
+            "mun_name": "Company",
+            "provider_status": "sent",
+        }
+        lookup = {
+            "campaign_id": "campaign-1",
+            "by_id": {"42": 42},
+            "by_source_row": {"1": 42},
+            "by_email": {"person@example.com": 42},
+        }
+        with unittest.mock.patch.object(
+            manager_stats, "_build_delivery_rows", return_value=([raw_row], {})
+        ), unittest.mock.patch.object(
+            manager_stats, "_campaign_recipient_lookup", return_value=lookup
+        ), unittest.mock.patch.object(
+            manager_stats, "latest_action_by_recipient", return_value={}
+        ), unittest.mock.patch.object(
+            manager_stats, "_load_company_data_for_job", return_value={}
+        ):
+            rows = manager_stats._build_delivery_rows_for_job("job-1", refresh=False)
+
+        self.assertEqual(rows[0]["row_id"], "42")
+        self.assertEqual(rows[0]["campaign_id"], "campaign-1")
+
+    def test_deleted_recipient_history_is_hidden(self) -> None:
+        raw_row = {
+            "row_id": "1",
+            "recipient": "deleted@example.com",
+            "mun_name": "Deleted",
+            "provider_status": "sent",
+        }
+        lookup = {
+            "campaign_id": "campaign-1",
+            "by_id": {},
+            "by_source_row": {},
+            "by_email": {},
+        }
+        with unittest.mock.patch.object(
+            manager_stats, "_build_delivery_rows", return_value=([raw_row], {})
+        ), unittest.mock.patch.object(
+            manager_stats, "_campaign_recipient_lookup", return_value=lookup
+        ), unittest.mock.patch.object(
+            manager_stats, "latest_action_by_recipient", return_value={}
+        ), unittest.mock.patch.object(
+            manager_stats, "_load_company_data_for_job", return_value={}
+        ):
+            rows = manager_stats._build_delivery_rows_for_job("job-1", refresh=False)
+
+        self.assertEqual(rows, [])
+
 class CampaignsTests(unittest.TestCase):
     def test_campaigns_summary(self) -> None:
         rows = [
             _delivery_row("job-1", "1", "Орг1", "a@x.ru", "rusender", "delivered"),
             _delivery_row("job-1", "2", "Орг2", "b@x.ru", "rusender", "opened"),
         ]
+        for row in rows:
+            row["campaign_id"] = "campaign-1"
         with unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs", return_value=rows), \
              unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=[]), \
              unittest.mock.patch.object(manager_stats, "_campaign_status", return_value="completed"), \
+             unittest.mock.patch.object(manager_stats, "_load_campaign_statuses", return_value={}), \
              unittest.mock.patch.object(manager_stats, "_campaign_period", return_value=("2026-05-01", "2026-05-02")), \
              unittest.mock.patch.object(manager_stats, "_campaign_metadata", return_value={"title": "Кампания"}):
             result = build_campaigns(StatsFilters(job_ids=("job-1",)))
@@ -326,8 +383,56 @@ class CampaignsTests(unittest.TestCase):
         campaign = result["campaigns"][0]
         self.assertEqual(campaign["title"], "Кампания")
         self.assertEqual(campaign["sent"], 2)
+        self.assertEqual(campaign["campaign_id"], "campaign-1")
+        self.assertTrue(campaign["can_delete"])
         self.assertIn("delivery_rate", campaign)
         self.assertIn("open_rate", campaign)
+        self.assertEqual(campaign["period_label"], "01.05.2026 — 02.05.2026")
+
+    def test_campaignflow_status_is_used_instead_of_stale_sender_state(self) -> None:
+        with unittest.mock.patch(
+            "src.campaigns.service.get_campaign_by_job_id",
+            return_value={"status": "completed_with_errors"},
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "_load_sender_state",
+            return_value={"status": "idle", "mode": "dry_run"},
+        ):
+            self.assertEqual(
+                manager_stats._campaign_status("job-current"),
+                "completed_with_errors",
+            )
+
+    def test_campaign_title_search_does_not_filter_delivery_rows(self) -> None:
+        rows = [
+            _delivery_row("job-1", "1", "ООО Получатель", "a@x.ru", "rusender", "delivered"),
+        ]
+        with unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs", return_value=rows), \
+             unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=[]), \
+             unittest.mock.patch.object(manager_stats, "_load_campaign_statuses", return_value={}), \
+             unittest.mock.patch.object(manager_stats, "_campaign_status", return_value="completed"), \
+             unittest.mock.patch.object(manager_stats, "_campaign_period", return_value=("2026-05-01", "2026-05-01")), \
+             unittest.mock.patch.object(manager_stats, "_campaign_metadata", return_value={"title": "Весенняя рассылка"}):
+            result = build_campaigns(StatsFilters(job_ids=("job-1",), q="весенняя"))
+
+        self.assertEqual(len(result["campaigns"]), 1)
+        self.assertEqual(result["campaigns"][0]["sent"], 1)
+
+    def test_period_and_provider_filters_hide_campaigns_without_matching_sends(self) -> None:
+        rows = [
+            _delivery_row("job-1", "1", "Орг1", "a@x.ru", "rusender", "delivered"),
+        ]
+        with unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs", return_value=rows), \
+             unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=[]), \
+             unittest.mock.patch.object(manager_stats, "_load_campaign_statuses", return_value={}), \
+             unittest.mock.patch.object(manager_stats, "_campaign_status", return_value="completed"), \
+             unittest.mock.patch.object(manager_stats, "_campaign_metadata", return_value={"title": "Кампания"}):
+            result = build_campaigns(
+                StatsFilters(job_ids=("job-1",), providers=("smtp",)),
+            )
+
+        self.assertEqual(result["campaigns"], [])
+        self.assertEqual(result["summary"]["total"], 0)
 
 
 class CampaignAnalyticsTests(unittest.TestCase):
@@ -569,6 +674,8 @@ class CompanyAggregationTests(unittest.TestCase):
             _delivery_row("job-1", "1", "Орг1", "a@x.ru", "rusender", "delivered", role="primary"),
             _delivery_row("job-1", "1", "Орг1", "b@x.ru", "rusender", "opened", role="fallback"),
         ]
+        for row in rows:
+            row["campaign_id"] = "campaign-1"
         with unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs", return_value=rows):
             result = build_recipients(StatsFilters(job_ids=("job-1",)))
         self.assertEqual(result["pagination"]["total"], 1)
@@ -579,6 +686,8 @@ class CompanyAggregationTests(unittest.TestCase):
         self.assertEqual(item["company"]["fields"]["region"]["display"], COMPANY_DATA_PLACEHOLDER)
         # opened outranks delivered, so the company's best status is "opened".
         self.assertEqual(item["manager_status"]["key"], "opened")
+        self.assertEqual(item["campaign_id"], "campaign-1")
+        self.assertTrue(item["can_delete"])
 
     def test_campaign_attempts_group_only_the_current_campaign_by_company(self) -> None:
         rows = [

@@ -23,8 +23,10 @@ export function useCampaignLaunchValidation(input: CampaignLaunchValidationInput
   flushPendingChangesRef.current = flushPendingChanges;
 
   const validateQuery = useQuery({
-    queryKey: campaignId ? campaignValidateQueryKey(campaignId) : ['campaign-validate'],
-    queryFn: () => campaignsApi.validate(campaignId!, { deep: true }),
+    queryKey: campaignId
+      ? campaignValidateQueryKey(campaignId, validationSignature)
+      : ['campaign-validate'],
+    queryFn: ({ signal }) => campaignsApi.validate(campaignId!, { deep: true, signal }),
     enabled: false,
     staleTime: Infinity,
   });
@@ -42,7 +44,7 @@ export function useCampaignLaunchValidation(input: CampaignLaunchValidationInput
       setError(undefined);
 
       const cached = queryClient.getQueryData<CampaignValidateResponse>(
-        campaignValidateQueryKey(campaignId),
+        campaignValidateQueryKey(campaignId, validationSignature),
       );
       const signatureUnchanged = lastValidatedSignatureRef.current === validationSignature;
 
@@ -58,8 +60,8 @@ export function useCampaignLaunchValidation(input: CampaignLaunchValidationInput
         setHasChecked(false);
 
         await queryClient.fetchQuery<CampaignValidateResponse>({
-          queryKey: campaignValidateQueryKey(campaignId),
-          queryFn: () => campaignsApi.validate(campaignId, { deep: true }),
+          queryKey: campaignValidateQueryKey(campaignId, validationSignature),
+          queryFn: ({ signal }) => campaignsApi.validate(campaignId, { deep: true, signal }),
           staleTime: Infinity,
         });
 

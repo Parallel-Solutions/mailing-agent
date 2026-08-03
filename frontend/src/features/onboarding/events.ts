@@ -1,19 +1,29 @@
-export const ONBOARDING_ADVANCE_EVENT = 'campaignflow:onboarding-advance';
-export const ONBOARDING_ENTER_EVENT = 'campaignflow:onboarding-enter';
+import { useSyncExternalStore } from 'react';
 
-export type OnboardingAdvanceDetail = {
-  fromId: string;
-  toId?: string;
-};
+type Listener = () => void;
 
-export type OnboardingEnterDetail = {
-  stepId: string;
-};
+let activeOnboardingStep: string | null = null;
+const listeners = new Set<Listener>();
 
-export function advanceOnboarding(fromId: string, toId?: string) {
-  window.dispatchEvent(
-    new CustomEvent<OnboardingAdvanceDetail>(ONBOARDING_ADVANCE_EVENT, {
-      detail: { fromId, toId },
-    }),
+function subscribe(listener: Listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function getActiveOnboardingStep() {
+  return activeOnboardingStep;
+}
+
+export function setActiveOnboardingStep(stepId: string | null) {
+  if (activeOnboardingStep === stepId) return;
+  activeOnboardingStep = stepId;
+  listeners.forEach((listener) => listener());
+}
+
+export function useActiveOnboardingStep() {
+  return useSyncExternalStore(
+    subscribe,
+    getActiveOnboardingStep,
+    () => null,
   );
 }

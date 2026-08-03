@@ -18,6 +18,9 @@ type CompanyFormModalProps = {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   onSuccess?: () => void;
+  onDelete?: () => Promise<unknown>;
+  deleting?: boolean;
+  onboardingPreview?: boolean;
 };
 
 function resetLogoState(
@@ -41,8 +44,11 @@ export function CompanyFormModal({
   open,
   onOpenChange,
   onSuccess,
+  onDelete,
+  deleting = false,
+  onboardingPreview = false,
 }: CompanyFormModalProps) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [removeLogo, setRemoveLogo] = useState(false);
@@ -84,6 +90,35 @@ export function CompanyFormModal({
         cancelText: 'Отмена',
         destroyOnHidden: true,
         confirmLoading: saving,
+        okButtonProps: { disabled: onboardingPreview },
+      }}
+      submitter={{
+        render: (_, dom) => {
+          if (mode !== 'edit' || !company || !onDelete) return dom;
+          return [
+            <Button
+              key="delete"
+              danger
+              htmlType="button"
+              icon={<DeleteOutlined />}
+              loading={deleting}
+              disabled={saving}
+              onClick={() => {
+                modal.confirm({
+                  title: `Удалить компанию «${company.name}»?`,
+                  content: 'Компания и её настройки будут удалены. Аккаунты участников и их данные сохранятся.',
+                  okText: 'Удалить',
+                  okType: 'danger',
+                  cancelText: 'Отмена',
+                  onOk: onDelete,
+                });
+              }}
+            >
+              Удалить компанию
+            </Button>,
+            ...dom,
+          ];
+        },
       }}
       initialValues={
         mode === 'edit' && company
@@ -101,6 +136,7 @@ export function CompanyFormModal({
         }
       }}
       onFinish={async (values) => {
+        if (onboardingPreview) return false;
         setSaving(true);
         try {
           if (mode === 'create') {
@@ -122,43 +158,52 @@ export function CompanyFormModal({
         }
       }}
     >
-      <ProFormText name="name" label="Название" rules={[{ required: true }]} />
-      <ProFormText name="phone" label="Телефон" />
-      <ProFormText name="contact_person_name" label="Контактное лицо" />
+      <div data-onboarding-id="company-details">
+        <ProFormText name="name" label="Название" rules={[{ required: true }]} />
+        <ProFormText name="phone" label="Телефон" />
+        <ProFormText name="contact_person_name" label="Контактное лицо" />
 
-      <Space direction="vertical" size="small" style={{ width: '100%' }}>
-        <Typography.Text type="secondary">Логотип</Typography.Text>
-        <Space align="center" wrap>
-          <Avatar size={72} src={avatarSrc} style={{ backgroundColor: '#1677ff' }}>
-            {avatarLabel.slice(0, 1).toUpperCase()}
-          </Avatar>
-          <Space direction="vertical" size="small">
-            <Upload showUploadList={false} beforeUpload={handleLogoSelect} accept=".png,.jpg,.jpeg,.webp">
-              <Button icon={<UploadOutlined />}>Загрузить логотип</Button>
-            </Upload>
-            {mode === 'edit' && company?.logo_url && !removeLogo && !logoFile && (
-              <Button
-                danger
-                htmlType="button"
-                icon={<DeleteOutlined />}
-                onClick={() => {
-                  setRemoveLogo(true);
-                  if (logoPreview) {
-                    URL.revokeObjectURL(logoPreview);
-                  }
-                  setLogoFile(null);
-                  setLogoPreview(null);
-                }}
+        <Space direction="vertical" size="small" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">Логотип</Typography.Text>
+          <Space align="center" wrap>
+            <Avatar size={72} src={avatarSrc} style={{ backgroundColor: '#1677ff' }}>
+              {avatarLabel.slice(0, 1).toUpperCase()}
+            </Avatar>
+            <Space direction="vertical" size="small">
+              <Upload
+                showUploadList={false}
+                beforeUpload={handleLogoSelect}
+                accept=".png,.jpg,.jpeg,.webp"
+                disabled={onboardingPreview}
               >
-                Удалить логотип
-              </Button>
-            )}
-            {removeLogo && (
-              <Typography.Text type="secondary">Логотип будет удалён при сохранении</Typography.Text>
-            )}
+                <Button icon={<UploadOutlined />} disabled={onboardingPreview}>
+                  Загрузить логотип
+                </Button>
+              </Upload>
+              {mode === 'edit' && company?.logo_url && !removeLogo && !logoFile && (
+                <Button
+                  danger
+                  htmlType="button"
+                  icon={<DeleteOutlined />}
+                  onClick={() => {
+                    setRemoveLogo(true);
+                    if (logoPreview) {
+                      URL.revokeObjectURL(logoPreview);
+                    }
+                    setLogoFile(null);
+                    setLogoPreview(null);
+                  }}
+                >
+                  Удалить логотип
+                </Button>
+              )}
+              {removeLogo && (
+                <Typography.Text type="secondary">Логотип будет удалён при сохранении</Typography.Text>
+              )}
+            </Space>
           </Space>
         </Space>
-      </Space>
+      </div>
     </ModalForm>
   );
 }

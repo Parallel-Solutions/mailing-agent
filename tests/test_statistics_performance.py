@@ -131,6 +131,7 @@ class BuildCampaignsSingleLoadTests(unittest.TestCase):
 
         with unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs", side_effect=_fake_load), \
                 unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=[]), \
+                unittest.mock.patch.object(manager_stats, "_load_campaign_statuses", return_value={}), \
                 unittest.mock.patch.object(manager_stats, "_campaign_metadata", return_value={"title": "T", "work_type": "", "work_type_label": ""}), \
                 unittest.mock.patch.object(manager_stats, "_campaign_status", return_value="draft"), \
                 unittest.mock.patch.object(manager_stats, "_campaign_period", return_value=("2026-05-01", "2026-05-01")):

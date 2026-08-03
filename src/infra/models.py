@@ -337,6 +337,7 @@ class SmtpMailbox(Base):
     oauth_tokens_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     smtp_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sending_key_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -401,6 +402,104 @@ class DeliveryChannelOutcome(Base):
         Index("idx_delivery_channel_outcomes_window", "connection_id", "occurred_at"),
     )
 
+
+class ConnectionWarmupProgram(Base):
+    """User-managed, gradual warmup program for one delivery connection."""
+
+    __tablename__ = "connection_warmup_programs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    connection_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft")
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Europe/Moscow")
+    daily_start_time: Mapped[str] = mapped_column(String(5), nullable=False, default="10:00")
+    daily_end_time: Mapped[str] = mapped_column(String(5), nullable=False, default="18:00")
+    pause_campaigns_during_warmup: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    max_growth_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=25)
+    current_day: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    run_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    daily_plan: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    diagnostics_status: Mapped[str] = mapped_column(String(24), nullable=False, default="not_checked")
+    diagnostics: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    subject_templates: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    body_templates: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    pause_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recipients_consent_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    recipients_consent_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scheduled_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("uq_connection_warmup_program_connection", "connection_id", unique=True),
+        Index("idx_connection_warmup_program_owner", "owner_username"),
+    )
+
+
+class ConnectionWarmupRecipient(Base):
+    __tablename__ = "connection_warmup_recipients"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    program_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("connection_warmup_programs.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("uq_connection_warmup_recipient_email", "program_id", "email", unique=True),
+        Index("idx_connection_warmup_recipient_status", "program_id", "status"),
+    )
+
+
+class ConnectionWarmupDelivery(Base):
+    __tablename__ = "connection_warmup_deliveries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    program_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("connection_warmup_programs.id", ondelete="CASCADE"), nullable=False
+    )
+    recipient_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("connection_warmup_recipients.id", ondelete="CASCADE"), nullable=False
+    )
+    day_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    run_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("idx_connection_warmup_delivery_program_day", "program_id", "day_number"),
+        Index("idx_connection_warmup_delivery_recipient", "recipient_id", "scheduled_at"),
+        Index("idx_connection_warmup_delivery_task", "task_id"),
+        Index("idx_connection_warmup_delivery_provider_message", "provider_message_id"),
+        Index(
+            "uq_connection_warmup_delivery_recipient_day",
+            "program_id",
+            "recipient_id",
+            "run_number",
+            "day_number",
+            unique=True,
+        ),
+    )
 
 class DeliveryChannelSendSlot(Base):
     __tablename__ = "delivery_channel_send_slots"

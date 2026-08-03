@@ -3003,16 +3003,19 @@ def _send_via_rusender(
     send_mode: str = "",
     attachment_mode: str = "",
     sender_email: str | None = None,
-    credential_api_key: str | None = None,
+    credential_sending_key_id: int | None = None,
     credential_sender_name: str | None = None,
     credential_api_base_url: str | None = None,
     track_links: bool | None = None,
 ) -> dict[str, Any]:
-    api_key = _safe_text(credential_api_key or settings.rusender_api_key)
+    api_key = _safe_text(settings.rusender_api_key)
+    sending_key_id = credential_sending_key_id
     sender_email = _resolve_sender_email(sender_email, settings.rusender_sender_email, settings.smtp_sender_email)
     sender_name = _safe_text(credential_sender_name or settings.rusender_sender_name) or "ООО «ПР»"
     if not api_key:
         raise RuntimeError("Не указан API-ключ RuSender.")
+    if api_key.startswith("rs_ck_") and not sending_key_id:
+        raise RuntimeError("Для нового API-ключа RuSender не указан ID ключа отправки.")
     if not sender_email:
         raise RuntimeError("Не указан подтверждённый email отправителя RuSender.")
 
@@ -3056,8 +3059,12 @@ def _send_via_rusender(
         payload["trackLinks"] = 0
         payload["mail"]["trackLinks"] = 0
 
+    send_path = RUSENDER_SEND_PATH
+    if api_key.startswith("rs_ck_"):
+        send_path = f"{send_path}/{int(sending_key_id)}"
+
     request = Request(
-        _build_rusender_url(RUSENDER_SEND_PATH, credential_api_base_url),
+        _build_rusender_url(send_path, credential_api_base_url),
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         method="POST",
         headers={
@@ -3830,7 +3837,7 @@ def _send_with_transport(
                     sender_email=sender_email,
                     credential_sender_name=saved_connection.sender_name if saved_connection else None,
                     credential_api_base_url=saved_connection.api_base_url if saved_connection else None,
-                    credential_api_key=saved_connection.secret if saved_connection else None,
+                    credential_sending_key_id=saved_connection.sending_key_id if saved_connection else None,
                 )
             elif transport == "mailopost":
                 while True:

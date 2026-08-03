@@ -1,6 +1,8 @@
-import { Button, Input, Space, Table, Tag } from 'antd';
-import { useQuery } from '@tanstack/react-query';
+import { DeleteOutlined } from '@ant-design/icons';
+import { App, Button, Input, Space, Table, Tag } from 'antd';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
+import { campaignsApi } from '@/api/campaigns';
 import { statisticsApi } from '@/api/statistics';
 import { RECIPIENT_CHIPS } from '../constants';
 import { KpiGrid } from '../components/KpiGrid';
@@ -8,6 +10,7 @@ import { useStatistics } from '../StatisticsContext';
 import { asRecord, asRecordArray, companyEmailsText, companyField, fmt, statusLabel } from '../utils';
 
 export function RecipientsTab() {
+  const { message, modal } = App.useApp();
   const {
     apiBaseParams,
     filters,
@@ -15,12 +18,43 @@ export function RecipientsTab() {
     pagination,
     setPage,
     refreshNonce,
+    requestRefresh,
     openDrilldown,
     openCompanyModal,
     openActionModal,
     setError,
   } = useStatistics();
   const [search, setSearch] = useState(filters.q || '');
+
+  const deleteCompany = useMutation({
+    mutationFn: async ({ campaignId, recipientId }: { campaignId: string; recipientId: number }) => {
+      const result = await campaignsApi.deleteRecipients(campaignId, [recipientId]);
+      if (!result.deleted) throw new Error('Компания уже удалена или недоступна');
+      return result;
+    },
+    onSuccess: () => {
+      message.success('Компания удалена из рассылки и статистики');
+      requestRefresh();
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+
+  const confirmDelete = (row: Record<string, unknown>) => {
+    const campaignId = String(row.campaign_id || '');
+    const recipientId = Number(row.row_id);
+    if (!campaignId || !Number.isInteger(recipientId) || recipientId <= 0) {
+      message.error('Не удалось определить компанию для удаления');
+      return;
+    }
+    modal.confirm({
+      title: 'Удалить компанию?',
+      content: `«${String(row.organization || 'Компания')}» будет удалена из этой рассылки и статистики. Отменить действие нельзя.`,
+      okText: 'Удалить',
+      cancelText: 'Отмена',
+      okButtonProps: { danger: true },
+      onOk: () => deleteCompany.mutateAsync({ campaignId, recipientId }),
+    });
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -117,18 +151,41 @@ export function RecipientsTab() {
           { title: 'Интерес', render: (_, r) => statusLabel(r.interest) },
           { title: 'Следующее действие', render: (_, r) => statusLabel(r.next_action) },
           {
-            title: '',
-            key: 'action',
+            title: 'Действия',
+            key: 'actions',
+            fixed: 'right',
+            width: 190,
             render: (_, r) => (
-              <Button
-                size="small"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void openActionModal(String(r.row_key));
-                }}
-              >
-                ⋯
-              </Button>
+              <Space size={4}>
+                <Button
+                  size="small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void openActionModal(String(r.row_key));
+                  }}
+                >
+                  Действие
+                </Button>
+                {r.can_delete && r.campaign_id ? (
+                  <Button
+                    type="link"
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined />}
+                    loading={
+                      deleteCompany.isPending &&
+                      deleteCompany.variables?.campaignId === String(r.campaign_id) &&
+                      deleteCompany.variables?.recipientId === Number(r.row_id)
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      confirmDelete(r);
+                    }}
+                  >
+                    Удалить
+                  </Button>
+                ) : null}
+              </Space>
             ),
           },
         ]}

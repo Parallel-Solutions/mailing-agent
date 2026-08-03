@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from src.infra.db import session_scope
 from src.infra.models import (
@@ -219,6 +219,27 @@ def update_chain(
         row.updated_at = _now()
         session.flush()
         return _chain_state(row)
+
+
+def delete_chain(
+    chain_id: str,
+    owner_username: str,
+    *,
+    visible_owners: frozenset[str] | None = None,
+) -> None:
+    with session_scope() as session:
+        row = _ensure_chain_access(
+            session.get(EmailChainRecord, chain_id),
+            owner_username,
+            visible_owners=visible_owners,
+        )
+        session.execute(
+            update(Campaign)
+            .where(Campaign.email_chain_id == chain_id)
+            .values(email_chain_id=None, updated_at=_now())
+        )
+        session.delete(row)
+        session.flush()
 
 
 def publish_chain(chain_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:

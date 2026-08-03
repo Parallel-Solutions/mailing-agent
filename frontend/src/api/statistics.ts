@@ -22,6 +22,15 @@ export type ManagerActionBody = {
   priority?: string;
 };
 
+export type RecipientResendResult = {
+  allowed: boolean;
+  target_email: string;
+  mode: 'same' | 'fallback' | '';
+  reason: string;
+  retry_after: string | null;
+  state: 'available' | 'automatic_retry' | 'requires_new_email' | 'blocked' | 'unsupported' | 'queued';
+  task_id?: string;
+};
 export type ExportReportBody = {
   report_type: string;
   period_from?: string;
@@ -48,6 +57,11 @@ export const statisticsApi = {
     api.post<Record<string, unknown>>(
       `/api/sender/recipients/${encodeURIComponent(rowKey)}/action`,
       body,
+    ),
+  resendRecipient: (rowKey: string) =>
+    api.post<RecipientResendResult>(
+      `/api/sender/recipients/${encodeURIComponent(rowKey)}/resend`,
+      {},
     ),
 
   consents: (params?: StatsParams) =>

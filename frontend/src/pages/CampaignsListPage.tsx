@@ -1,6 +1,7 @@
-import { PlusOutlined } from '@ant-design/icons';
+import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
-import { App, Button, Progress, Space, Tag } from 'antd';
+import { App, Button, Dropdown, Progress, Space, Tag, Tooltip } from 'antd';
+import type { MenuProps } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
@@ -25,7 +26,7 @@ const statusColor: Record<string, string> = {
 
 export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) {
   const navigate = useNavigate();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ['campaigns'],
@@ -66,6 +67,56 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
       navigate(`/campaigns/new?id=${camp.id}`);
     },
   });
+  const archive = useMutation({
+    mutationFn: (id: string) => campaignsApi.archive(id),
+    onSuccess: () => {
+      message.success('Рассылка удалена');
+      invalidate();
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+
+  const confirmArchive = (campaign: Campaign) => {
+    modal.confirm({
+      title: 'Удалить рассылку?',
+      content: `Рассылка «${campaign.name}» исчезнет из списка. История отправки сохранится.`,
+      okText: 'Удалить',
+      cancelText: 'Отмена',
+      okButtonProps: { danger: true },
+      onOk: () => archive.mutateAsync(campaign.id),
+    });
+  };
+
+  const actionMenu = (campaign: Campaign): MenuProps => ({
+    items: [
+      ...(canCampaignAction(campaign, 'edit')
+        ? [{ key: 'edit', label: 'Редактировать' }]
+        : []),
+      { key: 'duplicate', label: 'Дублировать' },
+      ...(canCampaignAction(campaign, 'resume')
+        ? [{ key: 'resume', label: 'Продолжить отправку' }]
+        : canCampaignAction(campaign, 'pause')
+          ? [{ key: 'pause', label: 'Поставить на паузу' }]
+          : []),
+      ...(canCampaignAction(campaign, 'cancel')
+        ? [{ key: 'cancel', label: 'Отменить рассылку', danger: true }]
+        : []),
+      ...(canCampaignAction(campaign, 'archive')
+        ? [
+            { type: 'divider' as const },
+            { key: 'archive', label: 'Удалить', danger: true },
+          ]
+        : []),
+    ],
+    onClick: ({ key }) => {
+      if (key === 'edit') navigate(`/campaigns/new?id=${campaign.id}`);
+      if (key === 'duplicate') duplicate.mutate(campaign.id);
+      if (key === 'resume') resume.mutate(campaign.id);
+      if (key === 'pause') pause.mutate(campaign.id);
+      if (key === 'cancel') cancel.mutate(campaign.id);
+      if (key === 'archive') confirmArchive(campaign);
+    },
+  });
 
   return (
     <div data-onboarding-id="campaigns-overview">
@@ -84,17 +135,21 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
         {
           title: 'Название',
           dataIndex: 'name',
-          render: (_, row) => <Link to={`/campaigns/${row.id}`}>{row.name}</Link>,
+          width: 180,
+          ellipsis: true,
+          render: (_, row) => <Link to={`/campaigns/${row.id}`} title={row.name}>{row.name}</Link>,
         },
         {
           title: 'Статус',
           dataIndex: 'status',
+          width: 150,
           render: (_, row) => <Tag color={statusColor[row.status] || 'default'}>{statusLabel(row.status)}</Tag>,
         },
-        { title: 'Тема', dataIndex: 'mail_subject', ellipsis: true },
-        { title: 'Провайдер', dataIndex: 'transport' },
+        { title: 'Тема', dataIndex: 'mail_subject', width: 160, ellipsis: true },
+        { title: 'Провайдер', dataIndex: 'transport', width: 110, ellipsis: true },
         {
           title: 'Прогресс',
+          width: 180,
           render: (_, row) => (
             <Progress
               percent={row.progress || 0}
@@ -103,33 +158,38 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
             />
           ),
         },
-        { title: 'Попытки', dataIndex: 'attempt_count' },
-        { title: 'Принято провайдером', dataIndex: 'success_count' },
-        { title: 'Пропущено', dataIndex: 'skipped_count' },
-        { title: 'Ошибки', dataIndex: 'failed_recipient_count' },
-        { title: 'Создана', dataIndex: 'created_at', render: (_, row) => formatLocalDateTime(row.created_at) },
+        { title: 'Попытки', dataIndex: 'attempt_count', width: 90 },
+        { title: 'Принято провайдером', dataIndex: 'success_count', width: 170 },
+        { title: 'Пропущено', dataIndex: 'skipped_count', width: 110 },
+        { title: 'Ошибки', dataIndex: 'failed_recipient_count', width: 90 },
+        { title: 'Создана', dataIndex: 'created_at', width: 150, render: (_, row) => formatLocalDateTime(row.created_at) },
         {
           title: 'Действия',
           valueType: 'option',
+          fixed: 'right',
+          width: 140,
+          align: 'center',
           render: (_, row) => (
-            <Space>
-              <a onClick={() => navigate(`/campaigns/${row.id}`)}>Открыть</a>
-              {canCampaignAction(row, 'edit') ? (
-                <a onClick={() => navigate(`/campaigns/new?id=${row.id}`)}>Редактировать</a>
-              ) : null}
-              <a onClick={() => duplicate.mutate(row.id)}>Дублировать</a>
-              {canCampaignAction(row, 'resume') ? (
-                <a onClick={() => resume.mutate(row.id)}>Продолжить</a>
-              ) : canCampaignAction(row, 'pause') ? (
-                <a onClick={() => pause.mutate(row.id)}>Пауза</a>
-              ) : null}
-              {canCampaignAction(row, 'cancel') ? (
-                <a onClick={() => cancel.mutate(row.id)}>Отменить</a>
-              ) : null}
+            <Space size={2} wrap={false}>
+              <Button type="link" size="small" onClick={() => navigate(`/campaigns/${row.id}`)}>
+                Открыть
+              </Button>
+              <Dropdown menu={actionMenu(row)} placement="bottomRight" trigger={['click']}>
+                <Tooltip title="Другие действия">
+                  <Button
+                    type="text"
+                    size="small"
+                    aria-label={`Другие действия: ${row.name}`}
+                    icon={<MoreOutlined />}
+                    loading={archive.isPending && archive.variables === row.id}
+                  />
+                </Tooltip>
+              </Dropdown>
             </Space>
           ),
         },
       ]}
+      scroll={{ x: 1530 }}
       />
     </div>
   );

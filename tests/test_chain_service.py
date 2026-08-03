@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from src.campaigns.chain_service import (
     create_chain,
+    delete_chain,
     empty_chain,
     get_chain_click_stats,
     load_chain,
@@ -478,6 +479,28 @@ class ChainServiceTests(unittest.TestCase):
 
         published = publish_chain(chain_id, self.username)
         self.assertTrue(published["published"])
+
+    def test_delete_standalone_chain_detaches_linked_campaign(self) -> None:
+        from src.campaigns.service import update_campaign
+        from src.infra.db import session_scope
+        from src.infra.models import Campaign
+
+        created = create_chain(self.username, name="Disposable chain")
+        chain_id = created["id"]
+        update_campaign(
+            self.campaign["id"],
+            self.username,
+            {"email_chain_id": chain_id, "send_scenario": "email_chain"},
+        )
+
+        delete_chain(chain_id, self.username)
+
+        with self.assertRaisesRegex(ValueError, "Цепочка не найдена"):
+            load_chain(chain_id, self.username)
+        with session_scope() as session:
+            campaign = session.get(Campaign, self.campaign["id"])
+            self.assertIsNotNone(campaign)
+            self.assertIsNone(campaign.email_chain_id)
 
     def test_campaign_linked_to_standalone_chain(self) -> None:
         from src.campaigns.service import update_campaign

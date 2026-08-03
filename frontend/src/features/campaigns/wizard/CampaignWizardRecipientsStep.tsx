@@ -32,21 +32,23 @@ export function CampaignWizardRecipientsStep({
   const [importing, setImporting] = useState(false);
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
-      <ProFormSelect
-        name="audience_id"
-        label="Сохранённая аудитория"
-        options={audiences.map((a) => ({
-          label: `${a.name} (${a.member_count})`,
-          value: a.id,
-        }))}
-        fieldProps={{
-          onChange: async (audienceId: string) => {
-            if (!campaignId || !audienceId) return;
-            await onAudienceSelect(audienceId);
-          },
-        }}
-      />
-      <Space wrap>
+      <div data-onboarding-id="campaign-audience">
+        <ProFormSelect
+          name="audience_id"
+          label="Сохранённая аудитория"
+          options={audiences.map((a) => ({
+            label: `${a.name} (${a.member_count})`,
+            value: a.id,
+          }))}
+          fieldProps={{
+            onChange: async (audienceId: string) => {
+              if (!campaignId || !audienceId) return;
+              await onAudienceSelect(audienceId);
+            },
+          }}
+        />
+      </div>
+      <Space wrap data-onboarding-id="campaign-recipient-sources">
         <Upload
           accept=".csv,.xlsx"
           showUploadList={false}
@@ -75,13 +77,14 @@ export function CampaignWizardRecipientsStep({
           Дозаполнить
         </Button>
       </Space>
-      <Table
-        rowKey="id"
-        size="small"
-        loading={recipientsLoading}
-        dataSource={recipients}
-        pagination={{ pageSize: 10 }}
-        columns={[
+      <div data-onboarding-id="campaign-recipient-check">
+        <Table
+          rowKey="id"
+          size="small"
+          loading={recipientsLoading}
+          dataSource={recipients}
+          pagination={{ pageSize: 10 }}
+          columns={[
           { title: 'Компания', dataIndex: 'company' },
           { title: 'Контакт', dataIndex: 'contact_name' },
           { title: 'Email', dataIndex: 'email' },
@@ -99,8 +102,9 @@ export function CampaignWizardRecipientsStep({
             dataIndex: 'excluded',
             render: (v) => (v ? 'да' : 'нет'),
           },
-        ]}
-      />
+          ]}
+        />
+      </div>
     </Space>
   );
 }

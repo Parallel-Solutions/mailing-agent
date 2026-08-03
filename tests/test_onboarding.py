@@ -31,8 +31,8 @@ class OnboardingApiTests(unittest.TestCase):
         self.assertEqual(initial.status_code, 200)
         self.assertEqual(initial.json()["result"]["status"], "active")
         self.assertEqual(initial.json()["result"]["current_step"], 0)
-        self.assertEqual(initial.json()["result"]["version"], 5)
-        self.assertEqual(initial.json()["result"]["step_count"], 24)
+        self.assertEqual(initial.json()["result"]["version"], 8)
+        self.assertEqual(initial.json()["result"]["step_count"], 85)
 
         paused = self.client.patch(
             "/api/v1/onboarding",

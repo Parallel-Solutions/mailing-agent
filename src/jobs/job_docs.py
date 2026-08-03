@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from src.infra.db import session_scope
-from src.infra.models import EventStreamCounter, JobDoc, JobEvent, JobOwner
+from src.infra.models import Campaign, EventStreamCounter, JobDoc, JobEvent, JobOwner
 from src.jobs.storage import normalize_job_id
 
 
@@ -267,4 +267,16 @@ def list_job_ids_with_events(stream: str) -> list[str]:
 
 
 def list_job_ids_with_sent_mail() -> list[str]:
-    return list_job_ids_with_events("sent_mail_log")
+    job_ids = list_job_ids_with_events("sent_mail_log")
+    if not job_ids:
+        return []
+    with session_scope() as session:
+        archived = set(
+            session.scalars(
+                select(Campaign.job_id).where(
+                    Campaign.job_id.in_(job_ids),
+                    Campaign.archived.is_(True),
+                )
+            ).all()
+        )
+    return [job_id for job_id in job_ids if job_id not in archived]
