@@ -180,17 +180,17 @@ def create_parser_router(
         return {"status": "ok", **result}
     
     @router.post("/api/parser/topup")
-    async def parser_topup(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
+    def parser_topup(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
         message = payload.message.strip()
         if not message:
             raise HTTPException(status_code=400, detail="Пустое сообщение")
         job_id = payload.job_id
         if not job_id:
             raise HTTPException(status_code=400, detail="Для дозаполнения нужен файл (job_id)")
-        await run_in_threadpool(ensure_job_access, job_id, principal, allow_missing=True)
+        ensure_job_access(job_id, principal, allow_missing=True)
 
         from src.parser.agent import topup
-        result = await run_in_threadpool(topup, message, job_id)
+        result = topup(message, job_id)
 
         # тот же блок верификации имён МО, что и в /chat — чтобы поведение совпадало
         result_file = result.get("result_file")
@@ -199,7 +199,7 @@ def create_parser_router(
                 from src.generator.verification.municipality_name_verifier import (
                     verify_municipality_names_in_workbook,
                 )
-                verification = await run_in_threadpool(verify_municipality_names_in_workbook, Path(result_file))
+                verification = verify_municipality_names_in_workbook(Path(result_file))
                 result["municipality_name_verification"] = verification
                 summary = format_municipality_verification_for_chat(verification, max_samples=20)
                 if summary:
@@ -208,18 +208,18 @@ def create_parser_router(
                 logger.warning(f"Верификация имён МО не выполнена: {exc}")
 
         return {"status": "ok", **result}
-    
+
     @router.post("/api/parser/fill")
-    async def parser_fill(payload: dict | None = Body(default=None), principal: object = Depends(check_auth)):
+    def parser_fill(payload: dict | None = Body(default=None), principal: object = Depends(check_auth)):
         payload = payload or {}
         job_id = payload.get("job_id")
         verify_emails = bool(payload.get("verify_emails"))
         if not job_id:
             raise HTTPException(status_code=400, detail="Для заполнения нужен файл (job_id)")
-        await run_in_threadpool(ensure_job_access, job_id, principal, allow_missing=True)
+        ensure_job_access(job_id, principal, allow_missing=True)
 
         from src.parser.agent import fill_gaps
-        result = await run_in_threadpool(fill_gaps, job_id, verify_emails)
+        result = fill_gaps(job_id, verify_emails)
         return {"status": "ok", **result}
 
     @router.get("/api/parser/progress")
