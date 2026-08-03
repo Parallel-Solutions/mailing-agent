@@ -47,7 +47,8 @@ MO_COLUMNS = [
     (16, "ОКПО",                       "REQUISITES_OKPO",  12),
     (17, "ОКТМО",                      "REQUISITES_OKTMO", 12),
     (18, "Статус",                     "STATUS",           15),
-    (19, "Примечание",                 "NOTE",             30),
+    (19, "Сайт",                       "WEBSITE",          30),
+    (20, "Примечание",                 "NOTE",             30),
 ]
 
 # Колонки реквизитов для объединения заголовка
@@ -242,6 +243,31 @@ def read_excel_tool(file_path: str) -> str:
     except Exception as e:
         logger.error(f"[excel/read] {e}")
         return f"Не удалось прочитать файл: {e}"
+
+def read_existing_mo_keys(file_path: str) -> set[str]:
+    """Множество ключей уже присутствующих МО: ОКТМО и нормализованное MUN_NAME.
+    Используется дозаполнением, чтобы не добавлять повторно."""
+    path = Path(file_path)
+    if not path.exists():
+        return set()
+    wb = load_workbook(str(path), read_only=True, data_only=True)
+    ws = wb.active
+    headers = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
+    col = {h: i + 1 for i, h in enumerate(headers) if h}
+    oktmo_c = col.get("REQUISITES_OKTMO")
+    name_c  = col.get("MUN_NAME")
+    keys: set[str] = set()
+    for row_idx in range(3, ws.max_row + 1):
+        if oktmo_c:
+            v = ws.cell(row_idx, oktmo_c).value
+            if v:
+                keys.add(f"oktmo:{str(v).strip()}")
+        if name_c:
+            v = ws.cell(row_idx, name_c).value
+            if v:
+                keys.add("name:" + "".join(str(v).lower().split()))
+    wb.close()
+    return keys
 
 
 @tool

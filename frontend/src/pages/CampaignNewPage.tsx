@@ -74,7 +74,7 @@ const ONBOARDING_CAMPAIGN_STEPS: Record<string, number> = {
   'campaign-launch': 4,
 };
 
-type CampaignModalKind = 'generate' | 'mapping' | 'preview' | 'layout' | 'fix';
+type CampaignModalKind = 'generate' | 'topup' | 'mapping' | 'preview' | 'layout' | 'fix';
 
 export function CampaignNewPage() {
   const [params] = useSearchParams();
@@ -83,7 +83,7 @@ export function CampaignNewPage() {
   const emailChainIdParam = params.get('email_chain_id');
   const step = readIntParam(params, 'step', 0, 0, 4);
   const modalKind = params.get('modal') as CampaignModalKind | null;
-  const generateModalOpen = modalKind === 'generate';
+  const generateModalOpen = modalKind === 'generate' || modalKind === 'topup';
   const mappingModalOpen = modalKind === 'mapping';
   const chainPreviewOpen = modalKind === 'preview';
   const layoutReviewOpen = modalKind === 'layout';
@@ -840,6 +840,7 @@ export function CampaignNewPage() {
                       message.success('Импорт выполнен');
                     }}
                     onOpenGenerate={() => openWizardModal('generate')}
+                    onOpenTopup={() => openWizardModal('topup')}
                     />
                   </div>
                 ),
@@ -1033,6 +1034,7 @@ export function CampaignNewPage() {
       {id && draft.job_id ? (
         <RecipientGenerateModal
           open={generateModalOpen}
+          mode={modalKind === 'topup' ? 'topup' : 'generate'}
           campaignId={id}
           jobId={draft.job_id}
           onClose={closeWizardModal}
@@ -1118,6 +1120,7 @@ export function CampaignNewPage() {
             message.success('Импорт выполнен');
           }}
           onOpenGenerate={() => openWizardModal('generate')}
+          onOpenTopup={() => openWizardModal('topup')}
           onScheduleChange={async (values) => {
             if (!id) return;
             const payload = formValuesToSchedulePayload(values);

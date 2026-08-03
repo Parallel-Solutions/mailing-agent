@@ -1,4 +1,4 @@
-import { App, Button, Form, Input, Modal, Space, Typography } from 'antd';
+import { App, Button, Checkbox, Form, Input, Modal, Segmented, Space, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { campaignsApi } from '@/api/campaigns';
 import { parserApi } from '@/api/parser';
@@ -9,6 +9,7 @@ type Props = {
   jobId: string;
   onClose: () => void;
   onImported: () => void;
+  mode?: 'generate' | 'topup';
 };
 
 type SearchValues = {
@@ -36,7 +37,7 @@ function buildPrompt(values: SearchValues): string {
     .join(' ');
 }
 
-export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImported }: Props) {
+export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'generate', onClose, onImported }: Props) {
   const { message } = App.useApp();
   const [form] = Form.useForm<SearchValues>();
   const [phase, setPhase] = useState<'form' | 'running' | 'done'>('form');
@@ -44,6 +45,8 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
   const [running, setRunning] = useState(false);
   const [hasFile, setHasFile] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [topupMode, setTopupMode] = useState<'fill' | 'find'>('fill');
+  const [verifyEmails, setVerifyEmails] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const streamRef = useRef<EventSource | null>(null);
   const timeoutRef = useRef<number | null>(null);
@@ -51,6 +54,8 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
   useEffect(() => {
     if (!open) return;
     setPhase('form');
+    setTopupMode('fill');
+    setVerifyEmails(false);
     setLogs([]);
     setRunning(false);
     setHasFile(false);
@@ -113,26 +118,31 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
   };
 
   const handleSubmit = async () => {
-    let values: SearchValues;
-    try {
-      values = await form.validateFields();
-    } catch {
-      return;
+    const isFill = mode === 'topup' && topupMode === 'fill';
+
+    let values: SearchValues = { what: '', where: '' };
+    if (!isFill) {
+      try {
+        values = await form.validateFields();
+      } catch {
+        return;
+      }
+      const what = values.what.trim();
+      const where = values.where.trim();
+      if (!what || !where) {
+        message.warning('Заполните, что и где нужно найти');
+        return;
+      }
     }
 
-    const what = values.what.trim();
-    const where = values.where.trim();
-    if (!what || !where) {
-      message.warning('Заполните, что и где нужно найти');
-      return;
-    }
-
-    const prompt = buildPrompt({
-      what,
-      where,
-      volume: values.volume?.trim(),
-      fields: values.fields?.trim(),
-    });
+    const prompt = isFill
+      ? ''
+      : buildPrompt({
+          what: values.what.trim(),
+          where: values.where.trim(),
+          volume: values.volume?.trim(),
+          fields: values.fields?.trim(),
+        });
 
     setPhase('running');
     setRunning(true);
@@ -156,7 +166,12 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
     });
 
     try {
-      const result = await parserApi.chat(prompt, jobId, controller.signal);
+      const result =
+        mode === 'topup'
+          ? topupMode === 'fill'
+            ? await parserApi.fillGaps(jobId, verifyEmails, controller.signal)
+            : await parserApi.topup(prompt, jobId, controller.signal)
+          : await parserApi.chat(prompt, jobId, controller.signal);
       if (result.reply) appendLog(result.reply);
 
       if (result.result_file) {
@@ -199,7 +214,11 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
 
   return (
     <Modal
-      title={phase === 'form' ? 'Что нужно найти?' : 'Сбор списка получателей'}
+      title={
+        phase === 'form'
+          ? mode === 'topup' ? 'Что дозаполнить?' : 'Что нужно найти?'
+          : mode === 'topup' ? 'Дозаполнение файла' : 'Сбор списка получателей'
+      }
       open={open}
       onCancel={handleCancel}
       destroyOnHidden
@@ -209,7 +228,7 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
           <Space>
             <Button onClick={handleCancel}>Отмена</Button>
             <Button type="primary" onClick={() => void handleSubmit()}>
-              Сформировать и отправить
+              {mode === 'topup' && topupMode === 'fill' ? 'Заполнить' : 'Сформировать и отправить'}
             </Button>
           </Space>
         ) : (
@@ -232,37 +251,69 @@ export function RecipientGenerateModal({ open, campaignId, jobId, onClose, onImp
       }
     >
       {phase === 'form' ? (
-        <Form form={form} layout="vertical" initialValues={{ fields: DEFAULT_FIELDS }}>
-          <Form.Item
-            name="what"
-            label="Что ищем"
-            rules={[{ required: true, message: 'Укажите, что искать' }]}
-          >
-            <Input placeholder="Например: сельские поселения, администрации, организации" />
-          </Form.Item>
-          <Form.Item
-            name="where"
-            label="Где ищем"
-            rules={[{ required: true, message: 'Укажите регион или территорию' }]}
-          >
-            <Input placeholder="Например: Забайкальский край" />
-          </Form.Item>
-          <Form.Item label="Объём">
-            <Space.Compact style={{ width: '100%' }}>
-              <Form.Item name="volume" noStyle>
-                <Input placeholder="Например: 3000 записей, все районы, первые 500" />
-              </Form.Item>
-              <Button
-                onClick={() => form.setFieldValue('volume', 'всё, что есть')}
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          {mode === 'topup' ? (
+            <Segmented
+              block
+              value={topupMode}
+              onChange={(v) => setTopupMode(v as 'fill' | 'find')}
+              options={[
+                { label: 'Заполнить пробелы', value: 'fill' },
+                { label: 'Донайти новые', value: 'find' },
+              ]}
+            />
+          ) : null}
+
+          {mode === 'topup' && topupMode === 'fill' ? (
+            <Space direction="vertical" size="small" style={{ width: '100%' }}>
+              <Typography.Text type="secondary">
+                Достроит недостающие данные у строк, которые уже есть в файле.
+                Искать новые организации не нужно — просто нажмите «Заполнить».
+              </Typography.Text>
+              <Checkbox checked={verifyEmails} onChange={(e) => setVerifyEmails(e.target.checked)}>
+                Проверить почты по официальным сайтам
+              </Checkbox>
+              {verifyEmails ? (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  Пройдёт по сайтам и обновит почты. Если в столбце «Сайт» (S) уже
+                  указан адрес — возьмёт почту прямо оттуда. Прежняя почта не теряется.
+                </Typography.Text>
+              ) : null}
+            </Space>
+          ) : (
+            <Form form={form} layout="vertical" initialValues={{ fields: DEFAULT_FIELDS }}>
+              <Form.Item
+                name="what"
+                label="Что ищем"
+                rules={[{ required: true, message: 'Укажите, что искать' }]}
               >
-                Искать всё
-              </Button>
-            </Space.Compact>
-          </Form.Item>
-          <Form.Item name="fields" label="Какие данные нужны">
-            <Input />
-          </Form.Item>
-        </Form>
+                <Input placeholder="Например: сельские поселения, администрации, организации" />
+              </Form.Item>
+              <Form.Item
+                name="where"
+                label="Где ищем"
+                rules={[{ required: true, message: 'Укажите регион или территорию' }]}
+              >
+                <Input placeholder="Например: Забайкальский край" />
+              </Form.Item>
+              <Form.Item label="Объём">
+                <Space.Compact style={{ width: '100%' }}>
+                  <Form.Item name="volume" noStyle>
+                    <Input placeholder="Например: 3000 записей, все районы, первые 500" />
+                  </Form.Item>
+                  <Button
+                    onClick={() => form.setFieldValue('volume', 'всё, что есть')}
+                  >
+                    Искать всё
+                  </Button>
+                </Space.Compact>
+              </Form.Item>
+              <Form.Item name="fields" label="Какие данные нужны">
+                <Input />
+              </Form.Item>
+            </Form>
+          )}
+        </Space>
       ) : (
         <Space direction="vertical" style={{ width: '100%' }}>
           <Typography.Text type="secondary">
