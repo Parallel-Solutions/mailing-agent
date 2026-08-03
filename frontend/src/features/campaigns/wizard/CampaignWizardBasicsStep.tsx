@@ -63,7 +63,7 @@ export function CampaignWizardBasicsStep({
       <div data-onboarding-id="campaign-chain">
         <ProFormSelect
           name="email_chain_id"
-          label="Цепочка писем"
+          label="Цепочка писем (необязательно)"
           placeholder="Выберите цепочку"
           options={chainOptions}
           fieldProps={{
@@ -73,7 +73,6 @@ export function CampaignWizardBasicsStep({
               onAutosave({ email_chain_id: value, send_scenario: 'email_chain' });
             },
           }}
-          rules={[{ required: true, message: 'Выберите цепочку писем' }]}
         />
       </div>
       {campaignId && linkedChainId ? (
@@ -89,7 +88,7 @@ export function CampaignWizardBasicsStep({
       <div data-onboarding-id="campaign-company">
         <ProFormSelect
           name="company_id"
-          label="Компания"
+          label="Компания (необязательно)"
           placeholder="Выберите компанию"
           options={companyOptions}
           fieldProps={{
@@ -107,18 +106,17 @@ export function CampaignWizardBasicsStep({
               });
             },
           }}
-          rules={[{ required: true, message: 'Выберите компанию' }]}
         />
       </div>
       <div data-onboarding-id="campaign-work-type">
         <ProFormSelect
           name="company_work_type_id"
-          label="Вид работ"
+          label="Вид работ (необязательно)"
           placeholder={
             selectedCompanyId
               ? workTypeOptions.length > 0
                 ? 'Выберите вид работ'
-                : 'Сначала добавьте виды работ в настройках компании'
+                : 'Для компании пока нет видов работ'
               : 'Сначала выберите компанию'
           }
           options={workTypeOptions}
@@ -135,7 +133,6 @@ export function CampaignWizardBasicsStep({
               onAutosave(patch);
             },
           }}
-          rules={[{ required: true, message: 'Выберите вид работ' }]}
         />
       </div>
       {(isAppAdmin || isCompanyAdmin) && selectedCompanyId ? (

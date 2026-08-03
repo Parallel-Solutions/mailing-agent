@@ -336,6 +336,14 @@ class SmtpMailbox(Base):
     oauth_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     oauth_tokens_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     smtp_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    save_sent_copy: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    imap_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    imap_port: Mapped[int] = mapped_column(Integer, nullable=False, default=993)
+    imap_use_ssl: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    imap_use_starttls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    imap_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    imap_password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imap_sent_folder: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False, default="")
     sending_key_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
@@ -371,6 +379,30 @@ class SmtpMailbox(Base):
     __table_args__ = (
         Index("idx_smtp_mailboxes_owner", "owner_username"),
         Index("idx_smtp_mailboxes_owner_default", "owner_username", "is_default"),
+    )
+
+
+class SmtpSentCopy(Base):
+    __tablename__ = "smtp_sent_copies"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    connection_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="CASCADE"), nullable=False
+    )
+    message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    folder: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    uid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("uq_smtp_sent_copies_connection_message", "connection_id", "message_id", unique=True),
+        Index("idx_smtp_sent_copies_status", "status", "updated_at"),
     )
 
 

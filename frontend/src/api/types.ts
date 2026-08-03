@@ -533,6 +533,14 @@ export type DeliveryConnection = {
   last_error?: string | null;
   use_ssl?: boolean | null;
   use_starttls?: boolean | null;
+  save_sent_copy?: boolean;
+  imap_host?: string;
+  imap_port?: number | null;
+  imap_use_ssl?: boolean | null;
+  imap_use_starttls?: boolean | null;
+  imap_username?: string;
+  imap_sent_folder?: string;
+  imap_password_configured?: boolean;
   has_secret?: boolean;
   max_per_hour?: number;
   max_per_day?: number;

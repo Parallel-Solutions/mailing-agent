@@ -13,9 +13,7 @@ describe('campaignStepValidation', () => {
       validate: null,
     });
     expect(steps[0].status).toBe('error');
-    expect(steps[0].errors).toEqual(
-      expect.arrayContaining(['Укажите название рассылки', 'Выберите цепочку писем']),
-    );
+    expect(steps[0].errors).toEqual(['Укажите название рассылки']);
     expect(steps[1].status).toBe('ok');
   });
 

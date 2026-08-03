@@ -245,6 +245,7 @@ class SenderAgentSmtpMailboxTests(unittest.TestCase):
 
         from src.generator.delivery import sender_agent
         from src.generator.delivery.smtp_mailboxes import ResolvedSmtpCredentials
+        from src.generator.delivery.imap_sent import SentCopyResult
 
         credentials = ResolvedSmtpCredentials(
             email="mailbox@example.com",
@@ -260,9 +261,10 @@ class SenderAgentSmtpMailboxTests(unittest.TestCase):
         with patch.object(sender_agent.settings, "smtp_allow_real_send", True), patch(
             "src.generator.delivery.smtp_mailboxes.resolve_smtp_credentials",
             return_value=credentials,
-        ), patch.object(sender_agent, "_build_message", return_value=message), patch.object(
-            sender_agent, "_save_sent_copy", return_value="sent-copy.eml"
-        ), patch(
+        ), patch.object(sender_agent, "_build_message", return_value=message), patch(
+            "src.generator.delivery.imap_sent.archive_sent_copy",
+            return_value=SentCopyResult(status="archived", folder="Sent"),
+        ) as archive_mock, patch(
             "src.generator.delivery.smtp_mailboxes._open_smtp_connection",
             return_value=mock_server,
         ):
@@ -274,8 +276,16 @@ class SenderAgentSmtpMailboxTests(unittest.TestCase):
                 smtp_mailbox_id="mailbox-1",
                 owner_username="owner",
             )
-        self.assertEqual(result, "sent-copy.eml")
-        mock_server.send_message.assert_called_once_with(message)
+        self.assertIsNone(result)
+        mock_server.sendmail.assert_called_once()
+        envelope_from, recipients, raw_message = mock_server.sendmail.call_args.args
+        self.assertEqual(envelope_from, "mailbox@example.com")
+        self.assertEqual(recipients, ["recipient@example.com"])
+        self.assertIn(b"Message-ID:", raw_message)
+        archive_mock.assert_called_once()
+        self.assertEqual(
+            archive_mock.call_args.kwargs["raw_message"], raw_message
+        )
 
 
 class NormalizeSmtpSecretTests(unittest.TestCase):

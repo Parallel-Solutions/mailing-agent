@@ -253,6 +253,14 @@ class ConnectionCreateBody(BaseModel):
     port: int | None = None
     use_ssl: bool | None = None
     use_starttls: bool | None = None
+    save_sent_copy: bool = True
+    imap_host: str = ""
+    imap_port: int | None = Field(default=None, ge=1, le=65535)
+    imap_use_ssl: bool | None = None
+    imap_use_starttls: bool | None = None
+    imap_username: str = ""
+    imap_password: str = ""
+    imap_sent_folder: str = ""
     make_default: bool = False
     auth_method: str = "password"
     oauth_provider: str = ""
@@ -283,6 +291,14 @@ class ConnectionUpdateBody(BaseModel):
     port: int | None = None
     use_ssl: bool | None = None
     use_starttls: bool | None = None
+    save_sent_copy: bool | None = None
+    imap_host: str | None = None
+    imap_port: int | None = Field(default=None, ge=1, le=65535)
+    imap_use_ssl: bool | None = None
+    imap_use_starttls: bool | None = None
+    imap_username: str | None = None
+    imap_password: str | None = None
+    imap_sent_folder: str | None = None
     max_per_hour: int | None = None
     max_per_day: int | None = None
     delivery_guard_enabled: bool | None = None

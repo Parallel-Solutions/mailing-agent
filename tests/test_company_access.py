@@ -9,8 +9,18 @@ from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from src.campaigns import company_service, connection_service, service as campaign_service
-from src.generator.delivery.smtp_mailboxes import create_mailbox, resolve_smtp_credentials
+from src.campaigns import (
+    audience_service,
+    chain_service,
+    company_service,
+    connection_service,
+    service as campaign_service,
+    template_service,
+)
+from src.generator.delivery.smtp_mailboxes import (
+    create_mailbox,
+    resolve_smtp_credentials,
+)
 from src.security.auth import Principal
 from src.security.company_access import (
     can_manage_company,
@@ -51,7 +61,9 @@ class CompanyAccessTests(unittest.TestCase):
 
         self.admin_app = FastAPI()
         self.admin_app.include_router(
-            create_companies_router(check_auth=lambda: Principal(self.admin, "root", "admin"))
+            create_companies_router(
+                check_auth=lambda: Principal(self.admin, "root", "admin")
+            )
         )
         self.admin_app.include_router(
             create_v1_router(check_auth=lambda: Principal(self.admin, "root", "admin"))
@@ -78,13 +90,21 @@ class CompanyAccessTests(unittest.TestCase):
         )
 
         self.ca_app = FastAPI()
-        self.ca_app.include_router(create_companies_router(check_auth=lambda: self.ca_principal))
-        self.ca_app.include_router(create_v1_router(check_auth=lambda: self.ca_principal))
+        self.ca_app.include_router(
+            create_companies_router(check_auth=lambda: self.ca_principal)
+        )
+        self.ca_app.include_router(
+            create_v1_router(check_auth=lambda: self.ca_principal)
+        )
         self.ca_client = TestClient(self.ca_app)
 
         self.member_app = FastAPI()
-        self.member_app.include_router(create_companies_router(check_auth=lambda: self.member_principal))
-        self.member_app.include_router(create_v1_router(check_auth=lambda: self.member_principal))
+        self.member_app.include_router(
+            create_companies_router(check_auth=lambda: self.member_principal)
+        )
+        self.member_app.include_router(
+            create_v1_router(check_auth=lambda: self.member_principal)
+        )
         self.member_client = TestClient(self.member_app)
 
     def test_app_admin_lists_and_updates_companies(self) -> None:
@@ -99,10 +119,14 @@ class CompanyAccessTests(unittest.TestCase):
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["result"]["phone"], "+7 900 111-11-11")
 
-    def test_company_admin_manages_members_and_can_view_other_company(self) -> None:
+    def test_company_admin_manages_members_but_cannot_view_other_company(self) -> None:
         added = self.ca_client.post(
             f"/api/v1/companies/{self.company['id']}/members",
-            json={"username": self.outsider, "password": "Pass12345!", "role": "member"},
+            json={
+                "username": self.outsider,
+                "password": "Pass12345!",
+                "role": "member",
+            },
         )
         self.assertEqual(added.status_code, 200)
 
@@ -113,17 +137,21 @@ class CompanyAccessTests(unittest.TestCase):
 
         other = company_service.create_company(name="Other Org")
         visible = self.ca_client.get(f"/api/v1/companies/{other['id']}")
-        self.assertEqual(visible.status_code, 200)
+        self.assertEqual(visible.status_code, 403)
 
     def test_campaign_visibility_by_role(self) -> None:
-        member_campaign = campaign_service.create_campaign(self.member, {"name": "Member campaign"})
-        admin_campaign = campaign_service.create_campaign(self.company_admin, {"name": "Admin campaign"})
+        member_campaign = campaign_service.create_campaign(
+            self.member, {"name": "Member campaign"}
+        )
+        admin_campaign = campaign_service.create_campaign(
+            self.company_admin, {"name": "Admin campaign"}
+        )
 
         member_list = self.member_client.get("/api/v1/campaigns")
         self.assertEqual(member_list.status_code, 200)
         member_ids = {item["id"] for item in member_list.json()["result"]["items"]}
         self.assertIn(member_campaign["id"], member_ids)
-        self.assertIn(admin_campaign["id"], member_ids)
+        self.assertNotIn(admin_campaign["id"], member_ids)
 
         ca_list = self.ca_client.get("/api/v1/campaigns")
         self.assertEqual(ca_list.status_code, 200)
@@ -136,19 +164,96 @@ class CompanyAccessTests(unittest.TestCase):
         admin_ids = {item["id"] for item in admin_list.json()["result"]["items"]}
         self.assertIn(member_campaign["id"], admin_ids)
 
+    def test_core_resources_are_isolated_for_regular_members(self) -> None:
+        resources = (
+            ("campaigns", {"name": "Foreign campaign"}, {"name": "Own campaign"}),
+            ("chains", {"name": "Foreign chain"}, {"name": "Own chain"}),
+            (
+                "templates",
+                {"name": "Foreign template", "template_type": "email"},
+                {"name": "Own template", "template_type": "email"},
+            ),
+            ("audiences", {"name": "Foreign audience"}, {"name": "Own audience"}),
+        )
+        foreign: dict[str, dict[str, object]] = {}
+        own: dict[str, dict[str, object]] = {}
+
+        for path, foreign_payload, own_payload in resources:
+            foreign_response = self.ca_client.post(
+                f"/api/v1/{path}", json=foreign_payload
+            )
+            own_response = self.member_client.post(f"/api/v1/{path}", json=own_payload)
+            self.assertEqual(foreign_response.status_code, 200, foreign_response.text)
+            self.assertEqual(own_response.status_code, 200, own_response.text)
+            foreign[path] = foreign_response.json()["result"]
+            own[path] = own_response.json()["result"]
+
+        def listed_ids(client: TestClient, path: str) -> set[str]:
+            response = client.get(f"/api/v1/{path}")
+            self.assertEqual(response.status_code, 200, response.text)
+            result = response.json()["result"]
+            items = result.get("items", []) if isinstance(result, dict) else result
+            return {str(item["id"]) for item in items}
+
+        for path, _, _ in resources:
+            foreign_id = str(foreign[path]["id"])
+            own_id = str(own[path]["id"])
+            member_ids = listed_ids(self.member_client, path)
+            self.assertIn(own_id, member_ids)
+            self.assertNotIn(foreign_id, member_ids)
+
+            hidden = self.member_client.get(f"/api/v1/{path}/{foreign_id}")
+            self.assertEqual(hidden.status_code, 404, hidden.text)
+            forbidden_update = self.member_client.patch(
+                f"/api/v1/{path}/{foreign_id}",
+                json={"name": "Forbidden update"},
+            )
+            self.assertEqual(forbidden_update.status_code, 404, forbidden_update.text)
+
+            company_admin_ids = listed_ids(self.ca_client, path)
+            self.assertIn(own_id, company_admin_ids)
+            self.assertIn(foreign_id, company_admin_ids)
+
+            app_admin_ids = listed_ids(self.admin_client, path)
+            self.assertIn(own_id, app_admin_ids)
+            self.assertIn(foreign_id, app_admin_ids)
+
+        self.assertIsNone(
+            campaign_service.get_campaign(str(foreign["campaigns"]["id"]), self.member)
+        )
+        with self.assertRaises(ValueError):
+            chain_service.load_chain(str(foreign["chains"]["id"]), self.member)
+        self.assertIsNone(
+            template_service.get_template(str(foreign["templates"]["id"]), self.member)
+        )
+        self.assertIsNone(
+            audience_service.get_audience(str(foreign["audiences"]["id"]), self.member)
+        )
+
     def test_can_view_owned_resource_matrix(self) -> None:
         self.assertTrue(can_view_owned_resource(self.ca_principal, self.member))
         self.assertTrue(can_view_owned_resource(self.ca_principal, self.company_admin))
-        self.assertFalse(can_view_owned_resource(self.member_principal, self.company_admin))
-        self.assertTrue(can_view_owned_resource(Principal(self.admin, "root", "admin"), self.member))
+        self.assertFalse(
+            can_view_owned_resource(self.member_principal, self.company_admin)
+        )
+        self.assertTrue(
+            can_view_owned_resource(Principal(self.admin, "root", "admin"), self.member)
+        )
         self.assertFalse(can_manage_company(self.member_principal, self.company["id"]))
 
     def test_visible_owner_usernames(self) -> None:
-        self.assertIsNone(visible_owner_usernames(Principal(self.admin, "root", "admin")))
-        self.assertIsNone(visible_owner_usernames(self.ca_principal))
-        self.assertIsNone(visible_owner_usernames(self.member_principal))
+        self.assertIsNone(
+            visible_owner_usernames(Principal(self.admin, "root", "admin"))
+        )
+        self.assertEqual(
+            visible_owner_usernames(self.ca_principal),
+            frozenset({self.company_admin, self.member}),
+        )
+        self.assertEqual(
+            visible_owner_usernames(self.member_principal), frozenset({self.member})
+        )
 
-    def test_member_can_list_companies(self) -> None:
+    def test_member_cannot_list_companies(self) -> None:
         outsider_app = FastAPI()
         outsider_app.include_router(
             create_companies_router(
@@ -157,8 +262,7 @@ class CompanyAccessTests(unittest.TestCase):
         )
         client = TestClient(outsider_app)
         response = client.get("/api/v1/companies")
-        self.assertEqual(response.status_code, 200)
-        self.assertGreaterEqual(response.json()["result"]["total"], 1)
+        self.assertEqual(response.status_code, 403)
 
     def test_unauthenticated_user_cannot_list_companies(self) -> None:
         def reject_auth() -> None:
@@ -170,9 +274,16 @@ class CompanyAccessTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_connection_owner_usernames(self) -> None:
-        self.assertIsNone(connection_owner_usernames(Principal(self.admin, "root", "admin")))
-        self.assertEqual(connection_owner_usernames(self.ca_principal), frozenset({self.company_admin}))
-        self.assertEqual(connection_owner_usernames(self.member_principal), frozenset({self.member}))
+        self.assertIsNone(
+            connection_owner_usernames(Principal(self.admin, "root", "admin"))
+        )
+        self.assertEqual(
+            connection_owner_usernames(self.ca_principal),
+            frozenset({self.company_admin}),
+        )
+        self.assertEqual(
+            connection_owner_usernames(self.member_principal), frozenset({self.member})
+        )
 
     def test_delivery_connections_are_isolated_between_accounts(self) -> None:
         key = Fernet.generate_key().decode("ascii")
@@ -204,11 +315,15 @@ class CompanyAccessTests(unittest.TestCase):
             }
             member_ids = {
                 item["id"]
-                for item in self.member_client.get("/api/v1/connections").json()["result"]
+                for item in self.member_client.get("/api/v1/connections").json()[
+                    "result"
+                ]
             }
             admin_ids = {
                 item["id"]
-                for item in self.admin_client.get("/api/v1/connections").json()["result"]
+                for item in self.admin_client.get("/api/v1/connections").json()[
+                    "result"
+                ]
             }
 
             self.assertEqual(ca_ids, {company_admin_mailbox["id"]})
@@ -283,7 +398,9 @@ class CompanyAccessTests(unittest.TestCase):
         self.assertTrue(item["id"])
         self.assertEqual(item["name"], "Градостроительный аудит")
 
-        duplicate = self.admin_client.post(base, json={"name": "градостроительный аудит"})
+        duplicate = self.admin_client.post(
+            base, json={"name": "градостроительный аудит"}
+        )
         self.assertEqual(duplicate.status_code, 400)
 
         updated = self.admin_client.patch(
@@ -291,7 +408,9 @@ class CompanyAccessTests(unittest.TestCase):
             json={"name": "Аудит градостроительной документации"},
         )
         self.assertEqual(updated.status_code, 200, updated.text)
-        self.assertEqual(updated.json()["result"]["name"], "Аудит градостроительной документации")
+        self.assertEqual(
+            updated.json()["result"]["name"], "Аудит градостроительной документации"
+        )
 
         listed_after = self.admin_client.get(base)
         self.assertEqual(len(listed_after.json()["result"]), 1)

@@ -59,9 +59,31 @@ class SmtpMailboxCreateRequest(BaseModel):
     oauth_provider: str | None = None
     oauth_tokens: dict[str, Any] | None = None
     smtp_username: str | None = None
+    save_sent_copy: bool = True
+    imap_host: str = ""
+    imap_port: int | None = Field(default=None, ge=1, le=65535)
+    imap_use_ssl: bool | None = None
+    imap_use_starttls: bool | None = None
+    imap_username: str | None = None
+    imap_password: str = ""
+    imap_sent_folder: str = ""
     setup_session_id: str | None = None
 
-    @field_validator("provider", "email", "password", "sender_name", "host", "auth_method", "oauth_provider", "smtp_username", mode="before")
+    @field_validator(
+        "provider",
+        "email",
+        "password",
+        "sender_name",
+        "host",
+        "auth_method",
+        "oauth_provider",
+        "smtp_username",
+        "imap_host",
+        "imap_username",
+        "imap_password",
+        "imap_sent_folder",
+        mode="before",
+    )
     @classmethod
     def _normalize_text(cls, value: Any) -> str:
         if value is None:
@@ -85,6 +107,14 @@ class SmtpMailboxUpdateRequest(BaseModel):
     oauth_provider: str | None = None
     oauth_tokens: dict[str, Any] | None = None
     smtp_username: str | None = None
+    save_sent_copy: bool | None = None
+    imap_host: str | None = None
+    imap_port: int | None = Field(default=None, ge=1, le=65535)
+    imap_use_ssl: bool | None = None
+    imap_use_starttls: bool | None = None
+    imap_username: str | None = None
+    imap_password: str | None = None
+    imap_sent_folder: str | None = None
 
 
 class SmtpMailboxTestRequest(BaseModel):
@@ -389,6 +419,14 @@ def create_smtp_router(*, check_auth: Callable[..., object]) -> APIRouter:
                 oauth_provider=payload.oauth_provider,
                 oauth_tokens=oauth_tokens,
                 smtp_username=payload.smtp_username,
+                save_sent_copy=payload.save_sent_copy,
+                imap_host=payload.imap_host,
+                imap_port=payload.imap_port,
+                imap_use_ssl=payload.imap_use_ssl,
+                imap_use_starttls=payload.imap_use_starttls,
+                imap_username=payload.imap_username,
+                imap_password=payload.imap_password,
+                imap_sent_folder=payload.imap_sent_folder,
             )
         except CredentialVaultError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -423,6 +461,14 @@ def create_smtp_router(*, check_auth: Callable[..., object]) -> APIRouter:
                 oauth_provider=payload.oauth_provider,
                 oauth_tokens=oauth_tokens,
                 smtp_username=payload.smtp_username,
+                save_sent_copy=payload.save_sent_copy,
+                imap_host=payload.imap_host,
+                imap_port=payload.imap_port,
+                imap_use_ssl=payload.imap_use_ssl,
+                imap_use_starttls=payload.imap_use_starttls,
+                imap_username=payload.imap_username,
+                imap_password=payload.imap_password,
+                imap_sent_folder=payload.imap_sent_folder,
             )
             if payload.send_test:
                 credentials = resolve_smtp_credentials(mailbox_id=mailbox_id, owner_username=actor.username)
@@ -470,6 +516,22 @@ def create_smtp_router(*, check_auth: Callable[..., object]) -> APIRouter:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=humanize_smtp_error(exc)) from exc
         return ok_response({"status": "ok", "message": "SMTP-подключение проверено, тестовое письмо отправлено."})
+
+    @router.post("/api/smtp/mailboxes/{mailbox_id}/test-imap")
+    def smtp_mailboxes_test_imap(mailbox_id: str, principal: object = Depends(check_auth)):
+        actor = coerce_principal(principal)
+        try:
+            from src.generator.delivery.imap_sent import verify_imap_connection
+
+            result = verify_imap_connection(
+                mailbox_id=mailbox_id,
+                owner_username=actor.username,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return ok_response({"status": result["status"], "folder": result.get("folder", "")})
 
     @router.post("/api/smtp/test")
     def smtp_test_connection(payload: SmtpMailboxTestRequest, principal: object = Depends(check_auth)):

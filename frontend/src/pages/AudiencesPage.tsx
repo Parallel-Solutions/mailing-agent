@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { audiencesApi } from '@/api/audiences';
 import type { Audience } from '@/api/types';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
+import { APP_TOP_BAR_HEIGHT } from '@/layout/AppTopBar';
 import { formatLocalDateTime } from '@/utils/dateTime';
 import { statusLabel } from '@/utils/presentation';
 
@@ -39,6 +40,7 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
         rowKey="id"
         loading={isLoading}
         search={false}
+        scroll={{ x: 'max-content' }}
         headerTitle={embedded ? undefined : 'База получателей'}
         toolBarRender={() => [
           <Button
@@ -85,6 +87,7 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
       />
 
       <Drawer
+        rootStyle={{ top: APP_TOP_BAR_HEIGHT }}
         width={820}
         open={Boolean(selected)}
         onClose={() => pushParams({}, ['audience'])}

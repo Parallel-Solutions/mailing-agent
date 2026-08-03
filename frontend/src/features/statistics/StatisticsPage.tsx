@@ -13,6 +13,7 @@ import { CampaignAnalyticsTab } from './tabs/CampaignAnalyticsTab';
 import { CampaignFullAnalyticsTab } from './fullAnalytics/CampaignFullAnalyticsTab';
 import { MarketingConsentsTab } from './tabs/MarketingConsentsTab';
 import { CampaignsListPage } from '@/pages/CampaignsListPage';
+import { AudiencesPage } from '@/pages/AudiencesPage';
 import { asRecordArray } from './utils';
 import { formatLocalDateTime } from '@/utils/dateTime';
 
@@ -184,6 +185,9 @@ function TabBody({ tabKey }: { tabKey: string }) {
       break;
     case 'campaign-list':
       body = <CampaignsListPage embedded />;
+      break;
+    case 'audiences':
+      body = <AudiencesPage embedded />;
       break;
     case 'campaigns':
       body = <CampaignsTab />;

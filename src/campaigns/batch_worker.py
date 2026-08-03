@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import mimetypes
-import smtplib
 import tempfile
 import time
 from datetime import datetime, timezone
 from email.message import EmailMessage
+from email.policy import SMTP as SMTP_POLICY
+from email.utils import format_datetime, make_msgid
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -104,7 +105,8 @@ def _send_smtp_message(
 ) -> str:
     from dataclasses import replace
 
-    from src.generator.delivery.smtp_mailboxes import resolve_smtp_credentials
+    from src.generator.delivery.imap_sent import archive_sent_copy
+    from src.generator.delivery.smtp_mailboxes import _open_smtp_connection, resolve_smtp_credentials
 
     creds = resolve_smtp_credentials(mailbox_id=mailbox_id, owner_username=owner_username)
     if sender_name and sender_name != creds.sender_name:
@@ -113,6 +115,9 @@ def _send_smtp_message(
     msg["Subject"] = subject
     msg["From"] = f"{creds.sender_name} <{creds.email}>" if creds.sender_name else creds.email
     msg["To"] = to_email
+    msg["Date"] = format_datetime(_now())
+    message_id = make_msgid(domain=creds.email.rpartition("@")[2] or None)
+    msg["Message-ID"] = message_id
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
     for filename, data in attachments or []:
@@ -120,22 +125,31 @@ def _send_smtp_message(
         maintype, subtype = (content_type or "application/octet-stream").split("/", 1)
         msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
 
-    if creds.use_ssl:
-        server: Any = smtplib.SMTP_SSL(creds.host, creds.port, timeout=60)
-    else:
-        server = smtplib.SMTP(creds.host, creds.port, timeout=60)
-        if creds.use_starttls:
-            server.starttls()
+    raw_message = msg.as_bytes(policy=SMTP_POLICY)
+    server: Any = _open_smtp_connection(creds)
     try:
-        if creds.password:
-            server.login(creds.smtp_username or creds.email, creds.password)
-        server.send_message(msg)
+        server.sendmail(creds.email, [to_email], raw_message)
     finally:
         try:
             server.quit()
         except Exception:
             pass
-    return f"smtp:{to_email}:{int(_now().timestamp())}"
+
+    try:
+        archive_sent_copy(
+            mailbox_id=mailbox_id,
+            owner_username=owner_username,
+            recipient=to_email,
+            raw_message=raw_message,
+            message_id=message_id,
+        )
+    except Exception:
+        logger.exception(
+            "SMTP message was accepted, but its IMAP sent copy could not be archived",
+            mailbox_id=mailbox_id,
+            message_id=message_id,
+        )
+    return message_id
 
 
 def _send_delivery_message(

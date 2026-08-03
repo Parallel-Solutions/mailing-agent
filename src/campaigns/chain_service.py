@@ -18,7 +18,12 @@ from src.infra.models import (
     EmailChainRecord,
     MailTemplate,
 )
-from src.security.company_access import apply_owner_filter, can_access_owner
+from src.security.company_access import (
+    OWNER_VISIBILITY_UNSET,
+    apply_owner_filter,
+    can_access_owner,
+    effective_owner_visibility,
+)
 
 CHAIN_VERSION = 2
 
@@ -116,7 +121,9 @@ def _get_chain_row(chain_id: str, *, session=None) -> EmailChainRecord | None:
 
 
 def _chain_state(row: EmailChainRecord) -> dict[str, Any]:
-    chain = normalize_chain(row.payload if isinstance(row.payload, dict) else empty_chain())
+    chain = normalize_chain(
+        row.payload if isinstance(row.payload, dict) else empty_chain()
+    )
     validation = validate_chain(chain, strict=False)
     return {
         "id": row.id,
@@ -133,8 +140,9 @@ def _ensure_chain_access(
     row: EmailChainRecord | None,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
 ) -> EmailChainRecord:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     if row is None or not can_access_owner(visible_owners, row.owner_username):
         raise ValueError("Цепочка не найдена")
     return row
@@ -158,10 +166,11 @@ def create_chain(owner_username: str, *, name: str | None = None) -> dict[str, A
 def list_chains(
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     from sqlalchemy import select
 
     with session_scope() as session:
@@ -169,7 +178,9 @@ def list_chains(
         stmt = apply_owner_filter(stmt, EmailChainRecord.owner_username, visible_owners)
         rows = session.scalars(stmt.limit(limit).offset(offset)).all()
         total_stmt = select(func.count()).select_from(EmailChainRecord)
-        total_stmt = apply_owner_filter(total_stmt, EmailChainRecord.owner_username, visible_owners)
+        total_stmt = apply_owner_filter(
+            total_stmt, EmailChainRecord.owner_username, visible_owners
+        )
         total = int(session.scalar(total_stmt) or 0)
         return {
             "items": [
@@ -177,7 +188,9 @@ def list_chains(
                     "id": row.id,
                     "name": row.name,
                     "published": bool(row.published),
-                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                    "updated_at": row.updated_at.isoformat()
+                    if row.updated_at
+                    else None,
                 }
                 for row in rows
             ],
@@ -185,16 +198,32 @@ def list_chains(
         }
 
 
-def load_chain(chain_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
+def load_chain(
+    chain_id: str, owner_username: str, *, visible_owners: Any = OWNER_VISIBILITY_UNSET
+) -> dict[str, Any]:
     with session_scope() as session:
-        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, visible_owners=visible_owners)
+        row = _ensure_chain_access(
+            session.get(EmailChainRecord, chain_id),
+            owner_username,
+            visible_owners=visible_owners,
+        )
         return _chain_state(row)
 
 
-def save_chain(chain_id: str, owner_username: str, chain: dict[str, Any], *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
+def save_chain(
+    chain_id: str,
+    owner_username: str,
+    chain: dict[str, Any],
+    *,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
+) -> dict[str, Any]:
     normalized = normalize_chain(chain)
     with session_scope() as session:
-        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, visible_owners=visible_owners)
+        row = _ensure_chain_access(
+            session.get(EmailChainRecord, chain_id),
+            owner_username,
+            visible_owners=visible_owners,
+        )
         row.payload = normalized
         row.updated_at = _now()
         session.flush()
@@ -206,7 +235,7 @@ def update_chain(
     owner_username: str,
     *,
     name: str | None = None,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
 ) -> dict[str, Any]:
     if name is None:
         raise ValueError("Не указано название цепочки")
@@ -214,7 +243,11 @@ def update_chain(
     if not trimmed:
         raise ValueError("Укажите название цепочки")
     with session_scope() as session:
-        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, visible_owners=visible_owners)
+        row = _ensure_chain_access(
+            session.get(EmailChainRecord, chain_id),
+            owner_username,
+            visible_owners=visible_owners,
+        )
         row.name = trimmed[:255]
         row.updated_at = _now()
         session.flush()
@@ -225,7 +258,7 @@ def delete_chain(
     chain_id: str,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
 ) -> None:
     with session_scope() as session:
         row = _ensure_chain_access(
@@ -242,10 +275,18 @@ def delete_chain(
         session.flush()
 
 
-def publish_chain(chain_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
+def publish_chain(
+    chain_id: str, owner_username: str, *, visible_owners: Any = OWNER_VISIBILITY_UNSET
+) -> dict[str, Any]:
     with session_scope() as session:
-        row = _ensure_chain_access(session.get(EmailChainRecord, chain_id), owner_username, visible_owners=visible_owners)
-        validation = validate_chain(row.payload if isinstance(row.payload, dict) else empty_chain(), strict=True)
+        row = _ensure_chain_access(
+            session.get(EmailChainRecord, chain_id),
+            owner_username,
+            visible_owners=visible_owners,
+        )
+        validation = validate_chain(
+            row.payload if isinstance(row.payload, dict) else empty_chain(), strict=True
+        )
         if not validation["ok"]:
             raise ValueError("; ".join(validation["errors"]))
         normalized = validation["chain"]
@@ -256,7 +297,9 @@ def publish_chain(chain_id: str, owner_username: str, *, visible_owners: frozens
         return _chain_state(row)
 
 
-def resolve_button_label(edge: dict[str, Any], node_by_id: dict[str, dict[str, Any]]) -> str:
+def resolve_button_label(
+    edge: dict[str, Any], node_by_id: dict[str, dict[str, Any]]
+) -> str:
     """Button text in the parent email matches the target block name."""
     target_id = str(edge.get("target_id") or "")
     target = node_by_id.get(target_id) or {}
@@ -409,7 +452,14 @@ def validate_chain(chain: dict[str, Any], *, strict: bool = False) -> dict[str, 
     }
 
 
-def save_email_chain(campaign_id: str, owner_username: str, chain: dict[str, Any], *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
+def save_email_chain(
+    campaign_id: str,
+    owner_username: str,
+    chain: dict[str, Any],
+    *,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
+) -> dict[str, Any]:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     normalized = normalize_chain(chain)
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
@@ -439,7 +489,13 @@ def save_email_chain(campaign_id: str, owner_username: str, chain: dict[str, Any
         }
 
 
-def load_email_chain(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
+def load_email_chain(
+    campaign_id: str,
+    owner_username: str,
+    *,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
+) -> dict[str, Any]:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
@@ -458,7 +514,13 @@ def load_email_chain(campaign_id: str, owner_username: str, *, visible_owners: f
         }
 
 
-def publish_email_chain(campaign_id: str, owner_username: str, *, visible_owners: frozenset[str] | None = None) -> dict[str, Any]:
+def publish_email_chain(
+    campaign_id: str,
+    owner_username: str,
+    *,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
+) -> dict[str, Any]:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
@@ -479,7 +541,10 @@ def publish_email_chain(campaign_id: str, owner_username: str, *, visible_owners
             draft["email_chain"] = normalized
             camp.draft_payload = draft
         camp.send_scenario = "email_chain"
-        root = next((n for n in normalized["nodes"] if n["id"] == normalized["root_node_id"]), None)
+        root = next(
+            (n for n in normalized["nodes"] if n["id"] == normalized["root_node_id"]),
+            None,
+        )
         if root and root.get("email_template_id"):
             camp.email_template_id = root["email_template_id"]
         camp.updated_at = _now()
@@ -573,16 +638,16 @@ def record_tracked_resource_open(token: str, *, kind: str) -> dict[str, Any]:
             "campaign_id": row.campaign_id,
             "recipient_id": row.recipient_id,
             "source_node_id": row.source_node_id,
-            "template_id": (
-                row.target_node_id if kind == "document" else ""
-            ),
+            "template_id": (row.target_node_id if kind == "document" else ""),
             "target_url": str(row.error or "") if kind == "link" else "",
             "already_opened": already_opened,
             "test_email": row.test_email,
         }
 
 
-def mark_token_sent(token: str, *, error: str | None = None, status: str | None = None) -> None:
+def mark_token_sent(
+    token: str, *, error: str | None = None, status: str | None = None
+) -> None:
     with session_scope() as session:
         row = session.get(CampaignChainToken, token)
         if row is None:
@@ -603,7 +668,11 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
 
     with session_scope() as session:
         campaign = session.get(Campaign, campaign_id)
-        chain = get_email_chain(campaign, session=session) if campaign is not None else empty_chain()
+        chain = (
+            get_email_chain(campaign, session=session)
+            if campaign is not None
+            else empty_chain()
+        )
         tokens = session.scalars(
             select(CampaignChainToken)
             .where(
@@ -612,13 +681,19 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
             )
             .order_by(CampaignChainToken.created_at.asc())
         ).all()
-        recipient_ids = {int(token.recipient_id) for token in tokens if token.recipient_id is not None}
+        recipient_ids = {
+            int(token.recipient_id)
+            for token in tokens
+            if token.recipient_id is not None
+        }
         recipients: dict[int, CampaignRecipient] = {}
         if recipient_ids:
             recipients = {
                 int(recipient.id): recipient
                 for recipient in session.scalars(
-                    select(CampaignRecipient).where(CampaignRecipient.id.in_(recipient_ids))
+                    select(CampaignRecipient).where(
+                        CampaignRecipient.id.in_(recipient_ids)
+                    )
                 ).all()
             }
 
@@ -644,10 +719,14 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
             node_id = str(node.get("id") or "")
             step_links: list[dict[str, Any]] = []
             step_documents: list[dict[str, Any]] = []
-            for edge in (item for item in edges if str(item.get("source_id") or "") == node_id):
+            for edge in (
+                item for item in edges if str(item.get("source_id") or "") == node_id
+            ):
                 edge_id = str(edge.get("id") or "")
                 edge_tokens = tokens_by_edge.get(edge_id, [])
-                clicked_tokens = [token for token in edge_tokens if token.clicked_at is not None]
+                clicked_tokens = [
+                    token for token in edge_tokens if token.clicked_at is not None
+                ]
                 target = node_by_id.get(str(edge.get("target_id") or ""), {})
                 clickers: list[dict[str, Any]] = []
                 seen_recipient_ids: set[int] = set()
@@ -664,11 +743,21 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
                     clickers.append(
                         {
                             "recipient_id": recipient_id,
-                            "row_id": str(recipient.row_index) if recipient is not None else "",
-                            "email": str(recipient.email or "") if recipient is not None else "",
-                            "company": str(recipient.company or "") if recipient is not None else "",
-                            "contact_name": str(recipient.contact_name or "") if recipient is not None else "",
-                            "clicked_at": token.clicked_at.isoformat() if token.clicked_at else "",
+                            "row_id": str(recipient.row_index)
+                            if recipient is not None
+                            else "",
+                            "email": str(recipient.email or "")
+                            if recipient is not None
+                            else "",
+                            "company": str(recipient.company or "")
+                            if recipient is not None
+                            else "",
+                            "contact_name": str(recipient.contact_name or "")
+                            if recipient is not None
+                            else "",
+                            "clicked_at": token.clicked_at.isoformat()
+                            if token.clicked_at
+                            else "",
                         }
                     )
 
@@ -714,7 +803,9 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
                     and str(token.edge_id or "").startswith(TRACKED_CONTENT_EDGE_PREFIX)
                     and str(token.error or "").strip()
                 ):
-                    content_tokens_by_url.setdefault(str(token.error).strip(), []).append(token)
+                    content_tokens_by_url.setdefault(
+                        str(token.error).strip(), []
+                    ).append(token)
             for url, content_tokens in content_tokens_by_url.items():
                 clicked_tokens = [
                     token for token in content_tokens if token.clicked_at is not None
@@ -755,9 +846,7 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
                                 else ""
                             ),
                             "clicked_at": (
-                                token.clicked_at.isoformat()
-                                if token.clicked_at
-                                else ""
+                                token.clicked_at.isoformat() if token.clicked_at else ""
                             ),
                         }
                     )
@@ -823,9 +912,7 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
                                 else ""
                             ),
                             "clicked_at": (
-                                token.clicked_at.isoformat()
-                                if token.clicked_at
-                                else ""
+                                token.clicked_at.isoformat() if token.clicked_at else ""
                             ),
                         }
                     )

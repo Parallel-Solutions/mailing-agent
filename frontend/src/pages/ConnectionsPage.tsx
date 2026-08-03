@@ -1,6 +1,6 @@
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { ModalForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProFormTextArea, ProTable } from '@ant-design/pro-components';
-import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography } from 'antd';
+import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography, type FormInstance } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { connectionsApi } from '@/api/connections';
@@ -34,6 +34,24 @@ const SECURITY_PORTS: Record<SmtpSecurity, number> = {
   tls: 465,
   starttls: 587,
 };
+const IMAP_SECURITY_PORTS: Record<SmtpSecurity, number> = {
+  none: 143,
+  tls: 993,
+  starttls: 143,
+};
+const IMAP_PROVIDER_DEFAULTS: Record<string, {
+  host: string;
+  port: number;
+  security: SmtpSecurity;
+  sentFolder: string;
+}> = {
+  gmail: { host: 'imap.gmail.com', port: 993, security: 'tls', sentFolder: '[Gmail]/Sent Mail' },
+  outlook: { host: 'outlook.office365.com', port: 993, security: 'tls', sentFolder: 'Sent Items' },
+  yandex: { host: 'imap.yandex.ru', port: 993, security: 'tls', sentFolder: 'Отправленные' },
+  mailru: { host: 'imap.mail.ru', port: 993, security: 'tls', sentFolder: 'Отправленные' },
+  custom: { host: '', port: 993, security: 'tls', sentFolder: '' },
+};
+
 
 const PROVIDER_LABELS: Record<ConnectionTransport, string> = {
   smtp: 'SMTP',
@@ -64,6 +82,107 @@ function smtpSecurity(connection: DeliveryConnection): SmtpSecurity {
   if (connection.use_ssl) return 'tls';
   if (connection.use_starttls) return 'starttls';
   return 'none';
+}
+
+function imapSecurity(connection: DeliveryConnection): SmtpSecurity {
+  if (connection.imap_use_ssl) return 'tls';
+  if (connection.imap_use_starttls) return 'starttls';
+  return 'none';
+}
+
+function imapPayload(values: Record<string, unknown>, provider: string) {
+  const defaults = IMAP_PROVIDER_DEFAULTS[provider] || IMAP_PROVIDER_DEFAULTS.custom;
+  const security = (values.imap_security || defaults.security) as SmtpSecurity;
+  return {
+    save_sent_copy: values.save_sent_copy !== false,
+    imap_host: String(values.imap_host || defaults.host || '').trim(),
+    imap_port: Number(values.imap_port || defaults.port),
+    imap_use_ssl: security === 'tls',
+    imap_use_starttls: security === 'starttls',
+    imap_username: String(
+      values.imap_username || values.smtp_username || values.email || '',
+    ).trim(),
+    imap_password: values.imap_password || undefined,
+    imap_sent_folder: String(
+      values.imap_sent_folder || defaults.sentFolder || '',
+    ).trim(),
+  };
+}
+
+function ConnectionImapFields({
+  form,
+  manual,
+  allowSeparatePassword = false,
+}: {
+  form: FormInstance;
+  manual: boolean;
+  allowSeparatePassword?: boolean;
+}) {
+  return (
+    <>
+      <Alert
+        type="info"
+        showIcon
+        message="Сохранять письма в «Отправленные»"
+        description="После успешной SMTP-отправки система сохранит ту же MIME-копию через IMAP. Ошибка IMAP не приведёт к повторной отправке адресату."
+        style={{ marginTop: 16, marginBottom: 16 }}
+      />
+      <ProFormSwitch
+        name="save_sent_copy"
+        label="Сохранять копии отправленных писем"
+      />
+      {manual ? (
+        <>
+          <ProFormText
+            name="imap_username"
+            label="Логин IMAP"
+            tooltip="Обычно совпадает с полным адресом электронной почты."
+          />
+          {allowSeparatePassword ? (
+            <ProFormText.Password
+              name="imap_password"
+              label="Отдельный пароль IMAP"
+              fieldProps={{ autoComplete: 'new-password' }}
+              extra="Оставьте пустым, чтобы использовать пароль или OAuth выбранного SMTP-подключения."
+            />
+          ) : null}
+          <ProFormText
+            name="imap_host"
+            label="IMAP-сервер"
+            placeholder="Например, imap.example.ru"
+          />
+          <ProFormSelect
+            name="imap_security"
+            label="Защита IMAP"
+            options={[
+              { label: 'SSL/TLS — обычно порт 993', value: 'tls' },
+              { label: 'STARTTLS — обычно порт 143', value: 'starttls' },
+              { label: 'Без шифрования — не рекомендуется', value: 'none' },
+            ]}
+            fieldProps={{
+              onChange: (value: SmtpSecurity) => {
+                form.setFieldValue('imap_port', IMAP_SECURITY_PORTS[value]);
+              },
+            }}
+          />
+          <ProFormDigit
+            name="imap_port"
+            label="Порт IMAP"
+            fieldProps={{ min: 1, max: 65535, precision: 0 }}
+          />
+          <ProFormText
+            name="imap_sent_folder"
+            label="Папка отправленных"
+            extra="Можно оставить пустой: система найдёт папку по системному флагу Sent."
+          />
+        </>
+      ) : (
+        <Typography.Text type="secondary">
+          IMAP-сервер и папка будут выбраны автоматически по провайдеру.
+        </Typography.Text>
+      )}
+    </>
+  );
 }
 
 function formatRateLimit(value?: number | null) {
@@ -276,6 +395,12 @@ function EditConnectionAction({
         host: connection.host,
         port: connection.port,
         security: smtpSecurity(connection),
+        save_sent_copy: connection.save_sent_copy ?? true,
+        imap_host: connection.imap_host || '',
+        imap_port: connection.imap_port || 993,
+        imap_security: imapSecurity(connection),
+        imap_username: connection.imap_username || connection.email,
+        imap_sent_folder: connection.imap_sent_folder || '',
         api_base_url: connection.api_base_url,
         password: '',
         api_token: '',
@@ -300,6 +425,7 @@ function EditConnectionAction({
             transport: 'smtp',
             email: values.email,
             ...(isSecretEditing ? { password: values.password } : {}),
+            ...imapPayload(values, connection.provider || 'custom'),
             ...rateLimits,
             ...guardSettings,
           });
@@ -313,6 +439,7 @@ function EditConnectionAction({
             max_per_day: _maxPerDay,
             delivery_error_rate_percent: _deliveryErrorRatePercent,
             warmup_recipients_text: _warmupRecipientsText,
+            imap_security: _imapSecurity,
             ...connectionValues
           } = values;
           await connectionsApi.update(connection.id, {
@@ -325,6 +452,9 @@ function EditConnectionAction({
               : {}),
             ...(isSecretEditing && connection.transport === 'mailopost'
               ? { api_token: values.api_token }
+              : {}),
+            ...(connection.transport === 'smtp'
+              ? imapPayload(values, connection.provider || 'custom')
               : {}),
             ...rateLimits,
             ...guardSettings,
@@ -348,7 +478,8 @@ function EditConnectionAction({
       />
 
       {connection.transport === 'smtp' ? (
-        isOAuth ? (
+        <>
+        {isOAuth ? (
           <Alert
             type="info"
             showIcon
@@ -411,7 +542,9 @@ function EditConnectionAction({
               rules={[{ required: true }]}
             />
           </>
-        )
+        )}
+        <ConnectionImapFields form={editForm} manual />
+        </>
       ) : (
         <>
           {connection.transport === 'mailopost' ? (
@@ -434,7 +567,6 @@ function EditConnectionAction({
               label="ID ключа отправки"
               fieldProps={{ min: 1, precision: 0 }}
               rules={[{ required: true, message: 'Укажите ID ключа отправки RuSender' }]}
-              extra="API-ключ доступа задаётся один раз в RUSENDER_API_KEY на сервере"
             />
           ) : null}
           <ProFormText
@@ -727,6 +859,7 @@ export function ConnectionsPage() {
         use_ssl: settings.use_ssl,
         use_starttls: settings.use_starttls,
         make_default: false,
+        ...imapPayload(form.getFieldsValue(true), settings.provider),
       });
       message.success('Почтовый ящик подключён через OAuth');
       enterLimitsStep(created.id);
@@ -778,6 +911,7 @@ export function ConnectionsPage() {
       rowKey="id"
       loading={isLoading}
       search={false}
+      scroll={{ x: 'max-content' }}
       headerTitle="Подключения отправителей"
       toolBarRender={() => [
         <ModalForm
@@ -863,6 +997,10 @@ export function ConnectionsPage() {
             smtp_username: '',
             security: 'starttls',
             port: 587,
+            save_sent_copy: true,
+            imap_security: 'tls',
+            imap_port: 993,
+            imap_sent_folder: '',
             max_per_hour: 0,
             max_per_day: 0,
             delivery_guard_enabled: false,
@@ -998,6 +1136,7 @@ export function ConnectionsPage() {
               use_ssl: verification.settings.use_ssl,
               use_starttls: verification.settings.use_starttls,
               make_default: false,
+              ...imapPayload(values, verification.settings.provider),
             });
             message.success('Почтовый ящик подключён');
             enterLimitsStep(created.id);
@@ -1276,6 +1415,13 @@ export function ConnectionsPage() {
                       )}
                     </>
                   ) : null}
+                  {authKind ? (
+                    <ConnectionImapFields
+                      form={form}
+                      manual={smtpSetupStage === 'manual'}
+                      allowSeparatePassword={smtpSetupStage === 'manual'}
+                    />
+                  ) : null}
                 </div>
               )}
             </div>
@@ -1322,7 +1468,6 @@ export function ConnectionsPage() {
                       label="ID ключа отправки"
                       fieldProps={{ min: 1, precision: 0 }}
                       rules={[{ required: true, message: 'Укажите ID ключа отправки RuSender' }]}
-                      extra="API-ключ доступа берётся из RUSENDER_API_KEY на сервере"
                     />
                   ) : null}
                   <ProFormText

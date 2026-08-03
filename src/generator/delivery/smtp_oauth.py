@@ -15,6 +15,14 @@ _GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _MICROSOFT_AUTH_URL = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
 _MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+_MICROSOFT_SMTP_SCOPE = (
+    "https://outlook.office.com/SMTP.Send offline_access openid profile email"
+)
+_MICROSOFT_MAIL_SCOPE = (
+    "https://outlook.office.com/SMTP.Send "
+    "https://outlook.office.com/IMAP.AccessAsUser.All "
+    "offline_access openid profile email"
+)
 
 
 @dataclass(frozen=True)
@@ -84,7 +92,7 @@ def build_oauth_authorize_url(*, provider: str, state: str, email: str) -> str:
             "client_id": _microsoft_client_id(),
             "redirect_uri": redirect_uri,
             "response_type": "code",
-            "scope": "https://outlook.office.com/SMTP.Send offline_access openid profile email",
+            "scope": _MICROSOFT_MAIL_SCOPE,
             "state": state,
             "login_hint": email,
         }
@@ -118,13 +126,23 @@ def exchange_oauth_code(*, provider: str, code: str) -> OAuthTokens:
                 "code": code,
                 "grant_type": "authorization_code",
                 "redirect_uri": redirect_uri,
+                "scope": _MICROSOFT_MAIL_SCOPE,
             },
         )
-        return OAuthTokens.from_dict(payload)
+        tokens = OAuthTokens.from_dict(payload)
+        if not tokens.scope:
+            return OAuthTokens(
+                access_token=tokens.access_token,
+                refresh_token=tokens.refresh_token,
+                token_type=tokens.token_type,
+                expires_in=tokens.expires_in,
+                scope=_MICROSOFT_MAIL_SCOPE,
+            )
+        return tokens
     raise ValueError("Неподдерживаемый OAuth-провайдер.")
 
 
-def refresh_oauth_tokens(*, provider: str, refresh_token: str) -> OAuthTokens:
+def refresh_oauth_tokens(*, provider: str, refresh_token: str, scope: str = "") -> OAuthTokens:
     normalized = str(provider or "").strip().lower()
     if normalized == "google":
         payload = _post_form(
@@ -148,6 +166,7 @@ def refresh_oauth_tokens(*, provider: str, refresh_token: str) -> OAuthTokens:
         return tokens
     if normalized == "microsoft":
         tenant = _microsoft_tenant()
+        requested_scope = str(scope or "").strip() or _MICROSOFT_SMTP_SCOPE
         payload = _post_form(
             _MICROSOFT_TOKEN_URL.format(tenant=tenant),
             {
@@ -155,19 +174,17 @@ def refresh_oauth_tokens(*, provider: str, refresh_token: str) -> OAuthTokens:
                 "client_secret": _microsoft_client_secret(),
                 "refresh_token": refresh_token,
                 "grant_type": "refresh_token",
-                "scope": "https://outlook.office.com/SMTP.Send offline_access openid profile email",
+                "scope": requested_scope,
             },
         )
         tokens = OAuthTokens.from_dict(payload)
-        if not tokens.refresh_token:
-            return OAuthTokens(
-                access_token=tokens.access_token,
-                refresh_token=refresh_token,
-                token_type=tokens.token_type,
-                expires_in=tokens.expires_in,
-                scope=tokens.scope,
-            )
-        return tokens
+        return OAuthTokens(
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token or refresh_token,
+            token_type=tokens.token_type,
+            expires_in=tokens.expires_in,
+            scope=tokens.scope or requested_scope,
+        )
     raise ValueError("Неподдерживаемый OAuth-провайдер.")
 
 
