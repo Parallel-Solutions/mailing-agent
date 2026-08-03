@@ -17,7 +17,7 @@ type Props = {
 
 export function KpiGrid({ items, onDrill, loading }: Props) {
   return (
-    <Row gutter={[12, 12]}>
+    <Row gutter={[12, 12]} data-onboarding-id="statistics-summary">
       {items.map((item) => {
         const clickable = Boolean(item.drill && onDrill);
         return (

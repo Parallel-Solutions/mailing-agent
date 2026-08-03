@@ -4,7 +4,6 @@ import { App, Button, Drawer, Space, Table, Upload } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { audiencesApi } from '@/api/audiences';
 import type { Audience } from '@/api/types';
-import { advanceOnboarding } from '@/features/onboarding/events';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { formatLocalDateTime } from '@/utils/dateTime';
 import { statusLabel } from '@/utils/presentation';
@@ -31,7 +30,6 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
       message.success('Аудитория создана');
       void queryClient.invalidateQueries({ queryKey: ['audiences'] });
       pushParams({ audience: audience.id });
-      advanceOnboarding('audience-open');
     },
   });
 
@@ -47,7 +45,6 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
             key="new"
             type="primary"
             icon={<PlusOutlined />}
-            data-onboarding-id="create-audience"
             loading={createMutation.isPending}
             onClick={() => createMutation.mutate()}
           >
@@ -103,14 +100,13 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
                   message.success('Импорт выполнен');
                   void queryClient.invalidateQueries({ queryKey: ['audience-members', selected.id] });
                   void queryClient.invalidateQueries({ queryKey: ['audiences'] });
-                  advanceOnboarding('audience-import', 'campaign-basics');
                   onSuccess?.({});
                 } catch (error) {
                   onError?.(error as Error);
                 }
               }}
             >
-              <Button data-onboarding-id="audience-import">Импорт</Button>
+              <Button>Импорт</Button>
             </Upload>
           ) : null
         }

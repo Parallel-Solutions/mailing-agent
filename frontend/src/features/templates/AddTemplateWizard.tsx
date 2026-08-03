@@ -9,9 +9,7 @@ import type { Template } from '@/api/types';
 import { OperationProgress } from '@/components/OperationProgress';
 import { DEFAULT_VISUAL_EMAIL_HTML } from '@/features/templates/emailConstants';
 import {
-  advanceOnboarding,
-  ONBOARDING_ENTER_EVENT,
-  type OnboardingEnterDetail,
+  useActiveOnboardingStep,
 } from '@/features/onboarding/events';
 import { showDocumentUploadError } from '@/features/templates/documentUploadError';
 import { TemplatePreviewImage } from '@/features/templates/TemplatePreviewImage';
@@ -32,20 +30,15 @@ type Props = {
 
 export function finishTemplateCreation({
   template,
-  fromStepId,
   onClose,
   onCreated,
 }: {
   template: Template;
-  fromStepId: string;
   onClose: () => void;
   onCreated: (template: Template) => void;
 }) {
-  // Close the wizard before either navigation. The onboarding route must be
-  // final while the tour is active; otherwise the editor route stays final.
   onClose();
   onCreated(template);
-  advanceOnboarding(fromStepId, 'audience-open');
 }
 
 const EMAIL_IMPORT_ACCEPT = '.docx,.pdf,.html,.htm,.txt';
@@ -143,6 +136,7 @@ export function AddTemplateWizard({
   onClose,
   onCreated,
 }: Props) {
+  const activeOnboardingStep = useActiveOnboardingStep();
   const { message, modal } = App.useApp();
   const defaultStep: WizardStep = templateType === 'email' ? 'format' : 'gallery';
   const [internalStep, setInternalStep] = useState<WizardStep>(defaultStep);
@@ -201,15 +195,10 @@ export function AddTemplateWizard({
 
   useEffect(() => {
     if (!open) return;
-    const handleOnboardingEnter = (event: Event) => {
-      const { stepId } = (event as CustomEvent<OnboardingEnterDetail>).detail || {};
-      if (stepId === 'template-format') setStep('format');
-      if (stepId === 'template-source') setStep('gallery');
-      if (stepId === 'template-custom') setStep('custom');
-    };
-    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
-    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
-  }, [open, setStep]);
+    if (activeOnboardingStep === 'template-format') setStep('format');
+    if (activeOnboardingStep === 'template-source') setStep('gallery');
+    if (activeOnboardingStep === 'template-custom') setStep('custom');
+  }, [activeOnboardingStep, open, setStep]);
 
   useEffect(() => {
     if (!modelsQuery.data?.length || model) return;
@@ -230,7 +219,6 @@ export function AddTemplateWizard({
       message.success('Шаблон добавлен из примера');
       finishTemplateCreation({
         template,
-        fromStepId: 'template-source',
         onClose,
         onCreated,
       });
@@ -253,7 +241,6 @@ export function AddTemplateWizard({
       );
       finishTemplateCreation({
         template,
-        fromStepId: emailFormat === 'upload' ? 'template-format' : 'template-source',
         onClose,
         onCreated,
       });
@@ -284,7 +271,6 @@ export function AddTemplateWizard({
       message.success('Создан пустой HTML-шаблон');
       finishTemplateCreation({
         template,
-        fromStepId: 'template-source',
         onClose,
         onCreated,
       });
@@ -313,7 +299,6 @@ export function AddTemplateWizard({
       message.success(prompt.trim() ? 'Шаблон сгенерирован' : 'Шаблон создан из файлов');
       finishTemplateCreation({
         template,
-        fromStepId: 'template-custom',
         onClose,
         onCreated,
       });
@@ -424,7 +409,6 @@ export function AddTemplateWizard({
               type="primary"
               onClick={() => {
                 setStep('gallery');
-                advanceOnboarding('template-format');
               }}
             >
               Далее
@@ -454,7 +438,6 @@ export function AddTemplateWizard({
               icon={<PlusOutlined />}
               onClick={() => {
                 setStep('custom');
-                advanceOnboarding('template-source', 'template-custom');
               }}
             >
               Добавить
@@ -572,11 +555,15 @@ export function AddTemplateWizard({
             </Card>
           </div>
         ) : step === 'gallery' ? (
-          <div className="add-template-wizard__gallery" data-onboarding-id="template-source">
+          <div
+            className="add-template-wizard__gallery"
+            data-onboarding-id={templateType === 'document' ? 'document-source' : 'template-source'}
+          >
             {showDocumentGalleryUpload ? (
               <button
                 type="button"
                 className="starter-tile starter-tile--upload"
+                data-onboarding-id="document-upload"
                 disabled={isGalleryBusy}
                 onClick={() => fileInputRef.current?.click()}
               >
@@ -588,6 +575,38 @@ export function AddTemplateWizard({
                   {uploadHint}
                 </Typography.Paragraph>
               </button>
+            ) : null}
+            {showDocumentGalleryUpload ? (
+              <Card
+                size="small"
+                title="Что входит в подготовку документа"
+                data-onboarding-id="document-checklist"
+                style={{ minWidth: 280 }}
+              >
+                <Space direction="vertical" size="small">
+                  <div data-onboarding-id="document-fields">
+                    <Typography.Text strong>Поля и персонализация</Typography.Text>
+                    <br />
+                    <Typography.Text type="secondary">
+                      Реквизиты, контакты, вид работ и другие переменные подставляются для каждого получателя.
+                    </Typography.Text>
+                  </div>
+                  <div data-onboarding-id="document-preview">
+                    <Typography.Text strong>PDF-предпросмотр и вёрстка</Typography.Text>
+                    <br />
+                    <Typography.Text type="secondary">
+                      Перед рассылкой проверяются страницы, шрифты, переносы и расположение полей.
+                    </Typography.Text>
+                  </div>
+                  <div data-onboarding-id="document-chain-use">
+                    <Typography.Text strong>Использование в цепочке</Typography.Text>
+                    <br />
+                    <Typography.Text type="secondary">
+                      Готовый документ прикрепляется к нужному письму в настройках узла цепочки.
+                    </Typography.Text>
+                  </div>
+                </Space>
+              </Card>
             ) : null}
             {filteredStarters.map((starter) => (
               <button

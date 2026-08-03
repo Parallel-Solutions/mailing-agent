@@ -14,14 +14,12 @@ import { ProCard } from '@ant-design/pro-components';
 import { App, Button, Checkbox, Dropdown, Modal, Space, Tabs, Tag, Tooltip, Typography, Upload } from 'antd';
 import type { MenuProps } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { templatesApi } from '@/api/templates';
 import type { Template } from '@/api/types';
 import {
-  advanceOnboarding,
-  ONBOARDING_ENTER_EVENT,
-  type OnboardingEnterDetail,
+  useActiveOnboardingStep,
 } from '@/features/onboarding/events';
 import { AddTemplateWizard, type WizardStep } from '@/features/templates/AddTemplateWizard';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
@@ -325,6 +323,8 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
   const [previewHtml, setPreviewHtml] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkArchiving, setBulkArchiving] = useState(false);
+  const activeOnboardingStep = useActiveOnboardingStep();
+  const previousOnboardingStepRef = useRef<string | null>(null);
   const isFileTemplate = type === 'document';
   const canBulkSelect = type === 'email';
   const { data, isLoading } = useQuery({
@@ -338,27 +338,63 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: ['templates', type] }); };
 
   useEffect(() => {
-    if (type !== 'email') return;
-    const handleOnboardingEnter = (event: Event) => {
-      const { stepId } = (event as CustomEvent<OnboardingEnterDetail>).detail || {};
-      const nextStep: WizardStep | undefined =
-        stepId === 'template-format'
-          ? 'format'
-          : stepId === 'template-source'
-            ? 'gallery'
-            : stepId === 'template-custom'
-              ? 'custom'
-              : undefined;
-      if (!nextStep) return;
-      pushParams({
-        tab: 'email',
-        wizard: '1',
-        wizard_step: nextStep === 'format' ? null : nextStep,
-      });
-    };
-    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
-    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
-  }, [pushParams, type]);
+    const previousStep = previousOnboardingStepRef.current;
+    previousOnboardingStepRef.current = activeOnboardingStep;
+    const stepId = activeOnboardingStep || '';
+
+    if (type === 'document') {
+      const documentSteps = new Set([
+        'document-source',
+        'document-upload',
+        'document-fields',
+        'document-preview',
+        'document-chain-use',
+      ]);
+      if (documentSteps.has(stepId)) {
+        pushParams({ tab: 'document', wizard: '1' }, ['wizard_step']);
+      } else if (
+        stepId === 'template-document'
+        || stepId === 'document-library'
+        || stepId === 'document-add'
+        || stepId === 'document-formats'
+      ) {
+        pushParams({ tab: 'document' }, ['wizard', 'wizard_step']);
+      } else if (previousStep?.startsWith('document-')) {
+        pushParams({}, ['wizard', 'wizard_step']);
+      }
+      return;
+    }
+
+    if (!stepId.startsWith('template-')) {
+      if (!previousStep?.startsWith('template-')) return;
+      pushParams({}, ['wizard', 'wizard_step']);
+      return;
+    }
+
+    if (
+      stepId === 'template-open'
+      || stepId === 'template-library'
+      || stepId === 'template-actions'
+    ) {
+      pushParams({ tab: 'email' }, ['wizard', 'wizard_step']);
+      return;
+    }
+
+    const nextStep: WizardStep | undefined =
+      stepId === 'template-format'
+        ? 'format'
+        : stepId === 'template-source'
+          ? 'gallery'
+          : stepId === 'template-custom'
+            ? 'custom'
+            : undefined;
+    if (!nextStep) return;
+    pushParams({
+      tab: 'email',
+      wizard: '1',
+      wizard_step: nextStep === 'format' ? null : nextStep,
+    });
+  }, [activeOnboardingStep, pushParams, type]);
 
   useEffect(() => {
     if (!previewTemplateId || type !== 'email') {
@@ -435,52 +471,58 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
 
   return (
     <>
-      <div className="template-library-toolbar">
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          data-onboarding-id="add-template"
-          onClick={() => {
-            pushParams({ tab: type, wizard: '1' });
-            advanceOnboarding('template-open');
-          }}
+      <div data-onboarding-id="template-library">
+        <div
+          className="template-library-toolbar"
+          data-onboarding-id={isFileTemplate ? 'document-library-toolbar' : 'template-library-toolbar'}
         >
-          {isFileTemplate ? 'Добавить документ' : 'Добавить письмо'}
-        </Button>
-        {isFileTemplate && (
-          <Typography.Text type="secondary">Форматы: DOCX, PDF, HTML</Typography.Text>
-        )}
-        {canBulkSelect && selectedCount > 0 && (
-          <div className="template-library-bulk">
-            <Typography.Text type="secondary">Выбрано: {selectedCount}</Typography.Text>
-            {!allSelected && (
-              <Button size="small" onClick={selectAll}>
-                Выбрать все
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            data-onboarding-id={isFileTemplate ? 'document-add' : 'add-template'}
+            onClick={() => {
+              pushParams({ tab: type, wizard: '1' });
+            }}
+          >
+            {isFileTemplate ? 'Добавить документ' : 'Добавить письмо'}
+          </Button>
+          {isFileTemplate && (
+            <Typography.Text type="secondary" data-onboarding-id="document-formats">
+              Форматы: DOCX, PDF, HTML
+            </Typography.Text>
+          )}
+          {canBulkSelect && selectedCount > 0 && (
+            <div className="template-library-bulk">
+              <Typography.Text type="secondary">Выбрано: {selectedCount}</Typography.Text>
+              {!allSelected && (
+                <Button size="small" onClick={selectAll}>
+                  Выбрать все
+                </Button>
+              )}
+              <Button size="small" onClick={clearSelection}>
+                Снять
               </Button>
-            )}
-            <Button size="small" onClick={clearSelection}>
-              Снять
-            </Button>
-            <Button danger size="small" loading={bulkArchiving} onClick={archiveSelected}>
-              Удалить выбранные
-            </Button>
-          </div>
-        )}
-      </div>
+              <Button danger size="small" loading={bulkArchiving} onClick={archiveSelected}>
+                Удалить выбранные
+              </Button>
+            </div>
+          )}
+        </div>
 
-      <div className="template-library-grid" aria-busy={isLoading}>
-        {templates.map((template) => (
-          <TemplateCard
-            key={template.id}
-            template={template}
-            type={type}
-            onRefresh={refresh}
-            selectable={canBulkSelect}
-            selected={selectedIds.has(template.id)}
-            onSelectedChange={(selected) => toggleSelected(template.id, selected)}
-            onPreview={(templateId) => pushParams({ tab: 'email', preview: templateId })}
-          />
-        ))}
+        <div className="template-library-grid" aria-busy={isLoading}>
+          {templates.map((template) => (
+            <TemplateCard
+              key={template.id}
+              template={template}
+              type={type}
+              onRefresh={refresh}
+              selectable={canBulkSelect}
+              selected={selectedIds.has(template.id)}
+              onSelectedChange={(selected) => toggleSelected(template.id, selected)}
+              onPreview={(templateId) => pushParams({ tab: 'email', preview: templateId })}
+            />
+          ))}
+        </div>
       </div>
 
       <AddTemplateWizard
@@ -523,7 +565,11 @@ export function TemplatesPage() {
       onChange={(key) => pushParams({ tab: key === 'email' ? null : key }, ['preview', 'wizard', 'wizard_step'])}
       items={[
         { key: 'email', label: 'Шаблон письма', children: <TemplateGrid type="email" /> },
-        { key: 'document', label: 'Документ', children: <TemplateGrid type="document" /> },
+        {
+          key: 'document',
+          label: <span data-onboarding-id="template-document-tab">Документ</span>,
+          children: <TemplateGrid type="document" />,
+        },
       ]}
     />
   );

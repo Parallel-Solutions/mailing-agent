@@ -1,5 +1,5 @@
 import { DeleteOutlined } from '@ant-design/icons';
-import { App, Button, Input, Space, Table } from 'antd';
+import { App, Button, Input, Space, Table, Tag } from 'antd';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { campaignsApi } from '@/api/campaigns';
@@ -70,8 +70,14 @@ export function CampaignsTab() {
 
   const kpis = [
     { title: 'Всего рассылок', value: fmt(summary.total), drill: 'campaigns_all' },
-    { title: 'Активные', value: fmt(summary.active), drill: 'campaigns_active' },
+    { title: 'В работе', value: fmt(summary.running), drill: 'campaigns_active' },
+    { title: 'На паузе', value: fmt(summary.paused), drill: 'campaigns_active' },
     { title: 'Завершённые', value: fmt(summary.completed), drill: 'campaigns_completed' },
+    {
+      title: 'Из них с ошибками',
+      value: fmt(summary.completed_with_errors),
+      drill: 'campaigns_completed',
+    },
     { title: 'Черновики', value: fmt(summary.draft), drill: 'campaigns_draft' },
     { title: 'Запланированные', value: fmt(summary.scheduled), drill: 'campaigns_scheduled' },
     {
@@ -113,7 +119,7 @@ export function CampaignsTab() {
           { title: 'Провайдер', dataIndex: 'provider_label' },
           { title: 'Принято провайдером', dataIndex: 'sent', render: (v) => fmt(v) },
           {
-            title: 'Доставлено',
+            title: <span data-onboarding-id="campaign-delivery-rate-column">Доставлено</span>,
             render: (_, r) => `${fmt(r.delivered)} / ${r.delivery_rate}%`,
           },
           {
@@ -125,7 +131,22 @@ export function CampaignsTab() {
             render: (_, r) => `${fmt(r.clicked)} / ${r.ctr}%`,
           },
           { title: 'Согласия', dataIndex: 'consents', render: (v) => fmt(v) },
-          { title: 'Статус', dataIndex: 'status_label' },
+          {
+            title: <span data-onboarding-id="campaign-status-column">Статус</span>,
+            dataIndex: 'status_label',
+            render: (value, row) => {
+              const colors: Record<string, string> = {
+                draft: 'default',
+                scheduled: 'processing',
+                running: 'success',
+                paused: 'warning',
+                completed: 'blue',
+                completed_with_errors: 'orange',
+                cancelled: 'error',
+              };
+              return <Tag color={colors[String(row.status)] || 'default'}>{String(value || '—')}</Tag>;
+            },
+          },
           {
             title: 'Действия',
             key: 'actions',

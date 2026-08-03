@@ -30,7 +30,7 @@ export function OnboardingSettings() {
         type="info"
         showIcon
         message="Обучение по ai offer"
-        description="Пошаговая подсветка покажет, где заполнить профиль, подключить почту, создать шаблон, аудиторию и первую рассылку."
+        description="Тематические главы подробно показывают подключения, компании, письма и документы, конструктор цепочек, создание рассылки и чтение статистики."
       />
       <Typography.Text>
         Статус: <Tag>{query.data ? statusLabels[query.data.status] : 'Загрузка…'}</Tag>

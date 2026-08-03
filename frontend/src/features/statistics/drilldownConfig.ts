@@ -218,18 +218,18 @@ export const DRILLDOWN_CONFIG: Record<string, DrillConfig> = {
   },
   campaigns_all: { title: 'Все рассылки', source: 'campaigns', columns: CAMPAIGN_COLUMNS, params: {} },
   campaigns_active: {
-    title: 'Активные рассылки',
+    title: 'Рассылки в работе и на паузе',
     source: 'campaigns',
     columns: CAMPAIGN_COLUMNS,
     params: {},
-    filter: (i) => i.status === 'active',
+    filter: (i) => ['running', 'paused'].includes(String(i.status || '')),
   },
   campaigns_completed: {
     title: 'Завершённые рассылки',
     source: 'campaigns',
     columns: CAMPAIGN_COLUMNS,
     params: {},
-    filter: (i) => i.status === 'completed',
+    filter: (i) => ['completed', 'completed_with_errors'].includes(String(i.status || '')),
   },
   campaigns_draft: {
     title: 'Черновики',

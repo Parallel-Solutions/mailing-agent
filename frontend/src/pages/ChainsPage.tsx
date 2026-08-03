@@ -2,9 +2,14 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
 import { App, Button, Empty, Popconfirm, Tag } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { chainsApi, type ChainListItem } from '@/api/chains';
 import { formatLocalDateTime } from '@/utils/dateTime';
+import {
+  useActiveOnboardingStep,
+} from '@/features/onboarding/events';
+import { OnboardingChainPreview } from '@/features/onboarding/OnboardingChainPreview';
 
 type ChainsLocationState = {
   campaignId?: string;
@@ -16,6 +21,9 @@ export function ChainsPage() {
   const campaignId = (location.state as ChainsLocationState | null)?.campaignId;
   const { message } = App.useApp();
   const queryClient = useQueryClient();
+  const [showOnboardingPreview, setShowOnboardingPreview] = useState(false);
+  const activeOnboardingStep = useActiveOnboardingStep();
+  const previousOnboardingStepRef = useRef<string | null>(null);
   const { data, isLoading } = useQuery({
     queryKey: ['chains'],
     queryFn: () => chainsApi.list({ limit: 100 }),
@@ -46,9 +54,33 @@ export function ChainsPage() {
     onError: (error: Error) => message.error(error.message),
   });
 
+  useEffect(() => {
+    const previewSteps = [
+      'chain-builder',
+      'chain-settings',
+      'chain-publish',
+      'chain-name-status',
+      'chain-add-nodes',
+      'chain-email-template',
+      'chain-documents',
+      'chain-transitions',
+      'chain-link-purpose',
+      'chain-save',
+      'chain-publish-button',
+    ];
+    const previousStep = previousOnboardingStepRef.current;
+    previousOnboardingStepRef.current = activeOnboardingStep;
+    if (previewSteps.includes(activeOnboardingStep || '')) {
+      setShowOnboardingPreview(true);
+    } else if (previousStep?.startsWith('chain-')) {
+      setShowOnboardingPreview(false);
+    }
+  }, [activeOnboardingStep]);
+
   return (
     <div data-onboarding-id="chains-overview">
-      <ProTable<ChainListItem>
+      <div data-onboarding-id="chains-list">
+        <ProTable<ChainListItem>
       rowKey="id"
       loading={isLoading}
       search={false}
@@ -59,6 +91,7 @@ export function ChainsPage() {
           type="primary"
           icon={<PlusOutlined />}
           loading={createChain.isPending}
+          data-onboarding-id="create-chain"
           onClick={() => createChain.mutate()}
         >
           Создать цепочку
@@ -72,6 +105,7 @@ export function ChainsPage() {
               type="primary"
               icon={<PlusOutlined />}
               loading={createChain.isPending}
+              data-onboarding-id="create-chain"
               onClick={() => createChain.mutate()}
             >
               Создать цепочку
@@ -133,7 +167,9 @@ export function ChainsPage() {
           ],
         },
       ]}
-      />
+        />
+      </div>
+      <OnboardingChainPreview open={showOnboardingPreview} />
     </div>
   );
 }

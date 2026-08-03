@@ -1,11 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  findVisibleOnboardingSuccessor,
   findVisibleOnboardingTarget,
   isOnboardingRouteActive,
-  resolveAvailableOnboardingStep,
 } from './targeting';
-import type { OnboardingStepDefinition } from './steps';
 
 function renderedRect() {
   return {
@@ -54,88 +51,9 @@ describe('onboarding target selection', () => {
     expect(findVisibleOnboardingTarget('[data-onboarding-id="hidden"]')).toBeUndefined();
   });
 
-  it('skips an unavailable optional branch in the requested direction', () => {
-    const steps: OnboardingStepDefinition[] = [
-      { id: 'first', route: '/', title: '', description: '' },
-      {
-        id: 'optional',
-        route: '/',
-        title: '',
-        description: '',
-        target: '[data-onboarding-id="missing"]',
-        skipIfTargetMissing: true,
-      },
-      { id: 'last', route: '/', title: '', description: '' },
-    ];
-
-    expect(resolveAvailableOnboardingStep(steps, 1, 0)).toBe(2);
-  });
-
-  it('recovers to the next visible target after a modal replaces the page target', () => {
-    const pageButton = markRendered(document.createElement('button'));
-    pageButton.dataset.onboardingId = 'open';
-    const modal = markRendered(document.createElement('div'));
-    modal.className = 'ant-modal-wrap';
-    const modalTarget = markRendered(document.createElement('div'));
-    modalTarget.dataset.onboardingId = 'method';
-    modal.append(modalTarget);
-    document.body.append(pageButton, modal);
-
-    const steps: OnboardingStepDefinition[] = [
-      {
-        id: 'open',
-        route: '/connections',
-        title: '',
-        description: '',
-        target: '[data-onboarding-id="open"]',
-      },
-      {
-        id: 'method',
-        route: '/connections',
-        title: '',
-        description: '',
-        target: '[data-onboarding-id="method"]',
-      },
-    ];
-
-    expect(findVisibleOnboardingSuccessor(steps, 0)).toBe(1);
-  });
-
-  it('does not jump over a required missing target', () => {
-    const visibleTarget = markRendered(document.createElement('div'));
-    visibleTarget.dataset.onboardingId = 'later';
-    document.body.append(visibleTarget);
-
-    const steps: OnboardingStepDefinition[] = [
-      { id: 'current', route: '/', title: '', description: '' },
-      {
-        id: 'required',
-        route: '/',
-        title: '',
-        description: '',
-        target: '[data-onboarding-id="missing"]',
-      },
-      {
-        id: 'later',
-        route: '/',
-        title: '',
-        description: '',
-        target: '[data-onboarding-id="later"]',
-      },
-    ];
-
-    expect(findVisibleOnboardingSuccessor(steps, 0)).toBeUndefined();
-  });
 });
 
 describe('onboarding route matching', () => {
-  it('accepts required query params together with dynamic drawer params', () => {
-    expect(isOnboardingRouteActive('/?tab=audiences', {
-      pathname: '/',
-      search: '?tab=audiences&audience=audience-id',
-    })).toBe(true);
-  });
-
   it('does not mistake another statistics tab for the requested route', () => {
     expect(isOnboardingRouteActive('/?tab=campaign-list', {
       pathname: '/',
