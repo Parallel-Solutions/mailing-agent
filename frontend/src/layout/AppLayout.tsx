@@ -17,11 +17,18 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { onboardingApi } from '@/api/onboarding';
 import type { OnboardingState } from '@/api/types';
 import { OnboardingTour } from '@/features/onboarding/OnboardingTour';
+import {
+  ONBOARDING_CHAPTERS,
+  ONBOARDING_STEPS,
+  type OnboardingChapterId,
+} from '@/features/onboarding/steps';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAuthStore } from '@/stores/authStore';
 import { tokens } from '@/theme/tokens';
 import { APP_TOP_BAR_HEIGHT, AppTopBar } from '@/layout/AppTopBar';
 import '@/layout/AppTopBar.css';
+
+const ONBOARDING_CHAPTER_STORAGE_KEY = 'campaignflow:onboarding-chapter';
 
 export function AppLayout() {
   const location = useLocation();
@@ -31,13 +38,38 @@ export function AppLayout() {
   const { isAppAdmin } = usePermissions();
   const queryClient = useQueryClient();
   const [onboardingSession, setOnboardingSession] = useState(0);
-  const restartOnboarding = useMutation({
-    mutationFn: onboardingApi.restart,
-    onSuccess: (state) => {
+  const [onboardingChapter, setOnboardingChapter] = useState<OnboardingChapterId>();
+  const [onboardingMenuOpen, setOnboardingMenuOpen] = useState(false);
+  const startOnboarding = useMutation({
+    mutationFn: (chapterId: OnboardingChapterId) => {
+      const chapter = ONBOARDING_CHAPTERS.find((item) => item.id === chapterId);
+      const firstStepIndex = ONBOARDING_STEPS.findIndex(
+        (step) => step.id === chapter?.stepIds[0],
+      );
+      const currentState = queryClient.getQueryData<OnboardingState>(['onboarding']);
+      return onboardingApi.update({
+        status: 'active',
+        current_step: Math.max(0, firstStepIndex),
+        completed_steps: currentState?.completed_steps ?? [],
+      });
+    },
+    onSuccess: (state, chapterId) => {
       queryClient.setQueryData<OnboardingState>(['onboarding'], state);
+      window.sessionStorage.setItem(ONBOARDING_CHAPTER_STORAGE_KEY, chapterId);
+      setOnboardingChapter(chapterId);
       setOnboardingSession((current) => current + 1);
     },
   });
+  const onboardingChapters = ONBOARDING_CHAPTERS.filter(
+    (chapter) => chapter.id !== 'companies' || isAppAdmin,
+  );
+
+  const launchOnboarding = (chapterId: OnboardingChapterId) => {
+    const chapter = ONBOARDING_CHAPTERS.find((item) => item.id === chapterId);
+    if (!chapter) return;
+    navigate(chapter.entryRoute);
+    startOnboarding.mutate(chapterId);
+  };
 
   const routes: ProLayoutProps['route'] = {
     path: '/',
@@ -106,13 +138,35 @@ export function AppLayout() {
         }}
         actionsRender={() => [
           <Tooltip title="Запустить обучение" key="onboarding">
-            <Button
-              type="text"
-              aria-label="Запустить обучение"
-              icon={<QuestionCircleOutlined />}
-              loading={restartOnboarding.isPending}
-              onClick={() => restartOnboarding.mutate()}
-            />
+            <Dropdown
+              trigger={['click']}
+              open={onboardingMenuOpen}
+              onOpenChange={setOnboardingMenuOpen}
+              menu={{
+                items: onboardingChapters.map((chapter) => ({
+                  key: chapter.id,
+                  label: (
+                    <div>
+                      <div>{chapter.title}</div>
+                      <div style={{ color: tokens.secondaryText, fontSize: 12 }}>
+                        {chapter.description}
+                      </div>
+                    </div>
+                  ),
+                })),
+                onClick: ({ key }) => {
+                  setOnboardingMenuOpen(false);
+                  launchOnboarding(key as OnboardingChapterId);
+                },
+              }}
+            >
+              <Button
+                type="text"
+                aria-label="Запустить обучение"
+                icon={<QuestionCircleOutlined />}
+                loading={startOnboarding.isPending}
+              />
+            </Dropdown>
           </Tooltip>,
         ]}
       >
@@ -120,7 +174,7 @@ export function AppLayout() {
           <Outlet />
         </PageContainer>
       </ProLayout>
-      <OnboardingTour key={onboardingSession} />
+      <OnboardingTour key={onboardingSession} chapterId={onboardingChapter} />
     </div>
   );
 }

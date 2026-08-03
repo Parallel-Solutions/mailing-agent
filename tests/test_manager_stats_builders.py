@@ -317,6 +317,7 @@ class CampaignsTests(unittest.TestCase):
         with unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs", return_value=rows), \
              unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=[]), \
              unittest.mock.patch.object(manager_stats, "_campaign_status", return_value="completed"), \
+             unittest.mock.patch.object(manager_stats, "_load_campaign_statuses", return_value={}), \
              unittest.mock.patch.object(manager_stats, "_campaign_period", return_value=("2026-05-01", "2026-05-02")), \
              unittest.mock.patch.object(manager_stats, "_campaign_metadata", return_value={"title": "Кампания"}):
             result = build_campaigns(StatsFilters(job_ids=("job-1",)))
@@ -328,6 +329,52 @@ class CampaignsTests(unittest.TestCase):
         self.assertEqual(campaign["sent"], 2)
         self.assertIn("delivery_rate", campaign)
         self.assertIn("open_rate", campaign)
+        self.assertEqual(campaign["period_label"], "01.05.2026 — 02.05.2026")
+
+    def test_campaignflow_status_is_used_instead_of_stale_sender_state(self) -> None:
+        with unittest.mock.patch(
+            "src.campaigns.service.get_campaign_by_job_id",
+            return_value={"status": "completed_with_errors"},
+        ), unittest.mock.patch.object(
+            manager_stats,
+            "_load_sender_state",
+            return_value={"status": "idle", "mode": "dry_run"},
+        ):
+            self.assertEqual(
+                manager_stats._campaign_status("job-current"),
+                "completed_with_errors",
+            )
+
+    def test_campaign_title_search_does_not_filter_delivery_rows(self) -> None:
+        rows = [
+            _delivery_row("job-1", "1", "ООО Получатель", "a@x.ru", "rusender", "delivered"),
+        ]
+        with unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs", return_value=rows), \
+             unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=[]), \
+             unittest.mock.patch.object(manager_stats, "_load_campaign_statuses", return_value={}), \
+             unittest.mock.patch.object(manager_stats, "_campaign_status", return_value="completed"), \
+             unittest.mock.patch.object(manager_stats, "_campaign_period", return_value=("2026-05-01", "2026-05-01")), \
+             unittest.mock.patch.object(manager_stats, "_campaign_metadata", return_value={"title": "Весенняя рассылка"}):
+            result = build_campaigns(StatsFilters(job_ids=("job-1",), q="весенняя"))
+
+        self.assertEqual(len(result["campaigns"]), 1)
+        self.assertEqual(result["campaigns"][0]["sent"], 1)
+
+    def test_period_and_provider_filters_hide_campaigns_without_matching_sends(self) -> None:
+        rows = [
+            _delivery_row("job-1", "1", "Орг1", "a@x.ru", "rusender", "delivered"),
+        ]
+        with unittest.mock.patch.object(manager_stats, "_load_delivery_for_jobs", return_value=rows), \
+             unittest.mock.patch.object(manager_stats, "_load_consents_for_jobs", return_value=[]), \
+             unittest.mock.patch.object(manager_stats, "_load_campaign_statuses", return_value={}), \
+             unittest.mock.patch.object(manager_stats, "_campaign_status", return_value="completed"), \
+             unittest.mock.patch.object(manager_stats, "_campaign_metadata", return_value={"title": "Кампания"}):
+            result = build_campaigns(
+                StatsFilters(job_ids=("job-1",), providers=("smtp",)),
+            )
+
+        self.assertEqual(result["campaigns"], [])
+        self.assertEqual(result["summary"]["total"], 0)
 
 
 class CampaignAnalyticsTests(unittest.TestCase):

@@ -11,8 +11,8 @@ from src.infra.db import session_scope
 from src.infra.models import UserOnboardingState
 
 
-ONBOARDING_VERSION = 5
-ONBOARDING_STEP_COUNT = 24
+ONBOARDING_VERSION = 8
+ONBOARDING_STEP_COUNT = 85
 ONBOARDING_STATUSES = {"active", "paused", "dismissed", "completed"}
 
 

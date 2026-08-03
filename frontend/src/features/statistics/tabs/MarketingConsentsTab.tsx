@@ -80,18 +80,20 @@ export function MarketingConsentsTab() {
 
   return (
     <div>
-      <Input.Search
-        allowClear
-        placeholder="Поиск по email или компании"
-        style={{ maxWidth: 360 }}
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
+      <div data-onboarding-id="statistics-consents-summary">
+        <Input.Search
+          allowClear
+          placeholder="Поиск по email или компании"
+          style={{ maxWidth: 360 }}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
 
-      <Typography.Title level={5} style={{ marginTop: 24 }}>
-        Подписались
-      </Typography.Title>
-      <KpiGrid items={subscribeKpis} loading={subscribesQuery.isLoading} />
+        <Typography.Title level={5} style={{ marginTop: 24 }}>
+          Подписались
+        </Typography.Title>
+        <KpiGrid items={subscribeKpis} loading={subscribesQuery.isLoading} />
+      </div>
       <Card size="small" style={{ marginTop: 16 }}>
         <Table
           loading={subscribesQuery.isLoading}

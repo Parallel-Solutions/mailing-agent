@@ -19,24 +19,26 @@ export function CampaignWizardSenderStep({
 }: Props) {
   return (
     <ProForm form={form} submitter={false} initialValues={draft} onValuesChange={(_, values) => onAutosave(values)}>
-      <ProFormSelect
-        name="smtp_mailbox_id"
-        label="Подключение отправителя"
-        placeholder="Выберите SMTP, RuSender или MailoPost"
-        options={mailboxes.map((m) => ({
-          label: `${m.transport === 'smtp' ? 'SMTP' : m.transport === 'rusender' ? 'RuSender' : 'MailoPost'} · ${m.email}${m.is_default ? ' (по умолчанию)' : ''}`,
-          value: m.id,
-        }))}
-        fieldProps={{
-          onChange: (value: string) => {
-            const connection = mailboxes.find((item) => item.id === value);
-            if (!connection) return;
-            form.setFieldValue('transport', connection.transport);
-            onAutosave({ smtp_mailbox_id: value, transport: connection.transport });
-          },
-        }}
-        rules={[{ required: true, message: 'Выберите подключение отправителя' }]}
-      />
+      <div data-onboarding-id="campaign-sender-connection">
+        <ProFormSelect
+          name="smtp_mailbox_id"
+          label="Подключение отправителя"
+          placeholder="Выберите SMTP, RuSender или MailoPost"
+          options={mailboxes.map((m) => ({
+            label: `${m.transport === 'smtp' ? 'SMTP' : m.transport === 'rusender' ? 'RuSender' : 'MailoPost'} · ${m.email}${m.is_default ? ' (по умолчанию)' : ''}`,
+            value: m.id,
+          }))}
+          fieldProps={{
+            onChange: (value: string) => {
+              const connection = mailboxes.find((item) => item.id === value);
+              if (!connection) return;
+              form.setFieldValue('transport', connection.transport);
+              onAutosave({ smtp_mailbox_id: value, transport: connection.transport });
+            },
+          }}
+          rules={[{ required: true, message: 'Выберите подключение отправителя' }]}
+        />
+      </div>
       <ProFormSelect
         name="transport"
         label="Способ отправки"

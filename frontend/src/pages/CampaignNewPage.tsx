@@ -21,7 +21,9 @@ import {
   isMappingRelatedMessage,
   type CampaignWizardStepIndex,
 } from '@/features/campaigns/campaignStepValidation';
-import { ONBOARDING_ENTER_EVENT } from '@/features/onboarding/events';
+import {
+  useActiveOnboardingStep,
+} from '@/features/onboarding/events';
 import '@/features/campaigns/CampaignWizardSteps.css';
 import { RecipientGenerateModal } from '@/features/campaigns/RecipientGenerateModal';
 import { ChainEmailPreviewModal } from '@/features/campaigns/ChainEmailPreviewModal';
@@ -67,10 +69,25 @@ const CAMPAIGN_MODAL_KEYS = ['modal', 'fix_step', 'preview_node'] as const;
 
 const ONBOARDING_CAMPAIGN_STEPS: Record<string, number> = {
   'campaign-basics': 0,
+  'campaign-name': 0,
+  'campaign-chain': 0,
+  'campaign-company': 0,
+  'campaign-work-type': 0,
   'campaign-sender': 1,
+  'campaign-sender-connection': 1,
   'campaign-recipients': 2,
+  'campaign-audience': 2,
+  'campaign-recipient-sources': 2,
+  'campaign-recipient-check': 2,
   'campaign-schedule': 3,
+  'campaign-batch-size': 3,
+  'campaign-start-at': 3,
+  'campaign-interval': 3,
+  'campaign-schedule-preview': 3,
   'campaign-launch': 4,
+  'campaign-launch-checks': 4,
+  'campaign-test-email': 4,
+  'campaign-start': 4,
 };
 
 type CampaignModalKind = 'generate' | 'mapping' | 'preview' | 'layout' | 'fix';
@@ -79,6 +96,7 @@ export function CampaignNewPage() {
   const [params] = useSearchParams();
   const { pushParams, replaceParams } = useUrlNavigation();
   const existingId = params.get('id');
+  const isOnboardingPreview = params.get('onboarding') === '1';
   const emailChainIdParam = params.get('email_chain_id');
   const step = readIntParam(params, 'step', 0, 0, 4);
   const modalKind = params.get('modal') as CampaignModalKind | null;
@@ -112,6 +130,7 @@ export function CampaignNewPage() {
   const hydratedIdRef = useRef<string | null>(null);
   const companyAutoSetRef = useRef<string | null>(null);
   const suppressAutosaveRef = useRef(false);
+  const activeOnboardingStep = useActiveOnboardingStep();
 
   const setWizardStep = useCallback(
     (nextStep: number) => {
@@ -121,14 +140,11 @@ export function CampaignNewPage() {
   );
 
   useEffect(() => {
-    const handleOnboardingEnter = (event: Event) => {
-      const stepId = (event as CustomEvent<{ stepId?: string }>).detail?.stepId;
-      const campaignStep = stepId ? ONBOARDING_CAMPAIGN_STEPS[stepId] : undefined;
-      if (campaignStep !== undefined) setWizardStep(campaignStep);
-    };
-    window.addEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
-    return () => window.removeEventListener(ONBOARDING_ENTER_EVENT, handleOnboardingEnter);
-  }, [setWizardStep]);
+    const campaignStep = activeOnboardingStep
+      ? ONBOARDING_CAMPAIGN_STEPS[activeOnboardingStep]
+      : undefined;
+    if (campaignStep !== undefined) setWizardStep(campaignStep);
+  }, [activeOnboardingStep, setWizardStep]);
 
   const openWizardModal = useCallback(
     (kind: CampaignModalKind, extra: Record<string, string | null | undefined> = {}) => {
@@ -151,6 +167,8 @@ export function CampaignNewPage() {
   });
 
   useEffect(() => {
+    if (isOnboardingPreview) return;
+
     if (existingId) {
       setCampaignId(existingId);
       void campaignsApi.get(existingId).then((camp) => {
@@ -162,9 +180,9 @@ export function CampaignNewPage() {
       createMutation.mutate();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [existingId]);
+  }, [existingId, isOnboardingPreview]);
 
-  const id = existingId || campaignId;
+  const id = isOnboardingPreview ? undefined : (existingId || campaignId);
 
   useEffect(() => {
     if (!id || !emailChainIdParam) return;
@@ -728,6 +746,7 @@ export function CampaignNewPage() {
           />
 
           <Collapse
+            data-onboarding-id="campaign-wizard"
             accordion
             activeKey={String(step)}
             collapsible={wizardLocked ? 'disabled' : undefined}
@@ -741,7 +760,11 @@ export function CampaignNewPage() {
             items={[
               {
                 key: '0',
-                label: 'Основная информация',
+                label: (
+                  <span data-onboarding-id="campaign-step-basics-label">
+                    Основная информация
+                  </span>
+                ),
                 children: (
                   <div data-onboarding-id="campaign-step-basics">
                     <CampaignWizardBasicsStep
@@ -768,7 +791,11 @@ export function CampaignNewPage() {
               },
               {
                 key: '1',
-                label: 'Отправитель',
+                label: (
+                  <span data-onboarding-id="campaign-step-sender-label">
+                    Отправитель
+                  </span>
+                ),
                 children: (
                   <div data-onboarding-id="campaign-step-sender">
                     <CampaignWizardSenderStep
@@ -783,7 +810,11 @@ export function CampaignNewPage() {
               },
               {
                 key: '2',
-                label: 'Получатели',
+                label: (
+                  <span data-onboarding-id="campaign-step-recipients-label">
+                    Получатели
+                  </span>
+                ),
                 children: (
                   <div data-onboarding-id="campaign-step-recipients">
                     <CampaignWizardRecipientsStep
@@ -813,7 +844,11 @@ export function CampaignNewPage() {
               },
               {
                 key: '3',
-                label: 'Расписание',
+                label: (
+                  <span data-onboarding-id="campaign-step-schedule-label">
+                    Расписание
+                  </span>
+                ),
                 children: (
                   <div data-onboarding-id="campaign-step-schedule">
                     <CampaignWizardScheduleStep
@@ -838,11 +873,29 @@ export function CampaignNewPage() {
               },
               {
                 key: '4',
-
-                label: 'Проверка и запуск',
+                label: (
+                  <span data-onboarding-id="campaign-step-launch-label">
+                    Проверка и запуск
+                  </span>
+                ),
                 children: (
                   <Space direction="vertical" style={{ width: '100%' }} data-onboarding-id="campaign-step-launch">
-                    {launchValidation.isChecking ? (
+                    {isOnboardingPreview ? (
+                      <>
+                        <Alert
+                          data-onboarding-id="campaign-launch-checks"
+                          type="info"
+                          showIcon
+                          message="Демонстрационный режим"
+                          description="Здесь появятся результаты проверки, предупреждения и ошибки. Во время обучения проверка и запуск не выполняются."
+                        />
+                        <Space wrap data-onboarding-id="campaign-launch-actions">
+                          <Button disabled data-onboarding-id="campaign-test-email">Тестовое письмо</Button>
+                          <Button disabled>Подтвердить сопоставление</Button>
+                          <Button type="primary" disabled data-onboarding-id="campaign-start">Старт</Button>
+                        </Space>
+                      </>
+                    ) : launchValidation.isChecking ? (
                       <Spin tip="Проверка…" />
                     ) : launchValidation.error ? (
                       <Alert type="error" showIcon message="Не удалось выполнить проверку" description={launchValidation.error} />

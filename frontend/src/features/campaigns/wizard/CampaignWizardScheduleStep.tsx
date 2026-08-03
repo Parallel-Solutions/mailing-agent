@@ -31,15 +31,20 @@ export function CampaignWizardScheduleStep({
         await onValuesChange(values as ScheduleFormValues);
       }}
     >
-      <ProFormDigit name="batch_size" label="Размер пакета" min={1} fieldProps={{ precision: 0 }} />
-      <ProFormDateTimePicker
-        name="start_at"
-        label="Дата и время старта"
-        rules={[{ required: true, message: 'Укажите дату и время старта' }]}
-        fieldProps={{ style: { width: '100%' }, format: 'DD.MM.YYYY HH:mm' }}
-      />
-      <Form.Item label="Интервал между пакетами" required>
-        <Space align="start">
+      <div data-onboarding-id="campaign-batch-size">
+        <ProFormDigit name="batch_size" label="Размер пакета" min={1} fieldProps={{ precision: 0 }} />
+      </div>
+      <div data-onboarding-id="campaign-start-at">
+        <ProFormDateTimePicker
+          name="start_at"
+          label="Дата и время старта"
+          rules={[{ required: true, message: 'Укажите дату и время старта' }]}
+          fieldProps={{ style: { width: '100%' }, format: 'DD.MM.YYYY HH:mm' }}
+        />
+      </div>
+      <div data-onboarding-id="campaign-interval">
+        <Form.Item label="Интервал между пакетами" required>
+          <Space align="start">
           <ProFormDigit
             name="interval_value"
             min={1}
@@ -58,14 +63,17 @@ export function CampaignWizardScheduleStep({
             rules={[{ required: true }]}
             formItemProps={{ style: { marginBottom: 0 } }}
           />
-        </Space>
-      </Form.Item>
-      <Typography.Text>
-        Прогноз: {batchCountPreview} пакетов
-        {estimatedDurationHours && estimatedDurationHours > 0
-          ? `, длительность ≈ ${estimatedDurationHours} ч`
-          : ''}
-      </Typography.Text>
+          </Space>
+        </Form.Item>
+      </div>
+      <div data-onboarding-id="campaign-schedule-preview">
+        <Typography.Text>
+          Прогноз: {batchCountPreview} пакетов
+          {estimatedDurationHours && estimatedDurationHours > 0
+            ? `, длительность ≈ ${estimatedDurationHours} ч`
+            : ''}
+        </Typography.Text>
+      </div>
     </ProForm>
   );
 }

@@ -25,7 +25,7 @@ vi.mock('@ant-design/pro-components', () => ({
 
 vi.mock('@/api/onboarding', () => ({
   onboardingApi: {
-    restart: vi.fn(),
+    update: vi.fn(),
   },
 }));
 
@@ -53,14 +53,14 @@ vi.mock('@/stores/authStore', () => ({
 }));
 
 describe('global onboarding launcher', () => {
-  it('remounts the tour after a successful restart', async () => {
+  it('opens the chapter menu and remounts the selected tour', async () => {
     tourTracker.mounts = 0;
-    vi.mocked(onboardingApi.restart).mockResolvedValue({
-      version: 5,
+    vi.mocked(onboardingApi.update).mockResolvedValue({
+      version: 8,
       status: 'active',
       current_step: 0,
       completed_steps: [],
-      step_count: 24,
+      step_count: 85,
       available: true,
       paused_at: null,
       dismissed_at: null,
@@ -85,10 +85,15 @@ describe('global onboarding launcher', () => {
 
     expect(screen.getByTestId('onboarding-tour')).toHaveTextContent('tour-1');
     fireEvent.click(screen.getByRole('button', { name: 'Запустить обучение' }));
+    fireEvent.click(await screen.findByText('Общее обучение'));
 
     await waitFor(() => {
       expect(screen.getByTestId('onboarding-tour')).toHaveTextContent('tour-2');
     });
-    expect(onboardingApi.restart).toHaveBeenCalledOnce();
+    expect(onboardingApi.update).toHaveBeenCalledWith({
+      status: 'active',
+      current_step: 0,
+      completed_steps: [],
+    });
   });
 });

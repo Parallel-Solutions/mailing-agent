@@ -1097,14 +1097,66 @@ def _apply_recipient_filters(rows: list[dict[str, Any]], filters: StatsFilters) 
     return result
 
 
-def _campaign_status(job_id: str) -> str:
+CAMPAIGN_STATUS_LABELS: dict[str, str] = {
+    "draft": "Черновик",
+    "scheduled": "Запланирована",
+    "running": "В работе",
+    "paused": "На паузе",
+    "completed": "Завершена",
+    "completed_with_errors": "Завершена с ошибками",
+    "cancelled": "Отменена",
+}
+
+
+def _load_campaign_statuses(job_ids: tuple[str, ...]) -> dict[str, str]:
+    if not job_ids:
+        return {}
+
+    from sqlalchemy import select
+
+    from src.infra.db import session_scope
+    from src.infra.models import Campaign
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(Campaign.job_id, Campaign.status).where(Campaign.job_id.in_(job_ids))
+        ).all()
+    return {
+        _safe_text(job_id): _safe_text(status).lower()
+        for job_id, status in rows
+        if _safe_text(job_id) and _safe_text(status).lower() in CAMPAIGN_STATUS_LABELS
+    }
+
+
+def _campaign_status(
+    job_id: str,
+    *,
+    known_status: str = "",
+    campaign_lookup_done: bool = False,
+) -> str:
+    # CampaignFlow keeps the authoritative lifecycle in the campaigns table.
+    # Sender state is only a legacy fallback and often remains ``idle`` for
+    # campaigns delivered by the batch worker, which previously made completed
+    # campaigns appear as drafts in statistics.
+    campaign_status = _safe_text(known_status).lower()
+    if campaign_status in CAMPAIGN_STATUS_LABELS:
+        return campaign_status
+
+    if not campaign_lookup_done:
+        from src.campaigns.service import get_campaign_by_job_id
+
+        campaign = get_campaign_by_job_id(job_id)
+        campaign_status = _safe_text((campaign or {}).get("status")).lower()
+        if campaign_status in CAMPAIGN_STATUS_LABELS:
+            return campaign_status
+
     sender_state = _load_sender_state(job_id)
     status = _safe_text(sender_state.get("status")) or "idle"
     mode = _safe_text(sender_state.get("mode")) or "dry_run"
     if status == "scheduled":
         return "scheduled"
     if status == "running":
-        return "active"
+        return "running"
     if status in {"completed", "stopped", "error"} and mode == "send":
         return "completed"
     return "draft"
@@ -1121,6 +1173,20 @@ def _campaign_period(job_id: str, rows: list[dict[str, Any]]) -> tuple[str, str]
     start = min(sent_times).date().isoformat()
     end = max(sent_times).date().isoformat()
     return start, end
+
+
+def _campaign_period_label(period_from: str, period_to: str) -> str:
+    def _format(value: str) -> str:
+        try:
+            return datetime.fromisoformat(value).strftime("%d.%m.%Y")
+        except (TypeError, ValueError):
+            return value
+
+    if not period_from and not period_to:
+        return ""
+    if not period_to or period_from == period_to:
+        return _format(period_from or period_to)
+    return f"{_format(period_from)} — {_format(period_to)}"
 
 
 def _aggregate_counts(rows: list[dict[str, Any]], consent_rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -1357,12 +1423,31 @@ def build_manager_dashboard(filters: StatsFilters, *, refresh: bool = False) -> 
 
 def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
     campaigns: list[dict[str, Any]] = []
-    totals = {"total": 0, "active": 0, "completed": 0, "draft": 0, "scheduled": 0}
+    totals = {
+        "total": 0,
+        "active": 0,
+        "running": 0,
+        "paused": 0,
+        "completed": 0,
+        "completed_with_errors": 0,
+        "cancelled": 0,
+        "draft": 0,
+        "scheduled": 0,
+    }
     delivery_rates: list[float] = []
     open_rates: list[float] = []
     # Load and filter everything once, then group by job in memory instead of
     # re-reading each job (DB + provider files) inside the loop.
-    all_rows = _apply_recipient_filters(_load_companies_for_jobs(filters.job_ids), filters)
+    # ``q`` on this endpoint searches campaign titles, not recipient/company
+    # fields. Applying it to delivery rows used to zero otherwise matching
+    # campaigns and made the table look inconsistent with the campaign picker.
+    row_filters = StatsFilters(
+        job_ids=filters.job_ids,
+        period_from=filters.period_from,
+        period_to=filters.period_to,
+        providers=filters.providers,
+    )
+    all_rows = _apply_recipient_filters(_load_companies_for_jobs(filters.job_ids), row_filters)
     all_consents = _load_company_consents_for_jobs(filters.job_ids)
     rows_by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in all_rows:
@@ -1370,19 +1455,37 @@ def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
     consents_by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in all_consents:
         consents_by_job[_safe_text(row.get("job_id"))].append(row)
+    campaign_statuses = _load_campaign_statuses(filters.job_ids)
     for job_id in filters.job_ids:
         rows = rows_by_job.get(job_id, [])
         consent_rows = consents_by_job.get(job_id, [])
+        campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows)
+        if filters.q and filters.q.casefold() not in _safe_text(campaign["title"]).casefold():
+            continue
+        # Period/provider filters describe actual sends. A campaign without a
+        # matching delivery row must not remain in the filtered table as a row
+        # full of zeroes.
+        if (filters.period_from or filters.period_to or filters.providers) and not rows:
+            continue
+
         counts = _aggregate_counts(rows, consent_rows)
-        status = _campaign_status(job_id)
+        status = _campaign_status(
+            job_id,
+            known_status=campaign_statuses.get(job_id, ""),
+            campaign_lookup_done=True,
+        )
         totals["total"] += 1
-        totals[status] += 1
+        if status in totals:
+            totals[status] += 1
+        if status in {"running", "paused"}:
+            totals["active"] += 1
+        if status == "completed_with_errors":
+            totals["completed"] += 1
         delivery_rate = _pct(counts["delivered"], counts["sent"])
         open_rate = _pct(counts["opened"], counts["delivered"] or counts["sent"])
         if counts["sent"]:
             delivery_rates.append(delivery_rate)
             open_rates.append(open_rate)
-        campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows)
         period_from, period_to = _campaign_period(job_id, rows)
         provider_counter = Counter(_safe_text(row.get("provider")) or "unknown" for row in rows)
         provider_key = provider_counter.most_common(1)[0][0] if provider_counter else ""
@@ -1392,7 +1495,7 @@ def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
                 "title": campaign["title"],
                 "period_from": period_from,
                 "period_to": period_to,
-                "period_label": f"{period_from} — {period_to}" if period_from and period_to else "",
+                "period_label": _campaign_period_label(period_from, period_to),
                 "provider": provider_key,
                 "provider_label": _provider_label(provider_key),
                 "sent": counts["sent"],
@@ -1404,12 +1507,7 @@ def build_campaigns(filters: StatsFilters) -> dict[str, Any]:
                 "open_rate": open_rate,
                 "ctr": _pct(counts["clicked"], counts["sent"]),
                 "status": status,
-                "status_label": {
-                    "active": "Активна",
-                    "completed": "Завершена",
-                    "draft": "Черновик",
-                    "scheduled": "Запланирована",
-                }[status],
+                "status_label": CAMPAIGN_STATUS_LABELS.get(status, status or "—"),
             }
         )
     campaigns.sort(key=lambda item: item.get("period_to") or "", reverse=True)
