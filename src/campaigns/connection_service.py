@@ -30,7 +30,6 @@ from src.generator.delivery.smtp_oauth import OAuthTokens
 from src.infra.db import session_scope
 from src.infra.models import Campaign, Company, SmtpMailbox
 from src.security.company_access import (
-    TEMPORARY_GLOBAL_ORGANIZATION_ACCESS,
     apply_owner_filter,
     can_access_owner,
 )
@@ -42,6 +41,18 @@ API_PROVIDERS = {"rusender", "mailopost"}
 SUPPORTED_TRANSPORTS = {"smtp", *API_PROVIDERS}
 MAILRU_HOST = "smtp.mail.ru"
 MAILRU_PORT = 465
+
+_CONNECTION_VISIBILITY_UNSET = object()
+
+
+def _effective_connection_visibility(
+    owner_username: str,
+    visible_owners: Any,
+) -> frozenset[str] | None:
+    if visible_owners is _CONNECTION_VISIBILITY_UNSET:
+        return frozenset({owner_username})
+    return visible_owners
+
 
 
 @dataclass(frozen=True)
@@ -230,7 +241,12 @@ def _apply_guard_settings_and_public(connection_id: str, data: dict[str, Any]) -
         return _public_connection(row)
 
 
-def list_connections(owner_username: str, *, visible_owners: frozenset[str] | None = None) -> list[dict[str, Any]]:
+def list_connections(
+    owner_username: str,
+    *,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
+) -> list[dict[str, Any]]:
+    visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
         stmt = select(SmtpMailbox).order_by(SmtpMailbox.is_default.desc(), SmtpMailbox.created_at.asc())
         stmt = apply_owner_filter(stmt, SmtpMailbox.owner_username, visible_owners)
@@ -383,14 +399,16 @@ def update_connection(
     owner_username: str,
     data: dict[str, Any],
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
 ) -> dict[str, Any]:
+    visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
             raise LookupError("Подключение не найдено.")
         transport = connection_transport(row)
         provider = row.provider
+        target_owner = row.owner_username
 
     requested_transport = _safe_text(data.get("transport") or transport).lower()
     if requested_transport != transport:
@@ -415,7 +433,7 @@ def update_connection(
                 )
             mailbox = update_mailbox(
                 connection_id,
-                owner_username=owner_username,
+                owner_username=target_owner,
                 provider="mailru",
                 email=email,
                 password=_safe_text(data.get("password")) or None,
@@ -431,7 +449,7 @@ def update_connection(
             return _apply_guard_settings_and_public(mailbox["id"], data)
         mailbox = update_mailbox(
             connection_id,
-            owner_username=owner_username,
+            owner_username=target_owner,
             provider=provider,
             email=data.get("email"),
             password=_safe_text(data.get("password")) or None,
@@ -489,8 +507,9 @@ def delete_connection(
     connection_id: str,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
 ) -> None:
+    visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
@@ -503,8 +522,9 @@ def reset_connection_guard(
     connection_id: str,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
 ) -> dict[str, Any]:
+    visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
@@ -524,8 +544,9 @@ def resolve_connection(
     owner_username: str,
     *,
     campaign: Campaign | None = None,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
 ) -> ResolvedConnection:
+    visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
@@ -605,10 +626,7 @@ def pick_available_connection(
     with session_scope() as session:
         for connection_id in ids:
             row = session.get(SmtpMailbox, connection_id)
-            if row is None or (
-                row.owner_username != owner_username
-                and not TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
-            ):
+            if row is None or row.owner_username != owner_username:
                 continue
             if row.delivery_guard_state == "disabled" or row.status == "disabled_by_guard":
                 continue
@@ -667,13 +685,18 @@ def test_connection(
     connection_id: str,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
 ) -> dict[str, Any]:
     connection = resolve_connection(connection_id, owner_username, visible_owners=visible_owners)
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection.id)
+        if row is None:
+            raise LookupError("Delivery connection not found.")
+        target_owner = row.owner_username
     credentials: ResolvedSmtpCredentials | None = None
     try:
         if connection.transport == "smtp":
-            credentials = resolve_smtp_credentials(mailbox_id=connection.id, owner_username=owner_username)
+            credentials = resolve_smtp_credentials(mailbox_id=connection.id, owner_username=target_owner)
             verify_and_mark_mailbox(credentials, mailbox_id=connection.id, send_test=False)
             message = "SMTP-подключение успешно проверено."
         else:
@@ -686,7 +709,7 @@ def test_connection(
 
             _send_delivery_message(
                 connection_id=connection.id,
-                owner_username=owner_username,
+                owner_username=target_owner,
                 to_email=email_validation.normalized_email,
                 subject="Проверка подключения ai-offer",
                 html="<p>Подключение успешно. Это тестовое письмо ai-offer.</p>",

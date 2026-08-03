@@ -39,7 +39,7 @@ from src.campaigns.schedule_planner import plan_batches
 from src.campaigns.state import CampaignStateConflict
 from src.jobs.access import coerce_principal
 from src.security.auth import Principal
-from src.security.company_access import visible_owner_usernames
+from src.security.company_access import connection_owner_usernames, visible_owner_usernames
 from src.utils.config import settings
 from src.web.upload_validation import validate_uploaded_file
 
@@ -297,6 +297,7 @@ class ConnectionUpdateBody(BaseModel):
 
 
 class ConnectionWarmupSettingsBody(BaseModel):
+    smtp_connection_id: str | None = None
     timezone: str | None = None
     daily_start_time: str | None = None
     daily_end_time: str | None = None
@@ -328,6 +329,10 @@ def _actor(principal: object) -> Principal:
 
 def _visibility(actor: Principal) -> frozenset[str] | None:
     return visible_owner_usernames(actor)
+
+
+def _connection_visibility(actor: Principal) -> frozenset[str] | None:
+    return connection_owner_usernames(actor)
 
 
 def _binary_response(item: dict[str, Any], *, disposition: str) -> Response:
@@ -364,7 +369,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/connections")
     def get_connections(principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        return _ok(connection_service.list_connections(actor.username, visible_owners=_visibility(actor)))
+        return _ok(connection_service.list_connections(actor.username, visible_owners=_connection_visibility(actor)))
 
     @router.post("/connections")
     def post_connection(body: ConnectionCreateBody, principal: object = Depends(check_auth)):
@@ -386,7 +391,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         try:
             return _ok(connection_service.update_connection(
                 connection_id, actor.username, body.model_dump(exclude_none=True),
-                visible_owners=_visibility(actor),
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -397,7 +402,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def delete_connection(connection_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            connection_service.delete_connection(connection_id, actor.username, visible_owners=_visibility(actor))
+            connection_service.delete_connection(connection_id, actor.username, visible_owners=_connection_visibility(actor))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _ok({"deleted": True})
@@ -406,7 +411,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def test_connection(connection_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            return _ok(connection_service.test_connection(connection_id, actor.username, visible_owners=_visibility(actor)))
+            return _ok(connection_service.test_connection(connection_id, actor.username, visible_owners=_connection_visibility(actor)))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:
@@ -420,7 +425,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 connection_service.reset_connection_guard(
                     connection_id,
                     actor.username,
-                    visible_owners=_visibility(actor),
+                    visible_owners=_connection_visibility(actor),
                 )
             )
         except LookupError as exc:
@@ -431,7 +436,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(connection_sender_warmup_service.get_program(
-                connection_id, actor.username, visible_owners=_visibility(actor)
+                connection_id, actor.username, visible_owners=_connection_visibility(actor)
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -448,7 +453,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 connection_id,
                 actor.username,
                 body.model_dump(exclude_none=True),
-                visible_owners=_visibility(actor),
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -467,7 +472,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 connection_id,
                 actor.username,
                 headers=body.headers,
-                visible_owners=_visibility(actor),
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -481,7 +486,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(connection_sender_warmup_service.add_recipients(
-                connection_id, actor.username, body.emails, visible_owners=_visibility(actor)
+                connection_id, actor.username, body.emails, visible_owners=_connection_visibility(actor)
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -502,7 +507,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 recipient_id,
                 actor.username,
                 body.status,
-                visible_owners=_visibility(actor),
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -522,7 +527,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 recipient_id,
                 actor.username,
                 "removed",
-                visible_owners=_visibility(actor),
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -542,7 +547,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         }
         try:
             return _ok(handlers[action](
-                connection_id, actor.username, visible_owners=_visibility(actor)
+                connection_id, actor.username, visible_owners=_connection_visibility(actor)
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -114,6 +114,14 @@ def visible_owner_usernames(actor: Any) -> frozenset[str] | None:
     return frozenset({principal.username})
 
 
+def connection_owner_usernames(actor: Any) -> frozenset[str] | None:
+    """Return owners whose delivery connections the actor may access."""
+    principal = _actor(actor)
+    if principal.is_admin:
+        return None
+    return frozenset({principal.username})
+
+
 def require_app_admin(actor: Any) -> Principal:
     principal = _actor(actor)
     if not principal.is_admin:

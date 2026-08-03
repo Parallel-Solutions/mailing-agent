@@ -413,6 +413,9 @@ class ConnectionWarmupProgram(Base):
         String(36), ForeignKey("smtp_mailboxes.id", ondelete="CASCADE"), nullable=False
     )
     owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    smtp_connection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="SET NULL"), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft")
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Europe/Moscow")
     daily_start_time: Mapped[str] = mapped_column(String(5), nullable=False, default="10:00")
@@ -477,6 +480,7 @@ class ConnectionWarmupDelivery(Base):
     )
     day_number: Mapped[int] = mapped_column(Integer, nullable=False)
     run_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
     task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -492,11 +496,11 @@ class ConnectionWarmupDelivery(Base):
         Index("idx_connection_warmup_delivery_task", "task_id"),
         Index("idx_connection_warmup_delivery_provider_message", "provider_message_id"),
         Index(
-            "uq_connection_warmup_delivery_recipient_day",
+            "uq_connection_warmup_delivery_sequence",
             "program_id",
-            "recipient_id",
             "run_number",
             "day_number",
+            "sequence_number",
             unique=True,
         ),
     )

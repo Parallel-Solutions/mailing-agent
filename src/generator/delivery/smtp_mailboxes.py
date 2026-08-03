@@ -401,16 +401,14 @@ def resolve_smtp_credentials(
     if not owner and job_id:
         owner = _safe_text(read_job_owner(job_id).get("owner_username"))
     mailbox_key = _safe_text(mailbox_id)
-    if mailbox_key and owner:
+    if mailbox_key:
+        if not owner:
+            raise LookupError("SMTP mailbox not found.")
         with session_scope() as session:
             row = session.get(SmtpMailbox, mailbox_key)
-            # TODO(security): replace this temporary global-use path with
-            # organization-owned credentials and explicit membership checks.
-            from src.security.company_access import TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
-
-            can_use_mailbox = row is not None and (
-                row.owner_username == owner or TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
-            )
+            can_use_mailbox = row is not None and row.owner_username == owner
+            if not can_use_mailbox:
+                raise LookupError("SMTP mailbox not found.")
             if can_use_mailbox:
                 if row.status == "auth_failed":
                     raise RuntimeError(row.last_error or "SMTP-ящик недоступен: ошибка авторизации.")

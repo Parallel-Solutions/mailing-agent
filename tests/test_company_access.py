@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
@@ -11,10 +10,14 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from src.campaigns import company_service, connection_service, service as campaign_service
-from src.campaigns.batch_worker import _send_delivery_message
 from src.generator.delivery.smtp_mailboxes import create_mailbox, resolve_smtp_credentials
 from src.security.auth import Principal
-from src.security.company_access import can_manage_company, can_view_owned_resource, visible_owner_usernames
+from src.security.company_access import (
+    can_manage_company,
+    can_view_owned_resource,
+    connection_owner_usernames,
+    visible_owner_usernames,
+)
 from src.security.user_store import create_user, get_user_record
 from src.utils.config import settings
 from src.web.companies_router import create_companies_router
@@ -166,75 +169,82 @@ class CompanyAccessTests(unittest.TestCase):
         response = TestClient(app).get("/api/v1/companies")
         self.assertEqual(response.status_code, 401)
 
-    def test_four_users_can_send_concurrently_through_one_shared_smtp_connection(self) -> None:
-        users = [self.company_admin, self.member, self.outsider]
-        fourth = f"mb{uuid.uuid4().hex[:6]}"
-        create_user(fourth, "Pass12345!")
-        company_service.add_member(self.company["id"], self.outsider, role="member")
-        company_service.add_member(self.company["id"], fourth, role="member")
-        users.append(fourth)
+    def test_connection_owner_usernames(self) -> None:
+        self.assertIsNone(connection_owner_usernames(Principal(self.admin, "root", "admin")))
+        self.assertEqual(connection_owner_usernames(self.ca_principal), frozenset({self.company_admin}))
+        self.assertEqual(connection_owner_usernames(self.member_principal), frozenset({self.member}))
 
+    def test_delivery_connections_are_isolated_between_accounts(self) -> None:
         key = Fernet.generate_key().decode("ascii")
         with patch.object(settings, "smtp_credentials_key", key):
-            mailbox = create_mailbox(
+            company_admin_mailbox = create_mailbox(
                 owner_username=self.company_admin,
                 provider="custom",
-                email="shared-sender@example.test",
-                password="shared-smtp-password",
+                email="company-admin@example.test",
+                password="company-admin-password",
+                host="mailpit",
+                port=1025,
+                use_ssl=False,
+                use_starttls=False,
+            )
+            member_mailbox = create_mailbox(
+                owner_username=self.member,
+                provider="custom",
+                email="member@example.test",
+                password="member-password",
                 host="mailpit",
                 port=1025,
                 use_ssl=False,
                 use_starttls=False,
             )
 
-            for username in users:
-                visible_connections = connection_service.list_connections(
-                    username,
-                    visible_owners=visible_owner_usernames(Principal(username, username)),
-                )
-                self.assertIn(mailbox["id"], {item["id"] for item in visible_connections})
-                credentials = resolve_smtp_credentials(
-                    mailbox_id=mailbox["id"],
-                    owner_username=username,
-                )
-                self.assertEqual(credentials.email, "shared-sender@example.test")
+            ca_ids = {
+                item["id"]
+                for item in self.ca_client.get("/api/v1/connections").json()["result"]
+            }
+            member_ids = {
+                item["id"]
+                for item in self.member_client.get("/api/v1/connections").json()["result"]
+            }
+            admin_ids = {
+                item["id"]
+                for item in self.admin_client.get("/api/v1/connections").json()["result"]
+            }
 
-            def fake_smtp_send(**kwargs) -> str:
-                credentials = resolve_smtp_credentials(
-                    mailbox_id=kwargs["mailbox_id"],
-                    owner_username=kwargs["owner_username"],
+            self.assertEqual(ca_ids, {company_admin_mailbox["id"]})
+            self.assertEqual(member_ids, {member_mailbox["id"]})
+            self.assertIn(company_admin_mailbox["id"], admin_ids)
+            self.assertIn(member_mailbox["id"], admin_ids)
+            admin_patch = self.admin_client.patch(
+                f"/api/v1/connections/{company_admin_mailbox['id']}",
+                json={"sender_name": "Managed by app admin"},
+            )
+            self.assertEqual(admin_patch.status_code, 200)
+
+            with self.assertRaises(LookupError):
+                resolve_smtp_credentials(
+                    mailbox_id=company_admin_mailbox["id"],
+                    owner_username=self.member,
                 )
-                self.assertEqual(credentials.email, "shared-sender@example.test")
-                return f"smtp:{kwargs['to_email']}"
+            with self.assertRaises(LookupError):
+                connection_service.resolve_connection(
+                    company_admin_mailbox["id"],
+                    self.member,
+                )
 
-            with (
-                patch(
-                    "src.generator.delivery.channel_guard.wait_for_channel_send_slot",
-                    return_value=None,
-                ),
-                patch(
-                    "src.campaigns.batch_worker._send_smtp_message",
-                    side_effect=fake_smtp_send,
-                ),
-                patch("src.campaigns.batch_worker._record_smtp_accept"),
-                ThreadPoolExecutor(max_workers=4) as pool,
-            ):
-                futures = [
-                    pool.submit(
-                        _send_delivery_message,
-                        connection_id=mailbox["id"],
-                        owner_username=username,
-                        to_email=f"recipient-{index}@example.test",
-                        subject="Concurrent shared SMTP test",
-                        html="<p>test</p>",
-                        text="test",
-                    )
-                    for index, username in enumerate(users)
-                ]
-                results = [future.result(timeout=10) for future in futures]
-
-        self.assertEqual(len(results), 4)
-        self.assertEqual(len(set(results)), 4)
+            foreign_patch = self.member_client.patch(
+                f"/api/v1/connections/{company_admin_mailbox['id']}",
+                json={"sender_name": "Forbidden"},
+            )
+            foreign_delete = self.member_client.delete(
+                f"/api/v1/connections/{company_admin_mailbox['id']}"
+            )
+            foreign_warmup = self.member_client.get(
+                f"/api/v1/connections/{company_admin_mailbox['id']}/sender-warmup"
+            )
+            self.assertEqual(foreign_patch.status_code, 404)
+            self.assertEqual(foreign_delete.status_code, 404)
+            self.assertEqual(foreign_warmup.status_code, 404)
 
     def test_only_app_admin_can_delete_company(self) -> None:
         other = company_service.create_company(name="Disposable Org")

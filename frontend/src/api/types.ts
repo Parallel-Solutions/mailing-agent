@@ -593,6 +593,10 @@ export type ConnectionWarmupCheck = {
 export type ConnectionWarmupProgram = {
   id: string;
   connection_id: string;
+  smtp_connection_id: string;
+  smtp_connection_email: string;
+  smtp_connection_status: string;
+  sending_transport: 'smtp';
   status: 'draft' | 'running' | 'paused' | 'completed' | 'blocked' | 'cancelled';
   timezone: string;
   daily_start_time: string;

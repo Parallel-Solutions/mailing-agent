@@ -1419,7 +1419,7 @@ export function ConnectionsPage() {
                 onDelete={(id) => removeMutation.mutateAsync(id)}
                 deleting={removeMutation.isPending && removeMutation.variables === row.id}
               />
-              <SenderWarmupAction connection={row} />
+              <SenderWarmupAction connection={row} connections={data || []} />
               <a
                 onClick={async () => {
                   try {
