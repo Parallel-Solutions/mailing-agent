@@ -237,7 +237,8 @@ def _lookup_site_emails(adm: str, region: str) -> tuple[str, list[str]]:
 
 def postprocess_file(file_path: str,
                      max_email_lookups: int = 40,
-                     enrich_suspicious: bool = True) -> dict:
+                     enrich_suspicious: bool = True,
+                     check_all: bool = False) -> dict:
     """Доводит уже созданный файл: почта с сайтов + город в названии.
 
     Работает НА МЕСТЕ (файл перезаписывается) — он и так лежит в output/latest.
@@ -263,6 +264,7 @@ def postprocess_file(file_path: str,
     col_osn = COL.get("EMAIL_OSN")
     col_dop = COL.get("EMAIL_DOP")
     col_sub = COL.get("SUB_RF")
+    col_site = COL.get("WEBSITE")
     if not all([col_adm, col_osn]):
         return {"error": "В шаблоне файла нет колонок ADM_NAME/EMAIL_OSN"}
 
@@ -284,9 +286,14 @@ def postprocess_file(file_path: str,
             stats["names_fixed"] += 1
             logger.info(f"[postprocess] название дополнено: …{fixed[-40:]}")
 
-        # нужен ли добор почты
+        # нужен ли добор/проверка почты
         cur = clean_email(str(ws.cell(r, col_osn).value or ""))
-        if not cur:
+        has_site = bool(str(ws.cell(r, col_site).value or "").strip()) if col_site else False
+        if check_all:
+            targets.append(r)
+        elif not cur:
+            targets.append(r)
+        elif has_site:
             targets.append(r)
         elif enrich_suspicious and _looks_personal(cur):
             targets.append(r)
@@ -306,10 +313,15 @@ def postprocess_file(file_path: str,
         adm = str(ws.cell(r, col_adm).value or "").strip()
         region = str(ws.cell(r, col_sub).value or "").strip() if col_sub else ""
         cur = clean_email(str(ws.cell(r, col_osn).value or ""))
+        known_site = str(ws.cell(r, col_site).value or "").strip() if col_site else ""
 
         try:
             stats["looked_up"] += 1
-            site, emails = _lookup_site_emails(adm, region)
+            if known_site and re.search(r"https?://|[A-Za-zА-Яа-я0-9-]+\.[a-z]{2,}", known_site):
+                site = known_site if known_site.lower().startswith("http") else "http://" + known_site
+                emails = _emails_from_site(site)
+            else:
+                site, emails = _lookup_site_emails(adm, region)
             if not emails:
                 if not cur:
                     stats["email_still_empty"] += 1
@@ -326,18 +338,22 @@ def postprocess_file(file_path: str,
                 ws.cell(r, col_osn, found)
                 stats["email_found"] += 1
                 logger.info(f"[postprocess] {adm[:45]}: почта найдена {found}")
-            elif _better_than(found, cur):
+            elif found.strip().lower() != cur.strip().lower():
+                # почта на сайте отличается — делаем её основной,
+                # прежнюю НЕ теряем: уводим в дополнительные (без дублей)
                 ws.cell(r, col_osn, found)
-                # прежнюю (личную) не выбрасываем — уводим в дополнительные
                 if col_dop:
                     old_dop = str(ws.cell(r, col_dop).value or "").strip()
-                    merged = ", ".join(x for x in (cur, old_dop) if x)
-                    ws.cell(r, col_dop, merged)
+                    parts, seen = [], set()
+                    for p in [x.strip() for x in f"{cur}, {old_dop}".split(",") if x.strip()]:
+                        if p.lower() not in seen:
+                            seen.add(p.lower())
+                            parts.append(p)
+                    ws.cell(r, col_dop, ", ".join(parts))
                 stats["email_replaced"] += 1
-                logger.info(f"[postprocess] {adm[:45]}: {cur} -> {found}")
+                logger.info(f"[postprocess] {adm[:45]}: {cur} -> {found} (прежняя в доп.)")
             else:
-                logger.info(f"[postprocess] {adm[:45]}: оставил {cur} "
-                            f"(на сайте {found} — не лучше)")
+                logger.info(f"[postprocess] {adm[:45]}: почта совпала ({cur})")
 
         except Exception as e:
             logger.warning(f"[postprocess] строка {r} ({adm[:35]}): {e}")

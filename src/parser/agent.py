@@ -281,6 +281,151 @@ def chat(message: str, job_id: Optional[str] = None) -> dict:
     finally:
         progress.finish()
 
+def topup(message: str, job_id: str) -> dict:
+    """Дозаполнение загруженного файла. Эндпоинт /api/parser/topup.
+
+    Та же форма, что и сбор, но с job_id файла: находим то, чего в файле ещё
+    нет, и дописываем в него же. Детерминированно, без агента.
+    """
+    from src.parser_new.tools.collector import parse_request, _detect_government
+
+    parsed = parse_request(message)
+    if not parsed:
+        return {"reply": "Не разобрал, что и где искать. Уточните запрос.",
+                "success": False, "result_file": None}
+    query, place, limit = parsed
+
+    try:
+        paths = resolve_job_paths(job_id)
+    except Exception as e:
+        logger.warning(f"[topup] пути job_id={job_id}: {e}")
+        return {"reply": f"Не удалось найти файл задачи: {e}",
+                "success": False, "result_file": None}
+
+    if not paths.data_xlsx.exists():
+        return {"reply": "Файл не загружен — сначала загрузите Excel.",
+                "success": False, "result_file": None}
+
+    file_path = str(paths.data_xlsx)
+    progress.start(job_id)
+    try:
+        if _detect_government(query) or _detect_government(place):
+            res = _topup_mo(file_path, place, query)
+        else:
+            res = _topup_commercial(file_path, query, place, limit)
+
+        if res.get("success") and res.get("result_file"):
+            _mark_discovery_table_ready(job_id, count=res.get("added", 0))
+            # чтобы download-result нашёл файл — кладём копию в папку задачи
+            # с каноничным именем, как это делает chat()
+            try:
+                from datetime import datetime as _dt
+                canonical = f"batch_{_dt.now().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
+                paths.output_dir.mkdir(parents=True, exist_ok=True)
+                dst = paths.output_dir / canonical
+                shutil.copy2(res["result_file"], dst)
+                res["result_file"] = str(dst)
+            except Exception as e:
+                logger.warning(f"[topup] копия результата в папку задачи: {e}")
+        return res
+    finally:
+        progress.finish()
+
+
+def _topup_commercial(file_path: str, query: str, place: str, limit: int) -> dict:
+    from src.parser_new.tools.collector import collect_recipients, _row_key
+    from src.parser_new.tools.discovery_tool import read_batch_rows, append_batch_xlsx
+
+    # 1. ключи того, что уже в файле
+    exclude = {_row_key(r) for r in read_batch_rows(file_path)}
+
+    # 2. сбор НОВЫХ (свой файл не пишем — write=False)
+    res = collect_recipients(query, place, limit, exclude=exclude, write=False)
+    if not res["success"]:
+        return {"reply": f"Не удалось донайти: {res['error']}",
+                "success": False, "result_file": None, "added": 0}
+
+    # 3. дозапись в исходный файл
+    added = append_batch_xlsx(file_path, res.get("rows") or [])
+
+    reply = (f"Дописал {added} новых организаций, которых не было в файле."
+             if added else
+             "Новых организаций сверх тех, что уже в файле, не нашлось.")
+    if res.get("note"):
+        reply += f"\n\n{res['note']}"
+    return {"reply": reply, "success": added > 0,
+            "result_file": file_path if added else None, "added": added}
+
+
+def _topup_mo(file_path: str, place: str, query: str) -> dict:
+    import json as _json
+    from openpyxl import load_workbook
+    from src.parser_new.tools.oktmo_tool import build_region_mo_file
+    from src.parser_new.tools.excel_tool import read_existing_mo_keys, append_excel_tool
+
+    # 1. что уже есть
+    have = read_existing_mo_keys(file_path)
+
+    # 2. полный список региона (переиспользуем готовый строитель скелета)
+    try:
+        region_path, _, sub_rf = build_region_mo_file(place, mo_type="")
+    except Exception as e:
+        return {"reply": f"Не удалось получить список МО региона: {e}",
+                "success": False, "result_file": None, "added": 0}
+
+    # 3. вычитаем то, что в файле
+    wb = load_workbook(region_path, read_only=True, data_only=True)
+    ws = wb.active
+    headers = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
+    col = {h: i + 1 for i, h in enumerate(headers) if h}
+    missing = []
+    for row_idx in range(3, ws.max_row + 1):
+        oktmo = ws.cell(row_idx, col["REQUISITES_OKTMO"]).value if col.get("REQUISITES_OKTMO") else None
+        name  = ws.cell(row_idx, col["MUN_NAME"]).value if col.get("MUN_NAME") else None
+        k_oktmo = f"oktmo:{str(oktmo).strip()}" if oktmo else None
+        k_name  = "name:" + "".join(str(name).lower().split()) if name else None
+        if (k_oktmo and k_oktmo in have) or (k_name and k_name in have):
+            continue
+        missing.append({"SUB_RF": sub_rf, "MUN_NAME": name,
+                        "REQUISITES_OKTMO": str(oktmo).strip() if oktmo else ""})
+    wb.close()
+
+    if not missing:
+        return {"reply": "В файле уже есть все МО этого региона — дописывать нечего.",
+                "success": False, "result_file": file_path, "added": 0}
+
+    # 4. дописываем недостающие (реквизиты/контакты потом дозальёт обычный batch)
+    payload = _json.dumps(missing, ensure_ascii=False)
+    if hasattr(append_excel_tool, "func"):
+        append_excel_tool.func(file_path, payload)      # @tool -> «сырая» функция
+    else:
+        append_excel_tool(file_path, payload)
+
+    return {"reply": f"Дописал {len(missing)} недостающих МО региона «{sub_rf}». "
+                     f"Их реквизиты и контакты дозаполнит обычная обработка файла.",
+            "success": True, "result_file": file_path, "added": len(missing)}
+
+def fill_gaps(job_id: str, verify_emails: bool = False) -> dict:
+    progress.start(job_id)
+    try:
+        res = run_batch_parser(job_id)
+        ok = res.get("status") == "ok"
+        result_file = res.get("file") or None
+
+        # проверка почт по официальным сайтам (и по столбцу S) — по галочке
+        if ok and verify_emails and result_file:
+            try:
+                from src.parser_new.tools.postprocess import postprocess_file
+                postprocess_file(result_file, max_email_lookups=2000, check_all=True)
+            except Exception as e:
+                logger.warning(f"[fill] проверка почт не выполнена: {e}")
+
+        if ok and result_file:
+            found = (res.get("task_stats") or {}).get("found", 0)
+            _mark_discovery_table_ready(job_id, count=found)
+        return {"reply": res.get("reply", ""), "success": ok, "result_file": result_file}
+    finally:
+        progress.finish()
 # ==============================
 # ПАКЕТНАЯ ОБРАБОТКА ФАЙЛА
 # ==============================

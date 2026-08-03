@@ -17,6 +17,12 @@ export const parserApi = {
   chat: (message: string, jobId: string, signal?: AbortSignal) =>
     api.post<ParserChatResponse>('/api/parser/chat', { message, job_id: jobId }, signal),
 
+  topup: (message: string, jobId: string, signal?: AbortSignal) =>
+    api.post<ParserChatResponse>('/api/parser/topup', { message, job_id: jobId }, signal),
+
+  fillGaps: (jobId: string, verifyEmails: boolean, signal?: AbortSignal) =>
+    api.post<ParserChatResponse>('/api/parser/fill', { job_id: jobId, verify_emails: verifyEmails }, signal),
+
   downloadResult: async (jobId: string): Promise<File> => {
     const response = await fetch(
       `/api/parser/download-result?job_id=${encodeURIComponent(jobId)}`,

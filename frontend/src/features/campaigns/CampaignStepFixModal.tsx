@@ -51,6 +51,7 @@ type Props = {
   onAudienceSelect: (audienceId: string) => Promise<void>;
   onImportRecipients: (file: File) => Promise<void>;
   onOpenGenerate: () => void;
+  onOpenTopup: () => void;
   onScheduleChange: (values: ScheduleFormValues) => void | Promise<void>;
   onOpenChainPreview?: () => void;
 };
@@ -88,6 +89,7 @@ export function CampaignStepFixModal({
   onAudienceSelect,
   onImportRecipients,
   onOpenGenerate,
+  onOpenTopup,
   onScheduleChange,
   onOpenChainPreview,
 }: Props) {
@@ -189,6 +191,7 @@ export function CampaignStepFixModal({
             onAudienceSelect={onAudienceSelect}
             onImportRecipients={onImportRecipients}
             onOpenGenerate={onOpenGenerate}
+            onOpenTopup={onOpenTopup}
           />
         </>
       ) : null}
