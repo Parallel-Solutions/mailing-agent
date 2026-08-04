@@ -193,6 +193,27 @@ class SenderAgentScalabilityTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["campaign_name"], "summer campaign")
 
+    def test_background_sender_worker_preserves_smtp_mailbox_context(self) -> None:
+        calls: list[dict] = []
+
+        with patch(
+            "src.generator.delivery.sender_agent.run_sender",
+            side_effect=lambda **kwargs: calls.append(kwargs) or {},
+        ):
+            background_worker._run_sender(
+                {
+                    "dry_run": False,
+                    "transport": "smtp",
+                    "smtp_mailbox_id": "mailbox-1",
+                    "owner_username": "owner",
+                    "job_id": "job-worker",
+                }
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["smtp_mailbox_id"], "mailbox-1")
+        self.assertEqual(calls[0]["owner_username"], "owner")
+
     def test_unisender_parallel_workers_only_for_real_unisender_send(self) -> None:
         with patch.object(sender_agent.settings, "sender_unisender_concurrency", 7):
             self.assertEqual(sender_agent._unisender_parallel_workers(dry_run=False, transport="unisender"), 7)

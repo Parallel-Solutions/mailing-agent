@@ -227,6 +227,8 @@ def _run_sender(kwargs: dict[str, Any]) -> None:
             subject_template=kwargs.get("subject_template"),
             sender_email=kwargs.get("sender_email"),
             campaign_name=kwargs.get("campaign_name"),
+            smtp_mailbox_id=kwargs.get("smtp_mailbox_id"),
+            owner_username=kwargs.get("owner_username"),
             require_confirmed_consent=bool(kwargs.get("require_confirmed_consent", False)),
             work_type=kwargs.get("work_type"),
             auto_recover=False,
