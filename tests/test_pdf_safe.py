@@ -217,6 +217,39 @@ class PdfSafeTests(unittest.TestCase):
         self.assertIn(b"/GSicon gs", content)
         self.assertGreaterEqual(content.count(b" rg"), 2)
 
+    def test_contact_positions_join_split_fragments_and_apply_page_transform(self) -> None:
+        class FragmentedContactPage:
+            def extract_text(self, *, visitor_text):
+                page_transform = [1.0, 0.0, 0.0, -1.0, 0.0, 841.0]
+
+                def emit(text: str, x: float, source_y: float) -> None:
+                    visitor_text(
+                        text,
+                        page_transform,
+                        [0.05, 0.0, 0.0, -0.05, x, source_y],
+                        None,
+                        180.0,
+                    )
+
+                # Website text in the header must not be mistaken for the contact email.
+                visitor_text("parresh", page_transform, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], None, 161.0)
+                emit("\u0418\u0441\u043f", 47.28, 664.85)
+                emit(".", 64.80, 664.85)
+                emit("\u0427\u0435\u0440\u043a\u0430\u0448\u0438\u043d\u0430", 84.00, 664.85)
+                emit("\u0442\u0435\u043b", 66.84, 682.25)
+                emit(".", 80.64, 682.25)
+                emit("ks", 66.84, 700.609)
+                emit("@", 75.24, 700.609)
+                emit("parresh", 83.40, 700.609)
+                emit(".ru", 113.40, 700.609)
+
+        positions = pdf_safe.find_contact_text_positions(FragmentedContactPage())  # type: ignore[arg-type]
+
+        self.assertAlmostEqual(positions.author_x or 0.0, 47.28, places=2)
+        self.assertAlmostEqual(positions.phone_x or 0.0, 66.84, places=2)
+        self.assertAlmostEqual(positions.phone_y or 0.0, 158.75, places=2)
+        self.assertAlmostEqual(positions.email_y or 0.0, 140.391, places=3)
+
     def test_convert_docx_to_delivery_pdf_runs_pdf_safe_pipeline(self) -> None:
         from src.generator.generation.template_preview import convert_docx_to_delivery_pdf
 
