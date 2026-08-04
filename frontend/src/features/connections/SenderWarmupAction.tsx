@@ -89,6 +89,7 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
         <Space wrap>
           <Typography.Text type="secondary">Принято: {warmup.delivery_counts.accepted || 0}</Typography.Text>
           <Typography.Text type="secondary">Доставлено: {warmup.delivery_counts.delivered || 0}</Typography.Text>
+          <Typography.Text type="secondary">{'\u041f\u0440\u0435\u0434\u043f\u043e\u043b\u0430\u0433\u0430\u0435\u043c\u043e \u043e\u0442\u043a\u0440\u044b\u0442\u043e'}: {warmup.delivery_counts.opened || 0}</Typography.Text>
           <Typography.Text type="secondary">В очереди: {(warmup.delivery_counts.queued || 0) + (warmup.delivery_counts.sending || 0)}</Typography.Text>
           <Typography.Text type="secondary">Ошибки: {warmup.delivery_counts.error || 0}</Typography.Text>
           <Typography.Text type="secondary">Hard bounce: {warmup.delivery_counts.hard_bounced || 0}</Typography.Text>

@@ -406,6 +406,48 @@ class SmtpSentCopy(Base):
     )
 
 
+class SmtpOpenTracking(Base):
+    """One stable tracking pixel identity for one logical SMTP delivery."""
+
+    __tablename__ = "smtp_open_tracking"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivery_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    connection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="SET NULL"), nullable=True
+    )
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    campaign_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=True
+    )
+    row_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    warmup_delivery_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("connection_warmup_deliveries.id", ondelete="CASCADE"), nullable=True
+    )
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    send_mode: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="prepared")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    open_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("uq_smtp_open_tracking_token", "token", unique=True),
+        Index("uq_smtp_open_tracking_delivery_key", "delivery_key_hash", unique=True),
+        Index("idx_smtp_open_tracking_job", "job_id", "first_opened_at"),
+        Index("idx_smtp_open_tracking_warmup", "warmup_delivery_id", "first_opened_at"),
+        Index("idx_smtp_open_tracking_provider_message", "provider_message_id"),
+    )
+
+
 class DeliveryChannelOutcome(Base):
     __tablename__ = "delivery_channel_outcomes"
 

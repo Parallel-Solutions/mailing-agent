@@ -20,6 +20,7 @@ from src.infra.models import (
     ConnectionWarmupProgram,
     ConnectionWarmupRecipient,
     SmtpMailbox,
+    SmtpOpenTracking,
 )
 from src.security.company_access import can_access_owner
 
@@ -214,6 +215,21 @@ def _program_dict(session: Any, program: ConnectionWarmupProgram) -> dict[str, A
             )
             .group_by(ConnectionWarmupDelivery.status)
         ).all()
+    )
+    delivery_counts["opened"] = int(
+        session.scalar(
+            select(func.count(SmtpOpenTracking.id))
+            .join(
+                ConnectionWarmupDelivery,
+                ConnectionWarmupDelivery.id == SmtpOpenTracking.warmup_delivery_id,
+            )
+            .where(
+                ConnectionWarmupDelivery.program_id == program.id,
+                ConnectionWarmupDelivery.run_number == int(program.run_number or 1),
+                SmtpOpenTracking.first_opened_at.is_not(None),
+            )
+        )
+        or 0
     )
     active_count = sum(1 for item in recipients if item.status == "active")
     smtp_connection = _selected_smtp_connection(session, program)
@@ -1070,6 +1086,8 @@ def run_warmup_message(kwargs: dict[str, Any]) -> dict[str, Any]:
             row_id=f"sender-warmup-{delivery_id}",
             send_mode="connection_warmup",
             track_links=False,
+            tracking_key=f"sender-warmup:{delivery_id}",
+            tracking_warmup_delivery_id=delivery_id,
         )
         status = "accepted"
         error = ""
