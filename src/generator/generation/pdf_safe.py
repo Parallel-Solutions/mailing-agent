@@ -37,6 +37,7 @@ KP_CONTACT_ICON_EMAIL_BASELINE_OFFSET_PT = 1.0
 KP_CONTACT_FALLBACK_ROW_GAP_PT = 12.2
 KP_CONTACT_TEXT_LEADING_SPACES = ""
 KP_CONTACT_PHONE_PARAGRAPH_AFTER_TWIPS = "60"
+KP_CONTACT_TEXT_LINE_TOLERANCE_PT = 1.5
 WORD_ANCHOR_PATTERN = re.compile(r"<wp:anchor\b[\s\S]*?</wp:anchor>", re.S)
 WORD_DRAWING_PATTERN = re.compile(r"<w:drawing>[\s\S]*?</w:drawing>", re.S)
 
@@ -534,28 +535,38 @@ def resolve_contact_icon_positions(
 
 
 def find_contact_text_positions(page: PageObject) -> KpContactTextPositions:
-    author_candidates: list[tuple[float, float]] = []
-    phone_candidates: list[tuple[float, float]] = []
-    email_candidates: list[tuple[float, float]] = []
+    fragments: list[tuple[str, float, float]] = []
 
-    def visitor(text: str, _cm, tm, _font_dict, _font_size) -> None:
+    def visitor(text: str, cm, tm, _font_dict, _font_size) -> None:
         stripped = text.strip()
         if not stripped:
             return
-        x = float(tm[4])
-        y = float(tm[5])
-        lower = stripped.casefold()
-        if "\u0438\u0441\u043f." in lower and "\u0447\u0435\u0440\u043a\u0430\u0448\u0438\u043d\u0430" in lower:
-            author_candidates.append((x, y))
-        if "\u0442\u0435\u043b." in lower:
-            phone_candidates.append((x, y))
-        if "ks" in lower or "@parresh" in lower or "parresh" in lower:
-            email_candidates.append((x, y))
+        x, y = transform_pdf_text_origin(cm, tm)
+        fragments.append((stripped, x, y))
 
     try:
         page.extract_text(visitor_text=visitor)
     except Exception:
         return KpContactTextPositions()
+
+    author_candidates: list[tuple[float, float]] = []
+    phone_candidates: list[tuple[float, float]] = []
+    email_candidates: list[tuple[float, float]] = []
+    for line_fragments in group_pdf_text_fragments_by_line(fragments):
+        ordered_fragments = sorted(line_fragments, key=lambda item: item[1])
+        compact_text = re.sub(
+            r"\s+",
+            "",
+            "".join(fragment_text for fragment_text, _x, _y in ordered_fragments),
+        ).casefold()
+        line_x = min(fragment_x for _text, fragment_x, _y in ordered_fragments)
+        line_y = sum(fragment_y for _text, _x, fragment_y in ordered_fragments) / len(ordered_fragments)
+        if "\u0438\u0441\u043f." in compact_text and "\u0447\u0435\u0440\u043a\u0430\u0448\u0438\u043d\u0430" in compact_text:
+            author_candidates.append((line_x, line_y))
+        if "\u0442\u0435\u043b." in compact_text:
+            phone_candidates.append((line_x, line_y))
+        if "@" in compact_text and ("parresh" in compact_text or compact_text.startswith("ks@")):
+            email_candidates.append((line_x, line_y))
 
     author_x = min(author_candidates, key=lambda item: item[1])[0] if author_candidates else None
     phone_x = None
@@ -579,6 +590,38 @@ def find_contact_text_positions(page: PageObject) -> KpContactTextPositions:
         phone_y=phone_y,
         email_y=email_y,
     )
+
+
+def transform_pdf_text_origin(cm, tm) -> tuple[float, float]:
+    """Return a text origin in page coordinates, including the current transform."""
+    if len(cm) < 6 or len(tm) < 6:
+        return float(tm[4]), float(tm[5])
+    return (
+        float(tm[4]) * float(cm[0]) + float(tm[5]) * float(cm[2]) + float(cm[4]),
+        float(tm[4]) * float(cm[1]) + float(tm[5]) * float(cm[3]) + float(cm[5]),
+    )
+
+
+def group_pdf_text_fragments_by_line(
+    fragments: list[tuple[str, float, float]],
+) -> list[list[tuple[str, float, float]]]:
+    """Group split PDF text callbacks into visual lines by their page-space baseline."""
+    lines: list[list[tuple[str, float, float]]] = []
+    for fragment in sorted(fragments, key=lambda item: (-item[2], item[1])):
+        matching_line = next(
+            (
+                line
+                for line in lines
+                if abs(sum(item[2] for item in line) / len(line) - fragment[2])
+                <= KP_CONTACT_TEXT_LINE_TOLERANCE_PT
+            ),
+            None,
+        )
+        if matching_line is None:
+            lines.append([fragment])
+        else:
+            matching_line.append(fragment)
+    return lines
 
 
 def svg_to_pdf_path_content(svg_payload: bytes, *, x: float, y: float, width: float, height: float) -> str:

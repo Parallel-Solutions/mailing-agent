@@ -10,9 +10,11 @@ import time
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.generator.delivery.manager_actions import (
     ACTION_TYPES,
@@ -42,6 +44,8 @@ from src.jobs import load_agent_state, resolve_job_paths
 from src.jobs.job_docs import list_job_ids_with_sent_mail
 from src.jobs.storage import normalize_job_id
 from src.utils.logger import logger
+
+STATISTICS_TIMEZONE = ZoneInfo("Europe/Moscow")
 
 MANAGER_STATUS_DEFINITIONS: dict[str, dict[str, str]] = {
     "delivered": {"label": "Доставлено", "tone": "good", "category": "success"},
@@ -285,17 +289,102 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
-def _within_period(value: Any, *, period_from: str, period_to: str) -> bool:
+def _parse_period_date(value: Any) -> datetime | None:
+    text = _safe_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("Statistics period boundaries must use YYYY-MM-DD format.") from exc
+
+
+def normalize_statistics_period(
+    period_from: Any = "",
+    period_to: Any = "",
+) -> tuple[str, str]:
+    start = _parse_period_date(period_from)
+    end = _parse_period_date(period_to)
+    if start and end and start > end:
+        raise ValueError("Statistics period start cannot be later than its end.")
+    return (
+        start.date().isoformat() if start else "",
+        end.date().isoformat() if end else "",
+    )
+
+
+@lru_cache(maxsize=128)
+def _statistics_period_bounds(
+    period_from: str,
+    period_to: str,
+) -> tuple[datetime | None, datetime | None]:
+    normalized_from, normalized_to = normalize_statistics_period(period_from, period_to)
+    start = _parse_period_date(normalized_from)
+    end = _parse_period_date(normalized_to)
+    start_utc = (
+        start.replace(tzinfo=STATISTICS_TIMEZONE).astimezone(timezone.utc)
+        if start
+        else None
+    )
+    end_utc = (
+        (end + timedelta(days=1))
+        .replace(tzinfo=STATISTICS_TIMEZONE)
+        .astimezone(timezone.utc)
+        if end
+        else None
+    )
+    return start_utc, end_utc
+
+
+def _statistics_event_datetime(value: Any) -> datetime | None:
     dt = _parse_datetime(value)
     if dt is None:
-        return not period_from and not period_to
-    start = _parse_datetime(period_from)
-    end = _parse_datetime(period_to)
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=STATISTICS_TIMEZONE)
+    return dt.astimezone(timezone.utc)
+
+
+def _within_period(value: Any, *, period_from: str, period_to: str) -> bool:
+    if not period_from and not period_to:
+        return True
+    dt = _statistics_event_datetime(value)
+    if dt is None:
+        return False
+    start, end = _statistics_period_bounds(period_from, period_to)
     if start and dt < start:
         return False
-    if end and dt > end.replace(hour=23, minute=59, second=59):
+    if end and dt >= end:
         return False
     return True
+
+
+def _filter_rows_by_period(
+    rows: list[dict[str, Any]],
+    *,
+    period_from: str,
+    period_to: str,
+    timestamp_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    if not period_from and not period_to:
+        return rows
+    return [
+        row
+        for row in rows
+        if _within_period(
+            next(
+                (
+                    row.get(field)
+                    for field in timestamp_fields
+                    if _safe_text(row.get(field))
+                ),
+                "",
+            ),
+            period_from=period_from,
+            period_to=period_to,
+        )
+    ]
+
 
 
 def _pct(value: int, base: int) -> float:
@@ -1964,8 +2053,23 @@ def _campaign_attempt_rows(job_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def _campaign_attempt_total(job_id: str) -> int:
+def _campaign_attempt_total(
+    job_id: str,
+    *,
+    period_from: str = "",
+    period_to: str = "",
+) -> int:
     """Count canonical attempts, falling back to real sends for legacy jobs."""
+    if period_from or period_to:
+        return len(
+            _filter_rows_by_period(
+                _campaign_attempt_rows(job_id),
+                period_from=period_from,
+                period_to=period_to,
+                timestamp_fields=("created_at", "sent_at_timestamp", "sent_at", "updated_at"),
+            )
+        )
+
     from src.jobs.job_docs import read_sent_mail_log
 
     try:
@@ -1982,9 +2086,18 @@ def build_campaign_attempts(
     *,
     page: int = 1,
     per_page: int = 100,
+    period_from: str = "",
+    period_to: str = "",
 ) -> dict[str, Any]:
     """Group every attempt/send in one mailing by company for the standard drilldown."""
     attempts = _campaign_attempt_rows(job_id)
+    attempts = _filter_rows_by_period(
+        attempts,
+        period_from=period_from,
+        period_to=period_to,
+        timestamp_fields=("created_at", "sent_at_timestamp", "sent_at", "updated_at"),
+    )
+
     companies = {
         _safe_text(row.get("row_id")): row
         for row in _load_companies_for_jobs((job_id,))
@@ -2750,24 +2863,52 @@ def _attach_chain_step_analytics(
         )
 
 
-def build_campaign_analytics(job_id: str, *, refresh: bool = False) -> dict[str, Any]:
-    delivery_rows = _load_delivery_for_jobs((job_id,))
-    rows = _group_rows_into_companies(delivery_rows)
+def build_campaign_analytics(
+    job_id: str,
+    *,
+    refresh: bool = False,
+    period_from: str = "",
+    period_to: str = "",
+) -> dict[str, Any]:
+    period_from, period_to = normalize_statistics_period(period_from, period_to)
+    has_period_filter = bool(period_from or period_to)
+    all_delivery_rows = _load_delivery_for_jobs((job_id,))
+    all_rows = _group_rows_into_companies(all_delivery_rows)
     refresh_started, refresh_in_progress = _trigger_provider_refresh(
         (job_id,),
-        {job_id: rows},
+        {job_id: all_rows},
         manual=refresh,
         auto=True,
     )
-    consent_rows = _load_company_consents_for_jobs((job_id,))
+    delivery_rows = _filter_rows_by_period(
+        all_delivery_rows,
+        period_from=period_from,
+        period_to=period_to,
+        timestamp_fields=("sent_at_timestamp", "sent_at"),
+    )
+    rows = _group_rows_into_companies(delivery_rows)
+    all_consent_rows = _load_company_consents_for_jobs((job_id,))
+    consent_rows = _filter_rows_by_period(
+        all_consent_rows,
+        period_from=period_from,
+        period_to=period_to,
+        timestamp_fields=("last_action_at", "materials_sent_at", "created_at"),
+    )
     analytics = _campaign_analytics_sections(
         rows,
         consent_rows,
-        total_attempts=_campaign_attempt_total(job_id),
+        total_attempts=_campaign_attempt_total(
+            job_id,
+            period_from=period_from,
+            period_to=period_to,
+        ),
     )
     counts = analytics["summary"]
-    campaign = _campaign_metadata(job_id, rows=rows, consent_rows=consent_rows)
-    period_from, period_to = _campaign_period(job_id, rows)
+    campaign = _campaign_metadata(job_id, rows=all_rows, consent_rows=all_consent_rows)
+    campaign_period_from, campaign_period_to = _campaign_period(job_id, all_rows)
+    if not has_period_filter:
+        period_from = campaign_period_from
+        period_to = campaign_period_to
     link_analytics: dict[str, Any] = {
         "mode": "standalone",
         "has_links": False,
@@ -2977,6 +3118,8 @@ def build_campaign_full_analytics(
     job_id: str,
     *,
     refresh: bool = False,
+    period_from: str = "",
+    period_to: str = "",
     delivery_page: int = 1,
     sent_log_page: int = 1,
     attempts_page: int = 1,
@@ -2988,7 +3131,13 @@ def build_campaign_full_analytics(
     from src.campaigns.service import get_campaign_by_job_id, list_delivery_attempts
     from src.jobs.job_docs import read_sent_mail_log
 
-    analytics = build_campaign_analytics(job_id, refresh=refresh)
+    period_from, period_to = normalize_statistics_period(period_from, period_to)
+    analytics = build_campaign_analytics(
+        job_id,
+        refresh=refresh,
+        period_from=period_from,
+        period_to=period_to,
+    )
     campaign_db = get_campaign_by_job_id(job_id)
     campaign_meta = analytics.get("campaign") or {}
     if campaign_db:
@@ -2997,13 +3146,44 @@ def build_campaign_full_analytics(
             **{k: v for k, v in campaign_db.items() if k not in {"draft_payload"}},
         }
 
-    consent_rows = _load_consents_for_jobs((job_id,))
-    delivery_rows = _load_delivery_for_jobs((job_id,), refresh=refresh)
-    sent_log = read_sent_mail_log(job_id)
-    sent_page_items, sent_pagination = _paginate_list(sent_log, page=sent_log_page, per_page=per_page)
-    delivery_page_items, delivery_pagination = _paginate_list(delivery_rows, page=delivery_page, per_page=per_page)
+    consent_rows = _filter_rows_by_period(
+        _load_consents_for_jobs((job_id,)),
+        period_from=period_from,
+        period_to=period_to,
+        timestamp_fields=("last_action_at", "materials_sent_at", "created_at"),
+    )
+    delivery_rows = _filter_rows_by_period(
+        _load_delivery_for_jobs((job_id,), refresh=refresh),
+        period_from=period_from,
+        period_to=period_to,
+        timestamp_fields=("sent_at_timestamp", "sent_at"),
+    )
+    sent_log = _filter_rows_by_period(
+        list(read_sent_mail_log(job_id)),
+        period_from=period_from,
+        period_to=period_to,
+        timestamp_fields=("sent_at", "created_at"),
+    )
+    sent_page_items, sent_pagination = _paginate_list(
+        sent_log,
+        page=sent_log_page,
+        per_page=per_page,
+    )
+    delivery_page_items, delivery_pagination = _paginate_list(
+        delivery_rows,
+        page=delivery_page,
+        per_page=per_page,
+    )
 
-    domain_filters = StatsFilters(job_ids=(normalize_job_id(job_id),))
+    domain_filters = StatsFilters(
+        job_ids=(normalize_job_id(job_id),),
+        period_from=period_from,
+        period_to=period_to,
+    )
+    attempt_created_from, attempt_created_to = _statistics_period_bounds(
+        period_from,
+        period_to,
+    )
     domain_stats = build_domain_delivery_stats(domain_filters)
 
     chain_stats: dict[str, Any] = {"edges": [], "consents": {}}
@@ -3021,6 +3201,8 @@ def build_campaign_full_analytics(
                 campaign_id,
                 page=attempts_page,
                 per_page=per_page,
+                created_from=attempt_created_from,
+                created_to=attempt_created_to,
             )
             recipients = _campaign_recipients_for_preview(campaign_id)
             email_templates = _email_templates_for_campaign(campaign_db)

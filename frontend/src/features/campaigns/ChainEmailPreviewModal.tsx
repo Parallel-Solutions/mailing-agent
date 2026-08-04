@@ -10,7 +10,6 @@ import type {
 } from '@/api/types';
 import { invalidateCampaignDerivedData, showAutoFixResultMessage } from '@/features/campaigns/campaignQueryUtils';
 import { ValidationAutoFixButton } from '@/features/campaigns/ValidationAutoFixButton';
-import { TemplatePreviewImage } from '@/features/templates/TemplatePreviewImage';
 import {
   buildEmailPreviewDocument,
   highlightReviewIssues,
@@ -79,11 +78,6 @@ function IssueAlerts({ issues }: { issues: TemplatePlaceholderIssue[] }) {
   );
 }
 
-function isPdfAttachment(attachment: EmailChainPreviewAttachment): boolean {
-  const contentType = attachment.content_type || '';
-  if (contentType === 'application/pdf') return true;
-  return attachment.filename.toLowerCase().endsWith('.pdf');
-}
 
 function attachmentDownloadUrl(
   campaignId: string,
@@ -127,23 +121,25 @@ function AttachmentPdfPreview({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryVersion, setRetryVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     let objectUrl: string | null = null;
     setLoading(true);
     setError(null);
     setPreviewUrl(null);
 
     campaignsApi
-      .fetchPreviewEmailChainAttachment(campaignId, recipientId, templateId)
+      .fetchPreviewEmailChainAttachment(campaignId, recipientId, templateId, { signal: controller.signal })
       .then((blob) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
         setPreviewUrl(objectUrl);
       })
       .catch((fetchError) => {
-        if (cancelled) return;
+        if (cancelled || (fetchError instanceof Error && fetchError.name === 'AbortError')) return;
         setError(fetchError instanceof Error ? fetchError.message : 'Не удалось загрузить PDF');
       })
       .finally(() => {
@@ -152,9 +148,10 @@ function AttachmentPdfPreview({
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [campaignId, recipientId, templateId, previewVersion]);
+  }, [campaignId, recipientId, templateId, previewVersion, retryVersion]);
 
   if (loading) {
     return (
@@ -165,7 +162,18 @@ function AttachmentPdfPreview({
   }
 
   if (error) {
-    return <Alert type="error" showIcon message={error} />;
+    return (
+      <Alert
+        type="error"
+        showIcon
+        message={error}
+        action={
+          <Button size="small" onClick={() => setRetryVersion((value) => value + 1)}>
+            {'\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u044c'}
+          </Button>
+        }
+      />
+    );
   }
 
   if (!previewUrl) return null;
@@ -204,21 +212,13 @@ function AttachmentPreviewTab({
       <IssueAlerts issues={attachmentIssues} />
       {attachment.has_content ? (
         <>
-          {isPdfAttachment(attachment) ? (
-            <AttachmentPdfPreview
-              campaignId={campaignId}
-              recipientId={recipientId}
-              templateId={attachment.template_id}
-              previewVersion={previewVersion}
-              filename={attachment.filename}
-            />
-          ) : (
-            <TemplatePreviewImage
-              templateId={attachment.template_id}
-              alt={attachment.filename}
-              cacheKey={previewVersion}
-            />
-          )}
+          <AttachmentPdfPreview
+            campaignId={campaignId}
+            recipientId={recipientId}
+            templateId={attachment.template_id}
+            previewVersion={previewVersion}
+            filename={attachment.filename}
+          />
           {downloadUrl ? (
             <Typography.Paragraph style={{ marginBottom: 0 }}>
               <a href={downloadUrl} download={attachment.filename || undefined}>

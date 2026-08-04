@@ -471,8 +471,9 @@ class CampaignV1ApiTests(unittest.TestCase):
         data: bytes,
         *,
         owner_username: str | None = None,
+        file_kind: str | None = None,
     ) -> tuple[bytes, str]:
-        del data, owner_username
+        del data, owner_username, file_kind
         return (b"%PDF-1.4 delivery copy", f"{Path(filename).stem}.pdf")
 
     @patch("src.campaigns.template_service._build_document_pdf_artifact")
@@ -597,6 +598,8 @@ class CampaignV1ApiTests(unittest.TestCase):
         mock_build_pdf.assert_called_once_with(
             "Шаблон письма Администрациям.docx",
             source_payload.getvalue(),
+            owner_username=self.username,
+            file_kind=None,
         )
 
     def test_upload_conversion_error_returns_structured_422(self) -> None:
@@ -688,6 +691,8 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(template["version"]["filename"], "КП_СТП_районы (1) (1).docx")
         self.assertEqual(template["version"]["rendered_pdf_filename"], "КП_СТП_районы.pdf")
         self.assertEqual(template["name"], "КП СТП районы")
+        self.assertEqual(template["version"]["editor_state"]["document_file_kind"], "kp")
+        self.assertEqual(mock_build_pdf.call_args.kwargs["file_kind"], "kp")
 
     @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_patch_delivery_filename_without_new_version(self, mock_build_pdf) -> None:

@@ -24,6 +24,7 @@ from src.campaigns.template_render_service import (
     _build_context,
     _render_pdf_overlay,
     collect_campaign_template_ids,
+    resolve_cached_attachment,
 )
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignRecipient, MailTemplate, TemplateVersion
@@ -58,7 +59,7 @@ def _load_review_context(
         return campaign, recipient
 
 
-def _load_pdf_template(
+def _load_document_template(
     template_id: str,
     owner_username: str,
 ) -> tuple[MailTemplate, TemplateVersion] | None:
@@ -74,7 +75,7 @@ def _load_pdf_template(
         if version is None:
             return None
         filename = str(version.filename or template.name or "")
-        if Path(filename).suffix.lower() != ".pdf":
+        if Path(filename).suffix.lower() not in {".pdf", ".docx", ".html", ".htm"}:
             return None
         session.expunge(template)
         session.expunge(version)
@@ -121,6 +122,38 @@ def _review_template(
     recipient: CampaignRecipient,
 ) -> dict[str, Any]:
     source_data = get_bytes(str(version.storage_key or ""))
+    source_filename = str(version.filename or template.name or "document.pdf")
+    if Path(source_filename).suffix.lower() != ".pdf":
+        resolved = resolve_cached_attachment(
+            template_id=str(template.id),
+            recipient_id=int(recipient.id),
+            job_id=str(campaign.job_id or campaign.id),
+            owner_username=campaign.owner_username,
+            campaign=campaign,
+            recipient=recipient,
+            strict=True,
+        )
+        if resolved is None:
+            raise ValueError("\u0412\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e")
+        preview_filename, preview_content = resolved
+        if Path(preview_filename).suffix.lower() != ".pdf":
+            preview_content, preview_filename = template_service._build_document_pdf_artifact(  # noqa: SLF001
+                preview_filename,
+                preview_content,
+                owner_username=campaign.owner_username,
+            )
+        return {
+            "template_id": str(template.id),
+            "active_version_id": str(version.id),
+            "template_name": str(template.name or version.filename or template.id),
+            "filename": preview_filename,
+            "status": "preview_only",
+            "message": "\u041f\u043e\u043a\u0430\u0437\u0430\u043d \u043f\u0435\u0440\u0441\u043e\u043d\u0430\u043b\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442 \u0434\u043b\u044f \u043f\u0435\u0440\u0432\u043e\u0433\u043e \u043f\u043e\u043b\u0443\u0447\u0430\u0442\u0435\u043b\u044f.",
+            "changes": [],
+            "before_image": _preview_data_url(preview_content),
+            "can_apply": False,
+        }
+
     source_text = template_service.cached_version_source_text(version) or _pdf_text(source_data)
     placeholders = discover_placeholders(source_text)
     base = {
@@ -207,7 +240,7 @@ def inspect_campaign_layout(
     _email_ids, document_ids = collect_campaign_template_ids(campaign)
     documents: list[dict[str, Any]] = []
     for template_id in document_ids:
-        loaded = _load_pdf_template(str(template_id), campaign.owner_username)
+        loaded = _load_document_template(str(template_id), campaign.owner_username)
         if loaded is None:
             continue
         template, version = loaded
@@ -257,10 +290,12 @@ def apply_campaign_layout(
     _email_ids, document_ids = collect_campaign_template_ids(campaign)
     if template_id not in {str(item) for item in document_ids}:
         raise ValueError("Шаблон документа не связан с этой рассылкой")
-    loaded = _load_pdf_template(template_id, campaign.owner_username)
+    loaded = _load_document_template(template_id, campaign.owner_username)
     if loaded is None:
         raise ValueError("PDF-шаблон не найден")
     template, version = loaded
+    if Path(str(version.filename or template.name or "")).suffix.lower() != ".pdf":
+        raise ValueError("\u0410\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0430\u044f \u043a\u043e\u0440\u0440\u0435\u043a\u0446\u0438\u044f \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430 \u0442\u043e\u043b\u044c\u043a\u043e \u0434\u043b\u044f PDF-\u0448\u0430\u0431\u043b\u043e\u043d\u043e\u0432")
     source_data = get_bytes(str(version.storage_key or ""))
     source_text = template_service.cached_version_source_text(version) or _pdf_text(source_data)
     placeholders = discover_placeholders(source_text)

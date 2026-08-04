@@ -5,6 +5,7 @@ export const PER_PAGE = 10;
 export const STATS_TABS = [
   { key: 'dashboard', label: 'Обзор' },
   { key: 'campaign-list', label: 'Рассылки' },
+  { key: 'draft-list', label: 'Черновики' },
   { key: 'audiences', label: 'Аудитории' },
   { key: 'campaigns', label: 'Показатели рассылок' },
   { key: 'recipients', label: 'Компании' },
@@ -13,13 +14,14 @@ export const STATS_TABS = [
   { key: 'marketing-consents', label: 'Подписки и отписки' },
 ] as const;
 
-export const MANAGEMENT_TAB_KEYS = ['campaign-list', 'audiences'] as const;
+export const MANAGEMENT_TAB_KEYS = ['campaign-list', 'draft-list', 'audiences'] as const;
 
 export type StatsTabKey = (typeof STATS_TABS)[number]['key'];
 
 export const PAGE_TITLES: Record<StatsTabKey, string> = {
   dashboard: 'Статистика рассылки',
   'campaign-list': 'Рассылки',
+  'draft-list': 'Черновики рассылок',
   audiences: 'Аудитории',
   campaigns: 'Показатели рассылок',
   recipients: 'Компании и статусы',

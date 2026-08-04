@@ -423,16 +423,24 @@ def list_delivery_attempts(
     *,
     page: int = 1,
     per_page: int = 50,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
 ) -> dict[str, Any]:
     """Paginated delivery attempts for statistics (no owner filter — caller verifies access)."""
     page = max(1, page)
     per_page = min(max(1, per_page), 200)
+    conditions = [DeliveryAttempt.campaign_id == campaign_id]
+    if created_from is not None:
+        conditions.append(DeliveryAttempt.created_at >= created_from)
+    if created_to is not None:
+        conditions.append(DeliveryAttempt.created_at < created_to)
+
     with session_scope() as session:
         total = (
             session.scalar(
                 select(func.count())
                 .select_from(DeliveryAttempt)
-                .where(DeliveryAttempt.campaign_id == campaign_id)
+                .where(*conditions)
             )
             or 0
         )
@@ -442,7 +450,7 @@ def list_delivery_attempts(
             .join(
                 CampaignRecipient, CampaignRecipient.id == DeliveryAttempt.recipient_id
             )
-            .where(DeliveryAttempt.campaign_id == campaign_id)
+            .where(*conditions)
             .order_by(DeliveryAttempt.created_at.desc(), DeliveryAttempt.id.desc())
             .offset(start)
             .limit(per_page)
@@ -522,6 +530,7 @@ def list_campaigns(
     owner_username: str,
     *,
     visible_owners: Any = OWNER_VISIBILITY_UNSET,
+    scope: str = "all",
     status: str | None = None,
     q: str | None = None,
     limit: int = 50,
@@ -534,6 +543,12 @@ def list_campaigns(
         stmt = apply_owner_filter(stmt, Campaign.owner_username, visible_owners)
         if not include_archived:
             stmt = stmt.where(Campaign.archived.is_(False))
+        if scope == "draft":
+            stmt = stmt.where(Campaign.status == "draft")
+        elif scope == "launched":
+            stmt = stmt.where(Campaign.status != "draft")
+        elif scope != "all":
+            raise ValueError(f"Unknown campaign list scope: {scope}")
         if status:
             stmt = stmt.where(Campaign.status == status)
         if q:

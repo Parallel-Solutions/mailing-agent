@@ -630,6 +630,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/campaigns")
     def get_campaigns(
         principal: object = Depends(check_auth),
+        scope: Literal["all", "draft", "launched"] = "all",
         status: str | None = None,
         q: str | None = None,
         limit: int = Query(default=50, ge=1, le=200),
@@ -640,6 +641,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             service.list_campaigns(
                 actor.username,
                 visible_owners=_visibility(actor),
+                scope=scope,
                 status=status,
                 q=q,
                 limit=limit,
@@ -1083,6 +1085,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         recipient_id: int = Query(..., ge=1),
         template_id: str = Query(..., min_length=1),
         download: int = Query(0, ge=0, le=1),
+        preview: int = Query(0, ge=0, le=1),
     ):
         actor = _actor(principal)
         try:
@@ -1091,8 +1094,11 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 recipient_id,
                 template_id,
                 actor.username,
+                as_pdf=bool(preview),
                 visible_owners=_visibility(actor),
             )
+        except template_service.DocumentConversionError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_detail()) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if resolved is None:

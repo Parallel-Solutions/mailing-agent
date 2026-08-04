@@ -216,7 +216,7 @@ export type DocumentLayoutReviewItem = {
   active_version_id: string;
   template_name: string;
   filename: string;
-  status: 'candidate' | 'already_applied' | 'skipped' | 'error';
+  status: 'candidate' | 'already_applied' | 'preview_only' | 'skipped' | 'error';
   message: string;
   changes: string[];
   before_image?: string;

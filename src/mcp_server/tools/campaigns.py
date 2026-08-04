@@ -6,15 +6,22 @@ from typing import Any, Callable
 def register_campaign_tools(mcp: Any, get_client: Callable[[], Any]) -> None:
     @mcp.tool()
     def list_campaigns(
+        scope: str | None = None,
         status: str | None = None,
         q: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
     ) -> Any:
-        """List campaigns. Optional filters: status, q, limit, offset."""
+        """List campaigns. Scope can be all, draft, or launched."""
         return get_client().get(
             "/api/v1/campaigns",
-            params={"status": status, "q": q, "limit": limit, "offset": offset},
+            params={
+                "scope": scope,
+                "status": status,
+                "q": q,
+                "limit": limit,
+                "offset": offset,
+            },
         )
 
     @mcp.tool()

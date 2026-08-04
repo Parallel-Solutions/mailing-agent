@@ -44,11 +44,20 @@ export type VariableMappingState = {
   recipient_template_variables?: TemplateVariableItem[];
 };
 
+export type CampaignListScope = 'all' | 'draft' | 'launched';
+
 const CAMPAIGN_VALIDATE_TIMEOUT_MS = 30_000;
 
 export const campaignsApi = {
-  list: (params?: { status?: string; q?: string; limit?: number; offset?: number }) => {
+  list: (params?: {
+    scope?: CampaignListScope;
+    status?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
     const q = new URLSearchParams();
+    if (params?.scope) q.set('scope', params.scope);
     if (params?.status) q.set('status', params.status);
     if (params?.q) q.set('q', params.q);
     if (params?.limit) q.set('limit', String(params.limit));
@@ -183,28 +192,40 @@ export const campaignsApi = {
     id: string,
     recipientId: number,
     templateId: string,
-    options?: { download?: boolean },
+    options?: { download?: boolean; preview?: boolean },
   ) => {
     const params = new URLSearchParams({
       recipient_id: String(recipientId),
       template_id: templateId,
     });
     if (options?.download) params.set('download', '1');
+    if (options?.preview) params.set('preview', '1');
     return `/api/v1/campaigns/${id}/email-chain/preview/attachment?${params.toString()}`;
   },
   fetchPreviewEmailChainAttachment: async (
     id: string,
     recipientId: number,
     templateId: string,
+    options?: { signal?: AbortSignal },
   ): Promise<Blob> => {
-    const response = await fetch(campaignsApi.previewEmailChainAttachmentUrl(id, recipientId, templateId), {
-      credentials: 'include',
-    });
+    const response = await fetch(
+      campaignsApi.previewEmailChainAttachmentUrl(id, recipientId, templateId, { preview: true }),
+      {
+        credentials: 'include',
+        signal: options?.signal,
+      },
+    );
     if (!response.ok) {
       let detail = 'Не удалось загрузить вложение';
       try {
-        const payload = (await response.json()) as { detail?: string };
-        detail = payload.detail || detail;
+        const payload = (await response.json()) as {
+          detail?: string | { user_message?: string; hint?: string };
+        };
+        if (typeof payload.detail === 'string') {
+          detail = payload.detail || detail;
+        } else if (payload.detail?.user_message) {
+          detail = [payload.detail.user_message, payload.detail.hint].filter(Boolean).join(' ');
+        }
       } catch {
         // Keep the generic message for non-JSON errors.
       }

@@ -35,6 +35,56 @@ class DocumentUploadRenderingTests(unittest.TestCase):
         )
         convert_mock.assert_called_once()
 
+    @patch("src.generator.generation.template_preview.convert_docx_to_delivery_pdf")
+    def test_docx_passes_explicit_kp_kind_to_pdf_safe_pipeline(self, convert_mock) -> None:
+        observed: dict[str, object] = {}
+
+        def convert(source: Path, output: Path, **kwargs: object) -> Path:
+            observed["source"] = source
+            observed["kwargs"] = kwargs
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"%PDF-1.4 kp")
+            return output
+
+        convert_mock.side_effect = convert
+
+        data, _filename = template_service._build_document_pdf_artifact(
+            "\u041a\u041f_\u0421\u0422\u041f.docx",
+            b"docx payload",
+            file_kind="kp",
+        )
+
+        source = observed["source"]
+        self.assertIsInstance(source, Path)
+        self.assertEqual(source.name, "source.docx")
+        self.assertEqual(data, b"%PDF-1.4 kp")
+        self.assertEqual(
+            observed["kwargs"],
+            {"file_kind": "kp", "template_docx": source},
+        )
+
+    def test_infer_document_file_kind_uses_source_identity_not_incidental_text(self) -> None:
+        self.assertEqual(
+            template_service.infer_document_file_kind(
+                template_type="document",
+                filename="\u041a\u041f_test.docx",
+            ),
+            "kp",
+        )
+        self.assertEqual(
+            template_service.infer_document_file_kind(
+                template_type="kp",
+                filename="offer.docx",
+            ),
+            "kp",
+        )
+        self.assertIsNone(
+            template_service.infer_document_file_kind(
+                template_type="document",
+                filename="generic-letter.docx",
+            )
+        )
+
     @patch("src.generator.generation.pdf_converter.convert_html_to_pdf")
     def test_html_also_produces_delivery_pdf(self, convert_mock) -> None:
         def convert(_html: str, output: Path, **_kwargs: object) -> Path:
