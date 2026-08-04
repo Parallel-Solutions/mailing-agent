@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from pypdf import PdfReader, PdfWriter
@@ -153,9 +154,70 @@ class PdfSafeTests(unittest.TestCase):
         reader = PdfReader(str(pdf_path))
         self.assertIn(b" rg", reader.pages[0].get_contents().get_data())
 
-    def test_convert_docx_to_delivery_pdf_runs_pdf_safe_pipeline(self) -> None:
-        from unittest.mock import patch
+    def test_explicit_kp_postprocess_restores_two_contact_icons(self) -> None:
+        source = self.tmp_dir / "source.docx"
+        staged = self.tmp_dir / "staged-icons.docx"
+        pdf_path = self.tmp_dir / "icons.pdf"
 
+        def drawing(png_id: str, svg_id: str, cx: int, cy: int) -> str:
+            return (
+                '<w:r><w:drawing><wp:inline><wp:extent cx="{}" cy="{}"/>'.format(cx, cy)
+                + '<a:blip r:embed="{}"><a:extLst><a:ext>'.format(png_id)
+                + '<asvg:svgBlip r:embed="{}"/>'.format(svg_id)
+                + "</a:ext></a:extLst></a:blip></wp:inline></w:drawing></w:r>"
+            )
+
+        document_xml = (
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+            'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            'xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main"><w:body>'
+            + drawing("rId12", "rId13", 113030, 121285)
+            + drawing("rId14", "rId15", 118745, 80645)
+            + "<w:p><w:r><w:t>\u0442\u0435\u043b. 8 903 806-08-08</w:t></w:r></w:p>"
+            + "<w:p><w:r><w:t>a.ivanov@parresh.ru</w:t></w:r></w:p>"
+            + "</w:body></w:document>"
+        )
+        rels_xml = (
+            "<Relationships>"
+            '<Relationship Id="rId13" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/phone.svg"/>'
+            '<Relationship Id="rId15" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/email.svg"/>'
+            "</Relationships>"
+        )
+        with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+            archive.writestr("word/document.xml", document_xml)
+            archive.writestr("word/_rels/document.xml.rels", rels_xml)
+            archive.writestr("word/media/phone.svg", SIMPLE_SVG)
+            archive.writestr("word/media/email.svg", SIMPLE_SVG)
+
+        plan = pdf_safe.prepare_docx_for_pdf_export(
+            source,
+            staged,
+            file_kind="kp",
+            template_docx=source,
+        )
+
+        self.assertTrue(plan.should_overlay_kp_contact_icons)
+        self.assertEqual(len(pdf_safe.extract_kp_contact_icons(source)), 2)
+        with ZipFile(staged) as archive:
+            staged_xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertNotIn("rId13", staged_xml)
+        self.assertNotIn("rId15", staged_xml)
+
+        writer = PdfWriter()
+        writer.add_blank_page(width=595, height=842)
+        with pdf_path.open("wb") as handle:
+            writer.write(handle)
+        positions = pdf_safe.KpContactTextPositions(phone_x=72.0, phone_y=100.0, email_y=82.0)
+        with patch.object(pdf_safe, "find_contact_text_positions", return_value=positions):
+            pdf_safe.apply_pdf_safe_postprocess(pdf_path, plan)
+
+        content = PdfReader(str(pdf_path)).pages[0].get_contents().get_data()
+        self.assertIn(b"/GSicon gs", content)
+        self.assertGreaterEqual(content.count(b" rg"), 2)
+
+    def test_convert_docx_to_delivery_pdf_runs_pdf_safe_pipeline(self) -> None:
         from src.generator.generation.template_preview import convert_docx_to_delivery_pdf
 
         source = self.tmp_dir / "КП_test.docx"
