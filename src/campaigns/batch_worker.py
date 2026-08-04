@@ -6,6 +6,7 @@ import mimetypes
 import tempfile
 import time
 from datetime import datetime, timezone
+from email.headerregistry import Address
 from email.message import EmailMessage
 from email.policy import SMTP as SMTP_POLICY
 from email.utils import format_datetime, make_msgid
@@ -25,6 +26,9 @@ from src.campaigns.state import (
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignBatch, CampaignRecipient, MailTemplate, TemplateVersion
 from src.utils.logger import logger
+
+
+_SMTP_MESSAGE_POLICY = SMTP_POLICY.clone(max_line_length=998)
 
 
 def _now() -> datetime:
@@ -92,6 +96,17 @@ def _load_email_template(campaign: Campaign) -> tuple[str, str, str]:
     return subject, body_html, body_text
 
 
+def _smtp_from_address(sender_name: str, sender_email: str) -> Address:
+    display_name = str(sender_name or "").strip()
+    addr_spec = str(sender_email or "").strip()
+    if any(char in display_name or char in addr_spec for char in ("\r", "\n")):
+        raise ValueError("SMTP sender name and address must not contain line breaks.")
+    try:
+        return Address(display_name=display_name, addr_spec=addr_spec)
+    except ValueError as exc:
+        raise ValueError("Invalid SMTP sender name or address.") from exc
+
+
 def _send_smtp_message(
     *,
     mailbox_id: str,
@@ -113,7 +128,7 @@ def _send_smtp_message(
         creds = replace(creds, sender_name=sender_name)
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = f"{creds.sender_name} <{creds.email}>" if creds.sender_name else creds.email
+    msg["From"] = _smtp_from_address(creds.sender_name, creds.email)
     msg["To"] = to_email
     msg["Date"] = format_datetime(_now())
     message_id = make_msgid(domain=creds.email.rpartition("@")[2] or None)
@@ -125,7 +140,7 @@ def _send_smtp_message(
         maintype, subtype = (content_type or "application/octet-stream").split("/", 1)
         msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
 
-    raw_message = msg.as_bytes(policy=SMTP_POLICY)
+    raw_message = msg.as_bytes(policy=_SMTP_MESSAGE_POLICY)
     server: Any = _open_smtp_connection(creds)
     try:
         server.sendmail(creds.email, [to_email], raw_message)
