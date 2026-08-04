@@ -5,6 +5,27 @@ alwaysApply: true
 
 # Local vs test containers
 
+## Container refresh after every change (mandatory)
+
+After every repository change, before reporting the task as complete, rebuild and recreate every affected long-running Docker Compose service. Never leave an active stack running code from an older image.
+
+- Changes that can affect application code, dependencies, frontend assets, or runtime configuration require rebuilding both `app` and `worker`.
+- Refresh the production-like local stack with:
+
+```powershell
+.\scripts\dev.ps1 start -Build
+```
+
+- If the E2E stack is running, refresh its affected services too:
+
+```powershell
+docker compose -p mailing-agent-e2e -f docker-compose.yml -f docker-compose.e2e.yml --env-file .env.e2e up -d --build app worker
+```
+
+- Changes to Dockerfiles, Compose files, or service dependencies also require recreating every additionally affected service.
+- Use non-destructive `up -d --build` updates. Never use `down -v`, `reset`, or delete persistent volumes unless the user explicitly requests it.
+- After recreation, verify `docker compose ... ps` plus the relevant health/readiness endpoints. Do not claim completion while an affected service is unhealthy or still running a stale image.
+
 ## Local manual testing / UI development
 
 Use the production-like stack only:
