@@ -34,6 +34,7 @@ from src.generator.delivery.manager_stats import (
     export_report,
     find_report_file,
     parse_row_key,
+    normalize_statistics_period,
 )
 from src.jobs.access import JobAccessDenied, authorize_job_access, job_is_visible
 from src.jobs.job_docs import list_job_ids_with_sent_mail
@@ -78,6 +79,12 @@ def create_statistics_router(
 
     def _principal_name(principal: object) -> str:
         return coerce_principal(principal).username
+
+    def _validate_statistics_period(period_from: str, period_to: str) -> tuple[str, str]:
+        try:
+            return normalize_statistics_period(period_from, period_to)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     def _list_mailing_jobs_for_stats(principal: object) -> list[str]:
         # Statistics only make sense for jobs that actually sent mail. Resolve the
@@ -127,6 +134,7 @@ def create_statistics_router(
             provider_values.extend(item.strip() for item in providers.split(",") if item.strip())
         status_values = [item.strip() for item in (status or "").split(",") if item.strip()]
         role_values = [item.strip() for item in (recipient_role or "").split(",") if item.strip()]
+        period_from, period_to = _validate_statistics_period(period_from, period_to)
         return StatsFilters(
             job_ids=_resolve_job_ids(principal, job_id=job_id, campaign=campaign),
             period_from=period_from,
@@ -404,28 +412,50 @@ def create_statistics_router(
     def sender_campaign_analytics(
         job_id: str,
         refresh: bool = False,
+        period_from: str = "",
+        period_to: str = "",
         principal: object = Depends(check_auth),
     ):
         ensure_job_access(job_id, principal, allow_missing=False)
-        return {"status": "ok", "result": build_campaign_analytics(job_id, refresh=refresh)}
+        period_from, period_to = _validate_statistics_period(period_from, period_to)
+        return {
+            "status": "ok",
+            "result": build_campaign_analytics(
+                job_id,
+                refresh=refresh,
+                period_from=period_from,
+                period_to=period_to,
+            ),
+        }
 
     @router.get("/api/sender/campaign-attempts/{job_id}")
     def sender_campaign_attempts(
         job_id: str,
         page: int = Query(default=1, ge=1),
         per_page: int = Query(default=100, ge=1, le=200),
+        period_from: str = "",
+        period_to: str = "",
         principal: object = Depends(check_auth),
     ):
         ensure_job_access(job_id, principal, allow_missing=False)
+        period_from, period_to = _validate_statistics_period(period_from, period_to)
         return {
             "status": "ok",
-            "result": build_campaign_attempts(job_id, page=page, per_page=per_page),
+            "result": build_campaign_attempts(
+                job_id,
+                page=page,
+                per_page=per_page,
+                period_from=period_from,
+                period_to=period_to,
+            ),
         }
 
     @router.get("/api/sender/campaign-full-analytics/{job_id}")
     def sender_campaign_full_analytics(
         job_id: str,
         refresh: bool = False,
+        period_from: str = "",
+        period_to: str = "",
         delivery_page: int = Query(1, ge=1),
         sent_log_page: int = Query(1, ge=1),
         attempts_page: int = Query(1, ge=1),
@@ -435,11 +465,14 @@ def create_statistics_router(
         principal: object = Depends(check_auth),
     ):
         ensure_job_access(job_id, principal, allow_missing=False)
+        period_from, period_to = _validate_statistics_period(period_from, period_to)
         return {
             "status": "ok",
             "result": build_campaign_full_analytics(
                 job_id,
                 refresh=refresh,
+                period_from=period_from,
+                period_to=period_to,
                 delivery_page=delivery_page,
                 sent_log_page=sent_log_page,
                 attempts_page=attempts_page,

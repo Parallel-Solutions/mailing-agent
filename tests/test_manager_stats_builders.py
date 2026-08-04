@@ -18,6 +18,7 @@ from src.generator.delivery.manager_stats import (
     _company_view,
     _group_rows_into_companies,
     _pct,
+    _within_period,
     build_campaign_analytics,
     build_campaign_attempts,
     build_campaign_full_analytics,
@@ -33,6 +34,7 @@ from src.generator.delivery.manager_stats import (
     build_work_lists,
     interest_for,
     list_available_reports,
+    normalize_statistics_period,
     make_row_key,
     normalize_manager_status,
     parse_row_key,
@@ -117,6 +119,20 @@ class PureHelperTests(unittest.TestCase):
 
     def test_bounce_reason(self) -> None:
         self.assertTrue(_bounce_reason("hard_bounced", "user unknown"))
+
+    def test_period_filter_handles_timezone_aware_and_legacy_values(self) -> None:
+        bounds = {"period_from": "2026-05-03", "period_to": "2026-05-03"}
+        self.assertTrue(_within_period("2026-05-03T23:59:59.999999+03:00", **bounds))
+        self.assertTrue(_within_period("2026-05-03T20:59:59.999999Z", **bounds))
+        self.assertTrue(_within_period("2026-05-03T23:59:59.999999", **bounds))
+        self.assertFalse(_within_period("2026-05-03T21:00:00Z", **bounds))
+        self.assertFalse(_within_period("2026-05-04T00:00:00+03:00", **bounds))
+
+    def test_period_validation_rejects_invalid_or_reversed_dates(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_statistics_period("03.05.2026", "2026-05-03")
+        with self.assertRaises(ValueError):
+            normalize_statistics_period("2026-05-04", "2026-05-03")
 
 
 class FunnelTests(unittest.TestCase):

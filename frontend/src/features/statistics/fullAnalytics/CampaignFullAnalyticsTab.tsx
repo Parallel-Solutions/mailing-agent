@@ -30,11 +30,19 @@ export function CampaignFullAnalyticsTab() {
   const [attemptsPage, setAttemptsPage] = useState(1);
   const [documentFilter, setDocumentFilter] = useState('');
 
+  useEffect(() => {
+    setDeliveryPage(1);
+    setSentLogPage(1);
+    setAttemptsPage(1);
+  }, [filters.period_from, filters.period_to]);
+
   const query = useQuery({
     queryKey: [
       'stats-campaign-full-analytics',
       jobId,
       refreshNonce,
+      filters.period_from,
+      filters.period_to,
       deliveryPage,
       sentLogPage,
       attemptsPage,
@@ -44,6 +52,8 @@ export function CampaignFullAnalyticsTab() {
       statisticsApi.campaignFullAnalytics(jobId, {
         refresh: refreshNonce > 0 ? true : undefined,
         delivery_page: deliveryPage,
+        period_from: filters.period_from || undefined,
+        period_to: filters.period_to || undefined,
         sent_log_page: sentLogPage,
         attempts_page: attemptsPage,
         per_page: 20,
