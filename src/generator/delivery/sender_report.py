@@ -30,6 +30,7 @@ from src.generator.delivery.sender_agent import (
 )
 from src.generator.delivery.consent_store import load_consent_records
 from src.generator.delivery.mailopost_events import load_mailopost_events
+from src.generator.delivery.open_tracking import load_smtp_open_events
 from src.generator.delivery.rusender_events import load_rusender_events
 from src.generator.delivery.unisender_go_events import load_unisender_go_events
 from src.generator.generation.excel_io import load_rows
@@ -642,6 +643,7 @@ def _build_delivery_rows(
     go_events = _latest_unisender_go_events(job_id)
     rusender_events = _latest_rusender_events(job_id)
     mailopost_events = _latest_mailopost_events(job_id)
+    smtp_open_events = _latest_smtp_open_events(job_id)
     cached_statuses = _load_delivery_status_cache(job_id)
     provider_statuses: dict[str, dict[str, Any]] = {}
     refresh_error = ""
@@ -685,9 +687,18 @@ def _build_delivery_rows(
         if mailopost_event:
             provider_status = _safe_text(mailopost_event.get("provider_status")) or provider_status
             checked_at = _safe_text(mailopost_event.get("checked_at")) or checked_at
+        smtp_open_event = _match_smtp_open_event(item, smtp_open_events)
+        if smtp_open_event:
+            provider_status = "opened"
+            checked_at = _safe_text(smtp_open_event.get("checked_at")) or checked_at
 
         label = _report_status_label(provider_status)
-        delivery_response = _delivery_response_text(go_event, rusender_event, mailopost_event)
+        delivery_response = _delivery_response_text(
+            go_event,
+            rusender_event,
+            mailopost_event,
+            smtp_open_event,
+        )
         recipient_role = _recipient_role_from_item(item, current_data_roles=current_data_roles)
         sent_at = _to_moscow_datetime(item.get("sent_at"))
         log_status = _normalize_provider_status(_safe_text(item.get("status")))
@@ -717,6 +728,13 @@ def _build_delivery_rows(
                 "email_id": message_id,
                 "message_id": _safe_text(item.get("provider_job_id") or provider.get("job_id")),
                 "checked_at": _format_moscow_datetime(checked_at),
+                "open_count": int((smtp_open_event or {}).get("open_count") or 0),
+                "first_opened_at": _format_moscow_datetime(
+                    (smtp_open_event or {}).get("first_opened_at")
+                ),
+                "last_opened_at": _format_moscow_datetime(
+                    (smtp_open_event or {}).get("last_opened_at")
+                ),
                 "comment": _comment_text(item, refresh_error),
                 "error": _safe_text(item.get("error")),
                 "layout_error_code": _safe_text(item.get("layout_error_code")),
@@ -1324,6 +1342,64 @@ def _latest_mailopost_events(job_id: str | None) -> dict[str, dict[str, Any]]:
                 latest_event["checked_at"] = checked_at
                 latest[key] = latest_event
     return latest
+
+
+def _latest_smtp_open_events(job_id: str | None) -> dict[str, dict[str, Any]]:
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
+
+    latest: dict[str, dict[str, Any]] = {}
+    try:
+        events = load_smtp_open_events(job_id)
+    except Exception as exc:
+        logger.warning("smtp_open_events_load_failed", job_id=job_id, error=str(exc))
+        return latest
+    for event in events:
+        recipient = _safe_text(event.get("recipient")).lower()
+        row_id = _safe_text(event.get("row_id"))
+        raw_message_id = _safe_text(event.get("provider_message_id"))
+        keys: list[str] = []
+        for message_id in provider_message_id_lookup_keys(raw_message_id):
+            if recipient:
+                keys.append(f"message_email:{message_id}:{recipient}")
+            keys.append(f"message:{message_id}")
+        if row_id and recipient:
+            keys.append(f"row_email:{row_id}:{recipient}")
+        if recipient:
+            keys.append(f"email:{recipient}")
+        for key in keys:
+            latest.setdefault(key, dict(event))
+    return latest
+
+
+def _match_smtp_open_event(
+    item: dict[str, Any],
+    events: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    if _provider_name(item).strip().lower() != "smtp":
+        return None
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
+
+    provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
+    raw_message_id = (
+        item.get("provider_message_id")
+        or item.get("message_id")
+        or provider.get("message_id")
+    )
+    recipient = _safe_text(item.get("recipient")).lower()
+    row_id = _safe_text(item.get("row_id"))
+    keys: list[str] = []
+    for message_id in provider_message_id_lookup_keys(raw_message_id):
+        if recipient:
+            keys.append(f"message_email:{message_id}:{recipient}")
+        keys.append(f"message:{message_id}")
+    if row_id and recipient:
+        keys.append(f"row_email:{row_id}:{recipient}")
+    if recipient:
+        keys.append(f"email:{recipient}")
+    for key in keys:
+        if key in events:
+            return events[key]
+    return None
 
 
 def _latest_rusender_events(job_id: str | None) -> dict[str, dict[str, Any]]:

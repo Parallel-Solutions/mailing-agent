@@ -167,6 +167,8 @@ def _send_delivery_message(
     send_run_id: str | None = None,
     campaign: Campaign | None = None,
     track_links: bool | None = None,
+    tracking_key: str = "",
+    tracking_warmup_delivery_id: str = "",
 ) -> str:
     """Send one message using the saved per-user connection."""
     from src.campaigns.connection_service import resolve_connection
@@ -190,13 +192,58 @@ def _send_delivery_message(
 
     try:
         if connection.transport == "smtp":
+            prepared_tracking = None
+            tracked_html = html
+            try:
+                from src.generator.delivery.open_tracking import (
+                    build_smtp_tracking_delivery_key,
+                    inject_smtp_open_tracking_pixel,
+                    prepare_smtp_open_tracking,
+                )
+
+                campaign_id = str(getattr(campaign, "id", "") or "")
+                delivery_key = build_smtp_tracking_delivery_key(
+                    connection_id=connection.id,
+                    recipient=to_email,
+                    job_id=str(job_id or ""),
+                    campaign_id=campaign_id,
+                    row_id=row_id,
+                    send_mode=str(send_mode or ""),
+                    send_run_id=str(send_run_id or ""),
+                    warmup_delivery_id=tracking_warmup_delivery_id,
+                    explicit_key=tracking_key,
+                )
+                prepared_tracking = prepare_smtp_open_tracking(
+                    delivery_key=delivery_key,
+                    connection_id=connection.id,
+                    owner_username=owner_username,
+                    recipient=to_email,
+                    job_id=str(job_id or ""),
+                    campaign_id=campaign_id,
+                    row_id=row_id,
+                    send_mode=str(send_mode or ""),
+                    warmup_delivery_id=tracking_warmup_delivery_id,
+                )
+                if prepared_tracking is not None:
+                    tracked_html = inject_smtp_open_tracking_pixel(
+                        html,
+                        prepared_tracking.pixel_url,
+                    )
+            except Exception:
+                # Tracking statistics must never block the actual message.
+                logger.exception(
+                    "smtp_open_tracking_prepare_failed",
+                    connection_id=connection.id,
+                    row_id=row_id,
+                )
+
             try:
                 message_id = _send_smtp_message(
                     mailbox_id=connection.id,
                     owner_username=owner_username,
                     to_email=to_email,
                     subject=subject,
-                    html=html,
+                    html=tracked_html,
                     text=text,
                     sender_name=connection.sender_name,
                     attachments=attachments,
@@ -204,6 +251,17 @@ def _send_delivery_message(
             except Exception as exc:
                 _record_submit_error(connection.id, to_email, exc)
                 raise
+            if prepared_tracking is not None:
+                try:
+                    from src.generator.delivery.open_tracking import mark_smtp_open_tracking_sent
+
+                    mark_smtp_open_tracking_sent(prepared_tracking.token, message_id)
+                except Exception:
+                    logger.exception(
+                        "smtp_open_tracking_mark_sent_failed",
+                        connection_id=connection.id,
+                        message_id=message_id,
+                    )
             _record_smtp_accept(connection.id, message_id, to_email)
             return message_id
 
@@ -569,6 +627,10 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     row_id=str(recipient.id),
                     attachments=attachments,
                     campaign=camp,
+                    tracking_key=(
+                        f"campaign-batch:{campaign_id}:{batch_id}:{recipient_id}:"
+                        f"{send_mode or 'email'}:{delivery_email}"
+                    ),
                 )
                 recipient.send_status = "sent"
                 recipient.last_error = None

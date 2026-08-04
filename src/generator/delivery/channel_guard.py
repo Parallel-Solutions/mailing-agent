@@ -351,6 +351,7 @@ def _enqueue_connection_warmup(
             "owner_username": owner_username,
             "recipients": recipients,
             "message_count": message_count,
+            "tracking_run_id": triggered_at.isoformat(),
         },
         max_attempts=1,
         idempotency_key=f"connection_warmup:{connection_id}:{triggered_at.isoformat()}",

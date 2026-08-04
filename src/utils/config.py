@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     smtp_use_ssl: bool = True
     smtp_use_starttls: bool = False
     smtp_allow_real_send: bool = False
+    smtp_open_tracking_enabled: bool = True
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     microsoft_oauth_client_id: str = ""

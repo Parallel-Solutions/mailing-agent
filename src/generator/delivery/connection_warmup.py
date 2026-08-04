@@ -61,6 +61,7 @@ def run_connection_warmup(kwargs: dict[str, Any]) -> dict[str, Any]:
         if str(value or "").strip()
     ]
     message_count = max(1, min(10000, int(kwargs.get("message_count") or 1)))
+    tracking_run_id = str(kwargs.get("tracking_run_id") or "").strip()
     if not connection_id or not owner_username or not recipients:
         raise ValueError("Для прогрева не хватает подключения или адресов получателей.")
 
@@ -95,6 +96,10 @@ def run_connection_warmup(kwargs: dict[str, Any]) -> dict[str, Any]:
                 row_id=f"warmup-{index + 1}",
                 send_mode="connection_warmup",
                 track_links=False,
+                tracking_key=(
+                    f"automatic-warmup:{connection_id}:{tracking_run_id}:"
+                    f"{index + 1}:{recipient}"
+                ),
             )
             sent += 1
         except Exception:

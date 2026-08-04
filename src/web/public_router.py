@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 
 PUBLIC_ASSETS_DIR = Path("src/generator/assets")
@@ -46,6 +46,26 @@ def create_public_router() -> APIRouter:
         if payload.get("status") != "ok":
             return JSONResponse(status_code=503, content=payload)
         return payload
+
+    @router.get("/public/email/open/{token}.gif")
+    def smtp_open_tracking_pixel(token: str):
+        from src.generator.delivery.open_tracking import TRANSPARENT_GIF, record_smtp_open
+        from src.utils.logger import logger
+
+        try:
+            record_smtp_open(token)
+        except Exception:
+            # Never expose storage failures to the recipient or break image rendering.
+            logger.exception("smtp_open_tracking_record_failed")
+        return Response(
+            content=TRANSPARENT_GIF,
+            media_type="image/gif",
+            headers={
+                **NO_CACHE_HEADERS,
+                "X-Content-Type-Options": "nosniff",
+                "Cross-Origin-Resource-Policy": "cross-origin",
+            },
+        )
 
     @router.get("/public/mail-signature.png")
     def public_mail_signature():
