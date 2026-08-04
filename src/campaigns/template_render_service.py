@@ -133,6 +133,45 @@ def _resolve_delivery_filename(
         return version.rendered_pdf_filename or f"{Path(stem_source).stem}.pdf"
     return version.filename or Path(stem_source).name
 
+def _render_cache_fingerprint(
+    *,
+    template: MailTemplate,
+    version: TemplateVersion,
+    recipient: CampaignRecipient,
+    campaign: Campaign,
+) -> str:
+    payload = {
+        "renderer_version": DOCUMENT_RENDERER_VERSION,
+        "template": {
+            "id": str(template.id),
+            "version_id": str(version.id),
+            "template_type": str(template.template_type or ""),
+            "attachment_output_format": str(template.attachment_output_format or "original"),
+            "is_template": bool(template.is_template),
+        },
+        "recipient": {
+            "id": int(recipient.id),
+            "row_index": int(recipient.row_index or 0),
+            "company": str(recipient.company or ""),
+            "contact_name": str(recipient.contact_name or ""),
+            "email": str(recipient.email or ""),
+            "email_fallback": str(recipient.email_fallback or ""),
+            "region": str(recipient.region or ""),
+            "extra": dict(recipient.extra or {}),
+        },
+        "campaign": {
+            "id": str(campaign.id),
+            "name": str(campaign.name or ""),
+            "description": str(campaign.description or ""),
+            "work_type": str(campaign.work_type or ""),
+            "document_mode": str(campaign.document_mode or ""),
+            "draft_payload": dict(campaign.draft_payload or {}),
+        },
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 
 def _signature(campaign: Campaign, template_ids: list[str]) -> str:
     parts: list[dict[str, Any]] = []
@@ -223,12 +262,15 @@ def _write_render_meta(
     fit_result: Any | None = None,
     font_pack_hash: str = "",
     template_version_id: str = "",
+    render_fingerprint: str = "",
 ) -> None:
     payload: dict[str, Any] = {"renderer_version": DOCUMENT_RENDERER_VERSION}
     if font_pack_hash:
         payload["font_pack_hash"] = font_pack_hash
     if template_version_id:
         payload["template_version_id"] = template_version_id
+    if render_fingerprint:
+        payload["render_fingerprint"] = render_fingerprint
     if fit_result is not None:
         payload["font_half_points"] = int(fit_result.font_half_points)
     _meta_cache_path(pdf_cache).write_text(
@@ -241,6 +283,7 @@ def _cached_pdf_is_valid(
     pdf_cache: Path,
     *,
     expected_font_pack_hash: str = "",
+    expected_render_fingerprint: str = "",
     expected_template_version_id: str = "",
     require_meta: bool = False,
 ) -> bool:
@@ -258,6 +301,11 @@ def _cached_pdf_is_valid(
         and str(meta.get("template_version_id") or "") != expected_template_version_id
     ):
         return False
+    if (
+        expected_render_fingerprint
+        and str(meta.get("render_fingerprint") or "") != expected_render_fingerprint
+    ):
+        return False
     return True
 
 
@@ -271,6 +319,7 @@ def _convert_kp_docx_to_pdf(
     prefer_local: bool = False,
     font_pack_hash: str = "",
     template_version_id: str = "",
+    render_fingerprint: str = "",
 ) -> None:
     from src.generator.generation.kp_one_page_fitter import fit_docx_to_one_page_pdf
 
@@ -288,6 +337,7 @@ def _convert_kp_docx_to_pdf(
         fit_result=fit_result,
         font_pack_hash=font_pack_hash,
         template_version_id=template_version_id,
+        render_fingerprint=render_fingerprint,
     )
 
 
@@ -317,26 +367,36 @@ def render_document_template_for_recipient(
         from src.campaigns.font_service import template_font_pack_hash
 
         expected_font_pack_hash = template_font_pack_hash(template_id, tmpl.owner_username)
+    render_fingerprint = (
+        _render_cache_fingerprint(
+            template=tmpl,
+            version=version,
+            recipient=recipient,
+            campaign=campaign,
+        )
+        if tmpl.is_template
+        else ""
+    )
 
     if not force:
         if wants_pdf and _cached_pdf_is_valid(
             pdf_cache,
             expected_font_pack_hash=expected_font_pack_hash,
             expected_template_version_id=str(version.id),
+            expected_render_fingerprint=render_fingerprint,
             require_meta=bool(tmpl.is_template),
         ):
             return delivery_name, pdf_cache.read_bytes()
-        if not wants_pdf and cache_file.exists():
-            if (
-                suffix != ".pdf"
-                or not tmpl.is_template
-                or _cached_pdf_is_valid(
-                    cache_file,
-                    expected_template_version_id=str(version.id),
-                    require_meta=True,
-                )
-            ):
-                return delivery_name, cache_file.read_bytes()
+        if not wants_pdf and cache_file.exists() and (
+            not tmpl.is_template
+            or _cached_pdf_is_valid(
+                cache_file,
+                expected_template_version_id=str(version.id),
+                expected_render_fingerprint=render_fingerprint,
+                require_meta=True,
+            )
+        ):
+            return delivery_name, cache_file.read_bytes()
 
     if not tmpl.is_template:
         filename = delivery_name
@@ -411,6 +471,11 @@ def render_document_template_for_recipient(
             if not wants_pdf:
                 rendered_data = output_docx.read_bytes()
                 cache_file.write_bytes(rendered_data)
+                _write_render_meta(
+                    cache_file,
+                    template_version_id=str(version.id),
+                    render_fingerprint=render_fingerprint,
+                )
                 return delivery_name, rendered_data
             file_kind = "kp" if str(tmpl.template_type or "").strip().lower() in {"kp", "document"} else None
             from src.generator.generation.pdf_safe import is_kp_docx
@@ -437,6 +502,7 @@ def render_document_template_for_recipient(
                         prefer_local=prefer_local,
                         font_pack_hash=active_font_pack_hash,
                         template_version_id=str(version.id),
+                        render_fingerprint=render_fingerprint,
                     )
                 else:
                     _convert_docx_to_pdf(
@@ -450,6 +516,7 @@ def render_document_template_for_recipient(
                         pdf_cache,
                         font_pack_hash=active_font_pack_hash,
                         template_version_id=str(version.id),
+                        render_fingerprint=render_fingerprint,
                     )
             return delivery_name, pdf_cache.read_bytes()
 
@@ -466,7 +533,11 @@ def render_document_template_for_recipient(
             else:
                 pdf_data = source_data
         pdf_cache.write_bytes(pdf_data)
-        _write_render_meta(pdf_cache, template_version_id=str(version.id))
+        _write_render_meta(
+            pdf_cache,
+            template_version_id=str(version.id),
+            render_fingerprint=render_fingerprint,
+        )
         return delivery_name, pdf_data
 
     if source_suffix in {".html", ".htm"}:
@@ -494,11 +565,26 @@ def render_document_template_for_recipient(
                 owner_username=tmpl.owner_username,
             )
             pdf_cache.write_bytes(pdf_data)
+            _write_render_meta(
+                pdf_cache,
+                template_version_id=str(version.id),
+                render_fingerprint=render_fingerprint,
+            )
             return delivery_name, pdf_data
         cache_file.write_bytes(rendered_data)
+        _write_render_meta(
+            cache_file,
+            template_version_id=str(version.id),
+            render_fingerprint=render_fingerprint,
+        )
         return delivery_name, rendered_data
 
     cache_file.write_bytes(source_data)
+    _write_render_meta(
+        cache_file,
+        template_version_id=str(version.id),
+        render_fingerprint=render_fingerprint,
+    )
     return delivery_name, source_data
 
 
@@ -595,6 +681,7 @@ def resolve_cached_attachment(
     owner_username: str,
     campaign: Campaign | None = None,
     recipient: CampaignRecipient | None = None,
+    strict: bool = False,
 ) -> tuple[str, bytes] | None:
     loaded = _load_template(template_id)
     if loaded is None:
@@ -611,6 +698,14 @@ def resolve_cached_attachment(
 
         expected_font_pack_hash = template_font_pack_hash(template_id, owner_username)
 
+    expected_render_fingerprint = ""
+    if tmpl.is_template and campaign is not None and recipient is not None:
+        expected_render_fingerprint = _render_cache_fingerprint(
+            template=tmpl,
+            version=version,
+            recipient=recipient,
+            campaign=campaign,
+        )
     if tmpl.is_template and campaign is not None and recipient is not None and job_id:
         delivery_name = _resolve_delivery_filename(
             tmpl,
@@ -623,14 +718,12 @@ def resolve_cached_attachment(
             template_id,
             ".pdf" if wants_pdf else source_suffix,
         )
-        if target_cache.exists() and (
-            target_cache.suffix.lower() != ".pdf"
-            or _cached_pdf_is_valid(
-                target_cache,
-                expected_font_pack_hash=expected_font_pack_hash,
-                expected_template_version_id=str(version.id),
-                require_meta=True,
-            )
+        if _cached_pdf_is_valid(
+            target_cache,
+            expected_font_pack_hash=expected_font_pack_hash,
+            expected_template_version_id=str(version.id),
+            expected_render_fingerprint=expected_render_fingerprint,
+            require_meta=True,
         ):
             return delivery_name, target_cache.read_bytes()
         try:
@@ -642,6 +735,8 @@ def resolve_cached_attachment(
             )
             return filename, data
         except Exception as exc:
+            if strict:
+                raise
             from src.campaigns.pdf_overlay_service import PdfOverlayLayoutError
             from src.generator.generation.kp_one_page_fitter import KpLayoutError
 
@@ -660,10 +755,11 @@ def resolve_cached_attachment(
             cache_file = _cache_dir(job_id, recipient_id) / f"{template_id}{suffix}"
             if not cache_file.exists():
                 continue
-            if suffix == ".pdf" and tmpl.is_template and not _cached_pdf_is_valid(
+            if tmpl.is_template and not _cached_pdf_is_valid(
                 cache_file,
                 expected_font_pack_hash=expected_font_pack_hash,
                 expected_template_version_id=str(version.id),
+                expected_render_fingerprint=expected_render_fingerprint,
                 require_meta=True,
             ):
                 continue

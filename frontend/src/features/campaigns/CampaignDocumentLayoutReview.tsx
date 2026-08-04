@@ -20,6 +20,7 @@ function statusTag(document: DocumentLayoutReviewItem, applied: boolean) {
     return <Tag color="green">Исправление применено</Tag>;
   }
   if (document.status === 'candidate') return <Tag color="blue">Есть улучшение</Tag>;
+  if (document.status === 'preview_only') return <Tag color="cyan">{'\u041f\u0440\u0435\u0434\u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440'}</Tag>;
   if (document.status === 'error') return <Tag color="red">Ошибка проверки</Tag>;
   return <Tag>Без изменений</Tag>;
 }
@@ -191,6 +192,14 @@ export function CampaignDocumentLayoutReview({
                   description={selectedDocument.message}
                 />
               ) : null}
+              {selectedDocument.status === 'preview_only' ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={'\u041f\u0435\u0440\u0441\u043e\u043d\u0430\u043b\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439 \u043f\u0440\u0435\u0434\u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440'}
+                  description={selectedDocument.message}
+                />
+              ) : null}
               {selectedDocument.status === 'skipped' ? (
                 <Alert
                   type="info"
@@ -198,6 +207,17 @@ export function CampaignDocumentLayoutReview({
                   message="Автоматическая коррекция не требуется"
                   description={selectedDocument.message}
                 />
+              ) : null}
+              {selectedDocument.status === 'preview_only' && selectedDocument.before_image ? (
+                <div className="document-layout-review__preview">
+                  <div className="document-layout-review__preview-title">
+                    <Typography.Text strong>{'\u0414\u043e\u043a\u0443\u043c\u0435\u043d\u0442 \u0434\u043b\u044f \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438'}</Typography.Text>
+                  </div>
+                  <img
+                    src={selectedDocument.before_image}
+                    alt={`\u041f\u0440\u0435\u0434\u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440 ${selectedDocument.template_name}`}
+                  />
+                </div>
               ) : null}
               {selectedDocument.before_image && selectedDocument.after_image ? (
                 <Row gutter={[16, 16]}>
