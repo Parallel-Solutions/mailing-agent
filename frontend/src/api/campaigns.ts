@@ -44,11 +44,20 @@ export type VariableMappingState = {
   recipient_template_variables?: TemplateVariableItem[];
 };
 
+export type CampaignListScope = 'all' | 'draft' | 'launched';
+
 const CAMPAIGN_VALIDATE_TIMEOUT_MS = 30_000;
 
 export const campaignsApi = {
-  list: (params?: { status?: string; q?: string; limit?: number; offset?: number }) => {
+  list: (params?: {
+    scope?: CampaignListScope;
+    status?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
     const q = new URLSearchParams();
+    if (params?.scope) q.set('scope', params.scope);
     if (params?.status) q.set('status', params.status);
     if (params?.q) q.set('q', params.q);
     if (params?.limit) q.set('limit', String(params.limit));

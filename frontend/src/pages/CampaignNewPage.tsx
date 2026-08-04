@@ -165,6 +165,7 @@ export function CampaignNewPage() {
     onSuccess: (camp) => {
       setCampaignId(camp.id);
       replaceDraft(camp);
+      void queryClient.invalidateQueries({ queryKey: ['campaigns', 'draft'] });
       navigate(`/campaigns/new?id=${camp.id}`, { replace: true });
     },
   });
@@ -1022,6 +1023,7 @@ export function CampaignNewPage() {
                               if (!id) return;
                               await runLaunchAction('Запуск рассылки…', async () => {
                                 await campaignsApi.launch(id);
+                                await queryClient.invalidateQueries({ queryKey: ['campaigns'] });
                                 await navigateAfterLaunch(id, 'Рассылка запущена');
                               });
                             }}

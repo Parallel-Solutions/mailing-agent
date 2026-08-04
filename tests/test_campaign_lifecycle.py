@@ -172,6 +172,32 @@ class CampaignLifecycleTests(unittest.TestCase):
         campaign_ids = {item["id"] for item in campaigns.json()["result"]["items"]}
         self.assertNotIn(campaign_id, campaign_ids)
 
+    def test_campaign_list_scopes_separate_drafts_from_launched_campaigns(self) -> None:
+        draft_id = self._create_campaign()
+        launched_id = self._create_campaign()
+        with session_scope() as session:
+            launched_campaign = session.get(Campaign, launched_id)
+            assert launched_campaign is not None
+            launched_campaign.status = "scheduled"
+            launched_campaign.launched_at = datetime.now(timezone.utc)
+
+        all_campaigns = self.client.get("/api/v1/campaigns")
+        self.assertEqual(all_campaigns.status_code, 200, all_campaigns.text)
+        self.assertEqual(all_campaigns.json()["result"]["total"], 2)
+
+        drafts = self.client.get("/api/v1/campaigns?scope=draft")
+        self.assertEqual(drafts.status_code, 200, drafts.text)
+        self.assertEqual(drafts.json()["result"]["total"], 1)
+        self.assertEqual(drafts.json()["result"]["items"][0]["id"], draft_id)
+
+        launched = self.client.get("/api/v1/campaigns?scope=launched")
+        self.assertEqual(launched.status_code, 200, launched.text)
+        self.assertEqual(launched.json()["result"]["total"], 1)
+        self.assertEqual(launched.json()["result"]["items"][0]["id"], launched_id)
+
+        invalid = self.client.get("/api/v1/campaigns?scope=unknown")
+        self.assertEqual(invalid.status_code, 422, invalid.text)
+
     def test_archive_rejects_active_campaign(self) -> None:
         campaign_id = self._create_campaign()
         with session_scope() as session:

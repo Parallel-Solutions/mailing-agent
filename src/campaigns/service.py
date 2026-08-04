@@ -522,6 +522,7 @@ def list_campaigns(
     owner_username: str,
     *,
     visible_owners: Any = OWNER_VISIBILITY_UNSET,
+    scope: str = "all",
     status: str | None = None,
     q: str | None = None,
     limit: int = 50,
@@ -534,6 +535,12 @@ def list_campaigns(
         stmt = apply_owner_filter(stmt, Campaign.owner_username, visible_owners)
         if not include_archived:
             stmt = stmt.where(Campaign.archived.is_(False))
+        if scope == "draft":
+            stmt = stmt.where(Campaign.status == "draft")
+        elif scope == "launched":
+            stmt = stmt.where(Campaign.status != "draft")
+        elif scope != "all":
+            raise ValueError(f"Unknown campaign list scope: {scope}")
         if status:
             stmt = stmt.where(Campaign.status == status)
         if q:

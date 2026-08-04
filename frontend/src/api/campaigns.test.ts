@@ -46,3 +46,22 @@ describe('campaignsApi.validate', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('campaignsApi.list', () => {
+  it('passes the requested campaign scope to the API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: 'ok', result: { items: [], total: 0 } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await campaignsApi.list({ scope: 'launched', limit: 100 });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/campaigns?scope=launched&limit=100',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+});

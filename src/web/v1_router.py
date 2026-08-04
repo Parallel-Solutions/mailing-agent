@@ -630,6 +630,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/campaigns")
     def get_campaigns(
         principal: object = Depends(check_auth),
+        scope: Literal["all", "draft", "launched"] = "all",
         status: str | None = None,
         q: str | None = None,
         limit: int = Query(default=50, ge=1, le=200),
@@ -640,6 +641,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             service.list_campaigns(
                 actor.username,
                 visible_owners=_visibility(actor),
+                scope=scope,
                 status=status,
                 q=q,
                 limit=limit,
