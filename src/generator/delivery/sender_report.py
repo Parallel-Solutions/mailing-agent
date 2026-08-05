@@ -28,6 +28,7 @@ from src.generator.delivery.sender_agent import (
     _safe_text,
     _unisender_status_label,
 )
+from src.generator.delivery.click_tracking import load_smtp_click_events
 from src.generator.delivery.consent_store import load_consent_records
 from src.generator.delivery.mailopost_events import load_mailopost_events
 from src.generator.delivery.open_tracking import load_smtp_open_events
@@ -644,6 +645,8 @@ def _build_delivery_rows(
     rusender_events = _latest_rusender_events(job_id)
     mailopost_events = _latest_mailopost_events(job_id)
     smtp_open_events = _latest_smtp_open_events(job_id)
+    smtp_click_events = _latest_smtp_click_events(job_id)
+    smtp_submit_errors = _latest_smtp_submit_errors(job_id)
     cached_statuses = _load_delivery_status_cache(job_id)
     provider_statuses: dict[str, dict[str, Any]] = {}
     refresh_error = ""
@@ -691,6 +694,12 @@ def _build_delivery_rows(
         if smtp_open_event:
             provider_status = "opened"
             checked_at = _safe_text(smtp_open_event.get("checked_at")) or checked_at
+        smtp_click_event = _match_smtp_click_event(item, smtp_click_events)
+        if smtp_click_event:
+            # Clicked ranks above opened, same precedence every provider's
+            # priority table already uses (accepted < ... < opened < clicked).
+            provider_status = "clicked"
+            checked_at = _safe_text(smtp_click_event.get("last_clicked_at")) or checked_at
 
         label = _report_status_label(provider_status)
         delivery_response = _delivery_response_text(
@@ -698,12 +707,22 @@ def _build_delivery_rows(
             rusender_event,
             mailopost_event,
             smtp_open_event,
+            smtp_click_event,
         )
         recipient_role = _recipient_role_from_item(item, current_data_roles=current_data_roles)
         sent_at = _to_moscow_datetime(item.get("sent_at"))
         log_status = _normalize_provider_status(_safe_text(item.get("status")))
         if log_status in {"failed", "error", "rejected", "not_delivered", "bounced"}:
             provider_status = log_status
+            smtp_submit_error = _match_smtp_submit_error(item, smtp_submit_errors)
+            if smtp_submit_error:
+                # Distinguish hard/soft bounce for SMTP submit-time rejections
+                # instead of collapsing every failure to a flat "failed",
+                # matching what provider webhooks already give us.
+                classified = _safe_text(smtp_submit_error.get("provider_status"))
+                if classified in {"hard_bounced", "soft_bounced"}:
+                    provider_status = classified
+                    delivery_response = delivery_response or _safe_text(smtp_submit_error.get("smtp_response"))
             label = _report_status_label(provider_status)
         rows.append(
             {
@@ -1399,6 +1418,101 @@ def _match_smtp_open_event(
     for key in keys:
         if key in events:
             return events[key]
+    return None
+
+
+def _latest_smtp_click_events(job_id: str | None) -> dict[str, dict[str, Any]]:
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
+
+    latest: dict[str, dict[str, Any]] = {}
+    try:
+        events = load_smtp_click_events(job_id)
+    except Exception as exc:
+        logger.warning("smtp_click_events_load_failed", job_id=job_id, error=str(exc))
+        return latest
+    for event in events:
+        recipient = _safe_text(event.get("recipient")).lower()
+        row_id = _safe_text(event.get("row_id"))
+        raw_message_id = _safe_text(event.get("provider_message_id"))
+        keys: list[str] = []
+        for message_id in provider_message_id_lookup_keys(raw_message_id):
+            if recipient:
+                keys.append(f"message_email:{message_id}:{recipient}")
+            keys.append(f"message:{message_id}")
+        if row_id and recipient:
+            keys.append(f"row_email:{row_id}:{recipient}")
+        if recipient:
+            keys.append(f"email:{recipient}")
+        for key in keys:
+            latest.setdefault(key, dict(event))
+    return latest
+
+
+def _match_smtp_click_event(
+    item: dict[str, Any],
+    events: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    if _provider_name(item).strip().lower() != "smtp":
+        return None
+    from src.generator.delivery.provider_ids import provider_message_id_lookup_keys
+
+    provider = item.get("provider") if isinstance(item.get("provider"), dict) else {}
+    raw_message_id = (
+        item.get("provider_message_id")
+        or item.get("message_id")
+        or provider.get("message_id")
+    )
+    recipient = _safe_text(item.get("recipient")).lower()
+    row_id = _safe_text(item.get("row_id"))
+    keys: list[str] = []
+    for message_id in provider_message_id_lookup_keys(raw_message_id):
+        if recipient:
+            keys.append(f"message_email:{message_id}:{recipient}")
+        keys.append(f"message:{message_id}")
+    if row_id and recipient:
+        keys.append(f"row_email:{row_id}:{recipient}")
+    if recipient:
+        keys.append(f"email:{recipient}")
+    for key in keys:
+        if key in events:
+            return events[key]
+    return None
+
+
+def _latest_smtp_submit_errors(job_id: str | None) -> dict[str, dict[str, Any]]:
+    """Hard/soft bounce classification for SMTP submit-time rejections
+    (see batch_worker.py::_record_submit_error), keyed by row_id/recipient
+    since a rejected submit never gets a provider message id."""
+    from src.jobs.provider_events_store import load_provider_events
+
+    latest: dict[str, dict[str, Any]] = {}
+    try:
+        events = load_provider_events("smtp", job_id)
+    except Exception as exc:
+        logger.warning("smtp_submit_errors_load_failed", job_id=job_id, error=str(exc))
+        return latest
+    for event in events:
+        recipient = _safe_text(event.get("recipient")).lower()
+        row_id = _safe_text(event.get("row_id"))
+        if row_id and recipient:
+            latest[f"row_email:{row_id}:{recipient}"] = event
+        elif recipient:
+            latest.setdefault(f"email:{recipient}", event)
+    return latest
+
+
+def _match_smtp_submit_error(
+    item: dict[str, Any],
+    events: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    if _provider_name(item).strip().lower() != "smtp":
+        return None
+    recipient = _safe_text(item.get("recipient")).lower()
+    row_id = _safe_text(item.get("row_id"))
+    if row_id and recipient and f"row_email:{row_id}:{recipient}" in events:
+        return events[f"row_email:{row_id}:{recipient}"]
+    if recipient and f"email:{recipient}" in events:
+        return events[f"email:{recipient}"]
     return None
 
 

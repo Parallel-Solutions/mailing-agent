@@ -8,6 +8,7 @@ from typing import Any
 
 from src.jobs import resolve_job_paths
 from src.jobs.json_store import append_jsonl, path_lock, read_jsonl
+from src.utils.logger import logger
 
 
 EVENTS_FILENAME = "unisender_go_events.jsonl"
@@ -48,6 +49,23 @@ def append_unisender_go_events(payload: Any) -> dict[str, Any]:
             record["event_key"] = event_key
             append_jsonl(path, record)
             existing_keys.add(event_key)
+        try:
+            from src.jobs.provider_events_store import append_provider_event
+
+            append_provider_event(
+                source="unisender_go",
+                job_id=job_id,
+                provider_task_id=str(record.get("provider_job_id") or ""),
+                recipient=str(record.get("recipient") or ""),
+                row_id=str(record.get("row_id") or ""),
+                event_type=str(record.get("event_type") or ""),
+                provider_status=str(record.get("event_type") or ""),
+                occurred_at=str(record.get("received_at") or ""),
+                event_key=event_key,
+                payload=record,
+            )
+        except Exception:
+            logger.exception("unisender_go_provider_delivery_event_write_failed", job_id=job_id)
         saved += 1
         jobs.add(job_id)
         try:
@@ -106,6 +124,14 @@ def _safe_text(value: Any) -> str:
     return str(value or "").strip()
 
 def load_unisender_go_events(job_id: str | None) -> list[dict[str, Any]]:
+    try:
+        from src.jobs.provider_events_store import has_provider_events, load_provider_events
+
+        if has_provider_events("unisender_go", job_id):
+            return load_provider_events("unisender_go", job_id)
+    except Exception:
+        logger.exception("unisender_go_provider_delivery_event_read_failed", job_id=job_id)
+    # Fallback: events written before the provider_delivery_events migration.
     return read_jsonl(unisender_go_events_path(job_id))
 
 def unisender_go_events_path(job_id: str | None) -> Path:

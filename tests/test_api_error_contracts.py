@@ -74,19 +74,18 @@ class ApiErrorContractTests(unittest.TestCase):
         )
         return TestClient(app)
 
-    def test_sender_run_500_hides_internal_exception_detail(self) -> None:
+    def test_sender_run_is_disabled(self) -> None:
+        # Legacy xlsx sender (sender_agent.run_sender) is permanently disabled:
+        # no UI, no open/click tracking. The handler body never runs the
+        # (mocked, failing) worker start path anymore, so it always 404s.
         logs: list[tuple] = []
         client = self._sender_client(logs=logs, failure=RuntimeError("smtp password leaked"))
 
         response = client.post("/api/sender/run", json={"attachment_mode": "kp"})
 
         payload = response.json()
-        self.assertEqual(response.status_code, 500)
-        self.assertEqual(payload["detail"], "Не удалось запустить отправку.")
-        self.assertNotIn("RuntimeError", payload["detail"])
-        self.assertNotIn("smtp password leaked", payload["detail"])
-        self.assertEqual(len(logs), 1)
-        self.assertEqual(logs[0][0][0], "sender_run_start_failed")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(logs, [])
 
     def test_unisender_webhook_500_hides_internal_exception_detail(self) -> None:
         logs: list[tuple] = []

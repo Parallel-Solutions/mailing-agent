@@ -436,6 +436,11 @@ def run_payload(payload: dict[str, Any]) -> None:
 
         run_template_text_extraction(kwargs)
         return
+    if task == "inbox_bounce_scan":
+        from src.generator.delivery.imap_bounce import run_inbox_bounce_scan
+
+        run_inbox_bounce_scan(kwargs)
+        return
     raise ValueError(f"unknown worker task: {task}")
 
 

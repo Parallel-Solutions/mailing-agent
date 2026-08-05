@@ -88,6 +88,11 @@ def _public_mailbox(row: SmtpMailbox) -> dict[str, Any]:
         "imap_username": row.imap_username or "",
         "imap_sent_folder": row.imap_sent_folder or "",
         "imap_password_configured": bool(row.imap_password_encrypted),
+        "bounce_scan_enabled": bool(row.bounce_scan_enabled),
+        "bounce_scan_last_checked_at": (
+            row.bounce_scan_last_checked_at.isoformat(timespec="seconds") if row.bounce_scan_last_checked_at else ""
+        ),
+        "bounce_scan_last_error": row.bounce_scan_last_error or "",
         "status": row.status,
         "last_error": row.last_error or "",
         "is_default": bool(row.is_default),
@@ -335,6 +340,7 @@ def update_mailbox(
     imap_sent_folder: str | None = None,
     max_per_hour: int | None = None,
     max_per_day: int | None = None,
+    bounce_scan_enabled: bool | None = None,
 ) -> dict[str, Any]:
     with session_scope() as session:
         row = session.get(SmtpMailbox, mailbox_id)
@@ -375,6 +381,8 @@ def update_mailbox(
             row.smtp_username = _safe_text(smtp_username) or row.email
         if save_sent_copy is not None:
             row.save_sent_copy = bool(save_sent_copy)
+        if bounce_scan_enabled is not None:
+            row.bounce_scan_enabled = bool(bounce_scan_enabled)
         if imap_host is not None:
             row.imap_host = _safe_text(imap_host)
         elif provider_changed:

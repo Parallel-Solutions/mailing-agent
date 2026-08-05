@@ -71,6 +71,8 @@ def _task_timeout_seconds(task_type: str) -> int:
         "connection_sender_warmup_message",
     }:
         return max(0, int(settings.sender_worker_timeout_seconds or 0))
+    if task_type == "inbox_bounce_scan":
+        return max(0, int(settings.sender_worker_timeout_seconds or 0))
     return 0
 
 
@@ -311,6 +313,57 @@ def _run_template_text_backfill_if_due(last_run: float) -> float:
     return now
 
 
+def _run_inbox_bounce_scan_if_due(last_run: float) -> float:
+    """Cheap tick: find mailboxes overdue for an IMAP INBOX bounce/complaint
+    scan and enqueue one task per mailbox. Each scan is a real network IMAP
+    connection that can hang, so it runs as its own background_worker task
+    (free timeout/heartbeat/retry/active_key dedup) rather than in-process
+    here — this tick only decides *who* is due."""
+    if not bool(settings.imap_bounce_scan_enabled):
+        return last_run
+    tick_interval = max(60, int(settings.imap_bounce_scan_tick_seconds or 300))
+    now = time.monotonic()
+    if now - last_run < tick_interval:
+        return last_run
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import select
+
+        from src.infra.db import session_scope
+        from src.infra.models import SmtpMailbox
+        from src.workers.task_queue import enqueue_task
+
+        scan_interval = max(60, int(settings.imap_bounce_scan_interval_seconds or 1800))
+        wall_now = time.time()
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=scan_interval)
+        with session_scope() as session:
+            rows = session.scalars(
+                select(SmtpMailbox).where(SmtpMailbox.bounce_scan_enabled.is_(True))
+            ).all()
+            due = [
+                row
+                for row in rows
+                if row.bounce_scan_last_checked_at is None or row.bounce_scan_last_checked_at <= cutoff
+            ]
+            mailbox_ids = [(row.id, row.owner_username) for row in due]
+        for mailbox_id, owner_username in mailbox_ids:
+            enqueue_task(
+                task_type="inbox_bounce_scan",
+                job_id=None,
+                owner_username=owner_username,
+                payload={"mailbox_id": mailbox_id, "owner_username": owner_username},
+                max_attempts=2,
+                idempotency_key=f"inbox_bounce_scan:{mailbox_id}:{int(wall_now // scan_interval)}",
+                active_key=f"inbox_bounce_scan:{mailbox_id}",
+            )
+        if mailbox_ids:
+            logger.info("imap_bounce_scan_enqueued", count=len(mailbox_ids))
+    except Exception:
+        logger.exception("imap_bounce_scan_tick_failed")
+    return now
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, _request_stop)
     if hasattr(signal, "SIGINT"):
@@ -332,6 +385,7 @@ def main() -> None:
     last_consent_recovery = 0.0
     last_campaign_reconciliation = 0.0
     last_template_text_backfill = 0.0
+    last_inbox_bounce_scan = 0.0
     logger.info("queue_worker_started", worker_id=worker_id)
     last_orphan_reconciliation = time.monotonic()
     touch_heartbeat()
@@ -343,6 +397,7 @@ def main() -> None:
             last_campaign_reconciliation
         )
         last_template_text_backfill = _run_template_text_backfill_if_due(last_template_text_backfill)
+        last_inbox_bounce_scan = _run_inbox_bounce_scan_if_due(last_inbox_bounce_scan)
         try:
             from src.generator.delivery.send_guard import is_sending_paused
 

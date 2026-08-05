@@ -373,6 +373,14 @@ class SmtpMailbox(Base):
     warmup_error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     warmup_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     warmup_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # IMAP INBOX scanning for DSN/NDR bounce + ARF/FBL complaint reports.
+    # Off by default: this is a per-mailbox opt-in that adds new IMAP traffic
+    # and new suppression-list writes.
+    bounce_scan_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    bounce_scan_last_uid: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    bounce_scan_uidvalidity: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    bounce_scan_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    bounce_scan_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -403,6 +411,40 @@ class SmtpSentCopy(Base):
     __table_args__ = (
         Index("uq_smtp_sent_copies_connection_message", "connection_id", "message_id", unique=True),
         Index("idx_smtp_sent_copies_status", "status", "updated_at"),
+    )
+
+
+class SmtpInboxEvent(Base):
+    """One row per DSN/NDR bounce or ARF/FBL complaint found by scanning a
+    mailbox's INBOX (see imap_bounce.py). ``message_id_hash`` is the hash of
+    the bounce/complaint email's OWN Message-ID (not the original message's)
+    — a defense-in-depth dedup net alongside the UID cursor, for the case of
+    a crash between "UID read" and "cursor persisted"."""
+
+    __tablename__ = "smtp_inbox_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    connection_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    report_format: Mapped[str] = mapped_column(String(16), nullable=False)
+    imap_uid: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    final_recipient: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    status_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    diagnostic_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    matched_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    matched_campaign_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    matched_by: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    suppression_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("uq_smtp_inbox_events_dedup", "connection_id", "message_id_hash", unique=True),
+        Index("idx_smtp_inbox_events_recipient", "final_recipient", "created_at"),
     )
 
 
@@ -448,6 +490,67 @@ class SmtpOpenTracking(Base):
     )
 
 
+class SmtpClickTracking(Base):
+    """One row per (delivery, tracked link) for first-party SMTP click
+    tracking. Deliberately not reusing CampaignChainToken: its ``error``
+    column is overloaded to hold either a real send error or a content
+    link's target_url, and it has no TTL/expiry concept — this table keeps
+    ``target_url`` explicit and mirrors ``SmtpOpenTracking``'s lifecycle
+    (no TTL either, for the same reason: a link inside an already-delivered
+    email must keep working no matter how old it is).
+    """
+
+    __tablename__ = "smtp_click_tracking"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivery_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    open_tracking_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("smtp_open_tracking.id", ondelete="SET NULL"), nullable=True
+    )
+    connection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="SET NULL"), nullable=True
+    )
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    campaign_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=True
+    )
+    row_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    warmup_delivery_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("connection_warmup_deliveries.id", ondelete="CASCADE"), nullable=True
+    )
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    send_mode: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    target_url: Mapped[str] = mapped_column(Text, nullable=False)
+    link_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="custom")
+    url_hash: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="prepared")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_clicked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_clicked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    click_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("uq_smtp_click_tracking_token", "token", unique=True),
+        Index(
+            "uq_smtp_click_tracking_delivery_url",
+            "delivery_key_hash",
+            "url_hash",
+            unique=True,
+        ),
+        Index("idx_smtp_click_tracking_job", "job_id", "first_clicked_at"),
+        Index("idx_smtp_click_tracking_warmup", "warmup_delivery_id", "first_clicked_at"),
+        Index("idx_smtp_click_tracking_provider_message", "provider_message_id"),
+        Index("idx_smtp_click_tracking_campaign_url", "campaign_id", "url_hash"),
+    )
+
+
 class DeliveryChannelOutcome(Base):
     __tablename__ = "delivery_channel_outcomes"
 
@@ -475,6 +578,73 @@ class DeliveryChannelOutcome(Base):
         ),
         Index("idx_delivery_channel_outcomes_window", "connection_id", "occurred_at"),
     )
+
+
+class ProviderDeliveryEvent(Base):
+    """Typed, indexed replacement for provider webhook events previously
+    stored as generic JSONB blobs in ``job_events`` (streams
+    rusender_events/mailopost_events/unisender_go_events). One row per
+    normalized provider (or first-party SMTP) delivery-status event.
+
+    ``payload`` keeps the full legacy record dict so existing readers
+    (``load_rusender_events`` and friends) can be reshaped without loss.
+    """
+
+    __tablename__ = "provider_delivery_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(24), nullable=False)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    campaign_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True
+    )
+    connection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="SET NULL"), nullable=True
+    )
+    provider_task_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    row_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    provider_status: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    smtp_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    event_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("uq_provider_delivery_events_key", "source", "event_key", unique=True),
+        Index("idx_provider_delivery_events_job_recipient", "job_id", "recipient"),
+        Index("idx_provider_delivery_events_campaign_time", "campaign_id", "occurred_at"),
+        Index("idx_provider_delivery_events_task", "source", "provider_task_id"),
+        Index("idx_provider_delivery_events_job_status", "job_id", "provider_status"),
+    )
+
+
+class ProviderTaskLookup(Base):
+    """Send-time index of provider_task_id -> job/campaign/recipient.
+
+    Populated when a provider (rusender/mailopost/unisender_go) accepts a
+    message, so incoming webhooks can resolve job_id with a single indexed
+    lookup instead of scanning the entire sent_mail_log history.
+    """
+
+    __tablename__ = "provider_task_lookup"
+
+    provider_task_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    campaign_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True
+    )
+    connection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="SET NULL"), nullable=True
+    )
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    row_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (Index("idx_provider_task_lookup_job", "job_id"),)
 
 
 class ConnectionWarmupProgram(Base):

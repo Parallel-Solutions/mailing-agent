@@ -79,6 +79,9 @@ class SenderRequestValidationTests(unittest.TestCase):
         return TestClient(app), calls
 
     def test_sender_run_rejects_invalid_limit_before_starting_worker(self) -> None:
+        # This still exercises real behavior: FastAPI validates the request body
+        # against SenderRunRequest before the (now permanently disabled) handler
+        # body ever runs, so an invalid `limit` still 422s at the Pydantic layer.
         client, calls = self._client()
 
         response = client.post("/api/sender/run", json={"job_id": "job-api", "limit": "not-a-number"})
@@ -86,64 +89,18 @@ class SenderRequestValidationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(calls, [])
 
-    def test_sender_run_treats_empty_or_zero_limit_as_unlimited_for_ui_payload(self) -> None:
-        for raw_limit in (None, 0, "0"):
-            with self.subTest(raw_limit=raw_limit):
-                client, calls = self._client()
-
-                with patch("src.web.sender_router.append_audit_event", lambda **kwargs: None):
-                    response = client.post(
-                        "/api/sender/run",
-                        json={"job_id": "job-api", "dry_run": True, "limit": raw_limit},
-                    )
-
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(len(calls), 1)
-                self.assertIsNone(calls[0]["kwargs"]["limit"])
-
-    def test_sender_run_accepts_existing_ui_payload_names(self) -> None:
+    def test_sender_run_is_disabled(self) -> None:
+        # Legacy xlsx sender (sender_agent.run_sender) has no UI and no
+        # open/click tracking — /api/sender/run always 404s now, regardless
+        # of an otherwise-valid payload.
         client, calls = self._client()
-        payload = {
-            "job_id": "job-api",
-            "dry_run": True,
-            "limit": 2,
-            "transport": "unisender",
-            "send_mode": "materials",
-            "attachment_mode": "contract",
-            "mail_subject": "  Subject  ",
-            "sender_email": "  sender@example.com  ",
-            "campaign_name": "  июльская рассылка  ",
-            "work_type": "  custom-work  ",
-        }
 
-        with patch("src.web.sender_router.append_audit_event", lambda **kwargs: None):
-            response = client.post("/api/sender/run", json=payload)
+        response = client.post(
+            "/api/sender/run",
+            json={"job_id": "job-api", "dry_run": True, "limit": 2},
+        )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(calls), 1)
-        worker_kwargs = calls[0]["kwargs"]
-        self.assertEqual(worker_kwargs["limit"], 2)
-        self.assertEqual(worker_kwargs["transport"], "unisender")
-        self.assertEqual(worker_kwargs["send_mode"], "materials")
-        self.assertEqual(worker_kwargs["attachment_mode"], "contract")
-        self.assertEqual(worker_kwargs["subject_template"], "Subject")
-        self.assertEqual(worker_kwargs["sender_email"], "sender@example.com")
-        self.assertEqual(worker_kwargs["campaign_name"], "июльская рассылка")
-        self.assertEqual(worker_kwargs["work_type"], "custom-work")
-
-    def test_sender_run_rejects_past_scheduled_start_at(self) -> None:
-        from datetime import datetime, timedelta, timezone
-
-        client, calls = self._client()
-        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-
-        with patch("src.web.sender_router.append_audit_event", lambda **kwargs: None):
-            response = client.post(
-                "/api/sender/run",
-                json={"job_id": "job-api", "dry_run": False, "scheduled_start_at": past},
-            )
-
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 404)
         self.assertEqual(calls, [])
 
 

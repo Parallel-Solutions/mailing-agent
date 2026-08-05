@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
 
 PUBLIC_ASSETS_DIR = Path("src/generator/assets")
@@ -66,6 +66,29 @@ def create_public_router() -> APIRouter:
                 "Cross-Origin-Resource-Policy": "cross-origin",
             },
         )
+
+    @router.get("/public/email/click/{token}")
+    def smtp_click_tracking_redirect(token: str):
+        from src.generator.delivery.click_tracking import record_smtp_click
+        from src.utils.config import settings
+        from src.utils.logger import logger
+
+        try:
+            result = record_smtp_click(token)
+        except Exception:
+            # Never expose storage failures to the recipient.
+            logger.exception("smtp_click_tracking_record_failed")
+            result = {"found": False, "target_url": ""}
+
+        target_url = str(result.get("target_url") or "").strip()
+        if not target_url.lower().startswith(("http://", "https://")):
+            # A stale/invalid/expired token must still redirect somewhere real
+            # (unlike the open-tracking pixel, the recipient actually clicked
+            # something) — never a 404/error page, and never reveal whether
+            # the token existed.
+            fallback = str(settings.public_base_url or "").strip().rstrip("/") or "/"
+            return RedirectResponse(url=fallback, status_code=302)
+        return RedirectResponse(url=target_url, status_code=302)
 
     @router.get("/public/mail-signature.png")
     def public_mail_signature():

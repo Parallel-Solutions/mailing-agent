@@ -156,5 +156,33 @@ class RuSenderEventsTests(unittest.TestCase):
             smtp_response="",
         )
 
+    def test_send_time_lookup_resolves_job_without_full_sent_mail_log_scan(self) -> None:
+        from src.jobs.provider_events_store import upsert_provider_task_lookup
+
+        upsert_provider_task_lookup(
+            provider_task_id="task-fast-1",
+            job_id="job-fast",
+            campaign_id=None,
+            connection_id=None,
+            recipient="fast@example.com",
+            row_id="9",
+        )
+        payload = {
+            "trigger": "external_mail.delivered",
+            "payload": {"taskId": "task-fast-1", "email": "fast@example.com"},
+        }
+
+        def _boom() -> dict[str, dict[str, str]]:
+            raise AssertionError("full sent_mail_log scan should not run when the fast lookup covers all ids")
+
+        with patch.object(rusender_events, "_load_task_job_index", side_effect=_boom):
+            result = rusender_events.append_rusender_events(payload)
+
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["jobs"], ["job-fast"])
+        record = load_rusender_events("job-fast")[0]
+        self.assertEqual(record["recipient"], "fast@example.com")
+
+
 if __name__ == "__main__":
     unittest.main()

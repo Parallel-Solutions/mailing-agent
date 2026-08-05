@@ -329,6 +329,10 @@ class TestExtConsentFlow(unittest.TestCase):
 
     def test_ext_consent_01_consent_flow_via_real_email(self) -> None:
         """EXT-CONSENT-01: Send consent request → find email → confirm consent → verify."""
+        # NOTE: run_send() posts to the now-permanently-disabled /api/sender/run
+        # (legacy xlsx sender). This test needs a CampaignFlow-based trigger for
+        # consent_request before it can run against real infrastructure again.
+        self.skipTest("Legacy /api/sender/run is disabled; EXT-CONSENT-01 needs a CampaignFlow-based rewrite.")
         job_id = self.config.job_id
 
         # Step 1: Send consent request

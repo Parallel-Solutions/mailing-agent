@@ -209,6 +209,8 @@ def _send_delivery_message(
         if connection.transport == "smtp":
             prepared_tracking = None
             tracked_html = html
+            tracked_text = text
+            click_tokens: list[str] = []
             try:
                 from src.generator.delivery.open_tracking import (
                     build_smtp_tracking_delivery_key,
@@ -228,6 +230,43 @@ def _send_delivery_message(
                     warmup_delivery_id=tracking_warmup_delivery_id,
                     explicit_key=tracking_key,
                 )
+                # Email chains already tokenize their own links to
+                # /chain/content/{token} (chain_send_service.py, independent
+                # of transport) and read click stats from that mechanism —
+                # rewriting them again here would just add a redundant
+                # redirect hop and write to a table nothing ever reads for
+                # chain campaigns. Only standalone (non-chain) sends need
+                # this first-party click tracking.
+                is_chain_campaign = bool(
+                    campaign is not None
+                    and (
+                        str(getattr(campaign, "send_scenario", "") or "") == "email_chain"
+                        or getattr(campaign, "email_chain_id", None)
+                    )
+                )
+                if not is_chain_campaign:
+                    try:
+                        from src.generator.delivery.click_tracking import rewrite_smtp_click_links
+
+                        tracked_html, tracked_text, click_tokens = rewrite_smtp_click_links(
+                            tracked_html,
+                            tracked_text,
+                            delivery_key=delivery_key,
+                            connection_id=connection.id,
+                            owner_username=owner_username,
+                            recipient=to_email,
+                            job_id=str(job_id or ""),
+                            campaign_id=campaign_id,
+                            row_id=row_id,
+                            send_mode=str(send_mode or ""),
+                            warmup_delivery_id=tracking_warmup_delivery_id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "smtp_click_tracking_prepare_failed",
+                            connection_id=connection.id,
+                            row_id=row_id,
+                        )
                 prepared_tracking = prepare_smtp_open_tracking(
                     delivery_key=delivery_key,
                     connection_id=connection.id,
@@ -241,7 +280,7 @@ def _send_delivery_message(
                 )
                 if prepared_tracking is not None:
                     tracked_html = inject_smtp_open_tracking_pixel(
-                        html,
+                        tracked_html,
                         prepared_tracking.pixel_url,
                     )
             except Exception:
@@ -259,12 +298,19 @@ def _send_delivery_message(
                     to_email=to_email,
                     subject=subject,
                     html=tracked_html,
-                    text=text,
+                    text=tracked_text,
                     sender_name=connection.sender_name,
                     attachments=attachments,
                 )
             except Exception as exc:
-                _record_submit_error(connection.id, to_email, exc)
+                _record_submit_error(
+                    connection.id,
+                    to_email,
+                    exc,
+                    job_id=str(job_id or ""),
+                    campaign_id=str(getattr(campaign, "id", "") or "") or None,
+                    row_id=row_id,
+                )
                 raise
             if prepared_tracking is not None:
                 try:
@@ -274,6 +320,17 @@ def _send_delivery_message(
                 except Exception:
                     logger.exception(
                         "smtp_open_tracking_mark_sent_failed",
+                        connection_id=connection.id,
+                        message_id=message_id,
+                    )
+            if click_tokens:
+                try:
+                    from src.generator.delivery.click_tracking import mark_smtp_click_tracking_sent
+
+                    mark_smtp_click_tracking_sent(click_tokens, message_id)
+                except Exception:
+                    logger.exception(
+                        "smtp_click_tracking_mark_sent_failed",
                         connection_id=connection.id,
                         message_id=message_id,
                     )
@@ -326,16 +383,40 @@ def _send_delivery_message(
         if not message_id:
             raise RuntimeError(f"{connection.transport} не вернул идентификатор письма.")
         # Store bare provider id so webhook task_id / message_id matches join keys.
+        try:
+            from src.jobs.provider_events_store import upsert_provider_task_lookup
+
+            upsert_provider_task_lookup(
+                provider_task_id=message_id,
+                job_id=str(job_id or ""),
+                campaign_id=str(getattr(campaign, "id", "") or "") or None,
+                connection_id=connection.id,
+                recipient=to_email,
+                row_id=row_id,
+            )
+        except Exception:
+            logger.exception("provider_task_lookup_write_failed", connection_id=connection.id, message_id=message_id)
         return message_id
     finally:
         if temp_dir is not None:
             temp_dir.cleanup()
 
 
-def _record_submit_error(connection_id: str, recipient: str, error: Exception) -> None:
+def _record_submit_error(
+    connection_id: str,
+    recipient: str,
+    error: Exception,
+    *,
+    job_id: str = "",
+    campaign_id: str | None = None,
+    row_id: str = "",
+) -> None:
     try:
         from src.generator.delivery.channel_guard import record_channel_outcome
-        from src.generator.delivery.suppression_store import upsert_from_provider_event
+        from src.generator.delivery.suppression_store import (
+            reason_from_delivery_response,
+            upsert_from_provider_event,
+        )
 
         error_text = str(error)
         record_channel_outcome(
@@ -351,6 +432,35 @@ def _record_submit_error(connection_id: str, recipient: str, error: Exception) -
             source="smtp_submit",
             delivery_response=error_text,
         )
+        # Surface the same hard/soft bounce classification suppression already
+        # uses back into the per-row report (sender_report.py), so a rejected
+        # SMTP send shows "hard bounce"/"soft bounce" instead of a flat
+        # "failed" — same as provider-webhook-sourced failures already do.
+        reason = reason_from_delivery_response(error_text)
+        classified_status = (
+            "hard_bounced" if reason == "hard_bounce" else "soft_bounced" if reason == "soft_bounce" else ""
+        )
+        if classified_status:
+            from src.jobs.provider_events_store import append_provider_event
+
+            append_provider_event(
+                source="smtp",
+                job_id=job_id,
+                campaign_id=campaign_id,
+                connection_id=connection_id,
+                recipient=recipient,
+                row_id=row_id,
+                event_type="submit_error",
+                provider_status=classified_status,
+                smtp_response=error_text,
+                event_key=f"submit-error:{uuid4()}",
+                payload={
+                    "provider_status": classified_status,
+                    "recipient": recipient,
+                    "row_id": row_id,
+                    "smtp_response": error_text,
+                },
+            )
     except Exception:
         logger.exception("delivery_channel_submit_error_record_failed", connection_id=connection_id)
 
