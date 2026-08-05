@@ -85,7 +85,10 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
         limit: int = Query(default=100, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
     ):
-        require_app_admin(_actor(principal))
+        # Read-only: any authenticated user may browse the full company list
+        # (e.g. to pick a company when creating a campaign). Mutating endpoints
+        # below remain gated by require_app_admin / require_company_admin.
+        _actor(principal)
         return _ok(company_service.list_companies(limit=limit, offset=offset))
 
     @router.post("/companies")
