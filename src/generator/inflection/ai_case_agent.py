@@ -68,7 +68,7 @@ def _build_openai_http_client():
         return None
     return httpx.Client(
         http2=False,
-        timeout=httpx.Timeout(connect=10, read=60, write=60, pool=60),
+        timeout=httpx.Timeout(connect=10, read=30, write=30, pool=30),
         trust_env=False,
     )
 
@@ -255,7 +255,7 @@ def _call_openai_adm_name_agent(row: dict, context: dict) -> dict:
     if not api_key:
         return {}
 
-    client_kwargs = {"api_key": api_key}
+    client_kwargs = {"api_key": api_key, "max_retries": 0}
     base_url = _resolve_openai_base_url()
     if base_url:
         client_kwargs["base_url"] = base_url
@@ -836,7 +836,7 @@ def _call_openai_case_agent(reviews: List[CaseFieldReview]) -> List[dict]:
     if not api_key:
         return []
 
-    client_kwargs = {"api_key": api_key}
+    client_kwargs = {"api_key": api_key, "max_retries": 0}
     base_url = _resolve_openai_base_url()
     if base_url:
         client_kwargs["base_url"] = base_url

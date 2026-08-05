@@ -8,24 +8,25 @@ afterEach(() => {
 });
 
 describe('campaignsApi.validate', () => {
-  it('aborts a validation request after 30 seconds', async () => {
+  it('does not abort a slow validation request on its own after 30 seconds', async () => {
     vi.useFakeTimers();
+    let settled = false;
     const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => {
+      new Promise<Response>((resolve, reject) => {
         init?.signal?.addEventListener('abort', () => {
+          settled = true;
           reject(new DOMException('Aborted', 'AbortError'));
         });
+        // Never resolves/rejects on its own \u2014 only a caller-provided signal should stop it.
+        void resolve;
       }),
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const validation = campaignsApi.validate('campaign-1');
-    const rejection = expect(validation).rejects.toThrow(
-      '\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0437\u0430\u043d\u044f\u043b\u0430 \u0431\u043e\u043b\u044c\u0448\u0435 30 \u0441\u0435\u043a\u0443\u043d\u0434',
-    );
+    void campaignsApi.validate('campaign-1');
 
-    await vi.advanceTimersByTimeAsync(30_000);
-    await rejection;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(settled).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it('uses the caller signal to cancel a stale validation without reporting a timeout', async () => {

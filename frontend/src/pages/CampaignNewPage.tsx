@@ -1,7 +1,7 @@
 import {
   ProCard,
 } from '@ant-design/pro-components';
-import { SwapOutlined } from '@ant-design/icons';
+import { ReloadOutlined, SwapOutlined } from '@ant-design/icons';
 import { App, Alert, Button, Col, Collapse, Form, Row, Space, Spin, Steps, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -735,6 +735,19 @@ export function CampaignNewPage() {
   const showAiFixButton = launchValidation.hasChecked && readinessErrors.length > 0;
   const wizardLocked = launchBusy.active || launchValidation.isChecking;
 
+  const formatLaunchValidationError = (err: unknown): string => {
+    if (err instanceof ApiError) {
+      return [err.detail, err.payload.hint].filter(Boolean).join(' ');
+    }
+    if (err instanceof TypeError) {
+      return 'Не удалось подключиться к серверу для проверки рассылки. Проверьте соединение и повторите попытку.';
+    }
+    if (err instanceof Error && err.message) {
+      return err.message;
+    }
+    return 'Не удалось выполнить проверку';
+  };
+
   const runLaunchAction = async (label: string, action: () => Promise<void>) => {
     setLaunchBusy({ active: true, label, progress: 50 });
     try {
@@ -992,7 +1005,21 @@ export function CampaignNewPage() {
                     ) : launchValidation.isChecking ? (
                       <Spin tip="Проверка…" />
                     ) : launchValidation.error ? (
-                      <Alert type="error" showIcon message="Не удалось выполнить проверку" description={launchValidation.error} />
+                      <Alert
+                        type="error"
+                        showIcon
+                        message="Не удалось выполнить проверку"
+                        description={formatLaunchValidationError(launchValidation.error)}
+                        action={
+                          <Button
+                            size="small"
+                            icon={<ReloadOutlined />}
+                            onClick={() => launchValidation.retry()}
+                          >
+                            Проверить снова
+                          </Button>
+                        }
+                      />
                     ) : launchValidation.hasChecked ? (
                       <>
                         {readinessWarnings.length > 0 ? (
@@ -1024,6 +1051,14 @@ export function CampaignNewPage() {
                           />
                         ) : null}
                         <Space wrap>
+                          <Button
+                            icon={<ReloadOutlined />}
+                            loading={launchValidation.isChecking}
+                            disabled={wizardLocked}
+                            onClick={() => launchValidation.retry()}
+                          >
+                            Проверить снова
+                          </Button>
                           <Button
                             disabled={launchBlocked || wizardLocked}
                             title={readinessErrors.join('; ') || undefined}

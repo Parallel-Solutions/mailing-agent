@@ -243,6 +243,9 @@ def _append_local_language_issues(
         )
 
 
+_CASE_AGENT_UNAVAILABLE_MESSAGE = "Автоматическая проверка падежей недоступна; это не мешает отправке."
+
+
 def _append_case_issues(
     issues: list[dict[str, Any]],
     *,
@@ -263,9 +266,41 @@ def _append_case_issues(
     if not relevant_fields:
         return
 
-    row = recipient_row(recipient)
-    context = build_document_context(row, outgoing_number=recipient.row_index or 1, work_type=campaign.work_type or None)
-    result = run_case_validation_agent(row, context)
+    try:
+        row = recipient_row(recipient)
+        context = build_document_context(
+            row, outgoing_number=recipient.row_index or 1, work_type=campaign.work_type or None
+        )
+        result = run_case_validation_agent(row, context)
+    except Exception as exc:
+        logger.warning(
+            "campaign_template_case_agent_failed",
+            template_id=template_id,
+            error=str(exc),
+        )
+        issues.append(
+            _issue_dict(
+                template_id=template_id,
+                template_name=template_name,
+                field="context",
+                kind="case",
+                severity="warning",
+                fragment="",
+                message=_CASE_AGENT_UNAVAILABLE_MESSAGE,
+                source="case_agent",
+                blocking=False,
+            )
+        )
+        return
+
+    agent_error = result.get("error")
+    if agent_error:
+        logger.warning(
+            "campaign_template_case_agent_failed",
+            template_id=template_id,
+            error=agent_error,
+        )
+
     for item in result.get("items") or []:
         if not isinstance(item, dict):
             continue
@@ -275,7 +310,11 @@ def _append_case_issues(
         field_name = str(item.get("field") or "context")
         if field_name not in relevant_fields:
             continue
-        comment = str(item.get("comment") or "Возможная ошибка падежа").strip()
+        comment = (
+            _CASE_AGENT_UNAVAILABLE_MESSAGE
+            if agent_error
+            else str(item.get("comment") or "Возможная ошибка падежа").strip()
+        )
         corrected = str(item.get("corrected_value") or "").strip()
         generated = str(item.get("generated_value") or "").strip()
         if (
