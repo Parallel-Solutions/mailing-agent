@@ -6,6 +6,7 @@ import {
   MailOutlined,
   PlusCircleOutlined,
   QuestionCircleOutlined,
+  TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import type { ProLayoutProps } from '@ant-design/pro-components';
@@ -17,6 +18,7 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { onboardingApi } from '@/api/onboarding';
 import type { OnboardingState } from '@/api/types';
 import { OnboardingTour } from '@/features/onboarding/OnboardingTour';
+import { campaignComposerPath } from '@/features/campaigns/campaignNavigation';
 import {
   ONBOARDING_CHAPTERS,
   ONBOARDING_STEPS,
@@ -24,6 +26,7 @@ import {
 } from '@/features/onboarding/steps';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAuthStore } from '@/stores/authStore';
+import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 import { tokens } from '@/theme/tokens';
 import { APP_TOP_BAR_HEIGHT, AppTopBar } from '@/layout/AppTopBar';
 import '@/layout/AppTopBar.css';
@@ -35,7 +38,9 @@ export function AppLayout() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const { isAppAdmin } = usePermissions();
+  const activeCampaignId = useCampaignDraftStore((s) => s.campaignId);
+  const resetCampaignDraft = useCampaignDraftStore((s) => s.reset);
+  const { isAppAdmin, canAccessCompanies } = usePermissions();
   const queryClient = useQueryClient();
   const [onboardingSession, setOnboardingSession] = useState(0);
   const [onboardingChapter, setOnboardingChapter] = useState<OnboardingChapterId>();
@@ -64,7 +69,7 @@ export function AppLayout() {
     },
   });
   const onboardingChapters = ONBOARDING_CHAPTERS.filter(
-    (chapter) => chapter.id !== 'companies' || isAppAdmin,
+    (chapter) => chapter.id !== 'companies' || canAccessCompanies,
   );
 
   const launchOnboarding = (chapterId: OnboardingChapterId) => {
@@ -82,8 +87,11 @@ export function AppLayout() {
       { path: '/chains', name: 'Конструктор цепочек', icon: <ApartmentOutlined /> },
       { path: '/templates', name: 'Шаблоны и документы', icon: <MailOutlined /> },
       { path: '/connections', name: 'Подключения', icon: <ClusterOutlined /> },
-      ...(isAppAdmin
+      ...(canAccessCompanies
         ? [{ path: '/companies', name: 'Компании', icon: <BankOutlined /> }]
+        : []),
+      ...(isAppAdmin
+        ? [{ path: '/users', name: 'Пользователи и роли', icon: <TeamOutlined /> }]
         : []),
       { path: '/profile', name: 'Профиль', icon: <UserOutlined /> },
     ],
@@ -114,7 +122,12 @@ export function AppLayout() {
           colorPrimary: tokens.primary,
           sider: { colorMenuBackground: tokens.surface },
         }}
-        menuItemRender={(item, dom) => <Link to={item.path || '/'}>{dom}</Link>}
+        menuItemRender={(item, dom) => {
+          const target = item.path === '/campaigns/new' && activeCampaignId
+            ? campaignComposerPath(activeCampaignId)
+            : (item.path || '/');
+          return <Link to={target}>{dom}</Link>;
+        }}
         avatarProps={{
           src: user?.company?.logo_url || undefined,
           title: user?.username || 'user',
@@ -130,6 +143,7 @@ export function AppLayout() {
                     onClick: async () => {
                       await logout();
                       navigate('/login');
+                      resetCampaignDraft();
                     },
                   },
                 ],

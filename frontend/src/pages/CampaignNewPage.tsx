@@ -5,7 +5,7 @@ import { SwapOutlined } from '@ant-design/icons';
 import { App, Alert, Button, Col, Collapse, Form, Row, Space, Spin, Steps, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
 import { ApiError } from '@/api/client';
 import { chainsApi } from '@/api/chains';
@@ -27,6 +27,7 @@ import {
 import '@/features/campaigns/CampaignWizardSteps.css';
 import { RecipientGenerateModal } from '@/features/campaigns/RecipientGenerateModal';
 import { ChainEmailPreviewModal } from '@/features/campaigns/ChainEmailPreviewModal';
+import { buildCampaignReturnState } from '@/features/campaigns/campaignNavigation';
 import {
   buildCampaignAutosavePayload,
   buildMappingInputsSignature,
@@ -95,8 +96,10 @@ type CampaignModalKind = 'generate' | 'topup' | 'mapping' | 'preview' | 'layout'
 
 export function CampaignNewPage() {
   const [params] = useSearchParams();
+  const location = useLocation();
   const { pushParams, replaceParams } = useUrlNavigation();
-  const existingId = params.get('id');
+  const requestedId = params.get('id');
+  const isExplicitNew = params.get('new') === '1';
   const isOnboardingPreview = params.get('onboarding') === '1';
   const emailChainIdParam = params.get('email_chain_id');
   const step = readIntParam(params, 'step', 0, 0, 4);
@@ -117,12 +120,15 @@ export function CampaignNewPage() {
     campaignId,
     draft,
     setCampaignId,
-    setDraft,
+    queueDraftPatch,
+    acknowledgeDraftPatch,
+    clearPendingPatch,
     replaceDraft,
     saveState,
     setSaveState,
     reset: resetDraftState,
   } = useCampaignDraftStore();
+  const existingId = requestedId || (!isExplicitNew ? campaignId : null);
   const [basicsForm] = Form.useForm();
   const [senderForm] = Form.useForm();
   const [scheduleForm] = Form.useForm();
@@ -135,7 +141,6 @@ export function CampaignNewPage() {
   const { isAppAdmin, isCompanyAdmin } = usePermissions();
   const user = useAuthStore((s) => s.user);
   const debounceRef = useRef<number | null>(null);
-  const pendingAutosaveRef = useRef<Record<string, unknown> | null>(null);
   const createRequestedRef = useRef(false);
   const hydratedIdRef = useRef<string | null>(null);
   const loadRequestRef = useRef(0);
@@ -169,6 +174,12 @@ export function CampaignNewPage() {
   const closeWizardModal = useCallback(() => {
     pushParams({}, [...CAMPAIGN_MODAL_KEYS]);
   }, [pushParams]);
+
+
+  useEffect(() => {
+    if (isOnboardingPreview || isExplicitNew || requestedId || !campaignId) return;
+    navigate(`/campaigns/new?id=${campaignId}`, { replace: true });
+  }, [campaignId, isExplicitNew, isOnboardingPreview, navigate, requestedId]);
 
   const id = isOnboardingPreview ? undefined : (existingId || undefined);
 
@@ -427,17 +438,24 @@ export function CampaignNewPage() {
         );
         persistQueueRef.current = request.then(() => undefined, () => undefined);
         const updated = await request;
+        if (useCampaignDraftStore.getState().campaignId !== id) return;
+        acknowledgeDraftPatch(patch);
         if (requestId === persistRequestRef.current) {
           replaceDraft({ ...updated, ...(updated.draft_payload || {}) });
-          setSaveState('saved');
+          const hasPending = Object.keys(useCampaignDraftStore.getState().pendingPatch).length > 0;
+          setSaveState(hasPending ? 'idle' : 'saved');
         }
-      } catch {
-        if (requestId === persistRequestRef.current) {
+      } catch (error) {
+        if (
+          requestId === persistRequestRef.current
+          && useCampaignDraftStore.getState().campaignId === id
+        ) {
           setSaveState('error');
         }
+        throw error;
       }
     },
-    [id, replaceDraft, setSaveState],
+    [acknowledgeDraftPatch, id, replaceDraft, setSaveState],
   );
 
   const flushPendingChanges = useCallback(async () => {
@@ -445,12 +463,38 @@ export function CampaignNewPage() {
       window.clearTimeout(debounceRef.current);
       debounceRef.current = null;
     }
-    const patch = pendingAutosaveRef.current;
-    pendingAutosaveRef.current = null;
-    if (patch) {
+    await persistQueueRef.current;
+    const patch = useCampaignDraftStore.getState().pendingPatch;
+    if (Object.keys(patch).length > 0) {
       await persist(patch);
     }
   }, [persist]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      const state = useCampaignDraftStore.getState();
+      if (Object.keys(state.pendingPatch).length === 0 && state.saveState !== 'saving') return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      void flushPendingChanges().catch(() => undefined);
+    };
+  }, [flushPendingChanges]);
+
+  const navigateAfterDraftSave = useCallback(
+    async (to: string, options?: { replace?: boolean; state?: unknown }) => {
+      try {
+        await flushPendingChanges();
+        navigate(to, options);
+      } catch {
+        message.error('\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u044f. \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u0435\u0440\u0435\u0445\u043e\u0434 \u043f\u043e\u0441\u043b\u0435 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0438\u044f.');
+      }
+    },
+    [flushPendingChanges, message, navigate],
+  );
 
   const launchValidation = useCampaignLaunchValidation({
     campaignId: id ?? undefined,
@@ -472,15 +516,29 @@ export function CampaignNewPage() {
 
   const autosave = (patch: Record<string, unknown>) => {
     if (suppressAutosaveRef.current) return;
-    setDraft(patch);
-    pendingAutosaveRef.current = { ...(pendingAutosaveRef.current || {}), ...patch };
+    queueDraftPatch(patch);
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
-      const pendingPatch = pendingAutosaveRef.current;
-      pendingAutosaveRef.current = null;
-      if (pendingPatch) void persist(pendingPatch);
+      const pendingPatch = useCampaignDraftStore.getState().pendingPatch;
+      if (Object.keys(pendingPatch).length > 0) {
+        void persist(pendingPatch).catch(() => undefined);
+      }
     }, 700);
   };
+
+  useEffect(() => {
+    if (!id) return;
+    const restoredPatch = useCampaignDraftStore.getState().pendingPatch;
+    if (Object.keys(restoredPatch).length === 0) return;
+    const timeout = window.setTimeout(() => {
+      const pendingPatch = useCampaignDraftStore.getState().pendingPatch;
+      if (Object.keys(pendingPatch).length > 0) {
+        void persist(pendingPatch).catch(() => undefined);
+      }
+    }, 50);
+    return () => window.clearTimeout(timeout);
+  }, [id, persist]);
+
 
   useEffect(() => {
     if (!id || hydratedIdRef.current !== id) return;
@@ -590,6 +648,7 @@ export function CampaignNewPage() {
 
   const runReset = async () => {
     if (!id) return;
+    clearPendingPatch();
     if (debounceRef.current) {
       window.clearTimeout(debounceRef.current);
       debounceRef.current = null;
@@ -776,6 +835,10 @@ export function CampaignNewPage() {
       navigate(`/campaigns/${campaignId}`);
     }
   };
+  const campaignReturnState = id
+    ? buildCampaignReturnState(id, location.pathname, location.search)
+    : undefined;
+
 
   return (
     <div style={{ position: 'relative' }}>
@@ -805,6 +868,17 @@ export function CampaignNewPage() {
                 />
               ) : null}
               <Tag>{saveState === 'saving' ? 'Сохранение…' : saveState === 'saved' ? 'Сохранено' : 'Черновик'}</Tag>
+              {saveState === 'error' ? (
+                <Button
+                  type="link"
+                  danger
+                  onClick={() => {
+                    void flushPendingChanges().catch(() => message.error('\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u044f'));
+                  }}
+                >
+                  {'\u041d\u0435 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043e \u2014 \u043f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u044c'}
+                </Button>
+              ) : null}
             </Space>
           }
         >
@@ -875,9 +949,19 @@ export function CampaignNewPage() {
                     isAppAdmin={isAppAdmin}
                     isCompanyAdmin={isCompanyAdmin}
                     onAutosave={autosave}
-                    onNavigateChain={() => linkedChainId && navigate(`/chains/${linkedChainId}`)}
-                    onNavigateChainsList={() => navigate('/chains')}
-                    onNavigateCompanies={() => navigate('/companies')}
+                    onNavigateChain={() => {
+                      if (linkedChainId) {
+                        void navigateAfterDraftSave(`/chains/${linkedChainId}`, {
+                          state: campaignReturnState,
+                        });
+                      }
+                    }}
+                    onNavigateChainsList={() => {
+                      void navigateAfterDraftSave('/chains', { state: campaignReturnState });
+                    }}
+                    onNavigateCompanies={() => {
+                      void navigateAfterDraftSave('/companies', { state: campaignReturnState });
+                    }}
                     />
                   </div>
                 ),
@@ -896,7 +980,9 @@ export function CampaignNewPage() {
                     draft={draft}
                     mailboxes={mailboxesQuery.data || []}
                     onAutosave={autosave}
-                    onNavigateConnections={() => navigate('/connections')}
+                    onNavigateConnections={() => {
+                      void navigateAfterDraftSave('/connections', { state: campaignReturnState });
+                    }}
                     />
                   </div>
                 ),

@@ -1449,6 +1449,23 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(linked.status_code, 200, linked.text)
         self.assertEqual(linked.json()["result"]["email_chain_id"], chain_id)
+
+        cleared = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"email_chain_id": None},
+        )
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        cleared_payload = cleared.json()["result"]
+        self.assertIsNone(cleared_payload["email_chain_id"])
+        self.assertEqual(cleared_payload["send_scenario"], "consent_then_materials")
+        self.assertIsNone(cleared_payload["draft_payload"]["email_chain_id"])
+
+        relinked = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"send_scenario": "email_chain", "email_chain_id": chain_id},
+        )
+        self.assertEqual(relinked.status_code, 200, relinked.text)
+
         deleted = self.client.delete(f"/api/v1/chains/{chain_id}")
         self.assertEqual(deleted.status_code, 200, deleted.text)
         self.assertEqual(deleted.json()["result"], {"deleted": True, "id": chain_id})
@@ -1458,6 +1475,11 @@ class CampaignV1ApiTests(unittest.TestCase):
         detached = self.client.get(f"/api/v1/campaigns/{campaign_id}")
         self.assertEqual(detached.status_code, 200, detached.text)
         self.assertIsNone(detached.json()["result"]["email_chain_id"])
+        self.assertEqual(
+            detached.json()["result"]["send_scenario"],
+            "consent_then_materials",
+        )
+        self.assertIsNone(detached.json()["result"]["draft_payload"]["email_chain_id"])
 
     def test_standalone_chain_rename(self) -> None:
         created = self.client.post("/api/v1/chains", json={"name": "Старое название"})

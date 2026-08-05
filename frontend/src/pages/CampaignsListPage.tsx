@@ -11,6 +11,7 @@ import {
   canCampaignAction,
   shouldPollCampaign,
 } from '@/features/campaigns/campaignLifecycle';
+import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 import { formatLocalDateTime } from '@/utils/dateTime';
 import { statusLabel } from '@/utils/presentation';
 
@@ -36,6 +37,8 @@ export function CampaignsListPage({
   const navigate = useNavigate();
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
+  const activeCampaignId = useCampaignDraftStore((state) => state.campaignId);
+  const resetCampaignDraft = useCampaignDraftStore((state) => state.reset);
   const { data, isLoading } = useQuery({
     queryKey: ['campaigns', scope],
     queryFn: () => campaignsApi.list({ scope, limit: 100 }),
@@ -80,7 +83,8 @@ export function CampaignsListPage({
   });
   const archive = useMutation({
     mutationFn: (id: string) => campaignsApi.archive(id),
-    onSuccess: () => {
+    onSuccess: (_, archivedId) => {
+      if (activeCampaignId === archivedId) resetCampaignDraft();
       message.success(isDraftList ? 'Черновик удалён' : 'Рассылка удалена');
       invalidate();
     },
@@ -139,7 +143,7 @@ export function CampaignsListPage({
       search={false}
       headerTitle={embedded ? undefined : isDraftList ? 'Черновики' : 'Рассылки'}
       toolBarRender={() => [
-        <Button key="new" type="primary" icon={<PlusOutlined />} onClick={() => navigate('/campaigns/new')}>
+        <Button key="new" type="primary" icon={<PlusOutlined />} onClick={() => navigate('/campaigns/new?new=1')}>
           Создать рассылку
         </Button>,
       ]}

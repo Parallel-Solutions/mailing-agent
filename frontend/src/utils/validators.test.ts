@@ -21,6 +21,17 @@ describe('validators', () => {
       }),
     ).toEqual([]);
     expect(
+      validateCampaignBasics({
+        name: 'A',
+        send_scenario: 'email_chain',
+        draft_payload: {
+          email_chain: {
+            nodes: [{ id: 'root' }],
+          },
+        },
+      }),
+    ).toEqual([]);
+    expect(
       validateCampaignBasics({ name: 'A', send_scenario: 'materials_now' }),
     ).toEqual([]);
   });

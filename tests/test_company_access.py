@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
@@ -24,15 +25,18 @@ from src.generator.delivery.smtp_mailboxes import (
 from src.security.auth import Principal
 from src.security.company_access import (
     can_manage_company,
+    company_accesses_for_username,
     can_view_owned_resource,
+    replace_company_accesses,
     connection_owner_usernames,
     visible_owner_usernames,
 )
 from src.security.user_store import create_user, get_user_record
+from src.web.auth_router import create_auth_router
 from src.utils.config import settings
 from src.web.companies_router import create_companies_router
 from src.web.v1_router import create_v1_router
-from tests.bootstrap import bootstrap_test_runtime
+from tests.bootstrap import PROJECT_ROOT, bootstrap_test_runtime
 
 
 class CompanyAccessTests(unittest.TestCase):
@@ -263,6 +267,144 @@ class CompanyAccessTests(unittest.TestCase):
         client = TestClient(outsider_app)
         response = client.get("/api/v1/companies")
         self.assertEqual(response.status_code, 403)
+
+    def test_legacy_company_admin_membership_is_synced_to_grants(self) -> None:
+        accesses = company_accesses_for_username(self.company_admin)
+        self.assertEqual(len(accesses), 1)
+        self.assertEqual(accesses[0]["company_id"], self.company["id"])
+        self.assertEqual(accesses[0]["access_level"], "manage")
+
+        updated = company_service.update_member_role(
+            self.company["id"],
+            self.company_admin,
+            "member",
+        )
+        self.assertIsNotNone(updated)
+        refreshed = get_user_record(self.company_admin)
+        assert refreshed is not None
+        self.assertEqual(refreshed.role, "user")
+        self.assertEqual(refreshed.company_role, "member")
+        self.assertEqual(company_accesses_for_username(self.company_admin), [])
+        self.assertFalse(
+            can_manage_company(
+                Principal(
+                    refreshed.username,
+                    refreshed.tenant_id,
+                    refreshed.role,
+                    company_id=refreshed.company_id,
+                    company_role=refreshed.company_role,
+                ),
+                self.company["id"],
+            )
+        )
+
+    def test_scoped_company_admin_only_sees_assigned_companies(self) -> None:
+        view_only = company_service.create_company(name="View only")
+        hidden = company_service.create_company(name="Hidden")
+        scoped_username = f"scope{uuid.uuid4().hex[:6]}"
+        create_user(scoped_username, "Pass12345!", role="company_admin")
+        replace_company_accesses(
+            scoped_username,
+            [
+                {"company_id": self.company["id"], "access_level": "manage"},
+                {"company_id": view_only["id"], "access_level": "view"},
+            ],
+            created_by=self.admin,
+        )
+        principal = Principal(scoped_username, scoped_username, "company_admin")
+        app = FastAPI()
+        app.include_router(create_companies_router(check_auth=lambda: principal))
+        client = TestClient(app)
+
+        listed = client.get("/api/v1/companies")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        listed_ids = {
+            item["id"] for item in listed.json()["result"]["items"]
+        }
+        self.assertEqual(listed_ids, {self.company["id"], view_only["id"]})
+        self.assertNotIn(hidden["id"], listed_ids)
+
+        managed = client.patch(
+            f"/api/v1/companies/{self.company['id']}",
+            json={"phone": "+7 900 222-22-22"},
+        )
+        self.assertEqual(managed.status_code, 200, managed.text)
+        denied = client.patch(
+            f"/api/v1/companies/{view_only['id']}",
+            json={"phone": "+7 900 333-33-33"},
+        )
+        self.assertEqual(denied.status_code, 403, denied.text)
+        create_denied = client.post(
+            "/api/v1/companies",
+            json={"name": "Not allowed"},
+        )
+        self.assertEqual(create_denied.status_code, 403, create_denied.text)
+
+    def test_super_admin_assigns_user_role_and_company_accesses(self) -> None:
+        second = company_service.create_company(name="Second assigned")
+        settings_obj = SimpleNamespace(
+            app_session_ttl_days=7,
+            app_allow_registration=False,
+            public_base_url="http://localhost:9806",
+        )
+        app = FastAPI()
+        app.include_router(
+            create_auth_router(
+                settings_obj=settings_obj,
+                check_auth=lambda: Principal(self.admin, "root", "admin"),
+                login_template_path=PROJECT_ROOT / "templates" / "login.html",
+                register_template_path=PROJECT_ROOT / "templates" / "register.html",
+            )
+        )
+        client = TestClient(app)
+        username = f"role{uuid.uuid4().hex[:6]}"
+
+        created = client.post(
+            "/api/admin/users",
+            json={
+                "username": username,
+                "password": "Pass12345!",
+                "password_confirm": "Pass12345!",
+                "role": "company_admin",
+                "company_accesses": [
+                    {"company_id": self.company["id"], "access_level": "manage"},
+                    {"company_id": second["id"], "access_level": "view"},
+                ],
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        user = created.json()["result"]["user"]
+        self.assertEqual(user["role"], "company_admin")
+        self.assertEqual(len(user["company_accesses"]), 2)
+
+        updated = client.patch(
+            f"/api/admin/users/{username}",
+            json={
+                "role": "user",
+                "company_accesses": [
+                    {"company_id": second["id"], "access_level": "view"}
+                ],
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["result"]["user"]["role"], "user")
+        self.assertEqual(
+            company_accesses_for_username(username),
+            [
+                {
+                    "company_id": second["id"],
+                    "company_name": second["name"],
+                    "access_level": "view",
+                }
+            ],
+        )
+
+        listed = client.get("/api/admin/users")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertIn(
+            username,
+            {item["username"] for item in listed.json()["result"]["items"]},
+        )
 
     def test_unauthenticated_user_cannot_list_companies(self) -> None:
         def reject_auth() -> None:

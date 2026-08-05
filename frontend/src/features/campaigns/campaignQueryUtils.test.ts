@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildCampaignAutosavePayload,
+  buildCampaignChainSelectionPatch,
   buildValidationSignature,
   campaignValidateQueryKey,
   invalidateCampaignDerivedData,
@@ -27,6 +28,26 @@ describe('buildCampaignAutosavePayload', () => {
     ).toEqual({
       description: 'Updated',
       draft_payload: { description: 'Updated' },
+    });
+  });
+});
+
+describe('buildCampaignChainSelectionPatch', () => {
+  it('switches to the chain scenario when a chain is selected', () => {
+    expect(buildCampaignChainSelectionPatch(' chain-1 ')).toEqual({
+      email_chain_id: 'chain-1',
+      send_scenario: 'email_chain',
+    });
+  });
+
+  it('detaches the chain and restores the default scenario when cleared', () => {
+    expect(buildCampaignChainSelectionPatch(undefined)).toEqual({
+      email_chain_id: null,
+      send_scenario: 'consent_then_materials',
+    });
+    expect(buildCampaignChainSelectionPatch('   ')).toEqual({
+      email_chain_id: null,
+      send_scenario: 'consent_then_materials',
     });
   });
 });

@@ -24,7 +24,10 @@ class Principal:
 
     @property
     def is_company_admin(self) -> bool:
-        return str(self.company_role or "").lower() == "company_admin"
+        return (
+            str(self.role or "").lower() == "company_admin"
+            or str(self.company_role or "").lower() == "company_admin"
+        )
 
     @property
     def actor_id(self) -> str:

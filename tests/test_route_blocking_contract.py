@@ -9,7 +9,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_ASYNC_FUNCTIONS = {
     ("auth_router.py", "register_page"),
     ("auth_router.py", "auth_register"),
-    ("auth_router.py", "admin_create_user"),
     ("parser_router.py", "parser_chat"),
     ("sender_router.py", "read_webhook_json"),
     ("sender_router.py", "unisender_go_webhook_tokenized"),

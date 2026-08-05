@@ -606,6 +606,9 @@ def update_campaign(
             _ensure_campaign_editable(row)
 
         old_email_chain_id = row.email_chain_id
+        chain_detached = "email_chain_id" in data and data["email_chain_id"] is None
+        if chain_detached and not data.get("send_scenario") and row.send_scenario == "email_chain":
+            data = {**data, "send_scenario": "consent_then_materials"}
         template_fields = (
             "email_template_id",
             "kp_template_id",
@@ -635,7 +638,7 @@ def update_campaign(
             "audience_id",
             "email_chain_id",
         ):
-            if field in data and data[field] is not None:
+            if field in data and (data[field] is not None or field == "email_chain_id"):
                 setattr(row, field, data[field])
         if "connection_ids" in data or "smtp_mailbox_id" in data:
             _apply_sender_fields(row, data)
@@ -666,6 +669,7 @@ def update_campaign(
             "send_scenario",
             "tags",
             "internal_comment",
+            "email_chain_id",
         ):
             if key in data:
                 draft[key] = data[key]

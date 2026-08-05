@@ -1,15 +1,72 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
 from src.jobs.access import principal_payload
 from src.security.auth import authenticate_user, principal_from_user_record
+from src.security.company_access import (
+    COMPANY_ACCESS_MANAGE,
+    company_accesses_for_username,
+    replace_company_accesses,
+    require_app_admin,
+)
 from src.security.session_store import SESSION_COOKIE_NAME, create_session, delete_session
-from src.security.user_store import UserStoreError, create_user, get_user_record
+from src.security.user_store import (
+    UserRecord,
+    UserStoreError,
+    create_user,
+    get_user_record,
+    list_user_records,
+    update_user_role,
+    user_record_to_dict,
+)
 from src.web.request_models import AuthLoginRequest, AuthRegisterRequest
+
+
+class CompanyAccessBody(BaseModel):
+    company_id: str = Field(min_length=1, max_length=36)
+    access_level: Literal["view", "manage"] = "view"
+
+
+class AdminUserCreateBody(BaseModel):
+    username: str
+    password: str
+    password_confirm: str | None = None
+    role: Literal["admin", "company_admin", "user"] = "user"
+    company_accesses: list[CompanyAccessBody] = Field(default_factory=list)
+
+
+class AdminUserUpdateBody(BaseModel):
+    role: Literal["admin", "company_admin", "user"] | None = None
+    company_accesses: list[CompanyAccessBody] | None = None
+
+
+def _access_dicts(items: list[CompanyAccessBody]) -> list[dict[str, str]]:
+    return [item.model_dump() for item in items]
+
+
+def _validate_role_accesses(role: str, accesses: list[dict[str, str]]) -> None:
+    has_manage = any(item["access_level"] == COMPANY_ACCESS_MANAGE for item in accesses)
+    if role == "company_admin" and not has_manage:
+        raise HTTPException(
+            status_code=400,
+            detail="Администратору компаний нужно выдать управление хотя бы одной компанией.",
+        )
+    if role == "user" and has_manage:
+        raise HTTPException(
+            status_code=400,
+            detail="Обычному пользователю нельзя выдать право настройки компании.",
+        )
+
+
+def _admin_user_payload(record: UserRecord) -> dict[str, Any]:
+    payload = user_record_to_dict(record)
+    payload["company_accesses"] = company_accesses_for_username(record.username)
+    return payload
 
 
 def _cookie_secure(settings_obj: Any) -> bool:
@@ -143,33 +200,85 @@ def create_auth_router(
             },
         }
 
-    @router.post("/api/admin/users")
-    async def admin_create_user(payload: AuthRegisterRequest, principal: object = Depends(check_auth)):
-        from src.campaigns import company_service
-        from src.campaigns.company_service import CompanyServiceError
-        from src.jobs.access import coerce_principal
+    @router.get("/api/admin/users")
+    def admin_list_users(principal: object = Depends(check_auth)):
+        require_app_admin(principal)
+        items = [_admin_user_payload(record) for record in list_user_records()]
+        return {"status": "ok", "result": {"items": items, "total": len(items)}}
 
-        actor = coerce_principal(principal)
-        if not actor.is_admin:
-            raise HTTPException(status_code=403, detail="Только администратор может создавать пользователей.")
+    @router.post("/api/admin/users")
+    def admin_create_user(
+        payload: AdminUserCreateBody,
+        principal: object = Depends(check_auth),
+    ):
+        from src.campaigns import company_service
+
+        actor = require_app_admin(principal)
+        if (
+            payload.password_confirm is not None
+            and payload.password != payload.password_confirm
+        ):
+            raise HTTPException(status_code=400, detail="Пароли не совпадают.")
+        accesses = _access_dicts(payload.company_accesses)
+        _validate_role_accesses(payload.role, accesses)
+        for access in accesses:
+            if company_service.get_company(access["company_id"]) is None:
+                raise HTTPException(status_code=400, detail="Компания не найдена.")
         try:
-            record = create_user(payload.username, payload.password)
-            if payload.company_id:
-                company_service.add_member(
-                    payload.company_id,
-                    record.username,
-                    role=payload.company_role or "member",
-                )
-                record = get_user_record(record.username) or record
-        except UserStoreError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except CompanyServiceError as exc:
+            record = create_user(
+                payload.username,
+                payload.password,
+                role=payload.role,
+            )
+            replace_company_accesses(
+                record.username,
+                accesses,
+                created_by=actor.username,
+            )
+        except (UserStoreError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             "status": "ok",
-            "result": {
-                "user": principal_payload(principal_from_user_record(record)),
-            },
+            "result": {"user": _admin_user_payload(record)},
+        }
+
+    @router.patch("/api/admin/users/{username}")
+    def admin_update_user(
+        username: str,
+        payload: AdminUserUpdateBody,
+        principal: object = Depends(check_auth),
+    ):
+        from src.campaigns import company_service
+
+        actor = require_app_admin(principal)
+        record = get_user_record(username)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Пользователь не найден.")
+        role = payload.role or record.role
+        accesses = (
+            _access_dicts(payload.company_accesses)
+            if payload.company_accesses is not None
+            else company_accesses_for_username(username)
+        )
+        _validate_role_accesses(role, accesses)
+        for access in accesses:
+            if company_service.get_company(str(access["company_id"])) is None:
+                raise HTTPException(status_code=400, detail="Компания не найдена.")
+        try:
+            if payload.role is not None:
+                record = update_user_role(username, payload.role)
+            if payload.company_accesses is not None:
+                replace_company_accesses(
+                    username,
+                    accesses,
+                    created_by=actor.username,
+                )
+        except (UserStoreError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        refreshed = get_user_record(username) or record
+        return {
+            "status": "ok",
+            "result": {"user": _admin_user_payload(refreshed)},
         }
 
     return router

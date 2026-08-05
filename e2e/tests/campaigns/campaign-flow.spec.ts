@@ -40,6 +40,41 @@ test.describe('Campaign creation and schedule', () => {
     guard.assertClean('campaign draft');
   });
 
+  test('keeps the same draft when leaving the wizard and returning from navigation', async ({ page }) => {
+    const guard = await openAppAuthed(page);
+    await page.goto('/campaigns/new');
+    await expect(page).toHaveURL(/id=([0-9a-f-]{36})/i, { timeout: 30_000 });
+    const campaignId = page.url().match(/id=([0-9a-f-]{36})/i)?.[1];
+    expect(campaignId).toBeTruthy();
+
+    const createRequests: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (request.method() === 'POST' && url.pathname === '/api/v1/campaigns') {
+        createRequests.push(request.url());
+      }
+    });
+
+    const name = `Navigation draft ${Date.now()}`;
+    await page.locator('[data-onboarding-id="campaign-name"] input').fill(name);
+    await page.locator('a[href="/templates"]').click();
+    await expect(page).toHaveURL(/\/templates$/);
+
+    const resumeLink = page.locator(`a[href="/campaigns/new?id=${campaignId}"]`).first();
+    await expect(resumeLink).toBeVisible();
+    await resumeLink.click();
+
+    await expect(page).toHaveURL(new RegExp(`/campaigns/new\\?id=${campaignId}`));
+    await expect(page.locator('[data-onboarding-id="campaign-name"] input')).toHaveValue(name);
+    await expect.poll(async () => {
+      const response = await page.request.get(`/api/v1/campaigns/${campaignId}`);
+      return (await response.json()).result.name;
+    }).toBe(name);
+    expect(createRequests).toHaveLength(0);
+
+    guard.assertClean('campaign navigation draft');
+  });
+
   test('launch campaign sends mail via Mailpit @email', async ({ page }) => {
     test.setTimeout(120_000);
     await mailpitDeleteAll();

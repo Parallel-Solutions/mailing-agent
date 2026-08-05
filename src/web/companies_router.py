@@ -13,6 +13,7 @@ from src.jobs.access import coerce_principal, principal_payload
 from src.security.auth import Principal
 from src.security.company_access import (
     can_view_company,
+    company_directory_ids,
     require_app_admin,
     require_company_admin,
     require_company_view,
@@ -85,8 +86,20 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
         limit: int = Query(default=100, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
     ):
-        require_app_admin(_actor(principal))
-        return _ok(company_service.list_companies(limit=limit, offset=offset))
+        actor = _actor(principal)
+        company_ids = company_directory_ids(actor)
+        if company_ids is not None and not company_ids:
+            raise HTTPException(
+                status_code=403,
+                detail="У пользователя нет доступа к списку компаний.",
+            )
+        return _ok(
+            company_service.list_companies(
+                limit=limit,
+                offset=offset,
+                company_ids=company_ids,
+            )
+        )
 
     @router.post("/companies")
     def create_company(

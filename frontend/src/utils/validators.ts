@@ -13,12 +13,20 @@ export function validateCampaignBasics(input: {
   draft_payload?: {
     company_id?: string;
     company_work_type_id?: string;
+    email_chain?: {
+      nodes?: unknown[];
+    };
   };
 }): string[] {
   const errors: string[] = [];
   const scenario = (input.send_scenario || 'consent_then_materials').trim();
+  const hasEmbeddedEmailChain = Boolean(input.draft_payload?.email_chain?.nodes?.length);
   if (!(input.name || '').trim()) errors.push('Укажите название рассылки');
-  if (scenario === 'email_chain' && !(input.email_chain_id || '').trim()) {
+  if (
+    scenario === 'email_chain'
+    && !(input.email_chain_id || '').trim()
+    && !hasEmbeddedEmailChain
+  ) {
     errors.push('Выберите цепочку писем');
   }
   return errors;

@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from src.infra.db import session_scope
-from src.infra.models import Company, CompanyMembership
+from src.infra.models import Company, CompanyAccessGrant, CompanyMembership, User
 from src.infra.object_store import ObjectNotFoundError, delete as delete_object, get_bytes, put_bytes
 from src.security.auth import _safe_identifier
 from src.security.company_access import (
@@ -68,9 +68,18 @@ def _normalize_company_role(role: str | None) -> str:
     return safe
 
 
-def list_companies(*, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+def list_companies(
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    company_ids: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    if company_ids is not None and not company_ids:
+        return {"items": [], "total": 0}
     with session_scope() as session:
         stmt = select(Company).order_by(Company.name.asc())
+        if company_ids is not None:
+            stmt = stmt.where(Company.id.in_(company_ids))
         total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
         rows = session.scalars(stmt.limit(limit).offset(offset)).all()
         items = []
@@ -259,6 +268,51 @@ def _user_has_membership(username: str, session) -> bool:
     return existing is not None
 
 
+def _sync_membership_admin_access(
+    session,
+    *,
+    company_id: str,
+    username: str,
+    role: str,
+) -> None:
+    grant = session.get(
+        CompanyAccessGrant,
+        {"company_id": company_id, "username": username},
+    )
+    user = session.get(User, username)
+    if role == COMPANY_ADMIN_ROLE:
+        if grant is None:
+            session.add(
+                CompanyAccessGrant(
+                    company_id=company_id,
+                    username=username,
+                    access_level="manage",
+                    created_by="membership",
+                )
+            )
+        elif grant.access_level != "manage":
+            grant.access_level = "manage"
+            grant.created_by = "membership"
+        if user is not None and user.role != "admin":
+            user.role = "company_admin"
+        return
+
+    if grant is not None and grant.created_by in {"membership", "migration"}:
+        session.delete(grant)
+
+    if user is not None and user.role == "company_admin":
+        remaining_manage = session.scalar(
+            select(CompanyAccessGrant.company_id)
+            .where(
+                CompanyAccessGrant.username == username,
+                CompanyAccessGrant.access_level == "manage",
+            )
+            .limit(1)
+        )
+        if remaining_manage is None:
+            user.role = "user"
+
+
 def add_member(
     company_id: str,
     username: str,
@@ -285,6 +339,12 @@ def add_member(
             created_at=_now(),
         )
         session.add(row)
+        _sync_membership_admin_access(
+            session,
+            company_id=company_id,
+            username=safe_username,
+            role=safe_role,
+        )
         session.flush()
         invalidate_company_members_cache(company_id)
         return _membership_to_dict(row)
@@ -298,6 +358,12 @@ def update_member_role(company_id: str, username: str, role: str) -> dict[str, A
         if row is None:
             return None
         row.role = safe_role
+        _sync_membership_admin_access(
+            session,
+            company_id=company_id,
+            username=safe_username,
+            role=safe_role,
+        )
         session.flush()
         invalidate_company_members_cache(company_id)
         return _membership_to_dict(row)
@@ -309,6 +375,12 @@ def remove_member(company_id: str, username: str) -> bool:
         row = session.get(CompanyMembership, {"company_id": company_id, "username": safe_username})
         if row is None:
             return False
+        _sync_membership_admin_access(
+            session,
+            company_id=company_id,
+            username=safe_username,
+            role=COMPANY_MEMBER_ROLE,
+        )
         session.delete(row)
         session.flush()
         invalidate_company_members_cache(company_id)
