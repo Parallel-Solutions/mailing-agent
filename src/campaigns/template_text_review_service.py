@@ -552,6 +552,9 @@ def _promote_deep_blocking_issue(
         issue["blocking"] = True
 
 
+_MAX_REVIEW_RECIPIENTS = 50
+
+
 def review_campaign_templates(
     campaign: Campaign,
     *,
@@ -565,6 +568,15 @@ def review_campaign_templates(
     recipients = _validation_recipients(campaign)
     if not recipients:
         return []
+
+    total_recipients = len(recipients)
+    truncated = total_recipients > _MAX_REVIEW_RECIPIENTS
+    if truncated:
+        # Rendering + local-language-checking every recipient is O(recipients) and,
+        # for large lists (thousands), can turn a "quick" validation into a
+        # multi-minute request. A bounded, deterministic (row_index-ordered) sample
+        # is enough to surface template-level defects without that cost.
+        recipients = recipients[:_MAX_REVIEW_RECIPIENTS]
 
     all_issues: list[dict[str, Any]] = []
     for template_info in _collect_templates_for_validation(campaign):
@@ -646,6 +658,24 @@ def review_campaign_templates(
                 issue.setdefault("recipient_id", str(recipient.id))
                 issue.setdefault("recipient_row_index", int(recipient.row_index or 0))
             all_issues.extend(rendered_issues)
+
+    if truncated:
+        all_issues.append(
+            _issue_dict(
+                template_id=None,
+                template_name="",
+                field="review",
+                kind="review",
+                severity="warning",
+                fragment="",
+                message=(
+                    f"Проверка текста выполнена по выборке из {_MAX_REVIEW_RECIPIENTS} "
+                    f"из {total_recipients} получателей — это не мешает отправке."
+                ),
+                source="local",
+                blocking=False,
+            )
+        )
     return all_issues
 
 

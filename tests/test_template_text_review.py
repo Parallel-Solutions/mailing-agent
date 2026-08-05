@@ -420,6 +420,58 @@ class TemplateTextReviewTests(unittest.TestCase):
     @patch("src.campaigns.variable_match_service._collect_templates_for_validation")
     @patch("src.campaigns.variable_match_service._validation_recipients")
     @patch("src.campaigns.template_text_review_service.render_template_text")
+    def test_large_recipient_lists_are_sampled_not_iterated_in_full(
+        self,
+        mock_render: MagicMock,
+        mock_recipients: MagicMock,
+        mock_templates: MagicMock,
+    ) -> None:
+        from src.campaigns.template_text_review_service import _MAX_REVIEW_RECIPIENTS
+
+        total = _MAX_REVIEW_RECIPIENTS + 25
+        recipients = [
+            MagicMock(id=f"r{i}", row_index=i, company=f"Компания {i}")
+            for i in range(1, total + 1)
+        ]
+        mock_recipients.return_value = recipients
+        mock_templates.return_value = [
+            {
+                "template_id": "mail-1",
+                "template_name": "Письмо",
+                "subject": "для администрация {{company}}.",
+                "body_html": "<p>Текст.</p>",
+                "body_text": "",
+                "text": "",
+            }
+        ]
+
+        def render(text: str, *, recipient, **_kwargs) -> str:
+            return text.replace("{{company}}", recipient.company)
+
+        mock_render.side_effect = render
+        issues = review_campaign_templates(MagicMock(), deep=False)
+
+        checked_rows = {
+            item.get("recipient_row_index")
+            for item in issues
+            if item.get("field") == "subject"
+        }
+        self.assertEqual(len(checked_rows), _MAX_REVIEW_RECIPIENTS)
+        self.assertEqual(checked_rows, set(range(1, _MAX_REVIEW_RECIPIENTS + 1)))
+
+        truncation_notices = [
+            item
+            for item in issues
+            if str(_MAX_REVIEW_RECIPIENTS) in str(item.get("message") or "")
+            and str(total) in str(item.get("message") or "")
+        ]
+        self.assertEqual(len(truncation_notices), 1)
+        self.assertEqual(truncation_notices[0].get("severity"), "warning")
+        self.assertFalse(truncation_notices[0].get("blocking"))
+
+    @patch("src.campaigns.variable_match_service._collect_templates_for_validation")
+    @patch("src.campaigns.variable_match_service._validation_recipients")
+    @patch("src.campaigns.template_text_review_service.render_template_text")
     def test_campaign_document_skips_terminal_punctuation_warning(
         self,
         mock_render: MagicMock,
