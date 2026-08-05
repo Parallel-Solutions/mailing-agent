@@ -8,8 +8,11 @@ describe('validators', () => {
   });
 
   it('validates only fields required by the launch API', () => {
-    expect(validateCampaignBasics({})).toEqual(['Укажите название рассылки']);
-    expect(validateCampaignBasics({ name: 'A' })).toEqual([]);
+    expect(validateCampaignBasics({})).toEqual([
+      'Укажите название рассылки',
+      'Выберите цепочку писем',
+    ]);
+    expect(validateCampaignBasics({ name: 'A' })).toEqual(['Выберите цепочку писем']);
     expect(
       validateCampaignBasics({ name: 'A', send_scenario: 'email_chain' }),
     ).toEqual(['Выберите цепочку писем']);
@@ -30,9 +33,12 @@ describe('validators', () => {
           },
         },
       }),
-    ).toEqual([]);
+    ).toEqual(['Выберите цепочку писем']);
     expect(
       validateCampaignBasics({ name: 'A', send_scenario: 'materials_now' }),
+    ).toEqual(['Выберите цепочку писем']);
+    expect(
+      validateCampaignBasics({ name: 'A', send_scenario: 'materials_now', email_chain_id: 'chain-1' }),
     ).toEqual([]);
   });
 

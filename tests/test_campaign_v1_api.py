@@ -34,10 +34,25 @@ class CampaignV1ApiTests(unittest.TestCase):
         app.include_router(create_v1_router(check_auth=lambda: Principal(self.username, "t1", "user")))
         self.client = TestClient(app)
 
+    def _attach_required_chain(self, campaign_id: str) -> str:
+        created = self.client.post(
+            "/api/v1/chains",
+            json={"name": f"Required chain {campaign_id}"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        chain_id = str(created.json()["result"]["id"])
+        linked = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"email_chain_id": chain_id},
+        )
+        self.assertEqual(linked.status_code, 200, linked.text)
+        return chain_id
+
     def test_create_update_schedule_launch_pause(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "API Campaign", "mail_subject": "Hello"})
         self.assertEqual(created.status_code, 200)
         campaign_id = created.json()["result"]["id"]
+        self._attach_required_chain(campaign_id)
 
         patched = self.client.patch(
             f"/api/v1/campaigns/{campaign_id}",
@@ -1187,6 +1202,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 200)
         campaign_id = created.json()["result"]["id"]
+        self._attach_required_chain(campaign_id)
 
         email = self.client.post(
             "/api/v1/templates",
@@ -1443,6 +1459,17 @@ class CampaignV1ApiTests(unittest.TestCase):
 
         campaign = self.client.post("/api/v1/campaigns", json={"name": "Uses standalone chain"})
         campaign_id = campaign.json()["result"]["id"]
+        missing_chain = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
+        self.assertEqual(missing_chain.status_code, 200, missing_chain.text)
+        self.assertIn(
+            "Выберите цепочку писем",
+            missing_chain.json()["result"]["errors"],
+        )
+        blocked_launch = self.client.post(
+            f"/api/v1/campaigns/{campaign_id}/launch?force_now=true"
+        )
+        self.assertEqual(blocked_launch.status_code, 400, blocked_launch.text)
+        self.assertIn("Выберите цепочку писем", blocked_launch.text)
         linked = self.client.patch(
             f"/api/v1/campaigns/{campaign_id}",
             json={"send_scenario": "email_chain", "email_chain_id": chain_id},

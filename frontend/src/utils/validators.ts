@@ -19,14 +19,8 @@ export function validateCampaignBasics(input: {
   };
 }): string[] {
   const errors: string[] = [];
-  const scenario = (input.send_scenario || 'consent_then_materials').trim();
-  const hasEmbeddedEmailChain = Boolean(input.draft_payload?.email_chain?.nodes?.length);
   if (!(input.name || '').trim()) errors.push('Укажите название рассылки');
-  if (
-    scenario === 'email_chain'
-    && !(input.email_chain_id || '').trim()
-    && !hasEmbeddedEmailChain
-  ) {
+  if (!(input.email_chain_id || '').trim()) {
     errors.push('Выберите цепочку писем');
   }
   return errors;

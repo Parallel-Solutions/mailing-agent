@@ -1469,6 +1469,8 @@ def validate_campaign_for_launch(
         warnings: list[str] = []
         if not (camp.name or "").strip():
             errors.append("Укажите название рассылки")
+        if not (camp.email_chain_id or "").strip():
+            errors.append("Выберите цепочку писем")
         from src.campaigns.connection_service import validate_connection_ids
 
         connection_error = validate_connection_ids(
@@ -1501,15 +1503,17 @@ def validate_campaign_for_launch(
         if active <= 0:
             errors.append("Нет получателей для отправки")
 
-        if camp.send_scenario == "email_chain":
+        if camp.email_chain_id and camp.send_scenario == "email_chain":
             from src.campaigns.chain_service import get_email_chain, validate_chain
 
             chain_validation = validate_chain(get_email_chain(camp), strict=False)
             if not chain_validation["ok"]:
                 errors.extend(chain_validation["errors"])
             warnings.extend(chain_validation.get("warnings") or [])
-        elif not camp.email_template_id and not (camp.draft_payload or {}).get(
-            "email_body"
+        elif (
+            camp.email_chain_id
+            and not camp.email_template_id
+            and not (camp.draft_payload or {}).get("email_body")
         ):
             warnings.append(
                 "Шаблон письма не выбран — будет использован текст по умолчанию"

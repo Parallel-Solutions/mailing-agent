@@ -70,11 +70,12 @@ export function CampaignWizardBasicsStep({
       <div data-onboarding-id="campaign-chain">
         <ProFormSelect
           name="email_chain_id"
-          label="Цепочка писем (необязательно)"
+          label="Цепочка писем"
           placeholder="Выберите цепочку"
           options={chainOptions}
+          rules={[{ required: true, message: 'Выберите цепочку писем' }]}
           fieldProps={{
-            allowClear: true,
+            allowClear: false,
             loading: chainsLoading,
           }}
         />
