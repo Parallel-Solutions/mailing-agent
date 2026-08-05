@@ -112,7 +112,14 @@ def _url_label(url: str) -> str:
     return f"{parsed.netloc}{path}" if path else parsed.netloc
 
 
-def _template_links(body_html: str, body_text: str) -> list[dict[str, str]]:
+def template_links(body_html: str, body_text: str) -> list[dict[str, str]]:
+    """Extract declared links (anchors + bare URLs) from an email body.
+
+    Public entry point reused by both email-chain content tokenization
+    (``chain_send_service.py``) and first-party SMTP click tracking
+    (``click_tracking.py``) so link extraction/normalization stays in one
+    place.
+    """
     parser = _AnchorParser()
     try:
         parser.feed(body_html or "")
@@ -139,6 +146,11 @@ def _template_links(body_html: str, body_text: str) -> list[dict[str, str]]:
         seen.add(url)
         links.append({"url": url, "label": _url_label(url)})
     return links
+
+
+# Back-compat alias: existing callers (chain_send_service.py) import the
+# private name directly.
+_template_links = template_links
 
 
 def _nested_text(payload: Any, keys: tuple[str, ...], *, depth: int = 0) -> str:
@@ -199,6 +211,33 @@ def _provider_click_events(job_id: str) -> list[dict[str, Any]]:
     return click_events
 
 
+def _smtp_click_events(job_id: str) -> list[dict[str, Any]]:
+    """First-party click events for plain SMTP sends (see click_tracking.py).
+
+    Same shape as ``_provider_click_events`` so both sources merge as one
+    click list for CTR/unique-clicker counting.
+    """
+    try:
+        from src.generator.delivery.click_tracking import load_smtp_click_events
+    except Exception:
+        return []
+    events: list[dict[str, Any]] = []
+    for record in load_smtp_click_events(job_id):
+        url = _normalize_url(record.get("target_url"))
+        if not url:
+            continue
+        events.append(
+            {
+                "url": url,
+                "email": _safe_text(record.get("recipient")).lower(),
+                "row_id": _safe_text(record.get("row_id")),
+                "clicked_at": _safe_text(record.get("last_clicked_at") or record.get("first_clicked_at")),
+                "provider": "smtp",
+            }
+        )
+    return events
+
+
 def _standalone_link_analytics(job_id: str, campaign: dict[str, Any]) -> dict[str, Any]:
     campaign_id = _safe_text(campaign.get("id"))
     template_id = _safe_text(campaign.get("email_template_id"))
@@ -242,7 +281,7 @@ def _standalone_link_analytics(job_id: str, campaign: dict[str, Any]) -> dict[st
                     body_text = _safe_text(version.body_text) or body_text
 
     declared_links = _template_links(body_html, body_text)
-    click_events = _provider_click_events(job_id)
+    click_events = _provider_click_events(job_id) + _smtp_click_events(job_id)
     links_by_url: dict[str, dict[str, Any]] = {}
     for item in declared_links:
         url = item["url"]

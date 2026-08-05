@@ -309,14 +309,12 @@ class SenderResponseContractTests(unittest.TestCase):
         self.assertEqual(payload["result"]["message"], "UniSender Go webhook endpoint is ready")
         self.assertEqual(payload["result"]["max_body_bytes"], 2048)
 
-    def test_sender_chat_returns_result_and_legacy_reply(self) -> None:
+    def test_sender_chat_is_disabled(self) -> None:
+        # Legacy sender chat (sender_agent.chat_with_sender) is disabled
+        # together with /api/sender/run — no UI ever called it.
         response = self._client().post("/api/sender/chat", json={"message": "hello"})
 
-        payload = response.json()
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["reply"], "echo:hello")
-        self.assertEqual(payload["result"]["reply"], "echo:hello")
+        self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":

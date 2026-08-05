@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import secrets
 import threading
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,7 +11,6 @@ from fastapi.concurrency import run_in_threadpool
 
 from src.jobs.access import JobAccessDenied, authorize_job_access
 from src.security.auth import coerce_principal
-from src.jobs.audit import append_audit_event
 from src.web.errors import internal_server_error
 from src.web.request_models import ChatRequest, JobScopedRequest, LimitRequest, SenderRunRequest
 from src.web.responses import ok_response
@@ -179,182 +177,22 @@ def create_sender_router(
 
     @router.post("/api/sender/run")
     def sender_run(payload: SenderRunRequest | None = Body(default=None), principal: object = Depends(check_auth)):
-        payload = payload or SenderRunRequest()
-        dry_run = payload.dry_run
-        limit = payload.limit
-        transport = payload.transport
-        send_mode = payload.send_mode
-        recipient_strategy = payload.recipient_strategy
-        subject_template = payload.mail_subject
-        sender_email = payload.sender_email
-        campaign_name = payload.campaign_name
-        smtp_mailbox_id = payload.smtp_mailbox_id
-        job_id = payload.job_id
-        owner_username = coerce_principal(principal).username
-        ensure_job_access(job_id, principal, allow_missing=True)
-        generator_state = get_generator_status(job_id)
-        work_type = str(payload.work_type or generator_state.get("work_type") or "").strip() or None
-        attachment_mode = _attachment_mode_from_documents(job_id, payload.attachment_mode)
-        if not dry_run and is_load_test_job(job_id):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Это нагрузочный тест. Реальная отправка для тестовых job запрещена: "
-                    "можно только проверить письма без отправки."
-                ),
-            )
-
-        scheduled_start_at = payload.scheduled_start_at
-        if scheduled_start_at is not None:
-            now = datetime.now(timezone.utc)
-            if scheduled_start_at <= now - timedelta(seconds=30):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Время отложенного старта должно быть в будущем.",
-                )
-
-        try:
-            clear_sender_stop_request(job_id)
-            primed_state_box: dict[str, Any] = {}
-
-            def _prime_state() -> None:
-                pass
-
-            queue_result, started = start_sender_thread_if_absent(
-                job_id,
-                target=run_sender_background,
-                kwargs={
-                    "dry_run": dry_run,
-                    "limit": limit,
-                    "transport": transport,
-                    "send_mode": send_mode,
-                    "attachment_mode": attachment_mode,
-                    "recipient_strategy": recipient_strategy,
-                    "subject_template": subject_template,
-                    "sender_email": sender_email,
-                    "campaign_name": campaign_name,
-                    "work_type": work_type,
-                    "job_id": job_id,
-                    "smtp_mailbox_id": smtp_mailbox_id,
-                    "owner_username": owner_username,
-                },
-                name=f"sender-{sender_job_key(job_id)}",
-                before_start=_prime_state,
-                available_at=scheduled_start_at,
-            )
-            if not started:
-                return {"status": "ok", "result": compact_sender_status(get_sender_status(job_id)), "queue": queue_result}
-
-            queue_position = int(queue_result.get("queue_position") or 1)
-            queue_total = int(queue_result.get("queue_total") or queue_position)
-            is_scheduled = (
-                scheduled_start_at is not None
-                and scheduled_start_at > datetime.now(timezone.utc) - timedelta(seconds=30)
-            )
-            if is_scheduled:
-                primed_state_box["state"] = prime_sender_scheduled_state(
-                    job_id,
-                    scheduled_start_at=scheduled_start_at,
-                    transport=transport,
-                    attachment_mode=attachment_mode,
-                    recipient_strategy=recipient_strategy,
-                    sender_email=sender_email,
-                    campaign_name=campaign_name,
-                    dry_run=dry_run,
-                    queue_task_id=str(queue_result.get("task_id") or ""),
-                )
-            elif queue_position > 1:
-                primed_state_box["state"] = prime_sender_queued_state(
-                    job_id,
-                    queue_position=queue_position,
-                    queue_total=queue_total,
-                    transport=transport,
-                    attachment_mode=attachment_mode,
-                    recipient_strategy=recipient_strategy,
-                    sender_email=sender_email,
-                    campaign_name=campaign_name,
-                    dry_run=dry_run,
-                )
-            elif dry_run:
-                primed_state_box["state"] = prime_sender_checking_state(
-                    job_id, transport, attachment_mode, recipient_strategy, sender_email, campaign_name
-                )
-            else:
-                primed_state_box["state"] = prime_sender_running_state(
-                    job_id, transport, attachment_mode, recipient_strategy, sender_email, campaign_name
-                )
-            append_audit_event(
-                action="sender.run",
-                principal=principal,
-                job_id=job_id,
-                details={
-                    "dry_run": dry_run,
-                    "transport": transport,
-                    "send_mode": send_mode,
-                    "attachment_mode": attachment_mode,
-                    "recipient_strategy": recipient_strategy,
-                    "sender_email": sender_email,
-                    "campaign_name": campaign_name,
-                    "scheduled_start_at": scheduled_start_at.isoformat(timespec="seconds") if scheduled_start_at else None,
-                },
-            )
-            primed_state = primed_state_box.get("state") or get_sender_status(job_id)
-        except Exception as exc:
-            logger.exception("sender_run_start_failed", job_id=job_id, transport=transport)
-            raise internal_server_error("Не удалось запустить отправку.") from exc
-        return {
-            "status": "ok",
-            "result": compact_sender_status(primed_state),
-            "queue": queue_result,
-            "accepted": True,
-            "started": started,
-        }
+        # Legacy xlsx-рассылка (sender_agent.run_sender) отключена: у неё нет UI,
+        # нет учёта открытий/кликов и она была доступна без ограничения по ролям.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     @router.get("/api/sender/queue")
     async def sender_queue(job_id: str | None = None, principal: object = Depends(check_auth)):
-        ensure_job_access(job_id, principal, allow_missing=True)
-        from src.workers.task_queue import get_queue_snapshot
-        from src.generator.delivery.send_guard import get_send_guard_status
-
-        snapshot = get_queue_snapshot(task_type="sender", job_id=job_id)
-        snapshot["send_guard"] = get_send_guard_status()
-        return {"status": "ok", "result": snapshot}
+        # Legacy xlsx-очередь (task_type="sender") отключена вместе с /api/sender/run:
+        # CampaignFlow использует task_type="sender_batch"/"chain_followup", эта очередь
+        # больше никогда не наполняется.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     @router.post("/api/sender/scheduled/cancel")
     def sender_scheduled_cancel(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
-        from src.generator.delivery.sender_agent import _load_sender_state, _save_sender_state
-        from src.workers.task_queue import get_active_task, request_cancel
-
-        payload = payload or JobScopedRequest()
-        job_id = payload.job_id
-        ensure_job_access(job_id, principal, allow_missing=True)
-
-        state = get_sender_status(job_id)
-        if str(state.get("status") or "") != "scheduled":
-            raise HTTPException(status_code=409, detail="Для этой рассылки нет запланированного старта.")
-
-        task_id = str(state.get("scheduled_task_id") or "").strip()
-        if not task_id:
-            active = get_active_task("sender", job_id)
-            task_id = str((active or {}).get("id") or "").strip()
-        if not task_id:
-            raise HTTPException(status_code=404, detail="Запланированная задача не найдена.")
-
-        cancelled = request_cancel(task_id)
-        fresh = _load_sender_state(job_id)
-        fresh["status"] = "idle"
-        fresh["scheduled_start_at"] = None
-        fresh["scheduled_task_id"] = None
-        fresh["summary_text"] = "Запланированная рассылка отменена."
-        fresh["completed_at"] = datetime.now().isoformat(timespec="seconds")
-        _save_sender_state(fresh, job_id)
-        append_audit_event(
-            action="sender.scheduled_cancel",
-            principal=principal,
-            job_id=job_id,
-            details={"task_id": task_id},
-        )
-        return ok_response({"cancelled": True, "task": cancelled, "result": compact_sender_status(fresh)})
+        # Legacy xlsx-рассылка отключена вместе с /api/sender/run — планировать
+        # отложенный старт для неё больше нельзя, отменять нечего.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     @router.post("/api/sender/resume")
     async def sender_resume(principal: object = Depends(check_auth)):
@@ -413,36 +251,20 @@ def create_sender_router(
 
     @router.get("/api/sender/domain-stats")
     async def sender_domain_stats(principal: object = Depends(check_auth)):
-        from src.generator.delivery.domain_rate_limiter import get_domain_stats
-
-        return {"status": "ok", "result": get_domain_stats()}
+        # domain_rate_limiter обслуживает только legacy xlsx-агента (sender_agent.py);
+        # CampaignFlow (batch_worker.py/chain_send_service.py) его не вызывает.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     @router.get("/api/sender/webhook-status")
     async def sender_webhook_status(principal: object = Depends(check_auth)):
-        from src.generator.delivery.rusender_events import _unmatched_events_path
-
-        unmatched_path = _unmatched_events_path()
-        unmatched_count = 0
-        try:
-            if unmatched_path.exists():
-                unmatched_count = sum(1 for _ in unmatched_path.open("r", encoding="utf-8"))
-        except OSError:
-            unmatched_count = 0
-        return {
-            "status": "ok",
-            "result": {
-                "rusender_webhook_configured": bool(
-                    str(getattr(settings, "rusender_webhook_token", "") or getattr(settings, "rusender_webhook_secret", "") or "").strip()
-                ),
-                "unmatched_events_count": unmatched_count,
-                "unmatched_events_path": str(unmatched_path),
-            },
-        }
+        # Диагностика поверх legacy-модели sent_mail_log/*_unmatched.jsonl.
+        # Отключена вместе с остальным legacy xlsx-потоком.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     @router.get("/api/sender/status")
     def sender_status(job_id: str | None = None, principal: object = Depends(check_auth)):
-        ensure_job_access(job_id, principal, allow_missing=True)
-        return {"status": "ok", "result": compact_sender_status(get_sender_status(job_id))}
+        # Читает legacy SENDER_STATE (sender_agent.py) — отключено вместе с /api/sender/run.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     @router.get("/api/sender/unisender-history")
     def sender_unisender_history(
@@ -451,11 +273,8 @@ def create_sender_router(
         refresh: bool = False,
         principal: object = Depends(check_auth),
     ):
-        ensure_job_access(job_id, principal, allow_missing=True)
-        return {
-            "status": "ok",
-            "result": get_unisender_history(job_id=job_id, limit=limit, refresh=refresh),
-        }
+        # Legacy job state (sender_agent.py) — отключено вместе с /api/sender/run.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     @router.get("/api/sender/analytics")
     def sender_analytics(
@@ -464,15 +283,8 @@ def create_sender_router(
         refresh_wait: bool = False,
         principal: object = Depends(check_auth),
     ):
-        ensure_job_access(job_id, principal, allow_missing=True)
-        return {
-            "status": "ok",
-            "result": build_sender_delivery_analytics(
-                job_id=job_id,
-                refresh=refresh,
-                refresh_wait=refresh_wait,
-            ),
-        }
+        # Legacy job state (sender_agent.py) — отключено вместе с /api/sender/run.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     @router.get("/api/consents/sales-requests")
     def consent_sales_requests(
@@ -633,28 +445,17 @@ def create_sender_router(
         return {"status": "ok", "result": result}
     @router.post("/api/sender/stop")
     def sender_stop(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
-        job_id = None if payload is None else payload.job_id
-        ensure_job_access(job_id, principal, allow_missing=True)
-        result = request_sender_stop(job_id=job_id)
-        append_audit_event(action="sender.stop", principal=principal, job_id=job_id)
-        return {"status": "ok", "result": compact_sender_status(result)}
+        # Legacy SENDER_STATE (sender_agent.py) — отключено вместе с /api/sender/run.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     @router.post("/api/sender/preview")
     def sender_preview(payload: LimitRequest | None = Body(default=None), principal: object = Depends(check_auth)):
-        limit = None if payload is None else payload.limit
-        job_id = None if payload is None else payload.job_id
-        ensure_job_access(job_id, principal, allow_missing=True)
-        result = preview_recipients(limit=limit, job_id=job_id)
-        return {"status": "ok", "result": result}
+        # Legacy preview_recipients (sender_agent.py) — отключено вместе с /api/sender/run.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     @router.post("/api/sender/chat")
     def sender_chat(payload: ChatRequest = Body(...), principal: object = Depends(check_auth)):
-        message = payload.message.strip()
-        if not message:
-            raise HTTPException(status_code=400, detail="Пустое сообщение")
-        job_id = payload.job_id
-        ensure_job_access(job_id, principal, allow_missing=True)
-        result = chat_with_sender(message, job_id=job_id, session_id=payload.session_id)
-        return ok_response(result, **result)
+        # Legacy chat_with_sender (sender_agent.py) — отключено вместе с /api/sender/run.
+        raise HTTPException(status_code=404, detail="Эндпоинт отключён в этой ветке.")
 
     return router

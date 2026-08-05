@@ -29,7 +29,7 @@ def register_system_tools(mcp: Any, get_client: Callable[[], Any]) -> None:
         """List background worker process statuses (`/api/workers/status`)."""
         return get_client().get("/api/workers/status")
 
-    @mcp.tool()
-    def get_sender_queue() -> Any:
-        """Return sender queue snapshot and send-guard status (`/api/sender/queue`)."""
-        return get_client().get("/api/sender/queue")
+    # get_sender_queue removed: it targeted the legacy xlsx sender queue
+    # (`/api/sender/queue`, task_type="sender"), which is disabled together
+    # with /api/sender/run. CampaignFlow uses task_type="sender_batch"/
+    # "chain_followup" instead; there is no replacement endpoint yet.

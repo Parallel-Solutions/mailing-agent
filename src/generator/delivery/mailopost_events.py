@@ -47,7 +47,7 @@ EVENT_STATUS_MAP = {
 
 def append_mailopost_events(payload: Any) -> dict[str, Any]:
     events = _extract_events(payload)
-    message_to_job = _load_message_job_index()
+    message_to_job = _resolve_message_job_index([_extract_message_id(event) for event in events])
     saved = 0
     skipped = 0
     duplicates = 0
@@ -90,6 +90,25 @@ def append_mailopost_events(payload: Any) -> dict[str, Any]:
             record["event_key"] = event_key
             append_jsonl(path, record)
             existing_keys.add(event_key)
+        try:
+            from src.jobs.provider_events_store import append_provider_event
+
+            append_provider_event(
+                source="mailopost",
+                job_id=job_id,
+                connection_id=str(record.get("connection_id") or "") or None,
+                provider_task_id=message_id,
+                recipient=str(record.get("recipient") or ""),
+                row_id=str(record.get("row_id") or ""),
+                event_type=str(record.get("event_type") or ""),
+                provider_status=str(record.get("provider_status") or ""),
+                smtp_response=str(record.get("smtp_response") or ""),
+                occurred_at=str(record.get("occurred_at") or ""),
+                event_key=event_key,
+                payload=record,
+            )
+        except Exception:
+            logger.exception("mailopost_provider_delivery_event_write_failed", message_id=message_id, job_id=job_id)
         try:
             from src.campaigns.connection_sender_warmup_service import record_warmup_delivery_outcome
 
@@ -141,6 +160,14 @@ def append_mailopost_events(payload: Any) -> dict[str, Any]:
 
 
 def load_mailopost_events(job_id: str | None) -> list[dict[str, Any]]:
+    try:
+        from src.jobs.provider_events_store import has_provider_events, load_provider_events
+
+        if has_provider_events("mailopost", job_id):
+            return load_provider_events("mailopost", job_id)
+    except Exception:
+        logger.exception("mailopost_provider_delivery_event_read_failed", job_id=job_id)
+    # Fallback: events written before the provider_delivery_events migration.
     return read_jsonl(mailopost_events_path(job_id))
 
 
@@ -272,6 +299,28 @@ def _extract_first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
         if value not in (None, ""):
             return str(value).strip()
     return ""
+
+
+def _resolve_message_job_index(message_ids: list[str]) -> dict[str, dict[str, str]]:
+    candidates = [message_id for message_id in message_ids if message_id]
+    if not candidates:
+        return {}
+    try:
+        from src.jobs.provider_events_store import lookup_provider_tasks
+
+        fast = lookup_provider_tasks(candidates)
+    except Exception:
+        logger.exception("provider_task_lookup_read_failed")
+        fast = {}
+    if all(message_id in fast for message_id in candidates):
+        return fast
+    # Fall back to the historical full sent_mail_log scan only for ids the
+    # send-time-populated lookup table doesn't cover yet (sends made before
+    # provider_task_lookup existed).
+    full = _load_message_job_index()
+    merged = dict(full)
+    merged.update(fast)
+    return merged
 
 
 def _load_message_job_index() -> dict[str, dict[str, str]]:

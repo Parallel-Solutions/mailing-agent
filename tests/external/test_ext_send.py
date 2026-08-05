@@ -38,6 +38,15 @@ class _BaseSendTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        # NOTE: /api/sender/run (the legacy xlsx sender, sender_agent.run_sender)
+        # is now permanently disabled (404) — it has no UI and no open/click
+        # tracking. `app.run_send()`/`wait_send_completed()` below target that
+        # dead endpoint; this whole class needs to move to the CampaignFlow
+        # send path (batch_worker.py) before it can run against real
+        # infrastructure again.
+        raise unittest.SkipTest(
+            "Legacy /api/sender/run is disabled; EXT-SEND-* needs a CampaignFlow-based rewrite."
+        )
         cls.config = load_config()
         cls.app = ExtAppAdapter(cls.config)
         cls.app.login()

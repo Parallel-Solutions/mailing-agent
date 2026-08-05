@@ -206,6 +206,13 @@ class E2EApiClient:
             time.sleep(2.0)
         raise E2EApiError(f"Sender still busy after {timeout}s (job={job_id})")
 
+    # NOTE: sender_run/sender_status/sender_analytics below target the legacy
+    # xlsx sender API (/api/sender/run, /status, /analytics), which is now
+    # permanently disabled (404) — it has no UI and no open/click tracking.
+    # Only tests/external/adapters/app.py still calls these; those call
+    # sites are themselves skipped. Kept here (not deleted) so a future
+    # CampaignFlow-based rewrite of the external send tests has a reference
+    # for the old request/response shape.
     def sender_run(
         self,
         job_id: str,

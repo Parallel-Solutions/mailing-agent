@@ -101,6 +101,15 @@ class Settings(BaseSettings):
     smtp_use_starttls: bool = False
     smtp_allow_real_send: bool = False
     smtp_open_tracking_enabled: bool = True
+    smtp_click_tracking_enabled: bool = True
+    # IMAP INBOX scanning for DSN/NDR bounce + ARF/FBL complaint reports.
+    # Global kill-switch defaults off until the feature is rolled out; each
+    # mailbox additionally needs its own bounce_scan_enabled opt-in.
+    imap_bounce_scan_enabled: bool = False
+    imap_bounce_scan_tick_seconds: int = 300
+    imap_bounce_scan_interval_seconds: int = 1800
+    imap_bounce_scan_max_messages_per_run: int = 200
+    imap_bounce_scan_recipient_window_days: int = 30
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     microsoft_oauth_client_id: str = ""

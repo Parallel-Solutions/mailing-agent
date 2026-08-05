@@ -29,7 +29,7 @@ TRIGGER_STATUS_MAP = {
 
 def append_rusender_events(payload: Any) -> dict[str, Any]:
     events = _extract_events(payload)
-    task_to_job = _load_task_job_index()
+    task_to_job = _resolve_task_job_index([_extract_task_id(event) for event in events])
     saved = 0
     skipped = 0
     duplicates = 0
@@ -70,6 +70,24 @@ def append_rusender_events(payload: Any) -> dict[str, Any]:
             record["event_key"] = event_key
             append_jsonl(path, record)
             existing_keys.add(event_key)
+        try:
+            from src.jobs.provider_events_store import append_provider_event
+
+            append_provider_event(
+                source="rusender",
+                job_id=job_id,
+                connection_id=str(record.get("connection_id") or "") or None,
+                provider_task_id=task_id,
+                recipient=str(record.get("recipient") or ""),
+                event_type=str(record.get("event_type") or ""),
+                provider_status=str(record.get("provider_status") or ""),
+                smtp_response=str(record.get("smtp_response") or ""),
+                occurred_at=str(record.get("occurred_at") or ""),
+                event_key=event_key,
+                payload=record,
+            )
+        except Exception:
+            logger.exception("rusender_provider_delivery_event_write_failed", task_id=task_id, job_id=job_id)
         try:
             from src.campaigns.connection_sender_warmup_service import record_warmup_delivery_outcome
 
@@ -155,6 +173,14 @@ def _safe_text(value: Any) -> str:
     return str(value or "").strip()
 
 def load_rusender_events(job_id: str | None) -> list[dict[str, Any]]:
+    try:
+        from src.jobs.provider_events_store import has_provider_events, load_provider_events
+
+        if has_provider_events("rusender", job_id):
+            return load_provider_events("rusender", job_id)
+    except Exception:
+        logger.exception("rusender_provider_delivery_event_read_failed", job_id=job_id)
+    # Fallback: events written before the provider_delivery_events migration.
     return read_jsonl(rusender_events_path(job_id))
 
 def rusender_events_path(job_id: str | None) -> Path:
@@ -236,6 +262,28 @@ def _extract_first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
         if value not in (None, ""):
             return str(value).strip()
     return ""
+
+
+def _resolve_task_job_index(task_ids: list[str]) -> dict[str, dict[str, str]]:
+    candidates = [task_id for task_id in task_ids if task_id]
+    if not candidates:
+        return {}
+    try:
+        from src.jobs.provider_events_store import lookup_provider_tasks
+
+        fast = lookup_provider_tasks(candidates)
+    except Exception:
+        logger.exception("provider_task_lookup_read_failed")
+        fast = {}
+    if all(task_id in fast for task_id in candidates):
+        return fast
+    # Fall back to the historical full sent_mail_log scan only for ids the
+    # send-time-populated lookup table doesn't cover yet (sends made before
+    # provider_task_lookup existed).
+    full = _load_task_job_index()
+    merged = dict(full)
+    merged.update(fast)
+    return merged
 
 
 def _load_task_job_index() -> dict[str, dict[str, str]]:
