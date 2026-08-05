@@ -113,8 +113,16 @@ export function CampaignNewPage() {
   const navigate = useNavigate();
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
-  const { campaignId, draft, setCampaignId, setDraft, replaceDraft, saveState, setSaveState } =
-    useCampaignDraftStore();
+  const {
+    campaignId,
+    draft,
+    setCampaignId,
+    setDraft,
+    replaceDraft,
+    saveState,
+    setSaveState,
+    reset: resetDraftState,
+  } = useCampaignDraftStore();
   const [basicsForm] = Form.useForm();
   const [senderForm] = Form.useForm();
   const [scheduleForm] = Form.useForm();
@@ -128,7 +136,9 @@ export function CampaignNewPage() {
   const user = useAuthStore((s) => s.user);
   const debounceRef = useRef<number | null>(null);
   const pendingAutosaveRef = useRef<Record<string, unknown> | null>(null);
+  const createRequestedRef = useRef(false);
   const hydratedIdRef = useRef<string | null>(null);
+  const loadRequestRef = useRef(0);
   const companyAutoSetRef = useRef<string | null>(null);
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistRequestRef = useRef(0);
@@ -160,6 +170,8 @@ export function CampaignNewPage() {
     pushParams({}, [...CAMPAIGN_MODAL_KEYS]);
   }, [pushParams]);
 
+  const id = isOnboardingPreview ? undefined : (existingId || undefined);
+
   const createMutation = useMutation({
     mutationFn: () => campaignsApi.create({ name: 'Черновик рассылки' }),
     onSuccess: (camp) => {
@@ -168,25 +180,61 @@ export function CampaignNewPage() {
       void queryClient.invalidateQueries({ queryKey: ['campaigns', 'draft'] });
       navigate(`/campaigns/new?id=${camp.id}`, { replace: true });
     },
+    onError: (error: Error) => {
+      createRequestedRef.current = false;
+      message.error(error.message || 'Не удалось создать черновик рассылки');
+    },
   });
 
   useEffect(() => {
     if (isOnboardingPreview) return;
 
-    if (existingId) {
-      setCampaignId(existingId);
-      void campaignsApi.get(existingId).then((camp) => {
-        replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
-      });
+    const requestId = ++loadRequestRef.current;
+    hydratedIdRef.current = null;
+    companyAutoSetRef.current = null;
+
+    if (!existingId) {
+      if (createRequestedRef.current) return;
+      createRequestedRef.current = true;
+      resetDraftState();
+      createMutation.mutate();
       return;
     }
-    if (!campaignId) {
-      createMutation.mutate();
+
+    createRequestedRef.current = false;
+    if (campaignId !== existingId) {
+      resetDraftState();
     }
+    setCampaignId(existingId);
+
+    void campaignsApi
+      .get(existingId)
+      .then((camp) => {
+        if (requestId !== loadRequestRef.current) return;
+        if (camp.status !== 'draft') {
+          resetDraftState();
+          message.warning('Эта рассылка уже запускалась. Создайте её копию для повторной отправки.');
+          navigate(`/campaigns/${existingId}`, { replace: true });
+          return;
+        }
+        setCampaignId(existingId);
+        replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
+      })
+      .catch((error: unknown) => {
+        if (requestId !== loadRequestRef.current) return;
+        resetDraftState();
+        message.error(error instanceof Error ? error.message : 'Не удалось загрузить черновик рассылки');
+        navigate('/campaigns', { replace: true });
+      });
+    // createMutation is deliberately guarded by createRequestedRef for React StrictMode.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existingId, isOnboardingPreview]);
 
-  const id = isOnboardingPreview ? undefined : (existingId || campaignId);
+  useEffect(() => {
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     if (!id || !emailChainIdParam) return;
@@ -694,11 +742,19 @@ export function CampaignNewPage() {
     } catch (err) {
       const detail =
         err instanceof ApiError
-          ? err.detail
+          ? [err.detail, err.payload.hint].filter(Boolean).join(' ')
           : err instanceof Error
             ? err.message
             : 'Не удалось выполнить действие';
       message.error(detail);
+      if (
+        err instanceof ApiError &&
+        err.payload.code === 'campaign_not_draft' &&
+        err.payload.campaign_id
+      ) {
+        resetDraftState();
+        navigate(`/campaigns/${err.payload.campaign_id}`, { replace: true });
+      }
     } finally {
       setLaunchBusy({ active: false, label: '', progress: 0 });
     }
@@ -706,7 +762,7 @@ export function CampaignNewPage() {
 
   const navigateAfterLaunch = async (campaignId: string, successMessage: string) => {
     message.success(successMessage);
-    await new Promise((resolve) => window.setTimeout(resolve, 3000));
+    resetDraftState();
     try {
       const batches = await campaignsApi.batches(campaignId);
       const hasErrors = (batches || []).some(

@@ -66,7 +66,7 @@ function TemplateFileUpload({
 
   return (
     <Upload
-      accept=".docx,.pdf,.html,.htm"
+      accept=".docx,.pdf,.pptx,.html,.htm"
       maxCount={1}
       showUploadList={false}
       customRequest={async ({ file, onSuccess, onError }) => {
@@ -117,9 +117,11 @@ function TemplateCard({
   const deliveryFilename = template.version?.rendered_pdf_filename || '';
   const hasFile = Boolean(filename);
   const extension = filename.split('.').pop()?.toUpperCase();
+  const isPptx = filename.toLowerCase().endsWith('.pptx');
+  const canPreviewFile = !isPptx;
   const hasDeliveryPdf = Boolean(template.version?.rendered_pdf_filename);
   const emailFormat = !isFileTemplate ? getEmailFormat(template) : null;
-  const canShowPreviewImage = isFileTemplate ? hasFile : Boolean(template.version?.body_html?.trim());
+  const canShowPreviewImage = isFileTemplate ? hasFile && canPreviewFile : Boolean(template.version?.body_html?.trim());
 
   const openEditor = () => navigate(`/templates/${template.id}/edit`);
   const preview = async () => {
@@ -267,13 +269,19 @@ function TemplateCard({
         </div>
 
         <div className="template-card-actions">
-          <Button type="primary" icon={<EditOutlined />} onClick={openEditor}>
-            {isFileTemplate ? 'Редактор' : 'Редактировать'}
-          </Button>
-          <Tooltip title="Предпросмотр">
+          {isPptx ? (
+            <Button type="primary" icon={<DownloadOutlined />} href={templatesApi.fileUrl(template.id)}>
+              Скачать
+            </Button>
+          ) : (
+            <Button type="primary" icon={<EditOutlined />} onClick={openEditor}>
+              {isFileTemplate ? 'Редактор' : 'Редактировать'}
+            </Button>
+          )}
+          <Tooltip title={canPreviewFile ? 'Предпросмотр' : 'PPTX отправляется оригиналом без предпросмотра'}>
             <Button
               icon={<EyeOutlined />}
-              disabled={(isFileTemplate && !hasFile) || (!isFileTemplate && !template.version?.body_html?.trim())}
+              disabled={(isFileTemplate && (!hasFile || !canPreviewFile)) || (!isFileTemplate && !template.version?.body_html?.trim())}
               aria-label="Предпросмотр"
               onClick={() => void preview()}
             />
@@ -418,6 +426,10 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
 
   const handleCreated = (template: Template) => {
     refresh();
+    if (template.version?.filename?.toLowerCase().endsWith('.pptx')) {
+      pushParams({ tab: 'document' }, ['wizard', 'wizard_step']);
+      return;
+    }
     navigate(`/templates/${template.id}/edit`);
   };
 
@@ -488,7 +500,7 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
           </Button>
           {isFileTemplate && (
             <Typography.Text type="secondary" data-onboarding-id="document-formats">
-              Форматы: DOCX, PDF, HTML
+              Форматы: DOCX, PDF, PPTX, HTML
             </Typography.Text>
           )}
           {canBulkSelect && selectedCount > 0 && (

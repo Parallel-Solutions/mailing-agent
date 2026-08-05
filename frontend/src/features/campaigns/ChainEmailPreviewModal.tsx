@@ -91,6 +91,11 @@ function attachmentDownloadUrl(
   return `${base}&v=${previewVersion}`;
 }
 
+function canInlinePreviewAttachment(filename: string): boolean {
+  const suffix = filename.split('.').pop()?.toLowerCase() || '';
+  return ['pdf', 'docx', 'html', 'htm'].includes(suffix);
+}
+
 function TabLabelWithIssues({ label, issues }: { label: string; issues: TemplatePlaceholderIssue[] }) {
   const { hasPlaceholderErrors, hasLanguageIssues } = tabIssueIcons(issues);
   return (
@@ -197,6 +202,7 @@ function AttachmentPreviewTab({
   previewVersion: number;
 }) {
   const attachmentIssues = attachment.issues || [];
+  const canPreviewInline = canInlinePreviewAttachment(attachment.filename || '');
   const downloadUrl = attachment.has_content
     ? attachmentDownloadUrl(campaignId, recipientId, attachment.template_id, previewVersion)
     : null;
@@ -212,13 +218,21 @@ function AttachmentPreviewTab({
       <IssueAlerts issues={attachmentIssues} />
       {attachment.has_content ? (
         <>
-          <AttachmentPdfPreview
-            campaignId={campaignId}
-            recipientId={recipientId}
-            templateId={attachment.template_id}
-            previewVersion={previewVersion}
-            filename={attachment.filename}
-          />
+          {canPreviewInline ? (
+            <AttachmentPdfPreview
+              campaignId={campaignId}
+              recipientId={recipientId}
+              templateId={attachment.template_id}
+              previewVersion={previewVersion}
+              filename={attachment.filename}
+            />
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              message="PPTX будет отправлен оригиналом без блокирующего предпросмотра."
+            />
+          )}
           {downloadUrl ? (
             <Typography.Paragraph style={{ marginBottom: 0 }}>
               <a href={downloadUrl} download={attachment.filename || undefined}>

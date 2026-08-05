@@ -60,6 +60,8 @@ def _content_type_for_filename(filename: str) -> str:
         return "application/pdf"
     if suffix == ".docx":
         return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if suffix == ".pptx":
+        return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     if suffix in {".html", ".htm"}:
         return "text/html"
     return "application/octet-stream"

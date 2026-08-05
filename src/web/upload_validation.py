@@ -9,6 +9,7 @@ from fastapi import HTTPException, UploadFile
 OOXML_SIGNATURE_MEMBERS = {
     ".xlsx": ("[Content_Types].xml", "xl/workbook.xml"),
     ".docx": ("[Content_Types].xml", "word/document.xml"),
+    ".pptx": ("[Content_Types].xml", "ppt/presentation.xml"),
 }
 
 

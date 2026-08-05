@@ -3,6 +3,8 @@ export type ApiErrorDetail = {
   title?: string;
   message: string;
   hint?: string;
+  campaign_id?: string;
+  campaign_status?: string;
 };
 
 export class ApiError extends Error {
@@ -41,6 +43,8 @@ async function parseDetail(response: Response): Promise<ApiErrorDetail> {
         title: typeof data.detail.title === 'string' ? data.detail.title : undefined,
         message: String(data.detail.message || response.statusText || 'Ошибка запроса'),
         hint: typeof data.detail.hint === 'string' ? data.detail.hint : undefined,
+        campaign_id: typeof data.detail.campaign_id === 'string' ? data.detail.campaign_id : undefined,
+        campaign_status: typeof data.detail.campaign_status === 'string' ? data.detail.campaign_status : undefined,
       };
     }
     return { message: response.statusText || 'Ошибка запроса' };

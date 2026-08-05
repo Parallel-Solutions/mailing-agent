@@ -15,6 +15,7 @@ from src.campaigns.substitution_engine import (
 from src.campaigns.text_local_review import review_email_text
 from src.campaigns.variable_match_service import render_template_text
 from src.infra.models import Campaign, CampaignRecipient
+from src.utils.logger import logger
 
 _LANGUAGE_KINDS = frozenset({"punctuation", "grammar", "case"})
 _CASE_FIELD_ALIASES: dict[str, frozenset[str]] = {
@@ -316,7 +317,28 @@ def _append_ai_issues(
     except ImportError:
         return
 
-    ai_items = _run_ai_review(blocks, ai_enabled=True)
+    try:
+        ai_items = _run_ai_review(blocks, ai_enabled=True)
+    except Exception as exc:
+        logger.warning(
+            "campaign_template_ai_review_failed",
+            template_id=template_id,
+            error=str(exc),
+        )
+        issues.append(
+            _issue_dict(
+                template_id=template_id,
+                template_name=template_name,
+                field="review",
+                kind="review",
+                severity="warning",
+                fragment="",
+                message="Автоматическая проверка текста недоступна; это не мешает отправке.",
+                source="ai",
+                blocking=False,
+            )
+        )
+        return
     for item in ai_items:
         severity = str(item.severity or "warning")
         if severity not in {"error", "warning", "info"}:
@@ -466,10 +488,16 @@ def review_rendered_template(
     return issues
 
 
-def _promote_deep_blocking_issue(issue: dict[str, Any]) -> None:
+def _promote_deep_blocking_issue(
+    issue: dict[str, Any], *, advisory_only: bool = False
+) -> None:
     kind = str(issue.get("kind") or "")
     suggestion = str(issue.get("suggestion") or "").strip()
     source = str(issue.get("source") or "local")
+    if advisory_only and kind in _LANGUAGE_KINDS:
+        issue["severity"] = "warning"
+        issue["blocking"] = False
+        return
     if issue.get("blocking") is True:
         issue["severity"] = "error"
         return
@@ -549,8 +577,8 @@ def review_campaign_templates(
                 continue
             seen_rendered.add(rendered_signature)
 
-            run_deep = bool(deep and not advisory_done)
-            run_advisory = bool(advisory and not advisory_done)
+            run_deep = bool(deep and not advisory_done and template_kind != "document")
+            run_advisory = bool(advisory and not advisory_done and template_kind != "document")
             rendered_issues = review_rendered_template(
                 template_id=template_id,
                 template_name=template_name,
@@ -573,7 +601,9 @@ def review_campaign_templates(
                 advisory_done = True
             for issue in rendered_issues:
                 if deep:
-                    _promote_deep_blocking_issue(issue)
+                    _promote_deep_blocking_issue(
+                        issue, advisory_only=template_kind == "document"
+                    )
                 issue.setdefault("recipient_id", str(recipient.id))
                 issue.setdefault("recipient_row_index", int(recipient.row_index or 0))
             all_issues.extend(rendered_issues)
