@@ -101,7 +101,7 @@ class TemplateRenderServiceTests(unittest.TestCase):
 
         self.assertIn("errors", result)
 
-    def test_launch_validation_reports_pending_legacy_pdf_cache(self) -> None:
+    def test_launch_validation_warns_for_pending_legacy_pdf_cache(self) -> None:
         with session_scope() as session:
             template = session.get(MailTemplate, self.template_id)
             assert template is not None and template.active_version_id
@@ -118,7 +118,12 @@ class TemplateRenderServiceTests(unittest.TestCase):
         ):
             result = validate_campaign_for_launch(self.campaign_id, self.username)
 
-        self.assertTrue(any("\u043e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442\u0441\u044f" in error for error in result["errors"]))
+        self.assertTrue(
+            any("\u043e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442\u0441\u044f" in warning for warning in result["warnings"])
+        )
+        self.assertFalse(
+            any("\u043e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442\u0441\u044f" in error for error in result["errors"])
+        )
 
     def test_background_task_backfills_legacy_pdf_text_once(self) -> None:
         with session_scope() as session:
