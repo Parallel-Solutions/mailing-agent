@@ -414,6 +414,77 @@ def _write_batch_xlsx(rows: list[dict]) -> str:
     logger.info(f"[discovery] Таблица записана: {path} ({len(rows)} строк)")
     return str(path)
 
+def read_batch_rows(path: str) -> list[dict]:
+    """Читает batch_*.xlsx обратно в строки {ключ: значение} по _COLUMNS.
+    Нужно, чтобы построить ключи уже имеющихся строк для дедупа."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    ws = wb.worksheets[0]
+    data = list(ws.iter_rows(values_only=True))
+    wb.close()
+    if not data:
+        return []
+    headers = [str(h) if h is not None else "" for h in data[0]]
+    key_by_col = {}
+    for i, h in enumerate(headers):
+        for col_header, key in _COLUMNS:
+            if h == col_header:
+                key_by_col[i] = key
+                break
+    rows = []
+    for r in data[1:]:
+        row = {key_by_col[i]: (r[i] if r[i] is not None else "")
+               for i in key_by_col if i < len(r)}
+        rows.append(row)
+    return rows
+
+
+def append_batch_xlsx(path: str, rows: list[dict]) -> int:
+    """Дописывает строки в существующий batch-файл. Дубли по ИНН пропускает.
+    Пишет во временную копию и атомарно заменяет оригинал."""
+    import os, tempfile
+    from pathlib import Path
+    from openpyxl import load_workbook
+
+    if not rows:
+        return 0
+
+    wb = load_workbook(path)
+    ws = wb.worksheets[0]
+    headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+    try:
+        inn_col = headers.index("ИНН") + 1
+    except ValueError:
+        inn_col = None
+
+    existing = set()
+    if inn_col:
+        for row in ws.iter_rows(min_row=2, max_col=inn_col, values_only=True):
+            v = row[inn_col - 1]
+            if v:
+                existing.add(str(v).strip())
+
+    added = 0
+    for r in rows:
+        inn = str(r.get("inn", "") or "").strip()
+        if inn and inn in existing:
+            continue
+        ws.append([str(r.get(key, "") or "") for _, key in _COLUMNS])
+        if inn:
+            existing.add(inn)
+        added += 1
+
+    fd, tmp = tempfile.mkstemp(suffix=".xlsx", dir=str(Path(path).parent))
+    os.close(fd)
+    try:
+        wb.save(tmp)
+        os.replace(tmp, path)      # атомарная замена — оригинал не бьётся при обрыве
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return added
+
 
 def discover_and_write(query: str, region: str, okved: str = "", limit: int = 25) -> dict:
     """

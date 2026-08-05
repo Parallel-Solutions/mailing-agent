@@ -14,6 +14,7 @@ type Props = {
   onAudienceSelect: (audienceId: string) => Promise<void>;
   onImportRecipients: (file: File) => Promise<void>;
   onOpenGenerate: () => void;
+  onOpenTopup: () => void;
 };
 
 export function CampaignWizardRecipientsStep({
@@ -25,6 +26,8 @@ export function CampaignWizardRecipientsStep({
   onAudienceSelect,
   onImportRecipients,
   onOpenGenerate,
+  onOpenTopup,
+  recipientsTotal,
 }: Props) {
   const [importing, setImporting] = useState(false);
   return (
@@ -66,6 +69,12 @@ export function CampaignWizardRecipientsStep({
         </Upload>
         <Button disabled={!campaignId || !draft.job_id} onClick={onOpenGenerate}>
           Сгенерировать список
+        </Button>
+        <Button
+          disabled={!campaignId || !draft.job_id || !recipientsTotal}
+          onClick={onOpenTopup}
+        >
+          Дозаполнить
         </Button>
       </Space>
       <div data-onboarding-id="campaign-recipient-check">

@@ -800,6 +800,9 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 visible_owners=_visibility(actor),
                 recipient_columns=columns,
             )
+            if filename.endswith(".xlsx") or filename.endswith(".xlsm"):
+                _persist_data_xlsx_for_campaign(campaign_id, actor, content)
+
             return _ok({"import": result, "preview": rows[:20]})
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -807,6 +810,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise _campaign_conflict(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    
 
     @router.get("/campaigns/{campaign_id}/schedule")
     def get_schedule(campaign_id: str, principal: object = Depends(check_auth)):
@@ -1981,3 +1985,36 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return router
+
+def _persist_data_xlsx_for_campaign(campaign_id: str, actor, content: bytes) -> None:
+    """Сохранить загруженный xlsx как input/data.xlsx задачи и синхронизировать
+    таблицу Client — теми же средствами, что использует генерация."""
+    import os
+    import tempfile
+
+    from src.jobs.storage import resolve_job_paths
+    from src.jobs.clients_store import import_clients_from_xlsx
+
+    camp = service.get_campaign(campaign_id, actor.username, visible_owners=_visibility(actor))
+    job_id = (camp or {}).get("job_id") or f"job-{campaign_id.replace('-', '')[:12]}"
+
+    paths = resolve_job_paths(job_id)
+    paths.data_xlsx.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp = tempfile.mkstemp(dir=str(paths.data_xlsx.parent), suffix=".xlsxtmp")
+    os.close(fd)
+    try:
+        with open(tmp, "wb") as f:
+            f.write(content)
+        os.replace(tmp, paths.data_xlsx)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+    try:
+        import_clients_from_xlsx(job_id, paths.data_xlsx)
+    except Exception:
+        pass

@@ -197,13 +197,17 @@ def _subject_code(place: str) -> str | None:
     return None
 
 
-def collect_recipients(query: str, place: str, limit: int = 25) -> dict:
-    """Опрашивает источники по очереди, пока не наберётся limit строк с почтой.
+def collect_recipients(query: str, place: str, limit: int = 25,
+                       exclude: set[str] | None = None,
+                       write: bool = True) -> dict:
+    """Опрашивает источники, пока не наберётся limit НОВЫХ строк с почтой.
 
-    Возвращает {"success", "path", "count", "requested", "sources", "note", "error"}.
+    exclude — ключи (_row_key) строк, которые уже есть у пользователя;
+              коллектор пропустит их так же, как внутренние дубли.
+    write   — писать ли собственный batch_*.xlsx (в дозаполнении = False).
     """
     rows: list[dict] = []
-    seen: set[str] = set()
+    seen: set[str] = set(exclude or ())     # <-- посев памяти ключами из файла
     sources: list[dict] = []
     notes: list[str] = []
 
@@ -264,9 +268,10 @@ def collect_recipients(query: str, place: str, limit: int = 25) -> dict:
         )
         return {"success": False, "path": None, "count": 0, "requested": limit,
                 "sources": sources, "note": " ".join(notes),
+                "rows": [],
                 "error": f"Не удалось собрать ни одной организации с почтой. {detail}"}
 
-    path = _write_batch_xlsx(rows)
+    path = _write_batch_xlsx(rows) if write else None
 
     if len(rows) < limit:
         notes.append(f"Запрошено {limit}, найдено {len(rows)} — больше "
@@ -274,7 +279,7 @@ def collect_recipients(query: str, place: str, limit: int = 25) -> dict:
 
     logger.info(f"[collector] ИТОГО {len(rows)}/{limit} строк -> {path}")
     return {"success": True, "path": path, "count": len(rows), "requested": limit,
-            "sources": sources, "note": " ".join(notes), "error": None}
+            "sources": sources, "note": " ".join(notes), "rows": rows, "error": None}
 
 
 def collect_and_describe(query: str, place: str, limit: int = 25) -> dict:
