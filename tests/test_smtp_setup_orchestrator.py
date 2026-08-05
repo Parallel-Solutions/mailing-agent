@@ -359,7 +359,49 @@ class SmtpSetupOrchestratorTests(unittest.TestCase):
         self.assertEqual(analysis.action.action, "show_app_password")
         self.assertEqual(analysis.discoveries[0]["provider"], "mailru")
 
+    @patch("src.generator.delivery.smtp_setup_orchestrator.advise_smtp_setup")
+    @patch("src.generator.delivery.smtp_setup_orchestrator.probe_smtp_for_email")
+    def test_mailru_custom_domain_overrides_ai_apply_settings(self, mock_probe, mock_advise) -> None:
+        # Regression test for the prod bug: the AI returned action="apply_settings"
+        # (a valid but generic action) for a Mail.ru-hosted custom domain, which the
+        # narrower "show_password"-only check failed to catch.
+        discoveries = [
+            SmtpDiscoveryResult(
+                provider="mailru",
+                host="smtp.mail.ru",
+                port=465,
+                use_ssl=True,
+                use_starttls=False,
+                source="mx_hint",
+                confidence="high",
+            )
+        ]
+        mock_probe.return_value = (
+            ProbeResult(
+                host="smtp.mail.ru",
+                port=465,
+                use_ssl=True,
+                use_starttls=False,
+                reachable=True,
+                provider="mailru",
+                source="mx_hint",
+                confidence="high",
+            ),
+            discoveries,
+        )
+        mock_advise.return_value = SetupAction(
+            action="apply_settings",
+            message_ru="Настройки SMTP успешно применены.",
+            instructions=[],
+            oauth_provider=None,
+            recommended_settings=None,
+            ai_used=True,
+        )
 
+        analysis = analyze_smtp_setup("personal.offer@parresh.ru")
+
+        self.assertEqual(analysis.action.action, "show_app_password")
+        self.assertEqual(analysis.discoveries[0]["provider"], "mailru")
 
     @patch("src.generator.delivery.smtp_setup_orchestrator.probe_smtp_for_email")
 
