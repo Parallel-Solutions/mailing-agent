@@ -339,6 +339,10 @@ def _ok(result: Any) -> dict[str, Any]:
     return {"status": "ok", "result": result}
 
 
+def _campaign_conflict(exc: CampaignStateConflict) -> HTTPException:
+    return HTTPException(status_code=409, detail=exc.as_detail())
+
+
 def _actor(principal: object) -> Principal:
     return coerce_principal(principal)
 
@@ -669,6 +673,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             item = service.update_campaign(
                 campaign_id, actor.username, body.model_dump(exclude_none=True), visible_owners=_visibility(actor)
             )
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not item:
@@ -731,6 +737,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -742,13 +750,16 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         principal: object = Depends(check_auth),
     ):
         actor = _actor(principal)
-        item = service.update_recipient(
-            campaign_id,
-            recipient_id,
-            actor.username,
-            body.model_dump(exclude_none=True),
-            visible_owners=_visibility(actor),
-        )
+        try:
+            item = service.update_recipient(
+                campaign_id,
+                recipient_id,
+                actor.username,
+                body.model_dump(exclude_none=True),
+                visible_owners=_visibility(actor),
+            )
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
         if not item:
             raise HTTPException(status_code=404, detail="Получатель не найден")
         return _ok(item)
@@ -758,9 +769,12 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         campaign_id: str, body: RecipientsDeleteBody, principal: object = Depends(check_auth)
     ):
         actor = _actor(principal)
-        deleted = service.delete_recipients(
-            campaign_id, body.ids, actor.username, visible_owners=_visibility(actor)
-        )
+        try:
+            deleted = service.delete_recipients(
+                campaign_id, body.ids, actor.username, visible_owners=_visibility(actor)
+            )
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
         return _ok({"deleted": deleted})
 
     @router.post("/campaigns/{campaign_id}/recipients/import")
@@ -789,6 +803,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             return _ok({"import": result, "preview": rows[:20]})
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -811,6 +827,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
 
     @router.post("/schedule/preview")
     def post_schedule_preview(body: SchedulePreviewBody, principal: object = Depends(check_auth)):
@@ -1193,7 +1211,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 )
             )
         except CampaignStateConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _campaign_conflict(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except PermissionError as exc:

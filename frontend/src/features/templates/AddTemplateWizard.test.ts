@@ -8,6 +8,8 @@ import type { Template } from '@/api/types';
 import {
   AddTemplateWizard,
   finishTemplateCreation,
+  getAcceptString,
+  getUploadHint,
   type WizardStep,
 } from './AddTemplateWizard';
 
@@ -97,5 +99,12 @@ describe('template format selection', () => {
 
     expect(await screen.findByText('Добавить')).toBeInTheDocument();
     expect(screen.queryByText('Пустой HTML-шаблон')).not.toBeInTheDocument();
+  });
+});
+
+describe('document upload formats', () => {
+  it('offers PPTX as a static document attachment', () => {
+    expect(getAcceptString('document', 'simple')).toContain('.pptx');
+    expect(getUploadHint('document')).toContain('PPTX');
   });
 });

@@ -42,17 +42,17 @@ export function finishTemplateCreation({
 }
 
 const EMAIL_IMPORT_ACCEPT = '.docx,.pdf,.html,.htm,.txt';
-const DOCUMENT_UPLOAD_ACCEPT = '.docx,.pdf,.html,.htm';
+const DOCUMENT_UPLOAD_ACCEPT = '.docx,.pdf,.pptx,.html,.htm';
 const SIMPLE_EMAIL_UPLOAD_ACCEPT = '.docx,.pdf,.html,.htm,.txt';
 
-function getAcceptString(templateType: TemplateKind, emailFormat: EmailFormat): string {
+export function getAcceptString(templateType: TemplateKind, emailFormat: EmailFormat): string {
   if (templateType === 'document') return DOCUMENT_UPLOAD_ACCEPT;
   if (emailFormat === 'upload') return EMAIL_IMPORT_ACCEPT;
   return SIMPLE_EMAIL_UPLOAD_ACCEPT;
 }
 
-function getUploadHint(templateType: TemplateKind): string {
-  if (templateType === 'document') return 'DOCX, PDF, HTML';
+export function getUploadHint(templateType: TemplateKind): string {
+  if (templateType === 'document') return 'DOCX, PDF, PPTX, HTML';
   return 'DOCX, PDF, HTML, TXT';
 }
 
@@ -63,6 +63,17 @@ function getUploadOperation(
 ) {
   const extension = file?.name.split('.').pop()?.toLowerCase() || '';
   if (templateType === 'document') {
+    if (extension === 'pptx') {
+      return {
+        estimate: [3, 10] as [number, number],
+        stages: [
+          'Загружаем файл',
+          'Проверяем формат и безопасность',
+          'Извлекаем текст без AI-проверки',
+          'Сохраняем оригинал для отправки',
+        ],
+      };
+    }
     if (extension === 'docx') {
       return {
         estimate: [20, 45] as [number, number],

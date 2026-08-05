@@ -140,6 +140,22 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_CAMPAIGN_EDITOR_STATUSES = frozenset({"draft", "scheduled", "paused"})
+
+
+def _ensure_campaign_editable(campaign: Campaign) -> None:
+    status = str(campaign.status or "draft")
+    if status in _CAMPAIGN_EDITOR_STATUSES:
+        return
+    raise CampaignStateConflict(
+        f"Campaign {campaign.id} cannot be edited in status {status}.",
+        campaign_id=str(campaign.id),
+        status=status,
+        code="campaign_not_editable",
+        hint="Create a new draft or duplicate this campaign before editing it.",
+    )
+
+
 def _schedule_requires_immediate_start(
     schedule: CampaignSchedule, *, now: datetime | None = None
 ) -> bool:
@@ -586,13 +602,8 @@ def update_campaign(
             return None
         if not can_access_owner(visible_owners, row.owner_username):
             return None
-        if (
-            row.status not in {"draft", "scheduled", "paused"}
-            and data.get("force") is not True
-        ):
-            # Allow metadata updates on draft-like states; still allow draft_payload merge always for drafts
-            if row.status not in {"draft"}:
-                pass
+        if data.get("force") is not True:
+            _ensure_campaign_editable(row)
 
         old_email_chain_id = row.email_chain_id
         template_fields = (
@@ -757,7 +768,6 @@ def duplicate_campaign(
             "draft_payload": source.get("draft_payload") or {},
         },
     )
-    # Copy recipients
     with session_scope() as session:
         recipients = session.scalars(
             select(CampaignRecipient).where(
@@ -780,12 +790,46 @@ def duplicate_campaign(
                     excluded=rec.excluded,
                 )
             )
+
         camp = session.get(Campaign, created["id"])
         if camp:
             camp.total_count = len(recipients)
             camp.email_template_id = source.get("email_template_id")
             camp.kp_template_id = source.get("kp_template_id")
             camp.contract_template_id = source.get("contract_template_id")
+            camp.audience_id = source.get("audience_id")
+            camp.email_chain_id = source.get("email_chain_id")
+
+        source_schedule = session.scalar(
+            select(CampaignSchedule).where(
+                CampaignSchedule.campaign_id == campaign_id
+            )
+        )
+        target_schedule = session.scalar(
+            select(CampaignSchedule).where(
+                CampaignSchedule.campaign_id == created["id"]
+            )
+        )
+        if source_schedule is not None and target_schedule is not None:
+            for field in (
+                "send_immediately",
+                "start_at",
+                "timezone",
+                "batch_size",
+                "interval_seconds",
+                "pause_between_messages_ms",
+                "max_per_hour",
+                "max_per_day",
+                "on_error",
+                "max_retries",
+            ):
+                setattr(target_schedule, field, getattr(source_schedule, field))
+            target_schedule.weekdays = list(source_schedule.weekdays or [])
+            target_schedule.time_windows = [
+                dict(window) for window in (source_schedule.time_windows or [])
+            ]
+            target_schedule.preview = {}
+
     return get_campaign(created["id"], owner_username, visible_owners=visible_owners)
 
 
@@ -886,10 +930,7 @@ def replace_recipients(
         camp = session.get(Campaign, campaign_id)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
-        if camp.status not in {"draft", "paused", "scheduled"}:
-            raise ValueError(
-                "Cannot replace recipients for campaign in status " + camp.status
-            )
+        _ensure_campaign_editable(camp)
 
         # Bulk delete + flush before inserts so re-import does not collide on
         # unique (campaign_id, row_index) when UOW would emit INSERT before DELETE.
@@ -986,6 +1027,7 @@ def update_recipient(
         camp = session.get(Campaign, campaign_id)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             return None
+        _ensure_campaign_editable(camp)
         row = session.get(CampaignRecipient, recipient_id)
         if row is None or row.campaign_id != campaign_id:
             return None
@@ -1034,6 +1076,7 @@ def delete_recipients(
         camp = session.get(Campaign, campaign_id)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             return 0
+        _ensure_campaign_editable(camp)
         job_id = str(camp.job_id or "")
         deleted = 0
         for rid in recipient_ids:
@@ -1207,6 +1250,7 @@ def upsert_schedule(
         camp = session.get(Campaign, campaign_id)
         if camp is None or not can_access_owner(visible_owners, camp.owner_username):
             raise PermissionError("Campaign not found")
+        _ensure_campaign_editable(camp)
         schedule = session.scalar(
             select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id)
         )
@@ -1477,7 +1521,7 @@ def validate_campaign_for_launch(
 
         mapping_errors = mapping_validation_errors(camp)
         errors.extend(mapping_errors)
-        errors.extend(template_text_cache_validation_errors(camp))
+        warnings.extend(template_text_cache_validation_errors(camp))
         template_issues: list[dict[str, Any]] = []
         if not mapping_errors:
             errors.extend(empty_variable_validation_errors(camp))
@@ -1534,8 +1578,13 @@ def launch_campaign(
             and can_access_owner(visible_owners, existing_campaign.owner_username)
             and existing_campaign.status != "draft"
         ):
+            status = str(existing_campaign.status or "draft")
             raise CampaignStateConflict(
-                "Only a draft campaign can be launched. Duplicate a completed campaign to send it again."
+                "Only a draft campaign can be launched. Duplicate a completed campaign to send it again.",
+                campaign_id=str(existing_campaign.id),
+                status=status,
+                code="campaign_not_draft",
+                hint="Create a new draft or duplicate this campaign before launching it.",
             )
 
     validation = validate_campaign_for_launch(
@@ -1551,8 +1600,13 @@ def launch_campaign(
         camp = session.get(Campaign, campaign_id, with_for_update=True)
         assert camp is not None
         if camp.status != "draft":
+            status = str(camp.status or "draft")
             raise CampaignStateConflict(
-                "Only a draft campaign can be launched. Duplicate a completed campaign to send it again."
+                "Only a draft campaign can be launched. Duplicate a completed campaign to send it again.",
+                campaign_id=str(camp.id),
+                status=status,
+                code="campaign_not_draft",
+                hint="Create a new draft or duplicate this campaign before launching it.",
             )
         schedule = session.scalar(
             select(CampaignSchedule).where(CampaignSchedule.campaign_id == campaign_id)

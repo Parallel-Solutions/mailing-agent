@@ -13,6 +13,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 from urllib.parse import quote
+from xml.etree import ElementTree
+from zipfile import BadZipFile, ZipFile
 
 from docx import Document
 from pypdf import PdfReader
@@ -44,7 +46,7 @@ FILE_TEMPLATE_TYPE_ALIASES = {
     "contract": "document",
 }
 FILE_TEMPLATE_EXTENSIONS = {
-    "document": {".docx", ".pdf", ".html", ".htm"},
+    "document": {".docx", ".pdf", ".pptx", ".html", ".htm"},
 }
 LEGACY_DOCUMENT_TYPES = ("kp", "contract")
 TEMPLATE_DELIVERY_RENDERER_VERSION = "2026-08-04-kp-contact-icons-v2"
@@ -125,6 +127,34 @@ def _decode_text(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+_PPTX_SLIDE_RE = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
+_PPTX_TEXT_TAG = "{http://schemas.openxmlformats.org/drawingml/2006/main}t"
+
+
+def _pptx_text(data: bytes) -> str:
+    try:
+        with ZipFile(BytesIO(data)) as archive:
+            slide_names: list[tuple[int, str]] = []
+            for member in archive.namelist():
+                match = _PPTX_SLIDE_RE.fullmatch(member.replace("\\", "/"))
+                if match:
+                    slide_names.append((int(match.group(1)), member))
+            slide_names.sort(key=lambda item: item[0])
+            slides: list[str] = []
+            for _, member in slide_names:
+                root = ElementTree.fromstring(archive.read(member))
+                chunks = [
+                    str(node.text or "").strip()
+                    for node in root.iter(_PPTX_TEXT_TAG)
+                    if str(node.text or "").strip()
+                ]
+                if chunks:
+                    slides.append(" ".join(chunks))
+            return "\n".join(slides)
+    except (BadZipFile, KeyError, OSError, ElementTree.ParseError) as exc:
+        raise ValueError("Не удалось прочитать содержимое PPTX") from exc
+
+
 def _file_text(filename: str, data: bytes) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix in {".html", ".htm", ".txt"}:
@@ -142,6 +172,8 @@ def _file_text(filename: str, data: bytes) -> str:
     if suffix == ".pdf":
         reader = PdfReader(BytesIO(data))
         return "\n".join(page.extract_text() or "" for page in reader.pages)
+    if suffix == ".pptx":
+        return _pptx_text(data)
     return ""
 
 
@@ -175,6 +207,25 @@ def _set_source_text_cache(
 
 def _is_file_document_template(template_type: str) -> bool:
     return normalize_file_template_type(template_type) == "document"
+
+
+def _normalize_attachment_output_format(
+    template: MailTemplate,
+    version: TemplateVersion | None,
+    value: str,
+) -> str:
+    normalized_format = str(value or "").strip().lower()
+    if normalized_format not in {"original", "pdf"}:
+        raise ValueError("Доступны форматы вложения: исходный или PDF")
+    if not _is_file_document_template(str(template.template_type or "")):
+        raise ValueError("Формат вложения можно выбрать только для документов")
+    if (
+        normalized_format == "pdf"
+        and version is not None
+        and Path(str(version.filename or "")).suffix.lower() == ".pptx"
+    ):
+        raise ValueError("PPTX отправляется только в исходном формате")
+    return normalized_format
 
 
 def _validate_file_template_type(template_type: str, filename: str) -> str:
@@ -554,6 +605,9 @@ def upload_file_version(
                 )
                 session.add(tmpl)
 
+            if suffix == ".pptx":
+                tmpl.is_template = False
+                tmpl.attachment_output_format = "original"
             version = TemplateVersion(
                 id=version_id,
                 template_id=resolved_template_id,
@@ -965,29 +1019,25 @@ def save_version(
             if is_template is not None:
                 tmpl.is_template = bool(is_template)
             if attachment_output_format is not None:
-                normalized_format = str(attachment_output_format or "").strip().lower()
-                if normalized_format not in {"original", "pdf"}:
-                    raise ValueError("Доступны форматы вложения: исходный или PDF")
-                if not _is_file_document_template(str(tmpl.template_type or "")):
-                    raise ValueError("Формат вложения можно выбрать только для документов")
+                normalized_format = _normalize_attachment_output_format(
+                    tmpl, current, attachment_output_format
+                )
                 tmpl.attachment_output_format = normalized_format
             tmpl.updated_at = _now()
             session.flush()
             return template_to_dict(tmpl, current)
+        current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
         if is_template is not None:
             tmpl.is_template = bool(is_template)
             tmpl.updated_at = _now()
         if attachment_output_format is not None:
-            normalized_format = str(attachment_output_format or "").strip().lower()
-            if normalized_format not in {"original", "pdf"}:
-                raise ValueError("Доступны форматы вложения: исходный или PDF")
-            if not _is_file_document_template(str(tmpl.template_type or "")):
-                raise ValueError("Формат вложения можно выбрать только для документов")
+            normalized_format = _normalize_attachment_output_format(
+                tmpl, current, attachment_output_format
+            )
             tmpl.attachment_output_format = normalized_format
             tmpl.updated_at = _now()
         if not content_changed and name is None:
             return None
-        current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
         next_number = (current.version_number + 1) if current else 1
         subj = subject if subject is not None else (current.subject if current else "")
         html = body_html if body_html is not None else (current.body_html if current else "")
