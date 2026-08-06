@@ -159,10 +159,10 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
     armTimeout();
 
     streamRef.current = parserApi.openProgressStream(jobId, (event) => {
-      if (event.text) {
-        appendLog(event.text);
-        armTimeout();   // сервер жив — отодвигаем обрыв
-      }
+      // Любое событие (в т.ч. keep-alive «ping» без текста) означает, что сервер
+      // жив, — отодвигаем обрыв. В лог пишем только содержательные, текстовые.
+      armTimeout();
+      if (event.text) appendLog(event.text);
     });
 
     try {

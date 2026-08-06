@@ -772,7 +772,12 @@ def run(
 
     total = len(records)
     processed = found = not_found = liquidated_count = 0
-    progress_step = max(1, min(save_every, total // 5)) if total < 50 else max(save_every, total // 12)   # ~10–12 апдейтов, без спама
+    # Апдейты слать заметно чаще, чем раз в total//12: при паузе 6–16 сек на строку
+    # (см. ниже) редкий шаг давал десятки минут тишины в канал прогресса — на 2000
+    # строк первый апдейт приходил лишь минут через 40. Привязываем к шагу сохранения
+    # (save_every) — реальный прогресс идёт каждые ~пару-тройку минут, а keep-alive
+    # в progress.py держит соединение в промежутках между апдейтами.
+    progress_step = max(1, min(save_every, total // 5)) if total < 50 else save_every
 
     logger.info(f"Начинаю обработку {total} строк...")
     print(f"\n{'='*50}")
