@@ -15,7 +15,11 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button, Dropdown, Tooltip } from 'antd';
 import { useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { onboardingApi } from '@/api/onboarding';
+import {
+  onboardingApi,
+  onboardingChapterStorageKey,
+  onboardingQueryKey,
+} from '@/api/onboarding';
 import type { OnboardingState } from '@/api/types';
 import { OnboardingTour } from '@/features/onboarding/OnboardingTour';
 import { campaignComposerPath } from '@/features/campaigns/campaignNavigation';
@@ -31,8 +35,6 @@ import { tokens } from '@/theme/tokens';
 import { APP_TOP_BAR_HEIGHT, AppTopBar } from '@/layout/AppTopBar';
 import '@/layout/AppTopBar.css';
 
-const ONBOARDING_CHAPTER_STORAGE_KEY = 'campaignflow:onboarding-chapter';
-
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -45,16 +47,18 @@ export function AppLayout() {
   const [onboardingSession, setOnboardingSession] = useState(0);
   const [onboardingChapter, setOnboardingChapter] = useState<OnboardingChapterId>();
   const [onboardingMenuOpen, setOnboardingMenuOpen] = useState(false);
+  const onboardingKey = onboardingQueryKey(user?.username);
+  const chapterStorageKey = onboardingChapterStorageKey(user?.username);
   const startOnboarding = useMutation({
     onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: ['onboarding'] });
+      await queryClient.cancelQueries({ queryKey: onboardingKey });
     },
     mutationFn: (chapterId: OnboardingChapterId) => {
       const chapter = ONBOARDING_CHAPTERS.find((item) => item.id === chapterId);
       const firstStepIndex = ONBOARDING_STEPS.findIndex(
         (step) => step.id === chapter?.stepIds[0],
       );
-      const currentState = queryClient.getQueryData<OnboardingState>(['onboarding']);
+      const currentState = queryClient.getQueryData<OnboardingState>(onboardingKey);
       return onboardingApi.update({
         status: 'active',
         current_step: Math.max(0, firstStepIndex),
@@ -62,8 +66,8 @@ export function AppLayout() {
       });
     },
     onSuccess: (state, chapterId) => {
-      queryClient.setQueryData<OnboardingState>(['onboarding'], state);
-      window.sessionStorage.setItem(ONBOARDING_CHAPTER_STORAGE_KEY, chapterId);
+      queryClient.setQueryData<OnboardingState>(onboardingKey, state);
+      window.sessionStorage.setItem(chapterStorageKey, chapterId);
       setOnboardingChapter(chapterId);
       setOnboardingSession((current) => current + 1);
     },

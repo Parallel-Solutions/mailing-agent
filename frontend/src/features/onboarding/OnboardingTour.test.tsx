@@ -13,6 +13,8 @@ vi.mock('@/api/onboarding', () => ({
     update: vi.fn(),
     restart: vi.fn(),
   },
+  onboardingQueryKey: (username?: string | null) => ['onboarding', username || 'anonymous'],
+  onboardingChapterStorageKey: (username?: string | null) => `campaignflow:onboarding-chapter:${username || 'anonymous'}`,
 }));
 
 const activeState: OnboardingState = {
@@ -108,6 +110,9 @@ describe('OnboardingTour', () => {
     expect(navigation).toContainElement(screen.getByRole('button', { name: 'Назад' }));
     expect(navigation).toContainElement(screen.getByRole('button', { name: 'Далее' }));
     expect(screen.getByRole('button', { name: 'Назад' })).toBeDisabled();
+    await waitFor(() => {
+      expect(container.querySelector('.campaignflow-onboarding__next')).toBeEnabled();
+    });
     expect(container.querySelectorAll('.campaignflow-onboarding__page')).toHaveLength(12);
     expect(container.querySelectorAll('.campaignflow-onboarding__page--active')).toHaveLength(1);
     expect(screen.getByRole('dialog')).not.toContainElement(navigation);
@@ -133,5 +138,17 @@ describe('OnboardingTour', () => {
     expect(container.querySelector('.campaignflow-onboarding__blocker')).toBeInTheDocument();
     expect(container.querySelector('.campaignflow-onboarding__connector')).toBeInTheDocument();
     expect(container.querySelector('.campaignflow-onboarding__panel')).toBeInTheDocument();
+  });
+
+  it('keeps a targetless intro usable when animation frames are stalled', async () => {
+    vi.stubGlobal('requestAnimationFrame', () => 1);
+    const { container } = renderTour();
+
+    await screen.findByRole('dialog');
+    await waitFor(() => {
+      expect(container.querySelector('.campaignflow-onboarding'))
+        .toHaveClass('campaignflow-onboarding--ready');
+      expect(container.querySelector('.campaignflow-onboarding__next')).toBeEnabled();
+    });
   });
 });

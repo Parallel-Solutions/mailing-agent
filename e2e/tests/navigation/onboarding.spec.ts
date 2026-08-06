@@ -195,6 +195,44 @@ async function expectCriticalLayersSeparated(page: Page, targetSelector: string)
   expect(overlapArea(panelBox!, navigationBox!)).toBe(0);
 }
 
+test.describe('new account onboarding', () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  test('can immediately start the automatic onboarding @smoke', async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 1224, height: 1280 });
+    await page.goto('/register');
+
+    const username = [
+      'onb',
+      Date.now(),
+      testInfo.workerIndex,
+      Math.floor(Math.random() * 1_000_000),
+    ].join('');
+    await page.locator('#username').fill(username);
+    await page.locator('#password').fill('ProbePass123!');
+    await page.locator('#password_confirm').fill('ProbePass123!');
+    await page.locator('button.ant-btn-primary').click();
+
+    await expect(page).toHaveURL(/\/$/);
+    const tour = page.locator('.campaignflow-onboarding');
+    const panel = tour.locator('.campaignflow-onboarding__panel');
+    const back = tour.locator('.campaignflow-onboarding__back');
+    const next = tour.locator('.campaignflow-onboarding__next');
+
+    await expect(tour).toHaveClass(/campaignflow-onboarding--ready/);
+    await expect(panel).toBeVisible();
+    await expect(back).toBeDisabled();
+    await expect(next).toBeEnabled();
+
+    await next.click();
+    await expect(page).toHaveURL(/\/connections$/);
+    await expect(panel).toBeVisible();
+    await expect(next).toBeEnabled();
+  });
+});
+
 test('all passive onboarding chapters complete without business writes', async ({ page }) => {
   test.setTimeout(240_000);
 
