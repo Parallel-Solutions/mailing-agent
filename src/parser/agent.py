@@ -408,18 +408,33 @@ def _topup_mo(file_path: str, place: str, query: str) -> dict:
 def fill_gaps(job_id: str, verify_emails: bool = False) -> dict:
     progress.start(job_id)
     try:
+        # БЫСТРЫЙ ПУТЬ: галочка «Проверить почты» = ТОЛЬКО проверка почт,
+        # без тяжёлого batch_processor (иначе на 2000 строк это часы дозаполнения).
+        if verify_emails:
+            paths = resolve_job_paths(job_id)
+            if not paths.data_xlsx.exists():
+                return {"reply": "Файл не найден — сначала загрузите Excel.",
+                        "success": False, "result_file": None}
+            from datetime import datetime as _dt
+            canonical = f"batch_{_dt.now().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
+            paths.output_dir.mkdir(parents=True, exist_ok=True)
+            dst = paths.output_dir / canonical
+            shutil.copy2(paths.data_xlsx, dst)   # копия в output/ — чтобы скачивание нашло файл
+            try:
+                from src.parser_new.tools.postprocess import postprocess_file
+                postprocess_file(str(dst), max_email_lookups=2000, check_all=True)
+            except Exception as e:
+                logger.warning(f"[fill] проверка почт не выполнена: {e}")
+                return {"reply": f"Проверка почт не выполнена: {e}",
+                        "success": False, "result_file": None}
+            _mark_discovery_table_ready(job_id, count=0)
+            return {"reply": "Проверка почт завершена.", "success": True,
+                    "result_file": str(dst)}
+
+        # ОБЫЧНЫЙ ПУТЬ (галочка не стоит): дозаполнение пропусков через batch_processor
         res = run_batch_parser(job_id)
         ok = res.get("status") == "ok"
         result_file = res.get("file") or None
-
-        # проверка почт по официальным сайтам (и по столбцу S) — по галочке
-        if ok and verify_emails and result_file:
-            try:
-                from src.parser_new.tools.postprocess import postprocess_file
-                postprocess_file(result_file, max_email_lookups=2000, check_all=True)
-            except Exception as e:
-                logger.warning(f"[fill] проверка почт не выполнена: {e}")
-
         if ok and result_file:
             found = (res.get("task_stats") or {}).get("found", 0)
             _mark_discovery_table_ready(job_id, count=found)
