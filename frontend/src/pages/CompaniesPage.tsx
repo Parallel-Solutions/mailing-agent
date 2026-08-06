@@ -14,6 +14,7 @@ import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import {
   useActiveOnboardingStep,
 } from '@/features/onboarding/events';
+import { useAuthStore } from '@/stores/authStore';
 import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 
 const ONBOARDING_COMPANY: Company = {
@@ -26,11 +27,12 @@ const ONBOARDING_COMPANY: Company = {
 export function CompaniesPage() {
   const queryClient = useQueryClient();
   const { message } = App.useApp();
+  const checkSession = useAuthStore((state) => state.checkSession);
   const location = useLocation();
   const navigate = useNavigate();
   const activeCampaignId = useCampaignDraftStore((state) => state.campaignId);
   const campaignContext = resolveCampaignReturnTarget(location.state, activeCampaignId);
-  const { isAppAdmin, canAccessCompanies, canManageCompany } = usePermissions();
+  const { canAccessCompanies, canManageCompanies, canManageCompany } = usePermissions();
   const { searchParams, pushParams } = useUrlNavigation();
   const editId = searchParams.get('edit');
   const workTypesId = searchParams.get('work_types');
@@ -39,10 +41,11 @@ export function CompaniesPage() {
   const previousOnboardingStepRef = useRef<string | null>(null);
   const deleteCompany = useMutation({
     mutationFn: companiesApi.remove,
-    onSuccess: (_, companyId) => {
+    onSuccess: async (_, companyId) => {
       if (editId === companyId) pushParams({}, ['edit']);
       if (workTypesId === companyId) pushParams({}, ['work_types']);
-      void queryClient.invalidateQueries({ queryKey: ['companies'] });
+      await checkSession();
+      await queryClient.invalidateQueries({ queryKey: ['companies'] });
       message.success('Компания удалена');
     },
     onError: (error) => {
@@ -106,7 +109,7 @@ export function CompaniesPage() {
                 </Button>,
               ]
             : []),
-          ...(isAppAdmin
+          ...(canManageCompanies
             ? [
                 <CompanyFormModal
                   key="create"
@@ -121,7 +124,11 @@ export function CompaniesPage() {
                     </Button>
                   }
                   onSuccess={() => {
-                    void queryClient.invalidateQueries({ queryKey: ['companies'] });
+                    void checkSession().then(() =>
+                      queryClient.invalidateQueries({
+                        queryKey: ['companies'],
+                      }),
+                    );
                   }}
                 />,
               ]
@@ -144,7 +151,7 @@ export function CompaniesPage() {
                 <a key="work-types" onClick={() => pushParams({ work_types: row.id })}>
                   Виды работ
                 </a>,
-                ...(isAppAdmin
+                ...(canManageCompany(row.id)
                   ? [
                       <Popconfirm
                         key="delete"
@@ -185,7 +192,7 @@ export function CompaniesPage() {
             pushParams({}, ['edit']);
           }}
           onDelete={
-            isAppAdmin
+            canManageCompany(editCompany.id)
               ? () => deleteCompany.mutateAsync(editCompany.id)
               : undefined
           }

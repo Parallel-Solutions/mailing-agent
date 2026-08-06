@@ -14,7 +14,6 @@ from src.security.auth import Principal
 from src.security.company_access import (
     can_view_company,
     company_directory_ids,
-    require_app_admin,
     require_company_admin,
     require_company_view,
 )
@@ -105,13 +104,19 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
     def create_company(
         body: CompanyCreateBody, principal: object = Depends(check_auth)
     ):
-        require_app_admin(_actor(principal))
+        actor = _actor(principal)
+        if not actor.is_admin and not actor.is_company_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Создавать компании могут только администраторы.",
+            )
         try:
             return _ok(
                 company_service.create_company(
                     name=body.name,
                     phone=body.phone or "",
                     contact_person_name=body.contact_person_name or "",
+                    managed_by_username=None if actor.is_admin else actor.username,
                 )
             )
         except CompanyServiceError as exc:
@@ -146,7 +151,7 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
 
     @router.delete("/companies/{company_id}")
     def delete_company(company_id: str, principal: object = Depends(check_auth)):
-        require_app_admin(_actor(principal))
+        require_company_admin(_actor(principal), company_id)
         if not company_service.delete_company(company_id):
             raise HTTPException(status_code=404, detail="Компания не найдена.")
         return _ok({"removed": True})

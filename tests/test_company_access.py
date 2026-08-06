@@ -334,11 +334,13 @@ class CompanyAccessTests(unittest.TestCase):
             json={"phone": "+7 900 333-33-33"},
         )
         self.assertEqual(denied.status_code, 403, denied.text)
-        create_denied = client.post(
+        member_create_denied = self.member_client.post(
             "/api/v1/companies",
             json={"name": "Not allowed"},
         )
-        self.assertEqual(create_denied.status_code, 403, create_denied.text)
+        self.assertEqual(
+            member_create_denied.status_code, 403, member_create_denied.text
+        )
 
     def test_super_admin_assigns_user_role_and_company_accesses(self) -> None:
         second = company_service.create_company(name="Second assigned")
@@ -503,7 +505,26 @@ class CompanyAccessTests(unittest.TestCase):
             self.assertEqual(foreign_delete.status_code, 404)
             self.assertEqual(foreign_warmup.status_code, 404)
 
-    def test_only_app_admin_can_delete_company(self) -> None:
+    def test_company_admin_can_create_and_delete_managed_company(self) -> None:
+        created = self.ca_client.post(
+            "/api/v1/companies",
+            json={"name": "Created by company admin"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        created_id = created.json()["result"]["id"]
+        self.assertTrue(can_manage_company(self.ca_principal, created_id))
+
+        deleted_by_company_admin = self.ca_client.delete(
+            f"/api/v1/companies/{created_id}"
+        )
+        self.assertEqual(
+            deleted_by_company_admin.status_code,
+            200,
+            deleted_by_company_admin.text,
+        )
+        self.assertIsNone(company_service.get_company(created_id))
+
+    def test_company_admin_cannot_delete_unassigned_company(self) -> None:
         other = company_service.create_company(name="Disposable Org")
         company_service.add_member(
             other["id"],

@@ -125,6 +125,7 @@ def create_company(
     name: str,
     phone: str = "",
     contact_person_name: str = "",
+    managed_by_username: str | None = None,
 ) -> dict[str, Any]:
     safe_name = str(name or "").strip()
     if not safe_name:
@@ -141,6 +142,18 @@ def create_company(
             updated_at=now,
         )
         session.add(row)
+        if managed_by_username:
+            manager = session.get(User, managed_by_username)
+            if manager is None:
+                raise CompanyServiceError("Администратор компании не найден.")
+            session.add(
+                CompanyAccessGrant(
+                    company_id=company_id,
+                    username=manager.username,
+                    access_level="manage",
+                    created_by=manager.username,
+                )
+            )
         session.flush()
         return _company_to_dict(row, member_count=0)
 
@@ -173,9 +186,31 @@ def delete_company(company_id: str) -> bool:
         row = session.get(Company, company_id)
         if row is None:
             return False
+        manager_usernames = list(
+            session.scalars(
+                select(CompanyAccessGrant.username).where(
+                    CompanyAccessGrant.company_id == company_id,
+                    CompanyAccessGrant.access_level == "manage",
+                )
+            ).all()
+        )
         logo_storage_key = row.logo_storage_key
         session.delete(row)
         session.flush()
+        for username in manager_usernames:
+            user = session.get(User, username)
+            if user is None or user.role != "company_admin":
+                continue
+            remaining_manage = session.scalar(
+                select(CompanyAccessGrant.company_id)
+                .where(
+                    CompanyAccessGrant.username == username,
+                    CompanyAccessGrant.access_level == "manage",
+                )
+                .limit(1)
+            )
+            if remaining_manage is None:
+                user.role = "user"
 
     invalidate_company_members_cache(company_id)
     if logo_storage_key:
