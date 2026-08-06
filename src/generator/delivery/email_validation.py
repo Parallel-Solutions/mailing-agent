@@ -367,6 +367,8 @@ def _loads_json_object(raw: Any) -> dict[str, Any] | list[Any] | None:
 def _classify_smtpbz_response(payload: Any) -> tuple[bool, str, str, dict[str, Any]] | None:
     values = list(_flatten_smtpbz_values(payload))
     details = {"smtpbz": {"status": "checked", "response": _safe_response_preview(payload)}}
+    delivery_keys = {"validdeliver", "valid_deliver", "valid_delivery"}
+    delivery_confirmed = False
 
     # SMTP.BZ can return result=true while a required nested check, such as
     # checks.validDeliver, is false. Required checks take precedence so that
@@ -375,7 +377,13 @@ def _classify_smtpbz_response(payload: Any) -> tuple[bool, str, str, dict[str, A
         key_l = key.lower().rsplit(".", 1)[-1]
         if key_l not in _SMTPBZ_REQUIRED_CHECK_KEYS:
             continue
-        if value is False or (
+        if key_l in delivery_keys and (
+            value is True
+            or value == 1
+            or (isinstance(value, str) and _SMTPBZ_VALID_TEXT_RE.match(value.strip()))
+        ):
+            delivery_confirmed = True
+        if value is False or value == 0 or (
             isinstance(value, str) and _SMTPBZ_INVALID_STATUS_RE.match(value.strip())
         ):
             return (
@@ -389,7 +397,9 @@ def _classify_smtpbz_response(payload: Any) -> tuple[bool, str, str, dict[str, A
         key_l = key.lower().rsplit(".", 1)[-1]
         if key_l in _SMTPBZ_VALID_KEYS and isinstance(value, bool):
             if value:
-                return True, "ok_smtpbz", "", details
+                if delivery_confirmed:
+                    return True, "ok_smtpbz", "", details
+                continue
             return False, "smtpbz_invalid", "SMTP.BZ: email не существует или некорректен.", details
 
     text_values = [str(value or "").strip() for _, value in values if value not in (None, "", [], {})]
@@ -403,9 +413,11 @@ def _classify_smtpbz_response(payload: Any) -> tuple[bool, str, str, dict[str, A
             value_s = str(value or "").strip()
             if _SMTPBZ_INVALID_STATUS_RE.match(value_s):
                 return False, "smtpbz_invalid", "SMTP.BZ: email не существует или некорректен.", details
-            if _SMTPBZ_VALID_TEXT_RE.match(value_s):
+            if delivery_confirmed and _SMTPBZ_VALID_TEXT_RE.match(value_s):
                 return True, "ok_smtpbz", "", details
 
+    if delivery_confirmed:
+        return True, "ok_smtpbz", "", details
     return None
 
 

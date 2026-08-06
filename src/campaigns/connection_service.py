@@ -186,8 +186,12 @@ def connection_transport(row: SmtpMailbox) -> str:
     return provider if provider in API_PROVIDERS else "smtp"
 
 
-def _public_connection(row: SmtpMailbox) -> dict[str, Any]:
-    from src.generator.delivery.channel_guard import guard_snapshot
+def _public_connection(row: SmtpMailbox, session: Any | None = None) -> dict[str, Any]:
+    from src.generator.delivery.channel_guard import guard_snapshot, refresh_guard_snapshot
+
+    delivery_guard = (
+        refresh_guard_snapshot(session, row) if session is not None else guard_snapshot(row)
+    )
 
     transport = connection_transport(row)
     auth_method = _safe_text(row.auth_method) or "password"
@@ -230,23 +234,23 @@ def _public_connection(row: SmtpMailbox) -> dict[str, Any]:
         "delivery_throttled_max_per_hour": int(row.delivery_throttled_max_per_hour or 50),
         "warmup_recipients": list(row.warmup_recipients or []),
         "warmup_percent_of_errors": int(row.warmup_percent_of_errors or 100),
-        "delivery_guard": guard_snapshot(row),
+        "delivery_guard": delivery_guard,
         "created_at": row.created_at.isoformat(timespec="seconds") if row.created_at else "",
         "updated_at": row.updated_at.isoformat(timespec="seconds") if row.updated_at else "",
     }
 
 
 def _apply_guard_settings_and_public(connection_id: str, data: dict[str, Any]) -> dict[str, Any]:
-    from src.generator.delivery.channel_guard import apply_guard_settings
+    from src.generator.delivery.channel_guard import apply_scoped_guard_settings
 
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
         if row is None:
             raise LookupError("Delivery connection not found.")
-        apply_guard_settings(row, data)
+        apply_scoped_guard_settings(session, row, data)
         row.updated_at = _now()
         session.flush()
-        return _public_connection(row)
+        return _public_connection(row, session)
 
 
 def list_connections(
@@ -259,7 +263,7 @@ def list_connections(
         stmt = select(SmtpMailbox).order_by(SmtpMailbox.is_default.desc(), SmtpMailbox.created_at.asc())
         stmt = apply_owner_filter(stmt, SmtpMailbox.owner_username, visible_owners)
         rows = session.execute(stmt).scalars().all()
-        return [_public_connection(row) for row in rows]
+        return [_public_connection(row, session) for row in rows]
 
 
 def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -418,12 +422,13 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
             created_at=now,
             updated_at=now,
         )
-        from src.generator.delivery.channel_guard import apply_guard_settings
-
-        apply_guard_settings(row, data)
         session.add(row)
         session.flush()
-        return _public_connection(row)
+        from src.generator.delivery.channel_guard import apply_scoped_guard_settings
+
+        apply_scoped_guard_settings(session, row, data)
+        session.flush()
+        return _public_connection(row, session)
 
 
 def update_connection(
@@ -540,15 +545,15 @@ def update_connection(
             row.max_per_hour = _rate_limit_value(data.get("max_per_hour"))
         if "max_per_day" in data and data.get("max_per_day") is not None:
             row.max_per_day = _rate_limit_value(data.get("max_per_day"))
-        from src.generator.delivery.channel_guard import apply_guard_settings
+        from src.generator.delivery.channel_guard import apply_scoped_guard_settings
 
-        apply_guard_settings(row, data)
+        apply_scoped_guard_settings(session, row, data)
         if row.delivery_guard_state != "disabled":
             row.status = "active"
             row.last_error = None
         row.updated_at = _now()
         session.flush()
-        return _public_connection(row)
+        return _public_connection(row, session)
 
 
 def delete_connection(
@@ -584,7 +589,7 @@ def reset_connection_guard(
         row = session.get(SmtpMailbox, connection_id)
         if row is None:
             raise LookupError("Delivery connection not found.")
-        return _public_connection(row)
+        return _public_connection(row, session)
 
 
 def resolve_connection(

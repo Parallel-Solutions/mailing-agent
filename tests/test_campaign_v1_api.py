@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 import uuid
 import zipfile
 from io import BytesIO
@@ -107,6 +108,67 @@ class CampaignV1ApiTests(unittest.TestCase):
         paused = self.client.post(f"/api/v1/campaigns/{campaign_id}/pause")
         self.assertEqual(paused.status_code, 200)
         self.assertEqual(paused.json()["result"]["status"], "paused")
+
+    def test_late_launch_keeps_campaign_interval_instead_of_filling_connection_limit(self) -> None:
+        from src.campaigns.connection_service import create_connection
+
+        connection = create_connection(
+            self.username,
+            {
+                "transport": "rusender",
+                "email": "sender@example.com",
+                "sending_key_id": 42,
+                "max_per_hour": 350,
+            },
+        )
+        created = self.client.post(
+            "/api/v1/campaigns",
+            json={
+                "name": "Late paced campaign",
+                "mail_subject": "Hello",
+                "smtp_mailbox_id": connection["id"],
+                "connection_ids": [connection["id"]],
+                "transport": "rusender",
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        campaign_id = created.json()["result"]["id"]
+        self._attach_required_chain(campaign_id)
+
+        recipients = [
+            {
+                "company": f"Company {index}",
+                "contact_name": "Contact",
+                "email": f"user{index}@example.com",
+            }
+            for index in range(351)
+        ]
+        uploaded = self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/recipients",
+            json={"recipients": recipients},
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        scheduled = self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/schedule",
+            json={
+                "send_immediately": False,
+                "start_at": "2020-01-01T10:00:00+00:00",
+                "timezone": "Europe/Moscow",
+                "weekdays": list(range(7)),
+                "time_windows": [{"start": "00:00", "end": "23:59"}],
+                "batch_size": 250,
+                "interval_seconds": 3600,
+            },
+        )
+        self.assertEqual(scheduled.status_code, 200, scheduled.text)
+
+        launched = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch")
+        self.assertEqual(launched.status_code, 200, launched.text)
+        batches = launched.json()["result"]["batches"]
+        self.assertEqual([item["size"] for item in batches], [250, 101])
+        first = datetime.fromisoformat(batches[0]["scheduled_at"])
+        second = datetime.fromisoformat(batches[1]["scheduled_at"])
+        self.assertGreaterEqual((second - first).total_seconds(), 3599)
 
     def test_update_campaign_with_connection_ids(self) -> None:
         from src.generator.delivery.smtp_mailboxes import create_mailbox

@@ -504,6 +504,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
             delivery_email, validation_attempts = resolve_delivery_email(
                 recipient,
                 validation_cache=email_validation_cache,
+                owner_username=camp.owner_username,
             )
             if not delivery_email:
                 recipient.send_status = "failed"

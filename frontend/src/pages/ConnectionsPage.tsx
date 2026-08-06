@@ -1,5 +1,5 @@
 import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
-import { ModalForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProFormTextArea, ProTable } from '@ant-design/pro-components';
+import { ModalForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProTable } from '@ant-design/pro-components';
 import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography, type FormInstance } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -248,12 +248,17 @@ function ConnectionDeliveryGuardFields() {
         label="Минимум завершённых доставок для расчёта"
         fieldProps={{ min: 1, precision: 0 }}
       />
-      <ProFormTextArea
+      <ProFormSelect
         name="warmup_recipients_text"
         label="Адреса получателей прогрева"
-        placeholder={'warmup-1@example.ru\nwarmup-2@example.ru'}
-        fieldProps={{ autoSize: { minRows: 2, maxRows: 6 } }}
-        extra="По одному адресу в строке или через запятую."
+        mode="tags"
+        options={[
+          { label: 'ffff06@yandex.ru', value: 'ffff06@yandex.ru' },
+          { label: 'fmagomedova654@gmail.ru', value: 'fmagomedova654@gmail.ru' },
+        ]}
+        placeholder="Выберите адреса или введите свои"
+        fieldProps={{ tokenSeparators: [',', ';', ' '] }}
+        extra="Можно выбрать несколько адресов; новые адреса проверяются сервером."
       />
       <ProFormDigit
         name="warmup_percent_of_errors"
@@ -266,9 +271,13 @@ function ConnectionDeliveryGuardFields() {
 }
 
 function deliveryGuardPayload(values: Record<string, unknown>) {
-  const warmupRecipients = String(values.warmup_recipients_text || '')
-    .split(/[,;\n]+/)
-    .map((value) => value.trim().toLowerCase())
+  const rawRecipients = values.warmup_recipients_text;
+  const warmupRecipients = (
+    Array.isArray(rawRecipients)
+      ? rawRecipients
+      : String(rawRecipients || '').split(/[,;\n]+/)
+  )
+    .map((value) => String(value).trim().toLowerCase())
     .filter(Boolean);
   return {
     delivery_guard_enabled: values.delivery_guard_enabled === true,
@@ -414,7 +423,7 @@ function EditConnectionAction({
         delivery_error_rate_percent: (connection.delivery_error_rate_threshold ?? 0.05) * 100,
         delivery_error_window_minutes: connection.delivery_error_window_minutes ?? 60,
         delivery_error_min_samples: connection.delivery_error_min_samples ?? 20,
-        warmup_recipients_text: (connection.warmup_recipients || []).join('\n'),
+        warmup_recipients_text: connection.warmup_recipients || [],
         warmup_percent_of_errors: connection.warmup_percent_of_errors ?? 100,
       }}
       onFinish={async (values) => {
@@ -735,7 +744,7 @@ export function ConnectionsPage() {
         delivery_error_rate_percent: 5,
         delivery_error_window_minutes: 60,
         delivery_error_min_samples: 20,
-        warmup_recipients_text: '',
+        warmup_recipients_text: [],
         warmup_percent_of_errors: 100,
       });
       setAddModalOpen(true);
@@ -1025,7 +1034,7 @@ export function ConnectionsPage() {
             delivery_error_rate_percent: 5,
             delivery_error_window_minutes: 60,
             delivery_error_min_samples: 20,
-            warmup_recipients_text: '',
+            warmup_recipients_text: [],
             warmup_percent_of_errors: 100,
           }}
           onOpenChange={(open) => {
@@ -1548,14 +1557,14 @@ export function ConnectionsPage() {
               </Tag>
               {row.delivery_guard?.state === 'warmup' &&
               ['queued', 'running'].includes(row.delivery_guard?.warmup_status || '') ? (
-                <Tag color="processing">Автовосстановление подключения</Tag>
+                <Tag color="processing">{row.delivery_guard.scope === 'sending_key' ? 'Автопрогрев ключа' : 'Автовосстановление подключения'}</Tag>
               ) : null}
               {row.delivery_guard?.warmup_status === 'failed' ? (
-                <Tag color="error">Автовосстановление завершилось с ошибкой</Tag>
+                <Tag color="error">{row.delivery_guard?.scope === 'sending_key' ? 'Прогрев ключа завершился с ошибкой' : 'Автовосстановление завершилось с ошибкой'}</Tag>
               ) : null}
               {row.delivery_guard && row.delivery_guard.terminal_count > 0 ? (
                 <Typography.Text type="secondary">
-                  Ошибки: {row.delivery_guard.error_count}/{row.delivery_guard.terminal_count}
+                  {row.delivery_guard.scope === 'sending_key' ? `Ошибки ключа ${row.delivery_guard.scope_id}: ` : 'Ошибки: '}{row.delivery_guard.error_count}/{row.delivery_guard.terminal_count}
                   {' '}({(row.delivery_guard.error_rate * 100).toFixed(1)}%)
                 </Typography.Text>
               ) : null}
@@ -1563,7 +1572,7 @@ export function ConnectionsPage() {
               row.delivery_guard?.warmup_status === 'completed' ||
               row.delivery_guard?.warmup_status === 'completed_with_errors' ? (
                 <Typography.Text type="secondary">
-                  Автовосстановление: отправлено {row.delivery_guard.warmup_sent_count}, ошибок{' '}
+                  {row.delivery_guard.scope === 'sending_key' ? 'Прогрев ключа' : 'Автовосстановление'}: отправлено {row.delivery_guard.warmup_sent_count}, ошибок{' '}
                   {row.delivery_guard.warmup_error_count}
                 </Typography.Text>
               ) : null}

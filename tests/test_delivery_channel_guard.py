@@ -5,6 +5,7 @@ import uuid
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
+from sqlalchemy import select
 
 from src.campaigns.connection_service import create_connection
 from src.campaigns.service import create_campaign
@@ -108,6 +109,40 @@ class DeliveryChannelGuardTests(unittest.TestCase):
         self.assertEqual(snapshot["terminal_count"], 3)
         self.assertEqual(snapshot["error_count"], 1)
 
+    def test_rusender_connections_with_same_key_share_error_rate(self) -> None:
+        from src.infra.models import SmtpMailbox
+
+        primary = self._connection(email="primary@example.com")
+        secondary = self._connection(email="secondary@example.com")
+        record_channel_outcome(
+            connection_id=primary["id"],
+            provider_message_id="shared-ok-1",
+            provider_status="delivered",
+        )
+        record_channel_outcome(
+            connection_id=secondary["id"],
+            provider_message_id="shared-ok-2",
+            provider_status="delivered",
+        )
+        snapshot = record_channel_outcome(
+            connection_id=secondary["id"],
+            provider_message_id="shared-error",
+            provider_status="hard_bounced",
+        )
+
+        self.assertEqual(snapshot["terminal_count"], 3)
+        self.assertEqual(snapshot["error_count"], 1)
+        self.assertEqual(snapshot["state"], "throttled")
+        with session_scope() as session:
+            self.assertEqual(
+                session.get(SmtpMailbox, primary["id"]).delivery_guard_state,
+                "throttled",
+            )
+            self.assertEqual(
+                session.get(SmtpMailbox, secondary["id"]).delivery_guard_state,
+                "throttled",
+            )
+
     def test_shared_slot_limit_is_persisted_in_database(self) -> None:
         connection = self._connection(max_per_hour=2)
         self.assertEqual(reserve_channel_send_slot(connection["id"]), 0.0)
@@ -120,12 +155,18 @@ class DeliveryChannelGuardTests(unittest.TestCase):
             delivery_error_critical_count=1,
             delivery_error_action="disable",
         )
+        secondary = self._connection(
+            email="secondary-disable@example.com",
+            delivery_error_min_samples=1,
+            delivery_error_critical_count=1,
+            delivery_error_action="disable",
+        )
         campaign = create_campaign(
             self.owner,
             {
                 "name": "Guard pause campaign",
-                "smtp_mailbox_id": connection["id"],
-                "connection_ids": [connection["id"]],
+                "smtp_mailbox_id": secondary["id"],
+                "connection_ids": [secondary["id"]],
                 "transport": "rusender",
             },
         )
@@ -144,6 +185,8 @@ class DeliveryChannelGuardTests(unittest.TestCase):
             self.assertEqual(session.get(Campaign, campaign["id"]).status, "paused")
         with self.assertRaises(DeliveryChannelDisabled):
             reserve_channel_send_slot(connection["id"])
+        with self.assertRaises(DeliveryChannelDisabled):
+            reserve_channel_send_slot(secondary["id"])
 
         reset = reset_channel_guard(connection["id"])
         self.assertEqual(reset["state"], "normal")
@@ -193,6 +236,49 @@ class DeliveryChannelGuardTests(unittest.TestCase):
             self.assertEqual(task.task_type, "connection_warmup")
             self.assertEqual(task.payload["message_count"], 2)
 
+
+    def test_failed_key_warmup_keeps_key_blocked_and_preserves_outcomes(self) -> None:
+        from src.generator.delivery.connection_warmup import run_connection_warmup
+        from src.infra.models import (
+            BackgroundTask,
+            DeliveryChannelOutcome,
+            DeliveryKeyGuard,
+            SmtpMailbox,
+        )
+
+        connection = self._connection(
+            delivery_error_min_samples=1,
+            delivery_error_action="warmup",
+            warmup_recipients=["warmup@example.com"],
+        )
+        record_channel_outcome(
+            connection_id=connection["id"],
+            provider_message_id="failed-before-warmup",
+            provider_status="hard_bounced",
+        )
+        with session_scope() as session:
+            mailbox = session.get(SmtpMailbox, connection["id"])
+            task = session.get(BackgroundTask, mailbox.warmup_task_id)
+            payload = dict(task.payload)
+            key_guard_id = payload["key_guard_id"]
+
+        with patch(
+            "src.campaigns.batch_worker._send_delivery_message",
+            side_effect=RuntimeError("provider rejected warmup"),
+        ):
+            result = run_connection_warmup(payload)
+
+        self.assertEqual(result["status"], "failed")
+        with session_scope() as session:
+            guard = session.get(DeliveryKeyGuard, key_guard_id)
+            self.assertEqual(guard.delivery_guard_state, "warmup")
+            self.assertEqual(guard.warmup_status, "failed")
+            preserved = session.scalar(
+                select(DeliveryChannelOutcome).where(
+                    DeliveryChannelOutcome.delivery_key_guard_id == key_guard_id
+                )
+            )
+            self.assertIsNotNone(preserved)
 
 if __name__ == "__main__":
     unittest.main()

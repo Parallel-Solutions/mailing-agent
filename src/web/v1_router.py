@@ -15,6 +15,7 @@ from src.campaigns import (
     chain_preview_service,
     chain_service,
     connection_service,
+    email_validation_service,
     connection_sender_warmup_service,
     document_layout_service,
     document_editor_service,
@@ -337,6 +338,15 @@ class ConnectionWarmupDiagnosticsBody(BaseModel):
 
 def _ok(result: Any) -> dict[str, Any]:
     return {"status": "ok", "result": result}
+
+
+def _enqueue_email_validation(scope_type: str, scope_id: str, owner_username: str) -> dict[str, Any]:
+    try:
+        return email_validation_service.enqueue_scope_validation(
+            scope_type, scope_id, owner_username
+        )
+    except Exception as exc:
+        return {"status": "failed", "error": str(exc)}
 
 
 def _campaign_conflict(exc: CampaignStateConflict) -> HTTPException:
@@ -729,15 +739,45 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         )
 
+    @router.get("/campaigns/{campaign_id}/email-validation")
+    def get_campaign_email_validation(
+        campaign_id: str,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                email_validation_service.get_scope_validation(
+                    "campaign", campaign_id, actor.username
+                )
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/campaigns/{campaign_id}/email-validation")
+    def post_campaign_email_validation(
+        campaign_id: str,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                email_validation_service.enqueue_scope_validation(
+                    "campaign", campaign_id, actor.username, force=True
+                )
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @router.put("/campaigns/{campaign_id}/recipients")
     def put_recipients(campaign_id: str, body: RecipientsReplaceBody, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            return _ok(
-                service.replace_recipients(
-                    campaign_id, actor.username, body.recipients, visible_owners=_visibility(actor)
-                )
+            result = service.replace_recipients(
+                campaign_id, actor.username, body.recipients, visible_owners=_visibility(actor)
             )
+            result["email_validation"] = _enqueue_email_validation("campaign", campaign_id, actor.username)
+            return _ok(result)
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except CampaignStateConflict as exc:
@@ -765,6 +805,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             raise _campaign_conflict(exc) from exc
         if not item:
             raise HTTPException(status_code=404, detail="Получатель не найден")
+        item["email_validation"] = _enqueue_email_validation("campaign", campaign_id, actor.username)
         return _ok(item)
 
     @router.post("/campaigns/{campaign_id}/recipients/delete")
@@ -778,7 +819,10 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         except CampaignStateConflict as exc:
             raise _campaign_conflict(exc) from exc
-        return _ok({"deleted": deleted})
+        return _ok({
+            "deleted": deleted,
+            "email_validation": _enqueue_email_validation("campaign", campaign_id, actor.username),
+        })
 
     @router.post("/campaigns/{campaign_id}/recipients/import")
     def post_import_recipients(
@@ -806,7 +850,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             if filename.endswith(".xlsx") or filename.endswith(".xlsm"):
                 _persist_data_xlsx_for_campaign(campaign_id, actor, content)
 
-            return _ok({"import": result, "preview": rows[:20]})
+            validation = _enqueue_email_validation("campaign", campaign_id, actor.username)
+            return _ok({"import": result, "preview": rows[:20], "email_validation": validation})
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except CampaignStateConflict as exc:
@@ -1940,15 +1985,47 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         )
 
+    @router.get("/audiences/{audience_id}/email-validation")
+    def get_audience_email_validation(
+        audience_id: str,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                email_validation_service.get_scope_validation(
+                    "audience", audience_id, actor.username
+                )
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/audiences/{audience_id}/email-validation")
+    def post_audience_email_validation(
+        audience_id: str,
+        principal: object = Depends(check_auth),
+    ):
+        actor = _actor(principal)
+        try:
+            return _ok(
+                email_validation_service.enqueue_scope_validation(
+                    "audience", audience_id, actor.username, force=True
+                )
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @router.put("/audiences/{audience_id}/members")
     def put_audience_members(
         audience_id: str, body: AudienceMembersBody, principal: object = Depends(check_auth)
     ):
         actor = _actor(principal)
         try:
-            return _ok(audience_service.replace_members(
+            result = audience_service.replace_members(
                 audience_id, actor.username, body.members, visible_owners=_visibility(actor),
-            ))
+            )
+            result["email_validation"] = _enqueue_email_validation("audience", audience_id, actor.username)
+            return _ok(result)
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1973,7 +2050,11 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return _ok({"import": result, "preview": rows[:20]})
+        return _ok({
+            "import": result,
+            "preview": rows[:20],
+            "email_validation": _enqueue_email_validation("audience", audience_id, actor.username),
+        })
 
     @router.post("/audiences/{audience_id}/use-in-campaign/{campaign_id}")
     def post_use_in_campaign(
@@ -1981,9 +2062,11 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     ):
         actor = _actor(principal)
         try:
-            return _ok(audience_service.copy_audience_to_campaign(
+            result = audience_service.copy_audience_to_campaign(
                 audience_id, campaign_id, actor.username, visible_owners=_visibility(actor),
-            ))
+            )
+            result["email_validation"] = _enqueue_email_validation("campaign", campaign_id, actor.username)
+            return _ok(result)
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

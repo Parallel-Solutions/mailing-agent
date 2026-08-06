@@ -9,6 +9,7 @@ import type {
   CampaignList,
   CampaignValidateResponse,
   DocumentTemplatePreview,
+  EmailValidationRun,
   EmailChain,
   EmailChainPreviewResponse,
   EmailChainState,
@@ -78,6 +79,10 @@ export const campaignsApi = {
     const suffix = q.toString() ? `?${q}` : '';
     return api.get<{ items: Recipient[]; total: number }>(`/api/v1/campaigns/${id}/recipients${suffix}`);
   },
+  emailValidation: (id: string) =>
+    api.get<EmailValidationRun>(`/api/v1/campaigns/${id}/email-validation`),
+  startEmailValidation: (id: string) =>
+    api.post<EmailValidationRun>(`/api/v1/campaigns/${id}/email-validation`),
   replaceRecipients: (id: string, recipients: Partial<Recipient>[]) =>
     api.put<{ total: number; duplicates_skipped: number; invalid: number }>(
       `/api/v1/campaigns/${id}/recipients`,

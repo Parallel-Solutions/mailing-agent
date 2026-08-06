@@ -108,7 +108,7 @@ def _get_connection(
     return row
 
 
-def _validate_smtp_connection(
+def _validate_legacy_smtp_connection(
     target: SmtpMailbox,
     sender: SmtpMailbox,
     *,
@@ -126,10 +126,43 @@ def _validate_smtp_connection(
         raise ValueError("Сначала восстановите выбранное SMTP-подключение.")
 
 
+def _validate_smtp_connection(
+    target: SmtpMailbox,
+    sender: SmtpMailbox,
+    *,
+    require_active: bool,
+) -> None:
+    """Validate the transport that actually owns the reputation being warmed."""
+    from src.campaigns.connection_service import connection_transport
+
+    target_transport = connection_transport(target)
+    sender_transport = connection_transport(sender)
+    if target_transport != "rusender":
+        _validate_legacy_smtp_connection(
+            target,
+            sender,
+            require_active=require_active,
+        )
+        return
+
+    if sender.owner_username != target.owner_username:
+        raise ValueError("RuSender connection must belong to the same account.")
+    if sender_transport != "rusender":
+        raise ValueError("Choose a RuSender connection to warm up a RuSender key.")
+    if (
+        sender.sending_key_id is None
+        or target.sending_key_id is None
+        or int(sender.sending_key_id) != int(target.sending_key_id)
+    ):
+        raise ValueError("The selected connection must use the same RuSender sending key.")
+    if require_active and sender.status != "active":
+        raise ValueError("Restore the selected RuSender connection before warmup.")
+
+
 def _default_smtp_connection_id(connection: SmtpMailbox) -> str | None:
     from src.campaigns.connection_service import connection_transport
 
-    return connection.id if connection_transport(connection) == "smtp" else None
+    return connection.id if connection_transport(connection) in {"smtp", "rusender"} else None
 
 
 def _selected_smtp_connection(

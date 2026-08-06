@@ -17,7 +17,11 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
             email_validation,
             "_domain_has_mail_route",
             return_value=(True, "ok_mx", "", {"domain_check": "mx"}),
-        ), patch.object(email_validation, "_run_smtpbz_request", return_value='{"result": true}') as request:
+        ), patch.object(
+            email_validation,
+            "_run_smtpbz_request",
+            return_value='{"result":true,"checks":{"validDeliver":true}}',
+        ) as request:
             result = email_validation.validate_email_address(
                 "User@Example.com",
                 mode="smtp_bz",
@@ -31,6 +35,22 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
         sent_request = request.call_args.args[0]
         self.assertEqual(sent_request.get_header("Authorization"), "token")
         self.assertIn("/check/email/User%40example.com", sent_request.full_url)
+
+    def test_smtpbz_mode_does_not_accept_top_level_result_without_delivery_confirmation(self) -> None:
+        with patch.object(
+            email_validation,
+            "_domain_has_mail_route",
+            return_value=(True, "ok_mx", "", {"domain_check": "mx"}),
+        ), patch.object(email_validation, "_run_smtpbz_request", return_value='{"result": true}'):
+            result = email_validation.validate_email_address(
+                "User@Example.com",
+                mode="smtp_bz",
+                smtpbz_api_key="token",
+                timeout_seconds=2,
+            )
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(result.reason_code, "smtpbz_unknown")
 
     def test_smtpbz_mode_rejects_nonexistent_mailbox(self) -> None:
         with patch.object(

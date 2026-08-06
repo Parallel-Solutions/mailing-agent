@@ -25,6 +25,7 @@ const STATUS_LABELS: Record<string, string> = {
   skipped: 'Пропущено',
   throttled: 'Скорость ограничена из-за ошибок',
   unknown: 'Статус уточняется',
+  stale: 'Требуется повторная проверка',
   valid: 'Адрес корректен',
 };
 

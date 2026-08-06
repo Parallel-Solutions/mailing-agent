@@ -47,15 +47,16 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
             session.add(SmtpMailbox(
                 id=self.smtp_connection_id,
                 owner_username=self.owner,
-                provider="custom",
-                email="sender@example.com",
+                provider="rusender",
+                email="alternate-sender@example.com",
                 sender_name="Sender",
-                host="smtp.example.com",
-                port=465,
+                host="https://api.rusender.ru/api/v1",
+                port=443,
                 use_ssl=True,
                 use_starttls=False,
-                auth_method="password",
-                password_encrypted="encrypted",
+                auth_method="environment",
+                password_encrypted="",
+                sending_key_id=123,
                 status="active",
                 is_default=False,
                 created_at=now,
@@ -83,14 +84,14 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
         self.assertEqual(providers["person@yandex.ru"], "yandex")
         self.assertEqual(result["effective_daily_plan"][0], 5)
 
-    def test_api_connection_cannot_be_used_as_warmup_sender(self) -> None:
-        with self.assertRaisesRegex(ValueError, "SMTP"):
-            warmup.update_program(
-                self.connection_id,
-                self.owner,
-                {"smtp_connection_id": self.connection_id},
-                visible_owners=self.visibility,
-            )
+    def test_rusender_key_can_use_any_sender_from_same_key(self) -> None:
+        result = warmup.update_program(
+            self.connection_id,
+            self.owner,
+            {"smtp_connection_id": self.connection_id},
+            visible_owners=self.visibility,
+        )
+        self.assertEqual(result["smtp_connection_id"], self.connection_id)
 
     def test_recipient_can_be_disabled_and_reactivated_by_readding(self) -> None:
         result = warmup.add_recipients(
