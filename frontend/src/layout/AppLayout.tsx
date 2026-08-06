@@ -6,6 +6,7 @@ import {
   MailOutlined,
   PlusCircleOutlined,
   QuestionCircleOutlined,
+  TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import type { ProLayoutProps } from '@ant-design/pro-components';
@@ -14,9 +15,14 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button, Dropdown, Tooltip } from 'antd';
 import { useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { onboardingApi } from '@/api/onboarding';
+import {
+  onboardingApi,
+  onboardingChapterStorageKey,
+  onboardingQueryKey,
+} from '@/api/onboarding';
 import type { OnboardingState } from '@/api/types';
 import { OnboardingTour } from '@/features/onboarding/OnboardingTour';
+import { campaignComposerPath } from '@/features/campaigns/campaignNavigation';
 import {
   ONBOARDING_CHAPTERS,
   ONBOARDING_STEPS,
@@ -24,32 +30,35 @@ import {
 } from '@/features/onboarding/steps';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAuthStore } from '@/stores/authStore';
+import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 import { tokens } from '@/theme/tokens';
 import { APP_TOP_BAR_HEIGHT, AppTopBar } from '@/layout/AppTopBar';
 import '@/layout/AppTopBar.css';
-
-const ONBOARDING_CHAPTER_STORAGE_KEY = 'campaignflow:onboarding-chapter';
 
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const { isAppAdmin } = usePermissions();
+  const activeCampaignId = useCampaignDraftStore((s) => s.campaignId);
+  const resetCampaignDraft = useCampaignDraftStore((s) => s.reset);
+  const { isAppAdmin, canAccessCompanies } = usePermissions();
   const queryClient = useQueryClient();
   const [onboardingSession, setOnboardingSession] = useState(0);
   const [onboardingChapter, setOnboardingChapter] = useState<OnboardingChapterId>();
   const [onboardingMenuOpen, setOnboardingMenuOpen] = useState(false);
+  const onboardingKey = onboardingQueryKey(user?.username);
+  const chapterStorageKey = onboardingChapterStorageKey(user?.username);
   const startOnboarding = useMutation({
     onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: ['onboarding'] });
+      await queryClient.cancelQueries({ queryKey: onboardingKey });
     },
     mutationFn: (chapterId: OnboardingChapterId) => {
       const chapter = ONBOARDING_CHAPTERS.find((item) => item.id === chapterId);
       const firstStepIndex = ONBOARDING_STEPS.findIndex(
         (step) => step.id === chapter?.stepIds[0],
       );
-      const currentState = queryClient.getQueryData<OnboardingState>(['onboarding']);
+      const currentState = queryClient.getQueryData<OnboardingState>(onboardingKey);
       return onboardingApi.update({
         status: 'active',
         current_step: Math.max(0, firstStepIndex),
@@ -57,14 +66,14 @@ export function AppLayout() {
       });
     },
     onSuccess: (state, chapterId) => {
-      queryClient.setQueryData<OnboardingState>(['onboarding'], state);
-      window.sessionStorage.setItem(ONBOARDING_CHAPTER_STORAGE_KEY, chapterId);
+      queryClient.setQueryData<OnboardingState>(onboardingKey, state);
+      window.sessionStorage.setItem(chapterStorageKey, chapterId);
       setOnboardingChapter(chapterId);
       setOnboardingSession((current) => current + 1);
     },
   });
   const onboardingChapters = ONBOARDING_CHAPTERS.filter(
-    (chapter) => chapter.id !== 'companies' || isAppAdmin,
+    (chapter) => chapter.id !== 'companies' || canAccessCompanies,
   );
 
   const launchOnboarding = (chapterId: OnboardingChapterId) => {
@@ -82,8 +91,11 @@ export function AppLayout() {
       { path: '/chains', name: 'Конструктор цепочек', icon: <ApartmentOutlined /> },
       { path: '/templates', name: 'Шаблоны и документы', icon: <MailOutlined /> },
       { path: '/connections', name: 'Подключения', icon: <ClusterOutlined /> },
-      ...(isAppAdmin
+      ...(canAccessCompanies
         ? [{ path: '/companies', name: 'Компании', icon: <BankOutlined /> }]
+        : []),
+      ...(isAppAdmin
+        ? [{ path: '/users', name: 'Пользователи и роли', icon: <TeamOutlined /> }]
         : []),
       { path: '/profile', name: 'Профиль', icon: <UserOutlined /> },
     ],
@@ -114,7 +126,12 @@ export function AppLayout() {
           colorPrimary: tokens.primary,
           sider: { colorMenuBackground: tokens.surface },
         }}
-        menuItemRender={(item, dom) => <Link to={item.path || '/'}>{dom}</Link>}
+        menuItemRender={(item, dom) => {
+          const target = item.path === '/campaigns/new' && activeCampaignId
+            ? campaignComposerPath(activeCampaignId)
+            : (item.path || '/');
+          return <Link to={target}>{dom}</Link>;
+        }}
         avatarProps={{
           src: user?.company?.logo_url || undefined,
           title: user?.username || 'user',
@@ -130,6 +147,7 @@ export function AppLayout() {
                     onClick: async () => {
                       await logout();
                       navigate('/login');
+                      resetCampaignDraft();
                     },
                   },
                 ],

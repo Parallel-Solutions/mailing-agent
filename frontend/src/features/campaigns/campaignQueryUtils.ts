@@ -51,6 +51,14 @@ export type ValidationSignatureInput = {
   };
 };
 
+export function buildCampaignChainSelectionPatch(value: unknown) {
+  const emailChainId = typeof value === 'string' ? value.trim() : '';
+  return {
+    email_chain_id: emailChainId || null,
+    send_scenario: emailChainId ? 'email_chain' : 'consent_then_materials',
+  };
+}
+
 export function buildCampaignAutosavePayload(patch: Record<string, unknown>) {
   const { draft_payload: _ignoredDraftPayload, ...draftPatch } = patch;
   return {

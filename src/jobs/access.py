@@ -111,13 +111,16 @@ def owner_public_payload(owner: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def principal_payload(principal: Any) -> dict[str, str | None]:
+def principal_payload(principal: Any) -> dict[str, Any]:
     actor = coerce_principal(principal)
-    payload: dict[str, str | None] = {
+    from src.security.company_access import company_accesses_for_username
+
+    payload: dict[str, Any] = {
         "username": actor.username,
         "tenant_id": actor.tenant_id,
         "role": actor.role,
         "company_id": actor.company_id,
         "company_role": actor.company_role,
+        "company_accesses": company_accesses_for_username(actor.username),
     }
     return payload

@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Space, Tag, Typography } from 'antd';
-import { onboardingApi } from '@/api/onboarding';
+import {
+  onboardingApi,
+  onboardingQueryKey,
+} from '@/api/onboarding';
 import type { OnboardingState } from '@/api/types';
+import { useAuthStore } from '@/stores/authStore';
 
 const statusLabels: Record<OnboardingState['status'], string> = {
   active: 'Идёт сейчас',
@@ -12,7 +16,9 @@ const statusLabels: Record<OnboardingState['status'], string> = {
 
 export function OnboardingSettings() {
   const queryClient = useQueryClient();
-  const query = useQuery({ queryKey: ['onboarding'], queryFn: onboardingApi.get });
+  const username = useAuthStore((store) => store.user?.username);
+  const queryKey = onboardingQueryKey(username);
+  const query = useQuery({ queryKey, queryFn: onboardingApi.get });
   const start = useMutation({
     mutationFn: () => query.data?.status === 'paused'
       ? onboardingApi.update({
@@ -21,7 +27,7 @@ export function OnboardingSettings() {
           completed_steps: query.data.completed_steps,
         })
       : onboardingApi.restart(),
-    onSuccess: (state) => queryClient.setQueryData(['onboarding'], state),
+    onSuccess: (state) => queryClient.setQueryData(queryKey, state),
   });
 
   return (

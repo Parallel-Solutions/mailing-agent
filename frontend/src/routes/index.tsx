@@ -36,6 +36,9 @@ const ProfilePage = lazy(() =>
 const CompaniesPage = lazy(() =>
   import('@/pages/CompaniesPage').then((m) => ({ default: m.CompaniesPage })),
 );
+const UsersRolesPage = lazy(() =>
+  import('@/pages/UsersRolesPage').then((m) => ({ default: m.UsersRolesPage })),
+);
 const NotFoundPage = lazy(() =>
   import('@/pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })),
 );
@@ -139,6 +142,14 @@ export function AppRoutes() {
             element={
               <Lazy>
                 <CompaniesPage />
+              </Lazy>
+            }
+          />
+          <Route
+            path="/users"
+            element={
+              <Lazy>
+                <UsersRolesPage />
               </Lazy>
             }
           />

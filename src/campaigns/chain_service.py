@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 
 from src.infra.db import session_scope
 from src.infra.models import (
@@ -266,11 +266,21 @@ def delete_chain(
             owner_username,
             visible_owners=visible_owners,
         )
-        session.execute(
-            update(Campaign)
-            .where(Campaign.email_chain_id == chain_id)
-            .values(email_chain_id=None, updated_at=_now())
-        )
+        linked_campaigns = session.scalars(
+            select(Campaign).where(Campaign.email_chain_id == chain_id)
+        ).all()
+        updated_at = _now()
+        for campaign in linked_campaigns:
+            campaign.email_chain_id = None
+            if campaign.send_scenario == "email_chain":
+                campaign.send_scenario = "consent_then_materials"
+            draft = dict(campaign.draft_payload or {})
+            draft["email_chain_id"] = None
+            draft["send_scenario"] = campaign.send_scenario
+            draft["mapping_confirmed"] = False
+            draft.pop("mapping_confirmed_at", None)
+            campaign.draft_payload = draft
+            campaign.updated_at = updated_at
         session.delete(row)
         session.flush()
 

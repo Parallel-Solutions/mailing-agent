@@ -19,6 +19,12 @@ export type OnboardingUpdate = {
   completed_steps?: string[];
 };
 
+export type CompanyAccess = {
+  company_id: string;
+  company_name: string;
+  access_level: 'view' | 'manage';
+};
+
 export type User = {
   username: string;
   role?: string;
@@ -26,6 +32,7 @@ export type User = {
   company_id?: string | null;
   company_role?: 'company_admin' | 'member' | null;
   company?: { id: string; name: string; logo_url?: string | null };
+  company_accesses?: CompanyAccess[];
 };
 
 export type Company = {

@@ -51,6 +51,27 @@ class CompanyMembership(Base):
     )
 
 
+class CompanyAccessGrant(Base):
+    __tablename__ = "company_access_grants"
+
+    company_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True
+    )
+    username: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.username", ondelete="CASCADE"), primary_key=True
+    )
+    access_level: Mapped[str] = mapped_column(String(16), nullable=False, default="view")
+    created_by: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_company_access_grants_username", "username"),
+        Index("idx_company_access_grants_company", "company_id"),
+    )
+
+
 class CompanyDocumentCounter(Base):
     __tablename__ = "company_document_counters"
 

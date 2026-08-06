@@ -1,18 +1,21 @@
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
 import { App, Button, Popconfirm, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { companiesApi } from '@/api/companies';
 import type { Company } from '@/api/types';
 import { CompanyFormModal } from '@/features/companies/CompanyFormModal';
 import { CompanyWorkTypesModal } from '@/features/companies/CompanyWorkTypesModal';
+import { resolveCampaignReturnTarget } from '@/features/campaigns/campaignNavigation';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import {
   useActiveOnboardingStep,
 } from '@/features/onboarding/events';
+import { useAuthStore } from '@/stores/authStore';
+import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 
 const ONBOARDING_COMPANY: Company = {
   id: 'onboarding-preview',
@@ -24,7 +27,12 @@ const ONBOARDING_COMPANY: Company = {
 export function CompaniesPage() {
   const queryClient = useQueryClient();
   const { message } = App.useApp();
-  const { isAppAdmin } = usePermissions();
+  const checkSession = useAuthStore((state) => state.checkSession);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const activeCampaignId = useCampaignDraftStore((state) => state.campaignId);
+  const campaignContext = resolveCampaignReturnTarget(location.state, activeCampaignId);
+  const { canAccessCompanies, canManageCompanies, canManageCompany } = usePermissions();
   const { searchParams, pushParams } = useUrlNavigation();
   const editId = searchParams.get('edit');
   const workTypesId = searchParams.get('work_types');
@@ -33,10 +41,11 @@ export function CompaniesPage() {
   const previousOnboardingStepRef = useRef<string | null>(null);
   const deleteCompany = useMutation({
     mutationFn: companiesApi.remove,
-    onSuccess: (_, companyId) => {
+    onSuccess: async (_, companyId) => {
       if (editId === companyId) pushParams({}, ['edit']);
       if (workTypesId === companyId) pushParams({}, ['work_types']);
-      void queryClient.invalidateQueries({ queryKey: ['companies'] });
+      await checkSession();
+      await queryClient.invalidateQueries({ queryKey: ['companies'] });
       message.success('Компания удалена');
     },
     onError: (error) => {
@@ -51,7 +60,7 @@ export function CompaniesPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['companies'],
     queryFn: () => companiesApi.list(),
-    enabled: isAppAdmin,
+    enabled: canAccessCompanies,
   });
 
   useEffect(() => {
@@ -64,12 +73,16 @@ export function CompaniesPage() {
     }
   }, [activeOnboardingStep]);
 
-  if (!isAppAdmin) {
+  if (!canAccessCompanies) {
     return <Navigate to="/" replace />;
   }
 
-  const editCompany = data?.items.find((item) => item.id === editId);
-  const workTypesCompany = data?.items.find((item) => item.id === workTypesId);
+  const editCompany = data?.items.find(
+    (item) => item.id === editId && canManageCompany(item.id),
+  );
+  const workTypesCompany = data?.items.find(
+    (item) => item.id === workTypesId && canManageCompany(item.id),
+  );
 
   return (
     <div>
@@ -85,22 +98,41 @@ export function CompaniesPage() {
         options={false}
         pagination={{ total: data?.total || 0 }}
         toolBarRender={() => [
-          <CompanyFormModal
-            key="create"
-            mode="create"
-            trigger={
-              <Button
-                type="primary"
-                icon={<PlusOutlined />}
-                data-onboarding-id="company-create"
-              >
-                Создать компанию
-              </Button>
-            }
-            onSuccess={() => {
-              void queryClient.invalidateQueries({ queryKey: ['companies'] });
-            }}
-          />,
+          ...(campaignContext
+            ? [
+                <Button
+                  key="return-to-campaign"
+                  icon={<ArrowLeftOutlined />}
+                  onClick={() => navigate(campaignContext.path)}
+                >
+                  {'\u0412\u0435\u0440\u043d\u0443\u0442\u044c\u0441\u044f \u043a \u0440\u0430\u0441\u0441\u044b\u043b\u043a\u0435'}
+                </Button>,
+              ]
+            : []),
+          ...(canManageCompanies
+            ? [
+                <CompanyFormModal
+                  key="create"
+                  mode="create"
+                  trigger={
+                    <Button
+                      type="primary"
+                      icon={<PlusOutlined />}
+                      data-onboarding-id="company-create"
+                    >
+                      Создать компанию
+                    </Button>
+                  }
+                  onSuccess={() => {
+                    void checkSession().then(() =>
+                      queryClient.invalidateQueries({
+                        queryKey: ['companies'],
+                      }),
+                    );
+                  }}
+                />,
+              ]
+            : []),
         ]}
         columns={[
           { title: 'Название', dataIndex: 'name' },
@@ -110,32 +142,39 @@ export function CompaniesPage() {
           {
             title: 'Действия',
             valueType: 'option',
-            render: (_, row) => [
-              <a key="edit" onClick={() => pushParams({ edit: row.id })}>
-                Редактировать
-              </a>,
-              <a key="work-types" onClick={() => pushParams({ work_types: row.id })}>
-                Виды работ
-              </a>,
-              <Popconfirm
-                key="delete"
-                title={`Удалить компанию «${row.name}»?`}
-                description="Компания и её настройки будут удалены. Аккаунты участников и их данные сохранятся."
-                okText="Удалить"
-                cancelText="Отмена"
-                okButtonProps={{ danger: true }}
-                onConfirm={() => deleteCompany.mutateAsync(row.id)}
-              >
-                <Button
-                  type="link"
-                  danger
-                  icon={<DeleteOutlined />}
-                  loading={deleteCompany.isPending && deleteCompany.variables === row.id}
-                >
-                  Удалить
-                </Button>
-              </Popconfirm>,
-            ],
+            render: (_, row) => {
+              if (!canManageCompany(row.id)) return [];
+              return [
+                <a key="edit" onClick={() => pushParams({ edit: row.id })}>
+                  Редактировать
+                </a>,
+                <a key="work-types" onClick={() => pushParams({ work_types: row.id })}>
+                  Виды работ
+                </a>,
+                ...(canManageCompany(row.id)
+                  ? [
+                      <Popconfirm
+                        key="delete"
+                        title={`Удалить компанию «${row.name}»?`}
+                        description="Компания и её настройки будут удалены. Аккаунты участников и их данные сохранятся."
+                        okText="Удалить"
+                        cancelText="Отмена"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={() => deleteCompany.mutateAsync(row.id)}
+                      >
+                        <Button
+                          type="link"
+                          danger
+                          icon={<DeleteOutlined />}
+                          loading={deleteCompany.isPending && deleteCompany.variables === row.id}
+                        >
+                          Удалить
+                        </Button>
+                      </Popconfirm>,
+                    ]
+                  : []),
+              ];
+            },
           },
         ]}
       />
@@ -152,7 +191,11 @@ export function CompaniesPage() {
             void queryClient.invalidateQueries({ queryKey: ['companies'] });
             pushParams({}, ['edit']);
           }}
-          onDelete={() => deleteCompany.mutateAsync(editCompany.id)}
+          onDelete={
+            canManageCompany(editCompany.id)
+              ? () => deleteCompany.mutateAsync(editCompany.id)
+              : undefined
+          }
           deleting={deleteCompany.isPending && deleteCompany.variables === editCompany.id}
         />
       ) : null}
