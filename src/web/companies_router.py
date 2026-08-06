@@ -86,7 +86,9 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
         offset: int = Query(default=0, ge=0),
     ):
         actor = _actor(principal)
-        company_ids = company_directory_ids(actor)
+        # Regular authenticated users need the shared read-only directory for
+        # campaign setup. Company admins remain scoped to explicit grants.
+        company_ids = company_directory_ids(actor) if actor.is_company_admin else None
         if company_ids is not None and not company_ids:
             raise HTTPException(
                 status_code=403,
