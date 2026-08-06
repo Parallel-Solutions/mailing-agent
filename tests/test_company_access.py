@@ -257,7 +257,10 @@ class CompanyAccessTests(unittest.TestCase):
             visible_owner_usernames(self.member_principal), frozenset({self.member})
         )
 
-    def test_member_cannot_list_companies(self) -> None:
+    def test_member_can_list_companies_read_only(self) -> None:
+        # The company list is common/read-only for every authenticated user
+        # (e.g. so anyone can pick a company when creating a campaign), but
+        # that does not grant access to a company's private details.
         outsider_app = FastAPI()
         outsider_app.include_router(
             create_companies_router(
@@ -266,7 +269,12 @@ class CompanyAccessTests(unittest.TestCase):
         )
         client = TestClient(outsider_app)
         response = client.get("/api/v1/companies")
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 200)
+        names = {item["name"] for item in response.json()["result"]["items"]}
+        self.assertIn(self.company["name"], names)
+
+        forbidden = client.get(f"/api/v1/companies/{self.company['id']}")
+        self.assertEqual(forbidden.status_code, 403)
 
     def test_legacy_company_admin_membership_is_synced_to_grants(self) -> None:
         accesses = company_accesses_for_username(self.company_admin)

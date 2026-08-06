@@ -1,7 +1,7 @@
 import {
   ProCard,
 } from '@ant-design/pro-components';
-import { SwapOutlined } from '@ant-design/icons';
+import { ReloadOutlined, SwapOutlined } from '@ant-design/icons';
 import { App, Alert, Button, Col, Collapse, Form, Row, Space, Spin, Steps, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -283,7 +283,6 @@ export function CampaignNewPage() {
   const companiesQuery = useQuery({
     queryKey: ['companies'],
     queryFn: () => companiesApi.list(),
-    enabled: isAppAdmin,
   });
   const myCompanyQuery = useQuery({
     queryKey: ['companies', 'me'],
@@ -403,15 +402,17 @@ export function CampaignNewPage() {
   }));
 
   const companyOptions = useMemo(() => {
-    if (isAppAdmin) {
-      return (companiesQuery.data?.items ?? []).map((company) => ({
+    // The company list is common to all users (read-only): everyone can pick
+    // any company here, not just their own.
+    if (companiesQuery.data?.items?.length) {
+      return companiesQuery.data.items.map((company) => ({
         label: company.name,
         value: company.id,
       }));
     }
     const company = user?.company || myCompanyQuery.data;
     return company ? [{ label: company.name, value: company.id }] : [];
-  }, [isAppAdmin, companiesQuery.data?.items, user?.company, myCompanyQuery.data]);
+  }, [companiesQuery.data?.items, user?.company, myCompanyQuery.data]);
 
   const workTypeOptions = (workTypesQuery.data ?? []).map((item) => ({
     label: item.name,
@@ -794,6 +795,19 @@ export function CampaignNewPage() {
   const showAiFixButton = launchValidation.hasChecked && readinessErrors.length > 0;
   const wizardLocked = launchBusy.active || launchValidation.isChecking;
 
+  const formatLaunchValidationError = (err: unknown): string => {
+    if (err instanceof ApiError) {
+      return [err.detail, err.payload.hint].filter(Boolean).join(' ');
+    }
+    if (err instanceof TypeError) {
+      return 'Не удалось подключиться к серверу для проверки рассылки. Проверьте соединение и повторите попытку.';
+    }
+    if (err instanceof Error && err.message) {
+      return err.message;
+    }
+    return 'Не удалось выполнить проверку';
+  };
+
   const runLaunchAction = async (label: string, action: () => Promise<void>) => {
     setLaunchBusy({ active: true, label, progress: 50 });
     try {
@@ -944,7 +958,7 @@ export function CampaignNewPage() {
                     linkedChainId={linkedChainId ?? undefined}
                     campaignId={id ?? undefined}
                     chainsLoading={chainsQuery.isLoading}
-                    companiesLoading={isAppAdmin ? companiesQuery.isLoading : myCompanyQuery.isLoading}
+                    companiesLoading={companiesQuery.isLoading}
                     workTypesLoading={workTypesQuery.isLoading}
                     isAppAdmin={isAppAdmin}
                     isCompanyAdmin={isCompanyAdmin}
@@ -1078,7 +1092,21 @@ export function CampaignNewPage() {
                     ) : launchValidation.isChecking ? (
                       <Spin tip="Проверка…" />
                     ) : launchValidation.error ? (
-                      <Alert type="error" showIcon message="Не удалось выполнить проверку" description={launchValidation.error} />
+                      <Alert
+                        type="error"
+                        showIcon
+                        message="Не удалось выполнить проверку"
+                        description={formatLaunchValidationError(launchValidation.error)}
+                        action={
+                          <Button
+                            size="small"
+                            icon={<ReloadOutlined />}
+                            onClick={() => launchValidation.retry()}
+                          >
+                            Проверить снова
+                          </Button>
+                        }
+                      />
                     ) : launchValidation.hasChecked ? (
                       <>
                         {readinessWarnings.length > 0 ? (
@@ -1110,6 +1138,14 @@ export function CampaignNewPage() {
                           />
                         ) : null}
                         <Space wrap>
+                          <Button
+                            icon={<ReloadOutlined />}
+                            loading={launchValidation.isChecking}
+                            disabled={wizardLocked}
+                            onClick={() => launchValidation.retry()}
+                          >
+                            Проверить снова
+                          </Button>
                           <Button
                             disabled={launchBlocked || wizardLocked}
                             title={readinessErrors.join('; ') || undefined}
@@ -1287,7 +1323,7 @@ export function CampaignNewPage() {
           workTypeOptions={workTypeOptions}
           selectedCompanyId={selectedCompanyId}
           chainsLoading={chainsQuery.isLoading}
-          companiesLoading={isAppAdmin ? companiesQuery.isLoading : myCompanyQuery.isLoading}
+          companiesLoading={companiesQuery.isLoading}
           workTypesLoading={workTypesQuery.isLoading}
           isAppAdmin={isAppAdmin}
           isCompanyAdmin={isCompanyAdmin}
