@@ -1,8 +1,9 @@
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { ModalForm, ProFormDigit, ProFormSelect, ProFormSwitch, ProFormText, ProFormTextArea, ProTable } from '@ant-design/pro-components';
 import { Alert, App, Button, Form, Input, Popconfirm, Radio, Space, Steps, Tag, Typography, type FormInstance } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { connectionsApi } from '@/api/connections';
 import type { SmtpSetupAnalysis, SmtpSetupSettings } from '@/api/connections';
 import type { DeliveryConnection } from '@/api/types';
@@ -22,6 +23,8 @@ import { selectSmtpSetupSettings, smtpSetupSecurity } from '@/utils/smtpSetup';
 import { SmtpSetupInstructions } from '@/features/connections/SmtpSetupInstructions';
 import { SenderWarmupAction } from '@/features/connections/SenderWarmupAction';
 import { errorLabel } from '@/utils/presentation';
+import { resolveCampaignReturnTarget } from '@/features/campaigns/campaignNavigation';
+import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 
 type ConnectionTransport = 'smtp' | 'rusender' | 'mailopost';
 type ApiTransport = 'rusender' | 'mailopost';
@@ -588,6 +591,10 @@ export function ConnectionsPage() {
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const { searchParams, pushParams } = useUrlNavigation();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const activeCampaignId = useCampaignDraftStore((state) => state.campaignId);
+  const campaignContext = resolveCampaignReturnTarget(location.state, activeCampaignId);
   const addModalOpen = readBoolParam(searchParams, 'add');
   const smtpSetupStage = readEnumParam(searchParams, 'smtp_stage', SMTP_SETUP_STAGES, 'email');
   const [form] = Form.useForm();
@@ -914,6 +921,17 @@ export function ConnectionsPage() {
       scroll={{ x: 'max-content' }}
       headerTitle="Подключения отправителей"
       toolBarRender={() => [
+        ...(campaignContext
+          ? [
+              <Button
+                key="return-to-campaign"
+                icon={<ArrowLeftOutlined />}
+                onClick={() => navigate(campaignContext.path)}
+              >
+                {'\u0412\u0435\u0440\u043d\u0443\u0442\u044c\u0441\u044f \u043a \u0440\u0430\u0441\u0441\u044b\u043b\u043a\u0435'}
+              </Button>,
+            ]
+          : []),
         <ModalForm
           key="add"
           form={form}

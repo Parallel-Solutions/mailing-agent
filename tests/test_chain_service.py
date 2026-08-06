@@ -501,6 +501,11 @@ class ChainServiceTests(unittest.TestCase):
             campaign = session.get(Campaign, self.campaign["id"])
             self.assertIsNotNone(campaign)
             self.assertIsNone(campaign.email_chain_id)
+            self.assertEqual(campaign.send_scenario, "consent_then_materials")
+            self.assertIsNone(campaign.draft_payload.get("email_chain_id"))
+            self.assertEqual(
+                campaign.draft_payload.get("send_scenario"), "consent_then_materials"
+            )
 
     def test_campaign_linked_to_standalone_chain(self) -> None:
         from src.campaigns.service import update_campaign

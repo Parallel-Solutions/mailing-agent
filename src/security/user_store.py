@@ -5,17 +5,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
 from src.campaigns.onboarding_service import create_onboarding_for_new_user
 from src.infra.db import session_scope
-from src.infra.models import CompanyMembership, User
+from src.infra.models import CompanyAccessGrant, CompanyMembership, User
 from src.security.auth import _safe_identifier
 from src.security.passwords import dummy_verify_password, hash_password, verify_password
 
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,32}$")
 _MIN_PASSWORD_LENGTH = 8
+USER_ROLES = {"admin", "company_admin", "user"}
 
 
 class UserStoreError(ValueError):
@@ -52,6 +53,13 @@ def validate_password(password: str) -> str:
     if len(raw) < _MIN_PASSWORD_LENGTH:
         raise UserStoreError(f"Пароль должен быть не короче {_MIN_PASSWORD_LENGTH} символов.")
     return raw
+
+
+def normalize_user_role(role: str | None) -> str:
+    safe_role = _safe_identifier(role or "user", fallback="user").lower()
+    if safe_role not in USER_ROLES:
+        raise UserStoreError("Роль должна быть admin, company_admin или user.")
+    return safe_role
 
 
 def username_exists(username: str) -> bool:
@@ -114,7 +122,7 @@ def create_user(
     safe_username = validate_username(username)
     safe_password = validate_password(password)
     safe_tenant = _safe_identifier(tenant_id or safe_username, fallback=safe_username)
-    safe_role = _safe_identifier(role or "user", fallback="user").lower()
+    safe_role = normalize_user_role(role)
     created_at = _now()
 
     with session_scope() as session:
@@ -183,7 +191,7 @@ def import_user_if_missing(
         safe_username,
         password,
         tenant_id=_safe_identifier(tenant_id or safe_username, fallback=safe_username),
-        role=_safe_identifier(role or "user", fallback="user").lower(),
+        role=normalize_user_role(role),
     )
 
 
@@ -200,7 +208,7 @@ def sync_imported_user(
     safe_username = validate_username(safe_username)
     safe_password = validate_password(password)
     safe_tenant = _safe_identifier(tenant_id or safe_username, fallback=safe_username)
-    safe_role = _safe_identifier(role or "user", fallback="user").lower()
+    safe_role = normalize_user_role(role)
     created_at = _now()
 
     with session_scope() as session:
@@ -229,6 +237,61 @@ def sync_imported_user(
         role=safe_role,
         created_at=created_text,
     )
+
+
+def list_user_records() -> list[UserRecord]:
+    with session_scope() as session:
+        rows = session.scalars(
+            select(User).order_by(User.created_at.asc(), User.username.asc())
+        ).all()
+        usernames = [row.username for row in rows]
+    return [
+        record
+        for username in usernames
+        if (record := get_user_record(username)) is not None
+    ]
+
+
+def update_user_role(username: str, role: str) -> UserRecord:
+    safe_username = validate_username(username)
+    safe_role = normalize_user_role(role)
+    with session_scope() as session:
+        row = session.get(User, safe_username)
+        if row is None:
+            raise UserStoreError("Пользователь не найден.")
+        if row.role == "admin" and safe_role != "admin":
+            admin_count = int(
+                session.scalar(
+                    select(func.count()).select_from(User).where(User.role == "admin")
+                )
+                or 0
+            )
+            if admin_count <= 1:
+                raise UserStoreError("Нельзя снять роль у последнего супер-администратора.")
+        if safe_role == "user":
+            session.execute(
+                update(CompanyMembership)
+                .where(
+                    CompanyMembership.username == safe_username,
+                    CompanyMembership.role == "company_admin",
+                )
+                .values(role="member")
+            )
+            session.execute(
+                update(CompanyAccessGrant)
+                .where(
+                    CompanyAccessGrant.username == safe_username,
+                    CompanyAccessGrant.access_level == "manage",
+                )
+                .values(access_level="view")
+            )
+
+        row.role = safe_role
+        session.flush()
+    record = get_user_record(safe_username)
+    if record is None:
+        raise UserStoreError("Пользователь не найден.")
+    return record
 
 
 def user_record_to_dict(record: UserRecord) -> dict[str, Any]:

@@ -10,8 +10,13 @@ import {
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { onboardingApi } from '@/api/onboarding';
+import {
+  onboardingApi,
+  onboardingChapterStorageKey,
+  onboardingQueryKey,
+} from '@/api/onboarding';
 import type { OnboardingState, OnboardingUpdate } from '@/api/types';
+import { useAuthStore } from '@/stores/authStore';
 import {
   setActiveOnboardingStep,
 } from './events';
@@ -44,10 +49,8 @@ import {
 import { useOnboardingTargetRect } from './useOnboardingTargetRect';
 import './OnboardingTour.css';
 
-const queryKey = ['onboarding'];
-const TARGET_WAIT_TIMEOUT_MS = 3_000;
+const TARGET_WAIT_TIMEOUT_MS = 1_000;
 const TARGET_STABLE_FRAME_COUNT = 2;
-const ONBOARDING_CHAPTER_STORAGE_KEY = 'campaignflow:onboarding-chapter';
 
 type OnboardingMutationRequest = {
   payload: OnboardingUpdate;
@@ -68,8 +71,8 @@ function readViewportSize(): Size {
   };
 }
 
-function readStoredChapter(): OnboardingChapterId | undefined {
-  const stored = window.sessionStorage.getItem(ONBOARDING_CHAPTER_STORAGE_KEY);
+function readStoredChapter(storageKey: string): OnboardingChapterId | undefined {
+  const stored = window.sessionStorage.getItem(storageKey);
   return ONBOARDING_CHAPTERS.some((chapter) => chapter.id === stored)
     ? stored as OnboardingChapterId
     : undefined;
@@ -83,6 +86,12 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const username = useAuthStore((store) => store.user?.username);
+  const queryKey = useMemo(() => onboardingQueryKey(username), [username]);
+  const chapterStorageKey = useMemo(
+    () => onboardingChapterStorageKey(username),
+    [username],
+  );
   const panelRef = useRef<HTMLElement | null>(null);
   const navigationRef = useRef<HTMLElement | null>(null);
   const stepEpochRef = useRef(0);
@@ -91,7 +100,7 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
   const [current, setCurrent] = useState(0);
   const [stepEpoch, setStepEpoch] = useState(0);
   const [activeChapterId, setActiveChapterId] = useState<OnboardingChapterId>(
-    () => chapterId ?? readStoredChapter() ?? 'general',
+    () => chapterId ?? readStoredChapter(chapterStorageKey) ?? 'general',
   );
   const [locallyHidden, setLocallyHidden] = useState(false);
   const [finishing, setFinishing] = useState(false);
@@ -180,9 +189,9 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
       mutationEpoch += 1;
       stepEpochRef.current = mutationEpoch;
       setStepEpoch(mutationEpoch);
+      setPanelReady(false);
     }
 
-    setPanelReady(false);
     setCurrent(bounded);
     if (!isOnboardingRouteActive(step.route, location)) {
       navigate(step.route);
@@ -221,8 +230,8 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
   useEffect(() => {
     if (!chapterId) return;
     setActiveChapterId(chapterId);
-    window.sessionStorage.setItem(ONBOARDING_CHAPTER_STORAGE_KEY, chapterId);
-  }, [chapterId]);
+    window.sessionStorage.setItem(chapterStorageKey, chapterId);
+  }, [chapterId, chapterStorageKey]);
 
   useEffect(() => {
     if (!state || state.version === ONBOARDING_VERSION || versionRestarted.current) return;
@@ -231,19 +240,19 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
     void onboardingApi.restart().then((nextState) => {
       if (epoch !== stepEpochRef.current) return;
       queryClient.setQueryData<OnboardingState>(queryKey, nextState);
-      window.sessionStorage.setItem(ONBOARDING_CHAPTER_STORAGE_KEY, 'general');
+      window.sessionStorage.setItem(chapterStorageKey, 'general');
       setActiveChapterId('general');
       initialized.current = true;
       setLocallyHidden(false);
       goToStep(nextState.current_step, false);
     });
-  }, [goToStep, queryClient, state]);
+  }, [chapterStorageKey, goToStep, queryClient, queryKey, state]);
 
   useEffect(() => {
     if (!isActive || initialized.current) return;
 
     const requestedStep = ONBOARDING_STEPS[state?.current_step ?? 0];
-    const storedChapterId = readStoredChapter();
+    const storedChapterId = readStoredChapter(chapterStorageKey);
     const storedChapterMatchesStep = storedChapterId
       ? getOnboardingChapterSteps(storedChapterId)
         .some((step) => step.id === requestedStep?.id)
@@ -263,9 +272,9 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
 
     initialized.current = true;
     setActiveChapterId(requestedChapterId);
-    window.sessionStorage.setItem(ONBOARDING_CHAPTER_STORAGE_KEY, requestedChapterId);
+    window.sessionStorage.setItem(chapterStorageKey, requestedChapterId);
     goToStep(initialIndex, false);
-  }, [chapterId, goToStep, isActive, state?.current_step]);
+  }, [chapterId, chapterStorageKey, goToStep, isActive, state?.current_step]);
 
   useEffect(() => {
     if (!isActive) {
@@ -299,7 +308,6 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
   );
 
   useLayoutEffect(() => {
-    setPanelReady(false);
     setNavigationBox(null);
 
     if (!overlayVisible) {
@@ -321,12 +329,15 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
     let missingSince = Date.now();
     let lastScrollAt = 0;
 
-    const updateReady = (next: boolean) => {
-      if (ready === next) return;
-      ready = next;
-      setPanelReady(next);
+    const markReady = () => {
+      if (ready) return;
+      ready = true;
+      setPanelReady(true);
     };
 
+    const fallbackTimer = window.setTimeout(markReady, TARGET_WAIT_TIMEOUT_MS);
+
+    if (!step.target) markReady();
 
     const scheduleNextFrame = () => {
       animationFrame = window.requestAnimationFrame(trackGeometry);
@@ -375,7 +386,6 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
 
       if (!step.target) {
         stableFrames = geometryChanged ? 0 : stableFrames + 1;
-        if (stableFrames >= TARGET_STABLE_FRAME_COUNT) updateReady(true);
         scheduleNextFrame();
         return;
       }
@@ -396,9 +406,7 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
         if (missingSince === 0) missingSince = Date.now();
         stableFrames = 0;
         if (Date.now() - missingSince >= TARGET_WAIT_TIMEOUT_MS) {
-          updateReady(true);
-        } else {
-          updateReady(false);
+          markReady();
         }
         scheduleNextFrame();
         return;
@@ -429,7 +437,6 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
           inline: 'nearest',
           behavior: 'auto',
         });
-        updateReady(false);
         stableFrames = 0;
         scheduleNextFrame();
         return;
@@ -438,10 +445,9 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
 
       if (geometryChanged) {
         stableFrames = 0;
-        updateReady(false);
       } else {
         stableFrames += 1;
-        if (stableFrames >= TARGET_STABLE_FRAME_COUNT) updateReady(true);
+        if (stableFrames >= TARGET_STABLE_FRAME_COUNT) markReady();
       }
 
       scheduleNextFrame();
@@ -451,6 +457,7 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
 
     return () => {
       cancelled = true;
+      window.clearTimeout(fallbackTimer);
       window.cancelAnimationFrame(animationFrame);
     };
   }, [current, location, overlayVisible, stepEpoch]);
@@ -472,7 +479,7 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
     }, {
       onSuccess: () => {
         if (epoch !== stepEpochRef.current) return;
-        window.sessionStorage.removeItem(ONBOARDING_CHAPTER_STORAGE_KEY);
+        window.sessionStorage.removeItem(chapterStorageKey);
         setActiveOnboardingStep(null);
         setLocallyHidden(true);
         setFinishing(false);
@@ -483,6 +490,7 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
     });
   }, [
     chapterSteps,
+    chapterStorageKey,
     completedSteps,
     current,
     finishing,

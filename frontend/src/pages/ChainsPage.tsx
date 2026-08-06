@@ -1,4 +1,4 @@
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
 import { App, Button, Empty, Popconfirm, Tag } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -10,15 +10,20 @@ import {
   useActiveOnboardingStep,
 } from '@/features/onboarding/events';
 import { OnboardingChainPreview } from '@/features/onboarding/OnboardingChainPreview';
+import { resolveCampaignReturnTarget } from '@/features/campaigns/campaignNavigation';
+import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 
 type ChainsLocationState = {
   campaignId?: string;
+  returnTo?: string;
 };
 
 export function ChainsPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const campaignId = (location.state as ChainsLocationState | null)?.campaignId;
+  const activeCampaignId = useCampaignDraftStore((state) => state.campaignId);
+  const campaignContext = resolveCampaignReturnTarget(location.state, activeCampaignId);
+  const campaignId = campaignContext?.campaignId;
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [showOnboardingPreview, setShowOnboardingPreview] = useState(false);
@@ -29,7 +34,9 @@ export function ChainsPage() {
     queryFn: () => chainsApi.list({ limit: 100 }),
   });
 
-  const chainNavigationState = campaignId ? { campaignId } : undefined;
+  const chainNavigationState: ChainsLocationState | undefined = campaignContext
+    ? { campaignId: campaignContext.campaignId, returnTo: campaignContext.path }
+    : undefined;
 
   const campaignUrl = (chainId: string) =>
     campaignId
@@ -86,6 +93,17 @@ export function ChainsPage() {
       search={false}
       headerTitle="Конструктор цепочек"
       toolBarRender={() => [
+        ...(campaignContext
+          ? [
+              <Button
+                key="return-to-campaign"
+                icon={<ArrowLeftOutlined />}
+                onClick={() => navigate(campaignContext.path)}
+              >
+                {'\u0412\u0435\u0440\u043d\u0443\u0442\u044c\u0441\u044f \u043a \u0440\u0430\u0441\u0441\u044b\u043b\u043a\u0435'}
+              </Button>,
+            ]
+          : []),
         <Button
           key="new"
           type="primary"

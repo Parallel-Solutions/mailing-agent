@@ -57,30 +57,40 @@ class TemplateRenderServiceTests(unittest.TestCase):
             json={"is_template": True},
         )
 
+        email_chain = {
+            "version": 1,
+            "root_node_id": "n1",
+            "nodes": [
+                {
+                    "id": "n1",
+                    "name": "Root",
+                    "kind": "email",
+                    "email_template_id": None,
+                    "document_template_ids": [self.template_id],
+                }
+            ],
+            "edges": [],
+        }
         with session_scope() as session:
             camp = session.get(Campaign, self.campaign_id)
             assert camp is not None
-            camp.draft_payload = {
-                "email_chain": {
-                    "version": 1,
-                    "root_node_id": "n1",
-                    "nodes": [
-                        {
-                            "id": "n1",
-                            "name": "Root",
-                            "kind": "email",
-                            "email_template_id": None,
-                            "document_template_ids": [self.template_id],
-                        }
-                    ],
-                    "edges": [],
-                }
-            }
+            camp.draft_payload = {"email_chain": email_chain}
             session.flush()
             self.recipient_id = session.scalar(
                 select(CampaignRecipient.id).where(CampaignRecipient.campaign_id == self.campaign_id)
             )
         assert self.recipient_id is not None
+
+        created_chain = self.client.post("/api/v1/chains", json={"name": "Render chain"})
+        self.assertEqual(created_chain.status_code, 200, created_chain.text)
+        chain_id = created_chain.json()["result"]["id"]
+        saved_chain = self.client.put(f"/api/v1/chains/{chain_id}", json=email_chain)
+        self.assertEqual(saved_chain.status_code, 200, saved_chain.text)
+        linked = self.client.patch(
+            f"/api/v1/campaigns/{self.campaign_id}",
+            json={"email_chain_id": chain_id},
+        )
+        self.assertEqual(linked.status_code, 200, linked.text)
 
     def test_launch_validation_uses_persisted_pdf_text(self) -> None:
         with session_scope() as session:

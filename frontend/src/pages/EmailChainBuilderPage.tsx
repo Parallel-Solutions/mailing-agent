@@ -20,6 +20,8 @@ import { ChainCanvas } from '@/features/campaigns/chain/ChainCanvas';
 import { ChainNodeBlock } from '@/features/campaigns/chain/ChainNodeBlock';
 import { ChainNodeSettingsPanel } from '@/features/campaigns/chain/ChainNodeSettingsPanel';
 import { invalidateCampaignDerivedData } from '@/features/campaigns/campaignQueryUtils';
+import { resolveCampaignReturnTarget } from '@/features/campaigns/campaignNavigation';
+import { useCampaignDraftStore } from '@/stores/campaignDraftStore';
 import {
   addChildEmailNode,
   addChildLinkNode,
@@ -43,7 +45,9 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const campaignId = (location.state as { campaignId?: string } | null)?.campaignId;
+  const activeCampaignId = useCampaignDraftStore((state) => state.campaignId);
+  const campaignContext = resolveCampaignReturnTarget(location.state, activeCampaignId);
+  const campaignId = campaignContext?.campaignId;
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const { searchParams, pushParams } = useUrlNavigation();

@@ -27,6 +27,8 @@ vi.mock('@/api/onboarding', () => ({
   onboardingApi: {
     update: vi.fn(),
   },
+  onboardingQueryKey: (username?: string | null) => ['onboarding', username || 'anonymous'],
+  onboardingChapterStorageKey: (username?: string | null) => `campaignflow:onboarding-chapter:${username || 'anonymous'}`,
 }));
 
 vi.mock('@/features/onboarding/OnboardingTour', async () => {
@@ -95,5 +97,8 @@ describe('global onboarding launcher', () => {
       current_step: 0,
       completed_steps: [],
     });
+    expect(
+      window.sessionStorage.getItem('campaignflow:onboarding-chapter:onboarding-user'),
+    ).toBe('general');
   });
 });

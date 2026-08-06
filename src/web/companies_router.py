@@ -13,7 +13,7 @@ from src.jobs.access import coerce_principal, principal_payload
 from src.security.auth import Principal
 from src.security.company_access import (
     can_view_company,
-    require_app_admin,
+    company_directory_ids,
     require_company_admin,
     require_company_view,
 )
@@ -85,23 +85,40 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
         limit: int = Query(default=100, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
     ):
-        # Read-only: any authenticated user may browse the full company list
-        # (e.g. to pick a company when creating a campaign). Mutating endpoints
-        # below remain gated by require_app_admin / require_company_admin.
-        _actor(principal)
-        return _ok(company_service.list_companies(limit=limit, offset=offset))
+        actor = _actor(principal)
+        # Regular authenticated users need the shared read-only directory for
+        # campaign setup. Company admins remain scoped to explicit grants.
+        company_ids = company_directory_ids(actor) if actor.is_company_admin else None
+        if company_ids is not None and not company_ids:
+            raise HTTPException(
+                status_code=403,
+                detail="У пользователя нет доступа к списку компаний.",
+            )
+        return _ok(
+            company_service.list_companies(
+                limit=limit,
+                offset=offset,
+                company_ids=company_ids,
+            )
+        )
 
     @router.post("/companies")
     def create_company(
         body: CompanyCreateBody, principal: object = Depends(check_auth)
     ):
-        require_app_admin(_actor(principal))
+        actor = _actor(principal)
+        if not actor.is_admin and not actor.is_company_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Создавать компании могут только администраторы.",
+            )
         try:
             return _ok(
                 company_service.create_company(
                     name=body.name,
                     phone=body.phone or "",
                     contact_person_name=body.contact_person_name or "",
+                    managed_by_username=None if actor.is_admin else actor.username,
                 )
             )
         except CompanyServiceError as exc:
@@ -136,7 +153,7 @@ def create_companies_router(*, check_auth: Any) -> APIRouter:
 
     @router.delete("/companies/{company_id}")
     def delete_company(company_id: str, principal: object = Depends(check_auth)):
-        require_app_admin(_actor(principal))
+        require_company_admin(_actor(principal), company_id)
         if not company_service.delete_company(company_id):
             raise HTTPException(status_code=404, detail="Компания не найдена.")
         return _ok({"removed": True})

@@ -34,10 +34,25 @@ class CampaignV1ApiTests(unittest.TestCase):
         app.include_router(create_v1_router(check_auth=lambda: Principal(self.username, "t1", "user")))
         self.client = TestClient(app)
 
+    def _attach_required_chain(self, campaign_id: str) -> str:
+        created = self.client.post(
+            "/api/v1/chains",
+            json={"name": f"Required chain {campaign_id}"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        chain_id = str(created.json()["result"]["id"])
+        linked = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"email_chain_id": chain_id},
+        )
+        self.assertEqual(linked.status_code, 200, linked.text)
+        return chain_id
+
     def test_create_update_schedule_launch_pause(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "API Campaign", "mail_subject": "Hello"})
         self.assertEqual(created.status_code, 200)
         campaign_id = created.json()["result"]["id"]
+        self._attach_required_chain(campaign_id)
 
         patched = self.client.patch(
             f"/api/v1/campaigns/{campaign_id}",
@@ -1187,6 +1202,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 200)
         campaign_id = created.json()["result"]["id"]
+        self._attach_required_chain(campaign_id)
 
         email = self.client.post(
             "/api/v1/templates",
@@ -1443,12 +1459,40 @@ class CampaignV1ApiTests(unittest.TestCase):
 
         campaign = self.client.post("/api/v1/campaigns", json={"name": "Uses standalone chain"})
         campaign_id = campaign.json()["result"]["id"]
+        missing_chain = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
+        self.assertEqual(missing_chain.status_code, 200, missing_chain.text)
+        self.assertIn(
+            "Выберите цепочку писем",
+            missing_chain.json()["result"]["errors"],
+        )
+        blocked_launch = self.client.post(
+            f"/api/v1/campaigns/{campaign_id}/launch?force_now=true"
+        )
+        self.assertEqual(blocked_launch.status_code, 400, blocked_launch.text)
+        self.assertIn("Выберите цепочку писем", blocked_launch.text)
         linked = self.client.patch(
             f"/api/v1/campaigns/{campaign_id}",
             json={"send_scenario": "email_chain", "email_chain_id": chain_id},
         )
         self.assertEqual(linked.status_code, 200, linked.text)
         self.assertEqual(linked.json()["result"]["email_chain_id"], chain_id)
+
+        cleared = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"email_chain_id": None},
+        )
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        cleared_payload = cleared.json()["result"]
+        self.assertIsNone(cleared_payload["email_chain_id"])
+        self.assertEqual(cleared_payload["send_scenario"], "consent_then_materials")
+        self.assertIsNone(cleared_payload["draft_payload"]["email_chain_id"])
+
+        relinked = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"send_scenario": "email_chain", "email_chain_id": chain_id},
+        )
+        self.assertEqual(relinked.status_code, 200, relinked.text)
+
         deleted = self.client.delete(f"/api/v1/chains/{chain_id}")
         self.assertEqual(deleted.status_code, 200, deleted.text)
         self.assertEqual(deleted.json()["result"], {"deleted": True, "id": chain_id})
@@ -1458,6 +1502,11 @@ class CampaignV1ApiTests(unittest.TestCase):
         detached = self.client.get(f"/api/v1/campaigns/{campaign_id}")
         self.assertEqual(detached.status_code, 200, detached.text)
         self.assertIsNone(detached.json()["result"]["email_chain_id"])
+        self.assertEqual(
+            detached.json()["result"]["send_scenario"],
+            "consent_then_materials",
+        )
+        self.assertIsNone(detached.json()["result"]["draft_payload"]["email_chain_id"])
 
     def test_standalone_chain_rename(self) -> None:
         created = self.client.post("/api/v1/chains", json={"name": "Старое название"})

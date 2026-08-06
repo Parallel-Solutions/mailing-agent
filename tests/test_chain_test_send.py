@@ -40,6 +40,21 @@ class ChainTestSendApiTests(unittest.TestCase):
         self.assertEqual(created.status_code, 200)
         self.campaign_id = created.json()["result"]["id"]
 
+        created_chain = self.client.post(
+            "/api/v1/chains",
+            json={"name": "Chain test send"},
+        )
+        self.assertEqual(created_chain.status_code, 200, created_chain.text)
+        self.chain_id = created_chain.json()["result"]["id"]
+        linked = self.client.patch(
+            f"/api/v1/campaigns/{self.campaign_id}",
+            json={
+                "send_scenario": "email_chain",
+                "email_chain_id": self.chain_id,
+            },
+        )
+        self.assertEqual(linked.status_code, 200, linked.text)
+
         email = self.client.post(
             "/api/v1/templates",
             json={

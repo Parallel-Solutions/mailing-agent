@@ -606,6 +606,9 @@ def update_campaign(
             _ensure_campaign_editable(row)
 
         old_email_chain_id = row.email_chain_id
+        chain_detached = "email_chain_id" in data and data["email_chain_id"] is None
+        if chain_detached and not data.get("send_scenario") and row.send_scenario == "email_chain":
+            data = {**data, "send_scenario": "consent_then_materials"}
         template_fields = (
             "email_template_id",
             "kp_template_id",
@@ -635,7 +638,7 @@ def update_campaign(
             "audience_id",
             "email_chain_id",
         ):
-            if field in data and data[field] is not None:
+            if field in data and (data[field] is not None or field == "email_chain_id"):
                 setattr(row, field, data[field])
         if "connection_ids" in data or "smtp_mailbox_id" in data:
             _apply_sender_fields(row, data)
@@ -666,6 +669,7 @@ def update_campaign(
             "send_scenario",
             "tags",
             "internal_comment",
+            "email_chain_id",
         ):
             if key in data:
                 draft[key] = data[key]
@@ -1465,6 +1469,8 @@ def validate_campaign_for_launch(
         warnings: list[str] = []
         if not (camp.name or "").strip():
             errors.append("Укажите название рассылки")
+        if not (camp.email_chain_id or "").strip():
+            errors.append("Выберите цепочку писем")
         from src.campaigns.connection_service import validate_connection_ids
 
         connection_error = validate_connection_ids(
@@ -1497,15 +1503,17 @@ def validate_campaign_for_launch(
         if active <= 0:
             errors.append("Нет получателей для отправки")
 
-        if camp.send_scenario == "email_chain":
+        if camp.email_chain_id and camp.send_scenario == "email_chain":
             from src.campaigns.chain_service import get_email_chain, validate_chain
 
             chain_validation = validate_chain(get_email_chain(camp), strict=False)
             if not chain_validation["ok"]:
                 errors.extend(chain_validation["errors"])
             warnings.extend(chain_validation.get("warnings") or [])
-        elif not camp.email_template_id and not (camp.draft_payload or {}).get(
-            "email_body"
+        elif (
+            camp.email_chain_id
+            and not camp.email_template_id
+            and not (camp.draft_payload or {}).get("email_body")
         ):
             warnings.append(
                 "Шаблон письма не выбран — будет использован текст по умолчанию"

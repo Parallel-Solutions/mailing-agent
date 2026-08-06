@@ -5,6 +5,7 @@ import {
 } from '@ant-design/pro-components';
 import { Button, type FormInstance } from 'antd';
 import type { Campaign } from '@/api/types';
+import { buildCampaignChainSelectionPatch } from '@/features/campaigns/campaignQueryUtils';
 
 type Option = { label: string; value: string };
 
@@ -52,8 +53,14 @@ export function CampaignWizardBasicsStep({
       form={form}
       submitter={false}
       initialValues={draft}
-      onValuesChange={(_, values) => {
-        const patch = values.email_chain_id ? { ...values, send_scenario: 'email_chain' } : values;
+      onValuesChange={(changedValues, values) => {
+        const chainSelectionChanged = Object.prototype.hasOwnProperty.call(
+          changedValues,
+          'email_chain_id',
+        );
+        const patch = chainSelectionChanged
+          ? { ...values, ...buildCampaignChainSelectionPatch(changedValues.email_chain_id) }
+          : values;
         onAutosave(patch);
       }}
     >
@@ -63,15 +70,13 @@ export function CampaignWizardBasicsStep({
       <div data-onboarding-id="campaign-chain">
         <ProFormSelect
           name="email_chain_id"
-          label="Цепочка писем (необязательно)"
+          label="Цепочка писем"
           placeholder="Выберите цепочку"
           options={chainOptions}
+          rules={[{ required: true, message: 'Выберите цепочку писем' }]}
           fieldProps={{
+            allowClear: false,
             loading: chainsLoading,
-            onChange: (value: string) => {
-              form.setFieldValue('email_chain_id', value);
-              onAutosave({ email_chain_id: value, send_scenario: 'email_chain' });
-            },
           }}
         />
       </div>

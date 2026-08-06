@@ -671,7 +671,10 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             item = service.update_campaign(
-                campaign_id, actor.username, body.model_dump(exclude_none=True), visible_owners=_visibility(actor)
+                campaign_id,
+                actor.username,
+                body.model_dump(exclude_unset=True),
+                visible_owners=_visibility(actor),
             )
         except CampaignStateConflict as exc:
             raise _campaign_conflict(exc) from exc
