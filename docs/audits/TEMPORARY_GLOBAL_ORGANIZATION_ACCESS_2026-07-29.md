@@ -1,35 +1,27 @@
-# Temporary global organization access
+# Organization access isolation
 
-Status: active temporary compatibility mode.
+Status: temporary global mode removed on 2026-08-03.
 
-All authenticated application users can currently view organizations and use
-organization-owned resources, including campaigns and delivery connections,
-regardless of their recorded company membership. Destructive organization
-management and delivery-credential mutation remain restricted to the existing
-admin/owner rules. Legacy jobs and worker-control operations remain
-owner-isolated.
+The compatibility switch `TEMPORARY_GLOBAL_ORGANIZATION_ACCESS` previously
+allowed every authenticated user to view organizations and owner-scoped
+resources. It was removed after the account-isolation review because a newly
+registered account could see data owned by unrelated accounts.
 
-This mode exists only for the initial shared-organization rollout. It must not
-be treated as the permanent authorization model.
+The active authorization model is:
 
-## Removal criteria
+1. Regular users can access only resources owned by their username.
+2. Company administrators can access resources owned by members of their
+   company.
+3. Application administrators can access resources across all owners.
+4. The organization directory is available only to application administrators.
+5. Delivery connections and credentials remain owner-scoped; only application
+   administrators have global visibility.
 
-Before disabling `TEMPORARY_GLOBAL_ORGANIZATION_ACCESS`:
+Core campaign, chain, audience, and template endpoints have negative
+cross-account tests for list, read, and update operations. Their service-layer
+defaults are owner-scoped so an omitted visibility argument cannot silently
+become global access.
 
-1. Add an explicit active-organization selector to the authenticated session.
-2. Store delivery connections as organization-owned resources instead of
-   username-owned resources.
-3. Authorize campaign, template, statistics, and delivery operations against
-   active organization membership and role.
-4. Migrate existing username-owned connections to an organization without
-   exposing encrypted secrets.
-5. Add negative cross-organization tests and re-enable the scoped expectations
-   currently bypassed by the temporary switch.
-
-The switch and its related `TODO(security)` comments are intentionally easy to
-search:
-
-```text
-TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
-TODO(security)
-```
+The longer-term organization-owned connection model and active-organization
+selector remain separate product improvements. They are not prerequisites for
+account isolation.

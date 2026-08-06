@@ -1,6 +1,6 @@
 .campaignflow-onboarding {
   position: fixed;
-  z-index: 1100;
+  z-index: 1160;
   inset: 0;
   color: #0f172a;
   pointer-events: none;
@@ -12,7 +12,7 @@
   inset: 0;
   background: rgba(15, 23, 42, 0.32);
   pointer-events: auto;
-  transition: background-color 220ms ease;
+  transition: background-color 120ms ease;
 }
 
 .campaignflow-onboarding--targeted .campaignflow-onboarding__blocker {
@@ -30,7 +30,7 @@
     0 10px 30px rgba(15, 23, 42, 0.18);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 180ms ease;
+  transition: opacity 140ms ease;
 }
 
 .campaignflow-onboarding--targeted .campaignflow-onboarding__spotlight {

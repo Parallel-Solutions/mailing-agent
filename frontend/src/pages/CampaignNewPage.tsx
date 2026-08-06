@@ -1,7 +1,7 @@
 import {
   ProCard,
 } from '@ant-design/pro-components';
-import { SwapOutlined } from '@ant-design/icons';
+import { ReloadOutlined, SwapOutlined } from '@ant-design/icons';
 import { App, Alert, Button, Col, Collapse, Form, Row, Space, Spin, Steps, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -113,8 +113,16 @@ export function CampaignNewPage() {
   const navigate = useNavigate();
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
-  const { campaignId, draft, setCampaignId, setDraft, replaceDraft, saveState, setSaveState } =
-    useCampaignDraftStore();
+  const {
+    campaignId,
+    draft,
+    setCampaignId,
+    setDraft,
+    replaceDraft,
+    saveState,
+    setSaveState,
+    reset: resetDraftState,
+  } = useCampaignDraftStore();
   const [basicsForm] = Form.useForm();
   const [senderForm] = Form.useForm();
   const [scheduleForm] = Form.useForm();
@@ -128,7 +136,9 @@ export function CampaignNewPage() {
   const user = useAuthStore((s) => s.user);
   const debounceRef = useRef<number | null>(null);
   const pendingAutosaveRef = useRef<Record<string, unknown> | null>(null);
+  const createRequestedRef = useRef(false);
   const hydratedIdRef = useRef<string | null>(null);
+  const loadRequestRef = useRef(0);
   const companyAutoSetRef = useRef<string | null>(null);
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistRequestRef = useRef(0);
@@ -160,32 +170,71 @@ export function CampaignNewPage() {
     pushParams({}, [...CAMPAIGN_MODAL_KEYS]);
   }, [pushParams]);
 
+  const id = isOnboardingPreview ? undefined : (existingId || undefined);
+
   const createMutation = useMutation({
     mutationFn: () => campaignsApi.create({ name: 'Черновик рассылки' }),
     onSuccess: (camp) => {
       setCampaignId(camp.id);
       replaceDraft(camp);
+      void queryClient.invalidateQueries({ queryKey: ['campaigns', 'draft'] });
       navigate(`/campaigns/new?id=${camp.id}`, { replace: true });
+    },
+    onError: (error: Error) => {
+      createRequestedRef.current = false;
+      message.error(error.message || 'Не удалось создать черновик рассылки');
     },
   });
 
   useEffect(() => {
     if (isOnboardingPreview) return;
 
-    if (existingId) {
-      setCampaignId(existingId);
-      void campaignsApi.get(existingId).then((camp) => {
-        replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
-      });
+    const requestId = ++loadRequestRef.current;
+    hydratedIdRef.current = null;
+    companyAutoSetRef.current = null;
+
+    if (!existingId) {
+      if (createRequestedRef.current) return;
+      createRequestedRef.current = true;
+      resetDraftState();
+      createMutation.mutate();
       return;
     }
-    if (!campaignId) {
-      createMutation.mutate();
+
+    createRequestedRef.current = false;
+    if (campaignId !== existingId) {
+      resetDraftState();
     }
+    setCampaignId(existingId);
+
+    void campaignsApi
+      .get(existingId)
+      .then((camp) => {
+        if (requestId !== loadRequestRef.current) return;
+        if (camp.status !== 'draft') {
+          resetDraftState();
+          message.warning('Эта рассылка уже запускалась. Создайте её копию для повторной отправки.');
+          navigate(`/campaigns/${existingId}`, { replace: true });
+          return;
+        }
+        setCampaignId(existingId);
+        replaceDraft({ ...camp, ...(camp.draft_payload || {}) });
+      })
+      .catch((error: unknown) => {
+        if (requestId !== loadRequestRef.current) return;
+        resetDraftState();
+        message.error(error instanceof Error ? error.message : 'Не удалось загрузить черновик рассылки');
+        navigate('/campaigns', { replace: true });
+      });
+    // createMutation is deliberately guarded by createRequestedRef for React StrictMode.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existingId, isOnboardingPreview]);
 
-  const id = isOnboardingPreview ? undefined : (existingId || campaignId);
+  useEffect(() => {
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     if (!id || !emailChainIdParam) return;
@@ -223,7 +272,6 @@ export function CampaignNewPage() {
   const companiesQuery = useQuery({
     queryKey: ['companies'],
     queryFn: () => companiesApi.list(),
-    enabled: isAppAdmin,
   });
   const myCompanyQuery = useQuery({
     queryKey: ['companies', 'me'],
@@ -343,15 +391,17 @@ export function CampaignNewPage() {
   }));
 
   const companyOptions = useMemo(() => {
-    if (isAppAdmin) {
-      return (companiesQuery.data?.items ?? []).map((company) => ({
+    // The company list is common to all users (read-only): everyone can pick
+    // any company here, not just their own.
+    if (companiesQuery.data?.items?.length) {
+      return companiesQuery.data.items.map((company) => ({
         label: company.name,
         value: company.id,
       }));
     }
     const company = user?.company || myCompanyQuery.data;
     return company ? [{ label: company.name, value: company.id }] : [];
-  }, [isAppAdmin, companiesQuery.data?.items, user?.company, myCompanyQuery.data]);
+  }, [companiesQuery.data?.items, user?.company, myCompanyQuery.data]);
 
   const workTypeOptions = (workTypesQuery.data ?? []).map((item) => ({
     label: item.name,
@@ -686,6 +736,19 @@ export function CampaignNewPage() {
   const showAiFixButton = launchValidation.hasChecked && readinessErrors.length > 0;
   const wizardLocked = launchBusy.active || launchValidation.isChecking;
 
+  const formatLaunchValidationError = (err: unknown): string => {
+    if (err instanceof ApiError) {
+      return [err.detail, err.payload.hint].filter(Boolean).join(' ');
+    }
+    if (err instanceof TypeError) {
+      return 'Не удалось подключиться к серверу для проверки рассылки. Проверьте соединение и повторите попытку.';
+    }
+    if (err instanceof Error && err.message) {
+      return err.message;
+    }
+    return 'Не удалось выполнить проверку';
+  };
+
   const runLaunchAction = async (label: string, action: () => Promise<void>) => {
     setLaunchBusy({ active: true, label, progress: 50 });
     try {
@@ -693,11 +756,19 @@ export function CampaignNewPage() {
     } catch (err) {
       const detail =
         err instanceof ApiError
-          ? err.detail
+          ? [err.detail, err.payload.hint].filter(Boolean).join(' ')
           : err instanceof Error
             ? err.message
             : 'Не удалось выполнить действие';
       message.error(detail);
+      if (
+        err instanceof ApiError &&
+        err.payload.code === 'campaign_not_draft' &&
+        err.payload.campaign_id
+      ) {
+        resetDraftState();
+        navigate(`/campaigns/${err.payload.campaign_id}`, { replace: true });
+      }
     } finally {
       setLaunchBusy({ active: false, label: '', progress: 0 });
     }
@@ -705,7 +776,7 @@ export function CampaignNewPage() {
 
   const navigateAfterLaunch = async (campaignId: string, successMessage: string) => {
     message.success(successMessage);
-    await new Promise((resolve) => window.setTimeout(resolve, 3000));
+    resetDraftState();
     try {
       const batches = await campaignsApi.batches(campaignId);
       const hasErrors = (batches || []).some(
@@ -813,7 +884,7 @@ export function CampaignNewPage() {
                     linkedChainId={linkedChainId ?? undefined}
                     campaignId={id ?? undefined}
                     chainsLoading={chainsQuery.isLoading}
-                    companiesLoading={isAppAdmin ? companiesQuery.isLoading : myCompanyQuery.isLoading}
+                    companiesLoading={companiesQuery.isLoading}
                     workTypesLoading={workTypesQuery.isLoading}
                     isAppAdmin={isAppAdmin}
                     isCompanyAdmin={isCompanyAdmin}
@@ -935,7 +1006,21 @@ export function CampaignNewPage() {
                     ) : launchValidation.isChecking ? (
                       <Spin tip="Проверка…" />
                     ) : launchValidation.error ? (
-                      <Alert type="error" showIcon message="Не удалось выполнить проверку" description={launchValidation.error} />
+                      <Alert
+                        type="error"
+                        showIcon
+                        message="Не удалось выполнить проверку"
+                        description={formatLaunchValidationError(launchValidation.error)}
+                        action={
+                          <Button
+                            size="small"
+                            icon={<ReloadOutlined />}
+                            onClick={() => launchValidation.retry()}
+                          >
+                            Проверить снова
+                          </Button>
+                        }
+                      />
                     ) : launchValidation.hasChecked ? (
                       <>
                         {readinessWarnings.length > 0 ? (
@@ -967,6 +1052,14 @@ export function CampaignNewPage() {
                           />
                         ) : null}
                         <Space wrap>
+                          <Button
+                            icon={<ReloadOutlined />}
+                            loading={launchValidation.isChecking}
+                            disabled={wizardLocked}
+                            onClick={() => launchValidation.retry()}
+                          >
+                            Проверить снова
+                          </Button>
                           <Button
                             disabled={launchBlocked || wizardLocked}
                             title={readinessErrors.join('; ') || undefined}
@@ -1023,6 +1116,7 @@ export function CampaignNewPage() {
                               if (!id) return;
                               await runLaunchAction('Запуск рассылки…', async () => {
                                 await campaignsApi.launch(id);
+                                await queryClient.invalidateQueries({ queryKey: ['campaigns'] });
                                 await navigateAfterLaunch(id, 'Рассылка запущена');
                               });
                             }}
@@ -1143,7 +1237,7 @@ export function CampaignNewPage() {
           workTypeOptions={workTypeOptions}
           selectedCompanyId={selectedCompanyId}
           chainsLoading={chainsQuery.isLoading}
-          companiesLoading={isAppAdmin ? companiesQuery.isLoading : myCompanyQuery.isLoading}
+          companiesLoading={companiesQuery.isLoading}
           workTypesLoading={workTypesQuery.isLoading}
           isAppAdmin={isAppAdmin}
           isCompanyAdmin={isCompanyAdmin}

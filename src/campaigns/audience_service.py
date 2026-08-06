@@ -12,7 +12,12 @@ from src.campaigns.service import _validate_email
 from src.campaigns.suppression_service import is_email_suppressed_for_import
 from src.infra.db import session_scope
 from src.infra.models import Audience, AudienceMember
-from src.security.company_access import apply_owner_filter, can_access_owner
+from src.security.company_access import (
+    OWNER_VISIBILITY_UNSET,
+    apply_owner_filter,
+    can_access_owner,
+    effective_owner_visibility,
+)
 
 
 def _now() -> datetime:
@@ -37,9 +42,16 @@ def audience_to_dict(row: Audience) -> dict[str, Any]:
     }
 
 
-def create_audience(owner_username: str, name: str, *, source: str = "manual") -> dict[str, Any]:
+def create_audience(
+    owner_username: str, name: str, *, source: str = "manual"
+) -> dict[str, Any]:
     with session_scope() as session:
-        row = Audience(id=_new_id(), owner_username=owner_username, name=name or "Аудитория", source=source)
+        row = Audience(
+            id=_new_id(),
+            owner_username=owner_username,
+            name=name or "Аудитория",
+            source=source,
+        )
         session.add(row)
         session.flush()
         return audience_to_dict(row)
@@ -49,8 +61,9 @@ def list_audiences(
     owner_username: str,
     *,
     include_archived: bool = False,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
 ) -> list[dict[str, Any]]:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     with session_scope() as session:
         stmt = select(Audience)
         stmt = apply_owner_filter(stmt, Audience.owner_username, visible_owners)
@@ -64,8 +77,9 @@ def get_audience(
     audience_id: str,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
 ) -> dict[str, Any] | None:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     with session_scope() as session:
         row = session.get(Audience, audience_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
@@ -78,8 +92,9 @@ def update_audience(
     owner_username: str,
     data: dict[str, Any],
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
 ) -> dict[str, Any] | None:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     with session_scope() as session:
         row = session.get(Audience, audience_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
@@ -97,15 +112,31 @@ def duplicate_audience(
     audience_id: str,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
 ) -> dict[str, Any] | None:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     source = get_audience(audience_id, owner_username, visible_owners=visible_owners)
     if not source:
         return None
-    created = create_audience(owner_username, f"{source['name']} (копия)", source=source["source"])
-    members = list_members(audience_id, owner_username, limit=100_000, offset=0, visible_owners=visible_owners)
-    replace_members(created["id"], owner_username, members["items"], visible_owners=frozenset({owner_username}))
-    return get_audience(created["id"], owner_username, visible_owners=frozenset({owner_username}))
+    created = create_audience(
+        owner_username, f"{source['name']} (копия)", source=source["source"]
+    )
+    members = list_members(
+        audience_id,
+        owner_username,
+        limit=100_000,
+        offset=0,
+        visible_owners=visible_owners,
+    )
+    replace_members(
+        created["id"],
+        owner_username,
+        members["items"],
+        visible_owners=frozenset({owner_username}),
+    )
+    return get_audience(
+        created["id"], owner_username, visible_owners=frozenset({owner_username})
+    )
 
 
 def list_members(
@@ -115,8 +146,9 @@ def list_members(
     limit: int = 50,
     offset: int = 0,
     q: str | None = None,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
 ) -> dict[str, Any]:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     with session_scope() as session:
         aud = session.get(Audience, audience_id)
         if aud is None or not can_access_owner(visible_owners, aud.owner_username):
@@ -130,7 +162,9 @@ def list_members(
                 | (AudienceMember.contact_name.ilike(like))
             )
         total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-        rows = session.scalars(stmt.order_by(AudienceMember.id).limit(limit).offset(offset)).all()
+        rows = session.scalars(
+            stmt.order_by(AudienceMember.id).limit(limit).offset(offset)
+        ).all()
         return {
             "items": [
                 {
@@ -156,13 +190,16 @@ def replace_members(
     owner_username: str,
     members: list[dict[str, Any]],
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
 ) -> dict[str, Any]:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     with session_scope() as session:
         aud = session.get(Audience, audience_id)
         if aud is None or not can_access_owner(visible_owners, aud.owner_username):
             raise PermissionError("Audience not found")
-        for old in session.scalars(select(AudienceMember).where(AudienceMember.audience_id == audience_id)).all():
+        for old in session.scalars(
+            select(AudienceMember).where(AudienceMember.audience_id == audience_id)
+        ).all():
             session.delete(old)
         valid = 0
         for item in members:
@@ -186,7 +223,9 @@ def replace_members(
                     source=str(item.get("source") or "import"),
                     validation_status=status,
                     extra=dict(item.get("extra") or {}),
-                    excluded=bool(item.get("excluded") or status != "valid" or suppressed),
+                    excluded=bool(
+                        item.get("excluded") or status != "valid" or suppressed
+                    ),
                 )
             )
         aud.member_count = len(members)
@@ -201,9 +240,18 @@ def copy_audience_to_campaign(
     campaign_id: str,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = OWNER_VISIBILITY_UNSET,
 ) -> dict[str, Any]:
+    visible_owners = effective_owner_visibility(owner_username, visible_owners)
     from src.campaigns.service import replace_recipients
 
-    members = list_members(audience_id, owner_username, limit=100_000, offset=0, visible_owners=visible_owners)
-    return replace_recipients(campaign_id, owner_username, members["items"], visible_owners=visible_owners)
+    members = list_members(
+        audience_id,
+        owner_username,
+        limit=100_000,
+        offset=0,
+        visible_owners=visible_owners,
+    )
+    return replace_recipients(
+        campaign_id, owner_username, members["items"], visible_owners=visible_owners
+    )

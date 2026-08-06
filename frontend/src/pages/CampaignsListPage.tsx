@@ -4,7 +4,7 @@ import { App, Button, Dropdown, Progress, Space, Tag, Tooltip } from 'antd';
 import type { MenuProps } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import { campaignsApi } from '@/api/campaigns';
+import { campaignsApi, type CampaignListScope } from '@/api/campaigns';
 import type { Campaign } from '@/api/types';
 import {
   campaignProgressLabel,
@@ -24,20 +24,31 @@ const statusColor: Record<string, string> = {
   cancelled: 'error',
 };
 
-export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) {
+type CampaignsListPageProps = {
+  embedded?: boolean;
+  scope?: Extract<CampaignListScope, 'draft' | 'launched'>;
+};
+
+export function CampaignsListPage({
+  embedded = false,
+  scope = 'launched',
+}: CampaignsListPageProps) {
   const navigate = useNavigate();
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
-    queryKey: ['campaigns'],
-    queryFn: () => campaignsApi.list({ limit: 100 }),
+    queryKey: ['campaigns', scope],
+    queryFn: () => campaignsApi.list({ scope, limit: 100 }),
     refetchInterval: (query) =>
       query.state.data?.items.some((item) => shouldPollCampaign(item.status))
         ? 10_000
         : 30_000,
   });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['campaigns', scope] });
+  const isDraftList = scope === 'draft';
+  const campaignPath = (campaign: Campaign) =>
+    isDraftList ? `/campaigns/new?id=${campaign.id}` : `/campaigns/${campaign.id}`;
 
   const pause = useMutation({
     mutationFn: (id: string) => campaignsApi.pause(id),
@@ -70,7 +81,7 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
   const archive = useMutation({
     mutationFn: (id: string) => campaignsApi.archive(id),
     onSuccess: () => {
-      message.success('Рассылка удалена');
+      message.success(isDraftList ? 'Черновик удалён' : 'Рассылка удалена');
       invalidate();
     },
     onError: (error: Error) => message.error(error.message),
@@ -78,8 +89,10 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
 
   const confirmArchive = (campaign: Campaign) => {
     modal.confirm({
-      title: 'Удалить рассылку?',
-      content: `Рассылка «${campaign.name}» исчезнет из списка. История отправки сохранится.`,
+      title: isDraftList ? 'Удалить черновик?' : 'Удалить рассылку?',
+      content: isDraftList
+        ? `Черновик «${campaign.name}» исчезнет из списка.`
+        : `Рассылка «${campaign.name}» исчезнет из списка. История отправки сохранится.`,
       okText: 'Удалить',
       cancelText: 'Отмена',
       okButtonProps: { danger: true },
@@ -124,7 +137,7 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
       rowKey="id"
       loading={isLoading}
       search={false}
-      headerTitle={embedded ? undefined : 'Рассылки'}
+      headerTitle={embedded ? undefined : isDraftList ? 'Черновики' : 'Рассылки'}
       toolBarRender={() => [
         <Button key="new" type="primary" icon={<PlusOutlined />} onClick={() => navigate('/campaigns/new')}>
           Создать рассылку
@@ -137,7 +150,7 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
           dataIndex: 'name',
           width: 180,
           ellipsis: true,
-          render: (_, row) => <Link to={`/campaigns/${row.id}`} title={row.name}>{row.name}</Link>,
+          render: (_, row) => <Link to={campaignPath(row)} title={row.name}>{row.name}</Link>,
         },
         {
           title: 'Статус',
@@ -171,8 +184,8 @@ export function CampaignsListPage({ embedded = false }: { embedded?: boolean }) 
           align: 'center',
           render: (_, row) => (
             <Space size={2} wrap={false}>
-              <Button type="link" size="small" onClick={() => navigate(`/campaigns/${row.id}`)}>
-                Открыть
+              <Button type="link" size="small" onClick={() => navigate(campaignPath(row))}>
+                {isDraftList ? 'Редактировать' : 'Открыть'}
               </Button>
               <Dropdown menu={actionMenu(row)} placement="bottomRight" trigger={['click']}>
                 <Tooltip title="Другие действия">

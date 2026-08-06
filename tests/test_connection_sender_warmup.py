@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from src.campaigns import connection_sender_warmup_service as warmup
 from src.infra.db import session_scope
@@ -22,6 +23,7 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
         bootstrap_test_runtime(reset_db=True)
         self.owner = f"warmup-{uuid4().hex[:8]}"
         self.connection_id = str(uuid4())
+        self.smtp_connection_id = str(uuid4())
         now = datetime.now(timezone.utc)
         with session_scope() as session:
             session.add(SmtpMailbox(
@@ -42,7 +44,30 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
                 created_at=now,
                 updated_at=now,
             ))
+            session.add(SmtpMailbox(
+                id=self.smtp_connection_id,
+                owner_username=self.owner,
+                provider="custom",
+                email="sender@example.com",
+                sender_name="Sender",
+                host="smtp.example.com",
+                port=465,
+                use_ssl=True,
+                use_starttls=False,
+                auth_method="password",
+                password_encrypted="encrypted",
+                status="active",
+                is_default=False,
+                created_at=now,
+                updated_at=now,
+            ))
         self.visibility = frozenset({self.owner})
+        warmup.update_program(
+            self.connection_id,
+            self.owner,
+            {"smtp_connection_id": self.smtp_connection_id},
+            visible_owners=self.visibility,
+        )
 
     def test_recipient_list_is_deduplicated_and_classified(self) -> None:
         result = warmup.add_recipients(
@@ -56,7 +81,16 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
         providers = {item["email"]: item["provider"] for item in result["recipients"]}
         self.assertEqual(providers["first@gmail.com"], "gmail")
         self.assertEqual(providers["person@yandex.ru"], "yandex")
-        self.assertEqual(result["effective_daily_plan"][0], 2)
+        self.assertEqual(result["effective_daily_plan"][0], 5)
+
+    def test_api_connection_cannot_be_used_as_warmup_sender(self) -> None:
+        with self.assertRaisesRegex(ValueError, "SMTP"):
+            warmup.update_program(
+                self.connection_id,
+                self.owner,
+                {"smtp_connection_id": self.connection_id},
+                visible_owners=self.visibility,
+            )
 
     def test_recipient_can_be_disabled_and_reactivated_by_readding(self) -> None:
         result = warmup.add_recipients(
@@ -91,7 +125,7 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
             )
         self.assertEqual(result["diagnostics_status"], "blocked")
         self.assertEqual(
-            [item["status"] for item in result["diagnostics"]["checks"][:2]],
+            [item["status"] for item in result["diagnostics"]["checks"][1:3]],
             ["fail", "fail"],
         )
 
@@ -126,23 +160,27 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
             )
         with patch.object(warmup, "_enqueue_delivery", return_value="message-task") as enqueue_delivery:
             result = warmup.run_warmup_day({"program_id": program["id"]})
-        self.assertEqual(result["scheduled"], 2)
-        self.assertEqual(enqueue_delivery.call_count, 2)
+        self.assertEqual(result["scheduled"], 5)
+        self.assertEqual(enqueue_delivery.call_count, 5)
 
         with session_scope() as session:
             deliveries = session.execute(
                 select(ConnectionWarmupDelivery).order_by(ConnectionWarmupDelivery.created_at.asc())
             ).scalars().all()
             delivery_ids = [item.id for item in deliveries]
-            self.assertEqual(len(delivery_ids), 2)
+            self.assertEqual(len(delivery_ids), 5)
+            distribution = Counter(item.recipient_id for item in deliveries)
+            self.assertEqual(sorted(distribution.values()), [2, 3])
 
         with (
-            patch("src.campaigns.batch_worker._send_delivery_message", side_effect=["message-1", "message-2"]) as send,
+            patch("src.campaigns.batch_worker._send_delivery_message", side_effect=[f"message-{index}" for index in range(1, 6)]) as send,
             patch.object(warmup, "_enqueue_day", return_value="task-next") as enqueue_day,
         ):
             for delivery_id in delivery_ids:
                 warmup.run_warmup_message({"delivery_id": delivery_id})
-        self.assertEqual(send.call_count, 2)
+        self.assertEqual(send.call_count, 5)
+        self.assertTrue(all(call.kwargs["connection_id"] == self.smtp_connection_id for call in send.call_args_list))
+        self.assertTrue(all(call.kwargs["send_mode"] == "connection_warmup" for call in send.call_args_list))
         enqueue_day.assert_called_once_with(program["id"], immediate=False)
         with session_scope() as session:
             current = session.get(ConnectionWarmupProgram, program["id"])
@@ -282,12 +320,12 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
         self.assertEqual(restarted["run_number"], 2)
         with patch.object(warmup, "_enqueue_delivery", return_value="message-task"):
             scheduled = warmup.run_warmup_day({"program_id": program_id, "run_number": 2})
-        self.assertEqual(scheduled["scheduled"], 1)
+        self.assertEqual(scheduled["scheduled"], 5)
         with session_scope() as session:
             runs = session.execute(
                 select(ConnectionWarmupDelivery.run_number).order_by(ConnectionWarmupDelivery.run_number.asc())
             ).scalars().all()
-        self.assertEqual(runs, [1, 2])
+        self.assertEqual(runs, [1, 2, 2, 2, 2, 2])
 
 if __name__ == "__main__":
     unittest.main()

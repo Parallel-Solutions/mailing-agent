@@ -139,7 +139,12 @@ export function StatisticsProvider({ children }: { children: ReactNode }) {
           const jobId = String(params.campaign || '');
           if (!jobId) throw new Error('Campaign is required for attempts drilldown.');
           rows = await fetchAllPages((page) =>
-            statisticsApi.campaignAttempts(jobId, { page, per_page: 100 }),
+            statisticsApi.campaignAttempts(jobId, {
+              page,
+              per_page: 100,
+              period_from: params.period_from,
+              period_to: params.period_to,
+            }),
           );
           truncated = rows.length >= 2000;
         } else if (config.source === 'reports') {

@@ -54,6 +54,35 @@ ALLOWED_CAMPAIGN_TRANSITIONS: dict[str, frozenset[str]] = {
 class CampaignStateConflict(ValueError):
     """The requested lifecycle action conflicts with the persisted campaign state."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        campaign_id: str | None = None,
+        status: str | None = None,
+        code: str = "campaign_state_conflict",
+        hint: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.campaign_id = campaign_id
+        self.status = status
+        self.code = code
+        self.hint = hint
+
+    def as_detail(self) -> dict[str, str]:
+        detail = {
+            "code": self.code,
+            "title": "Campaign state conflict",
+            "message": str(self),
+        }
+        if self.hint:
+            detail["hint"] = self.hint
+        if self.campaign_id:
+            detail["campaign_id"] = self.campaign_id
+        if self.status:
+            detail["campaign_status"] = self.status
+        return detail
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)

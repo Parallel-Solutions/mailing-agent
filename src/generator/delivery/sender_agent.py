@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from email.message import EmailMessage
+from email.policy import SMTP as SMTP_POLICY
+from email.utils import format_datetime, make_msgid
 from html import escape
 from pathlib import Path
 from time import perf_counter, sleep
@@ -2696,11 +2698,18 @@ def _send_via_smtp(
         body_override=body_override,
         sender_email=effective_sender_email,
     )
+    if "Date" not in message:
+        message["Date"] = format_datetime(datetime.now().astimezone())
+    message_id = message.get("Message-ID")
+    if not message_id:
+        message_id = make_msgid(domain=credentials.email.rpartition("@")[2] or None)
+        message["Message-ID"] = message_id
+    raw_message = message.as_bytes(policy=SMTP_POLICY)
 
     try:
         server = _open_smtp_connection(credentials)
         try:
-            server.send_message(message)
+            server.sendmail(credentials.email, [recipient], raw_message)
         finally:
             try:
                 server.quit()
@@ -2715,6 +2724,27 @@ def _send_via_smtp(
         raise RuntimeError(humanize_smtp_error(exc)) from exc
     except smtplib.SMTPException as exc:
         raise RuntimeError(humanize_smtp_error(exc)) from exc
+    if credentials.mailbox_id and owner_username:
+        try:
+            from src.generator.delivery.imap_sent import archive_sent_copy
+
+            result = archive_sent_copy(
+                mailbox_id=credentials.mailbox_id,
+                owner_username=owner_username,
+                recipient=recipient,
+                raw_message=raw_message,
+                message_id=message_id,
+            )
+            if result.status == "failed":
+                return result.error
+        except Exception:
+            logger.exception(
+                "SMTP message was accepted, but its IMAP sent copy could not be archived",
+                mailbox_id=credentials.mailbox_id,
+                message_id=message_id,
+            )
+            return "SMTP-отправка выполнена, но копию не удалось сохранить через IMAP."
+        return None
     return _save_sent_copy(message)
 
 

@@ -210,6 +210,84 @@ class StatisticsAccessTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    def test_campaign_statistics_endpoints_forward_period(self) -> None:
+        owners = {"job-alice": "alice"}
+        with (
+            patch(
+                "src.web.statistics_router.authorize_job_access",
+                side_effect=_authorize_for(owners),
+            ),
+            patch(
+                "src.web.statistics_router.build_campaign_analytics",
+                return_value={"job_id": "job-alice"},
+            ) as analytics_builder,
+            patch(
+                "src.web.statistics_router.build_campaign_attempts",
+                return_value={"items": [], "summary": {}, "pagination": {}},
+            ) as attempts_builder,
+            patch(
+                "src.web.statistics_router.build_campaign_full_analytics",
+                return_value={"job_id": "job-alice"},
+            ) as full_builder,
+        ):
+            client = _make_client(Principal("alice", "tenant-a", "user"))
+            query = "period_from=2026-05-01&period_to=2026-05-03"
+            analytics_response = client.get(
+                f"/api/sender/campaign-analytics/job-alice?{query}"
+            )
+            attempts_response = client.get(
+                f"/api/sender/campaign-attempts/job-alice?{query}&page=2&per_page=10"
+            )
+            full_response = client.get(
+                f"/api/sender/campaign-full-analytics/job-alice?{query}"
+            )
+
+        self.assertEqual(analytics_response.status_code, 200)
+        self.assertEqual(attempts_response.status_code, 200)
+        self.assertEqual(full_response.status_code, 200)
+        analytics_builder.assert_called_once_with(
+            "job-alice",
+            refresh=False,
+            period_from="2026-05-01",
+            period_to="2026-05-03",
+        )
+        attempts_builder.assert_called_once_with(
+            "job-alice",
+            page=2,
+            per_page=10,
+            period_from="2026-05-01",
+            period_to="2026-05-03",
+        )
+        full_builder.assert_called_once_with(
+            "job-alice",
+            refresh=False,
+            period_from="2026-05-01",
+            period_to="2026-05-03",
+            delivery_page=1,
+            sent_log_page=1,
+            attempts_page=1,
+            documents_page=1,
+            documents_q="",
+            per_page=50,
+        )
+
+    def test_reversed_campaign_statistics_period_returns_422(self) -> None:
+        owners = {"job-alice": "alice"}
+        with (
+            patch(
+                "src.web.statistics_router.authorize_job_access",
+                side_effect=_authorize_for(owners),
+            ),
+            patch("src.web.statistics_router.build_campaign_analytics") as builder,
+        ):
+            response = _make_client(Principal("alice", "tenant-a", "user")).get(
+                "/api/sender/campaign-analytics/job-alice"
+                "?period_from=2026-05-04&period_to=2026-05-03"
+            )
+
+        self.assertEqual(response.status_code, 422)
+        builder.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

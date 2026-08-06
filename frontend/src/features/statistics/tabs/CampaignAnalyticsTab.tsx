@@ -19,10 +19,18 @@ export function CampaignAnalyticsTab() {
   const jobId = filters.campaign || '';
 
   const query = useQuery({
-    queryKey: ['stats-campaign-analytics', jobId, refreshNonce],
+    queryKey: [
+      'stats-campaign-analytics',
+      jobId,
+      filters.period_from,
+      filters.period_to,
+      refreshNonce,
+    ],
     enabled: Boolean(jobId),
     queryFn: () =>
       statisticsApi.campaignAnalytics(jobId, {
+        period_from: filters.period_from || undefined,
+        period_to: filters.period_to || undefined,
         refresh: refreshNonce > 0 ? true : undefined,
       }),
   });

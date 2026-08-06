@@ -84,9 +84,10 @@ test.describe('Statistics page @smoke', () => {
     await page.goto('/?tab=campaign-analytics', { waitUntil: 'domcontentloaded' });
     const campaignFilter = page.getByTestId('statistics-campaign-filter');
     await campaignFilter.click();
-    const firstCampaign = page
-      .locator('.ant-select-dropdown:visible .ant-select-item-option')
-      .first();
+    const campaignOptions = page.locator('.ant-select-dropdown:visible .ant-select-item-option');
+    const firstCampaign = campaignOptions.first();
+    await expect(firstCampaign).toBeVisible();
+    const optionCount = await campaignOptions.count();
     const campaignName = await firstCampaign
       .locator('.ant-select-item-option-content')
       .innerText();
@@ -94,11 +95,9 @@ test.describe('Statistics page @smoke', () => {
 
     await expect(page).toHaveURL(/campaign=/);
     await campaignFilter.click();
-    await expect(
-      page
-        .locator('.ant-select-dropdown:visible .ant-select-item-option')
-        .filter({ hasText: campaignName }),
-    ).toBeVisible();
+    await expect(campaignOptions).toHaveCount(optionCount);
+    const selectedCampaign = page.locator('.ant-select-dropdown:visible .ant-select-item-option-selected');
+    await expect(selectedCampaign.locator('.ant-select-item-option-content')).toHaveText(campaignName);
     await page.keyboard.press('Escape');
 
     await campaignFilter.hover();

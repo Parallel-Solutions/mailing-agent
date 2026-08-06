@@ -1,7 +1,7 @@
 import { ProCard } from '@ant-design/pro-components';
 import { Alert, App, Button, Progress, Space, Table, Tabs, Tag, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { campaignsApi } from '@/api/campaigns';
 import {
   campaignProgressLabel,
@@ -20,6 +20,7 @@ export function CampaignDetailPage() {
   const { searchParams, pushParams } = useUrlNavigation();
   const tab = readEnumParam(searchParams, 'tab', CAMPAIGN_DETAIL_TABS, 'overview');
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const campaignQuery = useQuery({
@@ -86,6 +87,14 @@ export function CampaignDetailPage() {
       invalidate();
     },
   });
+  const duplicate = useMutation({
+    mutationFn: () => campaignsApi.duplicate(id),
+    onSuccess: (copy) => {
+      message.success('Копия создана');
+      navigate(`/campaigns/new?id=${copy.id}`);
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
 
   return (
     <div>
@@ -95,6 +104,11 @@ export function CampaignDetailPage() {
         </Typography.Title>
         <Tag>{statusLabel(camp?.status)}</Tag>
         {canCampaignAction(camp, 'edit') ? <Link to={`/campaigns/new?id=${id}`}>Редактировать</Link> : null}
+        {canCampaignAction(camp, 'duplicate') ? (
+          <Button loading={duplicate.isPending} onClick={() => duplicate.mutate()}>
+            Создать копию
+          </Button>
+        ) : null}
         {canCampaignAction(camp, 'edit') ? <Link to={`/campaigns/${id}/chain`}>Настроить цепочку</Link> : null}
         {canCampaignAction(camp, 'resume') ? (
           <Button loading={resume.isPending} onClick={() => resume.mutate()}>

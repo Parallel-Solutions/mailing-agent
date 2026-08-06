@@ -6,7 +6,8 @@ import type { Template } from '@/api/types';
 export function AttachmentOutputFormatField({ template }: { template: Template }) {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
-  const savedValue = template.attachment_output_format || 'original';
+  const isPptx = template.version?.filename?.toLowerCase().endsWith('.pptx') ?? false;
+  const savedValue = isPptx ? 'original' : template.attachment_output_format || 'original';
   const saveMutation = useMutation({
     mutationFn: (value: 'original' | 'pdf') =>
       templatesApi.save(template.id, { attachment_output_format: value }),
@@ -26,7 +27,7 @@ export function AttachmentOutputFormatField({ template }: { template: Template }
       <Select
         style={{ width: '100%', marginTop: 8 }}
         value={savedValue}
-        disabled={saveMutation.isPending}
+        disabled={saveMutation.isPending || isPptx}
         options={[
           { value: 'original', label: 'Нет' },
           { value: 'pdf', label: 'PDF' },
@@ -37,7 +38,9 @@ export function AttachmentOutputFormatField({ template }: { template: Template }
         type="secondary"
         style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
       >
-        При выборе PDF в цепочку и предпросмотр попадёт только сконвертированный файл.
+        {isPptx
+          ? 'PPTX отправляется оригиналом; текстовые замечания не блокируют отправку.'
+          : 'При выборе PDF в цепочку и предпросмотр попадёт только сконвертированный файл.'}
       </Typography.Paragraph>
     </Card>
   );

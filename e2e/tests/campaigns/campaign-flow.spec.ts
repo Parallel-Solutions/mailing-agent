@@ -127,6 +127,25 @@ test.describe('Campaign creation and schedule', () => {
     );
     expect(msg.Subject).toMatch(/Mailpit subject/i);
 
+    const createRequests: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (request.method() === 'POST' && url.pathname === '/api/v1/campaigns') {
+        createRequests.push(request.url());
+      }
+    });
+
+    await page.locator('a[href="/campaigns/new"]').click();
+    await expect(page).toHaveURL(/id=([0-9a-f-]{36})/i, { timeout: 30_000 });
+    const nextCampaignId = page.url().match(/id=([0-9a-f-]{36})/i)?.[1];
+    expect(nextCampaignId).toBeTruthy();
+    expect(nextCampaignId).not.toBe(campaignId);
+    expect(createRequests).toHaveLength(1);
+
+    const nextCampaign = await page.request.get(`/api/v1/campaigns/${nextCampaignId}`);
+    expect(nextCampaign.ok(), await nextCampaign.text()).toBeTruthy();
+    expect((await nextCampaign.json()).result.status).toBe('draft');
+
     guard.assertClean('mailpit send');
   });
 });

@@ -216,7 +216,7 @@ export type DocumentLayoutReviewItem = {
   active_version_id: string;
   template_name: string;
   filename: string;
-  status: 'candidate' | 'already_applied' | 'skipped' | 'error';
+  status: 'candidate' | 'already_applied' | 'preview_only' | 'skipped' | 'error';
   message: string;
   changes: string[];
   before_image?: string;
@@ -533,6 +533,14 @@ export type DeliveryConnection = {
   last_error?: string | null;
   use_ssl?: boolean | null;
   use_starttls?: boolean | null;
+  save_sent_copy?: boolean;
+  imap_host?: string;
+  imap_port?: number | null;
+  imap_use_ssl?: boolean | null;
+  imap_use_starttls?: boolean | null;
+  imap_username?: string;
+  imap_sent_folder?: string;
+  imap_password_configured?: boolean;
   has_secret?: boolean;
   max_per_hour?: number;
   max_per_day?: number;
@@ -593,6 +601,10 @@ export type ConnectionWarmupCheck = {
 export type ConnectionWarmupProgram = {
   id: string;
   connection_id: string;
+  smtp_connection_id: string;
+  smtp_connection_email: string;
+  smtp_connection_status: string;
+  sending_transport: 'smtp';
   status: 'draft' | 'running' | 'paused' | 'completed' | 'blocked' | 'cancelled';
   timezone: string;
   daily_start_time: string;

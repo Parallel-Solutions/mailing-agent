@@ -15,6 +15,7 @@ from src.campaigns.substitution_engine import (
 from src.campaigns.text_local_review import review_email_text
 from src.campaigns.variable_match_service import render_template_text
 from src.infra.models import Campaign, CampaignRecipient
+from src.utils.logger import logger
 
 _LANGUAGE_KINDS = frozenset({"punctuation", "grammar", "case"})
 _CASE_FIELD_ALIASES: dict[str, frozenset[str]] = {
@@ -242,6 +243,9 @@ def _append_local_language_issues(
         )
 
 
+_CASE_AGENT_UNAVAILABLE_MESSAGE = "Автоматическая проверка падежей недоступна; это не мешает отправке."
+
+
 def _append_case_issues(
     issues: list[dict[str, Any]],
     *,
@@ -262,9 +266,41 @@ def _append_case_issues(
     if not relevant_fields:
         return
 
-    row = recipient_row(recipient)
-    context = build_document_context(row, outgoing_number=recipient.row_index or 1, work_type=campaign.work_type or None)
-    result = run_case_validation_agent(row, context)
+    try:
+        row = recipient_row(recipient)
+        context = build_document_context(
+            row, outgoing_number=recipient.row_index or 1, work_type=campaign.work_type or None
+        )
+        result = run_case_validation_agent(row, context)
+    except Exception as exc:
+        logger.warning(
+            "campaign_template_case_agent_failed",
+            template_id=template_id,
+            error=str(exc),
+        )
+        issues.append(
+            _issue_dict(
+                template_id=template_id,
+                template_name=template_name,
+                field="context",
+                kind="case",
+                severity="warning",
+                fragment="",
+                message=_CASE_AGENT_UNAVAILABLE_MESSAGE,
+                source="case_agent",
+                blocking=False,
+            )
+        )
+        return
+
+    agent_error = result.get("error")
+    if agent_error:
+        logger.warning(
+            "campaign_template_case_agent_failed",
+            template_id=template_id,
+            error=agent_error,
+        )
+
     for item in result.get("items") or []:
         if not isinstance(item, dict):
             continue
@@ -274,7 +310,11 @@ def _append_case_issues(
         field_name = str(item.get("field") or "context")
         if field_name not in relevant_fields:
             continue
-        comment = str(item.get("comment") or "Возможная ошибка падежа").strip()
+        comment = (
+            _CASE_AGENT_UNAVAILABLE_MESSAGE
+            if agent_error
+            else str(item.get("comment") or "Возможная ошибка падежа").strip()
+        )
         corrected = str(item.get("corrected_value") or "").strip()
         generated = str(item.get("generated_value") or "").strip()
         if (
@@ -316,7 +356,28 @@ def _append_ai_issues(
     except ImportError:
         return
 
-    ai_items = _run_ai_review(blocks, ai_enabled=True)
+    try:
+        ai_items = _run_ai_review(blocks, ai_enabled=True)
+    except Exception as exc:
+        logger.warning(
+            "campaign_template_ai_review_failed",
+            template_id=template_id,
+            error=str(exc),
+        )
+        issues.append(
+            _issue_dict(
+                template_id=template_id,
+                template_name=template_name,
+                field="review",
+                kind="review",
+                severity="warning",
+                fragment="",
+                message="Автоматическая проверка текста недоступна; это не мешает отправке.",
+                source="ai",
+                blocking=False,
+            )
+        )
+        return
     for item in ai_items:
         severity = str(item.severity or "warning")
         if severity not in {"error", "warning", "info"}:
@@ -466,10 +527,16 @@ def review_rendered_template(
     return issues
 
 
-def _promote_deep_blocking_issue(issue: dict[str, Any]) -> None:
+def _promote_deep_blocking_issue(
+    issue: dict[str, Any], *, advisory_only: bool = False
+) -> None:
     kind = str(issue.get("kind") or "")
     suggestion = str(issue.get("suggestion") or "").strip()
     source = str(issue.get("source") or "local")
+    if advisory_only and kind in _LANGUAGE_KINDS:
+        issue["severity"] = "warning"
+        issue["blocking"] = False
+        return
     if issue.get("blocking") is True:
         issue["severity"] = "error"
         return
@@ -485,6 +552,9 @@ def _promote_deep_blocking_issue(issue: dict[str, Any]) -> None:
         issue["blocking"] = True
 
 
+_MAX_REVIEW_RECIPIENTS = 50
+
+
 def review_campaign_templates(
     campaign: Campaign,
     *,
@@ -498,6 +568,15 @@ def review_campaign_templates(
     recipients = _validation_recipients(campaign)
     if not recipients:
         return []
+
+    total_recipients = len(recipients)
+    truncated = total_recipients > _MAX_REVIEW_RECIPIENTS
+    if truncated:
+        # Rendering + local-language-checking every recipient is O(recipients) and,
+        # for large lists (thousands), can turn a "quick" validation into a
+        # multi-minute request. A bounded, deterministic (row_index-ordered) sample
+        # is enough to surface template-level defects without that cost.
+        recipients = recipients[:_MAX_REVIEW_RECIPIENTS]
 
     all_issues: list[dict[str, Any]] = []
     for template_info in _collect_templates_for_validation(campaign):
@@ -549,8 +628,8 @@ def review_campaign_templates(
                 continue
             seen_rendered.add(rendered_signature)
 
-            run_deep = bool(deep and not advisory_done)
-            run_advisory = bool(advisory and not advisory_done)
+            run_deep = bool(deep and not advisory_done and template_kind != "document")
+            run_advisory = bool(advisory and not advisory_done and template_kind != "document")
             rendered_issues = review_rendered_template(
                 template_id=template_id,
                 template_name=template_name,
@@ -573,10 +652,30 @@ def review_campaign_templates(
                 advisory_done = True
             for issue in rendered_issues:
                 if deep:
-                    _promote_deep_blocking_issue(issue)
+                    _promote_deep_blocking_issue(
+                        issue, advisory_only=template_kind == "document"
+                    )
                 issue.setdefault("recipient_id", str(recipient.id))
                 issue.setdefault("recipient_row_index", int(recipient.row_index or 0))
             all_issues.extend(rendered_issues)
+
+    if truncated:
+        all_issues.append(
+            _issue_dict(
+                template_id=None,
+                template_name="",
+                field="review",
+                kind="review",
+                severity="warning",
+                fragment="",
+                message=(
+                    f"Проверка текста выполнена по выборке из {_MAX_REVIEW_RECIPIENTS} "
+                    f"из {total_recipients} получателей — это не мешает отправке."
+                ),
+                source="local",
+                blocking=False,
+            )
+        )
     return all_issues
 
 

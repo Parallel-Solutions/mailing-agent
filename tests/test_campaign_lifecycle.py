@@ -135,14 +135,15 @@ class CampaignLifecycleTests(unittest.TestCase):
             campaign.status = "completed_with_errors"
             campaign.total_count = 1
             campaign.completed_at = datetime.now(timezone.utc)
-            session.add(
-                CampaignRecipient(
-                    campaign_id=campaign_id,
-                    row_index=0,
-                    email="failed@example.com",
-                    send_status="failed",
-                )
+            recipient = CampaignRecipient(
+                campaign_id=campaign_id,
+                row_index=0,
+                email="failed@example.com",
+                send_status="failed",
             )
+            session.add(recipient)
+            session.flush()
+            recipient_id = int(recipient.id)
 
         loaded = self.client.get(f"/api/v1/campaigns/{campaign_id}")
         self.assertEqual(loaded.status_code, 200, loaded.text)
@@ -152,9 +153,46 @@ class CampaignLifecycleTests(unittest.TestCase):
         self.assertNotIn("pause", payload["allowed_actions"])
         self.assertNotIn("cancel", payload["allowed_actions"])
 
-        for action in ("launch", "pause", "resume", "cancel"):
+        launch = self.client.post(f"/api/v1/campaigns/{campaign_id}/launch")
+        self.assertEqual(launch.status_code, 409, launch.text)
+        launch_detail = launch.json()["detail"]
+        self.assertEqual(launch_detail["code"], "campaign_not_draft")
+        self.assertEqual(launch_detail["campaign_id"], campaign_id)
+        self.assertEqual(launch_detail["campaign_status"], "completed_with_errors")
+
+        for action in ("pause", "resume", "cancel"):
             response = self.client.post(f"/api/v1/campaigns/{campaign_id}/{action}")
             self.assertEqual(response.status_code, 409, (action, response.text))
+
+        mutation_responses = (
+            self.client.patch(
+                f"/api/v1/campaigns/{campaign_id}",
+                json={"name": "Must not change"},
+            ),
+            self.client.put(
+                f"/api/v1/campaigns/{campaign_id}/schedule",
+                json={"batch_size": 99},
+            ),
+            self.client.patch(
+                f"/api/v1/campaigns/{campaign_id}/recipients/{recipient_id}",
+                json={"email": "changed@example.com"},
+            ),
+            self.client.post(
+                f"/api/v1/campaigns/{campaign_id}/recipients/delete",
+                json={"ids": [recipient_id]},
+            ),
+        )
+        for response in mutation_responses:
+            self.assertEqual(response.status_code, 409, response.text)
+            detail = response.json()["detail"]
+            self.assertEqual(detail["code"], "campaign_not_editable")
+            self.assertEqual(detail["campaign_id"], campaign_id)
+            self.assertEqual(detail["campaign_status"], "completed_with_errors")
+
+        unchanged = self.client.get(f"/api/v1/campaigns/{campaign_id}")
+        self.assertEqual(unchanged.json()["result"]["name"], "Lifecycle")
+        recipients = self.client.get(f"/api/v1/campaigns/{campaign_id}/recipients")
+        self.assertEqual(recipients.json()["result"]["items"][0]["email"], "failed@example.com")
 
     def test_archive_draft_hides_campaign_from_list(self) -> None:
         campaign_id = self._create_campaign()
@@ -171,6 +209,32 @@ class CampaignLifecycleTests(unittest.TestCase):
         self.assertEqual(campaigns.status_code, 200, campaigns.text)
         campaign_ids = {item["id"] for item in campaigns.json()["result"]["items"]}
         self.assertNotIn(campaign_id, campaign_ids)
+
+    def test_campaign_list_scopes_separate_drafts_from_launched_campaigns(self) -> None:
+        draft_id = self._create_campaign()
+        launched_id = self._create_campaign()
+        with session_scope() as session:
+            launched_campaign = session.get(Campaign, launched_id)
+            assert launched_campaign is not None
+            launched_campaign.status = "scheduled"
+            launched_campaign.launched_at = datetime.now(timezone.utc)
+
+        all_campaigns = self.client.get("/api/v1/campaigns")
+        self.assertEqual(all_campaigns.status_code, 200, all_campaigns.text)
+        self.assertEqual(all_campaigns.json()["result"]["total"], 2)
+
+        drafts = self.client.get("/api/v1/campaigns?scope=draft")
+        self.assertEqual(drafts.status_code, 200, drafts.text)
+        self.assertEqual(drafts.json()["result"]["total"], 1)
+        self.assertEqual(drafts.json()["result"]["items"][0]["id"], draft_id)
+
+        launched = self.client.get("/api/v1/campaigns?scope=launched")
+        self.assertEqual(launched.status_code, 200, launched.text)
+        self.assertEqual(launched.json()["result"]["total"], 1)
+        self.assertEqual(launched.json()["result"]["items"][0]["id"], launched_id)
+
+        invalid = self.client.get("/api/v1/campaigns?scope=unknown")
+        self.assertEqual(invalid.status_code, 422, invalid.text)
 
     def test_archive_rejects_active_campaign(self) -> None:
         campaign_id = self._create_campaign()

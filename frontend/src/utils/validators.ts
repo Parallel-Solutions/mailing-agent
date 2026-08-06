@@ -16,15 +16,11 @@ export function validateCampaignBasics(input: {
   };
 }): string[] {
   const errors: string[] = [];
-  const companyId = (input.company_id || input.draft_payload?.company_id || '').trim();
-  const workTypeId = (input.company_work_type_id || input.draft_payload?.company_work_type_id || '').trim();
-  const scenario = (input.send_scenario || 'email_chain').trim();
+  const scenario = (input.send_scenario || 'consent_then_materials').trim();
   if (!(input.name || '').trim()) errors.push('Укажите название рассылки');
   if (scenario === 'email_chain' && !(input.email_chain_id || '').trim()) {
     errors.push('Выберите цепочку писем');
   }
-  if (!companyId) errors.push('Выберите компанию');
-  if (!workTypeId) errors.push('Выберите вид работ');
   return errors;
 }
 

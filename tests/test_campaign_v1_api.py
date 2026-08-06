@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+import zipfile
 from io import BytesIO
 from pathlib import Path
 
@@ -192,6 +193,117 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(schedule.status_code, 200)
         self.assertEqual(schedule.json()["result"]["batch_size"], 25)
         self.assertEqual(schedule.json()["result"]["interval_seconds"], 300)
+
+    def test_duplicate_completed_campaign_creates_complete_draft(self) -> None:
+        created = self.client.post(
+            "/api/v1/campaigns",
+            json={"name": "Completed source", "mail_subject": "Original subject"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        campaign_id = created.json()["result"]["id"]
+
+        template = self.client.post(
+            "/api/v1/templates",
+            json={
+                "name": "Duplicate email",
+                "template_type": "email",
+                "subject": "Template subject",
+                "body_html": "<p>Template body</p>",
+                "body_text": "Template body",
+            },
+        )
+        self.assertEqual(template.status_code, 200, template.text)
+        template_id = template.json()["result"]["id"]
+
+        audience = self.client.post(
+            "/api/v1/audiences",
+            json={"name": "Duplicate audience"},
+        )
+        self.assertEqual(audience.status_code, 200, audience.text)
+        audience_id = audience.json()["result"]["id"]
+
+        chain = self.client.post(
+            "/api/v1/chains",
+            json={"name": "Duplicate chain"},
+        )
+        self.assertEqual(chain.status_code, 200, chain.text)
+        chain_id = chain.json()["result"]["id"]
+
+        patched = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={
+                "description": "Preserve me",
+                "email_template_id": template_id,
+                "audience_id": audience_id,
+                "email_chain_id": chain_id,
+                "send_scenario": "email_chain",
+                "draft_payload": {"email_body": "<p>Draft body</p>"},
+            },
+        )
+        self.assertEqual(patched.status_code, 200, patched.text)
+
+        recipients = self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/recipients",
+            json={
+                "recipients": [
+                    {"company": "A", "contact_name": "A", "email": "a@example.com"},
+                    {"company": "B", "contact_name": "B", "email": "b@example.com"},
+                ]
+            },
+        )
+        self.assertEqual(recipients.status_code, 200, recipients.text)
+
+        schedule = self.client.put(
+            f"/api/v1/campaigns/{campaign_id}/schedule",
+            json={
+                "send_immediately": False,
+                "start_at": "2030-08-05T12:00:00+00:00",
+                "timezone": "Europe/Moscow",
+                "weekdays": [1, 3],
+                "time_windows": [{"start": "10:00", "end": "16:00"}],
+                "batch_size": 7,
+                "interval_seconds": 45,
+                "max_per_hour": 70,
+                "max_per_day": 700,
+                "on_error": "pause",
+                "max_retries": 5,
+            },
+        )
+        self.assertEqual(schedule.status_code, 200, schedule.text)
+
+        from src.infra.db import session_scope
+        from src.infra.models import Campaign
+
+        with session_scope() as session:
+            source = session.get(Campaign, campaign_id)
+            assert source is not None
+            source.status = "completed"
+
+        duplicated = self.client.post(f"/api/v1/campaigns/{campaign_id}/duplicate")
+        self.assertEqual(duplicated.status_code, 200, duplicated.text)
+        copy = duplicated.json()["result"]
+        self.assertNotEqual(copy["id"], campaign_id)
+        self.assertEqual(copy["status"], "draft")
+        self.assertEqual(copy["email_template_id"], template_id)
+        self.assertEqual(copy["audience_id"], audience_id)
+        self.assertEqual(copy["email_chain_id"], chain_id)
+        self.assertEqual(copy["draft_payload"]["email_body"], "<p>Draft body</p>")
+
+        copied_recipients = self.client.get(f"/api/v1/campaigns/{copy['id']}/recipients")
+        self.assertEqual(copied_recipients.json()["result"]["total"], 2)
+        self.assertTrue(
+            all(item["send_status"] == "pending" for item in copied_recipients.json()["result"]["items"])
+        )
+
+        copied_schedule = self.client.get(f"/api/v1/campaigns/{copy['id']}/schedule")
+        self.assertEqual(copied_schedule.status_code, 200, copied_schedule.text)
+        copied_schedule_payload = copied_schedule.json()["result"]
+        self.assertEqual(copied_schedule_payload["batch_size"], 7)
+        self.assertEqual(copied_schedule_payload["interval_seconds"], 45)
+        self.assertEqual(copied_schedule_payload["weekdays"], [1, 3])
+        self.assertEqual(copied_schedule_payload["max_per_hour"], 70)
+        self.assertEqual(copied_schedule_payload["max_per_day"], 700)
+        self.assertEqual(copied_schedule_payload["max_retries"], 5)
 
     def test_replace_recipients_twice_does_not_500(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "Reimport Campaign"})
@@ -471,9 +583,77 @@ class CampaignV1ApiTests(unittest.TestCase):
         data: bytes,
         *,
         owner_username: str | None = None,
+        file_kind: str | None = None,
     ) -> tuple[bytes, str]:
-        del data, owner_username
+        del data, owner_username, file_kind
         return (b"%PDF-1.4 delivery copy", f"{Path(filename).stem}.pdf")
+
+    def _pptx_payload(self, text: str) -> bytes:
+        slide_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:sp>
+        <p:txBody>
+          <a:p><a:r><a:t>{text}</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>"""
+        payload = BytesIO()
+        with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "[Content_Types].xml",
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+            )
+            archive.writestr(
+                "ppt/presentation.xml",
+                (
+                    '<p:presentation '
+                    'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>'
+                ),
+            )
+            archive.writestr("ppt/slides/slide1.xml", slide_xml)
+        return payload.getvalue()
+
+    def test_upload_pptx_keeps_original_delivery_and_extracts_text(self) -> None:
+        pptx_payload = self._pptx_payload("Разработка для администрация района.")
+        created = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document", "name": "Static deck"},
+            files={
+                "file": (
+                    "deck.pptx",
+                    pptx_payload,
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+            },
+        )
+
+        self.assertEqual(created.status_code, 200, created.text)
+        template = created.json()["result"]
+        self.assertEqual(template["version"]["filename"], "deck.pptx")
+        self.assertIsNone(template["version"]["rendered_pdf_filename"])
+        self.assertEqual(template["version"]["text_extraction_status"], "ready")
+        self.assertFalse(template["is_template"])
+        self.assertEqual(template["attachment_output_format"], "original")
+
+        source_download = self.client.get(f"/api/v1/templates/{template['id']}/file")
+        self.assertEqual(source_download.status_code, 200, source_download.text)
+        self.assertEqual(source_download.content, pptx_payload)
+
+        from src.campaigns import template_service
+
+        self.assertIn("Разработка", template_service._file_text("deck.pptx", pptx_payload))
+
+        rejected_pdf = self.client.patch(
+            f"/api/v1/templates/{template['id']}",
+            json={"attachment_output_format": "pdf"},
+        )
+        self.assertEqual(rejected_pdf.status_code, 400, rejected_pdf.text)
+        self.assertIn("исходном формате", rejected_pdf.text)
 
     @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_upload_file_template_and_download_active_version(self, mock_build_pdf) -> None:
@@ -597,6 +777,8 @@ class CampaignV1ApiTests(unittest.TestCase):
         mock_build_pdf.assert_called_once_with(
             "Шаблон письма Администрациям.docx",
             source_payload.getvalue(),
+            owner_username=self.username,
+            file_kind=None,
         )
 
     def test_upload_conversion_error_returns_structured_422(self) -> None:
@@ -688,6 +870,8 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(template["version"]["filename"], "КП_СТП_районы (1) (1).docx")
         self.assertEqual(template["version"]["rendered_pdf_filename"], "КП_СТП_районы.pdf")
         self.assertEqual(template["name"], "КП СТП районы")
+        self.assertEqual(template["version"]["editor_state"]["document_file_kind"], "kp")
+        self.assertEqual(mock_build_pdf.call_args.kwargs["file_kind"], "kp")
 
     @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_patch_delivery_filename_without_new_version(self, mock_build_pdf) -> None:

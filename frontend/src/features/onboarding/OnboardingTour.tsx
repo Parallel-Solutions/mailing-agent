@@ -39,15 +39,20 @@ import {
   type OnboardingChapterId,
 } from './steps';
 import {
-  findVisibleOnboardingTarget,
   isOnboardingRouteActive,
 } from './targeting';
+import { useOnboardingTargetRect } from './useOnboardingTargetRect';
 import './OnboardingTour.css';
 
 const queryKey = ['onboarding'];
 const TARGET_WAIT_TIMEOUT_MS = 3_000;
-const TARGET_STABLE_FRAME_COUNT = 4;
+const TARGET_STABLE_FRAME_COUNT = 2;
 const ONBOARDING_CHAPTER_STORAGE_KEY = 'campaignflow:onboarding-chapter';
+
+type OnboardingMutationRequest = {
+  payload: OnboardingUpdate;
+  epoch: number;
+};
 
 function readViewportSize(): Size {
   const visualViewport = window.visualViewport;
@@ -80,18 +85,17 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
   const queryClient = useQueryClient();
   const panelRef = useRef<HTMLElement | null>(null);
   const navigationRef = useRef<HTMLElement | null>(null);
-  const targetRef = useRef<HTMLElement | null>(null);
+  const stepEpochRef = useRef(0);
   const initialized = useRef(false);
   const versionRestarted = useRef(false);
   const [current, setCurrent] = useState(0);
+  const [stepEpoch, setStepEpoch] = useState(0);
   const [activeChapterId, setActiveChapterId] = useState<OnboardingChapterId>(
     () => chapterId ?? readStoredChapter() ?? 'general',
   );
   const [locallyHidden, setLocallyHidden] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [panelReady, setPanelReady] = useState(false);
-  const [targetBox, setTargetBox] = useState<Box | null>(null);
-  const [targetVisible, setTargetVisible] = useState(false);
   const [panelSize, setPanelSize] = useState<Size>({ width: 370, height: 170 });
   const [navigationBox, setNavigationBox] = useState<Box | null>(null);
   const [viewport, setViewport] = useState<Size>(readViewportSize);
@@ -103,9 +107,11 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
   });
 
   const updateMutation = useMutation({
-    mutationFn: (payload: OnboardingUpdate) => onboardingApi.update(payload),
-    onSuccess: (nextState) =>
-      queryClient.setQueryData<OnboardingState>(queryKey, nextState),
+    mutationFn: ({ payload }: OnboardingMutationRequest) => onboardingApi.update(payload),
+    onSuccess: (nextState, request) => {
+      if (request.epoch !== stepEpochRef.current) return;
+      queryClient.setQueryData<OnboardingState>(queryKey, nextState);
+    },
   });
 
   const state = onboardingQuery.data;
@@ -122,6 +128,24 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
     0,
     chapterSteps.findIndex((step) => step.id === currentStep?.id),
   );
+  const routeReady = Boolean(
+    currentStep && isOnboardingRouteActive(currentStep.route, location),
+  );
+  const targetGeometry = useOnboardingTargetRect(currentStep?.target, {
+    enabled: overlayVisible && routeReady,
+    epoch: stepEpoch,
+  });
+  const targetGeometryRef = useRef(targetGeometry);
+  targetGeometryRef.current = targetGeometry;
+  const targetBox = useMemo<Box | null>(() => {
+    if (
+      targetGeometry.epoch !== stepEpoch
+      || !targetGeometry.stable
+      || !targetGeometry.rect
+    ) return null;
+    return toBox(targetGeometry.rect);
+  }, [stepEpoch, targetGeometry]);
+  const targetVisible = Boolean(targetBox);
 
   const panelPosition = calculatePanelPosition(
     targetVisible ? targetBox : null,
@@ -151,6 +175,13 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
       return;
     }
 
+    let mutationEpoch = stepEpochRef.current;
+    if (bounded !== current) {
+      mutationEpoch += 1;
+      stepEpochRef.current = mutationEpoch;
+      setStepEpoch(mutationEpoch);
+    }
+
     setPanelReady(false);
     setCurrent(bounded);
     if (!isOnboardingRouteActive(step.route, location)) {
@@ -169,9 +200,12 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
           ? Array.from(new Set([...completedSteps, previous.id]))
           : completedSteps;
       updateMutation.mutate({
-        status: 'active',
-        current_step: bounded,
-        completed_steps: nextCompleted,
+        epoch: mutationEpoch,
+        payload: {
+          status: 'active',
+          current_step: bounded,
+          completed_steps: nextCompleted,
+        },
       });
     }
   }, [
@@ -193,7 +227,9 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
   useEffect(() => {
     if (!state || state.version === ONBOARDING_VERSION || versionRestarted.current) return;
     versionRestarted.current = true;
+    const epoch = stepEpochRef.current;
     void onboardingApi.restart().then((nextState) => {
+      if (epoch !== stepEpochRef.current) return;
       queryClient.setQueryData<OnboardingState>(queryKey, nextState);
       window.sessionStorage.setItem(ONBOARDING_CHAPTER_STORAGE_KEY, 'general');
       setActiveChapterId('general');
@@ -264,10 +300,7 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
 
   useLayoutEffect(() => {
     setPanelReady(false);
-    setTargetVisible(false);
-    setTargetBox(null);
     setNavigationBox(null);
-    targetRef.current = null;
 
     if (!overlayVisible) {
       return;
@@ -282,8 +315,6 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
     let animationFrame = 0;
     let stableFrames = 0;
     let ready = false;
-    let targetIsVisible = false;
-    let lastTargetBox: Box | null = null;
     let lastPanelSize: Size = { width: 0, height: 0 };
     let lastViewport: Size = { width: 0, height: 0 };
     let lastNavigationBox: Box | null = null;
@@ -296,11 +327,6 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
       setPanelReady(next);
     };
 
-    const updateTargetVisibility = (next: boolean) => {
-      if (targetIsVisible === next) return;
-      targetIsVisible = next;
-      setTargetVisible(next);
-    };
 
     const scheduleNextFrame = () => {
       animationFrame = window.requestAnimationFrame(trackGeometry);
@@ -348,25 +374,26 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
       }
 
       if (!step.target) {
-        updateTargetVisibility(false);
         stableFrames = geometryChanged ? 0 : stableFrames + 1;
         if (stableFrames >= TARGET_STABLE_FRAME_COUNT) updateReady(true);
         scheduleNextFrame();
         return;
       }
 
-      let target = targetRef.current;
-      if (!target?.isConnected) {
-        target = findVisibleOnboardingTarget(step.target) ?? null;
-        targetRef.current = target;
-        if (target) missingSince = 0;
-      }
+      const geometry = targetGeometryRef.current;
+      const target =
+        geometry.epoch === stepEpoch && geometry.stable
+          ? geometry.target
+          : null;
+      const nextTargetBox =
+        geometry.epoch === stepEpoch
+        && geometry.stable
+        && geometry.rect
+          ? toBox(geometry.rect)
+          : null;
 
-      if (!target) {
+      if (!target || !nextTargetBox) {
         if (missingSince === 0) missingSince = Date.now();
-        lastTargetBox = null;
-        setTargetBox((previous) => previous === null ? previous : null);
-        updateTargetVisibility(false);
         stableFrames = 0;
         if (Date.now() - missingSince >= TARGET_WAIT_TIMEOUT_MS) {
           updateReady(true);
@@ -377,16 +404,7 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
         return;
       }
 
-      const nextTargetBox = toBox(target.getBoundingClientRect());
-      if (!nextTargetBox.width || !nextTargetBox.height) {
-        targetRef.current = null;
-        missingSince = Date.now();
-        updateTargetVisibility(false);
-        updateReady(false);
-        stableFrames = 0;
-        scheduleNextFrame();
-        return;
-      }
+      missingSince = 0;
 
       const mobile = nextViewport.width <= 640;
       const topInset = mobile ? MOBILE_TOP_CONTROL_INSET : TOP_CONTROL_INSET;
@@ -417,12 +435,6 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
         return;
       }
 
-      if (!sameBox(lastTargetBox, nextTargetBox)) {
-        lastTargetBox = nextTargetBox;
-        setTargetBox(nextTargetBox);
-        geometryChanged = true;
-      }
-      updateTargetVisibility(true);
 
       if (geometryChanged) {
         stableFrames = 0;
@@ -441,26 +453,33 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
       cancelled = true;
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [current, location, overlayVisible]);
+  }, [current, location, overlayVisible, stepEpoch]);
 
   const finish = useCallback(() => {
     if (finishing) return;
     setFinishing(true);
+    const epoch = stepEpochRef.current;
     updateMutation.mutate({
-      status: 'completed',
-      current_step: current,
-      completed_steps: Array.from(new Set([
-        ...completedSteps,
-        ...chapterSteps.map((step) => step.id),
-      ])),
+      epoch,
+      payload: {
+        status: 'completed',
+        current_step: current,
+        completed_steps: Array.from(new Set([
+          ...completedSteps,
+          ...chapterSteps.map((step) => step.id),
+        ])),
+      },
     }, {
       onSuccess: () => {
+        if (epoch !== stepEpochRef.current) return;
         window.sessionStorage.removeItem(ONBOARDING_CHAPTER_STORAGE_KEY);
         setActiveOnboardingStep(null);
         setLocallyHidden(true);
         setFinishing(false);
       },
-      onError: () => setFinishing(false),
+      onError: () => {
+        if (epoch === stepEpochRef.current) setFinishing(false);
+      },
     });
   }, [
     chapterSteps,
@@ -474,11 +493,19 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
     if (finishing) return;
     setActiveOnboardingStep(null);
     setLocallyHidden(true);
+    const epoch = stepEpochRef.current;
     updateMutation.mutate({
-      status: 'paused',
-      current_step: current,
-      completed_steps: completedSteps,
-    }, { onError: () => setLocallyHidden(false) });
+      epoch,
+      payload: {
+        status: 'paused',
+        current_step: current,
+        completed_steps: completedSteps,
+      },
+    }, {
+      onError: () => {
+        if (epoch === stepEpochRef.current) setLocallyHidden(false);
+      },
+    });
   }, [completedSteps, current, finishing, updateMutation]);
 
   useEffect(() => {
@@ -597,7 +624,7 @@ export function OnboardingTour({ chapterId }: OnboardingTourProps) {
       >
         <Button
           className="campaignflow-onboarding__back"
-          disabled={currentChapterIndex === 0 || finishing}
+          disabled={currentChapterIndex === 0 || !panelReady || finishing}
           onClick={() => goToChapterStep(currentChapterIndex - 1)}
         >
           Назад

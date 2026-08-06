@@ -7,32 +7,21 @@ describe('validators', () => {
     expect(isValidEmail('bad')).toBe(false);
   });
 
-  it('validates campaign basics', () => {
-    expect(validateCampaignBasics({})).toEqual(
-      expect.arrayContaining([
-        'Укажите название рассылки',
-        'Выберите цепочку писем',
-        'Выберите компанию',
-        'Выберите вид работ',
-      ]),
-    );
-    expect(validateCampaignBasics({ name: 'A' })).toEqual(
-      expect.arrayContaining(['Выберите цепочку писем', 'Выберите компанию', 'Выберите вид работ']),
-    );
+  it('validates only fields required by the launch API', () => {
+    expect(validateCampaignBasics({})).toEqual(['Укажите название рассылки']);
+    expect(validateCampaignBasics({ name: 'A' })).toEqual([]);
+    expect(
+      validateCampaignBasics({ name: 'A', send_scenario: 'email_chain' }),
+    ).toEqual(['Выберите цепочку писем']);
     expect(
       validateCampaignBasics({
         name: 'A',
-        send_scenario: 'materials_now',
-        company_id: 'company-1',
-        company_work_type_id: 'work-1',
+        send_scenario: 'email_chain',
+        email_chain_id: 'chain-1',
       }),
     ).toEqual([]);
     expect(
-      validateCampaignBasics({
-        name: 'A',
-        email_chain_id: 'chain-1',
-        draft_payload: { company_id: 'company-1', company_work_type_id: 'work-1' },
-      }),
+      validateCampaignBasics({ name: 'A', send_scenario: 'materials_now' }),
     ).toEqual([]);
   });
 

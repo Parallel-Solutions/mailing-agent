@@ -336,6 +336,14 @@ class SmtpMailbox(Base):
     oauth_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     oauth_tokens_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     smtp_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    save_sent_copy: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    imap_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    imap_port: Mapped[int] = mapped_column(Integer, nullable=False, default=993)
+    imap_use_ssl: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    imap_use_starttls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    imap_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    imap_password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imap_sent_folder: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False, default="")
     sending_key_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
@@ -371,6 +379,72 @@ class SmtpMailbox(Base):
     __table_args__ = (
         Index("idx_smtp_mailboxes_owner", "owner_username"),
         Index("idx_smtp_mailboxes_owner_default", "owner_username", "is_default"),
+    )
+
+
+class SmtpSentCopy(Base):
+    __tablename__ = "smtp_sent_copies"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    connection_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="CASCADE"), nullable=False
+    )
+    message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    folder: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    uid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("uq_smtp_sent_copies_connection_message", "connection_id", "message_id", unique=True),
+        Index("idx_smtp_sent_copies_status", "status", "updated_at"),
+    )
+
+
+class SmtpOpenTracking(Base):
+    """One stable tracking pixel identity for one logical SMTP delivery."""
+
+    __tablename__ = "smtp_open_tracking"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivery_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    connection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="SET NULL"), nullable=True
+    )
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    campaign_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=True
+    )
+    row_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    warmup_delivery_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("connection_warmup_deliveries.id", ondelete="CASCADE"), nullable=True
+    )
+    recipient: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    send_mode: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="prepared")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    open_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("uq_smtp_open_tracking_token", "token", unique=True),
+        Index("uq_smtp_open_tracking_delivery_key", "delivery_key_hash", unique=True),
+        Index("idx_smtp_open_tracking_job", "job_id", "first_opened_at"),
+        Index("idx_smtp_open_tracking_warmup", "warmup_delivery_id", "first_opened_at"),
+        Index("idx_smtp_open_tracking_provider_message", "provider_message_id"),
     )
 
 
@@ -413,6 +487,9 @@ class ConnectionWarmupProgram(Base):
         String(36), ForeignKey("smtp_mailboxes.id", ondelete="CASCADE"), nullable=False
     )
     owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    smtp_connection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="SET NULL"), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft")
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Europe/Moscow")
     daily_start_time: Mapped[str] = mapped_column(String(5), nullable=False, default="10:00")
@@ -477,6 +554,7 @@ class ConnectionWarmupDelivery(Base):
     )
     day_number: Mapped[int] = mapped_column(Integer, nullable=False)
     run_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
     task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -492,11 +570,11 @@ class ConnectionWarmupDelivery(Base):
         Index("idx_connection_warmup_delivery_task", "task_id"),
         Index("idx_connection_warmup_delivery_provider_message", "provider_message_id"),
         Index(
-            "uq_connection_warmup_delivery_recipient_day",
+            "uq_connection_warmup_delivery_sequence",
             "program_id",
-            "recipient_id",
             "run_number",
             "day_number",
+            "sequence_number",
             unique=True,
         ),
     )

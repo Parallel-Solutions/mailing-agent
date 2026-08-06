@@ -23,6 +23,7 @@ export function findVisibleOnboardingTarget(selector?: string) {
   const overlayLayers = activeOverlayLayers();
   return Array.from(document.querySelectorAll<HTMLElement>(selector)).find((element) => {
     if (!isRendered(element)) return false;
+    if (element.matches(':disabled, [aria-disabled="true"]')) return false;
     return overlayLayers.length === 0 || overlayLayers.some((layer) => layer.contains(element));
   });
 }

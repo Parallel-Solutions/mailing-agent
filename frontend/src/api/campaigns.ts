@@ -44,11 +44,18 @@ export type VariableMappingState = {
   recipient_template_variables?: TemplateVariableItem[];
 };
 
-const CAMPAIGN_VALIDATE_TIMEOUT_MS = 30_000;
+export type CampaignListScope = 'all' | 'draft' | 'launched';
 
 export const campaignsApi = {
-  list: (params?: { status?: string; q?: string; limit?: number; offset?: number }) => {
+  list: (params?: {
+    scope?: CampaignListScope;
+    status?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
     const q = new URLSearchParams();
+    if (params?.scope) q.set('scope', params.scope);
     if (params?.status) q.set('status', params.status);
     if (params?.q) q.set('q', params.q);
     if (params?.limit) q.set('limit', String(params.limit));
@@ -103,34 +110,12 @@ export const campaignsApi = {
     template_analysis_confirmed: boolean;
     mode?: string;
   }) => api.post<Record<string, unknown>>('/api/documents/start', body),
-  validate: async (id: string, opts?: { deep?: boolean; signal?: AbortSignal }) => {
+  validate: (id: string, opts?: { deep?: boolean; signal?: AbortSignal }) => {
     const suffix = opts?.deep ? '?deep=1' : '';
-    const controller = new AbortController();
-    const abortFromCaller = () => controller.abort(opts?.signal?.reason);
-    if (opts?.signal?.aborted) {
-      abortFromCaller();
-    } else {
-      opts?.signal?.addEventListener('abort', abortFromCaller, { once: true });
-    }
-    let timedOut = false;
-    const timeout = globalThis.setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, CAMPAIGN_VALIDATE_TIMEOUT_MS);
-    try {
-      return await api.get<CampaignValidateResponse>(
-        `/api/v1/campaigns/${id}/validate${suffix}`,
-        { signal: controller.signal },
-      );
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError' && timedOut) {
-        throw new Error('\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0437\u0430\u043d\u044f\u043b\u0430 \u0431\u043e\u043b\u044c\u0448\u0435 30 \u0441\u0435\u043a\u0443\u043d\u0434. \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u043e\u043f\u044b\u0442\u043a\u0443.');
-      }
-      throw error;
-    } finally {
-      opts?.signal?.removeEventListener('abort', abortFromCaller);
-      globalThis.clearTimeout(timeout);
-    }
+    return api.get<CampaignValidateResponse>(
+      `/api/v1/campaigns/${id}/validate${suffix}`,
+      { signal: opts?.signal },
+    );
   },
   autoFixValidation: (id: string) =>
     api.post<{
@@ -183,28 +168,40 @@ export const campaignsApi = {
     id: string,
     recipientId: number,
     templateId: string,
-    options?: { download?: boolean },
+    options?: { download?: boolean; preview?: boolean },
   ) => {
     const params = new URLSearchParams({
       recipient_id: String(recipientId),
       template_id: templateId,
     });
     if (options?.download) params.set('download', '1');
+    if (options?.preview) params.set('preview', '1');
     return `/api/v1/campaigns/${id}/email-chain/preview/attachment?${params.toString()}`;
   },
   fetchPreviewEmailChainAttachment: async (
     id: string,
     recipientId: number,
     templateId: string,
+    options?: { signal?: AbortSignal },
   ): Promise<Blob> => {
-    const response = await fetch(campaignsApi.previewEmailChainAttachmentUrl(id, recipientId, templateId), {
-      credentials: 'include',
-    });
+    const response = await fetch(
+      campaignsApi.previewEmailChainAttachmentUrl(id, recipientId, templateId, { preview: true }),
+      {
+        credentials: 'include',
+        signal: options?.signal,
+      },
+    );
     if (!response.ok) {
       let detail = 'Не удалось загрузить вложение';
       try {
-        const payload = (await response.json()) as { detail?: string };
-        detail = payload.detail || detail;
+        const payload = (await response.json()) as {
+          detail?: string | { user_message?: string; hint?: string };
+        };
+        if (typeof payload.detail === 'string') {
+          detail = payload.detail || detail;
+        } else if (payload.detail?.user_message) {
+          detail = [payload.detail.user_message, payload.detail.hint].filter(Boolean).join(' ');
+        }
       } catch {
         // Keep the generic message for non-JSON errors.
       }

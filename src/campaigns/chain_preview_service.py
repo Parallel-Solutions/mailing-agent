@@ -60,6 +60,8 @@ def _content_type_for_filename(filename: str) -> str:
         return "application/pdf"
     if suffix == ".docx":
         return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if suffix == ".pptx":
+        return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     if suffix in {".html", ".htm"}:
         return "text/html"
     return "application/octet-stream"
@@ -121,10 +123,11 @@ def _preview_attachments(
             resolved = resolve_cached_attachment(
                 template_id=tid,
                 recipient_id=int(recipient.id),
-                job_id=job_id,
+                job_id=str(job_id or campaign.id),
                 owner_username=owner,
                 campaign=campaign,
                 recipient=recipient,
+                strict=True,
             )
             if resolved:
                 filename, data = resolved
@@ -287,6 +290,7 @@ def resolve_preview_attachment(
     template_id: str,
     owner_username: str,
     *,
+    as_pdf: bool = False,
     visible_owners: frozenset[str] | None = None,
 ) -> tuple[str, bytes] | None:
     with session_scope() as session:
@@ -296,11 +300,27 @@ def resolve_preview_attachment(
         recipient = session.get(CampaignRecipient, int(recipient_id))
         if recipient is None or recipient.campaign_id != campaign_id:
             raise ValueError("Получатель не найден")
-        return resolve_cached_attachment(
+        resolved = resolve_cached_attachment(
             template_id=str(template_id),
             recipient_id=int(recipient_id),
-            job_id=camp.job_id,
+            job_id=str(camp.job_id or camp.id),
             owner_username=camp.owner_username,
             campaign=camp,
             recipient=recipient,
+            strict=True,
         )
+        if resolved is None or not as_pdf:
+            return resolved
+
+        filename, content = resolved
+        if Path(filename).suffix.lower() == ".pdf":
+            return filename, content
+
+        from src.campaigns import template_service
+
+        pdf_content, pdf_filename = template_service._build_document_pdf_artifact(  # noqa: SLF001
+            filename,
+            content,
+            owner_username=camp.owner_username,
+        )
+        return pdf_filename, pdf_content

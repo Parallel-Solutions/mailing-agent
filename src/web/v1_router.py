@@ -39,7 +39,7 @@ from src.campaigns.schedule_planner import plan_batches
 from src.campaigns.state import CampaignStateConflict
 from src.jobs.access import coerce_principal
 from src.security.auth import Principal
-from src.security.company_access import visible_owner_usernames
+from src.security.company_access import connection_owner_usernames, visible_owner_usernames
 from src.utils.config import settings
 from src.web.upload_validation import validate_uploaded_file
 
@@ -253,6 +253,14 @@ class ConnectionCreateBody(BaseModel):
     port: int | None = None
     use_ssl: bool | None = None
     use_starttls: bool | None = None
+    save_sent_copy: bool = True
+    imap_host: str = ""
+    imap_port: int | None = Field(default=None, ge=1, le=65535)
+    imap_use_ssl: bool | None = None
+    imap_use_starttls: bool | None = None
+    imap_username: str = ""
+    imap_password: str = ""
+    imap_sent_folder: str = ""
     make_default: bool = False
     auth_method: str = "password"
     oauth_provider: str = ""
@@ -283,6 +291,14 @@ class ConnectionUpdateBody(BaseModel):
     port: int | None = None
     use_ssl: bool | None = None
     use_starttls: bool | None = None
+    save_sent_copy: bool | None = None
+    imap_host: str | None = None
+    imap_port: int | None = Field(default=None, ge=1, le=65535)
+    imap_use_ssl: bool | None = None
+    imap_use_starttls: bool | None = None
+    imap_username: str | None = None
+    imap_password: str | None = None
+    imap_sent_folder: str | None = None
     max_per_hour: int | None = None
     max_per_day: int | None = None
     delivery_guard_enabled: bool | None = None
@@ -297,6 +313,7 @@ class ConnectionUpdateBody(BaseModel):
 
 
 class ConnectionWarmupSettingsBody(BaseModel):
+    smtp_connection_id: str | None = None
     timezone: str | None = None
     daily_start_time: str | None = None
     daily_end_time: str | None = None
@@ -322,12 +339,20 @@ def _ok(result: Any) -> dict[str, Any]:
     return {"status": "ok", "result": result}
 
 
+def _campaign_conflict(exc: CampaignStateConflict) -> HTTPException:
+    return HTTPException(status_code=409, detail=exc.as_detail())
+
+
 def _actor(principal: object) -> Principal:
     return coerce_principal(principal)
 
 
 def _visibility(actor: Principal) -> frozenset[str] | None:
     return visible_owner_usernames(actor)
+
+
+def _connection_visibility(actor: Principal) -> frozenset[str] | None:
+    return connection_owner_usernames(actor)
 
 
 def _binary_response(item: dict[str, Any], *, disposition: str) -> Response:
@@ -364,7 +389,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/connections")
     def get_connections(principal: object = Depends(check_auth)):
         actor = _actor(principal)
-        return _ok(connection_service.list_connections(actor.username, visible_owners=_visibility(actor)))
+        return _ok(connection_service.list_connections(actor.username, visible_owners=_connection_visibility(actor)))
 
     @router.post("/connections")
     def post_connection(body: ConnectionCreateBody, principal: object = Depends(check_auth)):
@@ -386,7 +411,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         try:
             return _ok(connection_service.update_connection(
                 connection_id, actor.username, body.model_dump(exclude_none=True),
-                visible_owners=_visibility(actor),
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -397,7 +422,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def delete_connection(connection_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            connection_service.delete_connection(connection_id, actor.username, visible_owners=_visibility(actor))
+            connection_service.delete_connection(connection_id, actor.username, visible_owners=_connection_visibility(actor))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _ok({"deleted": True})
@@ -406,7 +431,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     def test_connection(connection_id: str, principal: object = Depends(check_auth)):
         actor = _actor(principal)
         try:
-            return _ok(connection_service.test_connection(connection_id, actor.username, visible_owners=_visibility(actor)))
+            return _ok(connection_service.test_connection(connection_id, actor.username, visible_owners=_connection_visibility(actor)))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:
@@ -420,7 +445,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 connection_service.reset_connection_guard(
                     connection_id,
                     actor.username,
-                    visible_owners=_visibility(actor),
+                    visible_owners=_connection_visibility(actor),
                 )
             )
         except LookupError as exc:
@@ -431,7 +456,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(connection_sender_warmup_service.get_program(
-                connection_id, actor.username, visible_owners=_visibility(actor)
+                connection_id, actor.username, visible_owners=_connection_visibility(actor)
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -448,7 +473,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 connection_id,
                 actor.username,
                 body.model_dump(exclude_none=True),
-                visible_owners=_visibility(actor),
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -467,7 +492,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 connection_id,
                 actor.username,
                 headers=body.headers,
-                visible_owners=_visibility(actor),
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -481,7 +506,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(connection_sender_warmup_service.add_recipients(
-                connection_id, actor.username, body.emails, visible_owners=_visibility(actor)
+                connection_id, actor.username, body.emails, visible_owners=_connection_visibility(actor)
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -502,7 +527,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 recipient_id,
                 actor.username,
                 body.status,
-                visible_owners=_visibility(actor),
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -522,7 +547,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 recipient_id,
                 actor.username,
                 "removed",
-                visible_owners=_visibility(actor),
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -542,7 +567,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         }
         try:
             return _ok(handlers[action](
-                connection_id, actor.username, visible_owners=_visibility(actor)
+                connection_id, actor.username, visible_owners=_connection_visibility(actor)
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -609,6 +634,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
     @router.get("/campaigns")
     def get_campaigns(
         principal: object = Depends(check_auth),
+        scope: Literal["all", "draft", "launched"] = "all",
         status: str | None = None,
         q: str | None = None,
         limit: int = Query(default=50, ge=1, le=200),
@@ -619,6 +645,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             service.list_campaigns(
                 actor.username,
                 visible_owners=_visibility(actor),
+                scope=scope,
                 status=status,
                 q=q,
                 limit=limit,
@@ -646,6 +673,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             item = service.update_campaign(
                 campaign_id, actor.username, body.model_dump(exclude_none=True), visible_owners=_visibility(actor)
             )
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not item:
@@ -708,6 +737,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -719,13 +750,16 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         principal: object = Depends(check_auth),
     ):
         actor = _actor(principal)
-        item = service.update_recipient(
-            campaign_id,
-            recipient_id,
-            actor.username,
-            body.model_dump(exclude_none=True),
-            visible_owners=_visibility(actor),
-        )
+        try:
+            item = service.update_recipient(
+                campaign_id,
+                recipient_id,
+                actor.username,
+                body.model_dump(exclude_none=True),
+                visible_owners=_visibility(actor),
+            )
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
         if not item:
             raise HTTPException(status_code=404, detail="Получатель не найден")
         return _ok(item)
@@ -735,9 +769,12 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         campaign_id: str, body: RecipientsDeleteBody, principal: object = Depends(check_auth)
     ):
         actor = _actor(principal)
-        deleted = service.delete_recipients(
-            campaign_id, body.ids, actor.username, visible_owners=_visibility(actor)
-        )
+        try:
+            deleted = service.delete_recipients(
+                campaign_id, body.ids, actor.username, visible_owners=_visibility(actor)
+            )
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
         return _ok({"deleted": deleted})
 
     @router.post("/campaigns/{campaign_id}/recipients/import")
@@ -769,6 +806,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             return _ok({"import": result, "preview": rows[:20]})
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     
@@ -792,6 +831,8 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             )
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CampaignStateConflict as exc:
+            raise _campaign_conflict(exc) from exc
 
     @router.post("/schedule/preview")
     def post_schedule_preview(body: SchedulePreviewBody, principal: object = Depends(check_auth)):
@@ -1062,6 +1103,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         recipient_id: int = Query(..., ge=1),
         template_id: str = Query(..., min_length=1),
         download: int = Query(0, ge=0, le=1),
+        preview: int = Query(0, ge=0, le=1),
     ):
         actor = _actor(principal)
         try:
@@ -1070,8 +1112,11 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 recipient_id,
                 template_id,
                 actor.username,
+                as_pdf=bool(preview),
                 visible_owners=_visibility(actor),
             )
+        except template_service.DocumentConversionError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_detail()) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if resolved is None:
@@ -1170,7 +1215,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 )
             )
         except CampaignStateConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _campaign_conflict(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except PermissionError as exc:

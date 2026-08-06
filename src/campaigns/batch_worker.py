@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import mimetypes
-import smtplib
 import tempfile
 import time
 from datetime import datetime, timezone
+from email.headerregistry import Address
 from email.message import EmailMessage
+from email.policy import SMTP as SMTP_POLICY
+from email.utils import format_datetime, make_msgid
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -24,6 +26,9 @@ from src.campaigns.state import (
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignBatch, CampaignRecipient, MailTemplate, TemplateVersion
 from src.utils.logger import logger
+
+
+_SMTP_MESSAGE_POLICY = SMTP_POLICY.clone(max_line_length=998)
 
 
 def _now() -> datetime:
@@ -91,6 +96,17 @@ def _load_email_template(campaign: Campaign) -> tuple[str, str, str]:
     return subject, body_html, body_text
 
 
+def _smtp_from_address(sender_name: str, sender_email: str) -> Address:
+    display_name = str(sender_name or "").strip()
+    addr_spec = str(sender_email or "").strip()
+    if any(char in display_name or char in addr_spec for char in ("\r", "\n")):
+        raise ValueError("SMTP sender name and address must not contain line breaks.")
+    try:
+        return Address(display_name=display_name, addr_spec=addr_spec)
+    except ValueError as exc:
+        raise ValueError("Invalid SMTP sender name or address.") from exc
+
+
 def _send_smtp_message(
     *,
     mailbox_id: str,
@@ -104,15 +120,19 @@ def _send_smtp_message(
 ) -> str:
     from dataclasses import replace
 
-    from src.generator.delivery.smtp_mailboxes import resolve_smtp_credentials
+    from src.generator.delivery.imap_sent import archive_sent_copy
+    from src.generator.delivery.smtp_mailboxes import _open_smtp_connection, resolve_smtp_credentials
 
     creds = resolve_smtp_credentials(mailbox_id=mailbox_id, owner_username=owner_username)
     if sender_name and sender_name != creds.sender_name:
         creds = replace(creds, sender_name=sender_name)
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = f"{creds.sender_name} <{creds.email}>" if creds.sender_name else creds.email
+    msg["From"] = _smtp_from_address(creds.sender_name, creds.email)
     msg["To"] = to_email
+    msg["Date"] = format_datetime(_now())
+    message_id = make_msgid(domain=creds.email.rpartition("@")[2] or None)
+    msg["Message-ID"] = message_id
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
     for filename, data in attachments or []:
@@ -120,22 +140,31 @@ def _send_smtp_message(
         maintype, subtype = (content_type or "application/octet-stream").split("/", 1)
         msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
 
-    if creds.use_ssl:
-        server: Any = smtplib.SMTP_SSL(creds.host, creds.port, timeout=60)
-    else:
-        server = smtplib.SMTP(creds.host, creds.port, timeout=60)
-        if creds.use_starttls:
-            server.starttls()
+    raw_message = msg.as_bytes(policy=_SMTP_MESSAGE_POLICY)
+    server: Any = _open_smtp_connection(creds)
     try:
-        if creds.password:
-            server.login(creds.smtp_username or creds.email, creds.password)
-        server.send_message(msg)
+        server.sendmail(creds.email, [to_email], raw_message)
     finally:
         try:
             server.quit()
         except Exception:
             pass
-    return f"smtp:{to_email}:{int(_now().timestamp())}"
+
+    try:
+        archive_sent_copy(
+            mailbox_id=mailbox_id,
+            owner_username=owner_username,
+            recipient=to_email,
+            raw_message=raw_message,
+            message_id=message_id,
+        )
+    except Exception:
+        logger.exception(
+            "SMTP message was accepted, but its IMAP sent copy could not be archived",
+            mailbox_id=mailbox_id,
+            message_id=message_id,
+        )
+    return message_id
 
 
 def _send_delivery_message(
@@ -153,6 +182,8 @@ def _send_delivery_message(
     send_run_id: str | None = None,
     campaign: Campaign | None = None,
     track_links: bool | None = None,
+    tracking_key: str = "",
+    tracking_warmup_delivery_id: str = "",
 ) -> str:
     """Send one message using the saved per-user connection."""
     from src.campaigns.connection_service import resolve_connection
@@ -176,13 +207,58 @@ def _send_delivery_message(
 
     try:
         if connection.transport == "smtp":
+            prepared_tracking = None
+            tracked_html = html
+            try:
+                from src.generator.delivery.open_tracking import (
+                    build_smtp_tracking_delivery_key,
+                    inject_smtp_open_tracking_pixel,
+                    prepare_smtp_open_tracking,
+                )
+
+                campaign_id = str(getattr(campaign, "id", "") or "")
+                delivery_key = build_smtp_tracking_delivery_key(
+                    connection_id=connection.id,
+                    recipient=to_email,
+                    job_id=str(job_id or ""),
+                    campaign_id=campaign_id,
+                    row_id=row_id,
+                    send_mode=str(send_mode or ""),
+                    send_run_id=str(send_run_id or ""),
+                    warmup_delivery_id=tracking_warmup_delivery_id,
+                    explicit_key=tracking_key,
+                )
+                prepared_tracking = prepare_smtp_open_tracking(
+                    delivery_key=delivery_key,
+                    connection_id=connection.id,
+                    owner_username=owner_username,
+                    recipient=to_email,
+                    job_id=str(job_id or ""),
+                    campaign_id=campaign_id,
+                    row_id=row_id,
+                    send_mode=str(send_mode or ""),
+                    warmup_delivery_id=tracking_warmup_delivery_id,
+                )
+                if prepared_tracking is not None:
+                    tracked_html = inject_smtp_open_tracking_pixel(
+                        html,
+                        prepared_tracking.pixel_url,
+                    )
+            except Exception:
+                # Tracking statistics must never block the actual message.
+                logger.exception(
+                    "smtp_open_tracking_prepare_failed",
+                    connection_id=connection.id,
+                    row_id=row_id,
+                )
+
             try:
                 message_id = _send_smtp_message(
                     mailbox_id=connection.id,
                     owner_username=owner_username,
                     to_email=to_email,
                     subject=subject,
-                    html=html,
+                    html=tracked_html,
                     text=text,
                     sender_name=connection.sender_name,
                     attachments=attachments,
@@ -190,6 +266,17 @@ def _send_delivery_message(
             except Exception as exc:
                 _record_submit_error(connection.id, to_email, exc)
                 raise
+            if prepared_tracking is not None:
+                try:
+                    from src.generator.delivery.open_tracking import mark_smtp_open_tracking_sent
+
+                    mark_smtp_open_tracking_sent(prepared_tracking.token, message_id)
+                except Exception:
+                    logger.exception(
+                        "smtp_open_tracking_mark_sent_failed",
+                        connection_id=connection.id,
+                        message_id=message_id,
+                    )
             _record_smtp_accept(connection.id, message_id, to_email)
             return message_id
 
@@ -555,6 +642,10 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     row_id=str(recipient.id),
                     attachments=attachments,
                     campaign=camp,
+                    tracking_key=(
+                        f"campaign-batch:{campaign_id}:{batch_id}:{recipient_id}:"
+                        f"{send_mode or 'email'}:{delivery_email}"
+                    ),
                 )
                 recipient.send_status = "sent"
                 recipient.last_error = None

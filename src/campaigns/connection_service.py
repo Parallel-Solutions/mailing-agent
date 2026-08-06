@@ -30,7 +30,6 @@ from src.generator.delivery.smtp_oauth import OAuthTokens
 from src.infra.db import session_scope
 from src.infra.models import Campaign, Company, SmtpMailbox
 from src.security.company_access import (
-    TEMPORARY_GLOBAL_ORGANIZATION_ACCESS,
     apply_owner_filter,
     can_access_owner,
 )
@@ -42,6 +41,18 @@ API_PROVIDERS = {"rusender", "mailopost"}
 SUPPORTED_TRANSPORTS = {"smtp", *API_PROVIDERS}
 MAILRU_HOST = "smtp.mail.ru"
 MAILRU_PORT = 465
+
+_CONNECTION_VISIBILITY_UNSET = object()
+
+
+def _effective_connection_visibility(
+    owner_username: str,
+    visible_owners: Any,
+) -> frozenset[str] | None:
+    if visible_owners is _CONNECTION_VISIBILITY_UNSET:
+        return frozenset({owner_username})
+    return visible_owners
+
 
 
 @dataclass(frozen=True)
@@ -190,6 +201,14 @@ def _public_connection(row: SmtpMailbox) -> dict[str, Any]:
         "port": row.port if transport == "smtp" else None,
         "use_ssl": bool(row.use_ssl) if transport == "smtp" else None,
         "use_starttls": bool(row.use_starttls) if transport == "smtp" else None,
+        "save_sent_copy": bool(row.save_sent_copy) if transport == "smtp" else False,
+        "imap_host": (row.imap_host or "") if transport == "smtp" else "",
+        "imap_port": int(row.imap_port or 993) if transport == "smtp" else None,
+        "imap_use_ssl": bool(row.imap_use_ssl) if transport == "smtp" else None,
+        "imap_use_starttls": bool(row.imap_use_starttls) if transport == "smtp" else None,
+        "imap_username": (row.imap_username or "") if transport == "smtp" else "",
+        "imap_sent_folder": (row.imap_sent_folder or "") if transport == "smtp" else "",
+        "imap_password_configured": bool(row.imap_password_encrypted) if transport == "smtp" else False,
         "api_base_url": row.host if transport in API_PROVIDERS else "",
         "sending_key_id": row.sending_key_id if transport == "rusender" else None,
         "auth_method": auth_method,
@@ -230,7 +249,12 @@ def _apply_guard_settings_and_public(connection_id: str, data: dict[str, Any]) -
         return _public_connection(row)
 
 
-def list_connections(owner_username: str, *, visible_owners: frozenset[str] | None = None) -> list[dict[str, Any]]:
+def list_connections(
+    owner_username: str,
+    *,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
+) -> list[dict[str, Any]]:
+    visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
         stmt = select(SmtpMailbox).order_by(SmtpMailbox.is_default.desc(), SmtpMailbox.created_at.asc())
         stmt = apply_owner_filter(stmt, SmtpMailbox.owner_username, visible_owners)
@@ -273,6 +297,14 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
                 oauth_provider=oauth_provider,
                 oauth_tokens=oauth_tokens,
                 smtp_username=_safe_text(data.get("smtp_username")) or None,
+                save_sent_copy=bool(data.get("save_sent_copy", True)),
+                imap_host=_safe_text(data.get("imap_host")),
+                imap_port=data.get("imap_port"),
+                imap_use_ssl=data.get("imap_use_ssl"),
+                imap_use_starttls=data.get("imap_use_starttls"),
+                imap_username=_safe_text(data.get("imap_username")) or None,
+                imap_password=_safe_text(data.get("imap_password")),
+                imap_sent_folder=_safe_text(data.get("imap_sent_folder")),
                 max_per_hour=max_per_hour,
                 max_per_day=max_per_day,
             )
@@ -297,6 +329,14 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
                 sender_name=sender_name,
                 make_default=bool(data.get("make_default")),
                 smtp_username=email,
+                save_sent_copy=bool(data.get("save_sent_copy", True)),
+                imap_host=_safe_text(data.get("imap_host")),
+                imap_port=data.get("imap_port"),
+                imap_use_ssl=data.get("imap_use_ssl"),
+                imap_use_starttls=data.get("imap_use_starttls"),
+                imap_username=_safe_text(data.get("imap_username")) or email,
+                imap_password=_safe_text(data.get("imap_password")),
+                imap_sent_folder=_safe_text(data.get("imap_sent_folder")),
                 max_per_hour=max_per_hour,
                 max_per_day=max_per_day,
             )
@@ -313,6 +353,14 @@ def create_connection(owner_username: str, data: dict[str, Any]) -> dict[str, An
             use_starttls=data.get("use_starttls"),
             make_default=bool(data.get("make_default")),
             smtp_username=_safe_text(data.get("smtp_username")) or None,
+            save_sent_copy=bool(data.get("save_sent_copy", True)),
+            imap_host=_safe_text(data.get("imap_host")),
+            imap_port=data.get("imap_port"),
+            imap_use_ssl=data.get("imap_use_ssl"),
+            imap_use_starttls=data.get("imap_use_starttls"),
+            imap_username=_safe_text(data.get("imap_username")) or None,
+            imap_password=_safe_text(data.get("imap_password")),
+            imap_sent_folder=_safe_text(data.get("imap_sent_folder")),
             max_per_hour=max_per_hour,
             max_per_day=max_per_day,
         )
@@ -383,14 +431,16 @@ def update_connection(
     owner_username: str,
     data: dict[str, Any],
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
 ) -> dict[str, Any]:
+    visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
             raise LookupError("Подключение не найдено.")
         transport = connection_transport(row)
         provider = row.provider
+        target_owner = row.owner_username
 
     requested_transport = _safe_text(data.get("transport") or transport).lower()
     if requested_transport != transport:
@@ -415,7 +465,7 @@ def update_connection(
                 )
             mailbox = update_mailbox(
                 connection_id,
-                owner_username=owner_username,
+                owner_username=target_owner,
                 provider="mailru",
                 email=email,
                 password=_safe_text(data.get("password")) or None,
@@ -425,13 +475,21 @@ def update_connection(
                 use_ssl=True,
                 use_starttls=False,
                 smtp_username=email,
+                save_sent_copy=data.get("save_sent_copy"),
+                imap_host=data.get("imap_host"),
+                imap_port=data.get("imap_port"),
+                imap_use_ssl=data.get("imap_use_ssl"),
+                imap_use_starttls=data.get("imap_use_starttls"),
+                imap_username=data.get("imap_username"),
+                imap_password=data.get("imap_password"),
+                imap_sent_folder=data.get("imap_sent_folder"),
                 max_per_hour=_optional_rate_limit(data, "max_per_hour"),
                 max_per_day=_optional_rate_limit(data, "max_per_day"),
             )
             return _apply_guard_settings_and_public(mailbox["id"], data)
         mailbox = update_mailbox(
             connection_id,
-            owner_username=owner_username,
+            owner_username=target_owner,
             provider=provider,
             email=data.get("email"),
             password=_safe_text(data.get("password")) or None,
@@ -441,6 +499,14 @@ def update_connection(
             use_ssl=data.get("use_ssl"),
             use_starttls=data.get("use_starttls"),
             smtp_username=data.get("smtp_username"),
+            save_sent_copy=data.get("save_sent_copy"),
+            imap_host=data.get("imap_host"),
+            imap_port=data.get("imap_port"),
+            imap_use_ssl=data.get("imap_use_ssl"),
+            imap_use_starttls=data.get("imap_use_starttls"),
+            imap_username=data.get("imap_username"),
+            imap_password=data.get("imap_password"),
+            imap_sent_folder=data.get("imap_sent_folder"),
             max_per_hour=_optional_rate_limit(data, "max_per_hour"),
             max_per_day=_optional_rate_limit(data, "max_per_day"),
         )
@@ -489,8 +555,9 @@ def delete_connection(
     connection_id: str,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
 ) -> None:
+    visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
@@ -503,8 +570,9 @@ def reset_connection_guard(
     connection_id: str,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
 ) -> dict[str, Any]:
+    visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
@@ -524,8 +592,9 @@ def resolve_connection(
     owner_username: str,
     *,
     campaign: Campaign | None = None,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
 ) -> ResolvedConnection:
+    visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
         if row is None or not can_access_owner(visible_owners, row.owner_username):
@@ -605,10 +674,7 @@ def pick_available_connection(
     with session_scope() as session:
         for connection_id in ids:
             row = session.get(SmtpMailbox, connection_id)
-            if row is None or (
-                row.owner_username != owner_username
-                and not TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
-            ):
+            if row is None or row.owner_username != owner_username:
                 continue
             if row.delivery_guard_state == "disabled" or row.status == "disabled_by_guard":
                 continue
@@ -667,15 +733,36 @@ def test_connection(
     connection_id: str,
     owner_username: str,
     *,
-    visible_owners: frozenset[str] | None = None,
+    visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
 ) -> dict[str, Any]:
     connection = resolve_connection(connection_id, owner_username, visible_owners=visible_owners)
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection.id)
+        if row is None:
+            raise LookupError("Delivery connection not found.")
+        target_owner = row.owner_username
     credentials: ResolvedSmtpCredentials | None = None
     try:
         if connection.transport == "smtp":
-            credentials = resolve_smtp_credentials(mailbox_id=connection.id, owner_username=owner_username)
+            credentials = resolve_smtp_credentials(mailbox_id=connection.id, owner_username=target_owner)
             verify_and_mark_mailbox(credentials, mailbox_id=connection.id, send_test=False)
             message = "SMTP-подключение успешно проверено."
+            try:
+                from src.generator.delivery.imap_sent import verify_imap_connection
+
+                imap_result = verify_imap_connection(
+                    mailbox_id=connection.id,
+                    owner_username=target_owner,
+                )
+                if imap_result.get("status") == "ok":
+                    message += f" Копии будут сохраняться в папку «{imap_result.get('folder') or 'Отправленные'}»."
+            except Exception as imap_exc:
+                return {
+                    "status": "warning",
+                    "message": (
+                        f"{message} Но сохранение копий через IMAP не настроено: {imap_exc}"
+                    ),
+                }
         else:
             from src.campaigns.batch_worker import _send_delivery_message
             from src.campaigns.recipient_email_service import validate_delivery_email
@@ -686,7 +773,7 @@ def test_connection(
 
             _send_delivery_message(
                 connection_id=connection.id,
-                owner_username=owner_username,
+                owner_username=target_owner,
                 to_email=email_validation.normalized_email,
                 subject="Проверка подключения ai-offer",
                 html="<p>Подключение успешно. Это тестовое письмо ai-offer.</p>",

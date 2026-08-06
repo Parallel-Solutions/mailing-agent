@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import smtplib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.message import EmailMessage
+from email.policy import SMTP as SMTP_POLICY
+from email.utils import format_datetime, make_msgid
 from typing import Any
 from uuid import uuid4
 
@@ -24,6 +27,9 @@ from src.security.credential_vault import CredentialVaultError, decrypt_secret, 
 from src.utils.config import settings
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class ResolvedSmtpCredentials:
     email: str
@@ -38,6 +44,7 @@ class ResolvedSmtpCredentials:
     oauth_provider: str | None = None
     oauth_tokens: OAuthTokens | None = None
     smtp_username: str = ""
+    owner_username: str = ""
 
 
 def _now() -> datetime:
@@ -73,6 +80,14 @@ def _public_mailbox(row: SmtpMailbox) -> dict[str, Any]:
         "auth_method": row.auth_method or "password",
         "oauth_provider": row.oauth_provider or "",
         "smtp_username": row.smtp_username or "",
+        "save_sent_copy": bool(row.save_sent_copy),
+        "imap_host": row.imap_host or "",
+        "imap_port": int(row.imap_port or 993),
+        "imap_use_ssl": bool(row.imap_use_ssl),
+        "imap_use_starttls": bool(row.imap_use_starttls),
+        "imap_username": row.imap_username or "",
+        "imap_sent_folder": row.imap_sent_folder or "",
+        "imap_password_configured": bool(row.imap_password_encrypted),
         "status": row.status,
         "last_error": row.last_error or "",
         "is_default": bool(row.is_default),
@@ -95,6 +110,7 @@ def build_oauth_credentials(
     sender_name: str = "",
     smtp_username: str | None = None,
     mailbox_id: str | None = None,
+    owner_username: str = "",
 ) -> ResolvedSmtpCredentials:
     return ResolvedSmtpCredentials(
         email=email,
@@ -109,6 +125,7 @@ def build_oauth_credentials(
         oauth_tokens=tokens,
         smtp_username=str(smtp_username or email),
         mailbox_id=mailbox_id,
+        owner_username=owner_username,
     )
 
 
@@ -128,6 +145,7 @@ def _credentials_from_row(row: SmtpMailbox) -> ResolvedSmtpCredentials:
             sender_name=row.sender_name or "",
             smtp_username=smtp_username,
             mailbox_id=row.id,
+            owner_username=row.owner_username,
         )
     return ResolvedSmtpCredentials(
         email=row.email,
@@ -140,6 +158,7 @@ def _credentials_from_row(row: SmtpMailbox) -> ResolvedSmtpCredentials:
         mailbox_id=row.id,
         auth_method="password",
         smtp_username=smtp_username,
+        owner_username=row.owner_username,
     )
 
 
@@ -205,6 +224,14 @@ def create_mailbox(
     oauth_provider: str | None = None,
     oauth_tokens: OAuthTokens | None = None,
     smtp_username: str | None = None,
+    save_sent_copy: bool = True,
+    imap_host: str = "",
+    imap_port: int | None = None,
+    imap_use_ssl: bool | None = None,
+    imap_use_starttls: bool | None = None,
+    imap_username: str | None = None,
+    imap_password: str = "",
+    imap_sent_folder: str = "",
     max_per_hour: int = 0,
     max_per_day: int = 0,
 ) -> dict[str, Any]:
@@ -233,6 +260,10 @@ def create_mailbox(
         password_encrypted = encrypt_secret(safe_password)
         oauth_tokens_encrypted = None
         safe_oauth_provider = None
+    safe_imap_password = normalize_smtp_secret(imap_password)
+    imap_password_encrypted = (
+        encrypt_secret(safe_imap_password) if safe_imap_password else None
+    )
     now = _now()
     mailbox_id = str(uuid4())
     with session_scope() as session:
@@ -256,6 +287,14 @@ def create_mailbox(
             oauth_provider=safe_oauth_provider,
             oauth_tokens_encrypted=oauth_tokens_encrypted,
             smtp_username=safe_username,
+            save_sent_copy=bool(save_sent_copy),
+            imap_host=_safe_text(imap_host) or preset.imap_host,
+            imap_port=int(imap_port if imap_port is not None else preset.imap_port),
+            imap_use_ssl=bool(imap_use_ssl) if imap_use_ssl is not None else preset.imap_use_ssl,
+            imap_use_starttls=bool(imap_use_starttls) if imap_use_starttls is not None else preset.imap_use_starttls,
+            imap_username=_safe_text(imap_username) or safe_username,
+            imap_password_encrypted=imap_password_encrypted,
+            imap_sent_folder=_safe_text(imap_sent_folder) or preset.imap_sent_folder,
             password_encrypted=password_encrypted,
             status="active",
             last_error=None,
@@ -286,6 +325,14 @@ def update_mailbox(
     oauth_provider: str | None = None,
     oauth_tokens: OAuthTokens | None = None,
     smtp_username: str | None = None,
+    save_sent_copy: bool | None = None,
+    imap_host: str | None = None,
+    imap_port: int | None = None,
+    imap_use_ssl: bool | None = None,
+    imap_use_starttls: bool | None = None,
+    imap_username: str | None = None,
+    imap_password: str | None = None,
+    imap_sent_folder: str | None = None,
     max_per_hour: int | None = None,
     max_per_day: int | None = None,
 ) -> dict[str, Any]:
@@ -294,6 +341,7 @@ def update_mailbox(
         if row is None or row.owner_username != owner_username:
             raise LookupError("SMTP-ящик не найден.")
         provider_id = _safe_text(provider) or row.provider
+        provider_changed = provider is not None and provider_id != row.provider
         preset = resolve_provider_settings(
             provider_id,
             host=_safe_text(host) or row.host,
@@ -325,6 +373,33 @@ def update_mailbox(
             row.sender_name = _safe_text(sender_name)
         if smtp_username is not None:
             row.smtp_username = _safe_text(smtp_username) or row.email
+        if save_sent_copy is not None:
+            row.save_sent_copy = bool(save_sent_copy)
+        if imap_host is not None:
+            row.imap_host = _safe_text(imap_host)
+        elif provider_changed:
+            row.imap_host = preset.imap_host
+        if imap_port is not None:
+            row.imap_port = int(imap_port)
+        elif provider_changed:
+            row.imap_port = preset.imap_port
+        if imap_use_ssl is not None:
+            row.imap_use_ssl = bool(imap_use_ssl)
+        elif provider_changed:
+            row.imap_use_ssl = preset.imap_use_ssl
+        if imap_use_starttls is not None:
+            row.imap_use_starttls = bool(imap_use_starttls)
+        elif provider_changed:
+            row.imap_use_starttls = preset.imap_use_starttls
+        if imap_username is not None:
+            row.imap_username = _safe_text(imap_username) or row.smtp_username or row.email
+        if imap_password is not None:
+            safe_imap_password = normalize_smtp_secret(imap_password)
+            row.imap_password_encrypted = encrypt_secret(safe_imap_password) if safe_imap_password else None
+        if imap_sent_folder is not None:
+            row.imap_sent_folder = _safe_text(imap_sent_folder)
+        elif provider_changed:
+            row.imap_sent_folder = preset.imap_sent_folder
         if max_per_hour is not None:
             row.max_per_hour = max(0, int(max_per_hour))
         if max_per_day is not None:
@@ -401,16 +476,14 @@ def resolve_smtp_credentials(
     if not owner and job_id:
         owner = _safe_text(read_job_owner(job_id).get("owner_username"))
     mailbox_key = _safe_text(mailbox_id)
-    if mailbox_key and owner:
+    if mailbox_key:
+        if not owner:
+            raise LookupError("SMTP mailbox not found.")
         with session_scope() as session:
             row = session.get(SmtpMailbox, mailbox_key)
-            # TODO(security): replace this temporary global-use path with
-            # organization-owned credentials and explicit membership checks.
-            from src.security.company_access import TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
-
-            can_use_mailbox = row is not None and (
-                row.owner_username == owner or TEMPORARY_GLOBAL_ORGANIZATION_ACCESS
-            )
+            can_use_mailbox = row is not None and row.owner_username == owner
+            if not can_use_mailbox:
+                raise LookupError("SMTP mailbox not found.")
             if can_use_mailbox:
                 if row.status == "auth_failed":
                     raise RuntimeError(row.last_error or "SMTP-ящик недоступен: ошибка авторизации.")
@@ -458,6 +531,7 @@ def _ensure_fresh_oauth_credentials(
         refreshed = refresh_oauth_tokens(
             provider=_safe_text(credentials.oauth_provider),
             refresh_token=credentials.oauth_tokens.refresh_token,
+            scope=credentials.oauth_tokens.scope,
         )
     except Exception:
         return credentials
@@ -477,6 +551,7 @@ def _ensure_fresh_oauth_credentials(
         sender_name=credentials.sender_name,
         smtp_username=credentials.smtp_username or credentials.email,
         mailbox_id=credentials.mailbox_id,
+        owner_username=credentials.owner_username,
     )
 
 
@@ -622,6 +697,9 @@ def send_test_email(
     message["Subject"] = "Проверка SMTP-подключения"
     message["From"] = f"{sender_label} <{credentials.email}>" if sender_label else credentials.email
     message["To"] = target
+    message["Date"] = format_datetime(_now())
+    message_id = make_msgid(domain=credentials.email.rpartition("@")[2] or None)
+    message["Message-ID"] = message_id
     message.set_content("Тестовое письмо от mailing-agent. SMTP-подключение работает.")
     if include_sample_attachment:
         # Minimal valid-looking PDF bytes for SMTP attachment checks (Mailpit / clients).
@@ -635,14 +713,31 @@ def send_test_email(
             subtype="pdf",
             filename="e2e-sample.pdf",
         )
+    raw_message = message.as_bytes(policy=SMTP_POLICY)
     server = _open_smtp_connection(credentials)
     try:
-        server.send_message(message)
+        server.sendmail(credentials.email, [target], raw_message)
     finally:
         try:
             server.quit()
         except smtplib.SMTPException:
             server.close()
+
+    if credentials.mailbox_id and credentials.owner_username:
+        try:
+            from src.generator.delivery.imap_sent import archive_sent_copy
+
+            archive_sent_copy(
+                mailbox_id=credentials.mailbox_id,
+                owner_username=credentials.owner_username,
+                recipient=target,
+                raw_message=raw_message,
+                message_id=message_id,
+            )
+        except Exception:
+            logger.exception(
+                "SMTP test email was sent, but its IMAP sent copy could not be archived"
+            )
 
 
 def verify_and_mark_mailbox(
