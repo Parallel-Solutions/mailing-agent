@@ -44,7 +44,14 @@ _current_job_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
 _CHANNEL_PREFIX = "parser:progress:"
 _DONE = "__DONE__"               # спец-сигнал завершения потока
 _STREAM_TTL = 60 * 60            # сколько Redis хранит список сообщений (сек)
-_IDLE_TIMEOUT = 300.0            # закрыть SSE, если новых сообщений нет столько сек
+# Раньше SSE закрывался после 5 мин тишины — и делал это РАНЬШЕ, чем сдавался фронт
+# (10 мин), лишая фронт единственного способа продлить ожидание. Теперь поток
+# закрывается штатно по сигналу _DONE (он всегда приходит из finish() в finally),
+# а в тишине шлём keep-alive «пульс», чтобы и поток, и таймер клиента жили.
+# _IDLE_TIMEOUT остаётся лишь СТРАХОВКОЙ на случай жёсткого убийства процесса,
+# когда _DONE не пришёл, — поэтому он большой.
+_IDLE_TIMEOUT = 30 * 60          # закрыть SSE только если РЕАЛЬНЫХ сообщений нет столько сек
+_HEARTBEAT = 15.0                # слать «пульс», если в тишине нет событий столько сек
 _POLL = 0.4                      # как часто SSE-эндпоинт опрашивает список (сек)
 
 
@@ -140,7 +147,9 @@ def subscribe(job_id: str) -> Iterator[str]:
     """
     ch = _channel(job_id)
     cursor = 0
-    last_activity = time.time()
+    now0 = time.time()
+    last_message = now0     # когда пришло последнее РЕАЛЬНОЕ сообщение (для страховки)
+    last_sent = now0        # когда клиенту ушло последнее событие (сообщение или пульс)
 
     # стартовое событие, чтобы фронт сразу понял, что соединение живо
     yield _sse({"kind": "open"})
@@ -165,9 +174,20 @@ def subscribe(job_id: str) -> Iterator[str]:
                 yield _sse({"kind": "done"})
                 return
             yield _sse(data)
-            last_activity = time.time()
+            now = time.time()
+            last_message = now
+            last_sent = now
 
-        if time.time() - last_activity > _IDLE_TIMEOUT:
+        now = time.time()
+        # keep-alive: не молчим в сторону клиента дольше _HEARTBEAT — так и SSE-поток,
+        # и таймер тишины на фронте остаются живыми, пока сервер занят сбором.
+        if now - last_sent >= _HEARTBEAT:
+            yield _sse({"kind": "ping", "ts": now})
+            last_sent = now
+
+        # Страховка: РЕАЛЬНЫХ сообщений нет очень долго — вероятно, задача умерла,
+        # не прислав _DONE (жёсткий kill). Тогда закрываемся, чтобы не течь вечно.
+        if now - last_message > _IDLE_TIMEOUT:
             yield _sse({"kind": "timeout"})
             return
 
