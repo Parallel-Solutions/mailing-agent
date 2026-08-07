@@ -788,11 +788,17 @@ def _consent_candidate_recipients(
 def _validate_recipient_for_send(
     recipient: str,
     validation_cache: dict[str, EmailValidationResult],
+    owner_username: str = "",
 ) -> EmailValidationResult:
     cache_key = _mail_key(recipient) or _safe_text(recipient)
     if cache_key in validation_cache:
         return validation_cache[cache_key]
-    result = validate_configured_email_address(recipient, config=settings)
+    if owner_username:
+        from src.campaigns.email_validation_service import cached_validation_result
+
+        result = cached_validation_result(owner_username, recipient)
+    else:
+        result = validate_configured_email_address(recipient, config=settings)
     validation_cache[cache_key] = result
     return result
 
@@ -811,11 +817,14 @@ def _email_validation_attempt(result: EmailValidationResult) -> dict[str, Any]:
 def _filter_validated_recipients(
     recipients: list[str],
     validation_cache: dict[str, EmailValidationResult],
+    owner_username: str = "",
 ) -> tuple[list[str], list[dict[str, Any]]]:
     valid_recipients: list[str] = []
     validation_attempts: list[dict[str, Any]] = []
     for recipient in _unique_send_recipients(recipients):
-        result = _validate_recipient_for_send(recipient, validation_cache)
+        result = _validate_recipient_for_send(
+            recipient, validation_cache, owner_username
+        )
         if result.is_valid:
             valid_recipients.append(_safe_text(recipient))
         else:
@@ -4453,7 +4462,11 @@ def run_sender(
         preflight_attempts: list[dict[str, Any]] = []
         validation_candidates = _unique_send_recipients([*allowed_recipients, *fallback_recipients])
         if validation_candidates:
-            _, preflight_attempts = _filter_validated_recipients(validation_candidates, email_validation_cache)
+            _, preflight_attempts = _filter_validated_recipients(
+                validation_candidates,
+                email_validation_cache,
+                effective_owner_username,
+            )
             invalid_validation_keys = {
                 _mail_key(attempt.get("recipient"))
                 for attempt in preflight_attempts

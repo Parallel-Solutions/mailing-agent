@@ -449,7 +449,10 @@ def send_chain_node_email(
         if delivery_email:
             from src.campaigns.recipient_email_service import validate_delivery_email
 
-            validation_result = validate_delivery_email(delivery_email)
+            validation_result = validate_delivery_email(
+                delivery_email,
+                owner_username="" if active_test_email else camp.owner_username,
+            )
             if not validation_result.is_valid:
                 raise ValueError(validation_result.reason or "Email не прошёл проверку SMTP.BZ.")
             delivery_email = validation_result.normalized_email
@@ -464,7 +467,9 @@ def send_chain_node_email(
                 validation_attempts_error,
             )
 
-            delivery_email, validation_attempts = resolve_delivery_email(recipient)
+            delivery_email, validation_attempts = resolve_delivery_email(
+                recipient, owner_username=camp.owner_username
+            )
             if not delivery_email:
                 error_text = validation_attempts_error(validation_attempts)
                 if followup_token:

@@ -303,11 +303,16 @@ def process_campaign_delivery_fallbacks(
         delivery_email: str | None = None
         with session_scope() as session:
             recipient = session.get(CampaignRecipient, int(recipient_id))
-            if recipient is None:
+            campaign = session.get(Campaign, item_campaign_id)
+            if recipient is None or campaign is None:
                 continue
             tried = list((recipient.extra or {}).get("tried_emails") or [])
             tried.extend([_safe_text(item.get("recipient")) for item in row_items if _safe_text(item.get("recipient"))])
-            delivery_email, _attempts = resolve_delivery_email(recipient, skip_emails=tried)
+            delivery_email, _attempts = resolve_delivery_email(
+                recipient,
+                skip_emails=tried,
+                owner_username=campaign.owner_username,
+            )
             if delivery_email and _mail_key(delivery_email) in logged_recipients:
                 delivery_email = None
 

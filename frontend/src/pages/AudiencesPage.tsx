@@ -1,6 +1,7 @@
+import { useEffect } from 'react';
 import { PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
-import { App, Button, Drawer, Space, Table, Upload } from 'antd';
+import { Alert, App, Button, Drawer, Progress, Space, Table, Tag, Upload } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { audiencesApi } from '@/api/audiences';
 import type { Audience } from '@/api/types';
@@ -24,6 +25,26 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
     queryFn: () => audiencesApi.members(selected!.id, { limit: 50 }),
     enabled: Boolean(selected?.id),
   });
+  const validationQuery = useQuery({
+    queryKey: ['audience-email-validation', selected?.id],
+    queryFn: () => audiencesApi.validation(selected!.id),
+    enabled: Boolean(selected?.id),
+    refetchInterval: 3000,
+  });
+  const startValidation = useMutation({
+    mutationFn: () => audiencesApi.startValidation(selected!.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['audience-email-validation', selected?.id] });
+    },
+  });
+  const validation = validationQuery.data;
+
+  useEffect(() => {
+    if (!selected?.id || validation?.status !== 'completed') return;
+    void queryClient.invalidateQueries({ queryKey: ['audience-members', selected.id] });
+    void queryClient.invalidateQueries({ queryKey: ['audiences'] });
+  }, [queryClient, selected?.id, validation?.completed_at, validation?.status]);
+
 
   const createMutation = useMutation({
     mutationFn: () => audiencesApi.create(`Аудитория ${new Date().toLocaleString('ru-RU')}`),
@@ -114,6 +135,38 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
           ) : null
         }
       >
+        {validation?.enabled ? (
+          <Alert
+            showIcon
+            style={{ marginBottom: 16 }}
+            type={
+              validation.status === 'failed'
+                ? 'error'
+                : validation.status === 'completed' && validation.unknown_count === 0
+                  ? 'success'
+                  : 'info'
+            }
+            message="Предварительная проверка SMTP.BZ"
+            description={(
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Progress percent={validation.progress_percent} size="small" />
+                <span>
+                  Валидных: {validation.valid_count}, невалидных: {validation.invalid_count},
+                  требуют повтора: {validation.unknown_count}.
+                </span>
+              </Space>
+            )}
+            action={(
+              <Button
+                size="small"
+                loading={startValidation.isPending}
+                onClick={() => startValidation.mutate()}
+              >
+                {validation.status === 'not_started' ? 'Запустить проверку' : 'Проверить повторно'}
+              </Button>
+            )}
+          />
+        ) : null}
         <Table
           rowKey="id"
           loading={membersQuery.isLoading}
@@ -126,7 +179,11 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
             {
               title: 'Статус',
               dataIndex: 'validation_status',
-              render: (value) => statusLabel(String(value || '')),
+              render: (value) => (
+                <Tag color={value === 'valid' ? 'green' : value === 'invalid' ? 'red' : 'gold'}>
+                  {statusLabel(String(value || ''))}
+                </Tag>
+              ),
             },
           ]}
           pagination={{ pageSize: 20, total: membersQuery.data?.total }}

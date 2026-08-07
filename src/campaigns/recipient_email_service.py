@@ -60,12 +60,19 @@ def primary_email_key(email: str, email_fallback: str = "") -> str:
 def _validate_candidate(
     candidate: str,
     validation_cache: dict[str, EmailValidationResult],
+    *,
+    owner_username: str = "",
 ) -> EmailValidationResult:
     cache_key = _mail_key(candidate) or candidate
     cached = validation_cache.get(cache_key)
     if cached is not None:
         return cached
-    result = validate_configured_email_address(candidate, config=settings)
+    if owner_username:
+        from src.campaigns.email_validation_service import cached_validation_result
+
+        result = cached_validation_result(owner_username, candidate)
+    else:
+        result = validate_configured_email_address(candidate, config=settings)
     validation_cache[cache_key] = result
     return result
 
@@ -74,10 +81,11 @@ def validate_delivery_email(
     email: str,
     *,
     validation_cache: dict[str, EmailValidationResult] | None = None,
+    owner_username: str = "",
 ) -> EmailValidationResult:
     """Validate one outgoing recipient with the configured delivery validator."""
     cache = validation_cache if validation_cache is not None else {}
-    return _validate_candidate(_safe_text(email), cache)
+    return _validate_candidate(_safe_text(email), cache, owner_username=owner_username)
 
 
 def _attempt_record(recipient: str, *, error: str, validation: EmailValidationResult | None = None) -> dict[str, Any]:
@@ -96,6 +104,7 @@ def resolve_delivery_email(
     *,
     skip_emails: list[str] | None = None,
     validation_cache: dict[str, EmailValidationResult] | None = None,
+    owner_username: str = "",
 ) -> tuple[str | None, list[dict[str, Any]]]:
     from src.generator.delivery.suppression_store import is_suppressed
 
@@ -121,7 +130,7 @@ def resolve_delivery_email(
                 _attempt_record(candidate, error=f"Адрес в стоп-листе ({suppress_reason or 'suppressed'}).")
             )
             continue
-        result = _validate_candidate(candidate, cache)
+        result = _validate_candidate(candidate, cache, owner_username=owner_username)
         if result.is_valid:
             return candidate, attempts
         reason = _safe_text(result.reason) or "Email не прошёл проверку."

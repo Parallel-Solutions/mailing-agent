@@ -69,6 +69,7 @@ def _task_timeout_seconds(task_type: str) -> int:
         "connection_warmup",
         "connection_sender_warmup",
         "connection_sender_warmup_message",
+        "email_validation",
     }:
         return max(0, int(settings.sender_worker_timeout_seconds or 0))
     return 0
@@ -87,6 +88,20 @@ def _mark_terminal_failure(task: dict[str, Any], message: str) -> None:
         except Exception:
             logger.exception("queue_worker_finalize_template_text_extraction_failed", task_id=task.get("id"))
         return
+    if task_type == "email_validation":
+        try:
+            from src.campaigns.email_validation_service import mark_validation_run_failed
+
+            mark_validation_run_failed(
+                str((task.get("payload") or {}).get("run_id") or ""),
+                message,
+            )
+        except Exception:
+            logger.exception(
+                "queue_worker_finalize_email_validation_failed",
+                task_id=task.get("id"),
+            )
+        return
     if task_type == "connection_warmup":
         try:
             from src.generator.delivery.connection_warmup import (
@@ -96,6 +111,7 @@ def _mark_terminal_failure(task: dict[str, Any], message: str) -> None:
             finalize_connection_warmup_failure(
                 str((task.get("payload") or {}).get("connection_id") or ""),
                 message,
+                str((task.get("payload") or {}).get("key_guard_id") or "") or None,
             )
         except Exception:
             logger.exception(

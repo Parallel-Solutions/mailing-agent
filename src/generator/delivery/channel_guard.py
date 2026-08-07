@@ -17,6 +17,7 @@ from src.infra.models import (
     Campaign,
     CampaignBatch,
     DeliveryChannelOutcome,
+    DeliveryKeyGuard,
     DeliveryChannelSendSlot,
     SmtpMailbox,
 )
@@ -138,12 +139,138 @@ def apply_guard_settings(row: SmtpMailbox, data: dict[str, Any]) -> None:
         row.delivery_guard_state = "normal"
         row.delivery_guard_reason = None
         row.delivery_guard_triggered_at = None
-        if row.status == "disabled_by_guard":
+        if hasattr(row, "status") and row.status == "disabled_by_guard":
             row.status = "active"
             row.last_error = None
-    elif row.delivery_guard_state == "disabled":
+    elif row.delivery_guard_state == "disabled" and hasattr(row, "status"):
         row.status = "disabled_by_guard"
         row.last_error = row.delivery_guard_reason
+_GUARD_CONFIGURATION_FIELDS = (
+    "delivery_guard_enabled",
+    "delivery_error_rate_threshold",
+    "delivery_error_window_minutes",
+    "delivery_error_min_samples",
+    "delivery_error_critical_count",
+    "delivery_error_action",
+    "delivery_throttled_max_per_hour",
+    "warmup_recipients",
+    "warmup_percent_of_errors",
+)
+_GUARD_STATE_FIELDS = (
+    "delivery_guard_state",
+    "delivery_guard_reason",
+    "delivery_guard_terminal_count",
+    "delivery_guard_error_count",
+    "delivery_guard_error_rate",
+    "delivery_guard_triggered_at",
+    "delivery_guard_last_error_at",
+    "warmup_task_id",
+    "warmup_status",
+    "warmup_sent_count",
+    "warmup_error_count",
+    "warmup_started_at",
+    "warmup_completed_at",
+)
+
+
+def _rusender_key_scope(row: SmtpMailbox) -> tuple[str, str, str] | None:
+    provider = str(row.provider or "").strip().lower()
+    if provider != "rusender" or row.sending_key_id is None:
+        return None
+    return str(row.owner_username), provider, str(int(row.sending_key_id))
+
+
+def _ensure_key_guard(
+    session: Any,
+    row: SmtpMailbox,
+    *,
+    for_update: bool = False,
+) -> DeliveryKeyGuard | None:
+    scope = _rusender_key_scope(row)
+    if scope is None:
+        return None
+    owner_username, provider, external_key_id = scope
+    statement = select(DeliveryKeyGuard).where(
+        DeliveryKeyGuard.owner_username == owner_username,
+        DeliveryKeyGuard.provider == provider,
+        DeliveryKeyGuard.external_key_id == external_key_id,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    guard = session.scalar(statement)
+    if guard is not None:
+        return guard
+
+    guard = DeliveryKeyGuard(
+        id=str(uuid4()),
+        owner_username=owner_username,
+        provider=provider,
+        external_key_id=external_key_id,
+        warmup_connection_id=row.id,
+        created_at=_now(),
+        updated_at=_now(),
+        **{
+            field: list(getattr(row, field) or [])
+            if field == "warmup_recipients"
+            else getattr(row, field)
+            for field in (*_GUARD_CONFIGURATION_FIELDS, *_GUARD_STATE_FIELDS)
+        },
+    )
+    session.add(guard)
+    session.flush()
+    return guard
+
+
+def _key_scope_mailboxes(
+    session: Any,
+    row: SmtpMailbox,
+    *,
+    for_update: bool = False,
+) -> list[SmtpMailbox]:
+    scope = _rusender_key_scope(row)
+    if scope is None:
+        return [row]
+    owner_username, provider, external_key_id = scope
+    statement = select(SmtpMailbox).where(
+        SmtpMailbox.owner_username == owner_username,
+        func.lower(SmtpMailbox.provider) == provider,
+        SmtpMailbox.sending_key_id == int(external_key_id),
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return list(session.scalars(statement).all())
+
+
+def _sync_key_guard_to_mailboxes(
+    session: Any,
+    row: SmtpMailbox,
+    guard: DeliveryKeyGuard,
+) -> list[SmtpMailbox]:
+    mailboxes = _key_scope_mailboxes(session, row)
+    for mailbox in mailboxes:
+        for field in (*_GUARD_CONFIGURATION_FIELDS, *_GUARD_STATE_FIELDS):
+            value = getattr(guard, field)
+            setattr(mailbox, field, list(value or []) if field == "warmup_recipients" else value)
+        if guard.delivery_guard_state == "disabled":
+            mailbox.status = "disabled_by_guard"
+            mailbox.last_error = guard.delivery_guard_reason
+        elif mailbox.status == "disabled_by_guard":
+            mailbox.status = "active"
+            mailbox.last_error = None
+        mailbox.updated_at = _now()
+    return mailboxes
+
+
+def apply_scoped_guard_settings(session: Any, row: SmtpMailbox, data: dict[str, Any]) -> None:
+    """Apply RuSender settings to the key; other transports stay connection-scoped."""
+    guard = _ensure_key_guard(session, row, for_update=True)
+    if guard is None:
+        apply_guard_settings(row, data)
+        return
+    apply_guard_settings(guard, data)
+    guard.updated_at = _now()
+    _sync_key_guard_to_mailboxes(session, row, guard)
+
 
 
 def _effective_hour_limit(row: SmtpMailbox) -> int:
@@ -157,6 +284,12 @@ def _effective_hour_limit(row: SmtpMailbox) -> int:
 def guard_snapshot(row: SmtpMailbox) -> dict[str, Any]:
     return {
         "enabled": bool(row.delivery_guard_enabled),
+        "scope": (
+            "sending_key" if _rusender_key_scope(row) is not None else "connection"
+        ),
+        "scope_id": (
+            str(row.sending_key_id) if _rusender_key_scope(row) is not None else row.id
+        ),
         "state": str(row.delivery_guard_state or "normal"),
         "reason": str(row.delivery_guard_reason or ""),
         "error_rate_threshold": float(row.delivery_error_rate_threshold or 0.05),
@@ -182,12 +315,48 @@ def guard_snapshot(row: SmtpMailbox) -> dict[str, Any]:
     }
 
 
+def refresh_guard_snapshot(session: Any, row: SmtpMailbox) -> dict[str, Any]:
+    """Refresh rolling-window counters without triggering a new guard action."""
+    guard = _ensure_key_guard(session, row)
+    target: Any = guard or row
+    window_start = _now() - timedelta(
+        minutes=max(5, int(target.delivery_error_window_minutes or 60))
+    )
+    outcome_scope = (
+        DeliveryChannelOutcome.delivery_key_guard_id == guard.id
+        if guard is not None
+        else DeliveryChannelOutcome.connection_id == row.id
+    )
+    counts = session.execute(
+        select(
+            func.count(DeliveryChannelOutcome.id),
+            func.count(DeliveryChannelOutcome.id).filter(
+                DeliveryChannelOutcome.outcome == "error"
+            ),
+        ).where(
+            outcome_scope,
+            DeliveryChannelOutcome.occurred_at >= window_start,
+        )
+    ).one()
+    terminal_count = int(counts[0] or 0)
+    error_count = int(counts[1] or 0)
+    target.delivery_guard_terminal_count = terminal_count
+    target.delivery_guard_error_count = error_count
+    target.delivery_guard_error_rate = (
+        float(error_count / terminal_count) if terminal_count else 0.0
+    )
+    target.updated_at = _now()
+    if guard is not None:
+        _sync_key_guard_to_mailboxes(session, row, guard)
+    return guard_snapshot(row)
+
+
 def get_channel_guard(connection_id: str) -> dict[str, Any]:
     with session_scope() as session:
         row = session.get(SmtpMailbox, connection_id)
         if row is None:
             raise LookupError("Delivery connection not found.")
-        return guard_snapshot(row)
+        return refresh_guard_snapshot(session, row)
 
 
 def _parse_occurred_at(value: datetime | str | None) -> datetime:
@@ -218,20 +387,32 @@ def _campaign_uses_connection(campaign: Campaign, connection_id: str) -> bool:
 
 
 def _pause_campaigns_for_channel(
-    connection_id: str,
+    connection_id: str | list[str],
     *,
     reason: str = "delivery_channel_disabled",
 ) -> int:
     task_ids: set[str] = set()
     paused = 0
+    connection_ids = {
+        str(value)
+        for value in (connection_id if isinstance(connection_id, list) else [connection_id])
+        if str(value)
+    }
     with session_scope() as session:
+        if not isinstance(connection_id, list) and len(connection_ids) == 1:
+            source = session.get(SmtpMailbox, next(iter(connection_ids)))
+            if source is not None and _rusender_key_scope(source) is not None:
+                connection_ids = {
+                    mailbox.id for mailbox in _key_scope_mailboxes(session, source)
+                }
+
         campaigns = session.scalars(
             select(Campaign).where(Campaign.status.in_(ACTIVE_CAMPAIGN_STATUSES))
         ).all()
         campaign_ids: list[str] = []
         now = _now()
         for campaign in campaigns:
-            if not _campaign_uses_connection(campaign, connection_id):
+            if not any(_campaign_uses_connection(campaign, value) for value in connection_ids):
                 continue
             transition_campaign_status(
                 session,
@@ -266,7 +447,7 @@ def _pause_campaigns_for_channel(
     return paused
 
 
-def _evaluate_locked(session, row: SmtpMailbox, *, now: datetime) -> str | None:
+def _evaluate_connection_locked(session, row: SmtpMailbox, *, now: datetime) -> str | None:
     window_start = now - timedelta(minutes=max(5, int(row.delivery_error_window_minutes or 60)))
     counts = session.execute(
         select(
@@ -322,7 +503,80 @@ def _evaluate_locked(session, row: SmtpMailbox, *, now: datetime) -> str | None:
     return action
 
 
-def _enqueue_connection_warmup(
+
+def _evaluate_locked(session: Any, row: SmtpMailbox, *, now: datetime) -> str | None:
+    guard = _ensure_key_guard(session, row, for_update=True)
+    if guard is None:
+        return _evaluate_connection_locked(session, row, now=now)
+
+    window_start = now - timedelta(
+        minutes=max(5, int(guard.delivery_error_window_minutes or 60))
+    )
+    counts = session.execute(
+        select(
+            func.count(DeliveryChannelOutcome.id),
+            func.count(DeliveryChannelOutcome.id).filter(
+                DeliveryChannelOutcome.outcome == "error"
+            ),
+        ).where(
+            DeliveryChannelOutcome.delivery_key_guard_id == guard.id,
+            DeliveryChannelOutcome.occurred_at >= window_start,
+        )
+    ).one()
+    terminal_count = int(counts[0] or 0)
+    error_count = int(counts[1] or 0)
+    error_rate = float(error_count / terminal_count) if terminal_count else 0.0
+    guard.delivery_guard_terminal_count = terminal_count
+    guard.delivery_guard_error_count = error_count
+    guard.delivery_guard_error_rate = error_rate
+
+    if (
+        not bool(guard.delivery_guard_enabled)
+        or guard.delivery_guard_state in {"throttled", "disabled", "warmup"}
+    ):
+        guard.updated_at = now
+        _sync_key_guard_to_mailboxes(session, row, guard)
+        return None
+
+    rate_triggered = (
+        terminal_count >= max(1, int(guard.delivery_error_min_samples or 20))
+        and error_rate > float(guard.delivery_error_rate_threshold or 0.05)
+    )
+    critical = max(0, int(guard.delivery_error_critical_count or 0))
+    count_triggered = critical > 0 and error_count >= critical
+    if not rate_triggered and not count_triggered:
+        guard.updated_at = now
+        _sync_key_guard_to_mailboxes(session, row, guard)
+        return None
+
+    reasons: list[str] = []
+    if rate_triggered:
+        reasons.append(
+            f"Delivery error rate {error_rate:.2%} exceeded "
+            f"{float(guard.delivery_error_rate_threshold):.2%}"
+        )
+    if count_triggered:
+        reasons.append(
+            f"Delivery error count {error_count} reached critical value {critical}"
+        )
+    action = str(guard.delivery_error_action or "warmup")
+    if action == "warmup":
+        guard.delivery_guard_state = "warmup"
+        guard.warmup_connection_id = row.id
+        guard.warmup_status = "queued"
+        guard.warmup_sent_count = 0
+        guard.warmup_error_count = 0
+        guard.warmup_started_at = None
+        guard.warmup_completed_at = None
+    else:
+        guard.delivery_guard_state = "disabled" if action == "disable" else "throttled"
+    guard.delivery_guard_reason = "; ".join(reasons)
+    guard.delivery_guard_triggered_at = now
+    guard.updated_at = now
+    _sync_key_guard_to_mailboxes(session, row, guard)
+    return action
+
+def _enqueue_connection_warmup_legacy(
     connection_id: str,
     *,
     error_count: int,
@@ -367,6 +621,87 @@ def _enqueue_connection_warmup(
     return task_id
 
 
+def _enqueue_connection_warmup(
+    connection_id: str,
+    *,
+    key_guard_id: str | None,
+    error_count: int,
+    triggered_at: datetime,
+) -> str:
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, connection_id)
+        if row is None:
+            raise LookupError("Delivery connection not found.")
+        guard = (
+            session.get(DeliveryKeyGuard, key_guard_id)
+            if key_guard_id
+            else _ensure_key_guard(session, row)
+        )
+        settings_source: Any = guard or row
+        candidates = _key_scope_mailboxes(session, row) if guard is not None else [row]
+        active_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.status not in {"disabled", "disabled_by_guard"}
+        ]
+        preferred_id = str(getattr(guard, "warmup_connection_id", "") or connection_id)
+        selected = next(
+            (candidate for candidate in active_candidates if candidate.id == preferred_id),
+            active_candidates[0] if active_candidates else None,
+        )
+        if selected is None:
+            raise RuntimeError("No active RuSender connection is available for key warmup.")
+        recipients = list(settings_source.warmup_recipients or [])
+        if not recipients:
+            raise ValueError("At least one warmup recipient is required.")
+        percent = max(1, int(settings_source.warmup_percent_of_errors or 100))
+        message_count = min(
+            10000,
+            max(1, int(math.ceil(max(1, error_count) * percent / 100.0))),
+        )
+        selected_connection_id = selected.id
+        owner_username = str(selected.owner_username or "")
+        scope_id = guard.id if guard is not None else selected_connection_id
+        if guard is not None:
+            guard.warmup_connection_id = selected_connection_id
+            guard.updated_at = _now()
+            _sync_key_guard_to_mailboxes(session, selected, guard)
+
+    from src.workers.task_queue import enqueue_task
+
+    task, _created = enqueue_task(
+        task_type="connection_warmup",
+        job_id=None,
+        owner_username=owner_username,
+        payload={
+            "connection_id": selected_connection_id,
+            "key_guard_id": key_guard_id,
+            "owner_username": owner_username,
+            "recipients": recipients,
+            "message_count": message_count,
+            "tracking_run_id": triggered_at.isoformat(),
+        },
+        max_attempts=1,
+        idempotency_key=f"connection_warmup:{scope_id}:{triggered_at.isoformat()}",
+        active_key=f"connection_warmup:{scope_id}",
+    )
+    task_id = str(task["id"])
+    with session_scope() as session:
+        row = session.get(SmtpMailbox, selected_connection_id)
+        if row is not None:
+            guard = session.get(DeliveryKeyGuard, key_guard_id) if key_guard_id else None
+            if guard is not None:
+                guard.warmup_task_id = task_id
+                guard.warmup_status = "queued"
+                guard.updated_at = _now()
+                _sync_key_guard_to_mailboxes(session, row, guard)
+            else:
+                row.warmup_task_id = task_id
+                row.warmup_status = "queued"
+                row.updated_at = _now()
+    return task_id
+
+
 def record_channel_outcome(
     *,
     connection_id: str,
@@ -384,21 +719,38 @@ def record_channel_outcome(
 
     timestamp = _parse_occurred_at(occurred_at)
     triggered_action: str | None = None
+    key_guard_id: str | None = None
+    scope_connection_ids = [connection_id]
+    owner_username = ""
     with session_scope() as session:
-        row = session.execute(
-            select(SmtpMailbox).where(SmtpMailbox.id == connection_id).with_for_update()
-        ).scalar_one_or_none()
+        row = session.get(SmtpMailbox, connection_id)
         if row is None:
             return None
+        owner_username = str(row.owner_username or "")
+        key_guard = _ensure_key_guard(session, row, for_update=True)
+        if key_guard is None:
+            row = session.execute(
+                select(SmtpMailbox).where(SmtpMailbox.id == connection_id).with_for_update()
+            ).scalar_one()
+        else:
+            key_guard_id = key_guard.id
+            scope_connection_ids = [
+                mailbox.id for mailbox in _key_scope_mailboxes(session, row)
+            ]
+        outcome_scope = (
+            DeliveryChannelOutcome.delivery_key_guard_id == key_guard_id
+            if key_guard_id else DeliveryChannelOutcome.connection_id == connection_id
+        )
         existing = session.scalar(
             select(DeliveryChannelOutcome).where(
-                DeliveryChannelOutcome.connection_id == connection_id,
+                outcome_scope,
                 DeliveryChannelOutcome.provider_message_id == message_id,
             )
         )
         if existing is None:
             session.add(
                 DeliveryChannelOutcome(
+                    delivery_key_guard_id=key_guard_id,
                     connection_id=connection_id,
                     provider_message_id=message_id,
                     recipient=str(recipient or "").strip().lower(),
@@ -415,15 +767,32 @@ def record_channel_outcome(
             existing.smtp_response = str(smtp_response or existing.smtp_response or "").strip() or None
             existing.occurred_at = timestamp
             existing.updated_at = _now()
-        if outcome == "error":
+        if outcome == "error" and key_guard is not None:
+            key_guard.delivery_guard_last_error_at = timestamp
+        elif outcome == "error":
             row.delivery_guard_last_error_at = timestamp
         session.flush()
         triggered_action = _evaluate_locked(session, row, now=_now())
         snapshot = guard_snapshot(row)
 
+    if outcome == "error" and owner_username and recipient:
+        try:
+            from src.campaigns.email_validation_service import record_hard_delivery_failure
+
+            record_hard_delivery_failure(
+                owner_username=owner_username,
+                email=recipient,
+                provider_status=provider_status,
+                reason=smtp_response,
+            )
+        except Exception:
+            logger.exception(
+                "email_validation_hard_bounce_update_failed",
+                connection_id=connection_id,
+            )
     if triggered_action in {"disable", "warmup"}:
         snapshot["paused_campaigns"] = _pause_campaigns_for_channel(
-            connection_id,
+            scope_connection_ids,
             reason=(
                 "delivery_channel_warmup"
                 if triggered_action == "warmup"
@@ -434,6 +803,7 @@ def record_channel_outcome(
         try:
             snapshot["warmup_task_id"] = _enqueue_connection_warmup(
                 connection_id,
+                key_guard_id=key_guard_id,
                 error_count=int(snapshot.get("error_count") or 0),
                 triggered_at=timestamp,
             )
@@ -445,13 +815,17 @@ def record_channel_outcome(
             )
             with session_scope() as session:
                 row = session.get(SmtpMailbox, connection_id)
-                if row is not None:
-                    row.warmup_status = "failed"
-                    row.delivery_guard_reason = (
+                guard = session.get(DeliveryKeyGuard, key_guard_id) if key_guard_id else None
+                target: Any = guard or row
+                if target is not None:
+                    target.warmup_status = "failed"
+                    target.delivery_guard_reason = (
                         "Не удалось поставить прогрев в очередь. "
                         "Проверьте настройки и сбросьте состояние прогрева."
                     )
-                    row.updated_at = _now()
+                    target.updated_at = _now()
+                    if guard is not None and row is not None:
+                        _sync_key_guard_to_mailboxes(session, row, guard)
             snapshot["warmup_status"] = "failed"
     try:
         from src.campaigns.connection_sender_warmup_service import record_warmup_delivery_outcome
@@ -472,7 +846,7 @@ def record_channel_outcome(
     return snapshot
 
 
-def reset_channel_guard(connection_id: str, *, enable: bool | None = None) -> dict[str, Any]:
+def _reset_connection_guard(connection_id: str, *, enable: bool | None = None) -> dict[str, Any]:
     """Reset counters/state without auto-resuming campaigns."""
     warmup_task_id: str | None = None
     with session_scope() as session:
@@ -519,6 +893,63 @@ def reset_channel_guard(connection_id: str, *, enable: bool | None = None) -> di
     return snapshot
 
 
+def reset_channel_guard(connection_id: str, *, enable: bool | None = None) -> dict[str, Any]:
+    """Reset a connection guard or the whole RuSender key guard."""
+    warmup_task_id: str | None = None
+    with session_scope() as session:
+        probe = session.get(SmtpMailbox, connection_id)
+        if probe is None:
+            raise LookupError("Delivery connection not found.")
+        if _rusender_key_scope(probe) is None:
+            return _reset_connection_guard(connection_id, enable=enable)
+    with session_scope() as session:
+        row = session.execute(
+            select(SmtpMailbox).where(SmtpMailbox.id == connection_id).with_for_update()
+        ).scalar_one_or_none()
+        if row is None:
+            raise LookupError("Delivery connection not found.")
+        guard = _ensure_key_guard(session, row, for_update=True)
+        assert guard is not None
+
+        if enable is not None:
+            guard.delivery_guard_enabled = bool(enable)
+        warmup_task_id = str(guard.warmup_task_id or "") or None
+        guard.delivery_guard_state = "normal"
+        guard.delivery_guard_reason = None
+        guard.delivery_guard_terminal_count = 0
+        guard.delivery_guard_error_count = 0
+        guard.delivery_guard_error_rate = 0.0
+        guard.delivery_guard_triggered_at = None
+        guard.delivery_guard_last_error_at = None
+        guard.warmup_task_id = None
+        guard.warmup_status = "idle"
+        guard.warmup_sent_count = 0
+        guard.warmup_error_count = 0
+        guard.warmup_started_at = None
+        guard.warmup_completed_at = None
+        guard.updated_at = _now()
+        session.execute(
+            delete(DeliveryChannelOutcome).where(
+                DeliveryChannelOutcome.delivery_key_guard_id == guard.id
+            )
+        )
+        _sync_key_guard_to_mailboxes(session, row, guard)
+        snapshot = guard_snapshot(row)
+
+    if warmup_task_id:
+        from src.workers.task_queue import request_cancel
+
+        try:
+            request_cancel(warmup_task_id)
+        except Exception:
+            logger.exception(
+                "connection_warmup_cancel_failed",
+                connection_id=connection_id,
+                task_id=warmup_task_id,
+            )
+    return snapshot
+
+
 def reserve_channel_send_slot(
     connection_id: str,
     *,
@@ -529,11 +960,17 @@ def reserve_channel_send_slot(
     hour_start = now - timedelta(hours=1)
     day_start = now - timedelta(days=1)
     with session_scope() as session:
-        row = session.execute(
-            select(SmtpMailbox).where(SmtpMailbox.id == connection_id).with_for_update()
-        ).scalar_one_or_none()
+        row = session.get(SmtpMailbox, connection_id)
         if row is None:
             raise LookupError("Delivery connection not found.")
+        key_guard = _ensure_key_guard(session, row, for_update=True)
+        if key_guard is None:
+            row = session.execute(
+                select(SmtpMailbox).where(SmtpMailbox.id == connection_id).with_for_update()
+            ).scalar_one()
+        else:
+            _sync_key_guard_to_mailboxes(session, row, key_guard)
+
         if row.delivery_guard_state == "disabled" or row.status == "disabled_by_guard":
             raise DeliveryChannelDisabled(
                 row.delivery_guard_reason or "Канал отключён из-за ошибок доставки."

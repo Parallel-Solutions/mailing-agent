@@ -86,9 +86,9 @@ class BatchWorkerEmailValidationTests(unittest.TestCase):
             )
 
         with patch(
-            "src.campaigns.recipient_email_service.validate_configured_email_address",
-            side_effect=lambda email, **kwargs: fake_result(email, email == "backup@example.com"),
-        ):
+            "src.campaigns.email_validation_service.cached_validation_result",
+            side_effect=lambda owner, email: fake_result(email, email == "backup@example.com"),
+        ), patch("src.campaigns.recipient_email_service.settings.email_validation_mode", "smtpbz"):
             result = run_sender_batch(
                 {
                     "campaign_id": self.campaign_id,

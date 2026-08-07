@@ -239,6 +239,68 @@ class BackgroundTask(Base):
     )
 
 
+class EmailValidationCache(Base):
+    __tablename__ = "email_validation_cache"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="smtpbz")
+    normalized_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_email_validation_cache_owner_provider_email",
+            "owner_username",
+            "provider",
+            "normalized_email",
+            unique=True,
+        ),
+        Index("idx_email_validation_cache_expires", "provider", "expires_at"),
+    )
+
+
+class EmailValidationRun(Base):
+    __tablename__ = "email_validation_runs"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="smtpbz")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    valid_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    invalid_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unknown_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cached_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    task_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_email_validation_runs_scope", "owner_username", "scope_type", "scope_id", "created_at"),
+        Index("idx_email_validation_runs_status", "status", "created_at"),
+    )
+
+
 class Client(Base):
     __tablename__ = "clients"
 
@@ -469,10 +531,66 @@ class SmtpOpenTracking(Base):
     )
 
 
+class DeliveryKeyGuard(Base):
+    """Error guard and automatic warmup state for one provider sending key."""
+
+    __tablename__ = "delivery_key_guards"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_key_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    delivery_guard_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    delivery_error_rate_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.05)
+    delivery_error_window_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    delivery_error_min_samples: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    delivery_error_critical_count: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    delivery_error_action: Mapped[str] = mapped_column(String(16), nullable=False, default="warmup")
+    delivery_throttled_max_per_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    delivery_guard_state: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
+    delivery_guard_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivery_guard_terminal_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    delivery_guard_error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    delivery_guard_error_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    delivery_guard_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_guard_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    warmup_recipients: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    warmup_percent_of_errors: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    warmup_connection_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("smtp_mailboxes.id", ondelete="SET NULL"), nullable=True
+    )
+    warmup_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    warmup_status: Mapped[str] = mapped_column(String(24), nullable=False, default="idle")
+    warmup_sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warmup_error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warmup_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    warmup_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_delivery_key_guards_scope",
+            "owner_username",
+            "provider",
+            "external_key_id",
+            unique=True,
+        ),
+        Index("idx_delivery_key_guards_state", "delivery_guard_state", "updated_at"),
+    )
+
+
 class DeliveryChannelOutcome(Base):
     __tablename__ = "delivery_channel_outcomes"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    delivery_key_guard_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("delivery_key_guards.id", ondelete="SET NULL"), nullable=True
+    )
     connection_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("smtp_mailboxes.id", ondelete="CASCADE"), nullable=False
     )
@@ -495,6 +613,13 @@ class DeliveryChannelOutcome(Base):
             unique=True,
         ),
         Index("idx_delivery_channel_outcomes_window", "connection_id", "occurred_at"),
+        Index(
+            "uq_delivery_key_outcomes_message",
+            "delivery_key_guard_id",
+            "provider_message_id",
+            unique=True,
+        ),
+        Index("idx_delivery_key_outcomes_window", "delivery_key_guard_id", "occurred_at"),
     )
 
 

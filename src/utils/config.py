@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     smtpbz_api_key: str = ""
     smtpbz_api_base_url: str = "https://api.smtp.bz/v1"
     smtpbz_fail_open: bool = False
+    email_validation_concurrency: int = 5
+    email_validation_max_attempts: int = 3
+    email_validation_valid_ttl_days: int = 14
+    email_validation_invalid_ttl_days: int = 30
+    email_validation_unknown_ttl_minutes: int = 15
     documents_worker_max_processes: int = 1
     sender_worker_max_processes: int = 1
     user_worker_max_processes_per_task: int = 1

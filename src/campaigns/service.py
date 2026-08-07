@@ -259,7 +259,12 @@ def _effective_rate_limits(
 def _validate_email(value: str, email_fallback: str = "") -> str:
     from src.campaigns.recipient_email_service import validate_email_field
 
-    return validate_email_field(value, email_fallback)
+    status = validate_email_field(value, email_fallback)
+    if status == "valid":
+        from src.campaigns.email_validation_service import smtpbz_preflight_enabled
+
+        return "pending" if smtpbz_preflight_enabled() else "valid"
+    return status
 
 
 def extract_recipient_columns(rows: list[dict[str, Any]]) -> list[str]:
@@ -992,7 +997,7 @@ def replace_recipients(
                     validation_status=status,
                     extra=extra,
                     excluded=bool(
-                        item.get("excluded") or status != "valid" or suppressed
+                        item.get("excluded") or status == "invalid" or suppressed
                     ),
                 )
             )
@@ -1056,7 +1061,7 @@ def update_recipient(
         if "extra" in data and isinstance(data["extra"], dict):
             row.extra = dict(data["extra"])
         row.validation_status = _validate_email(row.email, row.email_fallback)
-        if row.validation_status != "valid":
+        if row.validation_status == "invalid":
             row.excluded = True
         session.flush()
         return {
@@ -1500,6 +1505,29 @@ def validate_campaign_for_launch(
             )
             or 0
         )
+        validation_rows = session.execute(
+            select(CampaignRecipient.validation_status, func.count())
+            .where(
+                CampaignRecipient.campaign_id == campaign_id,
+                CampaignRecipient.excluded.is_(False),
+            )
+            .group_by(CampaignRecipient.validation_status)
+        ).all()
+        validation_counts = {
+            str(status or "pending"): int(count or 0)
+            for status, count in validation_rows
+        }
+        from src.campaigns.email_validation_service import smtpbz_preflight_enabled
+
+        if smtpbz_preflight_enabled():
+            unverified = sum(
+                count for status, count in validation_counts.items() if status != "valid"
+            )
+            if unverified:
+                errors.append(
+                    f"Проверка SMTP.BZ не завершена для {unverified} получателей."
+                )
+
         if active <= 0:
             errors.append("Нет получателей для отправки")
 
@@ -1564,6 +1592,7 @@ def validate_campaign_for_launch(
         "active_recipients": int(active),
         "mapping_confirmed": bool(draft.get("mapping_confirmed")),
         "excluded_recipients": int(excluded),
+        "email_validation": validation_counts,
         "schedule": schedule_payload,
         "campaign": campaign_payload,
     }
@@ -1673,9 +1702,11 @@ def launch_campaign(
         immediate = force_now or _schedule_requires_immediate_start(
             schedule, now=launch_now
         )
-        # immediate launch bypasses calendar windows / schedule pacing, but connection limits still apply.
-        schedule_hour = 0 if immediate else schedule.max_per_hour
-        schedule_day = 0 if immediate else schedule.max_per_day
+        # An immediate/late launch changes only the first send time. Campaign
+        # pacing and campaign limits must remain in force; connection limits
+        # are safety ceilings and must never become a target send rate.
+        schedule_hour = schedule.max_per_hour
+        schedule_day = schedule.max_per_day
         max_per_hour, max_per_day = _effective_rate_limits(
             schedule_max_per_hour=schedule_hour,
             schedule_max_per_day=schedule_day,
@@ -1685,7 +1716,7 @@ def launch_campaign(
         preview = plan_batches(
             recipient_count=len(recipient_ids),
             batch_size=schedule.batch_size,
-            interval_seconds=0 if immediate else schedule.interval_seconds,
+            interval_seconds=schedule.interval_seconds,
             start_at=None if immediate else schedule.start_at,
             send_immediately=True if immediate else schedule.send_immediately,
             timezone_name=schedule.timezone,

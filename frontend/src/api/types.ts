@@ -196,6 +196,30 @@ export type CampaignValidateResponse = {
   active_recipients: number;
   excluded_recipients: number;
   mapping_confirmed?: boolean;
+  email_validation?: Record<string, number>;
+};
+
+export type EmailValidationRun = {
+  id: string;
+  scope_type: 'campaign' | 'audience';
+  scope_id: string;
+  revision: string;
+  provider: string;
+  status: 'not_started' | 'queued' | 'running' | 'completed' | 'failed' | 'stale';
+  total_count: number;
+  processed_count: number;
+  valid_count: number;
+  invalid_count: number;
+  unknown_count: number;
+  cached_count: number;
+  progress_percent: number;
+  task_id: string;
+  error: string;
+  started_at: string;
+  completed_at: string;
+  created_at: string;
+  enabled: boolean;
+  recipient_counts: Record<string, number>;
 };
 
 export type EmailChainPreviewItem = {
@@ -207,7 +231,6 @@ export type EmailChainPreviewItem = {
   attachments: EmailChainPreviewAttachment[];
   issues?: TemplatePlaceholderIssue[];
 };
-
 export type EmailChainPreviewResponse = {
   recipient: {
     id: number;
@@ -562,6 +585,8 @@ export type DeliveryConnection = {
   warmup_percent_of_errors?: number;
   delivery_guard?: {
     enabled: boolean;
+    scope: 'connection' | 'sending_key';
+    scope_id: string;
     state: 'normal' | 'throttled' | 'disabled' | 'warmup';
     reason: string;
     error_rate_threshold: number;

@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { Audience, Recipient } from './types';
+import type { Audience, EmailValidationRun, Recipient } from './types';
 
 export const audiencesApi = {
   list: () => api.get<Audience[]>('/api/v1/audiences'),
@@ -16,6 +16,10 @@ export const audiencesApi = {
     const suffix = q.toString() ? `?${q}` : '';
     return api.get<{ items: Recipient[]; total: number }>(`/api/v1/audiences/${id}/members${suffix}`);
   },
+  validation: (id: string) =>
+    api.get<EmailValidationRun>(`/api/v1/audiences/${id}/email-validation`),
+  startValidation: (id: string) =>
+    api.post<EmailValidationRun>(`/api/v1/audiences/${id}/email-validation`),
   replaceMembers: (id: string, members: Partial<Recipient>[]) =>
     api.put(`/api/v1/audiences/${id}/members`, { members }),
   importFile: (id: string, file: File) => api.upload(`/api/v1/audiences/${id}/import`, file),

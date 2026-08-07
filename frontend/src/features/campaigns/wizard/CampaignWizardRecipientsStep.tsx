@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ProFormSelect } from '@ant-design/pro-components';
-import { Button, Space, Table, Tag, Upload } from 'antd';
+import { Alert, Button, Progress, Space, Table, Tag, Upload } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { campaignsApi } from '@/api/campaigns';
 import type { Audience, Campaign, Recipient } from '@/api/types';
 import { statusLabel } from '@/utils/presentation';
 
@@ -30,6 +32,26 @@ export function CampaignWizardRecipientsStep({
   recipientsTotal,
 }: Props) {
   const [importing, setImporting] = useState(false);
+  const queryClient = useQueryClient();
+  const validationQuery = useQuery({
+    queryKey: ['campaign-email-validation', campaignId],
+    queryFn: () => campaignsApi.emailValidation(campaignId!),
+    enabled: Boolean(campaignId),
+    refetchInterval: 3000,
+  });
+  const startValidation = useMutation({
+    mutationFn: () => campaignsApi.startEmailValidation(campaignId!),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['campaign-email-validation', campaignId] });
+    },
+  });
+  const validation = validationQuery.data;
+
+  useEffect(() => {
+    if (!campaignId || validation?.status !== 'completed') return;
+    void queryClient.invalidateQueries({ queryKey: ['campaign-recipients', campaignId] });
+  }, [campaignId, queryClient, validation?.completed_at, validation?.status]);
+
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <div data-onboarding-id="campaign-audience">
@@ -77,6 +99,38 @@ export function CampaignWizardRecipientsStep({
           Дозаполнить
         </Button>
       </Space>
+      {campaignId && validation?.enabled ? (
+        <Alert
+          showIcon
+          type={
+            validation.status === 'failed'
+              ? 'error'
+              : validation.status === 'completed' && validation.unknown_count === 0
+                ? 'success'
+                : 'info'
+          }
+          message="Предварительная проверка SMTP.BZ"
+          description={(
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Progress percent={validation.progress_percent} size="small" />
+              <span>
+                Проверено: {validation.processed_count}/{validation.total_count}. Валидных: {validation.valid_count},
+                невалидных: {validation.invalid_count}, требуют повтора: {validation.unknown_count}.
+              </span>
+              {validation.error ? <span>{validation.error}</span> : null}
+            </Space>
+          )}
+          action={(
+            <Button
+              size="small"
+              loading={startValidation.isPending}
+              onClick={() => startValidation.mutate()}
+            >
+              {validation.status === 'not_started' ? 'Запустить проверку' : 'Проверить повторно'}
+            </Button>
+          )}
+        />
+      ) : null}
       <div data-onboarding-id="campaign-recipient-check">
         <Table
           rowKey="id"
@@ -92,7 +146,7 @@ export function CampaignWizardRecipientsStep({
             title: 'Проверка',
             dataIndex: 'validation_status',
             render: (v) => (
-              <Tag color={v === 'valid' ? 'green' : 'red'}>
+              <Tag color={v === 'valid' ? 'green' : v === 'invalid' ? 'red' : 'gold'}>
                 {statusLabel(String(v || ''))}
               </Tag>
             ),

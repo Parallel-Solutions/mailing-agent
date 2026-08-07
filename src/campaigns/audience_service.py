@@ -224,7 +224,7 @@ def replace_members(
                     validation_status=status,
                     extra=dict(item.get("extra") or {}),
                     excluded=bool(
-                        item.get("excluded") or status != "valid" or suppressed
+                        item.get("excluded") or status == "invalid" or suppressed
                     ),
                 )
             )

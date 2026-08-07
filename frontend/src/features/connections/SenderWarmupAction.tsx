@@ -18,7 +18,7 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [recipientText, setRecipientText] = useState('');
+  const [recipientEmails, setRecipientEmails] = useState<string[]>([]);
   const [headers, setHeaders] = useState('');
   const [busy, setBusy] = useState(false);
   const [smtpConnectionId, setSmtpConnectionId] = useState('');
@@ -36,11 +36,16 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
     refetchInterval: open ? 10_000 : false,
   });
   const warmup = query.data;
-  const smtpConnections = connections.filter(
-    (item) => item.transport === 'smtp'
-      && item.status === 'active'
-      && item.email.trim().toLowerCase() === connection.email.trim().toLowerCase(),
-  );
+  const smtpConnections = connections.filter((item) => {
+    if (item.status !== 'active') return false;
+    if (connection.transport === 'rusender') {
+      return item.transport === 'rusender'
+        && item.sending_key_id != null
+        && item.sending_key_id === connection.sending_key_id;
+    }
+    return item.transport === 'smtp'
+      && item.email.trim().toLowerCase() === connection.email.trim().toLowerCase();
+  });
   const selectedSmtpConnection = smtpConnections.find((item) => item.id === smtpConnectionId);
   const currentDayVolume = warmup
     ? warmup.daily_plan[Math.min(warmup.current_day - 1, warmup.daily_plan.length - 1)] || 0
@@ -76,10 +81,10 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
 
   return <>
     <a onClick={() => setOpen(true)}>Прогрев</a>
-    <Modal open={open} title={`Прогрев отправителя ${connection.email}`} onCancel={() => setOpen(false)} footer={null} width={860} destroyOnClose>
+    <Modal open={open} title={connection.transport === 'rusender' ? `Прогрев ключа RuSender ${connection.sending_key_id}` : `Прогрев отправителя ${connection.email}`} onCancel={() => setOpen(false)} footer={null} width={860} destroyOnClose>
       {query.isLoading ? <Typography.Text>Загрузка…</Typography.Text> : null}
       {warmup ? <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        <Alert type="info" showIcon message="Сначала техническая проверка, затем постепенный рост объёма" description="Дневной план — это общее количество писем. Они равномерно распределяются по активным адресам и отправляются только через выбранный SMTP." />
+        <Alert type="info" showIcon message="Сначала техническая проверка, затем постепенный рост объёма" description={connection.transport === 'rusender' ? "Письма отправляются именно через выбранный ключ RuSender. Email отправителя можно выбрать среди подключений этого ключа." : "Дневной план — это общее количество писем. Они равномерно распределяются по активным адресам и отправляются через выбранный SMTP."} />
 
         <Space wrap>
           <Typography.Title level={5} style={{ margin: 0 }}>Состояние</Typography.Title>
@@ -109,10 +114,21 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
         <div>
           <Typography.Title level={5}>2. Адреса получателей</Typography.Title>
           <Space.Compact block>
-            <Input.TextArea value={recipientText} onChange={(event) => setRecipientText(event.target.value)} placeholder={'friend@gmail.com\ncolleague@yandex.ru\ntest@mail.ru'} autoSize={{ minRows: 2, maxRows: 5 }} />
+            <Select
+              mode="tags"
+              value={recipientEmails}
+              onChange={setRecipientEmails}
+              tokenSeparators={[',', ';', ' ']}
+              options={[
+                { label: 'ffff06@yandex.ru', value: 'ffff06@yandex.ru' },
+                { label: 'fmagomedova654@gmail.ru', value: 'fmagomedova654@gmail.ru' },
+              ]}
+              placeholder="Выберите адреса или введите свои"
+              style={{ flex: 1, minWidth: 420 }}
+            />
             <Button type="primary" loading={busy} onClick={() => {
-              const emails = recipientText.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean);
-              void run(() => connectionsApi.addWarmupRecipients(connection.id, emails), `Добавлено адресов: ${emails.length}`).then(() => setRecipientText(''));
+              const emails = recipientEmails.map((item) => item.trim()).filter(Boolean);
+              void run(() => connectionsApi.addWarmupRecipients(connection.id, emails), `Добавлено адресов: ${emails.length}`).then(() => setRecipientEmails([]));
             }}>Добавить</Button>
           </Space.Compact>
           <Typography.Text type="secondary">Активно: {warmup.active_recipient_count}. План текущего дня: {distributionLabel}.</Typography.Text>
@@ -135,22 +151,22 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
         <div>
           <Typography.Title level={5}>3. Настройки отправки</Typography.Title>
           <label style={{ display: 'block', marginBottom: 12 }}>
-            <Typography.Text type="secondary">SMTP-подключение для отправки</Typography.Text>
+            <Typography.Text type="secondary">{connection.transport === 'rusender' ? 'Отправитель ключа RuSender' : 'SMTP-подключение для отправки'}</Typography.Text>
             <Select
               value={smtpConnectionId || undefined}
               onChange={setSmtpConnectionId}
-              placeholder="Выберите SMTP-подключение"
+              placeholder={connection.transport === 'rusender' ? 'Выберите отправителя этого ключа' : 'Выберите SMTP-подключение'}
               style={{ display: 'block', width: '100%', maxWidth: 520 }}
               options={smtpConnections.map((item) => ({
                 value: item.id,
-                label: `${item.email} · ${item.host}:${item.port}`,
+                label: connection.transport === 'rusender' ? `${item.email} · ключ ${item.sending_key_id}` : `${item.email} · ${item.host}:${item.port}`,
               }))}
               disabled={warmup.status === 'running'}
             />
           </label>
           {selectedSmtpConnection
-            ? <Alert type="success" showIcon message={`Прогрев отправляется через SMTP: ${selectedSmtpConnection.email}`} style={{ marginBottom: 12 }} />
-            : <Alert type="error" showIcon message="Добавьте и проверьте SMTP-подключение с тем же email" style={{ marginBottom: 12 }} />}
+            ? <Alert type="success" showIcon message={connection.transport === 'rusender' ? `Прогрев идёт через ключ ${selectedSmtpConnection.sending_key_id}, отправитель: ${selectedSmtpConnection.email}` : `Прогрев отправляется через SMTP: ${selectedSmtpConnection.email}`} style={{ marginBottom: 12 }} />
+            : <Alert type="error" showIcon message={connection.transport === 'rusender' ? "Нет активного подключения с этим ключом RuSender" : "Добавьте и проверьте SMTP-подключение с тем же email"} style={{ marginBottom: 12 }} />}
           <Space wrap align="start">
             <label>
               <Typography.Text type="secondary">Начало дня</Typography.Text>

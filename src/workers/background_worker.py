@@ -401,6 +401,11 @@ def run_payload(payload: dict[str, Any]) -> None:
 
         run_sender_batch(kwargs)
         return
+    if task == "email_validation":
+        from src.campaigns.email_validation_service import run_email_validation
+
+        run_email_validation(kwargs)
+        return
     if task == "campaign_pre_generate":
         from src.campaigns.batch_worker import run_campaign_pre_generate
 

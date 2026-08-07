@@ -175,6 +175,7 @@ def get_recipient_resend_capability(
         target_email, _attempts = resolve_delivery_email(
             recipient,
             skip_emails=[normalized_failed] if normalized_failed else None,
+            owner_username=campaign.owner_username,
         )
         mode = "fallback"
         if not target_email:
@@ -196,7 +197,9 @@ def get_recipient_resend_capability(
                 state=state,
                 retry_after=retry_after,
             )
-        validation = validate_delivery_email(target_email)
+        validation = validate_delivery_email(
+            target_email, owner_username=campaign.owner_username
+        )
         if not validation.is_valid:
             return _blocked(
                 validation.reason or "Email не прошёл проверку.",
@@ -313,7 +316,7 @@ def run_recipient_resend(payload: dict[str, Any]) -> dict[str, Any]:
         raise RecipientResendNotAllowed(
             f"Адрес находится в стоп-листе ({suppression_reason})."
         )
-    validation = validate_delivery_email(target_email)
+    validation = validate_delivery_email(target_email, owner_username=owner)
     if not validation.is_valid:
         raise RecipientResendNotAllowed(validation.reason or "Email не прошёл проверку.")
     target_email = validation.normalized_email
