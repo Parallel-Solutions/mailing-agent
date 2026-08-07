@@ -236,17 +236,13 @@ function ConnectionDeliveryGuardFields() {
         name="delivery_error_rate_percent"
         label="Критическая доля ошибок, %"
         fieldProps={{ min: 0.1, max: 100, precision: 1 }}
-        extra="По умолчанию 5%. Срабатывание происходит при превышении значения."
-      />
-      <ProFormDigit
-        name="delivery_error_window_minutes"
-        label="Окно расчёта, минут"
-        fieldProps={{ min: 5, max: 10080, precision: 0 }}
+        extra="Считается накопительно с последнего успешного прогрева или ручного сброса."
       />
       <ProFormDigit
         name="delivery_error_min_samples"
         label="Минимум завершённых доставок для расчёта"
         fieldProps={{ min: 1, precision: 0 }}
+        extra="По умолчанию 20: единичная ошибка не запустит прогрев."
       />
       <ProFormSelect
         name="warmup_recipients_text"
@@ -285,7 +281,6 @@ function deliveryGuardPayload(values: Record<string, unknown>) {
       0.001,
       Math.min(1, (Number(values.delivery_error_rate_percent) || 5) / 100),
     ),
-    delivery_error_window_minutes: Number(values.delivery_error_window_minutes) || 60,
     delivery_error_min_samples: Number(values.delivery_error_min_samples) || 20,
     delivery_error_critical_count: 0,
     delivery_error_action: 'warmup',
@@ -421,7 +416,6 @@ function EditConnectionAction({
         max_per_day: connection.max_per_day ?? 0,
         delivery_guard_enabled: connection.delivery_guard_enabled ?? false,
         delivery_error_rate_percent: (connection.delivery_error_rate_threshold ?? 0.05) * 100,
-        delivery_error_window_minutes: connection.delivery_error_window_minutes ?? 60,
         delivery_error_min_samples: connection.delivery_error_min_samples ?? 20,
         warmup_recipients_text: connection.warmup_recipients || [],
         warmup_percent_of_errors: connection.warmup_percent_of_errors ?? 100,
@@ -742,7 +736,6 @@ export function ConnectionsPage() {
         max_per_day: 500,
         delivery_guard_enabled: true,
         delivery_error_rate_percent: 5,
-        delivery_error_window_minutes: 60,
         delivery_error_min_samples: 20,
         warmup_recipients_text: [],
         warmup_percent_of_errors: 100,
@@ -1032,7 +1025,6 @@ export function ConnectionsPage() {
             max_per_day: 0,
             delivery_guard_enabled: false,
             delivery_error_rate_percent: 5,
-            delivery_error_window_minutes: 60,
             delivery_error_min_samples: 20,
             warmup_recipients_text: [],
             warmup_percent_of_errors: 100,

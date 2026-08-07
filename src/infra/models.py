@@ -446,6 +446,9 @@ class SmtpMailbox(Base):
     delivery_guard_terminal_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     delivery_guard_error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     delivery_guard_error_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    delivery_guard_monitoring_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     delivery_guard_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivery_guard_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     warmup_recipients: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
@@ -552,6 +555,9 @@ class DeliveryKeyGuard(Base):
     delivery_guard_terminal_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     delivery_guard_error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     delivery_guard_error_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    delivery_guard_monitoring_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     delivery_guard_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivery_guard_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     warmup_recipients: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
