@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from html import unescape
+from html.parser import HTMLParser
 
 from src.campaigns.substitution_context import SYSTEM_VARIABLE_ALIASES
 from src.generator.generation.template_analysis import _norm_token
@@ -33,6 +33,84 @@ COMPOUND_TOKENS: tuple[tuple[str, str], ...] = (
     ("MUN_NAME_2 MUN_R_NAME SUB_RF_1", "WORK_SCOPE_FRAGMENT"),
     ("MUN_NAME_2 MUN_R_NAME SUB_RF", "WORK_SCOPE_FRAGMENT"),
 )
+
+_REVIEW_TEXT_BREAK_TAGS = frozenset(
+    {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "br",
+        "caption",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    }
+)
+_REVIEW_TEXT_HIDDEN_TAGS = frozenset({"head", "script", "style", "template"})
+
+
+class _ReviewTextHTMLParser(HTMLParser):
+    """Extract rendered text without inventing whitespace around inline tags."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._hidden_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        tag = tag.casefold()
+        if tag in _REVIEW_TEXT_HIDDEN_TAGS:
+            self._hidden_depth += 1
+        elif not self._hidden_depth and tag in _REVIEW_TEXT_BREAK_TAGS:
+            self.parts.append(" ")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if not self._hidden_depth and tag.casefold() in _REVIEW_TEXT_BREAK_TAGS:
+            self.parts.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.casefold()
+        if tag in _REVIEW_TEXT_HIDDEN_TAGS:
+            self._hidden_depth = max(0, self._hidden_depth - 1)
+        elif not self._hidden_depth and tag in _REVIEW_TEXT_BREAK_TAGS:
+            self.parts.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if not self._hidden_depth:
+            self.parts.append(data)
+
 
 TERRITORY_PLACEHOLDER_NAMES = frozenset(
     {
@@ -155,7 +233,10 @@ def discover_malformed_placeholders(text: str) -> list[PlaceholderInfo]:
 def html_to_review_text(html: str) -> str:
     if not html:
         return ""
-    text = unescape(re.sub(r"<[^>]+>", " ", html or ""))
+    parser = _ReviewTextHTMLParser()
+    parser.feed(str(html))
+    parser.close()
+    text = "".join(parser.parts)
     text = text.replace("\u00a0", " ")
     return re.sub(r"[ \t]+", " ", text).strip()
 

@@ -205,6 +205,33 @@ class TemplateTextReviewTests(unittest.TestCase):
         plain = html_to_review_text("<p>на {{ стп }} для</p>")
         self.assertEqual(plain, "на {{ стп }} для")
 
+    def test_html_to_review_text_does_not_add_space_before_punctuation_after_inline_tag(self) -> None:
+        plain = html_to_review_text("<p>Hello,<strong> Alice</strong>!</p>")
+
+        self.assertEqual(plain, "Hello, Alice!")
+        self.assertFalse(
+            any(
+                issue.kind == "punctuation" and issue.fragment == " !"
+                for issue in review_email_text(plain, field="body")
+            )
+        )
+
+    def test_html_to_review_text_keeps_separation_between_block_tags(self) -> None:
+        self.assertEqual(
+            html_to_review_text("<p>First</p><p>Second</p>"),
+            "First Second",
+        )
+
+    def test_html_to_review_text_keeps_real_space_before_punctuation(self) -> None:
+        plain = html_to_review_text("<p>Text <strong>important</strong> !</p>")
+
+        self.assertTrue(
+            any(
+                issue.kind == "punctuation" and issue.fragment == " !"
+                for issue in review_email_text(plain, field="body")
+            )
+        )
+
     def test_partition_review_messages_splits_severity(self) -> None:
         issues = [
             {"template_name": "A", "message": "error one", "kind": "artifact", "severity": "error"},
