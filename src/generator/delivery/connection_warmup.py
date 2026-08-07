@@ -5,10 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete
-
 from src.infra.db import session_scope
-from src.infra.models import DeliveryChannelOutcome, DeliveryKeyGuard, SmtpMailbox
+from src.infra.models import DeliveryKeyGuard, SmtpMailbox
 
 
 def _now() -> datetime:
@@ -195,12 +193,7 @@ def run_connection_warmup(kwargs: dict[str, Any]) -> dict[str, Any]:
                 target.delivery_guard_error_count = 0
                 target.delivery_guard_error_rate = 0.0
                 target.delivery_guard_last_error_at = None
-                outcome_scope = (
-                    DeliveryChannelOutcome.delivery_key_guard_id == guard.id
-                    if guard is not None
-                    else DeliveryChannelOutcome.connection_id == connection_id
-                )
-                session.execute(delete(DeliveryChannelOutcome).where(outcome_scope))
+                target.delivery_guard_monitoring_started_at = target.warmup_completed_at
             else:
                 target.delivery_guard_state = "warmup"
                 target.delivery_guard_reason = (

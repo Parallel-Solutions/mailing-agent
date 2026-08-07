@@ -590,9 +590,9 @@ export type DeliveryConnection = {
     state: 'normal' | 'throttled' | 'disabled' | 'warmup';
     reason: string;
     error_rate_threshold: number;
-    window_minutes: number;
+    tracking_mode: 'since_reset';
+    monitoring_started_at: string;
     min_samples: number;
-    critical_error_count: number;
     action: 'throttle' | 'disable' | 'warmup';
     throttled_max_per_hour: number;
     terminal_count: number;

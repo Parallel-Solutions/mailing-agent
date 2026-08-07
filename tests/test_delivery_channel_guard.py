@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
@@ -143,6 +144,125 @@ class DeliveryChannelGuardTests(unittest.TestCase):
                 "throttled",
             )
 
+    def test_error_rate_accumulates_beyond_the_old_sixty_minute_window(self) -> None:
+        from src.infra.models import DeliveryKeyGuard
+
+        connection = self._connection()
+        with session_scope() as session:
+            guard = session.scalar(select(DeliveryKeyGuard))
+            guard.delivery_guard_monitoring_started_at = datetime.now(timezone.utc) - timedelta(days=1)
+
+        occurred_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        for index in range(2):
+            record_channel_outcome(
+                connection_id=connection["id"],
+                provider_message_id=f"old-ok-{index}",
+                provider_status="delivered",
+                occurred_at=occurred_at,
+            )
+        snapshot = record_channel_outcome(
+            connection_id=connection["id"],
+            provider_message_id="old-error",
+            provider_status="hard_bounced",
+            occurred_at=occurred_at,
+        )
+
+        self.assertEqual(snapshot["tracking_mode"], "since_reset")
+        self.assertEqual(snapshot["terminal_count"], 3)
+        self.assertEqual(snapshot["error_count"], 1)
+        self.assertEqual(snapshot["state"], "throttled")
+
+    def test_exactly_five_percent_does_not_trigger_but_more_than_five_does(self) -> None:
+        connection = self._connection(delivery_error_min_samples=20)
+        for index in range(19):
+            record_channel_outcome(
+                connection_id=connection["id"],
+                provider_message_id=f"threshold-ok-{index}",
+                provider_status="delivered",
+            )
+
+        exact_threshold = record_channel_outcome(
+            connection_id=connection["id"],
+            provider_message_id="threshold-error-1",
+            provider_status="hard_bounced",
+        )
+        self.assertEqual(exact_threshold["error_rate"], 0.05)
+        self.assertEqual(exact_threshold["state"], "normal")
+
+        above_threshold = record_channel_outcome(
+            connection_id=connection["id"],
+            provider_message_id="threshold-error-2",
+            provider_status="hard_bounced",
+        )
+        self.assertGreater(above_threshold["error_rate"], 0.05)
+        self.assertEqual(above_threshold["state"], "throttled")
+
+    def test_provider_acceptance_is_pending_until_final_webhook(self) -> None:
+        connection = self._connection(delivery_error_min_samples=1)
+
+        accepted = record_channel_outcome(
+            connection_id=connection["id"],
+            provider_message_id="pending-message",
+            provider_status="accepted",
+        )
+        self.assertEqual(accepted["terminal_count"], 0)
+        self.assertEqual(accepted["state"], "normal")
+
+        delivered = record_channel_outcome(
+            connection_id=connection["id"],
+            provider_message_id="pending-message",
+            provider_status="delivered",
+        )
+        self.assertEqual(delivered["terminal_count"], 1)
+        self.assertEqual(delivered["error_count"], 0)
+
+    def test_critical_error_count_no_longer_triggers_guard(self) -> None:
+        connection = self._connection(
+            delivery_error_rate_threshold=1.0,
+            delivery_error_min_samples=20,
+            delivery_error_critical_count=1,
+        )
+        snapshot = record_channel_outcome(
+            connection_id=connection["id"],
+            provider_message_id="single-error",
+            provider_status="hard_bounced",
+        )
+
+        self.assertEqual(snapshot["error_rate"], 1.0)
+        self.assertEqual(snapshot["state"], "normal")
+
+    def test_older_webhook_cannot_overwrite_newer_final_status(self) -> None:
+        from src.infra.models import DeliveryChannelOutcome, DeliveryKeyGuard
+
+        connection = self._connection(delivery_error_min_samples=1)
+        now = datetime.now(timezone.utc)
+        with session_scope() as session:
+            guard = session.scalar(select(DeliveryKeyGuard))
+            guard.delivery_guard_monitoring_started_at = now - timedelta(hours=2)
+
+        record_channel_outcome(
+            connection_id=connection["id"],
+            provider_message_id="out-of-order",
+            provider_status="delivered",
+            occurred_at=now,
+        )
+        snapshot = record_channel_outcome(
+            connection_id=connection["id"],
+            provider_message_id="out-of-order",
+            provider_status="hard_bounced",
+            occurred_at=now - timedelta(hours=1),
+        )
+
+        self.assertEqual(snapshot["terminal_count"], 1)
+        self.assertEqual(snapshot["error_count"], 0)
+        self.assertEqual(snapshot["state"], "normal")
+        with session_scope() as session:
+            outcome = session.scalar(
+                select(DeliveryChannelOutcome).where(
+                    DeliveryChannelOutcome.provider_message_id == "out-of-order"
+                )
+            )
+            self.assertEqual(outcome.provider_status, "delivered")
     def test_shared_slot_limit_is_persisted_in_database(self) -> None:
         connection = self._connection(max_per_hour=2)
         self.assertEqual(reserve_channel_send_slot(connection["id"]), 0.0)
