@@ -422,14 +422,35 @@ def fill_gaps(job_id: str, verify_emails: bool = False) -> dict:
             shutil.copy2(paths.data_xlsx, dst)   # копия в output/ — чтобы скачивание нашло файл
             try:
                 from src.parser_new.tools.postprocess import postprocess_file
-                postprocess_file(str(dst), max_email_lookups=2000, check_all=True)
+                stats = postprocess_file(str(dst), max_email_lookups=2000, check_all=True)
             except Exception as e:
                 logger.warning(f"[fill] проверка почт не выполнена: {e}")
                 return {"reply": f"Проверка почт не выполнена: {e}",
                         "success": False, "result_file": None}
+
+            # postprocess_file может вернуть {"error": ...} без исключения
+            # (файл не найден / не открылся) — это не успех.
+            if not isinstance(stats, dict) or stats.get("error"):
+                err = stats.get("error") if isinstance(stats, dict) else "неизвестная ошибка"
+                logger.warning(f"[fill] проверка почт: {err}")
+                return {"reply": f"Проверка почт не выполнена: {err}",
+                        "success": False, "result_file": None}
+
             _mark_discovery_table_ready(job_id, count=0)
-            return {"reply": "Проверка почт завершена.", "success": True,
-                    "result_file": str(dst)}
+
+            # Сводку по почтам прокидываем наверх: раньше числа жили только в
+            # логах (см. справку §11.5), теперь долетают до модалки.
+            replaced = int(stats.get("email_replaced", 0) or 0)
+            found = int(stats.get("email_found", 0) or 0)
+            still_empty = int(stats.get("email_still_empty", 0) or 0)
+            reply = (
+                f"Проверка почт завершена. Заменено почт с официальных сайтов: {replaced}"
+                + (f", добавлено в пустые: {found}" if found else "")
+                + (f", осталось без почты: {still_empty}" if still_empty else "")
+                + "."
+            )
+            return {"reply": reply, "success": True,
+                    "result_file": str(dst), "email_stats": stats}
 
         # ОБЫЧНЫЙ ПУТЬ (галочка не стоит): дозаполнение пропусков через batch_processor
         res = run_batch_parser(job_id)
