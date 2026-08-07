@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from sqlalchemy import select
@@ -16,7 +17,14 @@ from src.campaigns.email_validation_service import (
 from src.campaigns.service import create_campaign, replace_recipients, validate_campaign_for_launch
 from src.generator.delivery.email_validation import EmailValidationResult
 from src.infra.db import session_scope
-from src.infra.models import Audience, AudienceMember, CampaignRecipient, EmailValidationCache
+from src.infra.models import (
+    Audience,
+    AudienceMember,
+    BackgroundTask,
+    CampaignRecipient,
+    EmailValidationCache,
+    EmailValidationRun,
+)
 from src.security.user_store import create_user
 from src.utils.config import settings
 from tests.bootstrap import bootstrap_test_runtime
@@ -123,8 +131,13 @@ class EmailValidationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 [(row.validation_status, row.excluded) for row in recipients],
-                [("valid", False), ("invalid", True), ("unknown", False)],
+                [("valid", False), ("invalid", True), ("unknown", True)],
             )
+
+        launch_validation = validate_campaign_for_launch(self.campaign_id, self.username)
+        self.assertFalse(
+            any("SMTP.BZ" in str(error) for error in launch_validation["errors"])
+        )
 
         second_campaign = create_campaign(self.username, {"name": "Cached SMTP.BZ preflight"})
         second_campaign_id = str(second_campaign["id"])
@@ -156,6 +169,55 @@ class EmailValidationPreflightTests(unittest.TestCase):
         self.assertEqual(validator.call_args.args[0], "temp@example.com")
         self.assertEqual(refreshed["valid_count"], 2)
         self.assertEqual(refreshed["cached_count"], 2)
+
+        with session_scope() as session:
+            retried = list(
+                session.scalars(
+                    select(CampaignRecipient)
+                    .where(CampaignRecipient.campaign_id == self.campaign_id)
+                    .order_by(CampaignRecipient.row_index)
+                ).all()
+            )
+            self.assertEqual(
+                [(row.validation_status, row.excluded) for row in retried],
+                [("valid", False), ("invalid", True), ("valid", False)],
+            )
+
+    def test_force_replaces_a_stuck_running_validation(self) -> None:
+        replace_recipients(
+            self.campaign_id,
+            self.username,
+            [{"email": "stuck@example.com"}],
+        )
+        queued = enqueue_scope_validation("campaign", self.campaign_id, self.username)
+        stale_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        with session_scope() as session:
+            run = session.get(EmailValidationRun, queued["id"])
+            self.assertIsNotNone(run)
+            assert run is not None
+            run.status = "running"
+            run.updated_at = stale_at
+            task = session.get(BackgroundTask, queued["task_id"])
+            self.assertIsNotNone(task)
+            assert task is not None
+            task.status = "running"
+            task.lease_owner = "test-worker"
+            task.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+
+        replacement = enqueue_scope_validation(
+            "campaign", self.campaign_id, self.username, force=True
+        )
+
+        self.assertNotEqual(replacement["id"], queued["id"])
+        with session_scope() as session:
+            old_run = session.get(EmailValidationRun, queued["id"])
+            old_task = session.get(BackgroundTask, queued["task_id"])
+            self.assertIsNotNone(old_run)
+            self.assertIsNotNone(old_task)
+            assert old_run is not None
+            assert old_task is not None
+            self.assertEqual(old_run.status, "stale")
+            self.assertIsNotNone(old_task.cancel_requested_at)
 
     def test_audience_preflight_updates_member_statuses_and_quality(self) -> None:
         audience = create_audience(self.username, "Validated audience")

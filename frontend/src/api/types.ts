@@ -307,6 +307,7 @@ export type Recipient = {
   source?: string;
   validation_status?: string;
   excluded?: boolean;
+  extra?: Record<string, unknown>;
   send_status?: string;
   last_error?: string | null;
   layout_error_code?: string | null;

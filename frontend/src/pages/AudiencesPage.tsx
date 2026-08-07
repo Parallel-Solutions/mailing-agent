@@ -1,13 +1,14 @@
 import { useEffect } from 'react';
 import { PlusOutlined } from '@ant-design/icons';
 import { ProTable } from '@ant-design/pro-components';
-import { Alert, App, Button, Drawer, Progress, Space, Table, Tag, Upload } from 'antd';
+import { Alert, App, Button, Drawer, Progress, Space, Table, Tag, Tooltip, Upload } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { audiencesApi } from '@/api/audiences';
-import type { Audience } from '@/api/types';
+import type { Audience, Recipient } from '@/api/types';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { APP_TOP_BAR_HEIGHT } from '@/layout/AppTopBar';
 import { formatLocalDateTime } from '@/utils/dateTime';
+import { emailValidationReason } from '@/utils/emailValidation';
 import { statusLabel } from '@/utils/presentation';
 
 export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
@@ -179,11 +180,16 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
             {
               title: 'Статус',
               dataIndex: 'validation_status',
-              render: (value) => (
-                <Tag color={value === 'valid' ? 'green' : value === 'invalid' ? 'red' : 'gold'}>
-                  {statusLabel(String(value || ''))}
-                </Tag>
-              ),
+              render: (value, row: Recipient) => {
+                const reason = emailValidationReason(row);
+                return (
+                  <Tooltip title={reason || undefined}>
+                    <Tag color={value === 'valid' ? 'green' : value === 'invalid' ? 'red' : 'gold'}>
+                      {statusLabel(String(value || ''))}
+                    </Tag>
+                  </Tooltip>
+                );
+              },
             },
           ]}
           pagination={{ pageSize: 20, total: membersQuery.data?.total }}

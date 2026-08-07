@@ -134,6 +134,22 @@ def _cache_expiry(status: str, now: datetime) -> datetime:
     return now + timedelta(minutes=max(1, int(settings.email_validation_unknown_ttl_minutes or 15)))
 
 
+def _run_is_stuck(row: EmailValidationRun, now: datetime | None = None) -> bool:
+    if str(row.status or "") != "running":
+        return False
+    current = now or _now()
+    updated_at = row.updated_at or row.started_at or row.created_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    try:
+        request_timeout = max(1.0, float(settings.email_validation_timeout_seconds or 20.0))
+    except (TypeError, ValueError):
+        request_timeout = 20.0
+    attempts = max(1, int(settings.email_validation_max_attempts or 3))
+    stale_after = max(120.0, request_timeout * attempts + 30.0)
+    return (current - updated_at).total_seconds() >= stale_after
+
+
 def _result_status(result: EmailValidationResult) -> str:
     if result.reason_code == "ok_smtpbz" and result.is_valid:
         return "valid"
@@ -324,7 +340,7 @@ def _apply_scope_results(session: Any, run: EmailValidationRun) -> dict[str, int
             "revision": run.revision,
             "updated_at": now.isoformat(),
         }
-        if status == "invalid":
+        if status in {"invalid", "unknown"}:
             recipient.excluded = True
             extra["validation_excluded"] = True
         elif was_validation_excluded and status == "valid":
@@ -420,6 +436,8 @@ def enqueue_scope_validation(
     if not smtpbz_preflight_enabled():
         return get_scope_validation(scope_type, scope_id, owner_username)
 
+    superseded_task_id: str | None = None
+    replacement_run = False
     with session_scope() as session:
         _scope_entity(session, scope_type, scope_id, owner_username)
         rows = _scope_rows(session, scope_type, scope_id)
@@ -438,10 +456,21 @@ def enqueue_scope_validation(
             .limit(1)
         )
         if existing is not None:
-            return _run_payload(existing)
+            if not (force and _run_is_stuck(existing)):
+                return _run_payload(existing)
+            existing.status = "stale"
+            existing.error = "Validation stopped updating and was superseded by a retry."
+            existing.completed_at = _now()
+            existing.updated_at = _now()
+            superseded_task_id = str(existing.task_id or "").strip() or None
+            replacement_run = True
 
         for row in rows:
-            if str(row.validation_status or "") != "invalid":
+            current_status = str(row.validation_status or "pending")
+            if force:
+                if current_status in {"pending", "unknown", "stale"}:
+                    row.validation_status = "pending"
+            elif current_status != "invalid":
                 row.validation_status = "pending"
         run = EmailValidationRun(
             id=str(uuid4()),
@@ -457,7 +486,17 @@ def enqueue_scope_validation(
         session.flush()
         run_id = str(run.id)
 
-    from src.workers.task_queue import enqueue_task
+    from src.workers.task_queue import enqueue_task, request_cancel
+
+    if superseded_task_id:
+        try:
+            request_cancel(superseded_task_id)
+        except Exception:
+            logger.exception(
+                "email_validation_cancel_stuck_task_failed",
+                run_id=run_id,
+                task_id=superseded_task_id,
+            )
 
     try:
         task, _created = enqueue_task(
@@ -467,7 +506,11 @@ def enqueue_scope_validation(
             payload={"run_id": run_id, "refresh_unknown": bool(force)},
             max_attempts=max(1, int(settings.background_queue_max_attempts or 3)),
             idempotency_key=f"email_validation:{run_id}",
-            active_key=f"email_validation:{owner_username}:{scope_type}:{scope_id}:{revision}",
+            active_key=(
+                f"email_validation:{owner_username}:{scope_type}:{scope_id}:{revision}:{run_id}"
+                if replacement_run
+                else f"email_validation:{owner_username}:{scope_type}:{scope_id}:{revision}"
+            ),
         )
     except Exception as exc:
         mark_validation_run_failed(run_id, str(exc))
@@ -491,6 +534,8 @@ def run_email_validation(payload: dict[str, Any]) -> dict[str, Any]:
         run = session.get(EmailValidationRun, run_id)
         if run is None:
             raise LookupError("Email validation run not found.")
+        if run.status in TERMINAL_RUN_STATUSES:
+            return _run_payload(run)
         run.status = "running"
         run.started_at = run.started_at or _now()
         run.error = None
@@ -501,6 +546,12 @@ def run_email_validation(payload: dict[str, Any]) -> dict[str, Any]:
             run.status = "stale"
             run.completed_at = _now()
             return _run_payload(run)
+        run.processed_count = 0
+        run.valid_count = 0
+        run.invalid_count = 0
+        run.unknown_count = 0
+        run.cached_count = 0
+        run.total_count = len(candidates)
         owner_username = run.owner_username
 
     concurrency = max(1, min(20, int(settings.email_validation_concurrency or 5)))
@@ -534,7 +585,7 @@ def run_email_validation(payload: dict[str, Any]) -> dict[str, Any]:
             results.append(result)
             with session_scope() as session:
                 run = session.get(EmailValidationRun, run_id)
-                if run is None:
+                if run is None or run.status in TERMINAL_RUN_STATUSES:
                     continue
                 status, _item, cached = result
                 run.processed_count = int(run.processed_count or 0) + 1
@@ -552,6 +603,8 @@ def run_email_validation(payload: dict[str, Any]) -> dict[str, Any]:
         run = session.get(EmailValidationRun, run_id)
         if run is None:
             raise LookupError("Email validation run not found.")
+        if run.status in TERMINAL_RUN_STATUSES:
+            return _run_payload(run)
         rows = _scope_rows(session, run.scope_type, run.scope_id)
         if _scope_revision(_scope_candidates(rows)) != run.revision:
             run.status = "stale"
