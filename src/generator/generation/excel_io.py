@@ -30,12 +30,16 @@ def load_rows(xlsx_path: Path, sheet_name: Optional[str] = None) -> tuple[object
     workbook = load_workbook(xlsx_path)
     worksheet = workbook[sheet_name] if sheet_name else workbook[workbook.sheetnames[0]]
 
+    max_columns = min(max(1, int(worksheet.max_column or 1)), 512)
     headers = [
         worksheet.cell(row=HEADER_ROW, column=column_index).value
-        for column_index in range(1, worksheet.max_column + 1)
+        for column_index in range(1, max_columns + 1)
     ]
+    while headers and not headers[-1]:
+        headers.pop()
 
     rows: list[dict] = []
+    consecutive_blank_rows = 0
     for row_index in range(HEADER_ROW + 1, worksheet.max_row + 1):
         row = {}
         is_empty = True
@@ -46,10 +50,17 @@ def load_rows(xlsx_path: Path, sheet_name: Optional[str] = None) -> tuple[object
             row[header] = value
             if value not in (None, ""):
                 is_empty = False
-        if not is_empty and not _is_service_row(row):
-            _apply_header_aliases(row)
-            row["_row_index"] = row_index
-            rows.append(row)
+        if is_empty:
+            consecutive_blank_rows += 1
+            if consecutive_blank_rows >= 100:
+                break
+            continue
+        consecutive_blank_rows = 0
+        if _is_service_row(row):
+            continue
+        _apply_header_aliases(row)
+        row["_row_index"] = row_index
+        rows.append(row)
 
     return workbook, worksheet, rows
 

@@ -38,9 +38,6 @@ TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled", "stale"}
 VALIDATION_STATUSES = {"pending", "valid", "invalid", "unknown", "stale"}
 TRANSIENT_REASON_CODES = {
     "smtpbz_unavailable",
-    "smtpbz_unknown",
-    "smtpbz_quota_or_request_error",
-    "smtpbz_not_configured",
 }
 HARD_FAILURE_STATUSES = {
     "hard_bounced",
@@ -142,10 +139,10 @@ def _run_is_stuck(row: EmailValidationRun, now: datetime | None = None) -> bool:
     if updated_at.tzinfo is None:
         updated_at = updated_at.replace(tzinfo=timezone.utc)
     try:
-        request_timeout = max(1.0, float(settings.email_validation_timeout_seconds or 20.0))
+        request_timeout = max(1.0, float(settings.email_validation_timeout_seconds or 10.0))
     except (TypeError, ValueError):
-        request_timeout = 20.0
-    attempts = max(1, int(settings.email_validation_max_attempts or 3))
+        request_timeout = 10.0
+    attempts = max(1, int(settings.email_validation_max_attempts or 2))
     stale_after = max(120.0, request_timeout * attempts + 30.0)
     return (current - updated_at).total_seconds() >= stale_after
 
@@ -252,24 +249,26 @@ def _validate_one(
     email: str,
     *,
     refresh_unknown: bool = False,
+    skip_cache_lookup: bool = False,
 ) -> tuple[str, dict[str, Any], bool]:
     now = _now()
-    with session_scope() as session:
-        cached = session.scalar(
-            select(EmailValidationCache).where(
-                EmailValidationCache.owner_username == owner_username,
-                EmailValidationCache.provider == PROVIDER,
-                EmailValidationCache.normalized_email == email,
+    if not skip_cache_lookup:
+        with session_scope() as session:
+            cached = session.scalar(
+                select(EmailValidationCache).where(
+                    EmailValidationCache.owner_username == owner_username,
+                    EmailValidationCache.provider == PROVIDER,
+                    EmailValidationCache.normalized_email == email,
+                )
             )
-        )
-        if (
-            cached is not None
-            and _cache_is_fresh(cached, now)
-            and not (refresh_unknown and cached.status == "unknown")
-        ):
-            return str(cached.status), _cache_payload(cached), True
+            if (
+                cached is not None
+                and _cache_is_fresh(cached, now)
+                and not (refresh_unknown and cached.status == "unknown")
+            ):
+                return str(cached.status), _cache_payload(cached), True
 
-    max_attempts = max(1, int(settings.email_validation_max_attempts or 3))
+    max_attempts = max(1, int(settings.email_validation_max_attempts or 2))
     last_result: EmailValidationResult | None = None
     for attempt in range(1, max_attempts + 1):
         last_result = validate_configured_email_address(email, config=settings)
@@ -293,6 +292,63 @@ def _validate_one(
         attempt_count=max_attempts,
     )
     return saved_status, payload, False
+
+
+def _fresh_cached_results(
+    owner_username: str,
+    candidates: list[str],
+    *,
+    refresh_unknown: bool,
+) -> dict[str, tuple[str, dict[str, Any], bool]]:
+    """Load the complete validation cache in one DB round-trip."""
+    if not candidates:
+        return {}
+    now = _now()
+    with session_scope() as session:
+        rows = list(
+            session.scalars(
+                select(EmailValidationCache).where(
+                    EmailValidationCache.owner_username == owner_username,
+                    EmailValidationCache.provider == PROVIDER,
+                    EmailValidationCache.normalized_email.in_(candidates),
+                )
+            ).all()
+        )
+    result: dict[str, tuple[str, dict[str, Any], bool]] = {}
+    for row in rows:
+        if not _cache_is_fresh(row, now):
+            continue
+        if refresh_unknown and str(row.status or "") == "unknown":
+            continue
+        result[str(row.normalized_email)] = (
+            str(row.status),
+            _cache_payload(row),
+            True,
+        )
+    return result
+
+
+def _update_run_progress(
+    run_id: str,
+    results: list[tuple[str, dict[str, Any], bool]],
+) -> None:
+    """Persist progress in batches instead of one transaction per address."""
+    if not results:
+        return
+    valid_count = sum(1 for status, _item, _cached in results if status == "valid")
+    invalid_count = sum(1 for status, _item, _cached in results if status == "invalid")
+    unknown_count = len(results) - valid_count - invalid_count
+    cached_count = sum(1 for _status, _item, cached in results if cached)
+    with session_scope() as session:
+        run = session.get(EmailValidationRun, run_id)
+        if run is None or run.status in TERMINAL_RUN_STATUSES:
+            return
+        run.processed_count = int(run.processed_count or 0) + len(results)
+        run.valid_count = int(run.valid_count or 0) + valid_count
+        run.invalid_count = int(run.invalid_count or 0) + invalid_count
+        run.unknown_count = int(run.unknown_count or 0) + unknown_count
+        run.cached_count = int(run.cached_count or 0) + cached_count
+        run.updated_at = _now()
 
 
 def _apply_scope_results(session: Any, run: EmailValidationRun) -> dict[str, int]:
@@ -554,15 +610,27 @@ def run_email_validation(payload: dict[str, Any]) -> dict[str, Any]:
         run.total_count = len(candidates)
         owner_username = run.owner_username
 
-    concurrency = max(1, min(20, int(settings.email_validation_concurrency or 5)))
+    concurrency = max(1, min(20, int(settings.email_validation_concurrency or 10)))
     refresh_unknown = bool(payload.get("refresh_unknown"))
-    results: list[tuple[str, dict[str, Any], bool]] = []
+    cached_results = _fresh_cached_results(
+        owner_username,
+        candidates,
+        refresh_unknown=refresh_unknown,
+    )
+    _update_run_progress(run_id, list(cached_results.values()))
+    network_candidates = [email for email in candidates if email not in cached_results]
+    progress_batch: list[tuple[str, dict[str, Any], bool]] = []
+    progress_batch_size = max(5, concurrency)
     with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="email-validation") as pool:
         futures = {
             pool.submit(
-                _validate_one, owner_username, email, refresh_unknown=refresh_unknown
+                _validate_one,
+                owner_username,
+                email,
+                refresh_unknown=refresh_unknown,
+                skip_cache_lookup=True,
             ): email
-            for email in candidates
+            for email in network_candidates
         }
         for future in as_completed(futures):
             email = futures[future]
@@ -582,22 +650,11 @@ def run_email_validation(payload: dict[str, Any]) -> dict[str, Any]:
                 )
                 status, item = _upsert_cache(owner_username, email, fallback, attempt_count=1)
                 result = (status, item, False)
-            results.append(result)
-            with session_scope() as session:
-                run = session.get(EmailValidationRun, run_id)
-                if run is None or run.status in TERMINAL_RUN_STATUSES:
-                    continue
-                status, _item, cached = result
-                run.processed_count = int(run.processed_count or 0) + 1
-                if status == "valid":
-                    run.valid_count = int(run.valid_count or 0) + 1
-                elif status == "invalid":
-                    run.invalid_count = int(run.invalid_count or 0) + 1
-                else:
-                    run.unknown_count = int(run.unknown_count or 0) + 1
-                if cached:
-                    run.cached_count = int(run.cached_count or 0) + 1
-                run.updated_at = _now()
+            progress_batch.append(result)
+            if len(progress_batch) >= progress_batch_size:
+                _update_run_progress(run_id, progress_batch)
+                progress_batch = []
+    _update_run_progress(run_id, progress_batch)
 
     with session_scope() as session:
         run = session.get(EmailValidationRun, run_id)
