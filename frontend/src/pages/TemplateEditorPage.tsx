@@ -52,7 +52,7 @@ import {
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { templatesApi } from '@/api/templates';
+import { templatesApi, invalidateTemplateCaches } from '@/api/templates';
 import type { OfficeEditorConfig } from '@/api/templates';
 import type { PdfEditorField, Template } from '@/api/types';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
@@ -206,6 +206,7 @@ function EditorHeader({
   onPreview,
   onSave,
   onDownloadHtml,
+  onRenamed,
   format,
   saveLabel = 'Сохранить версию',
   saveDisabled = false,
@@ -217,6 +218,7 @@ function EditorHeader({
   onPreview: () => void;
   onSave: () => void;
   onDownloadHtml?: () => void;
+  onRenamed?: (name: string) => void;
   format?: 'PDF' | 'DOCX';
   saveLabel?: string;
   saveDisabled?: boolean;
@@ -229,9 +231,19 @@ function EditorHeader({
     mutationFn: () => templatesApi.archive(template.id),
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: ['template', template.id] });
-      void queryClient.invalidateQueries({ queryKey: ['templates'] });
+      invalidateTemplateCaches(queryClient, template.id);
       message.success(template.template_type === 'email' ? 'Шаблон удалён' : 'Документ удалён');
       navigate(template.template_type === 'email' ? '/templates?tab=email' : '/templates?tab=document');
+    },
+    onError: (error: Error) => message.error(error.message),
+  });
+  const renameMutation = useMutation({
+    mutationFn: (nextName: string) => templatesApi.save(template.id, { name: nextName }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['template', template.id], updated);
+      invalidateTemplateCaches(queryClient, template.id);
+      message.success('Название сохранено');
+      onRenamed?.(updated.name);
     },
     onError: (error: Error) => message.error(error.message),
   });
@@ -254,7 +266,21 @@ function EditorHeader({
           <Button icon={<ArrowLeftOutlined />} onClick={onBack} aria-label="Назад" />
           <div>
             <Space wrap>
-              <Title level={3} style={{ margin: 0 }}>{template.name}</Title>
+              <Title
+                level={3}
+                style={{ margin: 0 }}
+                editable={{
+                  tooltip: 'Изменить название',
+                  maxLength: 255,
+                  onChange: (value) => {
+                    const trimmed = value.trim();
+                    if (!trimmed || trimmed === template.name) return;
+                    renameMutation.mutate(trimmed);
+                  },
+                }}
+              >
+                {template.name}
+              </Title>
               {format && <Tag color="green">Итоговый формат: {format}</Tag>}
               <Tag>Версия {template.version?.version_number || 1}</Tag>
             </Space>
@@ -444,7 +470,7 @@ function EmailTemplateEditor({ template }: { template: Template }) {
     onSuccess: () => {
       setDirty(false);
       message.success('Создана новая версия шаблона');
-      void queryClient.invalidateQueries({ queryKey: ['template', template.id] });
+      invalidateTemplateCaches(queryClient, template.id);
     },
   });
   const renderedHtml = useMemo(() => {
@@ -462,6 +488,7 @@ function EmailTemplateEditor({ template }: { template: Template }) {
         onDownloadHtml={() => downloadEmailHtml(name, editor?.getHTML() || template.version?.body_html || '')}
         onPreview={() => pushParams({ preview: '1' })}
         onSave={() => saveMutation.mutate()}
+        onRenamed={setName}
       />
       <div className="template-editor-fields">
         <label><Text>Название шаблона</Text><Input value={name} onChange={(event) => { setName(event.target.value); setDirty(true); }} /></label>
@@ -542,7 +569,7 @@ function KpTemplateEditor({ template }: { template: Template }) {
   const controller = useRef<CanvasController | null>(null);
   const initialHtml = template.version?.body_html || DEFAULT_KP_HTML;
   const [html, setHtml] = useState(initialHtml);
-  const [name] = useState(template.name);
+  const [name, setName] = useState(template.name);
   const [dirty, setDirty] = useState(false);
   const [variableQuery, setVariableQuery] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
@@ -553,8 +580,7 @@ function KpTemplateEditor({ template }: { template: Template }) {
     onSuccess: () => {
       setDirty(false);
       message.success('PDF-версия КП сохранена');
-      void queryClient.invalidateQueries({ queryKey: ['template', template.id] });
-      void queryClient.invalidateQueries({ queryKey: ['templates', 'kp'] });
+      invalidateTemplateCaches(queryClient, template.id);
     },
   });
   const previewMutation = useMutation({
@@ -571,7 +597,7 @@ function KpTemplateEditor({ template }: { template: Template }) {
   };
   return (
     <div className="template-editor-page kp-editor-page">
-      <EditorHeader template={{ ...template, name }} dirty={dirty} saving={saveMutation.isPending} format="PDF" onBack={() => navigate('/templates')} onPreview={() => previewMutation.mutate()} onSave={() => saveMutation.mutate()} />
+      <EditorHeader template={{ ...template, name }} dirty={dirty} saving={saveMutation.isPending} format="PDF" onBack={() => navigate('/templates')} onPreview={() => previewMutation.mutate()} onSave={() => saveMutation.mutate()} onRenamed={setName} />
       {template.version?.filename && !template.version.filename.toLowerCase().endsWith('.pdf') && <Alert type="warning" showIcon message="Это старый шаблон другого формата" description="После сохранения редактор создаст новую версию PDF. Следующие загрузки для КП принимаются только в PDF." />}
       <KpToolbar controller={controller} />
       <div className="kp-workspace">
@@ -634,11 +660,10 @@ function PdfOverlayEditor({ template }: { template: Template }) {
       template.id,
       fields.map(({ id, value, font_size }) => ({ id, value, font_size })),
     ),
-    onSuccess: async () => {
+    onSuccess: () => {
       message.success('Новая PDF-версия сохранена, исходник остался в архиве');
       setDirty(false);
-      await queryClient.invalidateQueries({ queryKey: ['template', template.id] });
-      await queryClient.invalidateQueries({ queryKey: ['templates'] });
+      invalidateTemplateCaches(queryClient, template.id);
     },
     onError: (error) => message.error(error instanceof Error ? error.message : 'Не удалось сохранить PDF'),
   });
@@ -837,6 +862,7 @@ function DocxTemplateEditor({ template }: { template: Template }) {
     onSuccess: (latest) => {
       setDirty(false);
       queryClient.setQueryData(['template', template.id], latest);
+      invalidateTemplateCaches(queryClient, template.id);
       message.success(`Версия ${latest.version?.version_number || ''} сохранена`);
     },
     onError: (error) => {

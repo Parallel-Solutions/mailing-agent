@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { EditorSideAccordion } from '@/features/assistants';
 import { PersonalizationSetting } from '@/features/templates/PersonalizationSetting';
-import { templatesApi } from '@/api/templates';
+import { templatesApi, invalidateTemplateCaches } from '@/api/templates';
 import type { EmailEditorState, Template } from '@/api/types';
 import { EMAIL_VARIABLES, SAMPLE_EMAIL_VALUES } from './emailConstants';
 import {
@@ -195,7 +195,7 @@ export function VisualEmailEditor({ template }: Props) {
     onSuccess: () => {
       setDirty(false);
       message.success('Создана новая версия шаблона');
-      void queryClient.invalidateQueries({ queryKey: ['template', template.id] });
+      invalidateTemplateCaches(queryClient, template.id);
     },
     onError: (error) => {
       message.error(error instanceof Error ? error.message : 'Не удалось сохранить шаблон');
@@ -207,7 +207,7 @@ export function VisualEmailEditor({ template }: Props) {
     onSuccess: () => {
       setDirty(false);
       message.success('Шаблон перегенерирован с AI');
-      void queryClient.invalidateQueries({ queryKey: ['template', template.id] });
+      invalidateTemplateCaches(queryClient, template.id);
       setInitAttempt((value) => value + 1);
     },
     onError: (error) => {

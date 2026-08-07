@@ -1,3 +1,4 @@
+import type { QueryClient } from '@tanstack/react-query';
 import { api, apiRequest } from './client';
 import type {
   EmailEditorState,
@@ -7,6 +8,25 @@ import type {
   Template,
   TemplateFontsResult,
 } from './types';
+
+// Single convention for every template-related query key. Every list query
+// must be keyed `['templates', type]` so that invalidating the `all` prefix
+// (see `invalidateTemplateCaches`) reaches all of them — do not introduce
+// ad-hoc keys like `['templates-email']` for a new list query.
+export const templatesQueryKeys = {
+  all: ['templates'] as const,
+  list: (type: string) => ['templates', type] as const,
+  detail: (id: string) => ['template', id] as const,
+};
+
+// Call this from every mutation `onSuccess` that can change a template
+// (rename, content save, regenerate, archive) so every list/detail cache
+// that shows the template's name stays in sync — no need to remember which
+// specific query keys are affected.
+export function invalidateTemplateCaches(queryClient: QueryClient, templateId: string) {
+  void queryClient.invalidateQueries({ queryKey: templatesQueryKeys.detail(templateId) });
+  void queryClient.invalidateQueries({ queryKey: templatesQueryKeys.all });
+}
 
 export type OfficeEditorConfig = {
   editor_url: string;
