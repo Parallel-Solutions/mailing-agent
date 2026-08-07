@@ -1,11 +1,23 @@
 import { ApiError, api } from './client';
 
+// Сводка проверки почт (режим «Проверить почты по официальным сайтам»).
+// Приходит только из fill_gaps при verify_emails=true.
+export type EmailCheckStats = {
+  rows?: number;
+  names_fixed?: number;
+  email_found?: number;
+  email_replaced?: number;
+  email_still_empty?: number;
+  looked_up?: number;
+};
+
 export type ParserChatResponse = {
   status?: string;
   reply?: string;
   success?: boolean;
   result_file?: string | null;
   downloads?: { url?: string; label?: string }[];
+  email_stats?: EmailCheckStats;
 };
 
 export type ParserProgressEvent = {
