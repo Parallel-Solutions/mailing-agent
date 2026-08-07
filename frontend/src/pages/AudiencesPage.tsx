@@ -9,6 +9,7 @@ import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { APP_TOP_BAR_HEIGHT } from '@/layout/AppTopBar';
 import { formatLocalDateTime } from '@/utils/dateTime';
 import { emailValidationReason } from '@/utils/emailValidation';
+import { emailValidationRefetchInterval } from '@/utils/emailValidationPolling';
 import { statusLabel } from '@/utils/presentation';
 
 export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
@@ -30,7 +31,7 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
     queryKey: ['audience-email-validation', selected?.id],
     queryFn: () => audiencesApi.validation(selected!.id),
     enabled: Boolean(selected?.id),
-    refetchInterval: 3000,
+    refetchInterval: (query) => emailValidationRefetchInterval(query.state.data?.status),
   });
   const startValidation = useMutation({
     mutationFn: () => audiencesApi.startValidation(selected!.id),

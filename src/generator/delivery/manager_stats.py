@@ -434,6 +434,7 @@ def _email_domain_provider(email: str) -> str:
 _CACHE_WARM_INTERVAL_SECONDS = 20 * 60
 _CACHE_TTL_SECONDS = float(25 * 60)
 _cache_lock = threading.Lock()
+_cache_build_locks: dict[tuple[str, str], threading.Lock] = {}
 _delivery_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _consent_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # Company data (data.xlsx joined by row_id). Cached like delivery/consent rows so
@@ -508,6 +509,11 @@ def _cache_get(store: dict[str, tuple[float, list[dict[str, Any]]]], job_id: str
 def _cache_set(store: dict[str, tuple[float, list[dict[str, Any]]]], job_id: str, value: list[dict[str, Any]]) -> None:
     with _cache_lock:
         store[job_id] = (time.monotonic(), value)
+
+
+def _cache_build_lock(namespace: str, job_id: str) -> threading.Lock:
+    with _cache_lock:
+        return _cache_build_locks.setdefault((namespace, job_id), threading.Lock())
 
 
 def invalidate_stats_cache(job_id: str | None = None) -> None:
@@ -850,8 +856,11 @@ def _load_delivery_for_jobs(job_ids: tuple[str, ...], *, refresh: bool = False) 
             _settle_refreshed_job(job_id)
         cached = None if refresh else _cache_get(_delivery_cache, job_id)
         if cached is None:
-            cached = _build_delivery_rows_for_job(job_id, refresh=refresh)
-            _cache_set(_delivery_cache, job_id, cached)
+            with _cache_build_lock("delivery", job_id):
+                cached = None if refresh else _cache_get(_delivery_cache, job_id)
+                if cached is None:
+                    cached = _build_delivery_rows_for_job(job_id, refresh=refresh)
+                    _cache_set(_delivery_cache, job_id, cached)
         rows.extend(cached)
     return rows
 
@@ -976,8 +985,11 @@ def _load_consents_for_jobs(job_ids: tuple[str, ...]) -> list[dict[str, Any]]:
     for job_id in job_ids:
         cached = _cache_get(_consent_cache, job_id)
         if cached is None:
-            cached = _build_consent_rows_for_job(job_id)
-            _cache_set(_consent_cache, job_id, cached)
+            with _cache_build_lock("consent", job_id):
+                cached = _cache_get(_consent_cache, job_id)
+                if cached is None:
+                    cached = _build_consent_rows_for_job(job_id)
+                    _cache_set(_consent_cache, job_id, cached)
         rows.extend(cached)
     return rows
 

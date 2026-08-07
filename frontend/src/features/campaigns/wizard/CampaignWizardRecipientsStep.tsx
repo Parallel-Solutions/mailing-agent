@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { campaignsApi } from '@/api/campaigns';
 import type { Audience, Campaign, Recipient } from '@/api/types';
 import { emailValidationReason } from '@/utils/emailValidation';
+import { emailValidationRefetchInterval } from '@/utils/emailValidationPolling';
 import { statusLabel } from '@/utils/presentation';
 
 type Props = {
@@ -38,7 +39,7 @@ export function CampaignWizardRecipientsStep({
     queryKey: ['campaign-email-validation', campaignId],
     queryFn: () => campaignsApi.emailValidation(campaignId!),
     enabled: Boolean(campaignId),
-    refetchInterval: 3000,
+    refetchInterval: (query) => emailValidationRefetchInterval(query.state.data?.status),
   });
   const startValidation = useMutation({
     mutationFn: () => campaignsApi.startEmailValidation(campaignId!),

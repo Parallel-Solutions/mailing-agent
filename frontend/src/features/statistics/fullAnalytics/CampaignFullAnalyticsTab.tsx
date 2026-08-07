@@ -23,7 +23,7 @@ function ratePair(count: unknown, rate: unknown): string {
 }
 
 export function CampaignFullAnalyticsTab() {
-  const { filters, refreshNonce, setError } = useStatistics();
+  const { filters, refreshNonce, refreshProviders, setError } = useStatistics();
   const jobId = filters.campaign || '';
   const [deliveryPage, setDeliveryPage] = useState(1);
   const [sentLogPage, setSentLogPage] = useState(1);
@@ -50,7 +50,7 @@ export function CampaignFullAnalyticsTab() {
     enabled: Boolean(jobId),
     queryFn: () =>
       statisticsApi.campaignFullAnalytics(jobId, {
-        refresh: refreshNonce > 0 ? true : undefined,
+        refresh: refreshProviders ? true : undefined,
         delivery_page: deliveryPage,
         period_from: filters.period_from || undefined,
         period_to: filters.period_to || undefined,

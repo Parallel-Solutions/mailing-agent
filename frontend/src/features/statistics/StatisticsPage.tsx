@@ -16,6 +16,7 @@ import { CampaignsListPage } from '@/pages/CampaignsListPage';
 import { AudiencesPage } from '@/pages/AudiencesPage';
 import { asRecordArray } from './utils';
 import { formatLocalDateTime } from '@/utils/dateTime';
+import { managerDashboardParams, managerDashboardQueryKey } from './dashboardQuery';
 
 export function StatisticsPage() {
   return (
@@ -36,6 +37,7 @@ function StatisticsPageInner() {
     apiBaseParams,
     requestRefresh,
     refreshNonce,
+    refreshProviders,
     error,
     setError,
     openFiltersModal,
@@ -56,8 +58,11 @@ function StatisticsPageInner() {
   }, [requestRefresh]);
 
   const metaQuery = useQuery({
-    queryKey: ['stats-dashboard-meta', apiBaseParams, refreshNonce],
-    queryFn: () => statisticsApi.managerDashboard(apiBaseParams),
+    queryKey: managerDashboardQueryKey(apiBaseParams, refreshNonce),
+    queryFn: () =>
+      statisticsApi.managerDashboard(
+        managerDashboardParams(apiBaseParams, refreshProviders),
+      ),
     enabled: tab === 'dashboard',
   });
 
@@ -132,7 +137,7 @@ function StatisticsPageInner() {
               options={PROVIDER_OPTIONS.filter((item) => item.value)}
             />
             <Button onClick={openFiltersModal}>Расширенные фильтры</Button>
-            <Button type="primary" onClick={() => requestRefresh()}>
+            <Button type="primary" onClick={() => requestRefresh({ provider: true })}>
               Обновить
             </Button>
           </Space>
