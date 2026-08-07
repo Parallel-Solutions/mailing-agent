@@ -1,7 +1,7 @@
 import { App, Button, Checkbox, Form, Input, Modal, Segmented, Space, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { campaignsApi } from '@/api/campaigns';
-import { parserApi } from '@/api/parser';
+import { parserApi, type EmailCheckStats } from '@/api/parser';
 
 type Props = {
   open: boolean;
@@ -47,6 +47,7 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
   const [downloading, setDownloading] = useState(false);
   const [topupMode, setTopupMode] = useState<'fill' | 'find'>('fill');
   const [verifyEmails, setVerifyEmails] = useState(false);
+  const [emailStats, setEmailStats] = useState<EmailCheckStats | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const streamRef = useRef<EventSource | null>(null);
   const timeoutRef = useRef<number | null>(null);
@@ -56,6 +57,7 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
     setPhase('form');
     setTopupMode('fill');
     setVerifyEmails(false);
+    setEmailStats(null);
     setLogs([]);
     setRunning(false);
     setHasFile(false);
@@ -147,6 +149,7 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
     setPhase('running');
     setRunning(true);
     setHasFile(false);
+    setEmailStats(null);
     setLogs(['Запрос отправлен агенту…']);
 
     const controller = new AbortController();
@@ -173,6 +176,7 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
             : await parserApi.topup(prompt, jobId, controller.signal)
           : await parserApi.chat(prompt, jobId, controller.signal);
       if (result.reply) appendLog(result.reply);
+      if (result.email_stats) setEmailStats(result.email_stats);
 
       if (result.result_file) {
         setHasFile(true);
@@ -321,6 +325,33 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
               ? 'Агент собирает данные через внешние сервисы. Это может занять несколько минут.'
               : 'Сбор завершён.'}
           </Typography.Text>
+          {emailStats ? (
+            <div
+              style={{
+                background: '#f6ffed',
+                border: '1px solid #b7eb8f',
+                borderRadius: 8,
+                padding: '10px 12px',
+              }}
+            >
+              <Typography.Text strong>
+                Заменено почт с официальных сайтов: {emailStats.email_replaced ?? 0}
+              </Typography.Text>
+              <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
+                {[
+                  (emailStats.email_found ?? 0) > 0
+                    ? `добавлено в пустые: ${emailStats.email_found}`
+                    : null,
+                  (emailStats.email_still_empty ?? 0) > 0
+                    ? `осталось без почты: ${emailStats.email_still_empty}`
+                    : null,
+                  (emailStats.rows ?? 0) > 0 ? `проверено строк: ${emailStats.rows}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Typography.Text>
+            </div>
+          ) : null}
           <div
             style={{
               maxHeight: 280,
