@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { ProFormSelect } from '@ant-design/pro-components';
-import { Alert, Button, Progress, Space, Table, Tag, Upload } from 'antd';
+import { Alert, Button, Progress, Space, Table, Tag, Tooltip, Upload } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { campaignsApi } from '@/api/campaigns';
 import type { Audience, Campaign, Recipient } from '@/api/types';
+import { emailValidationReason } from '@/utils/emailValidation';
 import { statusLabel } from '@/utils/presentation';
 
 type Props = {
@@ -145,11 +146,16 @@ export function CampaignWizardRecipientsStep({
           {
             title: 'Проверка',
             dataIndex: 'validation_status',
-            render: (v) => (
-              <Tag color={v === 'valid' ? 'green' : v === 'invalid' ? 'red' : 'gold'}>
-                {statusLabel(String(v || ''))}
-              </Tag>
-            ),
+            render: (v, row: Recipient) => {
+              const reason = emailValidationReason(row);
+              return (
+                <Tooltip title={reason || undefined}>
+                  <Tag color={v === 'valid' ? 'green' : v === 'invalid' ? 'red' : 'gold'}>
+                    {statusLabel(String(v || ''))}
+                  </Tag>
+                </Tooltip>
+              );
+            },
           },
           {
             title: 'Исключён',
