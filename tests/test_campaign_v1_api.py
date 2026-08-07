@@ -998,6 +998,51 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(empty.status_code, 400, empty.text)
 
     @patch("src.campaigns.template_service._build_document_pdf_artifact")
+    def test_patch_name_without_new_version(self, mock_build_pdf) -> None:
+        mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
+        source_docx = Document()
+        source_docx.add_paragraph("Коммерческое предложение")
+        source_payload = BytesIO()
+        source_docx.save(source_payload)
+        created = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document", "name": "КП СТП районы"},
+            files={
+                "file": (
+                    "offer.docx",
+                    source_payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        template = created.json()["result"]
+        template_id = template["id"]
+        version_number = template["version"]["version_number"]
+        version_id = template["version"]["id"]
+
+        patched = self.client.patch(
+            f"/api/v1/templates/{template_id}",
+            json={"name": "КП СТП районы (новое название)"},
+        )
+        self.assertEqual(patched.status_code, 200, patched.text)
+        updated = patched.json()["result"]
+        self.assertEqual(updated["name"], "КП СТП районы (новое название)")
+        self.assertEqual(updated["version"]["version_number"], version_number)
+        self.assertEqual(updated["version"]["id"], version_id)
+
+        fetched = self.client.get(f"/api/v1/templates/{template_id}")
+        self.assertEqual(fetched.status_code, 200, fetched.text)
+        self.assertEqual(fetched.json()["result"]["name"], "КП СТП районы (новое название)")
+        self.assertEqual(fetched.json()["result"]["version"]["version_number"], version_number)
+
+        empty = self.client.patch(
+            f"/api/v1/templates/{template_id}",
+            json={"name": "   "},
+        )
+        self.assertEqual(empty.status_code, 400, empty.text)
+
+    @patch("src.campaigns.template_service._build_document_pdf_artifact")
     def test_template_starters_and_models(self, mock_build_pdf) -> None:
         mock_build_pdf.side_effect = self._fake_docx_pdf_artifact
         models = self.client.get("/api/v1/templates/models")

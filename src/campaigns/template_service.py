@@ -997,6 +997,10 @@ def save_version(
         tmpl = session.get(MailTemplate, template_id)
         if not _owns_template(tmpl, owner_username):
             return None
+        if name is not None:
+            name = name.strip()
+            if not name:
+                raise ValueError("Название не может быть пустым")
         content_changed = any(
             value is not None
             for value in (subject, body_html, body_text, variables, editor_state)
@@ -1006,7 +1010,7 @@ def save_version(
             or rendered_pdf_filename is not None
             or attachment_output_format is not None
         )
-        if not content_changed and name is None and metadata_changed:
+        if not content_changed and (metadata_changed or name is not None):
             current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
             if rendered_pdf_filename is not None:
                 if current is None:
@@ -1023,6 +1027,8 @@ def save_version(
                     tmpl, current, attachment_output_format
                 )
                 tmpl.attachment_output_format = normalized_format
+            if name is not None:
+                tmpl.name = name
             tmpl.updated_at = _now()
             session.flush()
             return template_to_dict(tmpl, current)

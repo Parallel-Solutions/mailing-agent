@@ -16,7 +16,7 @@ import type { MenuProps } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { templatesApi } from '@/api/templates';
+import { templatesApi, templatesQueryKeys } from '@/api/templates';
 import type { Template } from '@/api/types';
 import {
   useActiveOnboardingStep,
@@ -336,14 +336,14 @@ function TemplateGrid({ type }: { type: TemplateKind }) {
   const isFileTemplate = type === 'document';
   const canBulkSelect = type === 'email';
   const { data, isLoading } = useQuery({
-    queryKey: ['templates', type],
+    queryKey: templatesQueryKeys.list(type),
     queryFn: () => templatesApi.list({ template_type: type }),
   });
   const templates = data || [];
   const selectedCount = selectedIds.size;
   const allSelected = templates.length > 0 && selectedCount === templates.length;
 
-  const refresh = () => { void queryClient.invalidateQueries({ queryKey: ['templates', type] }); };
+  const refresh = () => { void queryClient.invalidateQueries({ queryKey: templatesQueryKeys.list(type) }); };
 
   useEffect(() => {
     const previousStep = previousOnboardingStepRef.current;

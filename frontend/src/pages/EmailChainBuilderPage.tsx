@@ -11,7 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { chainsApi, type ChainRecord } from '@/api/chains';
 import { campaignsApi } from '@/api/campaigns';
-import { templatesApi } from '@/api/templates';
+import { templatesApi, templatesQueryKeys } from '@/api/templates';
 import type { ChainLinkKind, EmailChain } from '@/api/types';
 import { EditorSideAccordion } from '@/features/assistants';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
@@ -101,12 +101,12 @@ export function EmailChainBuilderPage({ legacyCampaign = false }: { legacyCampai
   });
 
   const emailTemplatesQuery = useQuery({
-    queryKey: ['templates-email'],
+    queryKey: templatesQueryKeys.list('email'),
     queryFn: () => templatesApi.list({ template_type: 'email' }),
   });
 
   const documentTemplatesQuery = useQuery({
-    queryKey: ['templates-document'],
+    queryKey: templatesQueryKeys.list('document'),
     queryFn: () => templatesApi.list({ template_type: 'document' }),
   });
 
