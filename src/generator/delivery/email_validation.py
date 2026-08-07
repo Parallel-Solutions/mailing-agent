@@ -98,10 +98,10 @@ def validate_configured_email_address(email: Any, *, config: Any = None) -> Emai
     try:
         timeout_seconds = max(
             1.0,
-            float(getattr(config, "email_validation_timeout_seconds", 20.0) or 20.0),
+            float(getattr(config, "email_validation_timeout_seconds", 10.0) or 10.0),
         )
     except (TypeError, ValueError):
-        timeout_seconds = 20.0
+        timeout_seconds = 10.0
     return validate_email_address(
         email,
         mode=getattr(config, "email_validation_mode", EMAIL_VALIDATION_SMTPBZ),

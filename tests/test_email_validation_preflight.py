@@ -183,6 +183,34 @@ class EmailValidationPreflightTests(unittest.TestCase):
                 [("valid", False), ("invalid", True), ("valid", False)],
             )
 
+    def test_configuration_error_is_not_retried_for_every_address(self) -> None:
+        replace_recipients(
+            self.campaign_id,
+            self.username,
+            [{"email": "quota@example.com"}],
+        )
+        queued = enqueue_scope_validation("campaign", self.campaign_id, self.username)
+        failure = EmailValidationResult(
+            email="quota@example.com",
+            normalized_email="quota@example.com",
+            domain="example.com",
+            is_valid=False,
+            reason_code="smtpbz_quota_or_request_error",
+            reason="Quota exceeded.",
+            checked_at="2026-08-07T12:00:00+00:00",
+            details={"mode": "smtpbz"},
+        )
+
+        with patch.object(settings, "email_validation_max_attempts", 3), patch(
+            "src.campaigns.email_validation_service.validate_configured_email_address",
+            return_value=failure,
+        ) as validator:
+            completed = run_email_validation({"run_id": queued["id"]})
+
+        validator.assert_called_once_with("quota@example.com", config=settings)
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["unknown_count"], 1)
+
     def test_force_replaces_a_stuck_running_validation(self) -> None:
         replace_recipients(
             self.campaign_id,

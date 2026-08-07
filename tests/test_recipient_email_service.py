@@ -156,6 +156,29 @@ class CampaignRecipientsImportTests(unittest.TestCase):
         self.assertEqual(rows[0]["contact_name"], "Иванов Иван Иванович")
         self.assertEqual(rows[0]["email"], "glbuh@neopak.ru, tstender@neopak.ru")
 
+    def test_parse_recipients_xlsx_stops_after_large_blank_tail(self) -> None:
+        from io import BytesIO
+
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["Company", "Email"])
+        ws.append(["Visible recipient", "visible@example.com"])
+        # Excel often leaves formatting or an accidental value far below the
+        # real table. It must not make an import scan hundreds of thousands of
+        # empty rows synchronously.
+        ws.cell(row=5000, column=1, value="Stray tail value")
+        ws.cell(row=5000, column=2, value="tail@example.com")
+        buffer = BytesIO()
+        wb.save(buffer)
+
+        rows, _columns = parse_recipients_xlsx(buffer.getvalue())
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["company"], "Visible recipient")
+        self.assertEqual(rows[0]["email"], "visible@example.com")
+
     def test_replace_recipients_checko_export_splits_emails(self) -> None:
         from io import BytesIO
 

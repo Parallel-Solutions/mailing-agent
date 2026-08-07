@@ -1158,9 +1158,22 @@ def parse_recipients_xlsx(content: bytes) -> tuple[list[dict[str, Any]], list[st
 
     wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     ws = wb.active
-    rows_iter = ws.iter_rows(values_only=True)
-    first_raw = [str(c or "").strip() for c in next(rows_iter, [])]
-    second_raw = [str(c or "").strip() for c in next(rows_iter, [])]
+    # Broken/overformatted workbooks may report all 16k columns and more than a
+    # million used rows. Reading that declared range into a list can block the
+    # whole API process for minutes even when the file has only a few records.
+    max_import_columns = 512
+    header_rows = ws.iter_rows(
+        min_row=1,
+        max_row=2,
+        max_col=min(max(1, int(ws.max_column or 1)), max_import_columns),
+        values_only=True,
+    )
+    first_raw = [str(c or "").strip() for c in next(header_rows, [])]
+    second_raw = [str(c or "").strip() for c in next(header_rows, [])]
+    while first_raw and not first_raw[-1]:
+        first_raw.pop()
+    while second_raw and not second_raw[-1]:
+        second_raw.pop()
     first = [value.lower() for value in first_raw]
     second = [value.lower() for value in second_raw]
 
@@ -1171,21 +1184,35 @@ def parse_recipients_xlsx(content: bytes) -> tuple[list[dict[str, Any]], list[st
     # Parser MO template: row1 human labels, row2 technical keys (EMAIL_OSN, …).
     if _is_mo_tech_header(second):
         headers = second
-        data_rows: list[tuple[Any, ...]] = list(rows_iter)
+        include_second_row = False
     elif _is_mo_tech_header(first):
         headers = first
-        data_rows = (
-            [tuple(second_raw)] + list(rows_iter)
-            if any(second_raw)
-            else list(rows_iter)
-        )
+        include_second_row = any(second_raw)
     else:
         headers = first
-        data_rows = (
-            [tuple(second_raw)] + list(rows_iter)
-            if any(second_raw)
-            else list(rows_iter)
-        )
+        include_second_row = any(second_raw)
+
+    header_width = max(1, len(headers))
+
+    def iter_data_rows():
+        if include_second_row:
+            yield tuple(second_raw[:header_width])
+
+        consecutive_blank_rows = 0
+        for row in ws.iter_rows(
+            min_row=3,
+            max_col=header_width,
+            values_only=True,
+        ):
+            if any(str(value or "").strip() for value in row):
+                consecutive_blank_rows = 0
+                yield row
+                continue
+            consecutive_blank_rows += 1
+            if consecutive_blank_rows >= 100:
+                break
+
+    data_rows = iter_data_rows()
 
     mapping = {h: i for i, h in enumerate(headers)}
 
@@ -1244,6 +1271,7 @@ def parse_recipients_xlsx(content: bytes) -> tuple[list[dict[str, Any]], list[st
         if column and column not in seen:
             seen.add(column)
             merged_columns.append(column)
+    wb.close()
     return result, merged_columns
 
 
