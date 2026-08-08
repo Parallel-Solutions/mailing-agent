@@ -5,7 +5,7 @@
 #   MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:<sha> ./scripts/deploy.sh --pull
 #
 # Allowlist (long-lived on prod):
-#   app, worker, postgres, minio, redis, gotenberg, onlyoffice
+#   app, worker, postgres, minio, redis, gotenberg, onlyoffice, autoheal
 # One-shot OK: minio-init
 # Must NOT run: gotenberg-2, mailpit, playwright, e2e/test stacks
 #
@@ -13,6 +13,11 @@
 # - Disables RuSender click-tracking
 # - Removes dev bind-mounts of ./src and ./main.py (immutable GHCR image)
 # - Binds MinIO API/console to localhost only (not world-reachable)
+# - Runs a watchdog (autoheal) that restarts any container Docker reports as
+#   "unhealthy" — app/worker/postgres/minio/redis/gotenberg/onlyoffice all
+#   have healthchecks but Compose alone never acts on a failing one; without
+#   this, a hung-but-still-running process (e.g. a deadlocked app process)
+#   stays down until someone notices and restarts it by hand.
 
 services:
   app:
@@ -56,3 +61,20 @@ services:
       JWT_IN_BODY: "false"
       ALLOW_PRIVATE_IP_ADDRESS: "true"
     ports: !reset []
+  autoheal:
+    # Pulled via Google's Docker Hub mirror, not docker.io directly — this
+    # host already hit Docker Hub's anonymous rate limit once today (during
+    # the post-reboot container restart storm), so avoid adding another
+    # docker.io dependency to the recovery path.
+    image: mirror.gcr.io/willfarrell/autoheal:latest
+    restart: unless-stopped
+    environment:
+      # "all" = watch every container on the host with a healthcheck, not
+      # just ones carrying an autoheal label — simplest option here since
+      # every long-lived service in this stack already defines a healthcheck.
+      AUTOHEAL_CONTAINER_LABEL: all
+      AUTOHEAL_INTERVAL: 30
+      AUTOHEAL_START_PERIOD: 60
+      AUTOHEAL_DEFAULT_STOP_TIMEOUT: 10
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
