@@ -247,6 +247,45 @@ class EmailValidationPreflightTests(unittest.TestCase):
             self.assertEqual(old_run.status, "stale")
             self.assertIsNotNone(old_task.cancel_requested_at)
 
+    def test_force_replaces_a_stuck_queued_validation(self) -> None:
+        """A run that was never claimed by a worker (e.g. it was starved
+        behind an unrelated global pause) must also be recognized as stuck,
+        not just one that started running and then stalled — otherwise the
+        "retry" button is a no-op for this failure mode."""
+        replace_recipients(
+            self.campaign_id,
+            self.username,
+            [{"email": "neverclaimed@example.com"}],
+        )
+        queued = enqueue_scope_validation("campaign", self.campaign_id, self.username)
+        stale_at = datetime.now(timezone.utc) - timedelta(minutes=15)
+        with session_scope() as session:
+            run = session.get(EmailValidationRun, queued["id"])
+            self.assertIsNotNone(run)
+            assert run is not None
+            self.assertEqual(run.status, "queued")
+            run.updated_at = stale_at
+            task = session.get(BackgroundTask, queued["task_id"])
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertEqual(task.status, "queued")
+
+        replacement = enqueue_scope_validation(
+            "campaign", self.campaign_id, self.username, force=True
+        )
+
+        self.assertNotEqual(replacement["id"], queued["id"])
+        with session_scope() as session:
+            old_run = session.get(EmailValidationRun, queued["id"])
+            old_task = session.get(BackgroundTask, queued["task_id"])
+            self.assertIsNotNone(old_run)
+            self.assertIsNotNone(old_task)
+            assert old_run is not None
+            assert old_task is not None
+            self.assertEqual(old_run.status, "stale")
+            # A queued (never claimed) task is cancelled outright, not just flagged.
+            self.assertEqual(old_task.status, "cancelled")
+
     def test_audience_preflight_updates_member_statuses_and_quality(self) -> None:
         audience = create_audience(self.username, "Validated audience")
         audience_id = str(audience["id"])
