@@ -18,6 +18,7 @@ import httpx
 from langchain.tools import tool
 from tenacity import retry, stop_after_attempt, wait_fixed
 
+from src.infra.spend_ledger import record_service_call
 from src.parser_new import config
 from src.parser_new.logger import logger
 
@@ -274,6 +275,7 @@ def _twogis_request(params: dict) -> dict:
         timeout=15,
     )
     response.raise_for_status()
+    record_service_call(service="twogis", operation="lookup", metadata={"path": "3.0/items"})
     return response.json()
 
 

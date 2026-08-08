@@ -11,6 +11,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from src.infra.spend_ledger import record_service_call
+
 
 EMAIL_VALIDATION_OFF = "off"
 EMAIL_VALIDATION_SYNTAX = "syntax"
@@ -276,6 +278,9 @@ def _validate_email_with_smtpbz(
     try:
         raw = _run_smtpbz_request(request, timeout=max(1.0, float(timeout_seconds or 3.0)))
     except HTTPError as exc:
+        # SMTP.BZ answered (even with an HTTP error status), so the lookup
+        # attempt was billed regardless of the outcome.
+        record_service_call(service="smtp_bz", operation="validate_email", status="error")
         raw = getattr(exc, "raw_body", "")
         data = _loads_json_object(raw)
         classification = _classify_smtpbz_response(data if data is not None else raw)
@@ -311,6 +316,7 @@ def _validate_email_with_smtpbz(
             details={"status": "error", "error": str(exc)},
         )
 
+    record_service_call(service="smtp_bz", operation="validate_email")
     data = _loads_json_object(raw)
     classification = _classify_smtpbz_response(data if data is not None else raw)
     if classification is None:

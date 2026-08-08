@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 from langchain.tools import tool
 from tenacity import retry, stop_after_attempt, wait_fixed
 
+from src.infra.spend_ledger import record_service_call
 from src.parser_new.logger import logger
 from src.parser_new import config
 
@@ -381,6 +382,7 @@ def rusprofile_tool(mun_name: str, district: str, region: str) -> str:
 
         time.sleep(0.5)
         xml_result = search.run(query, format="xml", page=0)
+        record_service_call(service="yandex", operation="search")
         parsed = parse_yandex_xml(xml_result)
 
         # Берём первый подходящий результат с /id/ в URL

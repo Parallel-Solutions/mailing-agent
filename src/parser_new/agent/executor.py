@@ -9,6 +9,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage, AIMessage
 
+from src.infra.langchain_spend import SpendLedgerCallback
 from src.parser_new.agent.agent import build_agent, format_chat_history
 from src.parser_new.memory.memory_manager import init_memory
 from src.parser_new.logger import logger
@@ -57,12 +58,20 @@ def get_agent():
     return _agent_executor
 
 
-def _run_single_batch(task: str, chat_history: list[dict]) -> tuple[str, list[LogEntry]]:
+def _run_single_batch(
+    task: str, chat_history: list[dict], *, job_id: str | None = None
+) -> tuple[str, list[LogEntry]]:
     """Запускает одну задачу агента. Возвращает (текст_ответа, лог)."""
     log = []
     history = format_chat_history(chat_history)
     messages = history + [HumanMessage(content=task)]
-    result = get_agent().invoke({"messages": messages})
+    # ReAct-цикл может дёрнуть модель несколько раз (рассуждение + вызовы
+    # инструментов) за один invoke — колбэк логирует каждый такой вызов
+    # отдельно в журнал расходов, а не только финальный ответ.
+    spend_callback = SpendLedgerCallback(
+        service="openai", operation="parser_agent_react", job_id=job_id
+    )
+    result = get_agent().invoke({"messages": messages}, config={"callbacks": [spend_callback]})
     all_messages = result.get("messages", [])
     log.extend(_parse_messages(all_messages))
     ai_messages = [m for m in all_messages if isinstance(m, AIMessage)]
@@ -86,6 +95,7 @@ def run_agent_task(
     chat_history: list[dict],
     uploaded_file_path: str | None = None,
     mode: str = "С уточнениями",
+    job_id: str | None = None,
 ) -> AgentResult:
     log: list[LogEntry] = []
     log.append(LogEntry("step", "Задание получено"))
@@ -122,7 +132,7 @@ def run_agent_task(
                     batch_task += f"\n\nФайл: {uploaded_file_path}"
 
                 try:
-                    output, batch_log = _run_single_batch(batch_task, chat_history)
+                    output, batch_log = _run_single_batch(batch_task, chat_history, job_id=job_id)
                     log.extend(batch_log)
                     all_outputs.append(output)
                     log.append(LogEntry("ok", f"Пачка {i+1} готова"))
@@ -135,7 +145,7 @@ def run_agent_task(
 
         else:
             # Обычный режим — одна задача
-            output_text, task_log = _run_single_batch(full_task, chat_history)
+            output_text, task_log = _run_single_batch(full_task, chat_history, job_id=job_id)
             log.extend(task_log)
             log.append(LogEntry("ok", "Задача выполнена"))
 

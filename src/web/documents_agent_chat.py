@@ -21,6 +21,8 @@ from src.generator.generation.template_preview import (
     mark_template_preview_approval,
 )
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
+from src.infra.llm_pricing import usage_from_response
+from src.infra.spend_ledger import record_llm_usage
 from src.jobs import load_agent_state, resolve_job_paths, resolve_state_path
 from src.jobs.chat_memory import append_chat_turn, chat_history_for_prompt, get_chat_session
 from src.jobs.job_docs import read_events, read_sent_mail_log
@@ -921,6 +923,12 @@ def _documents_agent_preview_decision_reply(
             temperature=0,
             max_tokens=260,
         )
+        record_llm_usage(
+            service="openai",
+            model=settings.case_agent_model,
+            operation="documents_preview_intent",
+            usage=usage_from_response(response),
+        )
     except Exception:
         reply = "AI сейчас не смог разобрать ответ по примеру. Массовую генерацию не запускаю; попробуйте ещё раз чуть позже."
         return _documents_agent_reply_payload(
@@ -1143,6 +1151,12 @@ def _documents_agent_readonly_ai_reply(message: str, documents_status: dict, job
             temperature=0.2,
             max_tokens=420,
         )
+        record_llm_usage(
+            service="openai",
+            model=settings.case_agent_model,
+            operation="documents_readonly_agent",
+            usage=usage_from_response(response),
+        )
     except Exception:
         return None
     reply = str(response.choices[0].message.content if response.choices else "").strip()
@@ -1276,6 +1290,12 @@ def choose_documents_agent_reply(
                 messages=messages,
                 temperature=0.2,
                 max_tokens=520,
+            )
+            record_llm_usage(
+                service="openai",
+                model=settings.case_agent_model,
+                operation="documents_ai_chat",
+                usage=usage_from_response(response),
             )
             reply = str(response.choices[0].message.content if response.choices else "").strip()
             if not reply:

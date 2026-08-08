@@ -58,6 +58,8 @@ from src.generator.inflection.inflect import inflect_mun_name_genitive
 from src.generator.philologist.philologist_agent import get_philologist_status, run_philologist
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
 from src.generator.knowledge.service_knowledge import find_relevant_service_docs, format_service_rag_context
+from src.infra.llm_pricing import usage_from_response
+from src.infra.spend_ledger import record_llm_usage, record_service_call
 from src.jobs import load_agent_state, normalize_job_id, resolve_job_paths, save_agent_state
 from src.jobs.chat_memory import append_chat_turn, chat_history_for_prompt, get_chat_session
 from src.utils.config import settings
@@ -2733,6 +2735,13 @@ def _send_via_smtp(
         raise RuntimeError(humanize_smtp_error(exc)) from exc
     except smtplib.SMTPException as exc:
         raise RuntimeError(humanize_smtp_error(exc)) from exc
+    record_service_call(
+        service="smtp",
+        operation="send",
+        job_id=job_id,
+        owner_username=owner_username,
+        metadata={"recipient": recipient},
+    )
     if credentials.mailbox_id and owner_username:
         try:
             from src.generator.delivery.imap_sent import archive_sent_copy
@@ -3143,6 +3152,12 @@ def _send_via_rusender(
     if failed_recipients:
         raise RuntimeError("; ".join(failed_recipients))
 
+    record_service_call(
+        service="rusender",
+        operation="send",
+        job_id=job_id,
+        metadata={"recipient": recipient},
+    )
     return {
         "provider": "rusender",
         "status": "accepted",
@@ -3347,6 +3362,12 @@ def _send_via_mailopost(
         raise RuntimeError(_mailopost_error_message(raw))
     if not message_id and provider_status.lower() not in {"queued", "sent", "accepted"}:
         raise RuntimeError(_mailopost_error_message(raw, fallback="MailoPost не подтвердил отправку письма."))
+    record_service_call(
+        service="mailopost",
+        operation="send",
+        job_id=job_id,
+        metadata={"recipient": recipient},
+    )
     return {
         "provider": "mailopost",
         "status": provider_status,
@@ -3427,6 +3448,7 @@ def _send_via_unisender_classic(
             raise RuntimeError(message or "UniSender отклонил письмо.")
         if first.get("id"):
             message_id = _safe_text(first.get("id"))
+            record_service_call(service="unisender", operation="send", metadata={"recipient": recipient})
             return {
                 "provider": "unisender_classic",
                 "status": "accepted",
@@ -3438,6 +3460,7 @@ def _send_via_unisender_classic(
     legacy_result = data.get("result")
     if isinstance(legacy_result, dict) and legacy_result.get("email_id"):
         message_id = _safe_text(legacy_result.get("email_id"))
+        record_service_call(service="unisender", operation="send", metadata={"recipient": recipient})
         return {
             "provider": "unisender_classic",
             "status": "accepted",
@@ -3569,6 +3592,7 @@ def _send_via_unisender(
     accepted_emails = data.get("emails") or []
     if accepted_emails and recipient not in accepted_emails:
         raise RuntimeError("UniSender Go не подтвердил адрес получателя в ответе.")
+    record_service_call(service="unisender", operation="send", job_id=job_id, metadata={"recipient": recipient})
     return {
         "provider": "unisender_go",
         "status": _safe_text(data.get("status")) or "success",
@@ -3698,6 +3722,16 @@ def _send_via_unisender_go_bulk(
             for recipient in cleaned_recipients
             if not (isinstance(failed_emails, dict) and recipient in failed_emails)
         ]
+    # Bill per accepted recipient (not per batch call) so the by-service
+    # breakdown reflects actual mail volume, matching the single-send path.
+    if accepted_emails:
+        record_service_call(
+            service="unisender",
+            operation="send",
+            job_id=job_id,
+            request_count=len(accepted_emails),
+            metadata={"batch": True, "recipient_count": len(accepted_emails)},
+        )
     return {
         "provider": "unisender_go",
         "status": _safe_text(data.get("status")) or "success",
@@ -5385,6 +5419,13 @@ def chat_with_sender(message: str, *, job_id: str | None = None, session_id: str
             request_kwargs["response_format"] = {"type": "text"}
         try:
             response = client.chat.completions.create(**request_kwargs)
+            record_llm_usage(
+                service="openai",
+                model=request_kwargs["model"],
+                operation="sender_ai_chat",
+                usage=usage_from_response(response),
+                job_id=job_id,
+            )
             reply = _safe_text(response.choices[0].message.content if response.choices else "")
             if not reply:
                 reply = "AI returned an empty answer. Session context was saved; try the question again."

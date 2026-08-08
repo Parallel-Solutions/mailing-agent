@@ -13,6 +13,8 @@ from src.generator.inflection.ai_case_agent import (
 )
 from src.generator.orchestration.orchestrator_agent_loop import run_agentic_orchestrator
 from src.generator.orchestration.orchestrator_session_state import append_message, get_goal_state, get_session
+from src.infra.llm_pricing import usage_from_response
+from src.infra.spend_ledger import record_llm_usage
 from src.generator.generation.config_generator import DATA_DIR, DATA_XLSX_PATH
 from src.generator.generation.document_builder import CONTRACT_TEMPLATE_PATH, KP_TEMPLATE_PATH
 from src.generator.generation.generator_agent import get_generator_status, run_generator_agent
@@ -243,6 +245,12 @@ def _maybe_llm_enhance(goal: str, analysis: str, result: str, options: list[str]
             model=settings.case_agent_model,
             messages=[{"role": "user", "content": prompt}],
         )
+        record_llm_usage(
+            service="openai",
+            model=settings.case_agent_model,
+            operation="orchestrator_llm_enhance",
+            usage=usage_from_response(response),
+        )
         return _safe_text(response.choices[0].message.content)
     except Exception:
         return ""
@@ -311,6 +319,12 @@ def _classify_orchestrator_intent(message: str, preflight: dict[str, Any], snaps
         response = client.chat.completions.create(
             model=settings.case_agent_model,
             messages=[{"role": "user", "content": prompt}],
+        )
+        record_llm_usage(
+            service="openai",
+            model=settings.case_agent_model,
+            operation="orchestrator_intent_classify",
+            usage=usage_from_response(response),
         )
     except Exception:
         return None
