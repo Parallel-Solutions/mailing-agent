@@ -184,6 +184,24 @@ class DurableTaskQueueTests(unittest.TestCase):
         self.assertEqual(payload["kwargs"]["job_id"], "job-flat-kwargs")
         self.assertTrue(payload["kwargs"]["dry_run"])
 
+    def test_claim_task_respects_only_task_types_filter(self) -> None:
+        sender_task, _ = enqueue_task(task_type="sender", job_id="job-sender-only")
+        validation_task, _ = enqueue_task(task_type="email_validation", job_id="job-validation-only")
+
+        claimed = claim_task(
+            worker_id="worker-a",
+            lease_seconds=60,
+            only_task_types={"email_validation"},
+        )
+
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["id"], validation_task["id"])
+        # The sender task must stay queued — it wasn't in the allowed set.
+        self.assertEqual(get_task(sender_task["id"])["status"], "queued")
+
+        # Without a filter, the remaining (sender) task is now claimable.
+        self.assertIsNotNone(claim_task(worker_id="worker-b", lease_seconds=60))
+
     def test_future_available_at_is_not_claimed_until_due(self) -> None:
         future = datetime.now(timezone.utc) + timedelta(hours=2)
         queued, created = enqueue_task(

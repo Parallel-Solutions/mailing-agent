@@ -131,13 +131,23 @@ def _cache_expiry(status: str, now: datetime) -> datetime:
     return now + timedelta(minutes=max(1, int(settings.email_validation_unknown_ttl_minutes or 15)))
 
 
+_QUEUED_STALE_SECONDS = 600.0
+
+
 def _run_is_stuck(row: EmailValidationRun, now: datetime | None = None) -> bool:
-    if str(row.status or "") != "running":
+    status = str(row.status or "")
+    if status not in {"running", "queued"}:
         return False
     current = now or _now()
     updated_at = row.updated_at or row.started_at or row.created_at
     if updated_at.tzinfo is None:
         updated_at = updated_at.replace(tzinfo=timezone.utc)
+    if status == "queued":
+        # Never claimed by a worker at all (e.g. the shared background queue
+        # was stalled) — give it a generous, fixed grace period rather than
+        # the per-request SMTP.BZ timeout below, which only makes sense once
+        # a run has actually started running.
+        return (current - updated_at).total_seconds() >= _QUEUED_STALE_SECONDS
     try:
         request_timeout = max(1.0, float(settings.email_validation_timeout_seconds or 10.0))
     except (TypeError, ValueError):
