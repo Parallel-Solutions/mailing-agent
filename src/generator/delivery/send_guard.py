@@ -183,23 +183,18 @@ def record_api_request(*, success: bool) -> None:
 
 
 def evaluate_thresholds() -> None:
-    if is_sending_paused():
-        return
-    status = get_send_guard_status()
-    min_samples = int(status.get("min_samples") or 20)
-    sent = int(status.get("sent") or 0)
-    api_requests = int(status.get("api_requests") or 0)
-    complaint_rate = float(status.get("complaint_rate") or 0.0)
-    api_error_rate = float(status.get("api_error_rate") or 0.0)
-    complaint_threshold = float(status.get("complaint_rate_threshold") or 0.001)
-    api_error_threshold = float(status.get("api_error_rate_threshold") or 0.05)
-
-    if sent >= min_samples and complaint_rate >= complaint_threshold:
-        pause_sending(
-            f"Автопауза: рост жалоб ({complaint_rate:.4%} >= {complaint_threshold:.4%})."
-        )
-        return
-    if api_requests >= min_samples and api_error_rate >= api_error_threshold:
-        pause_sending(
-            f"Автопауза: рост ошибок API ({api_error_rate:.2%} >= {api_error_threshold:.2%})."
-        )
+    """Intentionally a no-op: the blanket, account-wide auto-pause this used
+    to trigger was a design mistake — a single connection/key's own
+    channel_guard.py already isolates and self-heals (via its "warmup"
+    action) on that connection's own error spikes, so halting sending for
+    every sender in the system over one connection's blip was both
+    redundant and too aggressive (5% of just 20 API calls — a single
+    transient failure — was enough to trip it). Kept as a no-op, rather than
+    deleted outright, so record_sent/record_complaint/record_api_request and
+    get_send_guard_status() keep working unchanged: the rolling
+    sent/complaint/api-error counters are still tracked and visible via
+    /api/sender/status, they just no longer pause anything.
+    pause_sending()/resume_sending()/is_sending_paused() are untouched, so a
+    manual pause (if one is ever wired up again) still works.
+    """
+    return
