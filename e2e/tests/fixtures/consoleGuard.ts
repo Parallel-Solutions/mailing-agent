@@ -38,6 +38,11 @@ export class ConsoleGuard {
       if (this.allowConsole.some((s) => text.includes(s))) return;
       // External webfont failures must not fail product E2E.
       if (text.includes('downloadable font') || text.includes('fonts.gstatic.com')) return;
+      // Chromium logs this whenever a `srcdoc` iframe is sandboxed without
+      // `allow-scripts` — the deliberate, correct security posture for any
+      // preview of recipient/user-controlled HTML (email chain preview,
+      // template preview), not a product bug.
+      if (text.includes("document's frame is sandboxed")) return;
       this.consoleErrors.push(text);
     });
 

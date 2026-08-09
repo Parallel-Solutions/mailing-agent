@@ -28,6 +28,22 @@ const H_GAP = 80;
 const V_GAP = 40;
 const PADDING = 40;
 
+/**
+ * `crypto.randomUUID()` only exists in secure contexts (HTTPS, or HTTP on
+ * localhost) — it is `undefined` on a plain-HTTP origin such as an internal
+ * deployment without TLS termination, which crashed the whole chain builder
+ * (`crypto.randomUUID is not a function`) before this fix. These ids are
+ * local, ephemeral node/edge identifiers (never persisted as real UUIDs —
+ * every call site below immediately truncates to 8 chars), so a
+ * `Math.random`-based fallback is safe and preserves the existing id shape.
+ */
+function randomIdSuffix(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().slice(0, 8);
+  }
+  return Math.random().toString(16).slice(2, 10).padEnd(8, '0');
+}
+
 export function nodeKind(node: EmailChainNode): 'email' | 'link' {
   return node.kind === 'link' ? 'link' : 'email';
 }
@@ -147,7 +163,7 @@ export function computeChainLayout(chain: EmailChain): ChainLayout {
 }
 
 export function createEmptyChain(): EmailChain {
-  const rootId = `node-${crypto.randomUUID().slice(0, 8)}`;
+  const rootId = `node-${randomIdSuffix()}`;
   return {
     version: 2,
     root_node_id: rootId,
@@ -173,7 +189,7 @@ function appendChild(
   parentId: string,
   child: EmailChainNode,
 ): EmailChain {
-  const edgeId = `edge-${crypto.randomUUID().slice(0, 8)}`;
+  const edgeId = `edge-${randomIdSuffix()}`;
   return {
     ...chain,
     nodes: [...chain.nodes, child],
@@ -190,7 +206,7 @@ function appendChild(
 }
 
 export function addChildEmailNode(chain: EmailChain, parentId: string): EmailChain {
-  const childId = `node-${crypto.randomUUID().slice(0, 8)}`;
+  const childId = `node-${randomIdSuffix()}`;
   const childIndex = nextBlockIndex(chain);
   const childName = `Письмо ${childIndex}`;
   return appendChild(chain, parentId, {
@@ -213,7 +229,7 @@ export function addChildLinkNode(
   parentId: string,
   linkKind: ChainLinkKind,
 ): EmailChain {
-  const childId = `node-${crypto.randomUUID().slice(0, 8)}`;
+  const childId = `node-${randomIdSuffix()}`;
   const defaults = LINK_DEFAULTS[linkKind];
   const childIndex = nextBlockIndex(chain);
   const childName =
