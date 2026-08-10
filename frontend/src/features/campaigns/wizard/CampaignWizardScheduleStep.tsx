@@ -5,7 +5,10 @@ import {
   ProFormSelect,
 } from '@ant-design/pro-components';
 import { Form, Space, Typography, type FormInstance } from 'antd';
-import type { ScheduleFormValues } from '@/utils/scheduleForm';
+import {
+  SCHEDULE_DATE_TIME_FORMAT,
+  type ScheduleFormValues,
+} from '@/utils/scheduleForm';
 
 type Props = {
   form: FormInstance;
@@ -48,7 +51,7 @@ export function CampaignWizardScheduleStep({
           name="start_at"
           label="Дата и время старта"
           rules={[{ required: true, message: 'Укажите дату и время старта' }]}
-          fieldProps={{ style: { width: '100%' }, format: 'DD.MM.YYYY HH:mm' }}
+          fieldProps={{ style: { width: '100%' }, format: SCHEDULE_DATE_TIME_FORMAT }}
         />
       </div>
       <div data-onboarding-id="campaign-interval">
