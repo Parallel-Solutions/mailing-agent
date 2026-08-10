@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -183,6 +183,39 @@ class EventStreamCounter(Base):
     last_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ExternalServiceSpend(Base):
+    """One row per billed call to an external service (LLM, email provider,
+    validation, lookup APIs) — powers the admin "external spend" statistics tab.
+
+    Not job-scoped like JobEvent: many billed calls (ad-hoc AI chat, template
+    generation, parser lookups) have no job_id. job_id/owner_username are kept
+    for attribution when available, but stay nullable.
+    """
+
+    __tablename__ = "external_service_spends"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    service: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(128), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 6), nullable=False, default=0)
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ok")
+    request_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_external_service_spends_created", "created_at"),
+        Index("idx_external_service_spends_service_created", "service", "created_at"),
+        Index("idx_external_service_spends_job", "job_id"),
     )
 
 

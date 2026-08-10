@@ -52,6 +52,8 @@ from src.generator.knowledge.philology_knowledge import find_relevant_rules, for
 from src.generator.philologist.philologist_tools import PhilologistToolRunner, build_philologist_tool_manifest
 from src.generator.generation.pdf_converter import convert_docx_batch
 from src.generator.orchestration.responsibility_matrix import diagnose_responsibility
+from src.infra.llm_pricing import usage_from_response
+from src.infra.spend_ledger import record_llm_usage
 from src.jobs import load_agent_state, save_agent_state
 from src.jobs.storage import resolve_job_paths
 from src.utils.logger import logger
@@ -372,6 +374,12 @@ def _call_inflection_context_llm(
     if not _resolve_openai_base_url():
         request_kwargs["response_format"] = {"type": "json_object"}
     response = client.chat.completions.create(**request_kwargs)
+    record_llm_usage(
+        service="openai",
+        model=DOCUMENT_REVIEW_MODEL,
+        operation="philologist_inflection_context",
+        usage=usage_from_response(response),
+    )
     content = response.choices[0].message.content or "{}"
     parsed = json.loads(_extract_json_payload(content))
     if isinstance(parsed, list):
@@ -799,6 +807,12 @@ def _react_decide_fix_strategy(
             model=DOCUMENT_REVIEW_MODEL,
             messages=[{"role": "user", "content": prompt}],
         )
+        record_llm_usage(
+            service="openai",
+            model=DOCUMENT_REVIEW_MODEL,
+            operation="philologist_fix_strategy",
+            usage=usage_from_response(response),
+        )
         payload = _extract_json_payload(_safe_text(response.choices[0].message.content))
         parsed = json.loads(payload) if payload else {}
     except Exception as exc:
@@ -929,6 +943,12 @@ def _react_decide_next_action(
         response = client.chat.completions.create(
             model=DOCUMENT_REVIEW_MODEL,
             messages=[{"role": "user", "content": prompt}],
+        )
+        record_llm_usage(
+            service="openai",
+            model=DOCUMENT_REVIEW_MODEL,
+            operation="philologist_react_decide",
+            usage=usage_from_response(response),
         )
         payload = _extract_json_payload(_safe_text(response.choices[0].message.content))
         parsed = json.loads(payload) if payload else {}
@@ -2541,6 +2561,12 @@ def chat_with_philologist(message: str, *, job_id: str | None = None) -> dict[st
 
     try:
         response = client.chat.completions.create(**request_kwargs)
+        record_llm_usage(
+            service="openai",
+            model=request_kwargs["model"],
+            operation="philologist_chat",
+            usage=usage_from_response(response),
+        )
         reply = _safe_text(response.choices[0].message.content)
         if not reply:
             reply = _fallback_chat_answer(message, state)

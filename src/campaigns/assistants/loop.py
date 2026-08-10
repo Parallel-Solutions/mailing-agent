@@ -12,6 +12,8 @@ from src.campaigns.assistants.client import (
 from src.campaigns.assistants.context import AssistantContext
 from src.campaigns.assistants.prompts import system_prompt
 from src.campaigns.assistants.tools import execute_tool, tools_for_kind
+from src.infra.llm_pricing import usage_from_response
+from src.infra.spend_ledger import record_llm_usage
 
 
 def _safe_text(value: Any) -> str:
@@ -80,6 +82,13 @@ def run_assistant_loop(
             messages=[_message_for_openai(item) for item in messages],
             tools=tools or None,
             tool_choice="auto" if tools else None,
+        )
+        record_llm_usage(
+            service="openai",
+            model=model,
+            operation="template_assistant_chat",
+            usage=usage_from_response(response),
+            owner_username=ctx.owner_username,
         )
         assistant_message = response.choices[0].message
         tool_calls = assistant_message.tool_calls or []

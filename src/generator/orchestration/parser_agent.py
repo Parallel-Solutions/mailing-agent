@@ -23,6 +23,8 @@ from src.generator.inflection.ai_case_agent import (
     _resolve_openai_api_key,
     _resolve_openai_base_url,
 )
+from src.infra.llm_pricing import usage_from_response
+from src.infra.spend_ledger import record_llm_usage
 from src.jobs import load_agent_state, resolve_job_paths, save_agent_state
 from src.utils.config import settings
 
@@ -611,6 +613,12 @@ def chat_with_parser(message: str, job_id: str | None = None) -> dict[str, Any]:
 
     try:
         response = client.chat.completions.create(**request_kwargs)
+        record_llm_usage(
+            service="openai",
+            model=request_kwargs["model"],
+            operation="parser_agent_chat",
+            usage=usage_from_response(response),
+        )
         reply = _safe_text(response.choices[0].message.content)
         if not reply:
             reply = _fallback_parser_chat(message, state)

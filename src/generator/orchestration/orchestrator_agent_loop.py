@@ -8,6 +8,8 @@ from src.generator.orchestration.orchestrator_prompts import get_orchestrator_sy
 from src.generator.orchestration.orchestrator_session_state import append_message, get_goal_state, get_session
 from src.generator.orchestration.orchestrator_tool_executor import execute_tool
 from src.generator.orchestration.orchestrator_tools import ORCHESTRATOR_TOOLS
+from src.infra.llm_pricing import usage_from_response
+from src.infra.spend_ledger import record_llm_usage
 from src.utils.config import settings
 
 
@@ -80,6 +82,12 @@ def _classify_confirmation_response(client: OpenAI | None, user_message: str, pe
         response = client.chat.completions.create(
             model=settings.case_agent_model,
             messages=[{"role": "user", "content": prompt}],
+        )
+        record_llm_usage(
+            service="openai",
+            model=settings.case_agent_model,
+            operation="orchestrator_confirmation_classify",
+            usage=usage_from_response(response),
         )
         answer = _safe_text(response.choices[0].message.content).lower()
     except Exception:
@@ -180,6 +188,12 @@ def run_agentic_orchestrator(
             messages=[{"role": "system", "content": system_prompt}, *messages],
             tools=ORCHESTRATOR_TOOLS,
             tool_choice="auto",
+        )
+        record_llm_usage(
+            service="openai",
+            model=settings.case_agent_model,
+            operation="orchestrator_agentic_step",
+            usage=usage_from_response(response),
         )
         assistant_message = response.choices[0].message
         tool_calls = assistant_message.tool_calls or []

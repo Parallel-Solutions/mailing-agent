@@ -9,6 +9,7 @@ import re
 import httpx
 from langchain.tools import tool
 
+from src.infra.spend_ledger import record_service_call
 from src.parser_new import config
 from src.parser_new.logger import logger
 
@@ -98,6 +99,7 @@ def web_search(query: str, max_results: int = 5, include_domains: list[str] | No
 
         logger.info(f"[search] Найдено {len(results)} результатов для: {query!r}")
 
+        record_service_call(service="yandex", operation="search")
         return {"success": True, "results": results}
 
     except Exception as e:
