@@ -12,9 +12,10 @@ export const STATS_TABS = [
   { key: 'campaign-analytics', label: 'Аналитика рассылки' },
   { key: 'campaign-full-analytics', label: 'Полная аналитика' },
   { key: 'marketing-consents', label: 'Подписки и отписки' },
+  { key: 'external-spend', label: 'Расходы на сервисы' },
 ] as const;
 
-export const MANAGEMENT_TAB_KEYS = ['campaign-list', 'draft-list', 'audiences'] as const;
+export const MANAGEMENT_TAB_KEYS = ['campaign-list', 'draft-list', 'audiences', 'external-spend'] as const;
 
 export type StatsTabKey = (typeof STATS_TABS)[number]['key'];
 
@@ -28,6 +29,7 @@ export const PAGE_TITLES: Record<StatsTabKey, string> = {
   'campaign-analytics': 'Детальная аналитика рассылки',
   'campaign-full-analytics': 'Полная аналитика рассылки',
   'marketing-consents': 'Подписки и отписки',
+  'external-spend': 'Расходы на внешние сервисы',
 };
 
 export const RECIPIENT_CHIPS: Array<[string, string]> = [

@@ -87,6 +87,40 @@ class Settings(BaseSettings):
     template_import_max_rounds: int = 10
     template_import_max_cost_usd: float = 1.5
     template_import_target_similarity: float = 0.97
+
+    # Static USD price per call for services whose API responses don't echo
+    # back a cost (email providers, validation, lookup APIs). LLM cost is
+    # computed from actual token usage instead — see src/infra/llm_pricing.py.
+    # Keys are "{service}_{operation}"; unknown keys default to 0.0.
+    #
+    # Sourced from each provider's public pricing page (RUB converted at the
+    # CBR rate on 2026-08-07, ~81.4 RUB/USD). Where a provider bills by
+    # subscription/volume tier rather than a flat per-call price, the value
+    # below is that tier's price divided by its included volume — the actual
+    # rate depends on which plan the account is actually on, so re-check
+    # after rollout if the billed plan differs:
+    #   rusender_send        — RuSender Premium API+SMTP, ~6000 sends/mo: 320 RUB → ~0.05 RUB/email
+    #   mailopost_send        — MailoPost 50,000-email package: 7500 RUB → 0.15 RUB/email
+    #   unisender_send        — UniSender Go pay-as-you-go overage rate: 0.8 RUB/email
+    #   smtp_send             — own SMTP relay (owned mailbox), no third-party per-send fee
+    #   smtp_bz_validate_email — SMTP.BZ Premium-20 tier: 1200 RUB / 20000 = 0.06 RUB
+    #                            (validator-specific rate isn't published separately; proxied
+    #                            from the sending tier)
+    #   checko_lookup         — Checko flat annual plan: 3500 RUB/year, amortized per request
+    #                            (very rough — Checko doesn't publish a per-request rate)
+    #   tavily_search         — Tavily pay-as-you-go: $0.008/credit, basic search = 1 credit
+    #   yandex_search         — Yandex Search API (AI Studio) daytime rate: 480 RUB/1000 requests
+    #   twogis_lookup         — 2GIS Catalog WebAPI has NO public per-request price — it's quoted
+    #                           individually per contract (see law.2gis.ru/catalog-pay). The value
+    #                           below is an unverified placeholder guess, not a sourced rate —
+    #                           replace with the account's actual negotiated price.
+    #   oktmo_lookup          — free public classifier site (classinform.ru), not a paid API
+    external_service_prices_usd_json: str = (
+        '{"rusender_send":0.0006,"mailopost_send":0.0018,"unisender_send":0.0098,'
+        '"smtp_send":0.0,"smtp_bz_validate_email":0.0007,"checko_lookup":0.0005,'
+        '"tavily_search":0.008,"yandex_search":0.0059,"twogis_lookup":0.01,'
+        '"oktmo_lookup":0.0}'
+    )
     case_agent_model: str = "gpt-4o"
     enable_case_agent: bool = True
     case_agent_mode: str = "auto_fix"

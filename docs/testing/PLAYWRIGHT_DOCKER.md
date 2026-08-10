@@ -130,6 +130,19 @@ npm equivalents: `npm run e2e:test`, `e2e:test:chromium`, `e2e:test:smoke`, …
 3. Reuse `tests/fixtures/mailpit.ts`, `appApi.ts`, `consoleGuard.ts`.
 4. Run via Docker: `.\scripts\e2e.ps1 test -- tests/area/foo.spec.ts`.
 
+`tests/campaigns/campaign-ui-journey.spec.ts` and `tests/campaigns/campaign-ui-consent.spec.ts`
+(both `@email`, not wired into the `e2e-smoke` CI gate — run on demand via
+`npm run e2e:test:email` or `test:email:journey`) drive a genuine UI customer journey rather than
+the API-shortcut approach `campaign-flow.spec.ts` uses: connecting a Mailpit mailbox, building an
+email template and chain, importing recipients (including the negative fixtures), scheduling and
+launching through the real wizard, and — for the consent spec — adding a document follow-up node
+and clicking its chain-branch link to verify the attached-document email. They exercise the
+chain-centric wizard, not `consent_then_materials`/`consent_router.py`, because
+`validate_campaign_for_launch` (`src/campaigns/service.py`) now makes `email_chain_id` mandatory
+for every launch regardless of `send_scenario`, and the UI has no control that keeps
+`send_scenario: consent_then_materials` once a chain is picked — so `email_chain_id` being unset is
+the first thing to check if a campaign won't validate/launch in a new test.
+
 ## Diagnostics
 
 | Symptom | Check |

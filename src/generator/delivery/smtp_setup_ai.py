@@ -12,6 +12,8 @@ from src.generator.inflection.ai_case_agent import (
     _resolve_openai_api_key,
     _resolve_openai_base_url,
 )
+from src.infra.llm_pricing import usage_from_response
+from src.infra.spend_ledger import record_llm_usage
 from src.utils.config import settings
 
 SMTP_SETUP_AI_ENABLED = _read_env_override("SMTP_SETUP_AI_ENABLED", "1") == "1"
@@ -72,6 +74,12 @@ def advise_smtp_setup(context: dict[str, Any]) -> SetupAction:
     try:
         response = client.chat.completions.create(
             **_build_request_kwargs(context),
+        )
+        record_llm_usage(
+            service="openai",
+            model=settings.case_agent_model,
+            operation="smtp_setup_advisor",
+            usage=usage_from_response(response),
         )
         content = str(response.choices[0].message.content or "").strip()
         parsed = _parse_setup_action_json(content, context)

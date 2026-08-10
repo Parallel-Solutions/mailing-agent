@@ -32,6 +32,7 @@ import time
 import httpx
 from langchain.tools import tool
 
+from src.infra.spend_ledger import record_service_call
 from src.parser_new import config
 from src.parser_new.logger import logger
 from src.parser_new.tools.regions import get_region_code
@@ -60,6 +61,7 @@ def _twogis_get(path: str, params: dict) -> dict:
         raise RuntimeError("TWOGIS_API_KEY не задан")
     resp = httpx.get(f"{TWOGIS_BASE}{path}", params={**params, "key": key}, timeout=20)
     resp.raise_for_status()
+    record_service_call(service="twogis", operation="lookup", metadata={"path": path})
     return resp.json()
 
 

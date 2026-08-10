@@ -14,6 +14,7 @@ import httpx
 from langchain.tools import tool
 from tenacity import retry, stop_after_attempt, wait_fixed
 
+from src.infra.spend_ledger import record_service_call
 from src.parser_new import config
 from src.parser_new.logger import logger
 from src.parser_new.tools.regions import get_region_code
@@ -50,6 +51,7 @@ def _checko_get(endpoint: str, params: dict) -> dict:
         timeout=15,
     )
     response.raise_for_status()
+    record_service_call(service="checko", operation="lookup", metadata={"endpoint": endpoint})
     return response.json()
 
 

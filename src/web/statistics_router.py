@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.campaigns.recipient_resend_service import (
@@ -36,6 +36,7 @@ from src.generator.delivery.manager_stats import (
     parse_row_key,
     normalize_statistics_period,
 )
+from src.infra.spend_ledger import build_spend_snapshot
 from src.jobs.access import JobAccessDenied, authorize_job_access, job_is_visible
 from src.jobs.job_docs import list_job_ids_with_sent_mail
 from src.jobs.storage import normalize_job_id
@@ -68,6 +69,7 @@ def create_statistics_router(
     jobs_dir: Path,
     resolve_job_paths: Callable[[str | None], Any],
     logger: Any,
+    spend_ledger_subscribe: Callable[[], Any] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -76,6 +78,10 @@ def create_statistics_router(
             return authorize_job_access(job_id, principal, allow_missing=allow_missing)
         except JobAccessDenied as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    def _require_admin(principal: object) -> None:
+        if not coerce_principal(principal).is_admin:
+            raise HTTPException(status_code=403, detail="Доступно только администраторам")
 
     def _principal_name(principal: object) -> str:
         return coerce_principal(principal).username
@@ -587,5 +593,27 @@ def create_statistics_router(
             period_to=period_to,
         )
         return {"status": "ok", "result": build_domain_delivery_stats(filters)}
+
+    @router.get("/api/sender/external-spend/snapshot")
+    def sender_external_spend_snapshot(
+        period_minutes: int = 1440,
+        principal: object = Depends(check_auth),
+    ):
+        _require_admin(principal)
+        return {"status": "ok", "result": build_spend_snapshot(period_minutes=period_minutes)}
+
+    @router.get("/api/sender/external-spend/stream")
+    def sender_external_spend_stream(principal: object = Depends(check_auth)):
+        _require_admin(principal)
+        if spend_ledger_subscribe is None:
+            raise HTTPException(status_code=503, detail="Live-поток расходов недоступен")
+        return StreamingResponse(
+            spend_ledger_subscribe(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     return router

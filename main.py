@@ -66,6 +66,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from time import perf_counter
 import time
+from src.infra.spend_ledger import subscribe as spend_ledger_subscribe
 from src.parser_new.progress import subscribe as parser_progress_subscribe
 
 app = FastAPI(title="Mailing Agent")
@@ -1439,6 +1440,7 @@ app.include_router(
         jobs_dir=JOBS_DIR,
         resolve_job_paths=resolve_job_paths,
         logger=logger,
+        spend_ledger_subscribe=spend_ledger_subscribe,
     )
 )
 
