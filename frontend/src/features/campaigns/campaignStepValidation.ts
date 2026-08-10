@@ -1,7 +1,10 @@
-import dayjs from 'dayjs';
 import type { Campaign, CampaignValidateResponse, TemplateValidationIssue } from '@/api/types';
 import { validateCampaignBasics } from '@/utils/validators';
-import { isPositiveInteger, type ScheduleFormValues } from '@/utils/scheduleForm';
+import {
+  isPositiveInteger,
+  parseScheduleDateTime,
+  type ScheduleFormValues,
+} from '@/utils/scheduleForm';
 
 export type StepValidationStatus = 'ok' | 'warning' | 'error';
 
@@ -141,8 +144,7 @@ function isAiFixableIssue(issue: TemplateValidationIssue): boolean {
 
 export function validateScheduleStep(values: Partial<ScheduleFormValues>): string[] {
   const errors: string[] = [];
-  const start = values.start_at == null ? null : dayjs(values.start_at);
-  if (!start?.isValid()) {
+  if (!parseScheduleDateTime(values.start_at)) {
     errors.push('Укажите дату и время старта');
   }
   if (!isPositiveInteger(values.batch_size)) {

@@ -1,7 +1,13 @@
 import dayjs, { type Dayjs } from 'dayjs';
+import customParseFormat from 'dayjs/plugin/customParseFormat';
 import { formatLocalDateTime } from '@/utils/dateTime';
 
+dayjs.extend(customParseFormat);
+
 export type IntervalUnit = 'hours' | 'days';
+export const SCHEDULE_DATE_TIME_FORMAT = 'DD.MM.YYYY HH:mm';
+
+const ISO_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T/;
 
 export type ScheduleFormValues = {
   batch_size: number;
@@ -14,6 +20,18 @@ export function isPositiveInteger(value: unknown): boolean {
   if (value === null || value === undefined || value === '') return false;
   const number = Number(value);
   return Number.isInteger(number) && number > 0;
+}
+
+export function parseScheduleDateTime(value: Dayjs | string | null | undefined): Dayjs | null {
+  if (dayjs.isDayjs(value)) return value.isValid() ? value : null;
+  if (typeof value !== 'string') return null;
+
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const parsed = ISO_DATE_TIME_PATTERN.test(normalized)
+    ? dayjs(normalized)
+    : dayjs(normalized, SCHEDULE_DATE_TIME_FORMAT, true);
+  return parsed.isValid() ? parsed : null;
 }
 
 export function intervalFromSeconds(seconds: number): {
@@ -65,9 +83,8 @@ export function formValuesToSchedulePayload(values: {
   interval_seconds: number;
 } | null {
   if (!isPositiveInteger(values.batch_size)) return null;
-  if (values.start_at == null || values.start_at === '') return null;
-  const start = dayjs(values.start_at);
-  if (!start.isValid()) return null;
+  const start = parseScheduleDateTime(values.start_at);
+  if (!start) return null;
   const effective = start.isBefore(dayjs()) ? dayjs() : start;
   return {
     batch_size: Number(values.batch_size),
