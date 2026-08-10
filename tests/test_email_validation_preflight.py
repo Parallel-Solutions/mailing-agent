@@ -41,6 +41,10 @@ class EmailValidationPreflightTests(unittest.TestCase):
             patch.object(settings, "email_validation_mode", "smtpbz"),
             patch.object(settings, "email_validation_concurrency", 1),
             patch.object(settings, "email_validation_max_attempts", 1),
+            patch(
+                "src.generator.delivery.email_validation._domain_has_mail_route",
+                return_value=(True, "ok_domain", "", {"dns": {"status": "ok"}}),
+            ),
         ]
         for setting_patch in self.settings_patches:
             setting_patch.start()
@@ -82,7 +86,7 @@ class EmailValidationPreflightTests(unittest.TestCase):
             ],
         )
 
-    def test_import_is_pending_and_launch_waits_for_preflight(self) -> None:
+    def test_import_is_pending_but_smtpbz_preflight_is_advisory(self) -> None:
         self._replace_test_recipients()
 
         with session_scope() as session:
@@ -97,8 +101,8 @@ class EmailValidationPreflightTests(unittest.TestCase):
             self.assertTrue(all(not row.excluded for row in recipients))
 
         validation = validate_campaign_for_launch(self.campaign_id, self.username)
-        self.assertFalse(validation["ok"])
-        self.assertTrue(any("SMTP.BZ" in str(error) for error in validation["errors"]))
+        self.assertFalse(any("SMTP.BZ" in str(error) for error in validation["errors"]))
+        self.assertTrue(any("SMTP.BZ" in str(warning) for warning in validation["warnings"]))
 
     def test_worker_updates_recipients_and_reuses_persistent_cache(self) -> None:
         self._replace_test_recipients()
@@ -131,13 +135,22 @@ class EmailValidationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 [(row.validation_status, row.excluded) for row in recipients],
-                [("valid", False), ("invalid", True), ("unknown", True)],
+                [("valid", False), ("invalid", False), ("unknown", False)],
             )
 
         launch_validation = validate_campaign_for_launch(self.campaign_id, self.username)
         self.assertFalse(
             any("SMTP.BZ" in str(error) for error in launch_validation["errors"])
         )
+        self.assertTrue(
+            any("SMTP.BZ" in str(warning) for warning in launch_validation["warnings"])
+        )
+        unknown = cached_validation_result(self.username, "temp@example.com")
+        self.assertTrue(unknown.is_valid)
+        self.assertEqual(unknown.reason_code, "smtpbz_unavailable")
+        provider_negative = cached_validation_result(self.username, "bad@example.com")
+        self.assertTrue(provider_negative.is_valid)
+        self.assertEqual(provider_negative.reason_code, "smtpbz_invalid")
 
         second_campaign = create_campaign(self.username, {"name": "Cached SMTP.BZ preflight"})
         second_campaign_id = str(second_campaign["id"])
@@ -314,7 +327,7 @@ class EmailValidationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 sorted((member.validation_status, member.excluded) for member in members),
-                [("invalid", True), ("valid", False)],
+                [("invalid", False), ("valid", False)],
             )
             stored_audience = session.get(Audience, audience_id)
             self.assertIsNotNone(stored_audience)

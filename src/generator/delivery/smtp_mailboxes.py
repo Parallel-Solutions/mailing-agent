@@ -686,11 +686,13 @@ def send_test_email(
     include_sample_attachment: bool = False,
 ) -> None:
     target = _safe_text(recipient) or credentials.email
-    from src.generator.delivery.email_validation import validate_configured_email_address
+    from src.generator.delivery.email_validation import validate_email_address
 
-    email_validation = validate_configured_email_address(target)
+    # A connection test must verify the selected transport, not depend on an
+    # unrelated external mailbox-probing service.
+    email_validation = validate_email_address(target, mode="syntax")
     if not email_validation.is_valid:
-        raise ValueError(email_validation.reason or "Email не прошёл проверку SMTP.BZ.")
+        raise ValueError(email_validation.reason or "Некорректный email для тестового письма.")
     target = email_validation.normalized_email
     message = EmailMessage()
     sender_label = credentials.sender_name or credentials.email

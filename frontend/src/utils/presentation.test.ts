@@ -4,6 +4,7 @@ import { errorLabel, providerLabel, scenarioLabel, statusLabel } from './present
 describe('user-facing presentation', () => {
   it('translates known technical statuses and scenarios', () => {
     expect(statusLabel('retry')).toBe('Повторная попытка');
+    expect(statusLabel('unknown')).toBe('Не подтверждён (допущен)');
     expect(scenarioLabel('email_chain')).toBe('Цепочка писем');
     expect(providerLabel('smtp')).toBe('Почтовый ящик');
   });
