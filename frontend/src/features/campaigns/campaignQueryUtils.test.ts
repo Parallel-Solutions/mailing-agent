@@ -3,6 +3,7 @@ import {
   buildCampaignAutosavePayload,
   buildCampaignChainSelectionPatch,
   buildValidationSignature,
+  campaignEmailValidationQueryKey,
   campaignValidateQueryKey,
   invalidateCampaignDerivedData,
   resolveLinkedChainId,
@@ -66,6 +67,15 @@ describe('campaignValidateQueryKey', () => {
   });
 });
 
+describe('campaignEmailValidationQueryKey', () => {
+  it('builds the shared SMTP.BZ progress key', () => {
+    expect(campaignEmailValidationQueryKey('camp-1')).toEqual([
+      'campaign-email-validation',
+      'camp-1',
+    ]);
+  });
+});
+
 describe('buildValidationSignature', () => {
   it('changes when company work type changes', () => {
     const base = {
@@ -121,6 +131,20 @@ describe('invalidateCampaignDerivedData', () => {
 
     expect(invalidateQueries).toHaveBeenCalledTimes(3);
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['campaign-validate', 'camp-1'] });
+  });
+
+  it('invalidates SMTP.BZ progress after recipient changes', () => {
+    const invalidateQueries = vi.fn();
+    const queryClient = { invalidateQueries } as never;
+
+    invalidateCampaignDerivedData(queryClient, 'camp-1', {
+      includeEmailValidation: true,
+    });
+
+    expect(invalidateQueries).toHaveBeenCalledTimes(3);
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['campaign-email-validation', 'camp-1'],
+    });
   });
 });
 
