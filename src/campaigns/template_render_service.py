@@ -214,6 +214,7 @@ def _render_pdf_overlay(source_data: bytes, editor_state: dict[str, Any], contex
         PdfOverlayLayoutError,
         render_pdf,
         render_pdf_with_discovered_placeholders,
+        resolve_layout_field_rich_html,
         resolve_layout_field_value,
     )
 
@@ -243,6 +244,9 @@ def _render_pdf_overlay(source_data: bytes, editor_state: dict[str, Any], contex
         )
         if is_dynamic or value:
             field["value"] = value
+        rich_html = resolve_layout_field_rich_html(field, context)
+        if rich_html:
+            field["rich_html"] = rich_html
     try:
         return render_pdf(source_data, state)
     except PdfOverlayLayoutError:

@@ -17,6 +17,7 @@ from src.campaigns.pdf_overlay_service import (
     build_auto_layout_state,
     render_pdf,
     render_pdf_with_discovered_placeholders,
+    resolve_layout_field_rich_html,
     resolve_layout_field_value,
     save_generated_editor_state,
 )
@@ -112,6 +113,9 @@ def _resolved_state(state: dict[str, Any], context: dict[str, str]) -> dict[str,
         value = resolve_layout_field_value(field, context)
         if value:
             field["value"] = value
+        rich_html = resolve_layout_field_rich_html(field, context)
+        if rich_html:
+            field["rich_html"] = rich_html
     return resolved
 
 

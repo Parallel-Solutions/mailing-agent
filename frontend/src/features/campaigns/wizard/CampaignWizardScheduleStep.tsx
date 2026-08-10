@@ -32,7 +32,16 @@ export function CampaignWizardScheduleStep({
       }}
     >
       <div data-onboarding-id="campaign-batch-size">
-        <ProFormDigit name="batch_size" label="Размер пакета" min={1} fieldProps={{ precision: 0 }} />
+        <ProFormDigit
+          name="batch_size"
+          label="Размер пакета"
+          min={1}
+          fieldProps={{ min: 1, precision: 0, step: 1 }}
+          rules={[
+            { required: true, message: 'Укажите размер пакета' },
+            { type: 'number', min: 1, message: 'Размер пакета должен быть больше нуля' },
+          ]}
+        />
       </div>
       <div data-onboarding-id="campaign-start-at">
         <ProFormDateTimePicker

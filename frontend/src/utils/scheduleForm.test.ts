@@ -35,6 +35,28 @@ describe('scheduleForm', () => {
     });
   });
 
+  it.each([1, 7, 24])('accepts a positive batch size below the old default: %s', (batchSize) => {
+    const payload = formValuesToSchedulePayload({
+      batch_size: batchSize,
+      start_at: dayjs().add(1, 'day'),
+      interval_value: 1,
+      interval_unit: 'hours',
+    });
+
+    expect(payload?.batch_size).toBe(batchSize);
+  });
+
+  it.each([undefined, 0, -1, 1.5])('does not build a payload for invalid batch size: %s', (batchSize) => {
+    const payload = formValuesToSchedulePayload({
+      batch_size: batchSize,
+      start_at: dayjs().add(1, 'day'),
+      interval_value: 1,
+      interval_unit: 'hours',
+    });
+
+    expect(payload).toBeNull();
+  });
+
   it('clamps past start_at to now in payload', () => {
     const past = dayjs().subtract(2, 'year');
     const payload = formValuesToSchedulePayload({

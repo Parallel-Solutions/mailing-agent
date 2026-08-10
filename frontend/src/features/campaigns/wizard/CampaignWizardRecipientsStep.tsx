@@ -6,6 +6,7 @@ import { campaignsApi } from '@/api/campaigns';
 import type { Audience, Campaign, Recipient } from '@/api/types';
 import { emailValidationReason } from '@/utils/emailValidation';
 import { statusLabel } from '@/utils/presentation';
+import { campaignEmailValidationQueryKey } from '../campaignQueryUtils';
 
 type Props = {
   campaignId?: string;
@@ -34,10 +35,12 @@ export function CampaignWizardRecipientsStep({
 }: Props) {
   const [importing, setImporting] = useState(false);
   const queryClient = useQueryClient();
+  const validationQueryKey = campaignEmailValidationQueryKey(campaignId || '');
   const validationQuery = useQuery({
-    queryKey: ['campaign-email-validation', campaignId],
+    queryKey: validationQueryKey,
     queryFn: () => campaignsApi.emailValidation(campaignId!),
     enabled: Boolean(campaignId),
+    refetchOnMount: 'always',
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       return status === 'queued' || status === 'running' ? 3000 : false;
@@ -45,8 +48,8 @@ export function CampaignWizardRecipientsStep({
   });
   const startValidation = useMutation({
     mutationFn: () => campaignsApi.startEmailValidation(campaignId!),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['campaign-email-validation', campaignId] });
+    onSuccess: (run) => {
+      queryClient.setQueryData(validationQueryKey, run);
     },
   });
   const validation = validationQuery.data;

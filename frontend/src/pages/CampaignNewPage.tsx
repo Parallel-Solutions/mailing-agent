@@ -392,6 +392,7 @@ export function CampaignNewPage() {
       invalidateCampaignDerivedData(queryClient, campaignId, {
         includeMapping: true,
         includeValidation: true,
+        includeEmailValidation: true,
       });
     },
     [queryClient],

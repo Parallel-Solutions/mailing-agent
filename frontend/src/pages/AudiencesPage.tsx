@@ -30,6 +30,7 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
     queryKey: ['audience-email-validation', selected?.id],
     queryFn: () => audiencesApi.validation(selected!.id),
     enabled: Boolean(selected?.id),
+    refetchOnMount: 'always',
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       return status === 'queued' || status === 'running' ? 3000 : false;
@@ -37,8 +38,8 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
   });
   const startValidation = useMutation({
     mutationFn: () => audiencesApi.startValidation(selected!.id),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['audience-email-validation', selected?.id] });
+    onSuccess: (run) => {
+      queryClient.setQueryData(['audience-email-validation', selected?.id], run);
     },
   });
   const validation = validationQuery.data;
@@ -127,6 +128,9 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
                   await audiencesApi.importFile(selected.id, file as File);
                   message.success('Импорт выполнен');
                   void queryClient.invalidateQueries({ queryKey: ['audience-members', selected.id] });
+                  void queryClient.invalidateQueries({
+                    queryKey: ['audience-email-validation', selected.id],
+                  });
                   void queryClient.invalidateQueries({ queryKey: ['audiences'] });
                   onSuccess?.({});
                 } catch (error) {

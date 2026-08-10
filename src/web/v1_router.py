@@ -113,7 +113,7 @@ class ScheduleBody(BaseModel):
     timezone: str | None = None
     weekdays: list[int] | None = None
     time_windows: list[dict[str, Any]] | None = None
-    batch_size: int | None = None
+    batch_size: int | None = Field(default=None, ge=1)
     interval_seconds: int | None = None
     pause_between_messages_ms: int | None = None
     max_per_hour: int | None = None
@@ -124,7 +124,7 @@ class ScheduleBody(BaseModel):
 
 class SchedulePreviewBody(BaseModel):
     recipient_count: int = 0
-    batch_size: int = 25
+    batch_size: int = Field(default=25, ge=1)
     interval_seconds: int = 300
     start_at: str | None = None
     send_immediately: bool = True
