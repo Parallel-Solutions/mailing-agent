@@ -1,4 +1,5 @@
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import zipfile
 from src.security.auth import principal_from_user_record
@@ -47,10 +48,7 @@ from src.web.auth_router import create_auth_router
 from src.web.companies_router import create_companies_router
 from src.web.v1_router import create_v1_router
 from src.web.workers_router import create_workers_router
-from src.web.static_assets import (
-    ImmutableStaticFiles,
-    configure_response_compression,
-)
+from src.web.static_assets import configure_response_compression
 from src.web.sender_service import (
     compact_sender_status,
     configure_sender_service,
@@ -1546,7 +1544,7 @@ app.include_router(
 # Serve built React SPA assets when present (same origin as API on :9806).
 _assets_dir = FRONTEND_DIST / "assets"
 if _assets_dir.is_dir():
-    app.mount("/assets", ImmutableStaticFiles(directory=str(_assets_dir)), name="frontend-assets")
+    app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="frontend-assets")
 
 
 @app.get("/{full_path:path}", response_class=HTMLResponse)
