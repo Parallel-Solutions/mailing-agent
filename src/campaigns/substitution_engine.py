@@ -34,6 +34,18 @@ COMPOUND_TOKENS: tuple[tuple[str, str], ...] = (
     ("MUN_NAME_2 MUN_R_NAME SUB_RF", "WORK_SCOPE_FRAGMENT"),
 )
 
+_TERRITORY_FIELD_PATTERN = (
+    r"(?:MUN_NAME(?:_[123])?|MUN_R_NAME(?:_1)?|SUB_RF(?:_1)?)"
+)
+_TERRITORY_TOKEN_PATTERN = (
+    rf"(?:\{{\{{\s*{_TERRITORY_FIELD_PATTERN}\s*\}}\}}|{_TERRITORY_FIELD_PATTERN})"
+)
+_ADJACENT_TERRITORY_RUN_RE = re.compile(
+    rf"{_TERRITORY_TOKEN_PATTERN}(?:[ \t]+{_TERRITORY_TOKEN_PATTERN})+",
+    flags=re.IGNORECASE,
+)
+_TERRITORY_TOKEN_RE = re.compile(_TERRITORY_TOKEN_PATTERN, flags=re.IGNORECASE)
+
 _REVIEW_TEXT_BREAK_TAGS = frozenset(
     {
         "address",
@@ -564,6 +576,103 @@ def _adapt_admin_value_case(value: str, *, text: str, token: str) -> str:
     return clean
 
 
+def _dedupe_territory_values(values: list[str]) -> list[str]:
+    """Keep one copy of overlapping administrative levels in a scope phrase."""
+    result: list[str] = []
+    normalized: list[str] = []
+    for raw_value in values:
+        value = re.sub(r"\s+", " ", str(raw_value or "")).strip()
+        if not value:
+            continue
+        folded = value.casefold()
+        if any(folded == existing for existing in normalized):
+            continue
+        if any(folded in existing for existing in normalized):
+            continue
+        keep = [index for index, existing in enumerate(normalized) if existing not in folded]
+        result = [result[index] for index in keep]
+        normalized = [normalized[index] for index in keep]
+        result.append(value)
+        normalized.append(folded)
+    return result
+
+
+def _territory_run_value(
+    run: str,
+    *,
+    full_text: str,
+    context: dict[str, str],
+) -> str:
+    # Prefer an explicitly supplied semantic compound when the template already
+    # uses one of the known legacy combinations.
+    compound = next(
+        (
+            item
+            for item in discover_placeholders(run)
+            if item.kind == "compound" and item.token.strip() == run.strip()
+        ),
+        None,
+    )
+    if compound is not None and _has_context_key(context, compound.name):
+        value = _context_value(context, compound.name)
+        if value:
+            return value
+
+    values: list[str] = []
+    token_matches = list(_TERRITORY_TOKEN_RE.finditer(run))
+    resolved_count = 0
+    for match in token_matches:
+        token = match.group(0)
+        placeholder = next(
+            (
+                item
+                for item in discover_placeholders(token)
+                if item.token == token and _is_territory_placeholder(item.name)
+            ),
+            None,
+        )
+        if placeholder is None or not _has_context_key(context, placeholder.name):
+            continue
+        value = _context_value(context, placeholder.name)
+        value = _territory_value_for_context(
+            value,
+            name=placeholder.name,
+            text=full_text,
+            token=token,
+            context=context,
+        )
+        value = _adapt_territory_value_case(
+            value,
+            name=placeholder.name,
+            text=full_text,
+            token=token,
+        )
+        if value:
+            values.append(value)
+            resolved_count += 1
+    if resolved_count != len(token_matches):
+        return ""
+    return " ".join(_dedupe_territory_values(values))
+
+
+def render_placeholder_values(text: str, context: dict[str, str]) -> str:
+    """Resolve placeholders while collapsing adjacent territory fields semantically."""
+    rendered = str(text or "")
+    matches = list(_ADJACENT_TERRITORY_RUN_RE.finditer(rendered))
+    for match in reversed(matches):
+        replacement = _territory_run_value(
+            match.group(0),
+            full_text=rendered,
+            context=context,
+        )
+        if not replacement:
+            continue
+        rendered = f"{rendered[:match.start()]}{replacement}{rendered[match.end():]}"
+    for token, value in build_replacement_pairs(context, rendered):
+        rendered = rendered.replace(token, value)
+    return rendered
+
+
 def build_replacement_pairs(context: dict[str, str], text: str) -> list[tuple[str, str]]:
     pairs: dict[str, str] = {}
     for item in discover_placeholders(text):
@@ -668,9 +777,7 @@ def _apply_territory_genitive_fix(text: str, context: dict[str, str]) -> str:
 def render_text(text: str, context: dict[str, str]) -> str:
     if not text:
         return text
-    rendered = text
-    for token, value in build_replacement_pairs(context, text):
-        rendered = rendered.replace(token, value)
+    rendered = render_placeholder_values(text, context)
     rendered = _apply_territory_genitive_fix(rendered, context)
 
     from src.campaigns.text_local_review import normalize_generated_correspondence_text

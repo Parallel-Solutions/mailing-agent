@@ -325,6 +325,24 @@ class SubstitutionEngineTests(unittest.TestCase):
         self.assertNotIn("{{current_date}}", rendered)
         self.assertNotIn("ADM_NAME", rendered)
 
+    def test_render_text_deduplicates_adjacent_territory_levels(self) -> None:
+        context = {
+            "MUN_NAME_2": "Воскресенского муниципального округа",
+            "MUN_R_NAME_1": "Воскресенского муниципального округа",
+            "SUB_RF_1": "Нижегородской области",
+        }
+
+        rendered = render_text(
+            "для MUN_NAME_2 MUN_R_NAME_1 SUB_RF_1",
+            context,
+        )
+
+        self.assertEqual(
+            rendered,
+            "для Воскресенского муниципального округа Нижегородской области",
+        )
+        self.assertEqual(rendered.count("Воскресенского муниципального округа"), 1)
+
     def test_render_text_keeps_generic_territory_phrase_lowercase_inside_sentence(self) -> None:
         context = {
             "MUN_R_NAME_1": "\u043c\u0443\u043d\u0438\u0446\u0438\u043f\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u043e\u043a\u0440\u0443\u0433\u0430",

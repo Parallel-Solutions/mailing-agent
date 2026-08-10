@@ -95,6 +95,35 @@ def _placeholder_pdf(*, font_size: float = 11) -> bytes:
     return data
 
 
+def _overlapping_scope_paragraph_pdf() -> bytes:
+    font_file = _unicode_font_file()
+    document = fitz.open()
+    page = document.new_page(width=595, height=842)
+    page.insert_textbox(
+        fitz.Rect(49, 210, 560, 280),
+        (
+            "ООО «Параллельные Решения» предлагает выполнить работы по разработке\n"
+            "программ комплексного развития (ПКР) для "
+            "MUN_NAME_2 MUN_R_NAME_1 SUB_RF_1\n"
+            "в соответствии с требованиями ст. 26 Градостроительного кодекса РФ."
+        ),
+        fontsize=12,
+        fontname="ScopeParagraphSans",
+        fontfile=font_file,
+        lineheight=1.0,
+    )
+    page.insert_text(
+        fitz.Point(49, 285),
+        "Следующий раздел",
+        fontsize=12,
+        fontname="ScopeParagraphSans",
+        fontfile=font_file,
+    )
+    data = document.tobytes()
+    document.close()
+    return data
+
+
 def _rendered_placeholder_pdf() -> bytes:
     source = _placeholder_pdf()
     document = fitz.open(stream=source, filetype="pdf")
@@ -257,13 +286,43 @@ def test_generic_compound_line_keeps_real_source_and_original_weight() -> None:
         discover_placeholders(_pdf_text(source)),
         {"company": "ООО Ромашка", "region": "Москва"},
     )
-    field = next(item for item in state["fields"] if item["layout_kind"] == "composite_line")
+    field = next(item for item in state["fields"] if item["layout_kind"] == "text_block")
 
     assert field["source_text"] == "{{company}} — {{region}}"
     assert field["variables"] == ["company", "region"]
-    assert field["label"] == "Строка «{{company}} — {{region}}»"
+    assert field["label"] == "Абзац «{{company}} — {{region}}»"
     assert field["bold"] is False
     assert field["min_font_size"] == 8.0
+
+
+def test_scope_paragraph_preserves_static_text_and_deduplicates_territory() -> None:
+    source = _overlapping_scope_paragraph_pdf()
+    context = {
+        "MUN_NAME_2": "Воскресенского муниципального округа",
+        "MUN_R_NAME_1": "Воскресенского муниципального округа",
+        "SUB_RF_1": "Нижегородской области",
+    }
+
+    state = build_auto_layout_state(
+        source,
+        discover_placeholders(_pdf_text(source)),
+        context,
+    )
+    field = next(item for item in state["fields"] if item["layout_kind"] == "text_block")
+    assert field["redact_rects"]
+    assert field["rich_runs"]
+
+    rendered = render_pdf(source, state)
+    normalized = " ".join(_pdf_text(rendered).replace("\u00a0", " ").split())
+
+    assert "ООО «Параллельные Решения» предлагает выполнить работы" in normalized
+    assert "в соответствии с требованиями ст. 26" in normalized
+    assert "Следующий раздел" in normalized
+    assert normalized.count("Воскресенского муниципального округа") == 1
+    assert "Нижегородской области" in normalized
+    assert "MUN_NAME_2" not in normalized
+    assert "MUN_R_NAME_1" not in normalized
+    assert "SUB_RF_1" not in normalized
 
 
 def test_layout_error_identifies_real_source_page_and_variables() -> None:
