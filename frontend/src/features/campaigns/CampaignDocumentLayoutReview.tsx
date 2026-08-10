@@ -21,6 +21,7 @@ function statusTag(document: DocumentLayoutReviewItem, applied: boolean) {
   }
   if (document.status === 'candidate') return <Tag color="blue">Есть улучшение</Tag>;
   if (document.status === 'preview_only') return <Tag color="cyan">{'\u041f\u0440\u0435\u0434\u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440'}</Tag>;
+  if (document.status === 'fallback') return <Tag color="gold">Исходный макет</Tag>;
   if (document.status === 'error') return <Tag color="red">Ошибка проверки</Tag>;
   return <Tag>Без изменений</Tag>;
 }
@@ -163,10 +164,14 @@ export function CampaignDocumentLayoutReview({
       {documents.length > 0 && !busy ? (
         <div className="document-layout-review">
           <Alert
-            type="info"
+            type={selectedDocument?.status === 'fallback' ? 'warning' : 'info'}
             showIcon
             message={`Пример для: ${reviewQuery.data?.recipient.company || 'первого получателя'}`}
-            description="Документы для отправки формируются по варианту «После». Сохранение закрепит эту разметку в новой версии шаблона."
+            description={
+              selectedDocument?.status === 'fallback'
+                ? 'Подстановка выполнена в исходном макете. Автоматическая коррекция не будет сохранена и не блокирует отправку.'
+                : 'Документы для отправки формируются по варианту «После». Сохранение закрепит эту разметку в новой версии шаблона.'
+            }
           />
           <Tabs
             activeKey={selectedDocument?.template_id}
@@ -200,6 +205,32 @@ export function CampaignDocumentLayoutReview({
                   description={selectedDocument.message}
                 />
               ) : null}
+              {selectedDocument.status === 'fallback' ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="Автоматическая компоновка пропущена"
+                  description={
+                    <Space direction="vertical" size={6}>
+                      <Typography.Text>{selectedDocument.message}</Typography.Text>
+                      {(selectedDocument.issues || []).map((issue, issueIndex) => (
+                        <Typography.Text
+                          key={`${issue.page}-${issue.source_text}-${issueIndex}`}
+                          type="secondary"
+                        >
+                          {`Страница ${issue.page}: строка «${issue.source_text || 'без текста'}». `}
+                          {issue.variables.length > 0
+                            ? `Переменные: ${issue.variables.join(', ')}. `
+                            : ''}
+                          {issue.rendered_value
+                            ? `Подставленное значение: «${issue.rendered_value}».`
+                            : ''}
+                        </Typography.Text>
+                      ))}
+                    </Space>
+                  }
+                />
+              ) : null}
               {selectedDocument.status === 'skipped' ? (
                 <Alert
                   type="info"
@@ -208,10 +239,18 @@ export function CampaignDocumentLayoutReview({
                   description={selectedDocument.message}
                 />
               ) : null}
-              {selectedDocument.status === 'preview_only' && selectedDocument.before_image ? (
+              {(selectedDocument.status === 'preview_only' ||
+                selectedDocument.status === 'fallback') &&
+              selectedDocument.before_image &&
+              !selectedDocument.after_image ? (
                 <div className="document-layout-review__preview">
                   <div className="document-layout-review__preview-title">
-                    <Typography.Text strong>{'\u0414\u043e\u043a\u0443\u043c\u0435\u043d\u0442 \u0434\u043b\u044f \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438'}</Typography.Text>
+                    <Typography.Text strong>Документ для отправки</Typography.Text>
+                    {selectedDocument.status === 'fallback' ? (
+                      <Typography.Text type="secondary">
+                        Подстановка в исходном макете
+                      </Typography.Text>
+                    ) : null}
                   </div>
                   <img
                     src={selectedDocument.before_image}

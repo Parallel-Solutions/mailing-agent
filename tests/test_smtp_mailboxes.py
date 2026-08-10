@@ -288,6 +288,34 @@ class SenderAgentSmtpMailboxTests(unittest.TestCase):
         )
 
 
+class SmtpTestEmailTests(unittest.TestCase):
+    @patch("src.generator.delivery.smtp_mailboxes._open_smtp_connection")
+    def test_test_email_does_not_call_smtpbz(self, open_connection: object) -> None:
+        from unittest.mock import MagicMock
+
+        from src.generator.delivery.smtp_mailboxes import (
+            ResolvedSmtpCredentials,
+            send_test_email,
+        )
+
+        server = MagicMock()
+        open_connection.return_value = server  # type: ignore[attr-defined]
+        credentials = ResolvedSmtpCredentials(
+            email="sender@example.com",
+            password="secret",
+            host="smtp.example.com",
+            port=587,
+            use_ssl=False,
+            use_starttls=True,
+        )
+
+        with patch("src.generator.delivery.email_validation._run_smtpbz_request") as smtpbz:
+            send_test_email(credentials, recipient="recipient@example.com")
+
+        smtpbz.assert_not_called()
+        server.sendmail.assert_called_once()
+
+
 class NormalizeSmtpSecretTests(unittest.TestCase):
     def test_strips_all_whitespace(self) -> None:
         from src.generator.delivery.smtp_mailboxes import normalize_smtp_secret

@@ -246,13 +246,28 @@ export type DocumentLayoutReviewItem = {
   active_version_id: string;
   template_name: string;
   filename: string;
-  status: 'candidate' | 'already_applied' | 'preview_only' | 'skipped' | 'error';
+  status:
+    | 'candidate'
+    | 'already_applied'
+    | 'preview_only'
+    | 'fallback'
+    | 'skipped'
+    | 'error';
   message: string;
   changes: string[];
   before_image?: string;
   after_image?: string;
   can_apply: boolean;
   layout_version?: string;
+  fallback_used?: boolean;
+  issues?: Array<{
+    page: number;
+    source_text: string;
+    variables: string[];
+    rendered_value: string;
+    reason: string;
+    message: string;
+  }>;
 };
 
 export type CampaignDocumentLayoutReview = {

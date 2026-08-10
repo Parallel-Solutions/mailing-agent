@@ -178,34 +178,41 @@ def _cache_payload(row: EmailValidationCache) -> dict[str, Any]:
 
 
 def cached_validation_result(owner_username: str, email: str) -> EmailValidationResult:
-    syntax = validate_email_address(email, mode="syntax")
-    if not syntax.is_valid or not smtpbz_preflight_enabled():
-        return syntax
+    if not smtpbz_preflight_enabled():
+        return validate_configured_email_address(email, config=settings)
+
+    local = validate_email_address(
+        email,
+        mode="domain",
+        timeout_seconds=max(1.0, float(settings.email_validation_timeout_seconds or 10.0)),
+    )
+    if not local.is_valid:
+        return local
 
     with session_scope() as session:
         row = session.scalar(
             select(EmailValidationCache).where(
                 EmailValidationCache.owner_username == owner_username,
                 EmailValidationCache.provider == PROVIDER,
-                EmailValidationCache.normalized_email == syntax.normalized_email.lower(),
+                EmailValidationCache.normalized_email == local.normalized_email.lower(),
             )
         )
         if row is None or not _cache_is_fresh(row):
             return EmailValidationResult(
                 email=email,
-                normalized_email=syntax.normalized_email,
-                domain=syntax.domain,
-                is_valid=False,
+                normalized_email=local.normalized_email,
+                domain=local.domain,
+                is_valid=True,
                 reason_code="validation_pending",
-                reason="Email ещё не прошёл предварительную проверку SMTP.BZ.",
+                reason="SMTP.BZ ещё не проверил адрес; синтаксис и DNS корректны.",
                 checked_at=_now().isoformat(timespec="seconds"),
                 details={"mode": PROVIDER, "status": "pending"},
             )
         return EmailValidationResult(
             email=email,
-            normalized_email=syntax.normalized_email,
-            domain=syntax.domain,
-            is_valid=row.status == "valid",
+            normalized_email=local.normalized_email,
+            domain=local.domain,
+            is_valid=row.reason_code != "delivery_hard_bounce",
             reason_code=row.reason_code or f"smtpbz_{row.status}",
             reason=row.reason or "",
             checked_at=row.checked_at.isoformat(timespec="seconds"),
@@ -406,10 +413,7 @@ def _apply_scope_results(session: Any, run: EmailValidationRun) -> dict[str, int
             "revision": run.revision,
             "updated_at": now.isoformat(),
         }
-        if status in {"invalid", "unknown"}:
-            recipient.excluded = True
-            extra["validation_excluded"] = True
-        elif was_validation_excluded and status == "valid":
+        if was_validation_excluded:
             recipient.excluded = False
             extra["validation_excluded"] = False
         recipient.validation_status = status
