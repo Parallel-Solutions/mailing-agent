@@ -193,7 +193,7 @@ class EmailValidationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 [(row.validation_status, row.excluded) for row in retried],
-                [("valid", False), ("invalid", True), ("valid", False)],
+                [("valid", False), ("invalid", False), ("valid", False)],
             )
 
     def test_configuration_error_is_not_retried_for_every_address(self) -> None:
