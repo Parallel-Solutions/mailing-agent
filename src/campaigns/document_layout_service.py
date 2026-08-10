@@ -13,6 +13,7 @@ from sqlalchemy import select
 from src.campaigns import template_service
 from src.campaigns.pdf_overlay_service import (
     PDF_AUTO_LAYOUT_VERSION,
+    PdfOverlayLayoutError,
     build_auto_layout_state,
     render_pdf,
     render_pdf_with_discovered_placeholders,
@@ -216,7 +217,30 @@ def _review_template(
             "changes": [],
             "can_apply": False,
         }
-    candidate_pdf = render_pdf(source_data, _resolved_state(candidate_state, context))
+    try:
+        candidate_pdf = render_pdf(source_data, _resolved_state(candidate_state, context))
+    except PdfOverlayLayoutError as exc:
+        fallback_pdf = render_pdf_with_discovered_placeholders(
+            source_data,
+            placeholders,
+            context,
+            corporate_layout=False,
+        )
+        return {
+            **base,
+            "status": "fallback",
+            "message": (
+                "Автоматическая компоновка не применена: персонализированный документ "
+                "сформирован в исходном макете. Отправку можно продолжить; для изменения "
+                "расположения текста отредактируйте исходный PDF."
+            ),
+            "changes": [],
+            "before_image": _preview_data_url(fallback_pdf),
+            "can_apply": False,
+            "fallback_used": True,
+            "issues": [exc.to_dict()],
+            "layout_version": AUTO_LAYOUT_VERSION,
+        }
     changes = list((candidate_state.get("auto_layout") or {}).get("changes") or [])
     return {
         **base,
@@ -254,6 +278,7 @@ def inspect_campaign_layout(
                 )
             )
         except Exception as exc:
+            issues = [exc.to_dict()] if isinstance(exc, PdfOverlayLayoutError) else []
             documents.append(
                 {
                     "template_id": str(template.id),
@@ -264,6 +289,7 @@ def inspect_campaign_layout(
                     "message": str(exc),
                     "changes": [],
                     "can_apply": False,
+                    "issues": issues,
                 }
             )
 

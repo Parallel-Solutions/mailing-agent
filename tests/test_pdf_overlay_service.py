@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import fitz
 import pytest
 
+from src.campaigns import document_layout_service, pdf_overlay_service
 from src.campaigns.pdf_overlay_service import (
     FONT_FILES,
     PDF_GEOMETRY_TOLERANCE,
@@ -17,6 +19,7 @@ from src.campaigns.pdf_overlay_service import (
     render_pdf_with_discovered_placeholders,
     resolve_layout_field_value,
 )
+from src.campaigns.template_render_service import _render_pdf_overlay
 from src.campaigns.substitution_engine import discover_placeholders
 
 
@@ -68,7 +71,7 @@ def _unicode_font_file() -> str:
     return font_file
 
 
-def _placeholder_pdf() -> bytes:
+def _placeholder_pdf(*, font_size: float = 11) -> bytes:
     font_file = _unicode_font_file()
     document = fitz.open()
     page = document.new_page(width=595, height=842)
@@ -76,10 +79,10 @@ def _placeholder_pdf() -> bytes:
     page.insert_text(
         fitz.Point(65, 100),
         "№ {{id}}-ИП от {{current_date}}",
-        fontsize=11,
+        fontsize=font_size,
         **font_kwargs,
     )
-    page.insert_text(fitz.Point(360, 100), "ADM_NAME", fontsize=11, **font_kwargs)
+    page.insert_text(fitz.Point(360, 100), "ADM_NAME", fontsize=font_size, **font_kwargs)
     page.insert_text(fitz.Point(360, 165), "Следующий блок", fontsize=11, **font_kwargs)
     page.insert_text(
         fitz.Point(210, 205),
@@ -183,7 +186,7 @@ def test_auto_layout_groups_related_fields_and_preserves_readable_font_size() ->
         str(field.get("layout_kind")): field
         for field in state.get("fields") or []
     }
-    assert {"composite_line", "recipient", "greeting"} <= set(fields_by_kind)
+    assert {"document_header", "recipient", "greeting"} <= set(fields_by_kind)
     assert fields_by_kind["greeting"]["font_size"] >= 9
     assert fields_by_kind["greeting"]["value"] == "Уважаемый Заурдин Джабраилович!"
     assert fields_by_kind["recipient"]["value"] == (
@@ -192,6 +195,230 @@ def test_auto_layout_groups_related_fields_and_preserves_readable_font_size() ->
     assert state["auto_layout"]["version"] == PDF_AUTO_LAYOUT_VERSION
     assert fields_by_kind["recipient"]["font_size"] == pytest.approx(11.0, abs=0.1)
     assert fields_by_kind["recipient"]["min_font_size"] == 9.5
+    assert fields_by_kind["document_header"]["label"].startswith("Строка «№ {{id}}")
+    assert fields_by_kind["document_header"]["label"] != "Номер и дата"
+
+
+@pytest.mark.parametrize("font_size", [8, 9, 10, 11])
+def test_auto_layout_uses_effective_minimum_font_for_composite_geometry(
+    font_size: float,
+) -> None:
+    source = _placeholder_pdf(font_size=font_size)
+    context = {
+        "id": "125",
+        "current_date": "28.07.2026",
+        "ADM_NAME": LONG_ADMIN_NAME,
+        "Имя Отчество": "Заурдин Джабраилович",
+    }
+
+    rendered = render_pdf_with_discovered_placeholders(
+        source,
+        discover_placeholders(_pdf_text(source)),
+        context,
+    )
+
+    rendered_text = _pdf_text(rendered).replace("\u00a0", " ").replace("\u00ad", "-")
+    assert "№ 125-ИП от 28.07.2026" in rendered_text
+
+
+def test_auto_layout_expands_document_header_for_long_identifier() -> None:
+    source = _placeholder_pdf()
+    rendered = render_pdf_with_discovered_placeholders(
+        source,
+        discover_placeholders(_pdf_text(source)),
+        {
+            "id": "2026/08/10-125",
+            "current_date": "28.07.2026",
+            "ADM_NAME": LONG_ADMIN_NAME,
+            "Имя Отчество": "Заурдин Джабраилович",
+        },
+    )
+
+    rendered_text = _pdf_text(rendered).replace("\u00ad", "-")
+    assert "2026/08/10-125-ИП" in rendered_text
+
+
+def test_generic_compound_line_keeps_real_source_and_original_weight() -> None:
+    font_file = _unicode_font_file()
+    document = fitz.open()
+    page = document.new_page(width=595, height=842)
+    page.insert_text(
+        fitz.Point(65, 100),
+        "{{company}} — {{region}}",
+        fontsize=8,
+        fontname="GenericLineSans",
+        fontfile=font_file,
+    )
+    source = document.tobytes()
+    document.close()
+
+    state = build_auto_layout_state(
+        source,
+        discover_placeholders(_pdf_text(source)),
+        {"company": "ООО Ромашка", "region": "Москва"},
+    )
+    field = next(item for item in state["fields"] if item["layout_kind"] == "composite_line")
+
+    assert field["source_text"] == "{{company}} — {{region}}"
+    assert field["variables"] == ["company", "region"]
+    assert field["label"] == "Строка «{{company}} — {{region}}»"
+    assert field["bold"] is False
+    assert field["min_font_size"] == 8.0
+
+
+def test_layout_error_identifies_real_source_page_and_variables() -> None:
+    source = _highlighted_pdf()
+    state = {
+        "fields": [
+            {
+                "page": 0,
+                "variable": "__composite__",
+                "variables": ["id", "current_date"],
+                "source_text": "№ {{id}} от {{current_date}}",
+                "value": "№ ОЧЕНЬ-ДЛИННЫЙ-НОМЕР от 28.07.2026",
+                "x": 100,
+                "y": 100,
+                "width": 20,
+                "height": 8,
+                "font_size": 10,
+                "min_font_size": 10,
+                "background": "#ffffff",
+            }
+        ]
+    }
+
+    with pytest.raises(PdfOverlayLayoutError) as raised:
+        render_pdf(source, state)
+
+    issue = raised.value.to_dict()
+    assert issue["page"] == 1
+    assert issue["source_text"] == "№ {{id}} от {{current_date}}"
+    assert issue["variables"] == ["id", "current_date"]
+    assert "Номер и дата" not in issue["message"]
+    assert "Страница 1" in issue["message"]
+
+
+def test_auto_layout_failure_falls_back_to_original_placeholder_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _placeholder_pdf()
+    invalid_state = {
+        "fields": [
+            {
+                "page": 0,
+                "variables": ["id", "current_date"],
+                "source_text": "№ {{id}}-ИП от {{current_date}}",
+                "value": "значение, которое заведомо не поместится",
+                "x": 65,
+                "y": 90,
+                "width": 5,
+                "height": 5,
+                "font_size": 10,
+                "min_font_size": 10,
+                "background": "#ffffff",
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        pdf_overlay_service,
+        "build_auto_layout_state",
+        lambda *_args, **_kwargs: invalid_state,
+    )
+
+    rendered = render_pdf_with_discovered_placeholders(
+        source,
+        discover_placeholders(_pdf_text(source)),
+        {
+            "id": "125",
+            "current_date": "28.07.2026",
+            "ADM_NAME": LONG_ADMIN_NAME,
+            "Имя Отчество": "Заурдин Джабраилович",
+        },
+    )
+
+    normalized = _pdf_text(rendered).replace("\u00a0", " ").replace("\u00ad", "-")
+    assert "125" in normalized
+    assert "28.07.2026" in normalized
+    assert "{{id}}" not in normalized
+
+
+def test_saved_v3_auto_layout_is_rebuilt_before_delivery() -> None:
+    source = _placeholder_pdf(font_size=8)
+    context = {
+        "id": "125",
+        "current_date": "28.07.2026",
+        "ADM_NAME": LONG_ADMIN_NAME,
+        "Имя Отчество": "Заурдин Джабраилович",
+    }
+    stale_state = build_auto_layout_state(
+        source,
+        discover_placeholders(_pdf_text(source)),
+        context,
+    )
+    stale_state["auto_layout"]["version"] = "pdf-text-layout-v3"
+    for field in stale_state["fields"]:
+        field["width"] = 1
+        field["height"] = 1
+
+    rendered = _render_pdf_overlay(source, stale_state, context)
+
+    normalized = _pdf_text(rendered).replace("\u00a0", " ").replace("\u00ad", "-")
+    assert "№ 125-ИП от 28.07.2026" in normalized
+    assert "{{" not in normalized
+
+
+def test_layout_review_returns_actionable_fallback_instead_of_unknown_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _placeholder_pdf(font_size=8)
+    context = {
+        "id": "125",
+        "current_date": "28.07.2026",
+        "ADM_NAME": LONG_ADMIN_NAME,
+        "Имя Отчество": "Заурдин Джабраилович",
+    }
+    monkeypatch.setattr(document_layout_service, "get_bytes", lambda _key: source)
+    monkeypatch.setattr(
+        document_layout_service.template_service,
+        "cached_version_source_text",
+        lambda _version: _pdf_text(source),
+    )
+    monkeypatch.setattr(
+        document_layout_service,
+        "_build_context",
+        lambda *_args, **_kwargs: context,
+    )
+
+    def fail_candidate_render(_data: bytes, state: dict[str, object]) -> bytes:
+        field = list(state.get("fields") or [])[0]
+        assert isinstance(field, dict)
+        raise PdfOverlayLayoutError(
+            "Тестовая ошибка компоновки",
+            field=field,
+            value=str(field.get("value") or ""),
+            reason="text_does_not_fit",
+        )
+
+    monkeypatch.setattr(document_layout_service, "render_pdf", fail_candidate_render)
+    result = document_layout_service._review_template(
+        template=SimpleNamespace(id="template-1", name="Layout PDF"),
+        version=SimpleNamespace(
+            id="version-1",
+            filename="layout.pdf",
+            storage_key="layout.pdf",
+            editor_state=None,
+        ),
+        campaign=SimpleNamespace(id="campaign-1"),
+        recipient=SimpleNamespace(id=1),
+    )
+
+    assert result["status"] == "fallback"
+    assert result["fallback_used"] is True
+    assert result["can_apply"] is False
+    assert result["before_image"].startswith("data:image/png;base64,")
+    assert result["issues"][0]["source_text"].startswith("№ {{id}}")
+    assert sorted(result["issues"][0]["variables"]) == ["current_date", "id"]
+    assert "Номер и дата" not in result["issues"][0]["message"]
 
 
 def test_default_render_rebuilds_formal_lines_with_consistent_typography() -> None:
