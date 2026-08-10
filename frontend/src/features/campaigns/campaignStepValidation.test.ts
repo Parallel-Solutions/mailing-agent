@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import dayjs from 'dayjs';
 import {
   buildCampaignStepValidation,
   CAMPAIGN_WIZARD_STEP_TITLES,
@@ -143,6 +144,25 @@ describe('campaignStepValidation', () => {
     expect(validateScheduleStep({})).toEqual(
       expect.arrayContaining(['Укажите дату и время старта', 'Укажите интервал между пакетами']),
     );
+  });
+
+  it('accepts batch size 1 and rejects zero', () => {
+    const valid = validateScheduleStep({
+      batch_size: 1,
+      start_at: dayjs().add(1, 'day'),
+      interval_value: 1,
+      interval_unit: 'hours',
+    });
+    expect(valid).not.toContain('Размер пакета должен быть целым числом больше нуля');
+
+    expect(
+      validateScheduleStep({
+        batch_size: 0,
+        start_at: dayjs().add(1, 'day'),
+        interval_value: 1,
+        interval_unit: 'hours',
+      }),
+    ).toContain('Размер пакета должен быть целым числом больше нуля');
   });
 
   it('exposes step titles', () => {

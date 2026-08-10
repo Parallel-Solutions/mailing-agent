@@ -10,6 +10,12 @@ export type ScheduleFormValues = {
   interval_unit: IntervalUnit;
 };
 
+export function isPositiveInteger(value: unknown): boolean {
+  if (value === null || value === undefined || value === '') return false;
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0;
+}
+
 export function intervalFromSeconds(seconds: number): {
   interval_value: number;
   interval_unit: IntervalUnit;
@@ -58,12 +64,13 @@ export function formValuesToSchedulePayload(values: {
   send_immediately: false;
   interval_seconds: number;
 } | null {
+  if (!isPositiveInteger(values.batch_size)) return null;
   if (values.start_at == null || values.start_at === '') return null;
   const start = dayjs(values.start_at);
   if (!start.isValid()) return null;
   const effective = start.isBefore(dayjs()) ? dayjs() : start;
   return {
-    batch_size: Math.max(1, Math.floor(Number(values.batch_size) || 25)),
+    batch_size: Number(values.batch_size),
     start_at: effective.toISOString(),
     send_immediately: false,
     interval_seconds: intervalToSeconds(
