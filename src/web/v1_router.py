@@ -321,16 +321,25 @@ class ConnectionWarmupSettingsBody(BaseModel):
     pause_campaigns_during_warmup: bool | None = None
     subject_templates: list[str] | None = None
     body_templates: list[str] | None = None
+    duration_days: int | None = Field(default=None, ge=1, le=365)
     max_growth_percent: int | None = Field(default=None, ge=20, le=30)
     recipients_consent_confirmed: bool | None = None
 
 
+class ConnectionWarmupRecipientInput(BaseModel):
+    email: str
+    messages_per_day: int = Field(default=1, ge=1, le=100_000)
+
+
 class ConnectionWarmupRecipientsBody(BaseModel):
     emails: list[str] = Field(default_factory=list, max_length=500)
+    recipients: list[ConnectionWarmupRecipientInput] = Field(default_factory=list, max_length=500)
+    messages_per_day: int = Field(default=1, ge=1, le=100_000)
 
 
 class ConnectionWarmupRecipientStatusBody(BaseModel):
-    status: Literal["active", "disabled"]
+    status: Literal["active", "disabled"] | None = None
+    messages_per_day: int | None = Field(default=None, ge=1, le=100_000)
 
 
 class ConnectionWarmupDiagnosticsBody(BaseModel):
@@ -516,7 +525,12 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
         actor = _actor(principal)
         try:
             return _ok(connection_sender_warmup_service.add_recipients(
-                connection_id, actor.username, body.emails, visible_owners=_connection_visibility(actor)
+                connection_id,
+                actor.username,
+                body.emails,
+                recipient_settings=[item.model_dump() for item in body.recipients],
+                messages_per_day=body.messages_per_day,
+                visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -537,6 +551,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                 recipient_id,
                 actor.username,
                 body.status,
+                messages_per_day=body.messages_per_day,
                 visible_owners=_connection_visibility(actor),
             ))
         except LookupError as exc:

@@ -1,4 +1,4 @@
-import { Alert, App, Button, Checkbox, Input, Modal, Popconfirm, Select, Space, Tag, Typography } from 'antd';
+import { Alert, App, Button, Checkbox, Input, InputNumber, Modal, Popconfirm, Select, Space, Tag, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { connectionsApi } from '@/api/connections';
@@ -19,16 +19,19 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [recipientEmails, setRecipientEmails] = useState<string[]>([]);
+  const [recipientMessagesPerDay, setRecipientMessagesPerDay] = useState(10);
   const [headers, setHeaders] = useState('');
   const [busy, setBusy] = useState(false);
   const [smtpConnectionId, setSmtpConnectionId] = useState('');
   const [dailyStartTime, setDailyStartTime] = useState('10:00');
   const [dailyEndTime, setDailyEndTime] = useState('18:00');
   const [growthPercent, setGrowthPercent] = useState('25');
+  const [durationDays, setDurationDays] = useState('14');
   const [pauseCampaigns, setPauseCampaigns] = useState(true);
   const [subjectTemplatesText, setSubjectTemplatesText] = useState('');
   const [bodyTemplatesText, setBodyTemplatesText] = useState('');
   const queryKey = ['connection-sender-warmup', connection.id];
+  const isRuSender = connection.transport === 'rusender';
   const query = useQuery({
     queryKey,
     queryFn: () => connectionsApi.getWarmup(connection.id),
@@ -51,7 +54,9 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
     ? warmup.daily_plan[Math.min(warmup.current_day - 1, warmup.daily_plan.length - 1)] || 0
     : 0;
   const distributionLabel = warmup && warmup.active_recipient_count > 0
-    ? warmup.active_recipient_count === 1
+    ? isRuSender
+      ? `${currentDayVolume} писем по индивидуальным квотам`
+      : warmup.active_recipient_count === 1
       ? `${currentDayVolume} писем на один адрес`
       : `${Math.floor(currentDayVolume / warmup.active_recipient_count)}–${Math.ceil(currentDayVolume / warmup.active_recipient_count)} писем на адрес`
     : 'нет активных адресов';
@@ -61,6 +66,7 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
     setSmtpConnectionId(warmup.smtp_connection_id);
     setDailyEndTime(warmup.daily_end_time);
     setGrowthPercent(String(warmup.max_growth_percent));
+    setDurationDays(String(warmup.duration_days));
     setPauseCampaigns(warmup.pause_campaigns_during_warmup);
     setSubjectTemplatesText(warmup.subject_templates.join('\n'));
     setBodyTemplatesText(warmup.body_templates.join('\n---\n'));
@@ -84,11 +90,20 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
     <Modal open={open} title={connection.transport === 'rusender' ? `Прогрев ключа RuSender ${connection.sending_key_id}` : `Прогрев отправителя ${connection.email}`} onCancel={() => setOpen(false)} footer={null} width={860} destroyOnClose>
       {query.isLoading ? <Typography.Text>Загрузка…</Typography.Text> : null}
       {warmup ? <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        <Alert type="info" showIcon message="Сначала техническая проверка, затем постепенный рост объёма" description={connection.transport === 'rusender' ? "Письма отправляются именно через выбранный ключ RuSender. Email отправителя можно выбрать среди подключений этого ключа." : "Дневной план — это общее количество писем. Они равномерно распределяются по активным адресам и отправляются через выбранный SMTP."} />
+        <Alert
+          type="info"
+          showIcon
+          message={isRuSender ? 'Фиксированный дневной объём для ключа RuSender' : 'Сначала техническая проверка, затем постепенный рост объёма'}
+          description={isRuSender
+            ? 'Для каждого адреса задаётся своё количество писем в день. Если по этому ключу начинается рассылка, прогрев автоматически ждёт её завершения и затем продолжает остаток текущего дня.'
+            : 'Дневной план — это общее количество писем. Они равномерно распределяются по активным адресам и отправляются через выбранный SMTP.'}
+        />
 
         <Space wrap>
           <Typography.Title level={5} style={{ margin: 0 }}>Состояние</Typography.Title>
-          <Tag color={warmup.status === 'running' ? 'processing' : warmup.status === 'completed' ? 'success' : 'default'}>{STATUS_LABELS[warmup.status] || warmup.status}</Tag>
+          <Tag color={warmup.suspended_by_campaign ? 'warning' : warmup.status === 'running' ? 'processing' : warmup.status === 'completed' ? 'success' : 'default'}>
+            {warmup.suspended_by_campaign ? 'Ожидает завершения рассылки' : STATUS_LABELS[warmup.status] || warmup.status}
+          </Tag>
           <Typography.Text type="secondary">День {Math.min(warmup.current_day, warmup.daily_plan.length)} из {warmup.daily_plan.length}</Typography.Text>
         </Space>
         <Space wrap>
@@ -119,17 +134,33 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
               value={recipientEmails}
               onChange={setRecipientEmails}
               tokenSeparators={[',', ';', ' ']}
-              options={[
-                { label: 'ffff06@yandex.ru', value: 'ffff06@yandex.ru' },
-                { label: 'fmagomedova654@gmail.ru', value: 'fmagomedova654@gmail.ru' },
-              ]}
+              options={[]}
               placeholder="Выберите адреса или введите свои"
               style={{ flex: 1, minWidth: 420 }}
+              disabled={warmup.status === 'running'}
             />
+            {isRuSender ? <InputNumber
+              min={1}
+              max={100_000}
+              value={recipientMessagesPerDay}
+              onChange={(value) => setRecipientMessagesPerDay(Number(value) || 1)}
+              addonAfter="в день"
+              style={{ width: 170 }}
+              disabled={warmup.status === 'running'}
+            /> : null}
             <Button type="primary" loading={busy} onClick={() => {
               const emails = recipientEmails.map((item) => item.trim()).filter(Boolean);
-              void run(() => connectionsApi.addWarmupRecipients(connection.id, emails), `Добавлено адресов: ${emails.length}`).then(() => setRecipientEmails([]));
-            }}>Добавить</Button>
+              void run(
+                () => connectionsApi.addWarmupRecipients(
+                  connection.id,
+                  emails.map((email) => ({
+                    email,
+                    messages_per_day: isRuSender ? recipientMessagesPerDay : 1,
+                  })),
+                ),
+                `Добавлено адресов: ${emails.length}`,
+              ).then(() => setRecipientEmails([]));
+            }} disabled={warmup.status === 'running'}>Добавить</Button>
           </Space.Compact>
           <Typography.Text type="secondary">Активно: {warmup.active_recipient_count}. План текущего дня: {distributionLabel}.</Typography.Text>
           <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 12 }}>
@@ -137,6 +168,23 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
               <Space wrap>
                 <Typography.Text>{recipient.email}</Typography.Text><Tag>{recipient.provider}</Tag>
                 <Tag color={recipient.status === 'active' ? 'success' : 'default'}>{recipient.status === 'active' ? 'Активен' : 'Отключён'}</Tag>
+                {isRuSender ? <InputNumber
+                  key={`${recipient.id}-${recipient.messages_per_day}`}
+                  min={1}
+                  max={100_000}
+                  defaultValue={recipient.messages_per_day}
+                  addonAfter="писем/день"
+                  disabled={busy || warmup.status === 'running'}
+                  onBlur={(event) => {
+                    const value = Number(event.target.value);
+                    if (Number.isInteger(value) && value > 0 && value !== recipient.messages_per_day) {
+                      void run(
+                        () => connectionsApi.setWarmupRecipientDailyCount(connection.id, recipient.id, value),
+                        'Дневная квота адреса обновлена',
+                      );
+                    }
+                  }}
+                /> : null}
                 <Typography.Text type="secondary">отправлено {recipient.sent_count}, ошибок {recipient.error_count}</Typography.Text>
               </Space>
               <Space>
@@ -176,14 +224,23 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
               <Typography.Text type="secondary">Конец дня</Typography.Text>
               <Input value={dailyEndTime} onChange={(event) => setDailyEndTime(event.target.value)} placeholder="18:00" style={{ width: 110, display: 'block' }} />
             </label>
-            <label>
+            {isRuSender ? <label>
+              <Typography.Text type="secondary">Количество дней</Typography.Text>
+              <Input type="number" min={1} max={365} value={durationDays} onChange={(event) => setDurationDays(event.target.value)} style={{ width: 130, display: 'block' }} />
+            </label> : <label>
               <Typography.Text type="secondary">Рост в день, %</Typography.Text>
               <Input type="number" min={20} max={30} value={growthPercent} onChange={(event) => setGrowthPercent(event.target.value)} style={{ width: 110, display: 'block' }} />
-            </label>
+            </label>}
           </Space>
-          <Checkbox checked={pauseCampaigns} onChange={(event) => setPauseCampaigns(event.target.checked)} style={{ marginTop: 12 }}>
+          {isRuSender ? <Alert
+            type="success"
+            showIcon
+            style={{ marginTop: 12 }}
+            message="Рассылки имеют приоритет"
+            description="Прогрев автоматически приостанавливается, пока любое подключение этого ключа участвует в активной рассылке. После завершения рассылки прогрев продолжится автоматически."
+          /> : <Checkbox checked={pauseCampaigns} onChange={(event) => setPauseCampaigns(event.target.checked)} style={{ marginTop: 12 }}>
             При запуске поставить обычные кампании подключения на паузу (возобновление вручную)
-          </Checkbox>
+          </Checkbox>}
           <Typography.Text strong style={{ display: 'block', marginTop: 12 }}>Темы — по одной в строке</Typography.Text>
           <Input.TextArea value={subjectTemplatesText} onChange={(event) => setSubjectTemplatesText(event.target.value)} autoSize={{ minRows: 3, maxRows: 8 }} />
           <Typography.Text strong style={{ display: 'block', marginTop: 12 }}>Тексты — разделитель ---</Typography.Text>
@@ -196,7 +253,9 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
               () => connectionsApi.updateWarmup(connection.id, {
                 daily_start_time: dailyStartTime,
                 daily_end_time: dailyEndTime,
-                max_growth_percent: Number(growthPercent),
+                ...(isRuSender
+                  ? { duration_days: Number(durationDays) }
+                  : { max_growth_percent: Number(growthPercent) }),
                 smtp_connection_id: smtpConnectionId,
                 pause_campaigns_during_warmup: pauseCampaigns,
                 subject_templates: subjectTemplatesText.split('\n').map((item) => item.trim()).filter(Boolean),
@@ -211,11 +270,20 @@ export function SenderWarmupAction({ connection, connections }: { connection: De
 
         <div>
           <Typography.Title level={5}>4. План</Typography.Title>
-          <Space wrap>{warmup.daily_plan.map((planned, index) => <Tag key={index} color={index + 1 === warmup.current_day ? 'processing' : 'default'}>День {index + 1}: {planned} писем</Tag>)}</Space>
+          {isRuSender ? <Space wrap>
+            <Tag color="processing">{warmup.daily_plan[0] || 0} писем в день</Tag>
+            <Tag>{warmup.duration_days} дней</Tag>
+            <Tag color="blue">Всего: {(warmup.daily_plan[0] || 0) * warmup.duration_days} писем</Tag>
+          </Space> : <Space wrap>{warmup.daily_plan.map((planned, index) => <Tag key={index} color={index + 1 === warmup.current_day ? 'processing' : 'default'}>День {index + 1}: {planned} писем</Tag>)}</Space>}
           {warmup.active_recipient_count === 1 ? <Alert style={{ marginTop: 12 }} type="warning" showIcon message="Все письма дневного плана будут отправлены на один адрес. Для более естественного распределения добавьте несколько адресов." /> : null}
         </div>
 
-        {warmup.pause_reason ? <Alert type="warning" showIcon message="Причина паузы" description={warmup.pause_reason} /> : null}
+        {warmup.pause_reason ? <Alert
+          type={warmup.suspended_by_campaign ? 'info' : 'warning'}
+          showIcon
+          message={warmup.suspended_by_campaign ? 'Прогрев ожидает рассылку' : 'Причина паузы'}
+          description={warmup.pause_reason}
+        /> : null}
         <Checkbox
           checked={warmup.recipients_consent_confirmed}
           disabled={busy || warmup.status === 'running'}

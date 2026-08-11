@@ -633,6 +633,7 @@ export type ConnectionWarmupRecipient = {
   email: string;
   provider: 'gmail' | 'yandex' | 'mailru' | 'outlook' | 'other';
   status: 'active' | 'disabled';
+  messages_per_day: number;
   sent_count: number;
   error_count: number;
   last_sent_at: string;
@@ -652,12 +653,14 @@ export type ConnectionWarmupProgram = {
   smtp_connection_id: string;
   smtp_connection_email: string;
   smtp_connection_status: string;
-  sending_transport: 'smtp';
+  sending_transport: 'smtp' | 'rusender';
   status: 'draft' | 'running' | 'paused' | 'completed' | 'blocked' | 'cancelled';
   timezone: string;
   daily_start_time: string;
   daily_end_time: string;
   pause_campaigns_during_warmup: boolean;
+  warmup_mode: 'growth' | 'fixed_daily';
+  duration_days: number;
   max_growth_percent: number;
   current_day: number;
   run_number: number;
@@ -668,6 +671,9 @@ export type ConnectionWarmupProgram = {
   subject_templates: string[];
   body_templates: string[];
   pause_reason: string;
+  suspended_by_campaign: boolean;
+  suspended_at: string;
+  active_campaigns: Array<{ id: string; name: string }>;
   diagnostics_status: 'not_checked' | 'ready' | 'warning' | 'blocked';
   diagnostics: {
     checked_at?: string;
