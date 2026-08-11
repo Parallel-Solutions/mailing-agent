@@ -75,6 +75,10 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
             self.connection_id,
             self.owner,
             [" First@Gmail.com ", "first@gmail.com", "person@yandex.ru"],
+            recipient_settings=[
+                {"email": "first@gmail.com", "messages_per_day": 3},
+                {"email": "person@yandex.ru", "messages_per_day": 2},
+            ],
             visible_owners=self.visibility,
         )
         self.assertEqual(result["recipient_count"], 2)
@@ -83,6 +87,10 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
         self.assertEqual(providers["first@gmail.com"], "gmail")
         self.assertEqual(providers["person@yandex.ru"], "yandex")
         self.assertEqual(result["effective_daily_plan"][0], 5)
+        self.assertEqual(
+            {item["email"]: item["messages_per_day"] for item in result["recipients"]},
+            {"first@gmail.com": 3, "person@yandex.ru": 2},
+        )
 
     def test_rusender_key_can_use_any_sender_from_same_key(self) -> None:
         result = warmup.update_program(
@@ -135,6 +143,10 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
             self.connection_id,
             self.owner,
             ["one@gmail.com", "two@outlook.com"],
+            recipient_settings=[
+                {"email": "one@gmail.com", "messages_per_day": 3},
+                {"email": "two@outlook.com", "messages_per_day": 2},
+            ],
             visible_owners=self.visibility,
         )
         with patch.object(
@@ -267,26 +279,148 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "delivered")
         self.assertFalse(outcome["paused"])
 
-    def test_growth_setting_rebuilds_the_daily_plan(self) -> None:
-        result = warmup.get_program(
+    def test_active_campaign_suspends_a_warmup_message(self) -> None:
+        result = warmup.add_recipients(
+            self.connection_id,
+            self.owner,
+            ["wait@gmail.com"],
+            recipient_settings=[{"email": "wait@gmail.com", "messages_per_day": 2}],
+            visible_owners=self.visibility,
+        )
+        delivery_id = str(uuid4())
+        now = datetime.now(timezone.utc)
+        with session_scope() as session:
+            program = session.get(ConnectionWarmupProgram, result["id"])
+            program.status = "running"
+            session.add(ConnectionWarmupDelivery(
+                id=delivery_id,
+                program_id=result["id"],
+                recipient_id=result["recipients"][0]["id"],
+                day_number=1,
+                run_number=1,
+                sequence_number=1,
+                status="queued",
+                scheduled_at=now,
+                created_at=now,
+                updated_at=now,
+            ))
+        campaigns = [{"id": "campaign-1", "name": "Основная рассылка"}]
+        with (
+            patch.object(warmup, "_active_rusender_campaigns", return_value=campaigns),
+            patch.object(warmup, "_enqueue_campaign_resume", return_value="poll-task") as enqueue_poll,
+        ):
+            outcome = warmup.run_warmup_message({"delivery_id": delivery_id})
+        self.assertEqual(outcome["status"], "suspended_by_campaign")
+        enqueue_poll.assert_called_once_with(result["id"])
+        with session_scope() as session:
+            program = session.get(ConnectionWarmupProgram, result["id"])
+            delivery = session.get(ConnectionWarmupDelivery, delivery_id)
+            self.assertTrue(program.suspended_by_campaign)
+            self.assertEqual(delivery.status, "paused")
+
+    def test_rusender_open_event_is_visible_in_warmup_statistics(self) -> None:
+        result = warmup.add_recipients(
+            self.connection_id,
+            self.owner,
+            ["open@gmail.com"],
+            visible_owners=self.visibility,
+        )
+        delivery_id = str(uuid4())
+        now = datetime.now(timezone.utc)
+        with session_scope() as session:
+            session.add(ConnectionWarmupDelivery(
+                id=delivery_id,
+                program_id=result["id"],
+                recipient_id=result["recipients"][0]["id"],
+                day_number=1,
+                run_number=1,
+                sequence_number=1,
+                status="delivered",
+                provider_message_id="open-provider-id",
+                scheduled_at=now,
+                sent_at=now,
+                created_at=now,
+                updated_at=now,
+            ))
+        outcome = warmup.record_warmup_delivery_outcome(
+            provider_message_id="open-provider-id",
+            provider_status="opened",
+        )
+        self.assertEqual(outcome["status"], "opened")
+        snapshot = warmup.get_program(
             self.connection_id,
             self.owner,
             visible_owners=self.visibility,
         )
-        self.assertEqual(result["daily_plan"], [5, 8, 10, 15, 19, 24, 25, 30, 38, 48, 50, 50, 50, 50])
+        self.assertEqual(snapshot["delivery_counts"]["opened"], 1)
+
+    def test_only_one_program_can_be_active_for_a_rusender_key(self) -> None:
+        second_connection_id = str(uuid4())
+        now = datetime.now(timezone.utc)
+        with session_scope() as session:
+            session.add(SmtpMailbox(
+                id=second_connection_id,
+                owner_username=self.owner,
+                provider="rusender",
+                email="third-sender@example.com",
+                sender_name="Sender",
+                host="https://api.rusender.ru/api/v1",
+                port=443,
+                use_ssl=True,
+                use_starttls=False,
+                auth_method="environment",
+                password_encrypted="",
+                sending_key_id=123,
+                status="active",
+                is_default=False,
+                created_at=now,
+                updated_at=now,
+            ))
+        second = warmup.get_program(
+            second_connection_id,
+            self.owner,
+            visible_owners=self.visibility,
+        )
+        with session_scope() as session:
+            first_program = session.scalar(
+                select(ConnectionWarmupProgram).where(
+                    ConnectionWarmupProgram.connection_id == self.connection_id
+                )
+            )
+            first_program.status = "running"
+        with session_scope() as session:
+            second_program = session.get(ConnectionWarmupProgram, second["id"])
+            second_connection = session.get(SmtpMailbox, second_connection_id)
+            with self.assertRaisesRegex(ValueError, "уже запущена"):
+                warmup._assert_no_other_key_warmup(session, second_connection, second_program)
+
+    def test_rusender_fixed_daily_plan_uses_recipient_quotas_and_duration(self) -> None:
+        result = warmup.add_recipients(
+            self.connection_id,
+            self.owner,
+            ["one@gmail.com", "two@yandex.ru"],
+            recipient_settings=[
+                {"email": "one@gmail.com", "messages_per_day": 3},
+                {"email": "two@yandex.ru", "messages_per_day": 2},
+            ],
+            visible_owners=self.visibility,
+        )
+        self.assertEqual(result["warmup_mode"], "fixed_daily")
+        self.assertEqual(result["daily_plan"], [5] * 14)
         result = warmup.update_program(
             self.connection_id,
             self.owner,
-            {"max_growth_percent": 20},
+            {"duration_days": 3},
             visible_owners=self.visibility,
         )
-        self.assertEqual(result["daily_plan"], [5, 8, 10, 15, 18, 22, 25, 30, 36, 44, 50, 50, 50, 50])
+        self.assertEqual(result["daily_plan"], [5, 5, 5])
 
     def test_restart_uses_a_new_run_and_preserves_old_deliveries(self) -> None:
         result = warmup.add_recipients(
             self.connection_id,
             self.owner,
             ["repeat@gmail.com"],
+            recipient_settings=[{"email": "repeat@gmail.com", "messages_per_day": 5}],
             visible_owners=self.visibility,
         )
         program_id = result["id"]

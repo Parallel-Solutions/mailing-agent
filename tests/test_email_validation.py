@@ -101,7 +101,7 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
         self.assertEqual(result.reason_code, "smtpbz_unknown")
         self.assertTrue(result.details["smtpbz"]["advisory"])
 
-    def test_smtpbz_nonexistent_mailbox_result_remains_advisory(self) -> None:
+    def test_smtpbz_explicit_nonexistent_mailbox_blocks_send(self) -> None:
         with patch.object(
             email_validation,
             "_domain_has_mail_route",
@@ -117,7 +117,7 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
                 smtpbz_api_key="token",
             )
 
-        self.assertTrue(result.is_valid)
+        self.assertFalse(result.is_valid)
         self.assertEqual(result.reason_code, "smtpbz_invalid")
         self.assertIn("SMTP.BZ", result.reason)
 

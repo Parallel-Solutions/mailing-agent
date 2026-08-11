@@ -13,6 +13,7 @@ export function CampaignsTab() {
   const {
     apiBaseParams,
     refreshNonce,
+    refreshProviders,
     requestRefresh,
     openDrilldown,
     openCampaignSummary,
@@ -28,7 +29,7 @@ export function CampaignsTab() {
       statisticsApi.campaigns({
         ...apiBaseParams,
         q: search || undefined,
-        refresh: refreshNonce > 0 ? true : undefined,
+        refresh: refreshProviders ? true : undefined,
       }),
   });
 

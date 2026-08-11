@@ -68,7 +68,7 @@ describe('campaignValidateQueryKey', () => {
 });
 
 describe('campaignEmailValidationQueryKey', () => {
-  it('builds the shared SMTP.BZ progress key', () => {
+  it('builds the shared email validation progress key', () => {
     expect(campaignEmailValidationQueryKey('camp-1')).toEqual([
       'campaign-email-validation',
       'camp-1',
@@ -133,7 +133,7 @@ describe('invalidateCampaignDerivedData', () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['campaign-validate', 'camp-1'] });
   });
 
-  it('invalidates SMTP.BZ progress after recipient changes', () => {
+  it('invalidates email validation progress after recipient changes', () => {
     const invalidateQueries = vi.fn();
     const queryClient = { invalidateQueries } as never;
 

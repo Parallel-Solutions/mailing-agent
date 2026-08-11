@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from email.parser import Parser
 import re
@@ -16,6 +17,7 @@ from sqlalchemy import func, select
 
 from src.infra.db import session_scope
 from src.infra.models import (
+    Campaign,
     ConnectionWarmupDelivery,
     ConnectionWarmupProgram,
     ConnectionWarmupRecipient,
@@ -39,6 +41,11 @@ def _build_daily_plan(max_growth_percent: int) -> list[int]:
 
 
 DEFAULT_DAILY_PLAN = _build_daily_plan(25)
+FIXED_DAILY_MODE = "fixed_daily"
+GROWTH_MODE = "growth"
+MAX_WARMUP_DURATION_DAYS = 365
+MAX_RECIPIENT_MESSAGES_PER_DAY = 100_000
+CAMPAIGN_RESUME_POLL_SECONDS = 300
 DEFAULT_SUBJECT_TEMPLATES = [
     "Короткое письмо",
     "Добрый день",
@@ -58,6 +65,12 @@ _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
+class WarmupSuspendedByCampaign(RuntimeError):
+    def __init__(self, campaigns: list[dict[str, str]]):
+        self.campaigns = campaigns
+        super().__init__("RuSender warmup is suspended while a campaign is running.")
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -71,6 +84,18 @@ def _normalize_email(value: Any) -> str:
     if len(email) > 320 or not _EMAIL_RE.fullmatch(email):
         raise ValueError(f"Некорректный email получателя: {value}")
     return email
+
+
+def _normalize_messages_per_day(value: Any) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Количество писем в день должно быть целым числом.") from exc
+    if result < 1 or result > MAX_RECIPIENT_MESSAGES_PER_DAY:
+        raise ValueError(
+            f"Количество писем на адрес должно быть от 1 до {MAX_RECIPIENT_MESSAGES_PER_DAY} в день."
+        )
+    return result
 
 
 def _template_list(value: Any, *, label: str) -> list[str]:
@@ -177,6 +202,52 @@ def _selected_smtp_connection(
     return connection
 
 
+def _connection_transport(connection: SmtpMailbox | None) -> str:
+    if connection is None:
+        return "smtp"
+    from src.campaigns.connection_service import connection_transport
+
+    return connection_transport(connection)
+
+
+def _active_rusender_campaigns(session: Any, connection: SmtpMailbox | None) -> list[dict[str, str]]:
+    if connection is None or _connection_transport(connection) != "rusender":
+        return []
+    from src.generator.delivery.channel_guard import _campaign_uses_connection, _key_scope_mailboxes
+
+    connection_ids = {row.id for row in _key_scope_mailboxes(session, connection)}
+    campaigns = session.scalars(
+        select(Campaign).where(
+            Campaign.owner_username == connection.owner_username,
+            Campaign.status == "running",
+        )
+    ).all()
+    return [
+        {"id": campaign.id, "name": campaign.name or campaign.id}
+        for campaign in campaigns
+        if any(_campaign_uses_connection(campaign, connection_id) for connection_id in connection_ids)
+    ]
+
+
+def active_rusender_campaigns_for_connection(connection_id: str) -> list[dict[str, str]]:
+    with session_scope() as session:
+        connection = session.get(SmtpMailbox, connection_id)
+        return _active_rusender_campaigns(session, connection)
+
+
+def _fixed_daily_plan(
+    program: ConnectionWarmupProgram,
+    recipients: list[ConnectionWarmupRecipient],
+) -> list[int]:
+    total = sum(
+        max(1, int(recipient.messages_per_day or 1))
+        for recipient in recipients
+        if recipient.status == "active"
+    )
+    duration = max(1, min(MAX_WARMUP_DURATION_DAYS, int(program.duration_days or 14)))
+    return [total for _ in range(duration)]
+
+
 def _ensure_program_locked(session: Any, connection: SmtpMailbox) -> ConnectionWarmupProgram:
     program = session.scalar(
         select(ConnectionWarmupProgram)
@@ -186,6 +257,14 @@ def _ensure_program_locked(session: Any, connection: SmtpMailbox) -> ConnectionW
     if program is not None:
         if program.smtp_connection_id is None:
             program.smtp_connection_id = _default_smtp_connection_id(connection)
+            program.updated_at = _now()
+        if (
+            _connection_transport(connection) == "rusender"
+            and str(program.warmup_mode or GROWTH_MODE) != FIXED_DAILY_MODE
+            and program.status not in ACTIVE_PROGRAM_STATUSES
+        ):
+            program.warmup_mode = FIXED_DAILY_MODE
+            program.duration_days = max(1, int(program.duration_days or 14))
             program.updated_at = _now()
         return program
     now = _now()
@@ -199,6 +278,8 @@ def _ensure_program_locked(session: Any, connection: SmtpMailbox) -> ConnectionW
         daily_start_time="10:00",
         daily_end_time="18:00",
         pause_campaigns_during_warmup=True,
+        warmup_mode=(FIXED_DAILY_MODE if _connection_transport(connection) == "rusender" else GROWTH_MODE),
+        duration_days=14,
         max_growth_percent=25,
         current_day=1,
         run_number=1,
@@ -208,6 +289,8 @@ def _ensure_program_locked(session: Any, connection: SmtpMailbox) -> ConnectionW
         subject_templates=list(DEFAULT_SUBJECT_TEMPLATES),
         body_templates=list(DEFAULT_BODY_TEMPLATES),
         pause_reason=None,
+        suspended_by_campaign=False,
+        suspended_at=None,
         created_at=now,
         updated_at=now,
     )
@@ -222,6 +305,7 @@ def _recipient_dict(row: ConnectionWarmupRecipient) -> dict[str, Any]:
         "email": row.email,
         "provider": row.provider,
         "status": row.status,
+        "messages_per_day": max(1, int(row.messages_per_day or 1)),
         "sent_count": int(row.sent_count or 0),
         "error_count": int(row.error_count or 0),
         "last_sent_at": _iso(row.last_sent_at),
@@ -249,7 +333,7 @@ def _program_dict(session: Any, program: ConnectionWarmupProgram) -> dict[str, A
             .group_by(ConnectionWarmupDelivery.status)
         ).all()
     )
-    delivery_counts["opened"] = int(
+    smtp_opened_count = int(
         session.scalar(
             select(func.count(SmtpOpenTracking.id))
             .join(
@@ -264,22 +348,48 @@ def _program_dict(session: Any, program: ConnectionWarmupProgram) -> dict[str, A
         )
         or 0
     )
+    provider_opened_count = int(
+        session.scalar(
+            select(func.count(ConnectionWarmupDelivery.id)).where(
+                ConnectionWarmupDelivery.program_id == program.id,
+                ConnectionWarmupDelivery.run_number == int(program.run_number or 1),
+                ConnectionWarmupDelivery.opened_at.is_not(None),
+            )
+        )
+        or 0
+    )
+    delivery_counts["opened"] = smtp_opened_count + provider_opened_count
     active_count = sum(1 for item in recipients if item.status == "active")
     smtp_connection = _selected_smtp_connection(session, program)
-    plan = [max(1, int(value)) for value in list(program.daily_plan or DEFAULT_DAILY_PLAN)]
+    target_connection = session.get(SmtpMailbox, program.connection_id)
+    sending_connection = smtp_connection or target_connection
+    warmup_mode = str(program.warmup_mode or GROWTH_MODE)
+    plan = (
+        _fixed_daily_plan(program, recipients)
+        if warmup_mode == FIXED_DAILY_MODE
+        else [max(1, int(value)) for value in list(program.daily_plan or DEFAULT_DAILY_PLAN)]
+    )
     effective_plan = list(plan) if active_count else [0 for _ in plan]
+    active_campaigns = _active_rusender_campaigns(session, sending_connection)
+    suspended_by_campaign = bool(program.suspended_by_campaign or active_campaigns)
+    pause_reason = program.pause_reason or (
+        "Прогрев временно остановлен: выполняется рассылка."
+        if active_campaigns else ""
+    )
     return {
         "id": program.id,
         "connection_id": program.connection_id,
         "smtp_connection_id": program.smtp_connection_id or "",
         "smtp_connection_email": smtp_connection.email if smtp_connection else "",
         "smtp_connection_status": smtp_connection.status if smtp_connection else "not_selected",
-        "sending_transport": "smtp",
+        "sending_transport": _connection_transport(sending_connection),
         "status": program.status,
         "timezone": program.timezone,
         "daily_start_time": program.daily_start_time,
         "daily_end_time": program.daily_end_time,
         "pause_campaigns_during_warmup": bool(program.pause_campaigns_during_warmup),
+        "warmup_mode": warmup_mode,
+        "duration_days": max(1, int(program.duration_days or len(plan) or 14)),
         "max_growth_percent": int(program.max_growth_percent or 25),
         "current_day": int(program.current_day or 1),
         "run_number": int(program.run_number or 1),
@@ -289,7 +399,10 @@ def _program_dict(session: Any, program: ConnectionWarmupProgram) -> dict[str, A
         "diagnostics": dict(program.diagnostics or {}),
         "subject_templates": list(program.subject_templates or DEFAULT_SUBJECT_TEMPLATES),
         "body_templates": list(program.body_templates or DEFAULT_BODY_TEMPLATES),
-        "pause_reason": program.pause_reason or "",
+        "pause_reason": pause_reason,
+        "suspended_by_campaign": suspended_by_campaign,
+        "suspended_at": _iso(program.suspended_at),
+        "active_campaigns": active_campaigns,
         "recipients_consent_confirmed": bool(program.recipients_consent_confirmed),
         "recipients_consent_confirmed_at": _iso(program.recipients_consent_confirmed_at),
         "scheduled_task_id": program.scheduled_task_id or "",
@@ -367,6 +480,15 @@ def update_program(
                 raise ValueError("Время окончания должно быть позже времени начала.")
         if "pause_campaigns_during_warmup" in data:
             program.pause_campaigns_during_warmup = bool(data.get("pause_campaigns_during_warmup"))
+        if "duration_days" in data:
+            duration_days = int(data.get("duration_days") or 0)
+            if duration_days < 1 or duration_days > MAX_WARMUP_DURATION_DAYS:
+                raise ValueError(
+                    f"Количество дней прогрева должно быть от 1 до {MAX_WARMUP_DURATION_DAYS}."
+                )
+            program.duration_days = duration_days
+            if _connection_transport(connection) == "rusender":
+                program.warmup_mode = FIXED_DAILY_MODE
         if "subject_templates" in data:
             program.subject_templates = _template_list(data.get("subject_templates"), label="Темы")
         if "body_templates" in data:
@@ -391,10 +513,23 @@ def add_recipients(
     owner_username: str,
     emails: list[str],
     *,
+    recipient_settings: list[dict[str, Any]] | None = None,
+    messages_per_day: int = 1,
     visible_owners: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     del owner_username
-    normalized = list(dict.fromkeys(_normalize_email(value) for value in emails))
+    default_messages_per_day = _normalize_messages_per_day(messages_per_day)
+    specifications: dict[str, int] = {}
+    for value in emails:
+        specifications[_normalize_email(value)] = default_messages_per_day
+    for item in list(recipient_settings or []):
+        if not isinstance(item, dict):
+            raise ValueError("Настройки получателей должны быть переданы объектами.")
+        email = _normalize_email(item.get("email"))
+        specifications[email] = _normalize_messages_per_day(
+            item.get("messages_per_day", default_messages_per_day)
+        )
+    normalized = list(specifications)
     if not normalized:
         raise ValueError("Добавьте хотя бы один адрес.")
     if len(normalized) > 500:
@@ -402,6 +537,8 @@ def add_recipients(
     with session_scope() as session:
         connection = _get_connection(session, connection_id, visible_owners=visible_owners)
         program = _ensure_program_locked(session, connection)
+        if program.status == "running":
+            raise ValueError("Сначала поставьте прогрев на паузу.")
         existing = {
             row.email: row
             for row in session.execute(
@@ -416,6 +553,7 @@ def add_recipients(
             row = existing.get(email)
             if row is not None:
                 row.status = "active"
+                row.messages_per_day = specifications[email]
                 row.updated_at = now
                 continue
             session.add(
@@ -425,6 +563,7 @@ def add_recipients(
                     email=email,
                     provider=_provider_for_email(email),
                     status="active",
+                    messages_per_day=specifications[email],
                     sent_count=0,
                     error_count=0,
                     created_at=now,
@@ -432,6 +571,8 @@ def add_recipients(
                 )
             )
         program.updated_at = now
+        if _connection_transport(connection) == "rusender":
+            program.warmup_mode = FIXED_DAILY_MODE
         session.flush()
         return _program_dict(session, program)
 
@@ -440,20 +581,35 @@ def set_recipient_status(
     connection_id: str,
     recipient_id: str,
     owner_username: str,
-    status: str,
+    status: str | None,
     *,
+    messages_per_day: int | None = None,
     visible_owners: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     del owner_username
-    if status not in {"active", "disabled", "removed"}:
+    if status is None and messages_per_day is None:
+        raise ValueError("Укажите статус или количество писем в день.")
+    if status is not None and status not in {"active", "disabled", "removed"}:
         raise ValueError("Некорректный статус получателя.")
+    normalized_messages_per_day = (
+        _normalize_messages_per_day(messages_per_day)
+        if messages_per_day is not None
+        else None
+    )
     with session_scope() as session:
         connection = _get_connection(session, connection_id, visible_owners=visible_owners)
         program = _ensure_program_locked(session, connection)
         recipient = session.get(ConnectionWarmupRecipient, recipient_id)
         if recipient is None or recipient.program_id != program.id:
             raise LookupError("Получатель прогрева не найден.")
-        recipient.status = status
+        if normalized_messages_per_day is not None:
+            if program.status == "running":
+                raise ValueError("Сначала поставьте прогрев на паузу.")
+            recipient.messages_per_day = normalized_messages_per_day
+            if _connection_transport(connection) == "rusender":
+                program.warmup_mode = FIXED_DAILY_MODE
+        if status is not None:
+            recipient.status = status
         recipient.updated_at = _now()
         program.updated_at = _now()
         session.flush()
@@ -493,10 +649,11 @@ def run_diagnostics(
     with session_scope() as session:
         connection = _get_connection(session, connection_id, visible_owners=visible_owners)
         program = _ensure_program_locked(session, connection)
-        from_domain = connection.email.rsplit("@", 1)[-1].lower()
         subject_templates = list(program.subject_templates or DEFAULT_SUBJECT_TEMPLATES)
         body_templates = list(program.body_templates or DEFAULT_BODY_TEMPLATES)
         smtp_connection = _selected_smtp_connection(session, program)
+        diagnostic_connection = smtp_connection or connection
+        from_domain = diagnostic_connection.email.rsplit("@", 1)[-1].lower()
         try:
             if smtp_connection is None:
                 raise ValueError("Выберите SMTP-подключение для прогрева.")
@@ -734,6 +891,88 @@ def _enqueue_delivery(delivery_id: str, *, available_at: datetime) -> str:
     return task_id
 
 
+def _enqueue_campaign_resume(program_id: str) -> str:
+    """Schedule one deduplicated poll for a RuSender key occupied by a campaign."""
+    from src.workers.task_queue import enqueue_task
+
+    with session_scope() as session:
+        program = session.get(ConnectionWarmupProgram, program_id)
+        if program is None:
+            raise LookupError("Программа прогрева не найдена.")
+        owner_username = program.owner_username
+        run_number = int(program.run_number or 1)
+        day_number = int(program.current_day or 1)
+    now = _now()
+    slot = int(now.timestamp() // CAMPAIGN_RESUME_POLL_SECONDS) + 1
+    available_at = datetime.fromtimestamp(
+        slot * CAMPAIGN_RESUME_POLL_SECONDS,
+        tz=timezone.utc,
+    )
+    poll_key = f"connection_sender_warmup_campaign_poll:{program_id}:{run_number}:{day_number}:{slot}"
+    task, _ = enqueue_task(
+        task_type="connection_sender_warmup",
+        job_id=program_id,
+        owner_username=owner_username,
+        payload={"program_id": program_id, "run_number": run_number, "campaign_poll": True},
+        max_attempts=2,
+        available_at=available_at,
+        idempotency_key=poll_key,
+        active_key=poll_key,
+    )
+    task_id = str(task["id"])
+    with session_scope() as session:
+        program = session.get(ConnectionWarmupProgram, program_id)
+        if program is not None:
+            program.scheduled_task_id = task_id
+            program.updated_at = _now()
+    return task_id
+
+
+def _set_campaign_suspension(
+    program: ConnectionWarmupProgram,
+    campaigns: list[dict[str, str]],
+) -> None:
+    names = ", ".join(item["name"] for item in campaigns[:3])
+    suffix = f": {names}" if names else ""
+    program.suspended_by_campaign = True
+    program.suspended_at = program.suspended_at or _now()
+    program.pause_reason = f"Прогрев временно остановлен: выполняется рассылка{suffix}."
+    program.updated_at = _now()
+
+
+def _clear_campaign_suspension(program: ConnectionWarmupProgram) -> None:
+    if not program.suspended_by_campaign:
+        return
+    program.suspended_by_campaign = False
+    program.suspended_at = None
+    program.pause_reason = None
+    program.updated_at = _now()
+
+
+def _assert_no_other_key_warmup(
+    session: Any,
+    connection: SmtpMailbox,
+    program: ConnectionWarmupProgram,
+) -> None:
+    if _connection_transport(connection) != "rusender":
+        return
+    from src.generator.delivery.channel_guard import _ensure_key_guard, _key_scope_mailboxes
+
+    _ensure_key_guard(session, connection, for_update=True)
+    connection_ids = [row.id for row in _key_scope_mailboxes(session, connection)]
+    conflict = session.scalar(
+        select(ConnectionWarmupProgram)
+        .where(
+            ConnectionWarmupProgram.id != program.id,
+            ConnectionWarmupProgram.connection_id.in_(connection_ids),
+            ConnectionWarmupProgram.status.in_(ACTIVE_PROGRAM_STATUSES),
+        )
+        .limit(1)
+    )
+    if conflict is not None:
+        raise ValueError("Для этого ключа RuSender уже запущена или приостановлена другая программа прогрева.")
+
+
 def _cancel_task_ids(task_ids: list[str]) -> None:
     from src.workers.task_queue import request_cancel
 
@@ -765,6 +1004,8 @@ def _pause_locked(
         delivery.updated_at = _now()
     program.status = "paused"
     program.pause_reason = reason
+    program.suspended_by_campaign = False
+    program.suspended_at = None
     program.paused_at = _now()
     program.scheduled_task_id = None
     program.updated_at = _now()
@@ -779,6 +1020,7 @@ def start_program(
 ) -> dict[str, Any]:
     del owner_username
     pause_campaigns = False
+    wait_for_campaign = False
     with session_scope() as session:
         connection = _get_connection(session, connection_id, visible_owners=visible_owners)
         program = _ensure_program_locked(session, connection)
@@ -790,6 +1032,7 @@ def start_program(
         if smtp_connection is None:
             raise ValueError("\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 SMTP-\u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u0434\u043b\u044f \u043f\u0440\u043e\u0433\u0440\u0435\u0432\u0430.")
         _validate_smtp_connection(connection, smtp_connection, require_active=True)
+        _assert_no_other_key_warmup(session, smtp_connection, program)
         if program.diagnostics_status not in {"ready", "warning"}:
             raise ValueError("Сначала выполните техническую проверку и устраните критические ошибки.")
         active_count = session.scalar(
@@ -813,15 +1056,27 @@ def start_program(
         program.started_at = program.started_at or _now()
         program.paused_at = None
         program.pause_reason = None
+        program.suspended_by_campaign = False
+        program.suspended_at = None
         program.updated_at = _now()
         program_id = program.id
-        pause_campaigns = bool(program.pause_campaigns_during_warmup)
+        active_campaigns = _active_rusender_campaigns(session, smtp_connection)
+        if active_campaigns:
+            _set_campaign_suspension(program, active_campaigns)
+            wait_for_campaign = True
+        pause_campaigns = (
+            bool(program.pause_campaigns_during_warmup)
+            and _connection_transport(smtp_connection) != "rusender"
+        )
         smtp_connection_id = smtp_connection.id
     if pause_campaigns:
         from src.generator.delivery.channel_guard import _pause_campaigns_for_channel
 
         _pause_campaigns_for_channel(smtp_connection_id, reason="connection_sender_warmup")
-    _enqueue_day(program_id, immediate=True)
+    if wait_for_campaign:
+        _enqueue_campaign_resume(program_id)
+    else:
+        _enqueue_day(program_id, immediate=True)
     return get_program(connection_id, "", visible_owners=visible_owners)
 
 
@@ -849,6 +1104,7 @@ def resume_program(
     visible_owners: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     del owner_username
+    wait_for_campaign = False
     with session_scope() as session:
         connection = _get_connection(session, connection_id, visible_owners=visible_owners)
         program = _ensure_program_locked(session, connection)
@@ -858,14 +1114,24 @@ def resume_program(
         if smtp_connection is None:
             raise ValueError("Выберите SMTP-подключение для прогрева.")
         _validate_smtp_connection(connection, smtp_connection, require_active=True)
+        _assert_no_other_key_warmup(session, smtp_connection, program)
         if program.diagnostics_status not in {"ready", "warning"}:
             raise ValueError("\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u0442\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0443\u044e \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443 \u043f\u043e\u0441\u043b\u0435 \u0441\u043c\u0435\u043d\u044b SMTP-\u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f.")
         program.status = "running"
         program.paused_at = None
         program.pause_reason = None
+        program.suspended_by_campaign = False
+        program.suspended_at = None
         program.updated_at = _now()
         program_id = program.id
-    _enqueue_day(program_id, immediate=True)
+        active_campaigns = _active_rusender_campaigns(session, smtp_connection)
+        if active_campaigns:
+            _set_campaign_suspension(program, active_campaigns)
+            wait_for_campaign = True
+    if wait_for_campaign:
+        _enqueue_campaign_resume(program_id)
+    else:
+        _enqueue_day(program_id, immediate=True)
     return get_program(connection_id, "", visible_owners=visible_owners)
 
 
@@ -895,6 +1161,8 @@ def stop_program(
         program.status = "cancelled"
         program.pause_reason = "Остановлено пользователем."
         program.scheduled_task_id = None
+        program.suspended_by_campaign = False
+        program.suspended_at = None
         program.completed_at = _now()
         program.updated_at = _now()
     _cancel_task_ids(task_ids)
@@ -906,6 +1174,34 @@ def run_warmup_day(kwargs: dict[str, Any]) -> dict[str, Any]:
     if not program_id:
         raise ValueError("program_id is required")
     expected_run_number = int(kwargs.get("run_number") or 0)
+    campaign_blocked = False
+    blocking_campaigns: list[dict[str, str]] = []
+    with session_scope() as session:
+        program = session.execute(
+            select(ConnectionWarmupProgram).where(ConnectionWarmupProgram.id == program_id).with_for_update()
+        ).scalar_one_or_none()
+        if program is None:
+            raise LookupError("Программа прогрева не найдена.")
+        if program.status != "running":
+            return {"program_id": program_id, "status": program.status, "scheduled": 0}
+        if expected_run_number and expected_run_number != int(program.run_number or 1):
+            return {"program_id": program_id, "status": "stale", "scheduled": 0}
+        sending_connection = _selected_smtp_connection(session, program)
+        blocking_campaigns = _active_rusender_campaigns(session, sending_connection)
+        if blocking_campaigns:
+            _set_campaign_suspension(program, blocking_campaigns)
+            program.scheduled_task_id = None
+            campaign_blocked = True
+        else:
+            _clear_campaign_suspension(program)
+    if campaign_blocked:
+        _enqueue_campaign_resume(program_id)
+        return {
+            "program_id": program_id,
+            "status": "suspended_by_campaign",
+            "scheduled": 0,
+            "campaigns": blocking_campaigns,
+        }
     with session_scope() as session:
         program = session.execute(
             select(ConnectionWarmupProgram).where(ConnectionWarmupProgram.id == program_id).with_for_update()
@@ -917,14 +1213,6 @@ def run_warmup_day(kwargs: dict[str, Any]) -> dict[str, Any]:
         if expected_run_number and expected_run_number != int(program.run_number or 1):
             return {"program_id": program_id, "status": "stale", "scheduled": 0}
         day_number = int(program.current_day or 1)
-        plan = [max(1, int(value)) for value in list(program.daily_plan or DEFAULT_DAILY_PLAN)]
-        if day_number > len(plan):
-            program.status = "completed"
-            program.completed_at = _now()
-            program.scheduled_task_id = None
-            program.updated_at = _now()
-            return {"program_id": program_id, "status": "completed", "scheduled": 0}
-        target = plan[day_number - 1]
         existing = session.execute(
             select(ConnectionWarmupDelivery)
             .where(
@@ -946,6 +1234,21 @@ def run_warmup_day(kwargs: dict[str, Any]) -> dict[str, Any]:
                 ConnectionWarmupRecipient.created_at.asc(),
             )
         ).scalars().all()
+        warmup_mode = str(program.warmup_mode or GROWTH_MODE)
+        plan = (
+            _fixed_daily_plan(program, recipients)
+            if warmup_mode == FIXED_DAILY_MODE
+            else [max(1, int(value)) for value in list(program.daily_plan or DEFAULT_DAILY_PLAN)]
+        )
+        if day_number > len(plan):
+            program.status = "completed"
+            program.completed_at = _now()
+            program.scheduled_task_id = None
+            program.suspended_by_campaign = False
+            program.suspended_at = None
+            program.updated_at = _now()
+            return {"program_id": program_id, "status": "completed", "scheduled": 0}
+        target = plan[day_number - 1]
         if not recipients:
             task_ids = _pause_locked(
                 session,
@@ -962,17 +1265,38 @@ def run_warmup_day(kwargs: dict[str, Any]) -> dict[str, Any]:
                 for delivery in existing
             }
             now = _now()
-            for sequence_number in range(1, target + 1):
-                if sequence_number in existing_by_sequence:
-                    continue
-                recipient = recipients[(sequence_number - 1) % len(recipients)]
+            if warmup_mode == FIXED_DAILY_MODE:
+                existing_by_recipient = Counter(delivery.recipient_id for delivery in existing)
+                desired_recipients: list[ConnectionWarmupRecipient] = []
+                max_quota = max(max(1, int(recipient.messages_per_day or 1)) for recipient in recipients)
+                for quota_index in range(max_quota):
+                    for recipient in recipients:
+                        quota = max(1, int(recipient.messages_per_day or 1))
+                        already_planned = int(existing_by_recipient.get(recipient.id, 0))
+                        if quota_index >= quota or quota_index < already_planned:
+                            continue
+                        desired_recipients.append(recipient)
+                next_sequence = max(existing_by_sequence, default=0) + 1
+            else:
+                desired_recipients = [
+                    recipients[(sequence_number - 1) % len(recipients)]
+                    for sequence_number in range(1, target + 1)
+                    if sequence_number not in existing_by_sequence
+                ]
+                next_sequence = min(
+                    (sequence_number for sequence_number in range(1, target + 1) if sequence_number not in existing_by_sequence),
+                    default=target + 1,
+                )
+            for recipient in desired_recipients:
+                while next_sequence in existing_by_sequence:
+                    next_sequence += 1
                 delivery = ConnectionWarmupDelivery(
                     id=str(uuid4()),
                     program_id=program.id,
                     recipient_id=recipient.id,
                     day_number=day_number,
                     run_number=int(program.run_number or 1),
-                    sequence_number=sequence_number,
+                    sequence_number=next_sequence,
                     status="queued",
                     scheduled_at=now,
                     created_at=now,
@@ -980,6 +1304,8 @@ def run_warmup_day(kwargs: dict[str, Any]) -> dict[str, Any]:
                 )
                 session.add(delivery)
                 existing.append(delivery)
+                existing_by_sequence[next_sequence] = delivery
+                next_sequence += 1
             session.flush()
             pending_ids = [
                 delivery.id
@@ -1025,9 +1351,16 @@ def _advance_after_day(program_id: str, day_number: int) -> None:
         if pending_count:
             return
         program.current_day = day_number + 1
-        if program.current_day > len(list(program.daily_plan or DEFAULT_DAILY_PLAN)):
+        if str(program.warmup_mode or GROWTH_MODE) == FIXED_DAILY_MODE:
+            plan_length = max(1, min(MAX_WARMUP_DURATION_DAYS, int(program.duration_days or 14)))
+        else:
+            plan_length = len(list(program.daily_plan or DEFAULT_DAILY_PLAN))
+        if program.current_day > plan_length:
             program.status = "completed"
             program.completed_at = _now()
+            program.suspended_by_campaign = False
+            program.suspended_at = None
+            program.pause_reason = None
         else:
             enqueue_next = True
         program.updated_at = _now()
@@ -1039,6 +1372,9 @@ def run_warmup_message(kwargs: dict[str, Any]) -> dict[str, Any]:
     delivery_id = str(kwargs.get("delivery_id") or "").strip()
     if not delivery_id:
         raise ValueError("delivery_id is required")
+    campaign_blocked = False
+    blocking_campaigns: list[dict[str, str]] = []
+    skip_delivery = False
     with session_scope() as session:
         delivery = session.execute(
             select(ConnectionWarmupDelivery).where(ConnectionWarmupDelivery.id == delivery_id).with_for_update()
@@ -1060,7 +1396,17 @@ def run_warmup_message(kwargs: dict[str, Any]) -> dict[str, Any]:
         day_number = int(delivery.day_number)
         task_ids: list[str] = []
         should_pause = False
-        if recipient.status != "active":
+        sending_connection = _selected_smtp_connection(session, program)
+        blocking_campaigns = _active_rusender_campaigns(session, sending_connection)
+        if blocking_campaigns:
+            delivery.status = "paused"
+            delivery.task_id = None
+            delivery.updated_at = _now()
+            _set_campaign_suspension(program, blocking_campaigns)
+            campaign_blocked = True
+        else:
+            _clear_campaign_suspension(program)
+        if not campaign_blocked and recipient.status != "active":
             replacement = session.scalar(
                 select(ConnectionWarmupRecipient)
                 .where(
@@ -1084,10 +1430,15 @@ def run_warmup_message(kwargs: dict[str, Any]) -> dict[str, Any]:
                     reason="Нет активных адресов для продолжения прогрева.",
                 )
                 should_pause = True
+            elif str(program.warmup_mode or GROWTH_MODE) == FIXED_DAILY_MODE:
+                delivery.status = "cancelled"
+                delivery.task_id = None
+                delivery.updated_at = _now()
+                skip_delivery = True
             else:
                 recipient = replacement
                 delivery.recipient_id = replacement.id
-        if not should_pause:
+        if not campaign_blocked and not should_pause and not skip_delivery:
             delivery.status = "sending"
             delivery.updated_at = _now()
             connection_id = str(program.smtp_connection_id or "")
@@ -1102,10 +1453,19 @@ def run_warmup_message(kwargs: dict[str, Any]) -> dict[str, Any]:
             text = bodies[variant_index % len(bodies)]
             recipient_id = recipient.id
 
-
+    if campaign_blocked:
+        _enqueue_campaign_resume(program_id)
+        return {
+            "delivery_id": delivery_id,
+            "status": "suspended_by_campaign",
+            "campaigns": blocking_campaigns,
+        }
     if should_pause:
         _cancel_task_ids(task_ids)
         return {"delivery_id": delivery_id, "status": "paused"}
+    if skip_delivery:
+        _advance_after_day(program_id, day_number)
+        return {"delivery_id": delivery_id, "status": "cancelled"}
     from src.campaigns.batch_worker import _send_delivery_message
 
     try:
@@ -1124,6 +1484,22 @@ def run_warmup_message(kwargs: dict[str, Any]) -> dict[str, Any]:
         )
         status = "accepted"
         error = ""
+    except WarmupSuspendedByCampaign as exc:
+        with session_scope() as session:
+            delivery = session.get(ConnectionWarmupDelivery, delivery_id)
+            program = session.get(ConnectionWarmupProgram, program_id)
+            if delivery is not None:
+                delivery.status = "paused"
+                delivery.task_id = None
+                delivery.updated_at = _now()
+            if program is not None:
+                _set_campaign_suspension(program, exc.campaigns)
+        _enqueue_campaign_resume(program_id)
+        return {
+            "delivery_id": delivery_id,
+            "status": "suspended_by_campaign",
+            "campaigns": exc.campaigns,
+        }
     except Exception as exc:
         message_id = ""
         status = "error"
@@ -1200,6 +1576,21 @@ def record_warmup_delivery_outcome(
     if not message_id:
         return None
     raw_status = str(provider_status or "").strip().lower()
+    if raw_status in {"opened", "open", "clicked", "click"}:
+        with session_scope() as session:
+            delivery = _find_delivery_for_provider_id(session, message_id)
+            if delivery is None:
+                return None
+            delivery.opened_at = delivery.opened_at or _now()
+            delivery.open_count = int(delivery.open_count or 0) + 1
+            delivery.updated_at = _now()
+            return {
+                "delivery_id": delivery.id,
+                "program_id": delivery.program_id,
+                "status": raw_status,
+                "paused": False,
+                "pause_reason": "",
+            }
     status_map = {
         "delivered": "delivered",
         "hard_bounced": "hard_bounced",

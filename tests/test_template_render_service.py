@@ -460,6 +460,29 @@ class TemplateRenderServiceTests(unittest.TestCase):
         self.assertEqual(filename, delivery_name)
         self.assertNotEqual(filename, f"{template_id}.pdf")
         self.assertTrue(data.startswith(b"%PDF"))
+        mock_convert_kp.assert_called_once()
+
+        page_mode = self.client.patch(
+            f"/api/v1/templates/{template_id}",
+            json={"enforce_one_page": False},
+        )
+        self.assertEqual(page_mode.status_code, 200, page_mode.text)
+        self.assertFalse(page_mode.json()["result"]["enforce_one_page"])
+
+        with patch.object(template_render_service, "_convert_docx_to_pdf") as convert_multi:
+            convert_multi.side_effect = _write_pdf
+            multi_filename, multi_data = template_render_service.render_document_template_for_recipient(
+                template_id=template_id,
+                recipient=recipient,
+                campaign=campaign,
+                job_id=self.job_id,
+                force=True,
+            )
+
+        self.assertEqual(multi_filename, delivery_name)
+        self.assertTrue(multi_data.startswith(b"%PDF"))
+        self.assertFalse(convert_multi.call_args.kwargs["compact_kp_body"])
+        self.assertEqual(mock_convert_kp.call_count, 1)
 
     def test_docx_attachment_keeps_original_format_by_default(self) -> None:
         source_docx = Document()

@@ -48,6 +48,7 @@ from src.web.auth_router import create_auth_router
 from src.web.companies_router import create_companies_router
 from src.web.v1_router import create_v1_router
 from src.web.workers_router import create_workers_router
+from src.web.static_assets import configure_response_compression
 from src.web.sender_service import (
     compact_sender_status,
     configure_sender_service,
@@ -70,6 +71,7 @@ from src.infra.spend_ledger import subscribe as spend_ledger_subscribe
 from src.parser_new.progress import subscribe as parser_progress_subscribe
 
 app = FastAPI(title="Mailing Agent")
+configure_response_compression(app)
 PROJECT_ROOT = Path(__file__).resolve().parent
 _sender_threads: dict[str, threading.Thread] = {}
 _sender_threads_lock = threading.Lock()

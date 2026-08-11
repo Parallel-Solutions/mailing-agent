@@ -198,10 +198,12 @@ export const connectionsApi = {
     api.patch<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup`, body),
   diagnoseWarmup: (id: string, headers = '') =>
     api.post<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/diagnostics`, { headers }),
-  addWarmupRecipients: (id: string, emails: string[]) =>
-    api.post<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/recipients`, { emails }),
+  addWarmupRecipients: (id: string, recipients: Array<{ email: string; messages_per_day: number }>) =>
+    api.post<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/recipients`, { recipients }),
   setWarmupRecipientStatus: (id: string, recipientId: string, status: 'active' | 'disabled') =>
     api.patch<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/recipients/${recipientId}`, { status }),
+  setWarmupRecipientDailyCount: (id: string, recipientId: string, messagesPerDay: number) =>
+    api.patch<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/recipients/${recipientId}`, { messages_per_day: messagesPerDay }),
   removeWarmupRecipient: (id: string, recipientId: string) =>
     api.delete<ConnectionWarmupProgram>(`/api/v1/connections/${id}/sender-warmup/recipients/${recipientId}`),
   changeWarmupStatus: (id: string, action: 'start' | 'pause' | 'resume' | 'stop') =>

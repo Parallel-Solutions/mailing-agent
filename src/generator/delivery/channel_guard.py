@@ -980,7 +980,14 @@ def reserve_channel_send_slot(
             )
         )
         hour_limit = _effective_hour_limit(row)
-        day_limit = max(0, int(row.max_per_day or 0))
+        # A RuSender warmup has its own explicit per-address daily quota.
+        # Do not apply the generic connection day cap a second time; the
+        # hourly cap still protects the API from an accidental burst.
+        day_limit = (
+            0
+            if allow_warmup and _rusender_key_scope(row) is not None
+            else max(0, int(row.max_per_day or 0))
+        )
         retry_at: list[datetime] = []
         if hour_limit > 0:
             hour_count = int(

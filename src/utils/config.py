@@ -153,12 +153,14 @@ class Settings(BaseSettings):
     sender_delay_max_seconds: float = 0.0
     sender_transport: str = "smtp"
     sender_unisender_concurrency: int = 1
+    # Local syntax and DNS/MX validation always runs after import. Setting
+    # this to "smtpbz" additionally enables the cached SMTP.BZ send-time gate.
     email_validation_mode: str = "domain"
     email_validation_timeout_seconds: float = 10.0
     smtpbz_api_key: str = ""
     smtpbz_api_base_url: str = "https://api.smtp.bz/v1"
-    # Kept for backwards-compatible environment parsing. SMTP.BZ is advisory
-    # and never blocks a syntactically and DNS-valid address.
+    # Kept for backwards-compatible environment parsing. Inconclusive
+    # SMTP.BZ failures remain fail-open; an explicit invalid result is blocked.
     smtpbz_fail_open: bool = True
     email_validation_concurrency: int = 10
     email_validation_max_attempts: int = 2

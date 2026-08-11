@@ -13,6 +13,7 @@ export function CampaignAnalyticsTab() {
   const {
     filters,
     refreshNonce,
+    refreshProviders,
     openDrilldown,
     setError,
   } = useStatistics();
@@ -31,7 +32,7 @@ export function CampaignAnalyticsTab() {
       statisticsApi.campaignAnalytics(jobId, {
         period_from: filters.period_from || undefined,
         period_to: filters.period_to || undefined,
-        refresh: refreshNonce > 0 ? true : undefined,
+        refresh: refreshProviders ? true : undefined,
       }),
   });
 

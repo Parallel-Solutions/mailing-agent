@@ -176,6 +176,7 @@ export const templatesApi = {
       is_template?: boolean;
       rendered_pdf_filename?: string;
       attachment_output_format?: 'original' | 'pdf';
+      enforce_one_page?: boolean;
     },
   ) => api.patch<Template>(`/api/v1/templates/${id}`, body),
   uploadAsset: async (templateId: string, file: File) => {

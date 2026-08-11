@@ -151,6 +151,7 @@ def _render_cache_fingerprint(
             "template_type": str(template.template_type or ""),
             "attachment_output_format": str(template.attachment_output_format or "original"),
             "is_template": bool(template.is_template),
+            "enforce_one_page": bool(getattr(template, "enforce_one_page", True)),
         },
         "recipient": {
             "id": int(recipient.id),
@@ -193,6 +194,7 @@ def _signature(campaign: Campaign, template_ids: list[str]) -> str:
                 "attachment_output_format": str(
                     tmpl.attachment_output_format or "original"
                 ),
+                "enforce_one_page": bool(getattr(tmpl, "enforce_one_page", True)),
                 "filename": version.filename,
             }
         )
@@ -265,6 +267,7 @@ def _convert_docx_to_pdf(
     output_pdf: Path,
     *,
     file_kind: str | None = None,
+    compact_kp_body: bool = True,
     fontconfig_path: Path | str | None = None,
     prefer_local: bool = False,
 ) -> Path:
@@ -274,6 +277,8 @@ def _convert_docx_to_pdf(
         "file_kind": file_kind,
         "template_docx": docx_path,
     }
+    if not compact_kp_body:
+        conversion_options["compact_kp_body"] = False
     if fontconfig_path or prefer_local:
         conversion_options.update(
             {
@@ -535,7 +540,7 @@ def render_document_template_for_recipient(
                 )
                 fontconfig_path = font_environment.fontconfig_path if font_environment else None
                 prefer_local = font_environment is not None
-                if file_kind == "kp":
+                if file_kind == "kp" and bool(getattr(tmpl, "enforce_one_page", True)):
                     _convert_kp_docx_to_pdf(
                         output_docx,
                         pdf_cache,
@@ -552,6 +557,7 @@ def render_document_template_for_recipient(
                         output_docx,
                         pdf_cache,
                         file_kind=file_kind,
+                        compact_kp_body=file_kind != "kp",
                         fontconfig_path=fontconfig_path,
                         prefer_local=prefer_local,
                     )

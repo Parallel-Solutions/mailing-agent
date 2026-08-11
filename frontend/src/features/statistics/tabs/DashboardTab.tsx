@@ -8,12 +8,14 @@ import { DashboardCharts } from '../components/StatsCharts';
 import { useStatistics } from '../StatisticsContext';
 import { readDashboardCache, writeDashboardCache } from '../hooks/useStatisticsState';
 import { asRecord, asRecordArray, fmt } from '../utils';
+import { managerDashboardParams, managerDashboardQueryKey } from '../dashboardQuery';
 
 export function DashboardTab() {
   const {
     apiBaseParams,
     filters,
     refreshNonce,
+    refreshProviders,
     openDrilldown,
     setTab,
     setError,
@@ -22,12 +24,11 @@ export function DashboardTab() {
   const cached = readDashboardCache(filters);
 
   const query = useQuery({
-    queryKey: ['stats-dashboard', apiBaseParams, refreshNonce],
+    queryKey: managerDashboardQueryKey(apiBaseParams, refreshNonce),
     queryFn: () =>
-      statisticsApi.managerDashboard({
-        ...apiBaseParams,
-        refresh: refreshNonce > 0 ? true : undefined,
-      }),
+      statisticsApi.managerDashboard(
+        managerDashboardParams(apiBaseParams, refreshProviders),
+      ),
     placeholderData: cached || undefined,
   });
 

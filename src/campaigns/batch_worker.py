@@ -189,11 +189,24 @@ def _send_delivery_message(
     from src.campaigns.connection_service import resolve_connection
     from src.generator.delivery.channel_guard import wait_for_channel_send_slot
 
+    if send_mode == "connection_warmup":
+        from src.campaigns.connection_sender_warmup_service import (
+            WarmupSuspendedByCampaign,
+            active_rusender_campaigns_for_connection,
+        )
+
+        active_campaigns = active_rusender_campaigns_for_connection(connection_id)
+        if active_campaigns:
+            raise WarmupSuspendedByCampaign(active_campaigns)
     wait_for_channel_send_slot(
         connection_id,
         allow_warmup=send_mode == "connection_warmup",
     )
     connection = resolve_connection(connection_id, owner_username, campaign=campaign)
+    if send_mode == "connection_warmup" and connection.transport == "rusender":
+        active_campaigns = active_rusender_campaigns_for_connection(connection.id)
+        if active_campaigns:
+            raise WarmupSuspendedByCampaign(active_campaigns)
     attachment_paths: list[str] = []
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
     if attachments:
@@ -498,6 +511,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
             from src.campaigns.recipient_email_service import (
                 persist_delivery_email_state,
                 resolve_delivery_email,
+                send_validation_snapshot,
                 validation_attempts_error,
             )
 
@@ -518,6 +532,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     batch_id=batch_id,
                     status="failed",
                     error=recipient.last_error,
+                    email_validation=send_validation_snapshot(recipient),
                 )
                 session.flush()
                 continue
@@ -530,6 +545,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                 batch_id=batch_id,
                 status="sending",
                 delivery_email=delivery_email,
+                email_validation=send_validation_snapshot(recipient, delivery_email),
             )
             if not accepted and recipient.send_status == "sent":
                 continue

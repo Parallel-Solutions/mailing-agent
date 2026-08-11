@@ -25,6 +25,7 @@ from src.campaigns.chain_service import (
     resolve_button_label,
 )
 from src.campaigns.chain_template_utils import inject_chain_buttons
+from src.campaigns.recipient_email_service import send_validation_snapshot
 from src.campaigns.service import record_delivery_attempt
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignChainToken, CampaignRecipient, MailTemplate, TemplateVersion
@@ -462,8 +463,12 @@ def send_chain_node_email(
                 raise ValueError(validation_result.reason or "Некорректный email получателя.")
             delivery_email = validation_result.normalized_email
             if not active_test_email:
-                from src.campaigns.recipient_email_service import persist_delivery_email_state
+                from src.campaigns.recipient_email_service import (
+                    persist_delivery_email_state,
+                    persist_send_validation,
+                )
 
+                persist_send_validation(recipient, delivery_email, validation_result)
                 persist_delivery_email_state(recipient, delivery_email)
         else:
             from src.campaigns.recipient_email_service import (
@@ -549,7 +554,10 @@ def send_chain_node_email(
         node_by_id = {n["id"]: n for n in chain.get("nodes") or []}
 
         from src.generator.generation.kp_one_page_fitter import KpLayoutError
-        from src.campaigns.layout_send_utils import record_kp_layout_send_failure
+        from src.campaigns.layout_send_utils import (
+            clear_kp_layout_failure,
+            record_kp_layout_send_failure,
+        )
 
         try:
             attachments, document_specs = _resolve_document_attachments(
@@ -573,6 +581,9 @@ def send_chain_node_email(
             session.commit()
             raise
 
+        if not active_test_email:
+            clear_kp_layout_failure(recipient)
+
         if batch_id and not active_test_email:
             record_delivery_attempt(
                 campaign_id=campaign_id,
@@ -580,6 +591,7 @@ def send_chain_node_email(
                 batch_id=batch_id,
                 status="sending",
                 delivery_email=delivery_email,
+                email_validation=send_validation_snapshot(recipient, delivery_email),
             )
 
         campaign_for_send = camp

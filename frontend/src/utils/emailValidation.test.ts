@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emailValidationReason } from './emailValidation';
+import { emailValidationReason, localEmailValidationStatusLabel } from './emailValidation';
 
 describe('emailValidationReason', () => {
   it('returns the reason for the recipient status', () => {
@@ -9,11 +9,11 @@ describe('emailValidationReason', () => {
         email_validation: {
           candidates: [
             { status: 'valid', reason: '' },
-            { status: 'unknown', reason: 'SMTP.BZ timed out' },
+            { status: 'unknown', reason: 'DNS timed out' },
           ],
         },
       },
-    })).toBe('SMTP.BZ timed out');
+    })).toBe('DNS timed out');
   });
 
   it('returns an empty string when no reason is stored', () => {
@@ -21,5 +21,10 @@ describe('emailValidationReason', () => {
       validation_status: 'pending',
       extra: { email_validation: { candidates: [] } },
     })).toBe('');
+  });
+
+  it('uses labels for the local format and DNS/MX check', () => {
+    expect(localEmailValidationStatusLabel('valid')).toBe('Формат и DNS/MX корректны');
+    expect(localEmailValidationStatusLabel('unknown')).toBe('Не удалось проверить DNS/MX');
   });
 });

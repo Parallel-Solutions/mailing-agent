@@ -28,6 +28,22 @@ export type StatsPagination = {
   problems: number;
 };
 
+export type StatisticsRefreshState = {
+  nonce: number;
+  providerNonce: number | null;
+};
+
+export function nextStatisticsRefreshState(
+  current: StatisticsRefreshState,
+  options?: { provider?: boolean },
+): StatisticsRefreshState {
+  const nonce = current.nonce + 1;
+  return {
+    nonce,
+    providerNonce: options?.provider ? nonce : null,
+  };
+}
+
 const FILTER_KEYS = [
   'period_from',
   'period_to',
@@ -136,12 +152,24 @@ export function useStatisticsState() {
 
   const [filters, setFiltersState] = useState<StatsFilters>(() => readFiltersFromParams(searchParams));
   const [pagination, setPaginationState] = useState<StatsPagination>(() => readPagination(searchParams));
-  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [refreshState, setRefreshState] = useState<StatisticsRefreshState>({
+    nonce: 0,
+    providerNonce: null,
+  });
+
+  const clearProviderRefresh = useCallback(() => {
+    setRefreshState((current) =>
+      current.providerNonce === null
+        ? current
+        : { ...current, providerNonce: null },
+    );
+  }, []);
 
   useEffect(() => {
     setFiltersState(readFiltersFromParams(searchParams));
     setPaginationState(readPagination(searchParams));
-  }, [searchParams]);
+    clearProviderRefresh();
+  }, [clearProviderRefresh, searchParams]);
 
   const syncUrl = useCallback(
     (next: { tab?: StatsTabKey; filters?: StatsFilters; pagination?: StatsPagination }) => {
@@ -193,6 +221,7 @@ export function useStatisticsState() {
   );
   const setTab = useCallback(
     (nextTab: StatsTabKey, patch?: Partial<StatsFilters>) => {
+      clearProviderRefresh();
       const nextFilters = { ...filters, ...patch };
       // Clear tab-specific filters when leaving recipients unless explicitly set
       if (nextTab !== 'recipients' && patch?.quick_filter === undefined) {
@@ -210,11 +239,12 @@ export function useStatisticsState() {
       setPaginationState(nextPagination);
       syncUrl({ tab: nextTab, filters: nextFilters, pagination: nextPagination });
     },
-    [filters, syncUrl],
+    [clearProviderRefresh, filters, syncUrl],
   );
 
   const setFilters = useCallback(
     (patch: Partial<StatsFilters>, options?: { resetPages?: boolean }) => {
+      clearProviderRefresh();
       const nextFilters = { ...filters, ...patch };
       for (const key of FILTER_KEYS) {
         if (patch[key] === undefined && key in patch) delete nextFilters[key];
@@ -226,16 +256,17 @@ export function useStatisticsState() {
       if (options?.resetPages) setPaginationState(nextPagination);
       syncUrl({ filters: nextFilters, pagination: nextPagination });
     },
-    [filters, pagination, syncUrl],
+    [clearProviderRefresh, filters, pagination, syncUrl],
   );
 
   const clearFilters = useCallback(() => {
+    clearProviderRefresh();
     const empty: StatsFilters = {};
     const nextPagination = { recipients: 1, consents: 1, subscribes: 1, unsubscribes: 1, problems: 1 };
     setFiltersState(empty);
     setPaginationState(nextPagination);
     syncUrl({ filters: empty, pagination: nextPagination });
-  }, [syncUrl]);
+  }, [clearProviderRefresh, syncUrl]);
 
   const setPage = useCallback(
     (key: keyof StatsPagination, page: number) => {
@@ -246,7 +277,9 @@ export function useStatisticsState() {
     [pagination, syncUrl],
   );
 
-  const requestRefresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
+  const requestRefresh = useCallback((options?: { provider?: boolean }) => {
+    setRefreshState((current) => nextStatisticsRefreshState(current, options));
+  }, []);
 
   const apiBaseParams = useMemo(() => buildApiParams(filters), [filters]);
 
@@ -259,7 +292,8 @@ export function useStatisticsState() {
     pagination,
     setPage,
     apiBaseParams,
-    refreshNonce,
+    refreshNonce: refreshState.nonce,
+    refreshProviders: refreshState.providerNonce === refreshState.nonce,
     requestRefresh,
     syncUrl,
   };

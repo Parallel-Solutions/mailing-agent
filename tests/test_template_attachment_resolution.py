@@ -112,6 +112,7 @@ class TemplateAttachmentResolutionTests(unittest.TestCase):
             attachment_output_format="original",
             is_template=True,
             template_type="document",
+            enforce_one_page=True,
         )
         version = SimpleNamespace(id="version-1")
         recipient = SimpleNamespace(
@@ -148,6 +149,50 @@ class TemplateAttachmentResolutionTests(unittest.TestCase):
         )
 
         self.assertNotEqual(first, second)
+
+    def test_render_fingerprint_changes_with_page_limit(self) -> None:
+        template = SimpleNamespace(
+            id="template-1",
+            attachment_output_format="pdf",
+            is_template=True,
+            template_type="document",
+            enforce_one_page=True,
+        )
+        version = SimpleNamespace(id="version-1")
+        recipient = SimpleNamespace(
+            id=1,
+            row_index=1,
+            company="Acme",
+            contact_name="Alice",
+            email="alice@example.com",
+            email_fallback="",
+            region="",
+            extra={},
+        )
+        campaign = SimpleNamespace(
+            id="campaign-1",
+            name="Campaign",
+            description="",
+            work_type="",
+            document_mode="",
+            draft_payload={},
+        )
+
+        one_page = template_render_service._render_cache_fingerprint(
+            template=template,
+            version=version,
+            recipient=recipient,
+            campaign=campaign,
+        )
+        template.enforce_one_page = False
+        multi_page = template_render_service._render_cache_fingerprint(
+            template=template,
+            version=version,
+            recipient=recipient,
+            campaign=campaign,
+        )
+
+        self.assertNotEqual(one_page, multi_page)
 
     def test_non_pdf_cache_requires_matching_render_fingerprint(self) -> None:
         cache_path = MagicMock()

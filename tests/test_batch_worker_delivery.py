@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from src.campaigns.batch_worker import _send_delivery_message
 from src.campaigns.connection_service import ResolvedConnection
+from src.campaigns.connection_sender_warmup_service import WarmupSuspendedByCampaign
 
 
 class BatchWorkerDeliveryTests(unittest.TestCase):
@@ -48,6 +49,79 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
         self.assertEqual(kwargs["body_override"], self._chain_text())
         self.assertEqual(kwargs["credential_sending_key_id"], 42)
         self.assertNotIn("credential_api_key", kwargs)
+
+    @patch("src.generator.delivery.channel_guard.wait_for_channel_send_slot")
+    @patch("src.campaigns.connection_service.resolve_connection")
+    @patch(
+        "src.campaigns.connection_sender_warmup_service.active_rusender_campaigns_for_connection",
+        return_value=[{"id": "campaign-1", "name": "Campaign"}],
+    )
+    def test_rusender_warmup_yields_to_running_campaign(
+        self,
+        campaign_mock,
+        resolve_mock,
+        wait_mock,
+    ) -> None:
+        resolve_mock.return_value = ResolvedConnection(
+            id="conn-1",
+            transport="rusender",
+            email="sender@example.com",
+            sender_name="Sender",
+            secret="",
+            api_base_url="https://api.example.test",
+            sending_key_id=42,
+        )
+
+        with self.assertRaises(WarmupSuspendedByCampaign):
+            _send_delivery_message(
+                connection_id="conn-1",
+                owner_username="user",
+                to_email="to@example.com",
+                subject="Warmup",
+                html="<p>Warmup</p>",
+                text="Warmup",
+                send_mode="connection_warmup",
+            )
+
+        wait_mock.assert_not_called()
+        campaign_mock.assert_called_once_with("conn-1")
+        resolve_mock.assert_not_called()
+
+    @patch("src.generator.delivery.channel_guard.wait_for_channel_send_slot")
+    @patch("src.campaigns.connection_service.resolve_connection")
+    @patch(
+        "src.campaigns.connection_sender_warmup_service.active_rusender_campaigns_for_connection",
+        side_effect=[[], [{"id": "campaign-1", "name": "Campaign"}]],
+    )
+    def test_rusender_warmup_rechecks_campaign_after_waiting_for_slot(
+        self,
+        campaign_mock,
+        resolve_mock,
+        wait_mock,
+    ) -> None:
+        resolve_mock.return_value = ResolvedConnection(
+            id="conn-1",
+            transport="rusender",
+            email="sender@example.com",
+            sender_name="Sender",
+            secret="",
+            api_base_url="https://api.example.test",
+            sending_key_id=42,
+        )
+
+        with self.assertRaises(WarmupSuspendedByCampaign):
+            _send_delivery_message(
+                connection_id="conn-1",
+                owner_username="user",
+                to_email="to@example.com",
+                subject="Warmup",
+                html="<p>Warmup</p>",
+                text="Warmup",
+                send_mode="connection_warmup",
+            )
+
+        wait_mock.assert_called_once_with("conn-1", allow_warmup=True)
+        self.assertEqual(campaign_mock.call_count, 2)
 
     @patch("src.generator.delivery.channel_guard.wait_for_channel_send_slot")
     @patch("src.generator.delivery.sender_agent._send_via_mailopost", return_value={"uuid": "msg-2"})
