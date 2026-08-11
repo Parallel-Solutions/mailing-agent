@@ -327,6 +327,12 @@ def run_recipient_resend(payload: dict[str, Any]) -> dict[str, Any]:
         campaign = session.get(Campaign, campaign_id)
         if campaign is None:
             raise ValueError("Рассылка не найдена.")
+        recipient = session.get(CampaignRecipient, recipient_id)
+        if recipient is None:
+            raise ValueError("Получатель не найден.")
+        from src.campaigns.recipient_email_service import persist_send_validation
+
+        persist_send_validation(recipient, target_email, validation)
         connection = pick_available_connection(
             campaign_connection_ids(campaign),
             owner,

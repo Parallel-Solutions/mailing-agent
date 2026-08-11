@@ -8,9 +8,8 @@ import type { Audience, Recipient } from '@/api/types';
 import { useUrlNavigation } from '@/hooks/useUrlNavigation';
 import { APP_TOP_BAR_HEIGHT } from '@/layout/AppTopBar';
 import { formatLocalDateTime } from '@/utils/dateTime';
-import { emailValidationReason } from '@/utils/emailValidation';
+import { emailValidationReason, localEmailValidationStatusLabel } from '@/utils/emailValidation';
 import { emailValidationRefetchInterval } from '@/utils/emailValidationPolling';
-import { statusLabel } from '@/utils/presentation';
 
 export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
   const { message } = App.useApp();
@@ -152,15 +151,15 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
                   ? validation.invalid_count > 0 ? 'warning' : 'success'
                   : 'info'
             }
-            message="Дополнительная проверка SMTP.BZ"
+            message="Внутренняя проверка формата и DNS/MX"
             description={(
               <Space direction="vertical" style={{ width: '100%' }}>
                 <Progress percent={validation.progress_percent} size="small" />
                 <span>
-                  Подтверждено: {validation.valid_count}, SMTP.BZ считает недоставляемыми: {validation.invalid_count},
-                  не подтверждено: {validation.unknown_count}.
+                  Корректные: {validation.valid_count}, некорректные: {validation.invalid_count},
+                  временно не проверены: {validation.unknown_count}.
                 </span>
-                <span>Результаты SMTP.BZ не исключают адреса автоматически; обязательными остаются синтаксис и DNS.</span>
+                <span>Некорректный формат или отсутствующий почтовый маршрут исключают адрес из аудитории.</span>
               </Space>
             )}
             action={(
@@ -169,7 +168,7 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
                 loading={startValidation.isPending}
                 onClick={() => startValidation.mutate()}
               >
-                {validation.status === 'not_started' ? 'Проверить через SMTP.BZ' : 'Проверить повторно'}
+                {validation.status === 'not_started' ? 'Проверить адреса' : 'Проверить повторно'}
               </Button>
             )}
           />
@@ -191,7 +190,7 @@ export function AudiencesPage({ embedded = false }: { embedded?: boolean }) {
                 return (
                   <Tooltip title={reason || undefined}>
                     <Tag color={value === 'valid' ? 'green' : value === 'invalid' ? 'red' : 'gold'}>
-                      {statusLabel(String(value || ''))}
+                      {localEmailValidationStatusLabel(String(value || ''))}
                     </Tag>
                   </Tooltip>
                 );

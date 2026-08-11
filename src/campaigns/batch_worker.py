@@ -511,6 +511,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
             from src.campaigns.recipient_email_service import (
                 persist_delivery_email_state,
                 resolve_delivery_email,
+                send_validation_snapshot,
                 validation_attempts_error,
             )
 
@@ -531,6 +532,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                     batch_id=batch_id,
                     status="failed",
                     error=recipient.last_error,
+                    email_validation=send_validation_snapshot(recipient),
                 )
                 session.flush()
                 continue
@@ -543,6 +545,7 @@ def run_sender_batch(kwargs: dict[str, Any]) -> dict[str, Any]:
                 batch_id=batch_id,
                 status="sending",
                 delivery_email=delivery_email,
+                email_validation=send_validation_snapshot(recipient, delivery_email),
             )
             if not accepted and recipient.send_status == "sent":
                 continue

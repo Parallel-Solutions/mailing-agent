@@ -4,9 +4,8 @@ import { Alert, Button, Progress, Space, Table, Tag, Tooltip, Upload } from 'ant
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { campaignsApi } from '@/api/campaigns';
 import type { Audience, Campaign, Recipient } from '@/api/types';
-import { emailValidationReason } from '@/utils/emailValidation';
+import { emailValidationReason, localEmailValidationStatusLabel } from '@/utils/emailValidation';
 import { emailValidationRefetchInterval } from '@/utils/emailValidationPolling';
-import { statusLabel } from '@/utils/presentation';
 import { campaignEmailValidationQueryKey } from '../campaignQueryUtils';
 
 type Props = {
@@ -114,15 +113,15 @@ export function CampaignWizardRecipientsStep({
                 ? validation.invalid_count > 0 ? 'warning' : 'success'
                 : 'info'
           }
-          message="Дополнительная проверка SMTP.BZ"
+          message="Внутренняя проверка формата и DNS/MX"
           description={(
             <Space direction="vertical" style={{ width: '100%' }}>
               <Progress percent={validation.progress_percent} size="small" />
               <span>
-                Проверено: {validation.processed_count}/{validation.total_count}. Подтверждено: {validation.valid_count},
-                SMTP.BZ считает недоставляемыми: {validation.invalid_count}, не подтверждено: {validation.unknown_count}.
+                Проверено: {validation.processed_count}/{validation.total_count}. Корректные: {validation.valid_count},
+                некорректные: {validation.invalid_count}, временно не проверены: {validation.unknown_count}.
               </span>
-              <span>Результаты SMTP.BZ не исключают адреса автоматически; обязательными остаются синтаксис и DNS.</span>
+              <span>Некорректный формат или отсутствующий почтовый маршрут исключают адрес из рассылки.</span>
               {validation.error ? <span>{validation.error}</span> : null}
             </Space>
           )}
@@ -132,7 +131,7 @@ export function CampaignWizardRecipientsStep({
               loading={startValidation.isPending}
               onClick={() => startValidation.mutate()}
             >
-              {validation.status === 'not_started' ? 'Проверить через SMTP.BZ' : 'Проверить повторно'}
+              {validation.status === 'not_started' ? 'Проверить адреса' : 'Проверить повторно'}
             </Button>
           )}
         />
@@ -156,7 +155,7 @@ export function CampaignWizardRecipientsStep({
               return (
                 <Tooltip title={reason || undefined}>
                   <Tag color={v === 'valid' ? 'green' : v === 'invalid' ? 'red' : 'gold'}>
-                    {statusLabel(String(v || ''))}
+                    {localEmailValidationStatusLabel(String(v || ''))}
                   </Tag>
                 </Tooltip>
               );

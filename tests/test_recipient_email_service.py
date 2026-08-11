@@ -126,7 +126,7 @@ class CampaignRecipientsImportTests(unittest.TestCase):
             assert recipient is not None
             self.assertEqual(recipient.email, "glbuh@neopak.ru")
             self.assertEqual(recipient.email_fallback, "tstender@neopak.ru")
-            self.assertEqual(recipient.validation_status, "valid")
+            self.assertEqual(recipient.validation_status, "pending")
             self.assertFalse(recipient.excluded)
 
     def test_parse_recipients_xlsx_checko_export_maps_core_fields(self) -> None:
@@ -219,7 +219,7 @@ class CampaignRecipientsImportTests(unittest.TestCase):
             self.assertEqual(recipient.contact_name, "Иванов Иван Иванович")
             self.assertEqual(recipient.email, "glbuh@neopak.ru")
             self.assertEqual(recipient.email_fallback, "tstender@neopak.ru")
-            self.assertEqual(recipient.validation_status, "valid")
+            self.assertEqual(recipient.validation_status, "pending")
             self.assertFalse(recipient.excluded)
 
     def test_parse_and_import_checko_zgyswi_sample_xlsx(self) -> None:

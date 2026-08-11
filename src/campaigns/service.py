@@ -261,9 +261,7 @@ def _validate_email(value: str, email_fallback: str = "") -> str:
 
     status = validate_email_field(value, email_fallback)
     if status == "valid":
-        from src.campaigns.email_validation_service import smtpbz_preflight_enabled
-
-        return "pending" if smtpbz_preflight_enabled() else "valid"
+        return "pending"
     return status
 
 
@@ -485,6 +483,7 @@ def list_delivery_attempts(
                 "status": attempt.status,
                 "delivery_email": attempt.delivery_email,
                 "provider_message_id": attempt.provider_message_id,
+                "email_validation": dict(attempt.email_validation or {}),
                 "error": attempt.error,
                 "company": recipient.company,
                 "contact_name": recipient.contact_name,
@@ -1545,16 +1544,16 @@ def validate_campaign_for_launch(
             str(status or "pending"): int(count or 0)
             for status, count in validation_rows
         }
-        from src.campaigns.email_validation_service import smtpbz_preflight_enabled
-
-        if smtpbz_preflight_enabled():
-            unverified = sum(
-                count for status, count in validation_counts.items() if status != "valid"
+        pending_validation = int(validation_counts.get("pending", 0))
+        unknown_validation = int(validation_counts.get("unknown", 0))
+        if pending_validation:
+            errors.append(
+                f"Дождитесь завершения внутренней проверки синтаксиса и DNS/MX для {pending_validation} адресов."
             )
-            if unverified:
-                warnings.append(
-                    f"SMTP.BZ не подтвердил {unverified} адресов; они допущены по синтаксису и DNS."
-                )
+        if unknown_validation:
+            warnings.append(
+                f"Не удалось подтвердить DNS/MX для {unknown_validation} адресов; перед отправкой они будут проверены повторно."
+            )
 
         if active <= 0:
             errors.append("Нет получателей для отправки")
@@ -2283,10 +2282,18 @@ def record_delivery_attempt(
     error: str | None = None,
     provider_message_id: str | None = None,
     delivery_email: str | None = None,
+    email_validation: dict[str, Any] | None = None,
     attempt_number: int | None = None,
 ) -> bool:
     """Return False if already recorded (idempotent skip)."""
     with session_scope() as session:
+        validation_snapshot = dict(email_validation or {})
+        if not validation_snapshot:
+            recipient = session.get(CampaignRecipient, recipient_id)
+            stored = dict((recipient.extra or {}).get("send_time_email_validation") or {}) if recipient else {}
+            candidates = dict(stored.get("candidates") or {})
+            validation_key = str(delivery_email or stored.get("last_candidate") or "").strip().lower()
+            validation_snapshot = dict(candidates.get(validation_key) or {})
         if attempt_number is None:
             latest = session.scalar(
                 select(DeliveryAttempt)
@@ -2328,6 +2335,7 @@ def record_delivery_attempt(
                     error=error,
                     provider_message_id=provider_message_id,
                     delivery_email=delivery_email,
+                    email_validation=validation_snapshot,
                     idempotency_key=key,
                 )
             )
@@ -2337,6 +2345,8 @@ def record_delivery_attempt(
             existing.provider_message_id = provider_message_id
             if delivery_email:
                 existing.delivery_email = delivery_email
+            if validation_snapshot:
+                existing.email_validation = validation_snapshot
             if batch_id:
                 existing.batch_id = batch_id
             existing.updated_at = _now()

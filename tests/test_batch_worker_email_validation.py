@@ -12,7 +12,7 @@ from src.campaigns.connection_service import ResolvedConnection
 from src.campaigns.service import create_campaign, replace_recipients
 from src.generator.delivery.email_validation import EmailValidationResult
 from src.infra.db import session_scope
-from src.infra.models import Campaign, CampaignBatch, CampaignRecipient
+from src.infra.models import Campaign, CampaignBatch, CampaignRecipient, DeliveryAttempt
 from src.security.user_store import create_user
 from tests.bootstrap import bootstrap_test_runtime
 
@@ -108,6 +108,16 @@ class BatchWorkerEmailValidationTests(unittest.TestCase):
             assert recipient is not None
             self.assertEqual(recipient.send_status, "sent")
             self.assertEqual((recipient.extra or {}).get("delivery_email"), "backup@example.com")
+            attempt = session.scalar(
+                select(DeliveryAttempt).where(
+                    DeliveryAttempt.campaign_id == self.campaign_id,
+                    DeliveryAttempt.recipient_id == self.recipient_id,
+                )
+            )
+            self.assertIsNotNone(attempt)
+            assert attempt is not None
+            self.assertEqual(attempt.delivery_email, "backup@example.com")
+            self.assertEqual((attempt.email_validation or {}).get("reason_code"), "ok_domain")
 
 
 if __name__ == "__main__":

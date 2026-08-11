@@ -30,12 +30,12 @@ from src.utils.config import settings
 from tests.bootstrap import bootstrap_test_runtime
 
 
-class EmailValidationPreflightTests(unittest.TestCase):
+class EmailValidationFlowTests(unittest.TestCase):
     def setUp(self) -> None:
         bootstrap_test_runtime(reset_db=True)
         self.username = f"evp{uuid.uuid4().hex[:8]}"
         create_user(self.username, "Pass12345!")
-        self.campaign = create_campaign(self.username, {"name": "SMTP.BZ preflight"})
+        self.campaign = create_campaign(self.username, {"name": "Email validation flow"})
         self.campaign_id = str(self.campaign["id"])
         self.settings_patches = [
             patch.object(settings, "email_validation_mode", "smtpbz"),
@@ -51,19 +51,19 @@ class EmailValidationPreflightTests(unittest.TestCase):
             self.addCleanup(setting_patch.stop)
 
     @staticmethod
-    def _result(email: str, status: str) -> EmailValidationResult:
+    def _local_result(email: str, status: str) -> EmailValidationResult:
         if status == "valid":
             is_valid = True
-            reason_code = "ok_smtpbz"
+            reason_code = "ok_mx"
             reason = ""
         elif status == "invalid":
             is_valid = False
-            reason_code = "smtpbz_invalid"
-            reason = "Mailbox does not exist."
+            reason_code = "domain_not_found"
+            reason = "Domain does not exist."
         else:
             is_valid = False
-            reason_code = "smtpbz_unavailable"
-            reason = "Validator is temporarily unavailable."
+            reason_code = "domain_lookup_failed"
+            reason = "DNS is temporarily unavailable."
         return EmailValidationResult(
             email=email,
             normalized_email=email.lower(),
@@ -71,6 +71,23 @@ class EmailValidationPreflightTests(unittest.TestCase):
             is_valid=is_valid,
             reason_code=reason_code,
             reason=reason,
+            checked_at="2026-08-06T12:00:00+00:00",
+            details={"mode": "domain"},
+        )
+
+    @staticmethod
+    def _smtpbz_result(email: str, status: str) -> EmailValidationResult:
+        return EmailValidationResult(
+            email=email,
+            normalized_email=email.lower(),
+            domain=email.rsplit("@", 1)[-1],
+            is_valid=status == "valid",
+            reason_code={
+                "valid": "ok_smtpbz",
+                "invalid": "smtpbz_invalid",
+                "unknown": "smtpbz_unavailable",
+            }[status],
+            reason="" if status == "valid" else "SMTP.BZ result",
             checked_at="2026-08-06T12:00:00+00:00",
             details={"mode": "smtpbz"},
         )
@@ -86,7 +103,7 @@ class EmailValidationPreflightTests(unittest.TestCase):
             ],
         )
 
-    def test_import_is_pending_but_smtpbz_preflight_is_advisory(self) -> None:
+    def test_import_is_pending_until_local_dns_validation_finishes(self) -> None:
         self._replace_test_recipients()
 
         with session_scope() as session:
@@ -101,10 +118,10 @@ class EmailValidationPreflightTests(unittest.TestCase):
             self.assertTrue(all(not row.excluded for row in recipients))
 
         validation = validate_campaign_for_launch(self.campaign_id, self.username)
-        self.assertFalse(any("SMTP.BZ" in str(error) for error in validation["errors"]))
-        self.assertTrue(any("SMTP.BZ" in str(warning) for warning in validation["warnings"]))
+        self.assertTrue(any("DNS/MX" in str(error) for error in validation["errors"]))
+        self.assertFalse(any("SMTP.BZ" in str(item) for item in [*validation["errors"], *validation["warnings"]]))
 
-    def test_worker_updates_recipients_and_reuses_persistent_cache(self) -> None:
+    def test_local_worker_updates_recipients_and_send_time_smtpbz_uses_cache(self) -> None:
         self._replace_test_recipients()
 
         statuses = {
@@ -114,8 +131,8 @@ class EmailValidationPreflightTests(unittest.TestCase):
         }
         queued = enqueue_scope_validation("campaign", self.campaign_id, self.username)
         with patch(
-            "src.campaigns.email_validation_service.validate_configured_email_address",
-            side_effect=lambda email, **kwargs: self._result(email, statuses[email]),
+            "src.campaigns.email_validation_service.validate_email_address",
+            side_effect=lambda email, **kwargs: self._local_result(email, statuses[email]),
         ) as validator:
             completed = run_email_validation({"run_id": queued["id"]})
 
@@ -135,24 +152,29 @@ class EmailValidationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 [(row.validation_status, row.excluded) for row in recipients],
-                [("valid", False), ("invalid", False), ("unknown", False)],
+                [("valid", False), ("invalid", True), ("unknown", False)],
             )
 
         launch_validation = validate_campaign_for_launch(self.campaign_id, self.username)
-        self.assertFalse(
-            any("SMTP.BZ" in str(error) for error in launch_validation["errors"])
-        )
         self.assertTrue(
-            any("SMTP.BZ" in str(warning) for warning in launch_validation["warnings"])
+            any("DNS/MX" in str(warning) for warning in launch_validation["warnings"])
         )
-        unknown = cached_validation_result(self.username, "temp@example.com")
+        with patch(
+            "src.campaigns.email_validation_service.validate_configured_email_address",
+            side_effect=lambda email, **kwargs: self._smtpbz_result(email, statuses[email]),
+        ) as smtpbz:
+            unknown = cached_validation_result(self.username, "temp@example.com")
+            provider_negative = cached_validation_result(self.username, "bad@example.com")
+            cached_negative = cached_validation_result(self.username, "bad@example.com")
+
+        self.assertEqual(smtpbz.call_count, 2)
         self.assertTrue(unknown.is_valid)
         self.assertEqual(unknown.reason_code, "smtpbz_unavailable")
-        provider_negative = cached_validation_result(self.username, "bad@example.com")
-        self.assertTrue(provider_negative.is_valid)
+        self.assertFalse(provider_negative.is_valid)
+        self.assertFalse(cached_negative.is_valid)
         self.assertEqual(provider_negative.reason_code, "smtpbz_invalid")
 
-        second_campaign = create_campaign(self.username, {"name": "Cached SMTP.BZ preflight"})
+        second_campaign = create_campaign(self.username, {"name": "Cached local validation"})
         second_campaign_id = str(second_campaign["id"])
         replace_recipients(
             second_campaign_id,
@@ -164,7 +186,7 @@ class EmailValidationPreflightTests(unittest.TestCase):
             ],
         )
         second = enqueue_scope_validation("campaign", second_campaign_id, self.username)
-        with patch("src.campaigns.email_validation_service.validate_configured_email_address") as validator:
+        with patch("src.campaigns.email_validation_service.validate_email_address") as validator:
             cached = run_email_validation({"run_id": second["id"]})
 
         validator.assert_not_called()
@@ -173,15 +195,16 @@ class EmailValidationPreflightTests(unittest.TestCase):
 
         retry = enqueue_scope_validation("campaign", self.campaign_id, self.username, force=True)
         with patch(
-            "src.campaigns.email_validation_service.validate_configured_email_address",
-            side_effect=lambda email, **kwargs: self._result(email, "valid"),
+            "src.campaigns.email_validation_service.validate_email_address",
+            side_effect=lambda email, **kwargs: self._local_result(email, "valid"),
         ) as validator:
-            refreshed = run_email_validation({"run_id": retry["id"], "refresh_unknown": True})
+            refreshed = run_email_validation(
+                {"run_id": retry["id"], "refresh_unknown": True, "refresh_all": True}
+            )
 
-        validator.assert_called_once()
-        self.assertEqual(validator.call_args.args[0], "temp@example.com")
-        self.assertEqual(refreshed["valid_count"], 2)
-        self.assertEqual(refreshed["cached_count"], 2)
+        self.assertEqual(validator.call_count, 3)
+        self.assertEqual(refreshed["valid_count"], 3)
+        self.assertEqual(refreshed["cached_count"], 0)
 
         with session_scope() as session:
             retried = list(
@@ -193,10 +216,10 @@ class EmailValidationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 [(row.validation_status, row.excluded) for row in retried],
-                [("valid", False), ("invalid", False), ("valid", False)],
+                [("valid", False), ("valid", False), ("valid", False)],
             )
 
-    def test_configuration_error_is_not_retried_for_every_address(self) -> None:
+    def test_transient_dns_error_uses_bounded_retries(self) -> None:
         replace_recipients(
             self.campaign_id,
             self.username,
@@ -208,19 +231,19 @@ class EmailValidationPreflightTests(unittest.TestCase):
             normalized_email="quota@example.com",
             domain="example.com",
             is_valid=False,
-            reason_code="smtpbz_quota_or_request_error",
-            reason="Quota exceeded.",
+            reason_code="domain_lookup_failed",
+            reason="DNS timeout.",
             checked_at="2026-08-07T12:00:00+00:00",
-            details={"mode": "smtpbz"},
+            details={"mode": "domain"},
         )
 
         with patch.object(settings, "email_validation_max_attempts", 3), patch(
-            "src.campaigns.email_validation_service.validate_configured_email_address",
+            "src.campaigns.email_validation_service.validate_email_address",
             return_value=failure,
         ) as validator:
             completed = run_email_validation({"run_id": queued["id"]})
 
-        validator.assert_called_once_with("quota@example.com", config=settings)
+        self.assertEqual(validator.call_count, 3)
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(completed["unknown_count"], 1)
 
@@ -299,7 +322,7 @@ class EmailValidationPreflightTests(unittest.TestCase):
             # A queued (never claimed) task is cancelled outright, not just flagged.
             self.assertEqual(old_task.status, "cancelled")
 
-    def test_audience_preflight_updates_member_statuses_and_quality(self) -> None:
+    def test_audience_local_check_updates_member_statuses_and_quality(self) -> None:
         audience = create_audience(self.username, "Validated audience")
         audience_id = str(audience["id"])
         replace_members(
@@ -309,8 +332,8 @@ class EmailValidationPreflightTests(unittest.TestCase):
         )
         queued = enqueue_scope_validation("audience", audience_id, self.username)
         with patch(
-            "src.campaigns.email_validation_service.validate_configured_email_address",
-            side_effect=lambda email, **kwargs: self._result(
+            "src.campaigns.email_validation_service.validate_email_address",
+            side_effect=lambda email, **kwargs: self._local_result(
                 email, "valid" if email == "valid@example.com" else "invalid"
             ),
         ):
@@ -327,7 +350,7 @@ class EmailValidationPreflightTests(unittest.TestCase):
             )
             self.assertEqual(
                 sorted((member.validation_status, member.excluded) for member in members),
-                [("invalid", False), ("valid", False)],
+                [("invalid", True), ("valid", False)],
             )
             stored_audience = session.get(Audience, audience_id)
             self.assertIsNotNone(stored_audience)

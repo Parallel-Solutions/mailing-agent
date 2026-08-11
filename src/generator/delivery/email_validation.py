@@ -156,7 +156,7 @@ def validate_email_address(
         )
 
     if normalized_mode == EMAIL_VALIDATION_SMTPBZ:
-        _smtpbz_valid, smtpbz_reason_code, smtpbz_reason, smtpbz_details = _validate_email_with_smtpbz(
+        smtpbz_valid, smtpbz_reason_code, smtpbz_reason, smtpbz_details = _validate_email_with_smtpbz(
             syntax_result.normalized_email,
             api_key=smtpbz_api_key,
             base_url=smtpbz_api_base_url,
@@ -167,10 +167,10 @@ def validate_email_address(
             email=raw_email,
             normalized_email=syntax_result.normalized_email,
             domain=syntax_result.domain,
-            # SMTP mailbox probing is advisory. Local syntax and DNS checks
-            # above remain the delivery gate; the provider classification is
-            # retained in ``reason_code`` for reporting and analytics.
-            is_valid=True,
+            # Inconclusive provider failures are fail-open inside
+            # ``_smtpbz_check_failure``. Only an explicit invalid mailbox
+            # classification blocks this concrete send target.
+            is_valid=smtpbz_valid,
             reason_code=smtpbz_reason_code,
             reason=smtpbz_reason,
             checked_at=checked_at,
@@ -460,7 +460,13 @@ def _safe_response_preview(payload: Any) -> Any:
 
 def _domain_has_mail_route(domain: str, *, timeout_seconds: float) -> tuple[bool, str, str, dict[str, Any]]:
     timeout_key = max(1, min(30, int(round(float(timeout_seconds or 3.0)))))
-    return _cached_domain_has_mail_route(domain, timeout_key)
+    result = _cached_domain_has_mail_route(domain, timeout_key)
+    if result[1] == "domain_lookup_failed":
+        # A resolver timeout is transient and must not become a process-long
+        # negative cache entry. Clearing also lets the bounded retry perform a
+        # real second lookup.
+        _cached_domain_has_mail_route.cache_clear()
+    return result
 
 
 @lru_cache(maxsize=4096)

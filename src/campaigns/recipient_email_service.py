@@ -99,6 +99,33 @@ def _attempt_record(recipient: str, *, error: str, validation: EmailValidationRe
     return record
 
 
+def persist_send_validation(
+    recipient: CampaignRecipient,
+    candidate: str,
+    validation: EmailValidationResult,
+) -> None:
+    extra = dict(recipient.extra or {})
+    snapshot = dict(extra.get("send_time_email_validation") or {})
+    candidates = dict(snapshot.get("candidates") or {})
+    key = _mail_key(candidate) or candidate.strip().lower()
+    candidates[key] = validation.to_dict()
+    snapshot["candidates"] = candidates
+    snapshot["last_candidate"] = key
+    snapshot["updated_at"] = validation.checked_at
+    extra["send_time_email_validation"] = snapshot
+    recipient.extra = extra
+
+
+def send_validation_snapshot(
+    recipient: CampaignRecipient,
+    candidate: str = "",
+) -> dict[str, Any]:
+    stored = dict((recipient.extra or {}).get("send_time_email_validation") or {})
+    candidates = dict(stored.get("candidates") or {})
+    key = _mail_key(candidate) or str(stored.get("last_candidate") or "").strip().lower()
+    return dict(candidates.get(key) or {})
+
+
 def resolve_delivery_email(
     recipient: CampaignRecipient,
     *,
@@ -131,6 +158,7 @@ def resolve_delivery_email(
             )
             continue
         result = _validate_candidate(candidate, cache, owner_username=owner_username)
+        persist_send_validation(recipient, candidate, result)
         if result.is_valid:
             return candidate, attempts
         reason = _safe_text(result.reason) or "Email не прошёл проверку."

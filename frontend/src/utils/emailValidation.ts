@@ -18,3 +18,16 @@ export function emailValidationReason(recipient: ValidationRecipient): string {
   const candidate = matching || records.find((item) => String(item.reason || '').trim());
   return String(candidate?.reason || '').trim();
 }
+
+const LOCAL_VALIDATION_LABELS: Record<string, string> = {
+  pending: 'Проверяется',
+  valid: 'Формат и DNS/MX корректны',
+  invalid: 'Некорректный адрес',
+  unknown: 'Не удалось проверить DNS/MX',
+  stale: 'Требуется повторная проверка',
+};
+
+export function localEmailValidationStatusLabel(value?: string | null): string {
+  const status = String(value || '').trim().toLowerCase();
+  return LOCAL_VALIDATION_LABELS[status] || 'Неизвестный статус';
+}

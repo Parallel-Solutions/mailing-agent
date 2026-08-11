@@ -1203,6 +1203,7 @@ class DeliveryAttempt(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     delivery_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    email_validation: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

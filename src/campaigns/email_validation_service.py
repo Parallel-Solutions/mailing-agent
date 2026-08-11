@@ -1,4 +1,4 @@
-"""Background SMTP.BZ validation and persistent recipient validation cache."""
+"""Local import validation and cached SMTP.BZ checks at delivery time."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.campaigns.recipient_email_service import validate_email_field
 from src.generator.delivery.email_validation import (
     EMAIL_VALIDATION_SMTPBZ,
     EmailValidationResult,
@@ -32,12 +33,16 @@ from src.utils.config import settings
 from src.utils.logger import logger
 
 
-PROVIDER = "smtpbz"
+LOCAL_PROVIDER = "domain"
+SMTPBZ_PROVIDER = "smtpbz"
 ACTIVE_RUN_STATUSES = {"queued", "running"}
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled", "stale"}
 VALIDATION_STATUSES = {"pending", "valid", "invalid", "unknown", "stale"}
 TRANSIENT_REASON_CODES = {
     "smtpbz_unavailable",
+}
+LOCAL_TRANSIENT_REASON_CODES = {
+    "domain_lookup_failed",
 }
 HARD_FAILURE_STATUSES = {
     "hard_bounced",
@@ -56,8 +61,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def smtpbz_preflight_enabled() -> bool:
+def smtpbz_send_validation_enabled() -> bool:
     return normalize_email_validation_mode(settings.email_validation_mode) == EMAIL_VALIDATION_SMTPBZ
+
+
+def smtpbz_preflight_enabled() -> bool:
+    """Compatibility alias; SMTP.BZ is no longer an import preflight."""
+    return smtpbz_send_validation_enabled()
 
 
 def _scope_entity(session: Any, scope_type: str, scope_id: str, owner_username: str) -> Any:
@@ -145,8 +155,8 @@ def _run_is_stuck(row: EmailValidationRun, now: datetime | None = None) -> bool:
     if status == "queued":
         # Never claimed by a worker at all (e.g. the shared background queue
         # was stalled) — give it a generous, fixed grace period rather than
-        # the per-request SMTP.BZ timeout below, which only makes sense once
-        # a run has actually started running.
+        # the per-request DNS timeout below, which only makes sense once a run
+        # has actually started running.
         return (current - updated_at).total_seconds() >= _QUEUED_STALE_SECONDS
     try:
         request_timeout = max(1.0, float(settings.email_validation_timeout_seconds or 10.0))
@@ -157,12 +167,20 @@ def _run_is_stuck(row: EmailValidationRun, now: datetime | None = None) -> bool:
     return (current - updated_at).total_seconds() >= stale_after
 
 
-def _result_status(result: EmailValidationResult) -> str:
+def _smtpbz_result_status(result: EmailValidationResult) -> str:
     if result.reason_code == "ok_smtpbz" and result.is_valid:
         return "valid"
     if result.reason_code in {"smtpbz_invalid", "delivery_hard_bounce"}:
         return "invalid"
     return "unknown"
+
+
+def _local_result_status(result: EmailValidationResult) -> str:
+    if result.is_valid:
+        return "valid"
+    if result.reason_code in LOCAL_TRANSIENT_REASON_CODES:
+        return "unknown"
+    return "invalid"
 
 
 def _cache_payload(row: EmailValidationCache) -> dict[str, Any]:
@@ -177,10 +195,8 @@ def _cache_payload(row: EmailValidationCache) -> dict[str, Any]:
     }
 
 
-def cached_validation_result(owner_username: str, email: str) -> EmailValidationResult:
-    if not smtpbz_preflight_enabled():
-        return validate_configured_email_address(email, config=settings)
-
+def validate_email_for_send(owner_username: str, email: str) -> EmailValidationResult:
+    """Validate one actual delivery target and call SMTP.BZ on a cache miss."""
     local = validate_email_address(
         email,
         mode="domain",
@@ -188,36 +204,32 @@ def cached_validation_result(owner_username: str, email: str) -> EmailValidation
     )
     if not local.is_valid:
         return local
+    if not smtpbz_send_validation_enabled():
+        return local
 
-    with session_scope() as session:
-        row = session.scalar(
-            select(EmailValidationCache).where(
-                EmailValidationCache.owner_username == owner_username,
-                EmailValidationCache.provider == PROVIDER,
-                EmailValidationCache.normalized_email == local.normalized_email.lower(),
-            )
-        )
-        if row is None or not _cache_is_fresh(row):
-            return EmailValidationResult(
-                email=email,
-                normalized_email=local.normalized_email,
-                domain=local.domain,
-                is_valid=True,
-                reason_code="validation_pending",
-                reason="SMTP.BZ ещё не проверил адрес; синтаксис и DNS корректны.",
-                checked_at=_now().isoformat(timespec="seconds"),
-                details={"mode": PROVIDER, "status": "pending"},
-            )
-        return EmailValidationResult(
-            email=email,
-            normalized_email=local.normalized_email,
-            domain=local.domain,
-            is_valid=row.reason_code != "delivery_hard_bounce",
-            reason_code=row.reason_code or f"smtpbz_{row.status}",
-            reason=row.reason or "",
-            checked_at=row.checked_at.isoformat(timespec="seconds"),
-            details=dict(row.details or {}),
-        )
+    status, payload, cached = _validate_smtpbz_one(
+        owner_username,
+        local.normalized_email.lower(),
+    )
+    details = dict(payload.get("details") or {})
+    details["send_time_validation"] = True
+    details["cache_hit"] = bool(cached)
+    details["provider"] = SMTPBZ_PROVIDER
+    return EmailValidationResult(
+        email=email,
+        normalized_email=local.normalized_email,
+        domain=local.domain,
+        is_valid=status != "invalid",
+        reason_code=str(payload.get("reason_code") or f"smtpbz_{status}"),
+        reason=str(payload.get("reason") or ""),
+        checked_at=str(payload.get("checked_at") or _now().isoformat(timespec="seconds")),
+        details=details,
+    )
+
+
+def cached_validation_result(owner_username: str, email: str) -> EmailValidationResult:
+    """Backward-compatible entry point used by all delivery paths."""
+    return validate_email_for_send(owner_username, email)
 
 
 def _upsert_cache(
@@ -226,21 +238,27 @@ def _upsert_cache(
     result: EmailValidationResult,
     *,
     attempt_count: int,
+    provider: str = SMTPBZ_PROVIDER,
+    status: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     now = _now()
-    status = _result_status(result)
+    resolved_status = status or (
+        _local_result_status(result)
+        if provider == LOCAL_PROVIDER
+        else _smtpbz_result_status(result)
+    )
     values = {
         "id": str(uuid4()),
         "owner_username": owner_username,
-        "provider": PROVIDER,
+        "provider": provider,
         "normalized_email": email,
-        "status": status,
+        "status": resolved_status,
         "reason_code": result.reason_code,
         "reason": result.reason or None,
         "details": dict(result.details or {}),
         "attempt_count": max(1, int(attempt_count)),
         "checked_at": now,
-        "expires_at": _cache_expiry(status, now),
+        "expires_at": _cache_expiry(resolved_status, now),
         "updated_at": now,
     }
     with session_scope() as session:
@@ -253,15 +271,15 @@ def _upsert_cache(
         row = session.scalar(
             select(EmailValidationCache).where(
                 EmailValidationCache.owner_username == owner_username,
-                EmailValidationCache.provider == PROVIDER,
+                EmailValidationCache.provider == provider,
                 EmailValidationCache.normalized_email == email,
             )
         )
         assert row is not None
-        return status, _cache_payload(row)
+        return resolved_status, _cache_payload(row)
 
 
-def _validate_one(
+def _validate_smtpbz_one(
     owner_username: str,
     email: str,
     *,
@@ -274,7 +292,7 @@ def _validate_one(
             cached = session.scalar(
                 select(EmailValidationCache).where(
                     EmailValidationCache.owner_username == owner_username,
-                    EmailValidationCache.provider == PROVIDER,
+                    EmailValidationCache.provider == SMTPBZ_PROVIDER,
                     EmailValidationCache.normalized_email == email,
                 )
             )
@@ -289,13 +307,15 @@ def _validate_one(
     last_result: EmailValidationResult | None = None
     for attempt in range(1, max_attempts + 1):
         last_result = validate_configured_email_address(email, config=settings)
-        status = _result_status(last_result)
+        status = _smtpbz_result_status(last_result)
         if status != "unknown" or last_result.reason_code not in TRANSIENT_REASON_CODES:
             saved_status, payload = _upsert_cache(
                 owner_username,
                 email,
                 last_result,
                 attempt_count=attempt,
+                provider=SMTPBZ_PROVIDER,
+                status=status,
             )
             return saved_status, payload, False
         if attempt < max_attempts:
@@ -307,6 +327,66 @@ def _validate_one(
         email,
         last_result,
         attempt_count=max_attempts,
+        provider=SMTPBZ_PROVIDER,
+        status=_smtpbz_result_status(last_result),
+    )
+    return saved_status, payload, False
+
+
+def _validate_local_one(
+    owner_username: str,
+    email: str,
+    *,
+    refresh_unknown: bool = False,
+    skip_cache_lookup: bool = False,
+) -> tuple[str, dict[str, Any], bool]:
+    now = _now()
+    if not skip_cache_lookup:
+        with session_scope() as session:
+            cached = session.scalar(
+                select(EmailValidationCache).where(
+                    EmailValidationCache.owner_username == owner_username,
+                    EmailValidationCache.provider == LOCAL_PROVIDER,
+                    EmailValidationCache.normalized_email == email,
+                )
+            )
+            if (
+                cached is not None
+                and _cache_is_fresh(cached, now)
+                and not (refresh_unknown and cached.status == "unknown")
+            ):
+                return str(cached.status), _cache_payload(cached), True
+
+    max_attempts = max(1, int(settings.email_validation_max_attempts or 2))
+    last_result: EmailValidationResult | None = None
+    for attempt in range(1, max_attempts + 1):
+        last_result = validate_email_address(
+            email,
+            mode="domain",
+            timeout_seconds=max(1.0, float(settings.email_validation_timeout_seconds or 10.0)),
+        )
+        status = _local_result_status(last_result)
+        if status != "unknown":
+            saved_status, payload = _upsert_cache(
+                owner_username,
+                email,
+                last_result,
+                attempt_count=attempt,
+                provider=LOCAL_PROVIDER,
+                status=status,
+            )
+            return saved_status, payload, False
+        if attempt < max_attempts:
+            time.sleep(min(2.0, 0.25 * (2 ** (attempt - 1))))
+
+    assert last_result is not None
+    saved_status, payload = _upsert_cache(
+        owner_username,
+        email,
+        last_result,
+        attempt_count=max_attempts,
+        provider=LOCAL_PROVIDER,
+        status=_local_result_status(last_result),
     )
     return saved_status, payload, False
 
@@ -316,6 +396,7 @@ def _fresh_cached_results(
     candidates: list[str],
     *,
     refresh_unknown: bool,
+    provider: str,
 ) -> dict[str, tuple[str, dict[str, Any], bool]]:
     """Load the complete validation cache in one DB round-trip."""
     if not candidates:
@@ -326,7 +407,7 @@ def _fresh_cached_results(
             session.scalars(
                 select(EmailValidationCache).where(
                     EmailValidationCache.owner_username == owner_username,
-                    EmailValidationCache.provider == PROVIDER,
+                    EmailValidationCache.provider == provider,
                     EmailValidationCache.normalized_email.in_(candidates),
                 )
             ).all()
@@ -375,7 +456,7 @@ def _apply_scope_results(session: Any, run: EmailValidationRun) -> dict[str, int
         session.scalars(
             select(EmailValidationCache).where(
                 EmailValidationCache.owner_username == run.owner_username,
-                EmailValidationCache.provider == PROVIDER,
+                EmailValidationCache.provider == run.provider,
                 EmailValidationCache.normalized_email.in_(candidates or [""]),
             )
         ).all()
@@ -404,7 +485,7 @@ def _apply_scope_results(session: Any, run: EmailValidationRun) -> dict[str, int
         extra = dict(recipient.extra or {})
         was_validation_excluded = bool(extra.get("validation_excluded"))
         extra["email_validation"] = {
-            "provider": PROVIDER,
+            "provider": run.provider,
             "status": status,
             "candidates": [
                 _cache_payload(item) if item is not None else {"email": email, "status": "pending"}
@@ -413,7 +494,11 @@ def _apply_scope_results(session: Any, run: EmailValidationRun) -> dict[str, int
             "revision": run.revision,
             "updated_at": now.isoformat(),
         }
-        if was_validation_excluded:
+        if status == "invalid":
+            if not recipient.excluded:
+                recipient.excluded = True
+                extra["validation_excluded"] = True
+        elif was_validation_excluded:
             recipient.excluded = False
             extra["validation_excluded"] = False
         recipient.validation_status = status
@@ -462,6 +547,7 @@ def get_scope_validation(scope_type: str, scope_id: str, owner_username: str) ->
                 EmailValidationRun.owner_username == owner_username,
                 EmailValidationRun.scope_type == scope_type,
                 EmailValidationRun.scope_id == scope_id,
+                EmailValidationRun.provider == LOCAL_PROVIDER,
             )
             .order_by(EmailValidationRun.created_at.desc())
             .limit(1)
@@ -476,7 +562,7 @@ def get_scope_validation(scope_type: str, scope_id: str, owner_username: str) ->
             "scope_type": scope_type,
             "scope_id": scope_id,
             "revision": _scope_revision(_scope_candidates(rows)),
-            "provider": PROVIDER,
+            "provider": LOCAL_PROVIDER,
             "status": "not_started",
             "total_count": len(_scope_candidates(rows)),
             "processed_count": 0,
@@ -492,7 +578,7 @@ def get_scope_validation(scope_type: str, scope_id: str, owner_username: str) ->
             "created_at": "",
         }
         payload["recipient_counts"] = counts
-        payload["enabled"] = smtpbz_preflight_enabled()
+        payload["enabled"] = True
         return payload
 
 
@@ -503,9 +589,6 @@ def enqueue_scope_validation(
     *,
     force: bool = False,
 ) -> dict[str, Any]:
-    if not smtpbz_preflight_enabled():
-        return get_scope_validation(scope_type, scope_id, owner_username)
-
     superseded_task_id: str | None = None
     replacement_run = False
     with session_scope() as session:
@@ -519,6 +602,7 @@ def enqueue_scope_validation(
                 EmailValidationRun.owner_username == owner_username,
                 EmailValidationRun.scope_type == scope_type,
                 EmailValidationRun.scope_id == scope_id,
+                EmailValidationRun.provider == LOCAL_PROVIDER,
                 EmailValidationRun.revision == revision,
                 EmailValidationRun.status.in_(ACTIVE_RUN_STATUSES | ({"completed"} if not force else set())),
             )
@@ -538,7 +622,9 @@ def enqueue_scope_validation(
         for row in rows:
             current_status = str(row.validation_status or "pending")
             if force:
-                if current_status in {"pending", "unknown", "stale"}:
+                # A manual retry means a real DNS/MX re-check, including
+                # addresses that previously had a definitive result.
+                if validate_email_field(row.email, row.email_fallback) == "valid":
                     row.validation_status = "pending"
             elif current_status != "invalid":
                 row.validation_status = "pending"
@@ -548,7 +634,7 @@ def enqueue_scope_validation(
             scope_type=scope_type,
             scope_id=scope_id,
             revision=revision,
-            provider=PROVIDER,
+            provider=LOCAL_PROVIDER,
             status="queued",
             total_count=len(candidates),
         )
@@ -573,13 +659,17 @@ def enqueue_scope_validation(
             task_type="email_validation",
             job_id=None,
             owner_username=owner_username,
-            payload={"run_id": run_id, "refresh_unknown": bool(force)},
+            payload={
+                "run_id": run_id,
+                "refresh_unknown": bool(force),
+                "refresh_all": bool(force),
+            },
             max_attempts=max(1, int(settings.background_queue_max_attempts or 3)),
             idempotency_key=f"email_validation:{run_id}",
             active_key=(
-                f"email_validation:{owner_username}:{scope_type}:{scope_id}:{revision}:{run_id}"
+                f"email_validation:{LOCAL_PROVIDER}:{owner_username}:{scope_type}:{scope_id}:{revision}:{run_id}"
                 if replacement_run
-                else f"email_validation:{owner_username}:{scope_type}:{scope_id}:{revision}"
+                else f"email_validation:{LOCAL_PROVIDER}:{owner_username}:{scope_type}:{scope_id}:{revision}"
             ),
         )
     except Exception as exc:
@@ -626,10 +716,16 @@ def run_email_validation(payload: dict[str, Any]) -> dict[str, Any]:
 
     concurrency = max(1, min(20, int(settings.email_validation_concurrency or 10)))
     refresh_unknown = bool(payload.get("refresh_unknown"))
-    cached_results = _fresh_cached_results(
-        owner_username,
-        candidates,
-        refresh_unknown=refresh_unknown,
+    refresh_all = bool(payload.get("refresh_all"))
+    cached_results = (
+        {}
+        if refresh_all
+        else _fresh_cached_results(
+            owner_username,
+            candidates,
+            refresh_unknown=refresh_unknown,
+            provider=LOCAL_PROVIDER,
+        )
     )
     _update_run_progress(run_id, list(cached_results.values()))
     network_candidates = [email for email in candidates if email not in cached_results]
@@ -638,7 +734,7 @@ def run_email_validation(payload: dict[str, Any]) -> dict[str, Any]:
     with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="email-validation") as pool:
         futures = {
             pool.submit(
-                _validate_one,
+                _validate_local_one,
                 owner_username,
                 email,
                 refresh_unknown=refresh_unknown,
@@ -657,12 +753,19 @@ def run_email_validation(payload: dict[str, Any]) -> dict[str, Any]:
                     normalized_email=email,
                     domain=email.rsplit("@", 1)[-1] if "@" in email else "",
                     is_valid=False,
-                    reason_code="smtpbz_unavailable",
-                    reason=f"SMTP.BZ validation failed: {type(exc).__name__}",
+                    reason_code="domain_lookup_failed",
+                    reason=f"DNS/MX validation failed: {type(exc).__name__}",
                     checked_at=_now().isoformat(timespec="seconds"),
                     details={"status": "error"},
                 )
-                status, item = _upsert_cache(owner_username, email, fallback, attempt_count=1)
+                status, item = _upsert_cache(
+                    owner_username,
+                    email,
+                    fallback,
+                    attempt_count=1,
+                    provider=LOCAL_PROVIDER,
+                    status="unknown",
+                )
                 result = (status, item, False)
             progress_batch.append(result)
             if len(progress_batch) >= progress_batch_size:
@@ -729,5 +832,12 @@ def record_hard_delivery_failure(
         checked_at=now.isoformat(timespec="seconds"),
         details={"source": "delivery_webhook", "provider_status": normalized_status},
     )
-    _upsert_cache(owner_username, syntax.normalized_email.lower(), fallback, attempt_count=1)
+    _upsert_cache(
+        owner_username,
+        syntax.normalized_email.lower(),
+        fallback,
+        attempt_count=1,
+        provider=SMTPBZ_PROVIDER,
+        status="invalid",
+    )
     return True

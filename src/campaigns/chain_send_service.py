@@ -25,6 +25,7 @@ from src.campaigns.chain_service import (
     resolve_button_label,
 )
 from src.campaigns.chain_template_utils import inject_chain_buttons
+from src.campaigns.recipient_email_service import send_validation_snapshot
 from src.campaigns.service import record_delivery_attempt
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignChainToken, CampaignRecipient, MailTemplate, TemplateVersion
@@ -462,8 +463,12 @@ def send_chain_node_email(
                 raise ValueError(validation_result.reason or "Некорректный email получателя.")
             delivery_email = validation_result.normalized_email
             if not active_test_email:
-                from src.campaigns.recipient_email_service import persist_delivery_email_state
+                from src.campaigns.recipient_email_service import (
+                    persist_delivery_email_state,
+                    persist_send_validation,
+                )
 
+                persist_send_validation(recipient, delivery_email, validation_result)
                 persist_delivery_email_state(recipient, delivery_email)
         else:
             from src.campaigns.recipient_email_service import (
@@ -580,6 +585,7 @@ def send_chain_node_email(
                 batch_id=batch_id,
                 status="sending",
                 delivery_email=delivery_email,
+                email_validation=send_validation_snapshot(recipient, delivery_email),
             )
 
         campaign_for_send = camp
