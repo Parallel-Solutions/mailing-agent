@@ -118,7 +118,8 @@ class EmailValidationFlowTests(unittest.TestCase):
             self.assertTrue(all(not row.excluded for row in recipients))
 
         validation = validate_campaign_for_launch(self.campaign_id, self.username)
-        self.assertTrue(any("DNS/MX" in str(error) for error in validation["errors"]))
+        self.assertFalse(any("DNS/MX" in str(error) for error in validation["errors"]))
+        self.assertTrue(any("DNS/MX" in str(warning) for warning in validation["warnings"]))
         self.assertFalse(any("SMTP.BZ" in str(item) for item in [*validation["errors"], *validation["warnings"]]))
 
     def test_local_worker_updates_recipients_and_send_time_smtpbz_uses_cache(self) -> None:

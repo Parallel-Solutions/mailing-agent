@@ -1547,8 +1547,8 @@ def validate_campaign_for_launch(
         pending_validation = int(validation_counts.get("pending", 0))
         unknown_validation = int(validation_counts.get("unknown", 0))
         if pending_validation:
-            errors.append(
-                f"Дождитесь завершения внутренней проверки синтаксиса и DNS/MX для {pending_validation} адресов."
+            warnings.append(
+                f"Внутренняя проверка синтаксиса и DNS/MX ещё выполняется для {pending_validation} адресов; перед отправкой они будут проверены повторно."
             )
         if unknown_validation:
             warnings.append(
