@@ -17,6 +17,12 @@ def apply_kp_layout_failure(recipient: CampaignRecipient, error: KpLayoutError) 
     recipient.send_status = "failed"
 
 
+def clear_kp_layout_failure(recipient: CampaignRecipient) -> None:
+    extra = dict(recipient.extra or {})
+    if extra.pop("layout_error_code", None) is not None:
+        recipient.extra = extra
+
+
 def append_kp_layout_sent_mail_log(
     *,
     campaign: Campaign,

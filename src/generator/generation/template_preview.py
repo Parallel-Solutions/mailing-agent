@@ -195,6 +195,7 @@ def convert_docx_to_delivery_pdf(
     file_kind: str | None = None,
     template_docx: Path | None = None,
     max_body_font_half_points: int = 20,
+    compact_kp_body: bool = True,
     fontconfig_path: Path | str | None = None,
     prefer_local: bool = False,
 ) -> Path:
@@ -210,6 +211,7 @@ def convert_docx_to_delivery_pdf(
         file_kind=file_kind,
         template_docx=template_source,
         max_body_font_half_points=max_body_font_half_points,
+        compact_kp_body=compact_kp_body,
     )
     converted = _convert_preview_docx_to_pdf(
         staged_docx,

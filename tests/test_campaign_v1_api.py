@@ -756,6 +756,7 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(template["template_type"], "document")
         self.assertEqual(template["version"]["filename"], "offer.docx")
         self.assertEqual(template["version"]["rendered_pdf_filename"], "offer.pdf")
+        self.assertTrue(template["enforce_one_page"])
         self.assertEqual(
             {item["name"] for item in template["version"]["variables"]},
             {"company", "contact_name"},
@@ -767,6 +768,13 @@ class CampaignV1ApiTests(unittest.TestCase):
         delivery_download = self.client.get(f"/api/v1/templates/{template['id']}/delivery-file")
         self.assertEqual(delivery_download.status_code, 200, delivery_download.text)
         self.assertEqual(delivery_download.content, delivery_pdf)
+
+        page_mode = self.client.patch(
+            f"/api/v1/templates/{template['id']}",
+            json={"enforce_one_page": False},
+        )
+        self.assertEqual(page_mode.status_code, 200, page_mode.text)
+        self.assertFalse(page_mode.json()["result"]["enforce_one_page"])
 
         legacy = self.client.post(
             "/api/v1/templates/upload",

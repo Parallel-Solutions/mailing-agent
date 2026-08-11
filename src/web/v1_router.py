@@ -187,6 +187,7 @@ class TemplateSaveBody(BaseModel):
     is_template: bool | None = None
     rendered_pdf_filename: str | None = None
     attachment_output_format: str | None = None
+    enforce_one_page: bool | None = None
 
 
 class KpPreviewBody(BaseModel):
@@ -1872,6 +1873,7 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
                     is_template=body.is_template,
                     rendered_pdf_filename=body.rendered_pdf_filename,
                     attachment_output_format=body.attachment_output_format,
+                    enforce_one_page=body.enforce_one_page,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

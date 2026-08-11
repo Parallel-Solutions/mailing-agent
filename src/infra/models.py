@@ -912,6 +912,7 @@ class MailTemplate(Base):
     attachment_output_format: Mapped[str] = mapped_column(
         String(16), nullable=False, default="original"
     )
+    enforce_one_page: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()

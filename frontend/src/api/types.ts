@@ -470,6 +470,7 @@ export type Template = {
   status: string;
   is_template?: boolean;
   attachment_output_format?: 'original' | 'pdf';
+  enforce_one_page?: boolean;
   tags?: string[];
   version?: {
     id: string;

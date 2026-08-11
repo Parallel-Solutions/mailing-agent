@@ -228,6 +228,11 @@ def _normalize_attachment_output_format(
     return normalized_format
 
 
+def _validate_page_limit_setting(template: MailTemplate) -> None:
+    if not _is_file_document_template(str(template.template_type or "")):
+        raise ValueError("Ограничение числа страниц можно настроить только для документов")
+
+
 def _validate_file_template_type(template_type: str, filename: str) -> str:
     normalized_type = normalize_file_template_type(template_type)
     allowed = FILE_TEMPLATE_EXTENSIONS.get(normalized_type)
@@ -260,6 +265,7 @@ def template_to_dict(row: MailTemplate, version: TemplateVersion | None = None) 
         "archived": bool(row.archived),
         "is_template": bool(row.is_template),
         "attachment_output_format": str(row.attachment_output_format or "original"),
+        "enforce_one_page": bool(row.enforce_one_page),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -992,6 +998,7 @@ def save_version(
     is_template: bool | None = None,
     rendered_pdf_filename: str | None = None,
     attachment_output_format: str | None = None,
+    enforce_one_page: bool | None = None,
 ) -> dict[str, Any] | None:
     with session_scope() as session:
         tmpl = session.get(MailTemplate, template_id)
@@ -1009,6 +1016,7 @@ def save_version(
             is_template is not None
             or rendered_pdf_filename is not None
             or attachment_output_format is not None
+            or enforce_one_page is not None
         )
         if not content_changed and (metadata_changed or name is not None):
             current = session.get(TemplateVersion, tmpl.active_version_id) if tmpl.active_version_id else None
@@ -1027,6 +1035,9 @@ def save_version(
                     tmpl, current, attachment_output_format
                 )
                 tmpl.attachment_output_format = normalized_format
+            if enforce_one_page is not None:
+                _validate_page_limit_setting(tmpl)
+                tmpl.enforce_one_page = bool(enforce_one_page)
             if name is not None:
                 tmpl.name = name
             tmpl.updated_at = _now()
@@ -1041,6 +1052,10 @@ def save_version(
                 tmpl, current, attachment_output_format
             )
             tmpl.attachment_output_format = normalized_format
+            tmpl.updated_at = _now()
+        if enforce_one_page is not None:
+            _validate_page_limit_setting(tmpl)
+            tmpl.enforce_one_page = bool(enforce_one_page)
             tmpl.updated_at = _now()
         if not content_changed and name is None:
             return None
@@ -1126,6 +1141,7 @@ def duplicate_template(template_id: str, owner_username: str) -> dict[str, Any] 
         metadata["attachment_output_format"] = str(
             source.get("attachment_output_format") or "original"
         )
+        metadata["enforce_one_page"] = bool(source.get("enforce_one_page", True))
     return save_version(str(copied["id"]), owner_username, **metadata)
 
 

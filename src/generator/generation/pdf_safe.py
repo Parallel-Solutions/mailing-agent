@@ -58,6 +58,7 @@ def prepare_docx_for_pdf_export(
     file_kind: str | None = None,
     template_docx: Path | None = None,
     max_body_font_half_points: int = 20,
+    compact_kp_body: bool = True,
 ) -> PdfSafePlan:
     staged_docx.parent.mkdir(parents=True, exist_ok=True)
     is_kp = is_kp_docx(source_docx, file_kind=file_kind)
@@ -71,6 +72,7 @@ def prepare_docx_for_pdf_export(
         staged_docx,
         strip_contact_icons=can_overlay_contact_icons,
         max_body_font_half_points=max_body_font_half_points,
+        compact_body=compact_kp_body,
     )
     return PdfSafePlan(
         source_docx=source_docx,
@@ -93,6 +95,7 @@ def copy_docx_without_pdf_unsafe_runs(
     *,
     strip_contact_icons: bool = False,
     max_body_font_half_points: int = 20,
+    compact_body: bool = True,
 ) -> None:
     with zipfile.ZipFile(source_docx, "r") as source_zip:
         items = source_zip.infolist()
@@ -106,10 +109,13 @@ def copy_docx_without_pdf_unsafe_runs(
             document_text, icons_changed = remove_contact_icon_runs(document_text)
         document_text, background_changed = remove_background_runs(document_text)
         document_text, contact_text_changed = normalize_contact_text_for_pdf(document_text)
-        document_text, body_font_changed = shrink_mngp_kp_body_for_pdf(
-            document_text,
-            max_body_font_half_points=max_body_font_half_points,
-        )
+        if compact_body:
+            document_text, body_font_changed = shrink_mngp_kp_body_for_pdf(
+                document_text,
+                max_body_font_half_points=max_body_font_half_points,
+            )
+        else:
+            body_font_changed = False
         if background_changed or icons_changed or contact_text_changed or body_font_changed:
             payloads[document_name] = document_text.encode("utf-8")
 

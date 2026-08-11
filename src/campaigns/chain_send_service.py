@@ -554,7 +554,10 @@ def send_chain_node_email(
         node_by_id = {n["id"]: n for n in chain.get("nodes") or []}
 
         from src.generator.generation.kp_one_page_fitter import KpLayoutError
-        from src.campaigns.layout_send_utils import record_kp_layout_send_failure
+        from src.campaigns.layout_send_utils import (
+            clear_kp_layout_failure,
+            record_kp_layout_send_failure,
+        )
 
         try:
             attachments, document_specs = _resolve_document_attachments(
@@ -577,6 +580,9 @@ def send_chain_node_email(
                 mark_token_sent(followup_token, error=str(exc))
             session.commit()
             raise
+
+        if not active_test_email:
+            clear_kp_layout_failure(recipient)
 
         if batch_id and not active_test_email:
             record_delivery_attempt(

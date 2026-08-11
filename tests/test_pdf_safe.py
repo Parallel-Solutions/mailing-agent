@@ -85,6 +85,35 @@ class PdfSafeTests(unittest.TestCase):
         self.assertIn('<w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t>' + body, staged_xml)
         self.assertIn('<w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr><w:t>' + signature, staged_xml)
 
+    def test_prepare_docx_for_pdf_export_can_preserve_multi_page_body(self) -> None:
+        source = self.tmp_dir / "KP_multi_page.docx"
+        staged = self.tmp_dir / "staged_multi_page.docx"
+        document_xml = (
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:body><w:p><w:r><w:rPr><w:sz w:val="24"/></w:rPr>'
+            '<w:t>КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</w:t></w:r></w:p></w:body></w:document>'
+        )
+        with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+            archive.writestr("word/document.xml", document_xml)
+
+        with patch.object(
+            pdf_safe,
+            "shrink_mngp_kp_body_for_pdf",
+            side_effect=AssertionError("multi-page mode must not compact the body"),
+        ):
+            plan = pdf_safe.prepare_docx_for_pdf_export(
+                source,
+                staged,
+                file_kind="kp",
+                template_docx=source,
+                compact_kp_body=False,
+            )
+
+        self.assertTrue(plan.should_overlay_kp_background)
+        with ZipFile(staged) as archive:
+            staged_xml = archive.read("word/document.xml").decode("utf-8")
+        self.assertIn('w:val="24"', staged_xml)
+
     def test_prepare_docx_for_pdf_export_shrinks_generic_kp_body_after_title(self) -> None:
         source = self.tmp_dir / "KP_generic.docx"
         staged = self.tmp_dir / "staged_generic.docx"

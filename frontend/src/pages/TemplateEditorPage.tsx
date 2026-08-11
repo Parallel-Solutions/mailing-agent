@@ -61,6 +61,7 @@ import { VisualEmailEditor } from '@/features/templates/VisualEmailEditor';
 import { PersonalizationSetting } from '@/features/templates/PersonalizationSetting';
 import { DeliveryFilenameField } from '@/features/templates/DeliveryFilenameField';
 import { AttachmentOutputFormatField } from '@/features/templates/AttachmentOutputFormatField';
+import { DocumentPageLimitField } from '@/features/templates/DocumentPageLimitField';
 import { TemplateFontsPanel } from '@/features/templates/TemplateFontsPanel';
 import { showDocumentUploadError } from '@/features/templates/documentUploadError';
 import {
@@ -193,6 +194,7 @@ function DocumentDeliverySettingsRow({ template }: { template: Template }) {
     <div className="document-delivery-settings-row">
       <PersonalizationSettingPanel template={template} />
       <AttachmentOutputFormatField template={template} />
+      <DocumentPageLimitField template={template} />
       <DeliveryFilenameField template={template} />
     </div>
   );
