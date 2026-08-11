@@ -1,6 +1,10 @@
 import type { Campaign, CampaignValidateResponse, TemplateValidationIssue } from '@/api/types';
 import { validateCampaignBasics } from '@/utils/validators';
-import { formValuesToSchedulePayload, type ScheduleFormValues } from '@/utils/scheduleForm';
+import {
+  isPositiveInteger,
+  parseScheduleDateTime,
+  type ScheduleFormValues,
+} from '@/utils/scheduleForm';
 
 export type StepValidationStatus = 'ok' | 'warning' | 'error';
 
@@ -140,9 +144,11 @@ function isAiFixableIssue(issue: TemplateValidationIssue): boolean {
 
 export function validateScheduleStep(values: Partial<ScheduleFormValues>): string[] {
   const errors: string[] = [];
-  const payload = formValuesToSchedulePayload(values);
-  if (!payload) {
+  if (!parseScheduleDateTime(values.start_at)) {
     errors.push('Укажите дату и время старта');
+  }
+  if (!isPositiveInteger(values.batch_size)) {
+    errors.push('Размер пакета должен быть целым числом больше нуля');
   }
   if (!values.interval_value || Number(values.interval_value) < 1) {
     errors.push('Укажите интервал между пакетами');

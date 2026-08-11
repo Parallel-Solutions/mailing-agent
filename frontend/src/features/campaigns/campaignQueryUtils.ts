@@ -106,16 +106,29 @@ export function invalidateCampaignMappingCache(queryClient: QueryClient, campaig
   });
 }
 
+export function campaignEmailValidationQueryKey(campaignId: string) {
+  return ['campaign-email-validation', campaignId] as const;
+}
+
 export function invalidateCampaignDerivedData(
   queryClient: QueryClient,
   campaignId: string,
-  opts?: { includeValidation?: boolean; includeMapping?: boolean },
+  opts?: {
+    includeValidation?: boolean;
+    includeMapping?: boolean;
+    includeEmailValidation?: boolean;
+  },
 ) {
   if (opts?.includeValidation) {
     void queryClient.invalidateQueries({ queryKey: campaignValidateQueryKey(campaignId) });
   }
   if (opts?.includeMapping) {
     invalidateCampaignMappingCache(queryClient, campaignId);
+  }
+  if (opts?.includeEmailValidation) {
+    void queryClient.invalidateQueries({
+      queryKey: campaignEmailValidationQueryKey(campaignId),
+    });
   }
   void queryClient.invalidateQueries({ queryKey: ['email-chain-preview', campaignId] });
   void queryClient.invalidateQueries({ queryKey: ['campaign-recipients', campaignId] });

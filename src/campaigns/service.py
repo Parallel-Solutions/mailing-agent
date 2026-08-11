@@ -1552,8 +1552,8 @@ def validate_campaign_for_launch(
                 count for status, count in validation_counts.items() if status != "valid"
             )
             if unverified:
-                errors.append(
-                    f"Проверка SMTP.BZ не завершена для {unverified} получателей."
+                warnings.append(
+                    f"SMTP.BZ не подтвердил {unverified} адресов; они допущены по синтаксису и DNS."
                 )
 
         if active <= 0:

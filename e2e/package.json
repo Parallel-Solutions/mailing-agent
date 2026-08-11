@@ -8,6 +8,7 @@
     "test:chromium": "playwright test --project=chromium",
     "test:smoke": "playwright test --grep @smoke",
     "test:email": "playwright test --grep @email",
+    "test:email:journey": "playwright test --grep @email tests/campaigns/campaign-ui-journey.spec.ts tests/campaigns/campaign-ui-consent.spec.ts",
     "test:visual": "playwright test --grep @visual",
     "test:headed": "xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' playwright test --headed --project=chromium",
     "test:debug": "xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' playwright test --debug --project=chromium",

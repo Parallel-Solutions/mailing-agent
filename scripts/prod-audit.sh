@@ -271,8 +271,9 @@ done < <(docker ps --format '{{.Names}} {{.Label "com.docker.compose.project"}}'
 
 # Also flag any compose services outside the prod allowlist in this project.
 section "Prod allowlist check"
-# Expected long-lived: app worker postgres minio redis gotenberg onlyoffice (minio-init is one-shot).
-allow_services='^(app|worker|postgres|minio|minio-init|redis|gotenberg|onlyoffice)$'
+# Expected long-lived: app worker postgres minio redis gotenberg onlyoffice
+# autoheal (minio-init is one-shot).
+allow_services='^(app|worker|postgres|minio|minio-init|redis|gotenberg|onlyoffice|autoheal)$'
 while IFS= read -r svc; do
   [[ -z "$svc" ]] && continue
   if [[ ! "$svc" =~ $allow_services ]]; then

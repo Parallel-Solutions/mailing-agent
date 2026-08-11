@@ -51,6 +51,12 @@ except Exception:
     def _emit(*a, **k):
         pass
 
+try:
+    from src.infra.spend_ledger import record_service_call
+except Exception:
+    def record_service_call(*a, **k):
+        pass
+
 # --- хелперы создания файла МО (точный формат с двойной шапкой) ---
 try:
     from src.parser_new.tools.excel_tool import (
@@ -102,6 +108,7 @@ def _fetch(url: str) -> str:
     headers = {"User-Agent": "Mozilla/5.0 (compatible; mo-parser/1.0)"}
     resp = httpx.get(url, headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=True)
     resp.raise_for_status()
+    record_service_call(service="oktmo", operation="lookup")
     return resp.text
 
 

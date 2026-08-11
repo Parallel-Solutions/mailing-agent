@@ -11,6 +11,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from src.infra.spend_ledger import record_service_call
+
 
 EMAIL_VALIDATION_OFF = "off"
 EMAIL_VALIDATION_SYNTAX = "syntax"
@@ -32,10 +34,6 @@ _SMTPBZ_INVALID_TEXT_RE = re.compile(
     re.I,
 )
 _SMTPBZ_VALID_TEXT_RE = re.compile(r"^(valid|ok|success|deliverable|exists|true|yes)$", re.I)
-_SMTPBZ_INVALID_STATUS_RE = re.compile(
-    r"^(invalid|not_valid|not_found|not_exists|does_not_exist|undeliverable|false|no|bad)$",
-    re.I,
-)
 _SMTPBZ_VALID_KEYS = {
     "valid",
     "is_valid",
@@ -75,7 +73,7 @@ class EmailValidationResult:
 def normalize_email_validation_mode(value: Any) -> str:
     mode = str(value or "").strip().lower().replace("-", "_")
     if not mode:
-        return EMAIL_VALIDATION_SMTPBZ
+        return EMAIL_VALIDATION_DOMAIN
     if mode in {"true", "1", "yes", "on", "domain_dns", "dns"}:
         return EMAIL_VALIDATION_DOMAIN
     if mode in {"false", "0", "no", "none", "disabled"}:
@@ -86,7 +84,7 @@ def normalize_email_validation_mode(value: Any) -> str:
         return EMAIL_VALIDATION_SMTPBZ
     if mode in EMAIL_VALIDATION_MODES:
         return mode
-    return EMAIL_VALIDATION_SMTPBZ
+    return EMAIL_VALIDATION_DOMAIN
 
 
 def validate_configured_email_address(email: Any, *, config: Any = None) -> EmailValidationResult:
@@ -104,7 +102,7 @@ def validate_configured_email_address(email: Any, *, config: Any = None) -> Emai
         timeout_seconds = 10.0
     return validate_email_address(
         email,
-        mode=getattr(config, "email_validation_mode", EMAIL_VALIDATION_SMTPBZ),
+        mode=getattr(config, "email_validation_mode", EMAIL_VALIDATION_DOMAIN),
         timeout_seconds=timeout_seconds,
         smtpbz_api_key=getattr(config, "smtpbz_api_key", ""),
         smtpbz_api_base_url=getattr(config, "smtpbz_api_base_url", ""),
@@ -141,25 +139,6 @@ def validate_email_address(
     if not syntax_result.is_valid or normalized_mode == EMAIL_VALIDATION_SYNTAX:
         return syntax_result
 
-    if normalized_mode == EMAIL_VALIDATION_SMTPBZ:
-        smtpbz_valid, smtpbz_reason_code, smtpbz_reason, smtpbz_details = _validate_email_with_smtpbz(
-            syntax_result.normalized_email,
-            api_key=smtpbz_api_key,
-            base_url=smtpbz_api_base_url,
-            timeout_seconds=timeout_seconds,
-            fail_open=smtpbz_fail_open,
-        )
-        return EmailValidationResult(
-            email=raw_email,
-            normalized_email=syntax_result.normalized_email,
-            domain=syntax_result.domain,
-            is_valid=smtpbz_valid,
-            reason_code=smtpbz_reason_code,
-            reason=smtpbz_reason,
-            checked_at=checked_at,
-            details={**syntax_result.details, **smtpbz_details, "mode": normalized_mode},
-        )
-
     has_route, reason_code, reason, details = _domain_has_mail_route(
         syntax_result.domain,
         timeout_seconds=timeout_seconds,
@@ -174,6 +153,33 @@ def validate_email_address(
             reason=reason,
             checked_at=checked_at,
             details={**syntax_result.details, **details, "mode": normalized_mode},
+        )
+
+    if normalized_mode == EMAIL_VALIDATION_SMTPBZ:
+        _smtpbz_valid, smtpbz_reason_code, smtpbz_reason, smtpbz_details = _validate_email_with_smtpbz(
+            syntax_result.normalized_email,
+            api_key=smtpbz_api_key,
+            base_url=smtpbz_api_base_url,
+            timeout_seconds=timeout_seconds,
+            fail_open=smtpbz_fail_open,
+        )
+        return EmailValidationResult(
+            email=raw_email,
+            normalized_email=syntax_result.normalized_email,
+            domain=syntax_result.domain,
+            # SMTP mailbox probing is advisory. Local syntax and DNS checks
+            # above remain the delivery gate; the provider classification is
+            # retained in ``reason_code`` for reporting and analytics.
+            is_valid=True,
+            reason_code=smtpbz_reason_code,
+            reason=smtpbz_reason,
+            checked_at=checked_at,
+            details={
+                **syntax_result.details,
+                **details,
+                **smtpbz_details,
+                "mode": normalized_mode,
+            },
         )
 
     return EmailValidationResult(
@@ -263,7 +269,7 @@ def _validate_email_with_smtpbz(
     if not api_key:
         return _smtpbz_check_failure(
             "smtpbz_not_configured",
-            "Проверка SMTP.BZ не настроена: отсутствует API-ключ.",
+            "SMTP.BZ не настроен: адрес проверен только по синтаксису и DNS.",
             fail_open=fail_open,
             details={"status": "skipped", "reason": "api_key_missing"},
         )
@@ -276,6 +282,9 @@ def _validate_email_with_smtpbz(
     try:
         raw = _run_smtpbz_request(request, timeout=max(1.0, float(timeout_seconds or 3.0)))
     except HTTPError as exc:
+        # SMTP.BZ answered (even with an HTTP error status), so the lookup
+        # attempt was billed regardless of the outcome.
+        record_service_call(service="smtp_bz", operation="validate_email", status="error")
         raw = getattr(exc, "raw_body", "")
         data = _loads_json_object(raw)
         classification = _classify_smtpbz_response(data if data is not None else raw)
@@ -286,37 +295,38 @@ def _validate_email_with_smtpbz(
         if exc.code == 401:
             return _smtpbz_check_failure(
                 "smtpbz_unauthorized",
-                "SMTP.BZ отклонил API-ключ проверки email.",
+                "SMTP.BZ отклонил API-ключ; результат внешней проверки не учтён.",
                 fail_open=fail_open,
                 details={"status": "error", "http_status": exc.code},
             )
         if exc.code == 400:
             return _smtpbz_check_failure(
                 "smtpbz_quota_or_request_error",
-                "SMTP.BZ не выполнил проверку email: проверьте квоту валидатора.",
+                "SMTP.BZ не выполнил проверку: проверьте квоту валидатора.",
                 fail_open=fail_open,
                 details={"status": "error", "http_status": exc.code},
             )
         return _smtpbz_check_failure(
             "smtpbz_unavailable",
-            "SMTP.BZ временно недоступен; отправка остановлена до проверки email.",
+            "SMTP.BZ временно недоступен; адрес проверен только по синтаксису и DNS.",
             fail_open=fail_open,
             details={"status": "error", "http_status": exc.code, "error": str(exc)},
         )
     except (URLError, OSError, TimeoutError) as exc:
         return _smtpbz_check_failure(
             "smtpbz_unavailable",
-            "SMTP.BZ временно недоступен; отправка остановлена до проверки email.",
+            "SMTP.BZ временно недоступен; адрес проверен только по синтаксису и DNS.",
             fail_open=fail_open,
             details={"status": "error", "error": str(exc)},
         )
 
+    record_service_call(service="smtp_bz", operation="validate_email")
     data = _loads_json_object(raw)
     classification = _classify_smtpbz_response(data if data is not None else raw)
     if classification is None:
         return _smtpbz_check_failure(
             "smtpbz_unknown",
-            "SMTP.BZ вернул неподдерживаемый результат; отправка остановлена.",
+            "SMTP.BZ не подтвердил доставляемость; результат оставлен справочным.",
             fail_open=fail_open,
             details={"status": "unknown", "raw": str(raw)[:500]},
         )
@@ -330,11 +340,23 @@ def _smtpbz_check_failure(
     fail_open: bool,
     details: dict[str, Any],
 ) -> tuple[bool, str, str, dict[str, Any]]:
+    # SMTP mailbox probing is advisory: receiving servers may hide mailbox
+    # existence, greylist a probe, or accept a recipient before rejecting the
+    # message later.  An unavailable or inconclusive third-party check must
+    # therefore never turn a syntactically and DNS-valid address into a hard
+    # failure.  ``fail_open`` is retained in details for configuration
+    # compatibility, but delivery is always allowed for these unknown states.
     return (
-        bool(fail_open),
+        True,
         reason_code,
-        "" if fail_open else reason,
-        {"smtpbz": {**details, "fail_open": bool(fail_open)}},
+        reason,
+        {
+            "smtpbz": {
+                **details,
+                "advisory": True,
+                "configured_fail_open": bool(fail_open),
+            }
+        },
     )
 
 
@@ -370,9 +392,15 @@ def _classify_smtpbz_response(payload: Any) -> tuple[bool, str, str, dict[str, A
     delivery_keys = {"validdeliver", "valid_deliver", "valid_delivery"}
     delivery_confirmed = False
 
-    # SMTP.BZ can return result=true while a required nested check, such as
-    # checks.validDeliver, is false. Required checks take precedence so that
-    # an address with unconfirmed deliverability is never accepted.
+    text_values = [str(value or "").strip() for _, value in values if value not in (None, "", [], {})]
+    joined_text = " ".join(text_values)
+    if _SMTPBZ_INVALID_TEXT_RE.search(joined_text):
+        return False, "smtpbz_invalid", "SMTP.BZ: email не существует или некорректен.", details
+
+    # A failed SMTP delivery probe is not proof that the mailbox is absent.
+    # Greylisting, anti-enumeration policies, catch-all domains and protocol
+    # errors all make this check inconclusive. Only positive delivery evidence
+    # is promoted to ``valid``; negative probe results remain ``unknown``.
     for key, value in values:
         key_l = key.lower().rsplit(".", 1)[-1]
         if key_l not in _SMTPBZ_REQUIRED_CHECK_KEYS:
@@ -383,15 +411,6 @@ def _classify_smtpbz_response(payload: Any) -> tuple[bool, str, str, dict[str, A
             or (isinstance(value, str) and _SMTPBZ_VALID_TEXT_RE.match(value.strip()))
         ):
             delivery_confirmed = True
-        if value is False or value == 0 or (
-            isinstance(value, str) and _SMTPBZ_INVALID_STATUS_RE.match(value.strip())
-        ):
-            return (
-                False,
-                "smtpbz_invalid",
-                "SMTP.BZ: email не прошёл обязательную проверку доставляемости.",
-                details,
-            )
 
     for key, value in values:
         key_l = key.lower().rsplit(".", 1)[-1]
@@ -400,19 +419,13 @@ def _classify_smtpbz_response(payload: Any) -> tuple[bool, str, str, dict[str, A
                 if delivery_confirmed:
                     return True, "ok_smtpbz", "", details
                 continue
-            return False, "smtpbz_invalid", "SMTP.BZ: email не существует или некорректен.", details
-
-    text_values = [str(value or "").strip() for _, value in values if value not in (None, "", [], {})]
-    joined_text = " ".join(text_values)
-    if _SMTPBZ_INVALID_TEXT_RE.search(joined_text):
-        return False, "smtpbz_invalid", "SMTP.BZ: email не существует или некорректен.", details
+            if key_l in {"exists", "is_exists", "email_valid", "address_valid"}:
+                return False, "smtpbz_invalid", "SMTP.BZ: email не существует или некорректен.", details
 
     for key, value in values:
         key_l = key.lower().rsplit(".", 1)[-1]
         if key_l in {"status", "state", "result", "validation", "email_status"}:
             value_s = str(value or "").strip()
-            if _SMTPBZ_INVALID_STATUS_RE.match(value_s):
-                return False, "smtpbz_invalid", "SMTP.BZ: email не существует или некорректен.", details
             if delivery_confirmed and _SMTPBZ_VALID_TEXT_RE.match(value_s):
                 return True, "ok_smtpbz", "", details
 

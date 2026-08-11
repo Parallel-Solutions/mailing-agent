@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import re
 import uuid
 from copy import deepcopy
+from difflib import SequenceMatcher
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,7 @@ from src.campaigns.substitution_engine import (
     PlaceholderInfo,
     discover_placeholders,
     is_identifier_variable,
+    render_placeholder_values,
     resolve_context_value,
 )
 from src.generator.generation.recipient_normalization import (
@@ -46,7 +50,7 @@ PDF_TEXTBOX_LINE_HEIGHT = 1.0
 PDF_REDACTION_HORIZONTAL_INSET = 0.25
 PDF_REDACTION_VERTICAL_PADDING = 0.4
 PDF_GEOMETRY_TOLERANCE = 0.25
-PDF_AUTO_LAYOUT_VERSION = "pdf-text-layout-v3"
+PDF_AUTO_LAYOUT_VERSION = "pdf-text-layout-v5"
 KNOWN_FIELDS = {
     "ADM_NAME": ("ADM_NAME", "Получатель"),
     "HEAD_FIO": ("HEAD_FIO", "ФИО руководителя"),
@@ -56,6 +60,36 @@ KNOWN_FIELDS = {
 
 class PdfOverlayLayoutError(ValueError):
     """Raised when a personalized PDF value cannot be rendered safely."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        field: dict[str, Any] | None = None,
+        value: str = "",
+        reason: str = "layout",
+    ) -> None:
+        super().__init__(message)
+        source = field or {}
+        self.page = int(source.get("page", 0)) + 1
+        self.source_text = str(source.get("source_text") or "").strip()
+        self.variables = [
+            str(item).strip()
+            for item in (source.get("variables") or [source.get("variable")])
+            if str(item or "").strip() and str(item).strip() != "__composite__"
+        ]
+        self.rendered_value = str(value or "")
+        self.reason = reason
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "page": self.page,
+            "source_text": self.source_text,
+            "variables": self.variables,
+            "rendered_value": self.rendered_value,
+            "reason": self.reason,
+            "message": str(self),
+        }
 
 
 def _new_id() -> str:
@@ -214,6 +248,27 @@ def _redaction_rect(field: dict[str, Any], page_rect: fitz.Rect) -> fitz.Rect:
     return rect & page_rect
 
 
+def _redaction_rects(field: dict[str, Any], page_rect: fitz.Rect) -> list[fitz.Rect]:
+    explicit = field.get("redact_rects")
+    if not isinstance(explicit, list) or not explicit:
+        return [_redaction_rect(field, page_rect)]
+    result: list[fitz.Rect] = []
+    for item in explicit:
+        if not isinstance(item, dict):
+            continue
+        try:
+            x = float(item["x"])
+            y = float(item["y"])
+            width = float(item["width"])
+            height = float(item["height"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rect = fitz.Rect(x, y, x + width, y + height) & page_rect
+        if not rect.is_empty:
+            result.append(rect)
+    return result or [_redaction_rect(field, page_rect)]
+
+
 def _rect_is_inside(container: fitz.Rect, candidate: fitz.Rect) -> bool:
     expanded = fitz.Rect(
         container.x0 - PDF_GEOMETRY_TOLERANCE,
@@ -279,10 +334,73 @@ def _insert_fitted_textbox(
             return fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + used_height)
         font_size = round(font_size - PDF_TEXTBOX_FONT_STEP, 2)
 
-    label = str(field.get("label") or field.get("variable") or "PDF field")
+    source_text = str(field.get("source_text") or "").strip()
+    variables = [
+        str(item).strip()
+        for item in (field.get("variables") or [field.get("variable")])
+        if str(item or "").strip() and str(item).strip() != "__composite__"
+    ]
+    page_number = int(field.get("page", 0)) + 1
+    location = (
+        f"строка «{source_text}»"
+        if source_text
+        else f"поле «{str(field.get('label') or field.get('variable') or 'PDF')}»"
+    )
+    variable_hint = f" Переменные: {', '.join(variables)}." if variables else ""
     raise PdfOverlayLayoutError(
-        f"Текст поля «{label}» не помещается в заданную область даже при размере "
-        f"{min_font_size:g} pt."
+        f"Страница {page_number}: {location} после подстановки «{value}» не помещается "
+        f"в доступную область при минимальном размере {min_font_size:g} pt."
+        f"{variable_hint}",
+        field=field,
+        value=value,
+        reason="text_does_not_fit",
+    )
+
+
+def _insert_fitted_htmlbox(
+    page: fitz.Page,
+    field: dict[str, Any],
+    rect: fitz.Rect,
+    value: str,
+) -> fitz.Rect:
+    html = str(field.get("rich_html") or "").strip()
+    if not html:
+        return _insert_fitted_textbox(page, field, rect, value)
+
+    min_font_size = max(
+        PDF_TEXTBOX_MIN_FONT_SIZE,
+        min(36.0, float(field.get("min_font_size") or PDF_TEXTBOX_MIN_FONT_SIZE)),
+    )
+    source_sizes = [
+        float(item.get("font_size") or field.get("font_size") or 10)
+        for item in (field.get("rich_runs") or [])
+        if isinstance(item, dict) and str(item.get("text") or "")
+    ]
+    smallest_source_size = min(source_sizes) if source_sizes else float(field.get("font_size") or 10)
+    scale_low = min(1.0, min_font_size / max(min_font_size, smallest_source_size))
+    css = (
+        "div { font-family: sans-serif; line-height: 1.18; margin: 0; padding: 0; "
+        "text-align: justify; text-align-last: left; }"
+    )
+    spare_height, scale = page.insert_htmlbox(
+        rect,
+        html,
+        css=css,
+        scale_low=scale_low,
+        overlay=True,
+    )
+    if spare_height >= 0 and scale + 1e-6 >= scale_low:
+        used_height = max(0.0, min(rect.height, rect.height - spare_height))
+        return fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + used_height)
+
+    page_number = int(field.get("page", 0)) + 1
+    source_text = str(field.get("source_text") or "").strip()
+    raise PdfOverlayLayoutError(
+        f"Страница {page_number}: абзац «{source_text}» после подстановки «{value}» "
+        f"не помещается при минимальном размере {min_font_size:g} pt.",
+        field=field,
+        value=value,
+        reason="text_does_not_fit",
     )
 
 
@@ -295,7 +413,11 @@ def _validate_rendered_field_rect(
 ) -> None:
     label = str(field.get("label") or field.get("variable") or "PDF field")
     if not _rect_is_inside(page_rect, rendered_rect):
-        raise PdfOverlayLayoutError(f"Текст поля «{label}» выходит за границы страницы PDF.")
+        raise PdfOverlayLayoutError(
+            f"Текст поля «{label}» выходит за границы страницы PDF.",
+            field=field,
+            reason="outside_page",
+        )
     for previous_field, previous_rect in previous:
         if not _rects_materially_overlap(rendered_rect, previous_rect):
             continue
@@ -303,7 +425,9 @@ def _validate_rendered_field_rect(
             previous_field.get("label") or previous_field.get("variable") or "PDF field"
         )
         raise PdfOverlayLayoutError(
-            f"Поля «{previous_label}» и «{label}» перекрываются после подстановки."
+            f"Поля «{previous_label}» и «{label}» перекрываются после подстановки.",
+            field=field,
+            reason="overlap",
         )
 
 
@@ -319,12 +443,14 @@ def render_pdf(data: bytes, state: dict[str, Any]) -> bytes:
                 continue
             page = document[page_index]
             for field in fields:
-                rect = _redaction_rect(field, page.rect)
-                page.add_redact_annot(
-                    rect,
-                    fill=_rgb(field.get("background", "#ffff00"), (1, 1, 0)),
-                )
-            page.apply_redactions()
+                for rect in _redaction_rects(field, page.rect):
+                    page.add_redact_annot(
+                        rect,
+                        fill=_rgb(field.get("background", "#ffff00"), (1, 1, 0)),
+                    )
+            # Placeholder substitution must not damage logos, table borders or
+            # decorative vector layers that merely cross the text area.
+            page.apply_redactions(images=0, graphics=0, text=0)
             rendered_fields: list[tuple[dict[str, Any], fitz.Rect]] = []
             for field in fields:
                 value = str(field.get("value") or "")
@@ -334,9 +460,15 @@ def render_pdf(data: bytes, state: dict[str, Any]) -> bytes:
                 label = str(field.get("label") or field.get("variable") or "PDF field")
                 if not _rect_is_inside(page.rect, textbox):
                     raise PdfOverlayLayoutError(
-                        f"Область поля «{label}» выходит за границы страницы PDF."
+                        f"Область поля «{label}» выходит за границы страницы PDF.",
+                        field=field,
+                        value=value,
+                        reason="outside_page",
                     )
-                rendered_rect = _insert_fitted_textbox(page, field, textbox, value)
+                if str(field.get("rich_html") or "").strip():
+                    rendered_rect = _insert_fitted_htmlbox(page, field, textbox, value)
+                else:
+                    rendered_rect = _insert_fitted_textbox(page, field, textbox, value)
                 _validate_rendered_field_rect(
                     page_rect=page.rect,
                     field=field,
@@ -536,15 +668,12 @@ def _discovered_textbox_rect(
 
 
 def _render_value_template(value_template: str, context: dict[str, str]) -> str:
-    value = str(value_template or "")
+    value = render_placeholder_values(str(value_template or ""), context)
     for placeholder in discover_placeholders(value):
-        normalized_name = re.sub(
-            r"\s+",
-            " ",
-            str(placeholder.name).replace("\u00a0", " "),
-        ).strip()
-        replacement = resolve_context_value(context, normalized_name)
-        value = value.replace(placeholder.token, replacement)
+        value = value.replace(
+            placeholder.token,
+            resolve_context_value(context, _normalized_variable_name(placeholder.name)),
+        )
     return value.replace("\u00a0", " ").replace("\u00ad", "-")
 
 
@@ -585,7 +714,8 @@ def resolve_layout_field_value(field: dict[str, Any], context: dict[str, str]) -
 
 def _page_text_lines(page: fitz.Page) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
-    for block in page.get_text("dict").get("blocks", []):
+    for block_index, block in enumerate(page.get_text("dict").get("blocks", [])):
+        block_lines: list[dict[str, Any]] = []
         for line in block.get("lines", []):
             spans = [span for span in line.get("spans", []) if str(span.get("text") or "")]
             if not spans:
@@ -593,13 +723,16 @@ def _page_text_lines(page: fitz.Page) -> list[dict[str, Any]]:
             rect = fitz.Rect(spans[0]["bbox"])
             for span in spans[1:]:
                 rect |= fitz.Rect(span["bbox"])
-            lines.append(
-                {
-                    "text": "".join(str(span.get("text") or "") for span in spans).strip(),
-                    "rect": rect,
-                    "spans": spans,
-                }
-            )
+            item = {
+                "text": "".join(str(span.get("text") or "") for span in spans).strip(),
+                "rect": rect,
+                "spans": spans,
+                "block_index": block_index,
+            }
+            block_lines.append(item)
+            lines.append(item)
+        for item in block_lines:
+            item["block_lines"] = block_lines
     return lines
 
 
@@ -620,6 +753,200 @@ def _line_style(line: dict[str, Any], source_rect: fitz.Rect) -> tuple[float, bo
     return round(font_size, 2), bold, text_color
 
 
+def _block_rect(lines: list[dict[str, Any]]) -> fitz.Rect:
+    rect = fitz.Rect(lines[0]["rect"])
+    for line in lines[1:]:
+        rect |= fitz.Rect(line["rect"])
+    return rect
+
+
+def _block_source_text(lines: list[dict[str, Any]]) -> str:
+    return re.sub(
+        r"\s+",
+        " ",
+        " ".join(str(line.get("text") or "").strip() for line in lines),
+    ).strip()
+
+
+def _block_rich_runs(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    runs: list[dict[str, Any]] = []
+    for line_index, line in enumerate(lines):
+        spans = [span for span in line.get("spans", []) if str(span.get("text") or "")]
+        for span in spans:
+            runs.append(
+                {
+                    "text": str(span.get("text") or "").replace("\u00a0", " ").replace("\u00ad", "-"),
+                    "font_size": round(float(span.get("size") or 10), 2),
+                    "bold": bool(int(span.get("flags") or 0) & 16),
+                    "italic": bool(int(span.get("flags") or 0) & 2),
+                    "text_color": _color_hex(int(span.get("color") or 0)),
+                }
+            )
+        if line_index + 1 < len(lines) and runs:
+            next_text = str(lines[line_index + 1].get("text") or "")
+            if not str(runs[-1].get("text") or "").endswith((" ", "\n")) and not next_text.startswith(" "):
+                runs[-1]["text"] = f"{runs[-1]['text']} "
+    return runs
+
+
+def _safe_redaction_rects(
+    lines: list[dict[str, Any]],
+    page_rect: fitz.Rect,
+) -> list[dict[str, float]]:
+    """Use baseline bands so overlapping glyph boxes on adjacent lines stay untouched."""
+    rects: list[dict[str, float]] = []
+    for line in lines:
+        for span in line.get("spans", []):
+            text = str(span.get("text") or "")
+            if not text:
+                continue
+            source = fitz.Rect(span["bbox"])
+            origin = span.get("origin") or (source.x0, source.y1 - source.height * 0.2)
+            baseline = float(origin[1])
+            band = fitz.Rect(
+                source.x0 - PDF_REDACTION_HORIZONTAL_INSET,
+                baseline - 0.75,
+                source.x1 + PDF_REDACTION_HORIZONTAL_INSET,
+                baseline + 0.75,
+            ) & page_rect
+            if band.is_empty:
+                continue
+            rects.append(
+                {
+                    "x": round(band.x0, 3),
+                    "y": round(band.y0, 3),
+                    "width": round(band.width, 3),
+                    "height": round(band.height, 3),
+                }
+            )
+    return rects
+
+
+def _safe_placeholder_redaction_rects(
+    line: dict[str, Any],
+    source_rect: fitz.Rect,
+    page_rect: fitz.Rect,
+) -> list[dict[str, float]]:
+    matching = [
+        span
+        for span in line.get("spans", [])
+        if fitz.Rect(span["bbox"]).intersects(source_rect)
+    ]
+    baselines = {
+        round(float((span.get("origin") or (source_rect.x0, source_rect.y1))[1]), 3)
+        for span in matching
+    }
+    if not baselines:
+        baselines = {round(source_rect.y1 - source_rect.height * 0.2, 3)}
+    result: list[dict[str, float]] = []
+    for baseline in sorted(baselines):
+        band = fitz.Rect(
+            source_rect.x0 - PDF_REDACTION_HORIZONTAL_INSET,
+            baseline - 0.75,
+            source_rect.x1 + PDF_REDACTION_HORIZONTAL_INSET,
+            baseline + 0.75,
+        ) & page_rect
+        if not band.is_empty:
+            result.append(
+                {
+                    "x": round(band.x0, 3),
+                    "y": round(band.y0, 3),
+                    "width": round(band.width, 3),
+                    "height": round(band.height, 3),
+                }
+            )
+    return result
+
+
+def _style_at_offset(runs: list[dict[str, Any]], offset: int) -> dict[str, Any]:
+    cursor = 0
+    for run in runs:
+        end = cursor + len(str(run.get("text") or ""))
+        if offset < end:
+            return {key: value for key, value in run.items() if key != "text"}
+        cursor = end
+    return {
+        key: value
+        for key, value in (runs[-1] if runs else {}).items()
+        if key != "text"
+    }
+
+
+def _append_styled_run(
+    result: list[dict[str, Any]],
+    text: str,
+    style: dict[str, Any],
+) -> None:
+    if not text:
+        return
+    if result and all(result[-1].get(key) == value for key, value in style.items()):
+        result[-1]["text"] = f"{result[-1]['text']}{text}"
+        return
+    result.append({"text": text, **style})
+
+
+def _slice_styled_runs(
+    runs: list[dict[str, Any]],
+    start: int,
+    end: int,
+    result: list[dict[str, Any]],
+) -> None:
+    cursor = 0
+    for run in runs:
+        text = str(run.get("text") or "")
+        run_end = cursor + len(text)
+        overlap_start = max(start, cursor)
+        overlap_end = min(end, run_end)
+        if overlap_start < overlap_end:
+            style = {key: value for key, value in run.items() if key != "text"}
+            _append_styled_run(
+                result,
+                text[overlap_start - cursor : overlap_end - cursor],
+                style,
+            )
+        cursor = run_end
+        if cursor >= end:
+            break
+
+
+def _resolve_rich_runs(
+    runs: list[dict[str, Any]],
+    context: dict[str, str],
+) -> list[dict[str, Any]]:
+    source = "".join(str(run.get("text") or "") for run in runs)
+    resolved = _render_value_template(source, context)
+    result: list[dict[str, Any]] = []
+    matcher = SequenceMatcher(a=source, b=resolved, autojunk=False)
+    for tag, source_start, source_end, value_start, value_end in matcher.get_opcodes():
+        if tag == "equal":
+            _slice_styled_runs(runs, source_start, source_end, result)
+            continue
+        if tag in {"replace", "insert"}:
+            style = _style_at_offset(runs, source_start)
+            _append_styled_run(result, resolved[value_start:value_end], style)
+    return result
+
+
+def resolve_layout_field_rich_html(field: dict[str, Any], context: dict[str, str]) -> str:
+    raw_runs = [item for item in (field.get("rich_runs") or []) if isinstance(item, dict)]
+    if not raw_runs:
+        return ""
+    resolved_runs = _resolve_rich_runs(raw_runs, context)
+    parts: list[str] = []
+    for run in resolved_runs:
+        styles = [f"font-size:{float(run.get('font_size') or 10):g}pt"]
+        if bool(run.get("bold")):
+            styles.append("font-weight:700")
+        if bool(run.get("italic")):
+            styles.append("font-style:italic")
+        color = str(run.get("text_color") or "#000000")
+        styles.append(f"color:{color}")
+        parts.append(
+            f'<span style="{";".join(styles)}">{escape(str(run.get("text") or ""))}</span>'
+        )
+    return f"<div>{''.join(parts)}</div>"
+
+
 def _text_width(value: str, *, font_size: float, bold: bool) -> float:
     font_path = _font_file_for_field({"bold": bold})
     if not font_path:
@@ -629,6 +956,106 @@ def _text_width(value: str, *, font_size: float, bold: bool) -> float:
         return max(1.0, font.text_length(value, fontsize=font_size))
     except Exception:
         return max(1.0, len(value) * font_size * 0.55)
+
+
+DATE_VARIABLE_NAMES = frozenset(
+    {
+        "date",
+        "current_date",
+        "document_date",
+        "outgoing_date",
+        "дата",
+        "дата документа",
+    }
+)
+
+
+def _normalized_variable_name(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").replace("\u00a0", " ")).strip()
+
+
+def _is_date_variable(value: str) -> bool:
+    return _normalized_variable_name(value).lower() in DATE_VARIABLE_NAMES
+
+
+def _is_document_header_line(variable_names: list[str]) -> bool:
+    return any(is_identifier_variable(name) for name in variable_names) and any(
+        _is_date_variable(name) for name in variable_names
+    )
+
+
+def _next_inline_content_left(page: fitz.Page, source_rect: fitz.Rect) -> float | None:
+    candidates: list[float] = []
+    for word in page.get_text("words"):
+        word_rect = fitz.Rect(word[:4])
+        if word_rect.x0 <= source_rect.x1 + 1:
+            continue
+        if word_rect.y1 < source_rect.y0 - 1 or word_rect.y0 > source_rect.y1 + 1:
+            continue
+        candidates.append(word_rect.x0)
+    return min(candidates) if candidates else None
+
+
+def _adaptive_line_textbox(
+    page: fitz.Page,
+    source_rect: fitz.Rect,
+    value: str,
+    *,
+    font_size: float,
+    min_font_size: float,
+    bold: bool,
+    align: int,
+) -> fitz.Rect:
+    """Size a line for the font that will actually be rendered, not only the source font."""
+    effective_font_size = max(font_size, min_font_size)
+    page_left = page.rect.x0 + PDF_PAGE_MARGIN
+    page_right = page.rect.x1 - PDF_PAGE_MARGIN
+    inline_left = _next_inline_content_left(page, source_rect)
+    right_limit = min(page_right, inline_left - 6 if inline_left is not None else page_right)
+    right_limit = max(source_rect.x1, right_limit)
+
+    rendered_width = _text_width(value, font_size=effective_font_size, bold=bold)
+    desired_width = max(source_rect.width, rendered_width + 8)
+    available_width = max(source_rect.width, right_limit - page_left)
+    width = min(desired_width, available_width)
+    if align == 1:
+        center_x = (source_rect.x0 + source_rect.x1) / 2
+        x0 = max(page_left, center_x - width / 2)
+        x0 = min(x0, right_limit - width)
+    else:
+        x0 = min(source_rect.x0, right_limit - width)
+        x0 = max(page_left, x0)
+    x1 = min(right_limit, x0 + width)
+
+    estimated_lines = max(1, math.ceil(rendered_width / max(1, x1 - x0 - 4)))
+    if desired_width <= x1 - x0 + 0.5:
+        estimated_lines = 1
+    desired_height = max(
+        source_rect.height + 2,
+        effective_font_size * 1.65 * estimated_lines,
+    )
+    page_bottom = page.rect.y1 - PDF_PAGE_MARGIN
+    next_top = _next_content_top(page, source_rect=source_rect, right_edge=right_limit)
+    bottom_limit = min(page_bottom, next_top - 4 if next_top is not None else page_bottom)
+    bottom = max(
+        source_rect.y0 + 1,
+        min(bottom_limit, source_rect.y0 + desired_height),
+    )
+    return fitz.Rect(x0, source_rect.y0 - 0.25, x1, bottom)
+
+
+def _adaptive_block_textbox(page: fitz.Page, source_rect: fitz.Rect) -> fitz.Rect:
+    page_left = page.rect.x0 + PDF_PAGE_MARGIN
+    page_right = page.rect.x1 - PDF_PAGE_MARGIN
+    inline_left = _next_inline_content_left(page, source_rect)
+    right_limit = min(page_right, inline_left - 6 if inline_left is not None else page_right)
+    right_limit = max(source_rect.x1, right_limit)
+    x0 = max(page_left, source_rect.x0)
+    page_bottom = page.rect.y1 - PDF_PAGE_MARGIN
+    next_top = _next_content_top(page, source_rect=source_rect, right_edge=right_limit)
+    bottom = min(page_bottom, next_top - 4 if next_top is not None else page_bottom)
+    bottom = max(source_rect.y1 + 1, bottom)
+    return fitz.Rect(x0, source_rect.y0, right_limit, bottom)
 
 
 def _auto_field(
@@ -651,8 +1078,11 @@ def _auto_field(
     min_font_size: float = 9.0,
     transform: str = "",
     layout_kind: str,
+    redact_rects: list[dict[str, float]] | None = None,
+    rich_runs: list[dict[str, Any]] | None = None,
+    rich_html: str = "",
 ) -> dict[str, Any]:
-    return {
+    field = {
         "id": field_id,
         "page": page_index,
         "variable": variable,
@@ -679,6 +1109,13 @@ def _auto_field(
         "transform": transform,
         "layout_kind": layout_kind,
     }
+    if redact_rects:
+        field["redact_rects"] = redact_rects
+    if rich_runs:
+        field["rich_runs"] = rich_runs
+    if rich_html:
+        field["rich_html"] = rich_html
+    return field
 
 
 def build_auto_layout_state(
@@ -709,18 +1146,19 @@ def build_auto_layout_state(
                 line_hits = [
                     (hit_index, hit)
                     for hit_index, hit in enumerate(hits)
-                    if hit.get("line") is line
+                    if hit_index not in claimed and hit.get("line") is line
                 ]
                 if not line_hits:
                     continue
-                line_text = str(line.get("text") or "").strip()
+                line_text = (
+                    str(line.get("text") or "")
+                    .replace("\u00a0", " ")
+                    .replace("\u00ad", "-")
+                    .strip()
+                )
                 line_rect = fitz.Rect(line["rect"])
                 placeholder_names = [
-                    re.sub(
-                        r"\s+",
-                        " ",
-                        str(hit["placeholder"].name).replace("\u00a0", " "),
-                    ).strip()
+                    _normalized_variable_name(hit["placeholder"].name)
                     for _, hit in line_hits
                 ]
                 resolved_line = _render_value_template(line_text, context)
@@ -741,36 +1179,92 @@ def build_auto_layout_state(
 
                 if is_greeting:
                     bold = False
-                    desired_width = max(
-                        line_rect.width,
-                        _text_width(resolved_line, font_size=font_size, bold=bold) + 8,
-                    )
-                    desired_width = min(page.rect.width - PDF_PAGE_MARGIN * 2, desired_width)
-                    center_x = (line_rect.x0 + line_rect.x1) / 2
-                    x0 = max(PDF_PAGE_MARGIN, center_x - desired_width / 2)
-                    x0 = min(x0, page.rect.x1 - PDF_PAGE_MARGIN - desired_width)
-                    textbox = fitz.Rect(
-                        x0,
-                        line_rect.y0 - 0.25,
-                        x0 + desired_width,
-                        line_rect.y0 + max(line_rect.height + 2, font_size * 1.7),
+                    textbox = _adaptive_line_textbox(
+                        page,
+                        line_rect,
+                        resolved_line,
+                        font_size=font_size,
+                        min_font_size=10.0,
+                        bold=bold,
+                        align=1,
                     )
                     kind = "greeting"
                     label = "Обращение"
                     align = 1
                     changes.append("Обращение собрано в одну строку без уменьшения имени.")
                 else:
+                    is_document_header = _is_document_header_line(placeholder_names)
+                    if not is_document_header:
+                        block_lines = list(line.get("block_lines") or [line])
+                        block_index = line.get("block_index")
+                        block_hits = [
+                            (hit_index, hit)
+                            for hit_index, hit in enumerate(hits)
+                            if hit_index not in claimed
+                            and (
+                                hit.get("line") is not None
+                                and hit["line"].get("block_index") == block_index
+                            )
+                        ]
+                        block_placeholder_names = list(
+                            dict.fromkeys(
+                                _normalized_variable_name(hit["placeholder"].name)
+                                for _, hit in block_hits
+                            )
+                        )
+                        source_block_text = _block_source_text(block_lines)
+                        resolved_block_text = _render_value_template(source_block_text, context)
+                        source_block_rect = _block_rect(block_lines)
+                        rich_runs = _block_rich_runs(block_lines)
+                        rich_html = resolve_layout_field_rich_html(
+                            {"rich_runs": rich_runs},
+                            context,
+                        )
+                        min_font_size = max(8.0, min(9.0, font_size))
+                        fields.append(
+                            _auto_field(
+                                field_id=f"auto-p{page_index}-block-{block_index}",
+                                page_index=page_index,
+                                variable="__composite__",
+                                variables=block_placeholder_names,
+                                label=f"Абзац «{source_block_text}»",
+                                source_text=source_block_text,
+                                value=resolved_block_text,
+                                value_template=source_block_text,
+                                redact_rect=source_block_rect,
+                                redact_rects=_safe_redaction_rects(block_lines, page.rect),
+                                textbox=_adaptive_block_textbox(page, source_block_rect),
+                                font_size=font_size,
+                                bold=False,
+                                align=0,
+                                text_color=text_color,
+                                min_font_size=min_font_size,
+                                layout_kind="text_block",
+                                rich_runs=rich_runs,
+                                rich_html=rich_html,
+                            )
+                        )
+                        changes.append(
+                            "Абзацы с несколькими переменными пересобраны целиком с сохранением статического текста."
+                        )
+                        claimed.update(hit_index for hit_index, _ in block_hits)
+                        continue
+
                     bold = True
-                    textbox = fitz.Rect(
-                        line_rect.x0,
-                        line_rect.y0,
-                        line_rect.x1,
-                        line_rect.y0 + max(line_rect.height, font_size * 1.45),
+                    min_font_size = 10.0
+                    textbox = _adaptive_line_textbox(
+                        page,
+                        line_rect,
+                        resolved_line,
+                        font_size=font_size,
+                        min_font_size=min_font_size,
+                        bold=bold,
+                        align=0,
                     )
-                    kind = "composite_line"
-                    label = "Номер и дата"
+                    kind = "document_header"
+                    label = f"Строка «{line_text}»"
                     align = 0
-                    changes.append("Связанные поля номера и даты объединены в один блок.")
+                    changes.append("Номер документа и дата объединены в один адаптивный блок.")
 
                 fields.append(
                     _auto_field(
@@ -783,12 +1277,17 @@ def build_auto_layout_state(
                         value=resolved_line,
                         value_template=line_text,
                         redact_rect=line_rect,
+                        redact_rects=_safe_redaction_rects([line], page.rect),
                         textbox=textbox,
                         font_size=font_size,
                         bold=bold,
                         align=align,
                         text_color=text_color,
-                        min_font_size=10.0,
+                        min_font_size=(
+                            10.0
+                            if is_greeting or kind == "document_header"
+                            else max(8.0, min(9.0, font_size))
+                        ),
                         layout_kind=kind,
                     )
                 )
@@ -845,6 +1344,7 @@ def build_auto_layout_state(
                         value=value,
                         value_template="",
                         redact_rect=rect,
+                        redact_rects=_safe_placeholder_redaction_rects(line, rect, page.rect),
                         textbox=textbox,
                         font_size=font_size,
                         bold=bold,
@@ -883,7 +1383,12 @@ def render_pdf_with_discovered_placeholders(
     if corporate_layout:
         state = build_auto_layout_state(data, placeholders, context)
         if state.get("fields"):
-            return render_pdf(data, state)
+            try:
+                return render_pdf(data, state)
+            except PdfOverlayLayoutError:
+                # Auto-layout is an enhancement. A geometry guess must never block
+                # the original placeholder substitution used for delivery.
+                pass
 
     document = fitz.open(stream=data, filetype="pdf")
     fields: list[dict[str, Any]] = []
@@ -891,6 +1396,7 @@ def render_pdf_with_discovered_placeholders(
         for page_index in range(document.page_count):
             page = document[page_index]
             page_text = page.get_text("text")
+            lines = _page_text_lines(page)
             claimed_source_rects: list[fitz.Rect] = []
             ordered_placeholders = sorted(
                 placeholders,
@@ -908,6 +1414,11 @@ def render_pdf_with_discovered_placeholders(
                     ):
                         continue
                     font_size = round(max(8.0, min(18.0, rect.height * 0.85)), 2)
+                    line = _line_for_rect(lines, rect) or {
+                        "spans": [],
+                        "text": placeholder.token,
+                        "rect": rect,
+                    }
                     textbox = _discovered_textbox_rect(
                         page,
                         rect,
@@ -926,6 +1437,11 @@ def render_pdf_with_discovered_placeholders(
                             "redact_y": round(rect.y0, 3),
                             "redact_width": round(rect.width, 3),
                             "redact_height": round(rect.height, 3),
+                            "redact_rects": _safe_placeholder_redaction_rects(
+                                line,
+                                rect,
+                                page.rect,
+                            ),
                             "x": round(textbox.x0, 3),
                             "y": round(textbox.y0, 3),
                             "width": round(textbox.width, 3),

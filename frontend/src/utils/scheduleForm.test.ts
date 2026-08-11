@@ -3,6 +3,7 @@ import {
   formValuesToSchedulePayload,
   intervalFromSeconds,
   intervalToSeconds,
+  parseScheduleDateTime,
   scheduleToFormValues,
 } from './scheduleForm';
 import dayjs from 'dayjs';
@@ -33,6 +34,41 @@ describe('scheduleForm', () => {
       send_immediately: false,
       interval_seconds: 86400,
     });
+  });
+
+  it.each([
+    ['10.08.2027 13:59', '10.08.2027 13:59'],
+    ['08.10.2027 13:59', '08.10.2027 13:59'],
+    ['13.08.2027 13:59', '13.08.2027 13:59'],
+  ])('parses manual date input as day, month, year: %s', (input, expected) => {
+    expect(parseScheduleDateTime(input)?.format('DD.MM.YYYY HH:mm')).toBe(expected);
+  });
+
+  it('accepts ISO dates from the API and rejects ambiguous unsupported strings', () => {
+    expect(parseScheduleDateTime('2027-08-13T10:59:00.000Z')?.isValid()).toBe(true);
+    expect(parseScheduleDateTime('08/13/2027 13:59')).toBeNull();
+  });
+
+  it.each([1, 7, 24])('accepts a positive batch size below the old default: %s', (batchSize) => {
+    const payload = formValuesToSchedulePayload({
+      batch_size: batchSize,
+      start_at: dayjs().add(1, 'day'),
+      interval_value: 1,
+      interval_unit: 'hours',
+    });
+
+    expect(payload?.batch_size).toBe(batchSize);
+  });
+
+  it.each([undefined, 0, -1, 1.5])('does not build a payload for invalid batch size: %s', (batchSize) => {
+    const payload = formValuesToSchedulePayload({
+      batch_size: batchSize,
+      start_at: dayjs().add(1, 'day'),
+      interval_value: 1,
+      interval_unit: 'hours',
+    });
+
+    expect(payload).toBeNull();
   });
 
   it('clamps past start_at to now in payload', () => {

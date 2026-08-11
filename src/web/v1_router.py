@@ -113,7 +113,7 @@ class ScheduleBody(BaseModel):
     timezone: str | None = None
     weekdays: list[int] | None = None
     time_windows: list[dict[str, Any]] | None = None
-    batch_size: int | None = None
+    batch_size: int | None = Field(default=None, ge=1)
     interval_seconds: int | None = None
     pause_between_messages_ms: int | None = None
     max_per_hour: int | None = None
@@ -124,7 +124,7 @@ class ScheduleBody(BaseModel):
 
 class SchedulePreviewBody(BaseModel):
     recipient_count: int = 0
-    batch_size: int = 25
+    batch_size: int = Field(default=25, ge=1)
     interval_seconds: int = 300
     start_at: str | None = None
     send_immediately: bool = True
@@ -1352,15 +1352,15 @@ def create_v1_router(*, check_auth: Any) -> APIRouter:
             return _ok(result)
 
         from src.campaigns.batch_worker import _send_delivery_message
-        from src.campaigns.recipient_email_service import validate_delivery_email
+        from src.generator.delivery.email_validation import validate_email_address
         from src.infra.db import session_scope
         from src.infra.models import MailTemplate, TemplateVersion
 
-        email_validation = validate_delivery_email(body.to_email)
+        email_validation = validate_email_address(body.to_email, mode="syntax")
         if not email_validation.is_valid:
             raise HTTPException(
                 status_code=400,
-                detail=email_validation.reason or "Email не прошёл проверку SMTP.BZ.",
+                detail=email_validation.reason or "Некорректный email для тестового письма.",
             )
         delivery_email = email_validation.normalized_email
 

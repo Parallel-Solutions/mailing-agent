@@ -12,11 +12,13 @@ import { RecipientsTab } from './tabs/RecipientsTab';
 import { CampaignAnalyticsTab } from './tabs/CampaignAnalyticsTab';
 import { CampaignFullAnalyticsTab } from './fullAnalytics/CampaignFullAnalyticsTab';
 import { MarketingConsentsTab } from './tabs/MarketingConsentsTab';
+import { ExternalSpendTab } from './tabs/ExternalSpendTab';
 import { CampaignsListPage } from '@/pages/CampaignsListPage';
 import { AudiencesPage } from '@/pages/AudiencesPage';
 import { asRecordArray } from './utils';
 import { formatLocalDateTime } from '@/utils/dateTime';
 import { managerDashboardParams, managerDashboardQueryKey } from './dashboardQuery';
+import { usePermissions } from '@/hooks/usePermissions';
 
 export function StatisticsPage() {
   return (
@@ -42,6 +44,7 @@ function StatisticsPageInner() {
     setError,
     openFiltersModal,
   } = useStatistics();
+  const { isAppAdmin } = usePermissions();
 
   const campaignsQuery = useQuery({
     queryKey: ['stats-campaigns-shell', refreshNonce],
@@ -169,7 +172,7 @@ function StatisticsPageInner() {
       <Tabs
         activeKey={tab}
         onChange={(key) => setTab(key as typeof tab)}
-        items={STATS_TABS.map((item) => ({
+        items={STATS_TABS.filter((item) => item.key !== 'external-spend' || isAppAdmin).map((item) => ({
           key: item.key,
           label: item.label,
           children: <TabBody tabKey={item.key} />,
@@ -211,6 +214,9 @@ function TabBody({ tabKey }: { tabKey: string }) {
       break;
     case 'marketing-consents':
       body = <MarketingConsentsTab />;
+      break;
+    case 'external-spend':
+      body = <ExternalSpendTab />;
       break;
     default:
       body = null;

@@ -770,11 +770,11 @@ def test_connection(
                 }
         else:
             from src.campaigns.batch_worker import _send_delivery_message
-            from src.campaigns.recipient_email_service import validate_delivery_email
+            from src.generator.delivery.email_validation import validate_email_address
 
-            email_validation = validate_delivery_email(connection.email)
+            email_validation = validate_email_address(connection.email, mode="syntax")
             if not email_validation.is_valid:
-                raise ValueError(email_validation.reason or "Email не прошёл проверку SMTP.BZ.")
+                raise ValueError(email_validation.reason or "Некорректный email подключения.")
 
             _send_delivery_message(
                 connection_id=connection.id,

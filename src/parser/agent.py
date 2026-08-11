@@ -197,6 +197,7 @@ def chat(message: str, job_id: Optional[str] = None) -> dict:
         result = run_agent_task(
             task=message, chat_history=[],
             uploaded_file_path=uploaded_file, mode="Автоматический",
+            job_id=job_id,
         )
         reply_text, success = result.text, result.success
 

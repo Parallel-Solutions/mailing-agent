@@ -25,6 +25,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
@@ -46,6 +47,12 @@ try:
     from src.parser_new.progress import emit as _emit
 except Exception:
     def _emit(*a, **k):
+        pass
+
+try:
+    from src.infra.spend_ledger import record_service_call
+except Exception:
+    def record_service_call(*a, **k):
         pass
 
 def _label() -> str:
@@ -320,6 +327,24 @@ _yandex_sdk = None
 _yandex_search = None
 
 
+class _TrackedYandexSearch:
+    """Wraps the SDK's .run() so every caller of the shared client (this
+    module's own two call sites, plus email_lookup.py and email_tool.py which
+    import this same factory) gets logged to the spend ledger automatically —
+    without having to instrument each call site by hand."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def run(self, *args: Any, **kwargs: Any) -> Any:
+        result = self._inner.run(*args, **kwargs)
+        record_service_call(service="yandex", operation="search")
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 def _get_yandex_search():
     global _yandex_sdk, _yandex_search
     if _yandex_search is None:
@@ -328,7 +353,7 @@ def _get_yandex_search():
             folder_id=config.YANDEX_FOLDER_ID,
             auth=config.YANDEX_API_KEY,
         )
-        _yandex_search = _yandex_sdk.search_api.web("RU", groups_on_page=5)
+        _yandex_search = _TrackedYandexSearch(_yandex_sdk.search_api.web("RU", groups_on_page=5))
     return _yandex_search
 
 
@@ -485,6 +510,7 @@ def fetch_checko_by_inn(inn: str) -> dict | None:
             params={"key": config.CHECKO_API_KEY, "inn": inn},
             timeout=15,
         )
+        record_service_call(service="checko", operation="lookup", metadata={"endpoint": "company"})
         data = resp.json()
         if data.get("meta", {}).get("status") == "error":
             return None
@@ -553,6 +579,7 @@ def search_checko_by_name(rec: MORecord) -> str | None:
             },
             timeout=15,
         )
+        record_service_call(service="checko", operation="lookup", metadata={"endpoint": "search"})
         data = resp.json()
         records = data.get("data", {}).get("Записи", []) or []
         admin_kw = ["администрац", "сельсовет", "поселени", "исполнител", "комитет"]

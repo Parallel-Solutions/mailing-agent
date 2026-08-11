@@ -26,9 +26,21 @@ class SendGuardTests(unittest.TestCase):
         resume_sending()
         self.assertFalse(is_sending_paused())
 
-    def test_complaint_threshold_triggers_pause(self) -> None:
+    def test_crossing_complaint_threshold_no_longer_auto_pauses(self) -> None:
+        """The blanket account-wide auto-pause was removed as a design
+        mistake — channel_guard.py's per-connection guard already isolates
+        and self-heals on that connection's own error spikes. Crossing the
+        threshold must still update the visible counters/rate (still used
+        by /api/sender/status) but must never call pause_sending()."""
         from src.utils.config import settings
-        from src.generator.delivery.send_guard import evaluate_thresholds, is_sending_paused, record_complaint, record_sent, resume_sending
+        from src.generator.delivery.send_guard import (
+            evaluate_thresholds,
+            get_send_guard_status,
+            is_sending_paused,
+            record_complaint,
+            record_sent,
+            resume_sending,
+        )
 
         resume_sending()
         original_min = settings.send_guard_min_samples
@@ -40,7 +52,13 @@ class SendGuardTests(unittest.TestCase):
                 record_sent()
             record_complaint()
             evaluate_thresholds()
-            self.assertTrue(is_sending_paused())
+            self.assertFalse(is_sending_paused())
+            # Counters are process-wide sliding windows (Redis or in-memory
+            # fallback), shared across the whole test run rather than reset
+            # per test — assert they still moved, not exact totals.
+            status = get_send_guard_status()
+            self.assertGreaterEqual(status["sent"], 5)
+            self.assertGreaterEqual(status["complaints"], 1)
         finally:
             settings.send_guard_min_samples = original_min
             settings.send_guard_complaint_rate_threshold = original_threshold

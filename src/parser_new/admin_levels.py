@@ -31,6 +31,39 @@ except ImportError:  # запуск из каталога parser_new
     from logger import logger
     from tools.oktmo_tool import resolve_region
 
+try:
+    from src.infra.llm_pricing import LlmUsage
+    from src.infra.spend_ledger import record_llm_usage
+except Exception:  # запуск из каталога parser_new, вне приложения — без учёта расходов
+    LlmUsage = None  # type: ignore
+
+    def record_llm_usage(*args, **kwargs) -> None:
+        pass
+
+
+def _record_langchain_usage(response, *, operation: str) -> None:
+    """response — AIMessage от ChatOpenAI.invoke(); .usage_metadata это
+    {"input_tokens", "output_tokens", "total_tokens"} (langchain-core), не
+    .usage.prompt_tokens как у обычного OpenAI SDK-ответа."""
+    if LlmUsage is None:
+        return
+    usage = getattr(response, "usage_metadata", None)
+    if not usage:
+        return
+    try:
+        record_llm_usage(
+            service="openai",
+            model=str(config.AGENT_MODEL or ""),
+            operation=operation,
+            usage=LlmUsage(
+                prompt_tokens=int(usage.get("input_tokens") or 0),
+                completion_tokens=int(usage.get("output_tokens") or 0),
+                total_tokens=int(usage.get("total_tokens") or 0),
+            ),
+        )
+    except Exception:
+        pass
+
 
 # колонки (как в batch_processor.COL)
 COL_SUB_RF = 2     # B — субъект
@@ -169,6 +202,7 @@ def _parse_batch(names: list[str]) -> list[dict]:
         SystemMessage(content=_SYSTEM),
         HumanMessage(content=example + "\n\n" + task),
     ])
+    _record_langchain_usage(resp, operation="admin_levels_split")
     content = resp.content if isinstance(resp.content, str) else str(resp.content)
     data = _extract_json_array(content)
     if not isinstance(data, list) or len(data) != len(names):

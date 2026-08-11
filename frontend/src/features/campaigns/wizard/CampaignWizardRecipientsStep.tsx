@@ -7,6 +7,7 @@ import type { Audience, Campaign, Recipient } from '@/api/types';
 import { emailValidationReason } from '@/utils/emailValidation';
 import { emailValidationRefetchInterval } from '@/utils/emailValidationPolling';
 import { statusLabel } from '@/utils/presentation';
+import { campaignEmailValidationQueryKey } from '../campaignQueryUtils';
 
 type Props = {
   campaignId?: string;
@@ -35,16 +36,18 @@ export function CampaignWizardRecipientsStep({
 }: Props) {
   const [importing, setImporting] = useState(false);
   const queryClient = useQueryClient();
+  const validationQueryKey = campaignEmailValidationQueryKey(campaignId || '');
   const validationQuery = useQuery({
-    queryKey: ['campaign-email-validation', campaignId],
+    queryKey: validationQueryKey,
     queryFn: () => campaignsApi.emailValidation(campaignId!),
     enabled: Boolean(campaignId),
+    refetchOnMount: 'always',
     refetchInterval: (query) => emailValidationRefetchInterval(query.state.data?.status),
   });
   const startValidation = useMutation({
     mutationFn: () => campaignsApi.startEmailValidation(campaignId!),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['campaign-email-validation', campaignId] });
+    onSuccess: (run) => {
+      queryClient.setQueryData(validationQueryKey, run);
     },
   });
   const validation = validationQuery.data;
@@ -107,18 +110,19 @@ export function CampaignWizardRecipientsStep({
           type={
             validation.status === 'failed'
               ? 'error'
-              : validation.status === 'completed' && validation.unknown_count === 0
-                ? 'success'
+              : validation.status === 'completed'
+                ? validation.invalid_count > 0 ? 'warning' : 'success'
                 : 'info'
           }
-          message="Предварительная проверка SMTP.BZ"
+          message="Дополнительная проверка SMTP.BZ"
           description={(
             <Space direction="vertical" style={{ width: '100%' }}>
               <Progress percent={validation.progress_percent} size="small" />
               <span>
-                Проверено: {validation.processed_count}/{validation.total_count}. Валидных: {validation.valid_count},
-                невалидных: {validation.invalid_count}, требуют повтора: {validation.unknown_count}.
+                Проверено: {validation.processed_count}/{validation.total_count}. Подтверждено: {validation.valid_count},
+                SMTP.BZ считает недоставляемыми: {validation.invalid_count}, не подтверждено: {validation.unknown_count}.
               </span>
+              <span>Результаты SMTP.BZ не исключают адреса автоматически; обязательными остаются синтаксис и DNS.</span>
               {validation.error ? <span>{validation.error}</span> : null}
             </Space>
           )}
@@ -128,7 +132,7 @@ export function CampaignWizardRecipientsStep({
               loading={startValidation.isPending}
               onClick={() => startValidation.mutate()}
             >
-              {validation.status === 'not_started' ? 'Запустить проверку' : 'Проверить повторно'}
+              {validation.status === 'not_started' ? 'Проверить через SMTP.BZ' : 'Проверить повторно'}
             </Button>
           )}
         />

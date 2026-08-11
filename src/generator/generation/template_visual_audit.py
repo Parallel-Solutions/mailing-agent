@@ -17,6 +17,8 @@ from src.generator.generation.config_generator import (
     TEMPLATE_VISUAL_AUDIT_MODEL,
 )
 from src.generator.generation.pdf_quality import validate_kp_pdf
+from src.infra.llm_pricing import usage_from_response
+from src.infra.spend_ledger import record_llm_usage
 
 try:
     from src.utils.logger import logger
@@ -296,6 +298,12 @@ def call_template_visual_audit_ai(*, context: dict[str, Any], image_data_url: st
         logger.warning("template_visual_audit_ai_failed", error=str(exc))
         return {"status": "error", "error": str(exc)}
 
+    record_llm_usage(
+        service="openai",
+        model=TEMPLATE_VISUAL_AUDIT_MODEL,
+        operation="template_visual_audit",
+        usage=usage_from_response(response, image_count=1 if image_data_url else 0),
+    )
     raw = str(response.choices[0].message.content if response.choices else "").strip()
     payload = extract_json_object(raw) or {}
     payload.setdefault("status", "ok" if payload else "bad_response")

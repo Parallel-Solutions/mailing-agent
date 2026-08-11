@@ -1,7 +1,13 @@
 import dayjs, { type Dayjs } from 'dayjs';
+import customParseFormat from 'dayjs/plugin/customParseFormat';
 import { formatLocalDateTime } from '@/utils/dateTime';
 
+dayjs.extend(customParseFormat);
+
 export type IntervalUnit = 'hours' | 'days';
+export const SCHEDULE_DATE_TIME_FORMAT = 'DD.MM.YYYY HH:mm';
+
+const ISO_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T/;
 
 export type ScheduleFormValues = {
   batch_size: number;
@@ -9,6 +15,24 @@ export type ScheduleFormValues = {
   interval_value: number;
   interval_unit: IntervalUnit;
 };
+
+export function isPositiveInteger(value: unknown): boolean {
+  if (value === null || value === undefined || value === '') return false;
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0;
+}
+
+export function parseScheduleDateTime(value: Dayjs | string | null | undefined): Dayjs | null {
+  if (dayjs.isDayjs(value)) return value.isValid() ? value : null;
+  if (typeof value !== 'string') return null;
+
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const parsed = ISO_DATE_TIME_PATTERN.test(normalized)
+    ? dayjs(normalized)
+    : dayjs(normalized, SCHEDULE_DATE_TIME_FORMAT, true);
+  return parsed.isValid() ? parsed : null;
+}
 
 export function intervalFromSeconds(seconds: number): {
   interval_value: number;
@@ -58,12 +82,12 @@ export function formValuesToSchedulePayload(values: {
   send_immediately: false;
   interval_seconds: number;
 } | null {
-  if (values.start_at == null || values.start_at === '') return null;
-  const start = dayjs(values.start_at);
-  if (!start.isValid()) return null;
+  if (!isPositiveInteger(values.batch_size)) return null;
+  const start = parseScheduleDateTime(values.start_at);
+  if (!start) return null;
   const effective = start.isBefore(dayjs()) ? dayjs() : start;
   return {
-    batch_size: Math.max(1, Math.floor(Number(values.batch_size) || 25)),
+    batch_size: Number(values.batch_size),
     start_at: effective.toISOString(),
     send_immediately: false,
     interval_seconds: intervalToSeconds(

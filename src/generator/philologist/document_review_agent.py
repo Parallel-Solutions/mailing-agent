@@ -19,6 +19,8 @@ try:
         _resolve_openai_base_url,
     )
     from src.generator.knowledge.philology_knowledge import find_relevant_rules, format_rules_context
+    from src.infra.llm_pricing import usage_from_response
+    from src.infra.spend_ledger import record_llm_usage
 except ImportError:  # pragma: no cover
     from campaigns.text_local_review import review_email_text
     from generator.generation.config_generator import DOCUMENT_REVIEW_MODEL, ENABLE_DOCUMENT_REVIEW_AI
@@ -28,6 +30,8 @@ except ImportError:  # pragma: no cover
         _resolve_openai_base_url,
     )
     from generator.knowledge.philology_knowledge import find_relevant_rules, format_rules_context
+    from infra.llm_pricing import usage_from_response
+    from infra.spend_ledger import record_llm_usage
 
 try:
     from openai import OpenAI  # type: ignore
@@ -556,6 +560,12 @@ def _run_ai_review(blocks: list[tuple[str, str]], *, ai_enabled: bool = True) ->
         request_kwargs["response_format"] = {"type": "json_object"}
 
     response = client.chat.completions.create(**request_kwargs)
+    record_llm_usage(
+        service="openai",
+        model=DOCUMENT_REVIEW_MODEL,
+        operation="document_review",
+        usage=usage_from_response(response),
+    )
     content = response.choices[0].message.content or "{}"
     parsed = json.loads(_extract_json_payload(content))
     issues = parsed.get("issues") if isinstance(parsed, dict) else []

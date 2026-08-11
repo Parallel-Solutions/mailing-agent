@@ -448,13 +448,18 @@ def send_chain_node_email(
         delivery_email = active_test_email or delivery_email_override
         if delivery_email:
             from src.campaigns.recipient_email_service import validate_delivery_email
+            from src.generator.delivery.email_validation import validate_email_address
 
-            validation_result = validate_delivery_email(
-                delivery_email,
-                owner_username="" if active_test_email else camp.owner_username,
+            validation_result = (
+                validate_email_address(delivery_email, mode="syntax")
+                if active_test_email
+                else validate_delivery_email(
+                    delivery_email,
+                    owner_username=camp.owner_username,
+                )
             )
             if not validation_result.is_valid:
-                raise ValueError(validation_result.reason or "Email не прошёл проверку SMTP.BZ.")
+                raise ValueError(validation_result.reason or "Некорректный email получателя.")
             delivery_email = validation_result.normalized_email
             if not active_test_email:
                 from src.campaigns.recipient_email_service import persist_delivery_email_state

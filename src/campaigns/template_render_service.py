@@ -140,8 +140,11 @@ def _render_cache_fingerprint(
     recipient: CampaignRecipient,
     campaign: Campaign,
 ) -> str:
+    from src.campaigns.pdf_overlay_service import PDF_AUTO_LAYOUT_VERSION
+
     payload = {
         "renderer_version": DOCUMENT_RENDERER_VERSION,
+        "pdf_auto_layout_version": PDF_AUTO_LAYOUT_VERSION,
         "template": {
             "id": str(template.id),
             "version_id": str(version.id),
@@ -174,6 +177,8 @@ def _render_cache_fingerprint(
 
 
 def _signature(campaign: Campaign, template_ids: list[str]) -> str:
+    from src.campaigns.pdf_overlay_service import PDF_AUTO_LAYOUT_VERSION
+
     parts: list[dict[str, Any]] = []
     for template_id in sorted(template_ids):
         loaded = _load_template(template_id)
@@ -195,6 +200,7 @@ def _signature(campaign: Campaign, template_ids: list[str]) -> str:
         "campaign_id": campaign.id,
         "work_type": campaign.work_type or "",
         "renderer_version": DOCUMENT_RENDERER_VERSION,
+        "pdf_auto_layout_version": PDF_AUTO_LAYOUT_VERSION,
         "templates": parts,
         "mapping": dict((campaign.draft_payload or {}).get("variable_mapping") or {}),
     }
@@ -203,7 +209,31 @@ def _signature(campaign: Campaign, template_ids: list[str]) -> str:
 
 
 def _render_pdf_overlay(source_data: bytes, editor_state: dict[str, Any], context: dict[str, Any]) -> bytes:
-    from src.campaigns.pdf_overlay_service import render_pdf, resolve_layout_field_value
+    from src.campaigns.pdf_overlay_service import (
+        PDF_AUTO_LAYOUT_VERSION,
+        PdfOverlayLayoutError,
+        render_pdf,
+        render_pdf_with_discovered_placeholders,
+        resolve_layout_field_rich_html,
+        resolve_layout_field_value,
+    )
+
+    auto_layout = dict(editor_state.get("auto_layout") or {})
+    if auto_layout:
+        import fitz
+
+        document = fitz.open(stream=source_data, filetype="pdf")
+        try:
+            source_text = "\n".join(page.get_text("text") for page in document)
+        finally:
+            document.close()
+        placeholders = discover_placeholders(source_text)
+        if str(auto_layout.get("version") or "") != PDF_AUTO_LAYOUT_VERSION:
+            return render_pdf_with_discovered_placeholders(
+                source_data,
+                placeholders,
+                context,
+            )
 
     state = deepcopy(editor_state)
     for field in state.get("fields") or []:
@@ -214,7 +244,20 @@ def _render_pdf_overlay(source_data: bytes, editor_state: dict[str, Any], contex
         )
         if is_dynamic or value:
             field["value"] = value
-    return render_pdf(source_data, state)
+        rich_html = resolve_layout_field_rich_html(field, context)
+        if rich_html:
+            field["rich_html"] = rich_html
+    try:
+        return render_pdf(source_data, state)
+    except PdfOverlayLayoutError:
+        if not auto_layout:
+            raise
+        return render_pdf_with_discovered_placeholders(
+            source_data,
+            placeholders,
+            context,
+            corporate_layout=False,
+        )
 
 
 def _convert_docx_to_pdf(

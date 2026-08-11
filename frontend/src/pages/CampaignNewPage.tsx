@@ -68,6 +68,7 @@ function draftBasicsFields(draft: Partial<Campaign>) {
 }
 
 const CAMPAIGN_MODAL_KEYS = ['modal', 'fix_step', 'preview_node'] as const;
+const SCHEDULE_FORM_FIELDS = ['batch_size', 'start_at', 'interval_value', 'interval_unit'] as const;
 
 const ONBOARDING_CAMPAIGN_STEPS: Record<string, number> = {
   'campaign-basics': 0,
@@ -147,6 +148,10 @@ export function CampaignNewPage() {
   const companyAutoSetRef = useRef<string | null>(null);
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistRequestRef = useRef(0);
+  const schedulePersistQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const schedulePersistRequestRef = useRef(0);
+  const schedulePendingWritesRef = useRef(0);
+  const scheduleHydratedIdRef = useRef<string | null>(null);
   const suppressAutosaveRef = useRef(false);
   const activeOnboardingStep = useActiveOnboardingStep();
 
@@ -392,6 +397,7 @@ export function CampaignNewPage() {
       invalidateCampaignDerivedData(queryClient, campaignId, {
         includeMapping: true,
         includeValidation: true,
+        includeEmailValidation: true,
       });
     },
     [queryClient],
@@ -459,22 +465,62 @@ export function CampaignNewPage() {
     [acknowledgeDraftPatch, id, replaceDraft, setSaveState],
   );
 
+  const persistSchedule = useCallback(
+    async (values: Parameters<typeof formValuesToSchedulePayload>[0]) => {
+      const requestId = ++schedulePersistRequestRef.current;
+      if (!id) return;
+      const payload = formValuesToSchedulePayload(values);
+      if (!payload) return;
+
+      schedulePendingWritesRef.current += 1;
+      const request = schedulePersistQueueRef.current.then(async () => {
+        await queryClient.cancelQueries({ queryKey: ['campaign-schedule', id] });
+        return campaignsApi.putSchedule(id, payload);
+      });
+      schedulePersistQueueRef.current = request.then(() => undefined, () => undefined);
+      try {
+        const updated = await request;
+        if (
+          requestId !== schedulePersistRequestRef.current
+          || useCampaignDraftStore.getState().campaignId !== id
+        ) {
+          return;
+        }
+        scheduleForm.setFields(
+          SCHEDULE_FORM_FIELDS.map((name) => ({ name, touched: false })),
+        );
+        queryClient.setQueryData(['campaign-schedule', id], updated);
+      } finally {
+        schedulePendingWritesRef.current = Math.max(
+          0,
+          schedulePendingWritesRef.current - 1,
+        );
+      }
+    },
+    [id, queryClient, scheduleForm],
+  );
+
   const flushPendingChanges = useCallback(async () => {
     if (debounceRef.current) {
       window.clearTimeout(debounceRef.current);
       debounceRef.current = null;
     }
-    await persistQueueRef.current;
+    await Promise.all([persistQueueRef.current, schedulePersistQueueRef.current]);
     const patch = useCampaignDraftStore.getState().pendingPatch;
     if (Object.keys(patch).length > 0) {
       await persist(patch);
     }
+    await schedulePersistQueueRef.current;
   }, [persist]);
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       const state = useCampaignDraftStore.getState();
-      if (Object.keys(state.pendingPatch).length === 0 && state.saveState !== 'saving') return;
+      if (
+        Object.keys(state.pendingPatch).length === 0
+        && state.saveState !== 'saving'
+        && schedulePendingWritesRef.current === 0
+      ) return;
       event.preventDefault();
       event.returnValue = '';
     };
@@ -564,7 +610,15 @@ export function CampaignNewPage() {
       scheduleSyncedIdRef.current = null;
     }
     const formValues = scheduleToFormValues(schedule);
-    scheduleForm.setFieldsValue(formValues);
+    const shouldHydrateForm =
+      scheduleHydratedIdRef.current !== id || !scheduleForm.isFieldsTouched();
+    if (shouldHydrateForm) {
+      scheduleForm.setFieldsValue(formValues);
+      scheduleForm.setFields(
+        SCHEDULE_FORM_FIELDS.map((name) => ({ name, touched: false })),
+      );
+      scheduleHydratedIdRef.current = id;
+    }
     const payload = formValuesToSchedulePayload(formValues);
     if (!payload) return;
     const needsSync =
@@ -577,10 +631,8 @@ export function CampaignNewPage() {
     }
     if (scheduleSyncedIdRef.current === id) return;
     scheduleSyncedIdRef.current = id;
-    void campaignsApi.putSchedule(id, payload).then(() => {
-      void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
-    });
-  }, [schedule, scheduleForm, id, queryClient]);
+    void persistSchedule(formValues);
+  }, [schedule, scheduleForm, id, persistSchedule]);
 
   const watchedSchedule = Form.useWatch([], scheduleForm);
   const schedulePreview = useMemo(() => {
@@ -630,11 +682,16 @@ export function CampaignNewPage() {
       hydratedIdRef.current = null;
       companyAutoSetRef.current = null;
       scheduleSyncedIdRef.current = null;
+      scheduleHydratedIdRef.current = null;
       basicsForm.resetFields();
       senderForm.resetFields();
       scheduleForm.resetFields();
       const scheduleData = await campaignsApi.getSchedule(id);
       scheduleForm.setFieldsValue(scheduleToFormValues(scheduleData));
+      scheduleForm.setFields(
+        SCHEDULE_FORM_FIELDS.map((name) => ({ name, touched: false })),
+      );
+      scheduleHydratedIdRef.current = id;
       basicsForm.setFieldsValue({ ...camp, ...draftBasicsFields(camp) });
       senderForm.setFieldsValue(camp);
       queryClient.removeQueries({ queryKey: campaignValidateQueryKey(id) });
@@ -656,6 +713,7 @@ export function CampaignNewPage() {
     }
     suppressAutosaveRef.current = true;
     try {
+      await schedulePersistQueueRef.current;
       await resetMutation.mutateAsync();
     } finally {
       suppressAutosaveRef.current = false;
@@ -697,11 +755,7 @@ export function CampaignNewPage() {
         await persist(senderForm.getFieldsValue());
       } else if (fixModalStep === 3) {
         await scheduleForm.validateFields();
-        const payload = formValuesToSchedulePayload(scheduleForm.getFieldsValue());
-        if (id && payload) {
-          await campaignsApi.putSchedule(id, payload);
-          void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
-        }
+        await persistSchedule(scheduleForm.getFieldsValue());
       }
       closeWizardModal();
       message.success('Изменения сохранены');
@@ -1054,13 +1108,7 @@ export function CampaignNewPage() {
                         ? Math.round(schedulePreview.estimatedDurationSeconds / 3600)
                         : undefined
                     }
-                    onValuesChange={async (values) => {
-                      if (!id) return;
-                      const payload = formValuesToSchedulePayload(values);
-                      if (!payload) return;
-                      await campaignsApi.putSchedule(id, payload);
-                      void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
-                    }}
+                    onValuesChange={persistSchedule}
                     />
                   </div>
                 ),
@@ -1357,13 +1405,7 @@ export function CampaignNewPage() {
           }}
           onOpenGenerate={() => openWizardModal('generate')}
           onOpenTopup={() => openWizardModal('topup')}
-          onScheduleChange={async (values) => {
-            if (!id) return;
-            const payload = formValuesToSchedulePayload(values);
-            if (!payload) return;
-            await campaignsApi.putSchedule(id, payload);
-            void queryClient.invalidateQueries({ queryKey: ['campaign-schedule', id] });
-          }}
+          onScheduleChange={persistSchedule}
           onOpenChainPreview={() => openWizardModal('preview')}
         />
       ) : null}

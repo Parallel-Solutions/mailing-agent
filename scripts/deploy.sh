@@ -218,7 +218,7 @@ bash ./scripts/backup-prod-data.sh
 echo "=== Ensure prod infra ==="
 MAILING_AGENT_IMAGE="$MAILING_AGENT_IMAGE" \
   ONLYOFFICE_IMAGE="$ONLYOFFICE_IMAGE" \
-  "${COMPOSE[@]}" up -d postgres minio redis gotenberg onlyoffice
+  "${COMPOSE[@]}" up -d postgres minio redis gotenberg onlyoffice autoheal
 
 if (( PULL_IMAGE )); then
   echo "Pulling image: $MAILING_AGENT_IMAGE"

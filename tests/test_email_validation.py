@@ -4,13 +4,24 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
+from src.campaigns.email_validation_service import cached_validation_result
 from src.generator.delivery import email_validation
+from src.utils.config import settings
 
 
 class SmtpBzEmailValidationTests(unittest.TestCase):
-    def test_empty_or_unknown_mode_defaults_to_smtpbz(self) -> None:
-        self.assertEqual(email_validation.normalize_email_validation_mode(""), "smtpbz")
-        self.assertEqual(email_validation.normalize_email_validation_mode("typo"), "smtpbz")
+    def setUp(self) -> None:
+        route_patch = patch.object(
+            email_validation,
+            "_domain_has_mail_route",
+            return_value=(True, "ok_mx", "", {"domain_check": "mx"}),
+        )
+        route_patch.start()
+        self.addCleanup(route_patch.stop)
+
+    def test_empty_or_unknown_mode_defaults_to_domain(self) -> None:
+        self.assertEqual(email_validation.normalize_email_validation_mode(""), "domain")
+        self.assertEqual(email_validation.normalize_email_validation_mode("typo"), "domain")
 
     def test_smtpbz_mode_accepts_valid_response(self) -> None:
         with patch.object(
@@ -36,7 +47,44 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
         self.assertEqual(sent_request.get_header("Authorization"), "token")
         self.assertIn("/check/email/User%40example.com", sent_request.full_url)
 
-    def test_smtpbz_mode_does_not_accept_top_level_result_without_delivery_confirmation(self) -> None:
+    def test_smtpbz_mode_rejects_missing_domain_before_external_request(self) -> None:
+        with patch.object(
+            email_validation,
+            "_domain_has_mail_route",
+            return_value=(
+                False,
+                "domain_not_found",
+                "Домен не найден.",
+                {"domain_check": "mx"},
+            ),
+        ), patch.object(email_validation, "_run_smtpbz_request") as request:
+            result = email_validation.validate_email_address(
+                "person@missing.example",
+                mode="smtpbz",
+                smtpbz_api_key="token",
+            )
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(result.reason_code, "domain_not_found")
+        request.assert_not_called()
+
+    def test_campaign_delivery_keeps_local_domain_check_when_smtpbz_is_disabled(self) -> None:
+        with patch.object(settings, "email_validation_mode", "domain"), patch.object(
+            email_validation,
+            "_domain_has_mail_route",
+            return_value=(
+                False,
+                "domain_not_found",
+                "Домен не найден.",
+                {"domain_check": "dns"},
+            ),
+        ):
+            result = cached_validation_result("owner", "person@missing.example")
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(result.reason_code, "domain_not_found")
+
+    def test_smtpbz_mode_allows_inconclusive_top_level_result_as_advisory(self) -> None:
         with patch.object(
             email_validation,
             "_domain_has_mail_route",
@@ -49,10 +97,11 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
                 timeout_seconds=2,
             )
 
-        self.assertFalse(result.is_valid)
+        self.assertTrue(result.is_valid)
         self.assertEqual(result.reason_code, "smtpbz_unknown")
+        self.assertTrue(result.details["smtpbz"]["advisory"])
 
-    def test_smtpbz_mode_rejects_nonexistent_mailbox(self) -> None:
+    def test_smtpbz_nonexistent_mailbox_result_remains_advisory(self) -> None:
         with patch.object(
             email_validation,
             "_domain_has_mail_route",
@@ -68,11 +117,11 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
                 smtpbz_api_key="token",
             )
 
-        self.assertFalse(result.is_valid)
+        self.assertTrue(result.is_valid)
         self.assertEqual(result.reason_code, "smtpbz_invalid")
         self.assertIn("SMTP.BZ", result.reason)
 
-    def test_smtpbz_mode_rejects_failed_delivery_check_despite_true_result(self) -> None:
+    def test_smtpbz_mode_keeps_failed_delivery_probe_as_unknown(self) -> None:
         with patch.object(
             email_validation,
             "_run_smtpbz_request",
@@ -88,11 +137,11 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
                 smtpbz_api_key="token",
             )
 
-        self.assertFalse(result.is_valid)
-        self.assertEqual(result.reason_code, "smtpbz_invalid")
-        self.assertIn("доставляемости", result.reason)
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.reason_code, "smtpbz_unknown")
+        self.assertIn("справочным", result.reason)
 
-    def test_smtpbz_mode_blocks_when_api_is_unavailable(self) -> None:
+    def test_smtpbz_mode_allows_when_api_is_unavailable(self) -> None:
         with patch.object(
             email_validation,
             "_domain_has_mail_route",
@@ -104,9 +153,10 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
                 smtpbz_api_key="token",
             )
 
-        self.assertFalse(result.is_valid)
+        self.assertTrue(result.is_valid)
         self.assertEqual(result.reason_code, "smtpbz_unavailable")
-        self.assertFalse(result.details["smtpbz"]["fail_open"])
+        self.assertFalse(result.details["smtpbz"]["configured_fail_open"])
+        self.assertTrue(result.details["smtpbz"]["advisory"])
         self.assertIn("SMTP.BZ", result.reason)
 
     def test_smtpbz_mode_can_fail_open_when_explicitly_enabled(self) -> None:
@@ -124,7 +174,7 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
 
         self.assertTrue(result.is_valid)
         self.assertEqual(result.reason_code, "smtpbz_unavailable")
-        self.assertTrue(result.details["smtpbz"]["fail_open"])
+        self.assertTrue(result.details["smtpbz"]["configured_fail_open"])
 
     def test_smtpbz_mode_does_not_call_api_without_key(self) -> None:
         with patch.object(
@@ -134,9 +184,10 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
         ), patch.object(email_validation, "_run_smtpbz_request") as request:
             result = email_validation.validate_email_address("person@example.com", mode="smtpbz")
 
-        self.assertFalse(result.is_valid)
+        self.assertTrue(result.is_valid)
         self.assertEqual(result.reason_code, "smtpbz_not_configured")
-        self.assertIn("API-ключ", result.reason)
+        self.assertIn("не настроен", result.reason)
+        self.assertTrue(result.details["smtpbz"]["advisory"])
         request.assert_not_called()
 
     def test_smtpbz_mode_can_fail_open_without_key_when_explicitly_enabled(self) -> None:
@@ -153,10 +204,10 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
 
         self.assertTrue(result.is_valid)
         self.assertEqual(result.reason_code, "smtpbz_not_configured")
-        self.assertTrue(result.details["smtpbz"]["fail_open"])
+        self.assertTrue(result.details["smtpbz"]["configured_fail_open"])
         request.assert_not_called()
 
-    def test_smtpbz_mode_blocks_rejected_api_key(self) -> None:
+    def test_smtpbz_mode_allows_rejected_api_key_as_advisory(self) -> None:
         error = HTTPError("https://api.smtp.bz/v1/check/email/test", 401, "Unauthorized", {}, None)
         error.raw_body = '{"message":"Unauthorized"}'
         with patch.object(email_validation, "_run_smtpbz_request", side_effect=error):
@@ -166,11 +217,11 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
                 smtpbz_api_key="bad-token",
             )
 
-        self.assertFalse(result.is_valid)
+        self.assertTrue(result.is_valid)
         self.assertEqual(result.reason_code, "smtpbz_unauthorized")
         self.assertIn("API-ключ", result.reason)
 
-    def test_smtpbz_mode_blocks_quota_or_request_error(self) -> None:
+    def test_smtpbz_mode_allows_quota_or_request_error_as_advisory(self) -> None:
         error = HTTPError("https://api.smtp.bz/v1/check/email/test", 400, "Bad Request", {}, None)
         error.raw_body = '{"status":"error","message":"Quota exceeded"}'
         with patch.object(email_validation, "_run_smtpbz_request", side_effect=error):
@@ -180,7 +231,7 @@ class SmtpBzEmailValidationTests(unittest.TestCase):
                 smtpbz_api_key="token",
             )
 
-        self.assertFalse(result.is_valid)
+        self.assertTrue(result.is_valid)
         self.assertEqual(result.reason_code, "smtpbz_quota_or_request_error")
         self.assertIn("квоту", result.reason)
 

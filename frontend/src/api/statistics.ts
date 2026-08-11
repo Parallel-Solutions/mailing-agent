@@ -108,4 +108,27 @@ export const statisticsApi = {
 
   autoCallContactsUrl: (jobId: string) =>
     `/api/download/auto-call-contacts?job_id=${encodeURIComponent(jobId)}`,
+
+  externalSpendSnapshot: (periodMinutes?: number) =>
+    api.get<Record<string, unknown>>(
+      withQuery('/api/sender/external-spend/snapshot', { period_minutes: periodMinutes }),
+    ),
+
+  openExternalSpendStream: (
+    onEvent: (event: Record<string, unknown>) => void,
+  ): EventSource | null => {
+    if (typeof EventSource === 'undefined') return null;
+    const source = new EventSource('/api/sender/external-spend/stream');
+    source.onmessage = (message) => {
+      try {
+        onEvent(JSON.parse(message.data) as Record<string, unknown>);
+      } catch {
+        // ignore malformed SSE payloads
+      }
+    };
+    source.onerror = () => {
+      source.close();
+    };
+    return source;
+  },
 };

@@ -293,17 +293,25 @@ def recover_expired_tasks(*, limit: int = 100) -> int:
     return recovered
 
 
-def claim_task(*, worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
+def claim_task(
+    *,
+    worker_id: str,
+    lease_seconds: int,
+    only_task_types: set[str] | None = None,
+) -> dict[str, Any] | None:
     recover_expired_tasks()
     now = _now()
     with session_scope() as session:
+        conditions = [
+            BackgroundTask.status.in_((QUEUED, RETRY)),
+            BackgroundTask.available_at <= now,
+            BackgroundTask.cancel_requested_at.is_(None),
+        ]
+        if only_task_types:
+            conditions.append(BackgroundTask.task_type.in_(only_task_types))
         task = session.execute(
             select(BackgroundTask)
-            .where(
-                BackgroundTask.status.in_((QUEUED, RETRY)),
-                BackgroundTask.available_at <= now,
-                BackgroundTask.cancel_requested_at.is_(None),
-            )
+            .where(*conditions)
             .order_by(BackgroundTask.priority.desc(), BackgroundTask.created_at.asc())
             .limit(1)
             .with_for_update(skip_locked=True)

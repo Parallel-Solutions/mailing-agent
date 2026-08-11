@@ -25,6 +25,8 @@ from src.generator.generation.transforms import (
     ensure_official_district_wording,
     normalize_municipality_name_case,
 )
+from src.infra.llm_pricing import usage_from_response
+from src.infra.spend_ledger import record_llm_usage
 from src.utils.env import resolve_env_value
 
 try:
@@ -276,6 +278,12 @@ def _call_openai_adm_name_agent(row: dict, context: dict) -> dict:
     print(f"[case-agent] adm_name_llm_start id={row_id}")
     response = client.chat.completions.create(**request_kwargs)
     print(f"[case-agent] adm_name_llm_done id={row_id} elapsed={perf_counter() - started_at:.2f}s")
+    record_llm_usage(
+        service="openai",
+        model=request_kwargs["model"],
+        operation="case_agent_adm_name",
+        usage=usage_from_response(response),
+    )
     content = response.choices[0].message.content or "{}"
     parsed = json.loads(_extract_json_payload(content))
     return parsed if isinstance(parsed, dict) else {}
@@ -467,6 +475,12 @@ def _call_openai_canonical_mo_agent(row: dict, context: dict) -> dict:
     print(f"[case-agent] canonical_mo_llm_start id={row_id}")
     response = client.chat.completions.create(**request_kwargs)
     print(f"[case-agent] canonical_mo_llm_done id={row_id} elapsed={perf_counter() - started_at:.2f}s")
+    record_llm_usage(
+        service="openai",
+        model=request_kwargs["model"],
+        operation="case_agent_canonical_mo",
+        usage=usage_from_response(response),
+    )
     content = response.choices[0].message.content or "{}"
     parsed = json.loads(_extract_json_payload(content))
     return parsed if isinstance(parsed, dict) else {}
@@ -863,6 +877,12 @@ def _call_openai_case_agent(reviews: List[CaseFieldReview]) -> List[dict]:
     print(f"[case-agent] slot_llm_start fields={review_fields}")
     response = client.chat.completions.create(**request_kwargs)
     print(f"[case-agent] slot_llm_done fields={review_fields} elapsed={perf_counter() - started_at:.2f}s")
+    record_llm_usage(
+        service="openai",
+        model=request_kwargs["model"],
+        operation="case_agent_slot_review",
+        usage=usage_from_response(response),
+    )
     content = response.choices[0].message.content or "{}"
     parsed = json.loads(_extract_json_payload(content))
     if isinstance(parsed, dict):

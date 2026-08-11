@@ -12,6 +12,9 @@ from typing import Any
 from docx import Document
 
 from src.campaigns import template_service
+from src.infra.llm_pricing import LlmUsage, estimate_llm_cost_usd, usage_from_response
+from src.infra.llm_pricing import usage_from_response as _usage_from_response
+from src.infra.spend_ledger import record_llm_usage
 from src.utils.config import settings
 
 try:
@@ -36,25 +39,6 @@ except ImportError:  # pragma: no cover
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
 
-# USD per 1M tokens (input, output). Conservative defaults for budget tracking.
-_MODEL_COST_PER_MILLION: dict[str, tuple[float, float]] = {
-    "gpt-4o": (2.50, 10.0),
-    "gpt-4.1": (2.0, 8.0),
-    "gpt-4o-mini": (0.15, 0.60),
-}
-_DEFAULT_INPUT_COST_PER_M = 2.50
-_DEFAULT_OUTPUT_COST_PER_M = 10.0
-# Extra image tokens when usage API does not itemize vision separately.
-_VISION_IMAGE_TOKEN_ESTIMATE = 1000
-
-
-@dataclass(frozen=True)
-class LlmUsage:
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    image_count: int = 0
-
 
 @dataclass(frozen=True)
 class VisionLlmResult:
@@ -62,44 +46,6 @@ class VisionLlmResult:
     usage: LlmUsage = field(default_factory=LlmUsage)
     estimated_cost_usd: float = 0.0
     model: str = ""
-
-
-def _model_cost_rates(model: str) -> tuple[float, float]:
-    lowered = (model or "").lower()
-    for key, rates in _MODEL_COST_PER_MILLION.items():
-        if key in lowered:
-            return rates
-    if "mini" in lowered:
-        return _MODEL_COST_PER_MILLION["gpt-4o-mini"]
-    return _DEFAULT_INPUT_COST_PER_M, _DEFAULT_OUTPUT_COST_PER_M
-
-
-def estimate_llm_cost_usd(
-    *,
-    model: str,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    image_count: int = 0,
-) -> float:
-    input_rate, output_rate = _model_cost_rates(model)
-    prompt = max(0, int(prompt_tokens or 0)) + max(0, int(image_count or 0)) * _VISION_IMAGE_TOKEN_ESTIMATE
-    completion = max(0, int(completion_tokens or 0))
-    return (prompt * input_rate + completion * output_rate) / 1_000_000.0
-
-
-def _usage_from_response(response: Any, *, image_count: int = 0) -> LlmUsage:
-    usage = getattr(response, "usage", None)
-    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-    total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
-    if total_tokens <= 0:
-        total_tokens = prompt_tokens + completion_tokens
-    return LlmUsage(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=total_tokens,
-        image_count=max(0, int(image_count or 0)),
-    )
 
 
 def list_models() -> list[dict[str, str]]:
@@ -185,6 +131,12 @@ def _call_llm(model: str, system: str, user: str) -> dict[str, Any]:
         )
     except Exception as exc:
         raise RuntimeError(_llm_error_message(exc, model=resolved_model)) from exc
+    record_llm_usage(
+        service="openai",
+        model=resolved_model,
+        operation="template_generate",
+        usage=_usage_from_response(response),
+    )
     content = response.choices[0].message.content or ""
     try:
         return _parse_json_payload(content)
@@ -248,6 +200,12 @@ def _call_vision_llm_tracked(
         prompt_tokens=usage.prompt_tokens,
         completion_tokens=usage.completion_tokens,
         image_count=usage.image_count,
+    )
+    record_llm_usage(
+        service="openai",
+        model=resolved_model,
+        operation="template_import_vision",
+        usage=usage,
     )
     return VisionLlmResult(payload=payload, usage=usage, estimated_cost_usd=cost, model=resolved_model)
 
