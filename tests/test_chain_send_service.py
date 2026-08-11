@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
@@ -11,11 +12,50 @@ from src.campaigns.chain_send_service import (
     dispatch_chain_followup,
     prewarm_next_node_documents,
     send_chain_node_email,
+    start_test_chain,
 )
 from src.campaigns.chain_service import empty_chain, save_email_chain
 from src.infra.db import session_scope
 from src.infra.models import Campaign, CampaignChainToken, CampaignRecipient
 from tests.bootstrap import bootstrap_test_runtime
+
+
+class ChainTestStartTests(unittest.TestCase):
+    @patch("src.security.company_access.can_access_owner", return_value=True)
+    @patch("src.campaigns.chain_send_service.get_email_chain")
+    @patch("src.campaigns.chain_send_service.session_scope")
+    @patch("src.campaigns.chain_send_service.send_chain_node_email", return_value={"status": "sent"})
+    def test_each_test_chain_start_uses_a_fresh_send_run_id(
+        self,
+        mock_send,
+        mock_session_scope,
+        mock_get_chain,
+        _mock_access,
+    ) -> None:
+        session = mock_session_scope.return_value.__enter__.return_value
+        session.get.return_value = SimpleNamespace(owner_username="owner", send_scenario="email_chain")
+        session.scalar.return_value = SimpleNamespace(
+            id=7,
+            company="Test Co",
+            contact_name="Alex",
+            email="source@example.com",
+        )
+        mock_get_chain.return_value = {"root_node_id": "root-node"}
+
+        for _ in range(2):
+            result = start_test_chain(
+                "campaign-id",
+                "test-recipient@example.com",
+                "owner",
+                "connection-id",
+            )
+            self.assertEqual(result["mode"], "chain_test")
+
+        first_run_id = mock_send.call_args_list[0].kwargs["send_run_id"]
+        second_run_id = mock_send.call_args_list[1].kwargs["send_run_id"]
+        self.assertTrue(first_run_id.startswith("chain-test-"))
+        self.assertTrue(second_run_id.startswith("chain-test-"))
+        self.assertNotEqual(first_run_id, second_run_id)
 
 
 class ChainSendServiceTests(unittest.TestCase):

@@ -885,6 +885,7 @@ def start_test_chain(
         node_id=root_id,
         test_email=to_email,
         connection_id=connection_id,
+        send_run_id=f"chain-test-{uuid.uuid4()}",
     )
     if result.get("status") != "sent":
         reason = str(result.get("reason") or "unknown")
