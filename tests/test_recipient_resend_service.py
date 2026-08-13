@@ -12,6 +12,7 @@ from src.campaigns.recipient_resend_service import (
 def _context(*, fallback: str = "backup@example.com"):
     campaign = SimpleNamespace(
         id="campaign-1",
+        owner_username="admin",
         send_scenario="consent_then_materials",
     )
     recipient = SimpleNamespace(

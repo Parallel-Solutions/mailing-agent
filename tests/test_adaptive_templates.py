@@ -188,11 +188,22 @@ def test_compiler_auto_discovers_legacy_docx_markers(tmp_path: Path) -> None:
 
 def test_pdf_auto_detection_uses_outgoing_line_not_company_details() -> None:
     fitz = pytest.importorskip("fitz")
-    document = fitz.open()
-    page = document.new_page(width=595, height=842)
-    font_path = str(_font_path())
-    page.insert_text((300, 80), "ИНН 101 5038", fontname="company-font", fontfile=font_path, fontsize=10)
-    page.insert_text((50, 170), "№ 101-КП от 12.05.2026", fontname="outgoing-font", fontfile=font_path, fontsize=11)
+
+    class SearchablePage:
+        rect = fitz.Rect(0, 0, 595, 842)
+
+        def get_text(self, kind: str) -> str:
+            assert kind == "text"
+            return "ИНН 101 5038\n№ 101-КП от 12.05.2026\n"
+
+        def search_for(self, value: str) -> list:
+            if value == "101":
+                return [fitz.Rect(330, 70, 350, 82), fitz.Rect(58, 160, 80, 173)]
+            if value == "12.05.2026":
+                return [fitz.Rect(116, 160, 178, 173)]
+            return []
+
+    document = [SearchablePage()]
 
     regions = _find_pdf_regions(document, {})
     number_region = next(item for item in regions if item.field_name == "OUTGOING_NUMBER")
