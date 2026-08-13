@@ -71,6 +71,15 @@ agent-full = [
     "yargy>=0.16.0",
 ]
 
+[tool.pytest.ini_options]
+minversion = "8.4"
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+testpaths = ["tests"]
+norecursedirs = ["external"]
+cache_dir = ".test-runtime/pytest-cache"
+xfail_strict = true
+junit_family = "xunit2"
+
 [tool.coverage.run]
 branch = true
 source = ["src", "."]

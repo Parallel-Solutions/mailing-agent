@@ -67,6 +67,15 @@ jobs:
           done
           docker compose -p mailing-agent-test -f docker-compose.test.yml run --rm --no-deps test
 
+      - name: Upload backend test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: .test-runtime/backend-junit.xml
+          if-no-files-found: warn
+          retention-days: 14
+
   build-image:
     name: Build and push runtime image
     runs-on: ubuntu-latest
