@@ -375,6 +375,8 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
         with session_scope() as session:
             program = session.get(ConnectionWarmupProgram, result["id"])
             program.status = "running"
+            program.warmup_mode = warmup.FIXED_DAILY_MODE
+            program.duration_days = 1
             session.add(ConnectionWarmupDelivery(
                 id=delivery_id,
                 program_id=result["id"],
@@ -400,6 +402,9 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
             self.assertEqual(delivery.status, "send_retry_pending")
             recipient = session.get(warmup.ConnectionWarmupRecipient, recipient_id)
             self.assertEqual(recipient.error_count, 1)
+            program = session.get(ConnectionWarmupProgram, result["id"])
+            self.assertEqual(program.status, "running")
+            self.assertEqual(program.current_day, 1)
 
         # Task-queue retry re-invokes the same delivery_id.
         with patch(
@@ -414,6 +419,8 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
             self.assertEqual(delivery.status, "error")
             recipient = session.get(warmup.ConnectionWarmupRecipient, recipient_id)
             self.assertEqual(recipient.error_count, 2)
+            program = session.get(ConnectionWarmupProgram, result["id"])
+            self.assertEqual(program.status, "completed")
 
         # A third invocation must short-circuit at the terminal check and
         # must not call _send_delivery_message again.

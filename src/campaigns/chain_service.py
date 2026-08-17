@@ -339,6 +339,7 @@ def _normalize_node(raw: dict[str, Any]) -> dict[str, Any]:
     else:
         node["email_template_id"] = raw.get("email_template_id") or None
         node["document_template_ids"] = [str(x) for x in doc_ids if x]
+        node["consent_on_click"] = bool(raw.get("consent_on_click", False))
     return node
 
 

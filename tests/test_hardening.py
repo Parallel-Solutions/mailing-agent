@@ -178,7 +178,7 @@ class DatabaseRuntimeGuardTests(unittest.TestCase):
                 side_effect=lambda _connection, table: table
                 == "user_onboarding_states",
             ),
-            # None of the 0032-0046 markers are present in this simulated
+            # None of the 0032-0050 markers are present in this simulated
             # schema — without this, an unpatched _has_column against a
             # MagicMock connection would return truthy for every call
             # (`.scalar() is not None` on a MagicMock's default chain is

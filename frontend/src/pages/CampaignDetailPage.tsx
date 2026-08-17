@@ -159,6 +159,10 @@ export function CampaignDetailPage() {
                       </div>
                     ))}
                     <div style={{ marginTop: 8 }}>
+                      <Typography.Text strong>Запросили КП: </Typography.Text>
+                      {chainStatsQuery.data?.consents?.materials_request?.count ?? 0}
+                    </div>
+                    <div>
                       <Typography.Text strong>Подписались: </Typography.Text>
                       {chainStatsQuery.data?.consents?.subscribe?.count ?? 0}
                     </div>

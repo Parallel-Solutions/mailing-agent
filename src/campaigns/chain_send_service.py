@@ -447,6 +447,15 @@ def send_chain_node_email(
                 active_test_email = token_row.test_email
 
         delivery_email = active_test_email or delivery_email_override
+        if not delivery_email and followup_token:
+            # A branch token is created by a successfully delivered previous
+            # chain node. Reuse that node's resolved address for the follow-up
+            # instead of asking resolve_delivery_email() for an "untried"
+            # candidate: the successful address is intentionally present in
+            # tried_emails and would otherwise be filtered out.
+            delivery_email = str(
+                dict(recipient.extra or {}).get("delivery_email") or ""
+            ).strip()
         if delivery_email:
             from src.campaigns.recipient_email_service import validate_delivery_email
             from src.generator.delivery.email_validation import validate_email_address
@@ -483,7 +492,10 @@ def send_chain_node_email(
             if not delivery_email:
                 error_text = validation_attempts_error(validation_attempts)
                 if followup_token:
-                    mark_token_sent(followup_token, status="skipped", error=error_text)
+                    mark_token_sent(followup_token, error=error_text)
+                    recipient.last_error = error_text
+                    session.flush()
+                    raise RuntimeError(error_text)
                 recipient.send_status = "failed"
                 recipient.last_error = error_text
                 session.flush()
@@ -814,7 +826,12 @@ def _enqueue_chain_followup_fallback(payload: dict[str, Any]) -> None:
 def _run_chain_followup_fast(payload: dict[str, Any]) -> None:
     token = str(payload.get("token") or "")
     try:
-        run_chain_followup(payload)
+        result = run_chain_followup(payload)
+        if (
+            str(result.get("status") or "").strip().lower() == "skipped"
+            and str(result.get("reason") or "").strip().lower() == "invalid_email"
+        ):
+            raise RuntimeError("Нет email, прошедшего проверку.")
     except Exception:
         logger.exception("chain_followup_fast_failed", token=token)
         _reset_followup_token_pending(token)

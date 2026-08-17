@@ -277,11 +277,23 @@ def _mail_template_column_names(connection) -> set[str]:
 
 def _detect_schema_revision(connection) -> str | None:
     """Best-effort stamp when alembic_version lags behind the real schema."""
-    # 0032-0046: extends detection past the previous ceiling of
+    # 0032-0050: extends detection past the previous ceiling of
     # "0031_merge_onboarding_main" (see the recoverable-migration incident
     # this guards against). Checked newest-first, same table/column
     # introspection style as the rest of this function.
     #
+    # 0050 is identified by the 0049 column plus the absence of the table it
+    # deliberately drops. Checking 0049 first avoids treating an old schema
+    # from before 0003 as current merely because that table is absent.
+    if _has_column(connection, "mail_templates", "enforce_one_page"):
+        if not _has_table(connection, "send_guard_state"):
+            return "0050_drop_send_guard_state"
+        return "0049_template_page_limit"
+    if _has_column(connection, "delivery_attempts", "email_validation"):
+        return "0048_delivery_email_validation"
+    if _has_column(connection, "connection_warmup_programs", "warmup_mode"):
+        return "0047_rusender_fixed_warmup"
+
     # 0045 forked into two revisions off 0044 ("0045_external_service_spends"
     # and "0045_smtpbz_advisory"), merged back by "0046_merge_smtpbz_spends".
     # "0045_smtpbz_advisory" is a pure idempotent data-repair UPDATE with no

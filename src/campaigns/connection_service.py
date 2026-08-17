@@ -599,6 +599,7 @@ def resolve_connection(
     *,
     campaign: Campaign | None = None,
     visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
+    allow_warmup: bool = False,
 ) -> ResolvedConnection:
     visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
@@ -607,7 +608,11 @@ def resolve_connection(
             raise LookupError("Подключение не найдено.")
         if row.delivery_guard_state == "disabled" or row.status == "disabled_by_guard":
             raise RuntimeError(row.delivery_guard_reason or "Delivery channel is disabled.")
-        if channel_state_blocks_send(row.delivery_guard_state, row.status):
+        if channel_state_blocks_send(
+            row.delivery_guard_state,
+            row.status,
+            allow_warmup=allow_warmup,
+        ):
             raise RuntimeError(
                 "Обычная отправка приостановлена до завершения прогрева подключения."
             )

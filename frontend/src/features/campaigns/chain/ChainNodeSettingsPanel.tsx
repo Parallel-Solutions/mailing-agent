@@ -1,4 +1,4 @@
-import { ProForm, ProFormSelect, ProFormText } from '@ant-design/pro-components';
+import { ProForm, ProFormSelect, ProFormSwitch, ProFormText } from '@ant-design/pro-components';
 import { Alert, App, Form, Typography } from 'antd';
 import type { FormInstance } from 'antd';
 import { useEffect, useRef } from 'react';
@@ -20,6 +20,7 @@ type NodeFormValues = {
   name: string;
   email_template_id?: string;
   document_template_ids: string[];
+  consent_on_click: boolean;
   link_kind: ChainLinkKind;
   link_url: string;
 };
@@ -36,6 +37,7 @@ function nodeToFormValues(node: EmailChainNode): NodeFormValues {
     name: node.name,
     email_template_id: node.email_template_id ?? undefined,
     document_template_ids: node.document_template_ids ?? [],
+    consent_on_click: node.consent_on_click ?? false,
     link_kind: node.link_kind ?? 'custom',
     link_url: node.link_url ?? '',
   };
@@ -51,7 +53,8 @@ function formValuesMatchNode(values: Record<string, unknown>, node: EmailChainNo
     if ((values.email_template_id as string | undefined) !== expected.email_template_id) return false;
     const docs = (values.document_template_ids as string[]) ?? [];
     if (docs.length !== expected.document_template_ids.length) return false;
-    return docs.every((id, index) => id === expected.document_template_ids[index]);
+    if (!docs.every((id, index) => id === expected.document_template_ids[index])) return false;
+    return Boolean(values.consent_on_click) === expected.consent_on_click;
   }
 
   const linkKind = (values.link_kind as ChainLinkKind) ?? 'custom';
@@ -130,6 +133,7 @@ export function ChainNodeSettingsPanel({
         ...nextNode,
         email_template_id: (values.email_template_id as string | undefined) ?? null,
         document_template_ids: (values.document_template_ids as string[]) ?? [],
+        consent_on_click: Boolean(values.consent_on_click),
         link_kind: undefined,
         link_url: undefined,
       };
@@ -140,6 +144,7 @@ export function ChainNodeSettingsPanel({
         link_url: nextLinkKind === 'custom' ? String(values.link_url ?? '') : null,
         email_template_id: undefined,
         document_template_ids: undefined,
+        consent_on_click: undefined,
       };
     }
 
@@ -171,12 +176,14 @@ export function ChainNodeSettingsPanel({
             kind: 'email',
             email_template_id: undefined,
             document_template_ids: [],
+            consent_on_click: false,
           });
           applyPatch({
             kind: 'email',
             name: form.getFieldValue('name'),
             email_template_id: null,
             document_template_ids: [],
+            consent_on_click: false,
           });
         } else {
           form.setFieldsValue({
@@ -267,6 +274,17 @@ export function ChainNodeSettingsPanel({
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Можно выбрать несколько документов
             </Typography.Text>
+            {!isRoot && (
+              <>
+                <ProFormSwitch
+                  name="consent_on_click"
+                  label="Считать клик согласием на получение КП"
+                />
+                <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                  Согласие фиксируется до отправки этого письма. Текст условий должен быть указан в предыдущем письме.
+                </Typography.Text>
+              </>
+            )}
           </>
         )}
 
@@ -278,11 +296,16 @@ export function ChainNodeSettingsPanel({
               options={LINK_KIND_OPTIONS}
             />
             {linkKind === 'custom' && (
-              <ProFormText
-                name="link_url"
-                label="URL"
-                fieldProps={{ placeholder: 'https://example.com' }}
-              />
+              <>
+                <ProFormText
+                  name="link_url"
+                  label="URL"
+                  fieldProps={{ placeholder: 'https://example.com' }}
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  Открывает внешний URL. Письмо и документы после клика не отправляются.
+                </Typography.Text>
+              </>
             )}
             {linkKind === 'unsubscribe' && (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>

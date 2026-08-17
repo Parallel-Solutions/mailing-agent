@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
@@ -13,10 +14,14 @@ from src.campaigns.chain_send_service import run_chain_followup
 from src.campaigns.chain_service import LINK_KIND_SUBSCRIBE, LINK_KIND_UNSUBSCRIBE
 from src.generator.delivery.suppression_store import is_suppressed
 from src.infra.db import session_scope
-from src.infra.models import CampaignChainToken, CampaignRecipient
+from src.infra.models import (
+    CampaignChainConsentEvent,
+    CampaignChainToken,
+    CampaignRecipient,
+)
 from src.security.auth import Principal
 from src.security.user_store import create_user
-from src.web.chain_router import create_chain_router
+from src.web.chain_router import _is_duplicate_consent_token, create_chain_router
 from src.web.v1_router import create_v1_router
 from tests.bootstrap import bootstrap_test_runtime
 
@@ -282,6 +287,57 @@ class ChainTestSendApiTests(unittest.TestCase):
         self.assertIn("Спасибо", response.text)
         mock_dispatch.assert_called_once_with(token_value)
 
+    @patch("src.web.chain_router.dispatch_chain_followup")
+    def test_email_branch_click_records_materials_request_before_followup(self, mock_dispatch) -> None:
+        loaded = self.client.get(f"/api/v1/campaigns/{self.campaign_id}/email-chain")
+        chain = loaded.json()["result"]["chain"]
+        target = next(node for node in chain["nodes"] if node["id"] == self.node2_id)
+        target["consent_on_click"] = True
+        saved = self.client.put(
+            f"/api/v1/campaigns/{self.campaign_id}/email-chain", json=chain
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        saved_target = next(
+            node
+            for node in saved.json()["result"]["chain"]["nodes"]
+            if node["id"] == self.node2_id
+        )
+        self.assertTrue(saved_target["consent_on_click"])
+
+        with session_scope() as session:
+            recipient = session.scalar(
+                select(CampaignRecipient).where(
+                    CampaignRecipient.campaign_id == self.campaign_id
+                )
+            )
+            assert recipient is not None
+            token_row = CampaignChainToken(
+                token=str(uuid.uuid4()),
+                campaign_id=self.campaign_id,
+                recipient_id=int(recipient.id),
+                edge_id="edge-1",
+                source_node_id=self.root_node_id,
+                target_node_id=self.node2_id,
+                send_status="pending",
+            )
+            session.add(token_row)
+            session.flush()
+            token_value = token_row.token
+
+        response = self.client.get(f"/chain/branch/{token_value}")
+        self.assertEqual(response.status_code, 200, response.text)
+        mock_dispatch.assert_called_once_with(token_value)
+
+        with session_scope() as session:
+            event = session.scalar(
+                select(CampaignChainConsentEvent).where(
+                    CampaignChainConsentEvent.token == token_value
+                )
+            )
+            assert event is not None
+            self.assertEqual(event.action, "materials_request")
+            self.assertEqual(event.email, "alice@example.com")
+
     @patch("src.web.chain_router.record_subscribe")
     def test_concurrent_subscribe_click_race_returns_friendly_page_not_500(self, mock_record_subscribe) -> None:
         """record_branch_click's clicked_at check-then-set isn't row-locked,
@@ -290,7 +346,10 @@ class ChainTestSendApiTests(unittest.TestCase):
         loser must not surface an unhandled IntegrityError as a 500."""
         from sqlalchemy.exc import IntegrityError
 
-        mock_record_subscribe.side_effect = IntegrityError("INSERT", {}, Exception("duplicate key"))
+        original = SimpleNamespace(
+            diag=SimpleNamespace(constraint_name="idx_chain_consent_token")
+        )
+        mock_record_subscribe.side_effect = IntegrityError("INSERT", {}, original)
 
         loaded = self.client.get(f"/api/v1/campaigns/{self.campaign_id}/email-chain")
         chain = loaded.json()["result"]["chain"]
@@ -327,6 +386,16 @@ class ChainTestSendApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("Спасибо", response.text)
+
+    def test_unrelated_integrity_error_is_not_treated_as_click_race(self) -> None:
+        from sqlalchemy.exc import IntegrityError
+
+        original = SimpleNamespace(
+            diag=SimpleNamespace(constraint_name="some_other_constraint")
+        )
+        error = IntegrityError("INSERT", {}, original)
+
+        self.assertFalse(_is_duplicate_consent_token(error))
 
 
 if __name__ == "__main__":

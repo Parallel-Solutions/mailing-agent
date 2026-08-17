@@ -126,6 +126,59 @@ class ChainSendServiceTests(unittest.TestCase):
         self.assertEqual(kwargs["send_run_id"], followup_token)
         self.assertIs(kwargs["track_links"], False)
 
+    @patch(
+        "src.campaigns.batch_worker._send_delivery_message",
+        side_effect=["rusender:uuid-root", "rusender:uuid-followup"],
+    )
+    def test_followup_reuses_successful_root_delivery_email(self, mock_send) -> None:
+        followup_node_id = "node-email-followup"
+        self.chain["nodes"].append(
+            {
+                "id": followup_node_id,
+                "name": "Получить КП",
+                "kind": "email",
+                "email_template_id": "tmpl-followup",
+                "document_template_ids": [],
+            }
+        )
+        self.chain["edges"] = [
+            {
+                "id": "edge-followup",
+                "source_id": self.root_node_id,
+                "target_id": followup_node_id,
+                "button_label": "Получить КП",
+            }
+        ]
+        save_email_chain(self.campaign["id"], self.username, self.chain)
+
+        root_result = send_chain_node_email(
+            campaign_id=self.campaign["id"],
+            recipient_id=self.recipient_id,
+            node_id=self.root_node_id,
+            connection_id=self.connection_id,
+        )
+        self.assertEqual(root_result["status"], "sent")
+
+        with session_scope() as session:
+            recipient = session.get(CampaignRecipient, self.recipient_id)
+            assert recipient is not None
+            extra = dict(recipient.extra or {})
+            self.assertEqual(extra.get("delivery_email"), "chain-send@example.com")
+            self.assertIn("chain-send@example.com", list(extra.get("tried_emails") or []))
+
+        followup_result = send_chain_node_email(
+            campaign_id=self.campaign["id"],
+            recipient_id=self.recipient_id,
+            node_id=followup_node_id,
+            followup_token=str(uuid.uuid4()),
+            connection_id=self.connection_id,
+        )
+
+        self.assertEqual(followup_result["status"], "sent")
+        self.assertEqual(mock_send.call_count, 2)
+        self.assertEqual(mock_send.call_args_list[0].kwargs["to_email"], "chain-send@example.com")
+        self.assertEqual(mock_send.call_args_list[1].kwargs["to_email"], "chain-send@example.com")
+
     @patch("src.campaigns.batch_worker._send_delivery_message", return_value="rusender:uuid-root")
     def test_root_send_uses_chain_root_send_mode(self, mock_send) -> None:
         from src.jobs.job_docs import read_sent_mail_log
@@ -397,6 +450,21 @@ class ChainFollowupDispatchTests(unittest.TestCase):
         mock_enqueue.assert_called_once()
         self.assertEqual(mock_enqueue.call_args.kwargs.get("priority"), 100)
         self.assertEqual(mock_enqueue.call_args.kwargs.get("task_type"), "chain_followup")
+        with session_scope() as session:
+            row = session.get(CampaignChainToken, self.token)
+            assert row is not None
+            self.assertEqual(row.send_status, "pending")
+
+    @patch("src.campaigns.chain_send_service.threading.Thread", side_effect=_immediate_thread)
+    @patch(
+        "src.campaigns.chain_send_service.run_chain_followup",
+        return_value={"status": "skipped", "reason": "invalid_email"},
+    )
+    @patch("src.workers.task_queue.enqueue_task")
+    def test_dispatch_retries_invalid_email_skip(self, mock_enqueue, _mock_run, _mock_thread) -> None:
+        dispatch_chain_followup(self.token)
+
+        mock_enqueue.assert_called_once()
         with session_scope() as session:
             row = session.get(CampaignChainToken, self.token)
             assert row is not None

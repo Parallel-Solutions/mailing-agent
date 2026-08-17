@@ -28,6 +28,7 @@ describe('chainUtils button labels', () => {
     const child = next.nodes.find((n) => n.id !== chain.root_node_id);
     expect(child?.kind).toBe('email');
     expect(child?.email_template_id).toBeNull();
+    expect(child?.consent_on_click).toBe(false);
   });
 
   it('updateNode syncs incoming edge label when block is renamed', () => {

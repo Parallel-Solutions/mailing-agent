@@ -1150,7 +1150,9 @@ def stop_program(
             select(ConnectionWarmupDelivery).where(
                 ConnectionWarmupDelivery.program_id == program.id,
                 ConnectionWarmupDelivery.run_number == int(program.run_number or 1),
-                ConnectionWarmupDelivery.status.in_({"queued", "paused", "sending"}),
+                ConnectionWarmupDelivery.status.in_(
+                    {"queued", "paused", "sending", "send_retry_pending"}
+                ),
             )
         ).scalars().all()
         for delivery in deliveries:
@@ -1345,7 +1347,9 @@ def _advance_after_day(program_id: str, day_number: int) -> None:
                 ConnectionWarmupDelivery.program_id == program_id,
                 ConnectionWarmupDelivery.run_number == int(program.run_number or 1),
                 ConnectionWarmupDelivery.day_number == day_number,
-                ConnectionWarmupDelivery.status.in_({"queued", "paused", "sending"}),
+                ConnectionWarmupDelivery.status.in_(
+                    {"queued", "paused", "sending", "send_retry_pending"}
+                ),
             )
         ) or 0)
         if pending_count:

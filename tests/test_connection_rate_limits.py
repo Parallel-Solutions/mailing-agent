@@ -253,6 +253,27 @@ class MultiSenderConnectionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             resolve_connection(warming["id"], self.owner)
 
+    def test_resolve_connection_allows_explicit_warmup_send(self) -> None:
+        warming = create_connection(
+            self.owner,
+            {
+                "transport": "rusender",
+                "email": "warming-send@example.com",
+                "sending_key_id": 43,
+            },
+        )
+        with session_scope() as session:
+            row = session.get(SmtpMailbox, warming["id"])
+            row.delivery_guard_state = "warmup"
+
+        resolved = resolve_connection(
+            warming["id"],
+            self.owner,
+            allow_warmup=True,
+        )
+
+        self.assertEqual(resolved.id, warming["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

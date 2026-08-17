@@ -199,6 +199,7 @@ export type DocumentFollowupNodeOptions = {
   childName: string;
   emailTemplateName: string;
   documentTemplateNames: string[];
+  consentOnClick?: boolean;
 };
 
 /**
@@ -228,10 +229,10 @@ export type DocumentFollowupNodeOptions = {
  */
 export async function addDocumentFollowupNode(
   page: Page,
-  { childName, emailTemplateName, documentTemplateNames }: DocumentFollowupNodeOptions,
+  { childName, emailTemplateName, documentTemplateNames, consentOnClick = false }: DocumentFollowupNodeOptions,
 ): Promise<void> {
   await page.locator('.chain-node-block .chain-node-block__add').first().click();
-  await page.getByRole('menuitem', { name: 'Письмо' }).click();
+  await page.getByRole('menuitem', { name: /Следующее письмо/ }).click();
 
   // Scoped via Form.Item structure, not getByLabel('Название') — the chain-level
   // name field (see createChainWithRootTemplate) shares the same label text and
@@ -240,6 +241,9 @@ export async function addDocumentFollowupNode(
   await selectAntdOption(page, 'Шаблон письма', emailTemplateName);
   for (const documentName of documentTemplateNames) {
     await selectAntdOption(page, 'Документы', documentName);
+  }
+  if (consentOnClick) {
+    await page.getByRole('switch', { name: 'Считать клик согласием на получение КП' }).click();
   }
 
   await saveChainAndWait(page);

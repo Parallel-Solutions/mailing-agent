@@ -10,7 +10,11 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy.exc import IntegrityError
 
-from src.campaigns.chain_consent_service import record_subscribe, record_unsubscribe
+from src.campaigns.chain_consent_service import (
+    record_materials_request,
+    record_subscribe,
+    record_unsubscribe,
+)
 from src.campaigns.chain_send_service import dispatch_chain_followup
 from src.campaigns.chain_service import (
     LINK_KIND_CUSTOM,
@@ -60,6 +64,11 @@ def _resolve_target_node(campaign_id: str, target_node_id: str) -> dict | None:
             return None
         chain = get_email_chain(camp)
         return find_node(chain, target_node_id)
+
+
+def _is_duplicate_consent_token(exc: IntegrityError) -> bool:
+    diag = getattr(getattr(exc, "orig", None), "diag", None)
+    return getattr(diag, "constraint_name", None) == "idx_chain_consent_token"
 
 
 def create_chain_router() -> APIRouter:
@@ -120,13 +129,15 @@ def create_chain_router() -> APIRouter:
             return _handle_chain_branch_click(token)
         except ValueError as exc:
             return _page("Ссылка недоступна", str(exc))
-        except IntegrityError:
+        except IntegrityError as exc:
             # record_branch_click's clicked_at check-then-set isn't locked,
             # so two concurrent clicks on the same subscribe/unsubscribe
             # link can both see already_clicked=False and both attempt to
             # record consent — the loser hits a uniqueness violation here.
             # That's not a real failure, just a race: treat it the same as
             # "already confirmed" instead of surfacing a 500.
+            if not _is_duplicate_consent_token(exc):
+                raise
             return _page("Спасибо", "Мы уже зафиксировали ваш выбор по этой ссылке.")
 
     def _handle_chain_branch_click(token: str) -> HTMLResponse:
@@ -190,6 +201,24 @@ def create_chain_router() -> APIRouter:
             return _page("Ссылка недоступна", "Неизвестный тип ссылки.")
 
         if is_email_node(target_node):
+            if bool(target_node.get("consent_on_click")) and not result.get("test_email"):
+                with session_scope() as session:
+                    recipient = session.get(
+                        CampaignRecipient, int(result["recipient_id"])
+                    )
+                    recipient_extra = dict(recipient.extra or {}) if recipient else {}
+                    email = (
+                        str(recipient_extra.get("delivery_email") or "").strip()
+                        or (recipient.email if recipient else "")
+                    )
+                record_materials_request(
+                    campaign_id=str(result["campaign_id"]),
+                    recipient_id=int(result["recipient_id"]),
+                    email=email,
+                    node_id=str(result["target_node_id"]),
+                    edge_id=str(result["edge_id"]),
+                    token=token,
+                )
             if result.get("send_status") not in {"sent", "sending"}:
                 dispatch_chain_followup(token)
 

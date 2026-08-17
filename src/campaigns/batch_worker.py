@@ -202,7 +202,12 @@ def _send_delivery_message(
         connection_id,
         allow_warmup=send_mode == "connection_warmup",
     )
-    connection = resolve_connection(connection_id, owner_username, campaign=campaign)
+    connection = resolve_connection(
+        connection_id,
+        owner_username,
+        campaign=campaign,
+        allow_warmup=send_mode == "connection_warmup",
+    )
     if send_mode == "connection_warmup" and connection.transport == "rusender":
         active_campaigns = active_rusender_campaigns_for_connection(connection.id)
         if active_campaigns:

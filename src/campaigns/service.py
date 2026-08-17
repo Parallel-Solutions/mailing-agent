@@ -220,6 +220,16 @@ def _campaign_connection_ids(row: Campaign) -> list[str]:
     return campaign_connection_ids(row)
 
 
+def _campaign_has_email_chain(row: Campaign) -> bool:
+    if str(row.email_chain_id or "").strip():
+        return True
+    embedded_chain = (row.draft_payload or {}).get("email_chain")
+    if not isinstance(embedded_chain, dict):
+        return False
+    embedded_nodes = embedded_chain.get("nodes")
+    return isinstance(embedded_nodes, list) and bool(embedded_nodes)
+
+
 def _apply_sender_fields(row: Campaign, data: dict[str, Any]) -> None:
     from src.campaigns.connection_service import (
         normalize_connection_ids,
@@ -644,18 +654,6 @@ def update_campaign(
         ):
             if field in data and (data[field] is not None or field == "email_chain_id"):
                 setattr(row, field, data[field])
-        if row.send_scenario == "email_chain" and not row.email_chain_id:
-            # A campaign in chain mode is also valid with an embedded chain
-            # stored directly on draft_payload (publish_email_chain writes
-            # it there when no standalone email_chain_id is attached) — only
-            # reject when NEITHER a linked chain NOR embedded chain content
-            # exists, mirroring migration 0040_repair_detached_campaign_chains'
-            # own definition of the bad state it had to bulk-repair.
-            embedded_nodes = ((row.draft_payload or {}).get("email_chain") or {}).get("nodes")
-            if not isinstance(embedded_nodes, list) or not embedded_nodes:
-                raise ValueError(
-                    "Для сценария «Цепочка писем» необходимо выбрать или создать цепочку писем."
-                )
         if "connection_ids" in data or "smtp_mailbox_id" in data:
             _apply_sender_fields(row, data)
         if "tags" in data:
@@ -690,6 +688,16 @@ def update_campaign(
             if key in data:
                 draft[key] = data[key]
         row.draft_payload = draft
+        if row.send_scenario == "email_chain" and not _campaign_has_email_chain(row):
+            # A campaign in chain mode is also valid with an embedded chain
+            # stored directly on draft_payload (publish_email_chain writes
+            # it there when no standalone email_chain_id is attached) — only
+            # reject when NEITHER a linked chain NOR embedded chain content
+            # exists, mirroring migration 0040_repair_detached_campaign_chains'
+            # own definition of the bad state it had to bulk-repair.
+            raise ValueError(
+                "Для сценария «Цепочка писем» необходимо выбрать или создать цепочку писем."
+            )
         if template_changed or chain_changed:
             _invalidate_variable_mapping(row)
         row.updated_at = _now()
@@ -1518,7 +1526,8 @@ def validate_campaign_for_launch(
         # and "email_chain" both walk an email chain (for the consent
         # request or the whole flow respectively), so only "materials_now"
         # is exempt from needing one attached.
-        if camp.send_scenario != "materials_now" and not (camp.email_chain_id or "").strip():
+        has_email_chain = _campaign_has_email_chain(camp)
+        if camp.send_scenario != "materials_now" and not has_email_chain:
             errors.append("Выберите цепочку писем")
         from src.campaigns.connection_service import validate_connection_ids
 
@@ -1575,15 +1584,18 @@ def validate_campaign_for_launch(
         if active <= 0:
             errors.append("Нет получателей для отправки")
 
-        if camp.email_chain_id and camp.send_scenario == "email_chain":
+        if has_email_chain and camp.send_scenario == "email_chain":
             from src.campaigns.chain_service import get_email_chain, validate_chain
 
-            chain_validation = validate_chain(get_email_chain(camp), strict=False)
+            chain_validation = validate_chain(
+                get_email_chain(camp, session=session),
+                strict=False,
+            )
             if not chain_validation["ok"]:
                 errors.extend(chain_validation["errors"])
             warnings.extend(chain_validation.get("warnings") or [])
         elif (
-            camp.email_chain_id
+            has_email_chain
             and not camp.email_template_id
             and not (camp.draft_payload or {}).get("email_body")
         ):

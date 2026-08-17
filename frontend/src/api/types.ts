@@ -111,6 +111,7 @@ export type EmailChainNode = {
   kind?: ChainNodeKind;
   email_template_id?: string | null;
   document_template_ids?: string[];
+  consent_on_click?: boolean;
   link_kind?: ChainLinkKind;
   link_url?: string | null;
 };
@@ -140,6 +141,7 @@ export type EmailChainStats = {
   consents?: {
     subscribe: { count: number };
     unsubscribe: { count: number };
+    materials_request?: { count: number };
   };
 };
 

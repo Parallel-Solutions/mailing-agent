@@ -79,6 +79,25 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(patched.status_code, 200, patched.text)
         self.assertEqual(patched.json()["result"]["send_scenario"], "email_chain")
 
+    def test_setting_email_chain_scenario_with_embedded_chain_succeeds(self) -> None:
+        created = self.client.post("/api/v1/campaigns", json={"name": "Embedded chain"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+        loaded = self.client.get(f"/api/v1/campaigns/{campaign_id}/email-chain")
+        self.assertEqual(loaded.status_code, 200, loaded.text)
+        chain = loaded.json()["result"]["chain"]
+
+        patched = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={
+                "send_scenario": "email_chain",
+                "draft_payload": {"email_chain": chain},
+            },
+        )
+
+        self.assertEqual(patched.status_code, 200, patched.text)
+        self.assertEqual(patched.json()["result"]["send_scenario"], "email_chain")
+
     def test_create_update_schedule_launch_pause(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "API Campaign", "mail_subject": "Hello"})
         self.assertEqual(created.status_code, 200)
@@ -1580,6 +1599,13 @@ class CampaignV1ApiTests(unittest.TestCase):
 
         camp = self.client.get(f"/api/v1/campaigns/{campaign_id}")
         self.assertEqual(camp.json()["result"]["send_scenario"], "email_chain")
+
+        validated = self.client.get(f"/api/v1/campaigns/{campaign_id}/validate")
+        self.assertEqual(validated.status_code, 200, validated.text)
+        self.assertNotIn(
+            "Выберите цепочку писем",
+            validated.json()["result"]["errors"],
+        )
 
     def test_standalone_chains_api(self) -> None:
         created = self.client.post("/api/v1/chains", json={"name": "Standalone API chain"})

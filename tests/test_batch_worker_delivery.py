@@ -121,6 +121,12 @@ class BatchWorkerDeliveryTests(unittest.TestCase):
             )
 
         wait_mock.assert_called_once_with("conn-1", allow_warmup=True)
+        resolve_mock.assert_called_once_with(
+            "conn-1",
+            "user",
+            campaign=None,
+            allow_warmup=True,
+        )
         self.assertEqual(campaign_mock.call_count, 2)
 
     @patch("src.generator.delivery.channel_guard.wait_for_channel_send_slot")
