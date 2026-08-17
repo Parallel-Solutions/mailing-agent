@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from src.campaigns.chain_consent_service import MaterialsConsentDocumentError
 from src.campaigns.chain_send_service import run_chain_followup
 from src.campaigns.chain_service import LINK_KIND_SUBSCRIBE, LINK_KIND_UNSUBSCRIBE
 from src.generator.delivery.suppression_store import is_suppressed
@@ -288,7 +289,12 @@ class ChainTestSendApiTests(unittest.TestCase):
         mock_dispatch.assert_called_once_with(token_value)
 
     @patch("src.web.chain_router.dispatch_chain_followup")
-    def test_email_branch_click_records_materials_request_before_followup(self, mock_dispatch) -> None:
+    @patch("src.web.chain_router.ensure_materials_request_document")
+    def test_email_branch_click_records_materials_request_before_followup(
+        self,
+        mock_ensure_document,
+        mock_dispatch,
+    ) -> None:
         loaded = self.client.get(f"/api/v1/campaigns/{self.campaign_id}/email-chain")
         chain = loaded.json()["result"]["chain"]
         target = next(node for node in chain["nodes"] if node["id"] == self.node2_id)
@@ -326,6 +332,7 @@ class ChainTestSendApiTests(unittest.TestCase):
 
         response = self.client.get(f"/chain/branch/{token_value}")
         self.assertEqual(response.status_code, 200, response.text)
+        mock_ensure_document.assert_called_once_with(token_value)
         mock_dispatch.assert_called_once_with(token_value)
 
         with session_scope() as session:
@@ -337,6 +344,57 @@ class ChainTestSendApiTests(unittest.TestCase):
             assert event is not None
             self.assertEqual(event.action, "materials_request")
             self.assertEqual(event.email, "alice@example.com")
+            self.assertEqual(event.confirmed_ip, "testclient")
+            self.assertTrue(event.confirmed_user_agent)
+            self.assertEqual(event.document_status, "pending")
+            self.assertEqual(event.evidence_payload["campaign_id"], self.campaign_id)
+            self.assertEqual(event.evidence_payload["target_node_name"], "Письмо 2")
+
+    @patch("src.web.chain_router.dispatch_chain_followup")
+    @patch(
+        "src.web.chain_router.ensure_materials_request_document",
+        side_effect=MaterialsConsentDocumentError("storage failed"),
+    )
+    def test_materials_consent_document_error_blocks_followup(
+        self,
+        _mock_ensure_document,
+        mock_dispatch,
+    ) -> None:
+        loaded = self.client.get(f"/api/v1/campaigns/{self.campaign_id}/email-chain")
+        chain = loaded.json()["result"]["chain"]
+        target = next(node for node in chain["nodes"] if node["id"] == self.node2_id)
+        target["consent_on_click"] = True
+        saved = self.client.put(
+            f"/api/v1/campaigns/{self.campaign_id}/email-chain",
+            json=chain,
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+        with session_scope() as session:
+            recipient = session.scalar(
+                select(CampaignRecipient).where(
+                    CampaignRecipient.campaign_id == self.campaign_id
+                )
+            )
+            assert recipient is not None
+            token_row = CampaignChainToken(
+                token=str(uuid.uuid4()),
+                campaign_id=self.campaign_id,
+                recipient_id=int(recipient.id),
+                edge_id="edge-1",
+                source_node_id=self.root_node_id,
+                target_node_id=self.node2_id,
+                send_status="pending",
+            )
+            session.add(token_row)
+            session.flush()
+            token_value = token_row.token
+
+        response = self.client.get(f"/chain/branch/{token_value}")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("Не удалось подтвердить запрос", response.text)
+        mock_dispatch.assert_not_called()
 
     @patch("src.web.chain_router.record_subscribe")
     def test_concurrent_subscribe_click_race_returns_friendly_page_not_500(self, mock_record_subscribe) -> None:

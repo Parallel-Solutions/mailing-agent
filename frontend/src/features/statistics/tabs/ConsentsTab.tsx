@@ -101,6 +101,21 @@ export function ConsentsTab() {
               { title: 'Статус согласия', dataIndex: 'consent_status_label' },
               { title: 'Материалы', dataIndex: 'materials_label' },
               {
+                title: 'Документ',
+                render: (_, r) =>
+                  r.consent_document_url ? (
+                    <Button
+                      size="small"
+                      href={String(r.consent_document_url)}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Скачать
+                    </Button>
+                  ) : (
+                    '—'
+                  ),
+              },
+              {
                 title: 'Последнее действие',
                 render: (_, r) => (
                   <span>

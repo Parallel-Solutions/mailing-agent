@@ -46,13 +46,19 @@ class DbMigrationRecoveryTests(unittest.TestCase):
         applied migrations."""
         with engine.begin() as connection:
             detected = _detect_schema_revision(connection)
-        self.assertEqual(detected, "0050_drop_send_guard_state")
+        self.assertEqual(detected, "0051_chain_consent_docs")
 
     def test_detect_schema_revision_distinguishes_0049_from_0050(self) -> None:
         """The 0049 column exists on both revisions; 0050 is distinguished
         by the send_guard_state table having been dropped."""
         connection = engine.connect()
         try:
+            connection.execute(
+                text(
+                    "ALTER TABLE campaign_chain_consent_events "
+                    "DROP COLUMN IF EXISTS consent_document_path"
+                )
+            )
             connection.execute(
                 text(
                     "CREATE TABLE send_guard_state ("
@@ -77,6 +83,12 @@ class DbMigrationRecoveryTests(unittest.TestCase):
         database for other tests."""
         connection = engine.connect()
         try:
+            connection.execute(
+                text(
+                    "ALTER TABLE campaign_chain_consent_events "
+                    "DROP COLUMN IF EXISTS consent_document_path"
+                )
+            )
             connection.execute(
                 text("ALTER TABLE mail_templates DROP COLUMN IF EXISTS enforce_one_page")
             )

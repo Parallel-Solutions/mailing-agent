@@ -898,11 +898,11 @@ def _build_consent_rows_for_job(job_id: str) -> list[dict[str, Any]]:
 
 
 def _build_chain_consent_rows_for_job(job_id: str, *, existing_emails: set[str]) -> list[dict[str, Any]]:
-    """Map CampaignFlow chain subscribe events into consent KPI rows (no duplicates by email)."""
+    """Map chain subscription and materials-consent events into KPI rows."""
 
     from sqlalchemy import select
 
-    from src.campaigns.chain_consent_service import ACTION_SUBSCRIBE
+    from src.campaigns.chain_consent_service import ACTION_MATERIALS_REQUEST, ACTION_SUBSCRIBE
     from src.infra.db import session_scope
     from src.infra.models import Campaign, CampaignChainConsentEvent, CampaignRecipient
     from src.generator.delivery.sender_report import _format_moscow_datetime
@@ -916,7 +916,7 @@ def _build_chain_consent_rows_for_job(job_id: str, *, existing_emails: set[str])
             select(CampaignChainConsentEvent)
             .where(
                 CampaignChainConsentEvent.campaign_id == campaign.id,
-                CampaignChainConsentEvent.action == ACTION_SUBSCRIBE,
+                CampaignChainConsentEvent.action.in_([ACTION_MATERIALS_REQUEST, ACTION_SUBSCRIBE]),
             )
             .order_by(CampaignChainConsentEvent.created_at.desc())
         ).all()
@@ -936,14 +936,28 @@ def _build_chain_consent_rows_for_job(job_id: str, *, existing_emails: set[str])
             seen_emails.add(email)
             recipient = recipients.get(int(event.recipient_id)) if event.recipient_id is not None else None
             organization = _safe_text(recipient.company) if recipient is not None else ""
-            confirmed_at = _format_moscow_datetime(event.created_at.isoformat() if event.created_at else "")
+            evidence = dict(event.evidence_payload or {})
+            event_time = event.confirmed_at or event.created_at
+            confirmed_at = _format_moscow_datetime(event_time.isoformat() if event_time else "")
+            is_materials_request = event.action == ACTION_MATERIALS_REQUEST
+            material_names = evidence.get("material_names")
+            materials_label = (
+                "; ".join(_safe_text(item) for item in material_names if _safe_text(item))
+                if isinstance(material_names, list)
+                else ""
+            )
+            status_label = (
+                "Подтверждено получение материалов"
+                if is_materials_request
+                else "Подтверждено (цепочка)"
+            )
             rows.append(
                 {
                     "row_id": _safe_text(event.recipient_id),
                     "mun_name": organization,
                     "recipient": email,
                     "status": "confirmed",
-                    "status_label": "Подтверждено (цепочка)",
+                    "status_label": status_label,
                     "request_sent_at": "",
                     "created_at": confirmed_at,
                     "confirmed_at": confirmed_at,
@@ -954,19 +968,31 @@ def _build_chain_consent_rows_for_job(job_id: str, *, existing_emails: set[str])
                     "materials_error": "",
                     "materials_dispatch_summary": "",
                     "transport": _safe_text(campaign.transport),
-                    "attachment_mode": "",
+                    "attachment_mode": "chain_materials" if is_materials_request else "",
                     "work_type": "",
-                    "confirmed_ip": "",
-                    "confirmed_user_agent": "",
-                    "consent_document_path": "",
+                    "confirmed_ip": _safe_text(event.confirmed_ip),
+                    "confirmed_user_agent": _safe_text(event.confirmed_user_agent),
+                    "consent_document_path": _safe_text(event.consent_document_path),
+                    "consent_document_sha256": _safe_text(event.consent_document_sha256),
+                    "consent_document_status": _safe_text(event.document_status),
+                    "consent_document_error": _safe_text(event.document_error),
+                    "consent_document_url": (
+                        f"/api/sender/consents/{event.id}/document"
+                        if event.consent_document_path
+                        else ""
+                    ),
                     "job_id": job_id,
                     "organization": organization,
                     "contact": _safe_text(recipient.contact_name) if recipient is not None else email,
                     "email": email,
                     "consent_status_key": "confirmed",
-                    "consent_status_label": "Подтверждено (цепочка)",
-                    "materials_label": "",
-                    "last_action_label": "Подписка в цепочке",
+                    "consent_status_label": status_label,
+                    "materials_label": materials_label,
+                    "last_action_label": (
+                        "Запрос материалов в цепочке"
+                        if is_materials_request
+                        else "Подписка в цепочке"
+                    ),
                     "last_action_at": confirmed_at,
                     "interest": {
                         "key": "medium",

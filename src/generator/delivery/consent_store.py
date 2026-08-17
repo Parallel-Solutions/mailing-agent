@@ -11,20 +11,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from docx import Document
-
 from src.jobs import normalize_job_id, resolve_job_paths
 from src.jobs.json_store import read_json, write_json_atomic
 from src.jobs.access import read_job_owner
 from src.jobs.job_docs import LEGACY_JOB_ID, list_job_ids_with_doc
 from src.utils.config import settings
 from src.generator.generation.work_types import DEFAULT_WORK_TYPE, normalize_work_type
+from src.generator.delivery.consent_document import write_consent_document
 
 
 CONSENT_FILENAME = "consents.json"
 CONSENT_TEXT = "Согласен получить коммерческое предложение и проект договора от ООО «Параллельные Решения»."
-CONSENT_OPERATOR_NAME = "ООО «Параллельные Решения»"
-CONSENT_OPERATOR_INN = "5038110107"
 ATTACHMENT_MODE_KP = "kp"
 ATTACHMENT_MODE_CONTRACT = "contract"
 ATTACHMENT_MODE_BOTH = "both"
@@ -162,11 +159,6 @@ def _consent_document_path(record: dict[str, Any], *, job_id: str | None) -> Pat
     )
 
 
-def _add_consent_paragraph(document: Document, text: str) -> None:
-    paragraph = document.add_paragraph()
-    paragraph.add_run(text)
-
-
 def _save_consent_document(record: dict[str, Any], *, job_id: str | None) -> Path:
     existing_path = _safe_text(record.get("consent_document_path"))
     if existing_path:
@@ -177,61 +169,11 @@ def _save_consent_document(record: dict[str, Any], *, job_id: str | None) -> Pat
     path = _consent_document_path(record, job_id=job_id)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    document = Document()
-    document.add_heading("СОГЛАСИЕ", level=1)
-    document.add_heading("НА ПОЛУЧЕНИЕ МАТЕРИАЛОВ И ОБРАБОТКУ ПЕРСОНАЛЬНЫХ ДАННЫХ", level=2)
-
-    _add_consent_paragraph(
-        document,
-        (
-            f"Настоящим я, перейдя по ссылке из письма, направленного {CONSENT_OPERATOR_NAME}, "
-            f"ИНН {CONSENT_OPERATOR_INN} (далее — Оператор), как субъект персональных данных, "
-            "во исполнение требований Федерального закона от 27.07.2006 № 152-ФЗ "
-            "«О персональных данных», добровольно, своей волей и в своем интересе предоставляю "
-            "своё согласие на:"
-        ),
+    document_record = dict(record)
+    document_record["materials_description"] = _materials_list_for_attachment_mode(
+        record.get("attachment_mode")
     )
-    _add_consent_paragraph(
-        document,
-        f"1. Получение от Оператора по электронной почте {_materials_list_for_attachment_mode(record.get('attachment_mode'))}.",
-    )
-    _add_consent_paragraph(
-        document,
-        "2. Обработку моих персональных данных: адрес электронной почты, IP-адрес, время и факт "
-        "перехода по ссылке, данные об устройстве.",
-    )
-    _add_consent_paragraph(
-        document,
-        "Цель обработки: направление запрошенных мной материалов по электронной почте.",
-    )
-    _add_consent_paragraph(
-        document,
-        "Перечень действий с персональными данными: сбор, запись, систематизация, накопление, "
-        "хранение, уточнение (обновление, изменение), извлечение, использование, передача "
-        "(распространение, предоставление, доступ) в объёме, необходимом для достижения указанной цели, "
-        "а также блокирование, удаление, уничтожение.",
-    )
-    _add_consent_paragraph(
-        document,
-        "Согласие действует до момента направления запрошенных материалов либо до момента моего отзыва "
-        "по запросу на email: personal.offer@parresh.ru.",
-    )
-    _add_consent_paragraph(
-        document,
-        "Я подтверждаю, что переход по ссылке является аналогом собственноручной подписи и полностью "
-        "заменяет её для целей фиксации согласия в информационной системе Оператора.",
-    )
-
-    document.add_heading("Фиксация согласия произведена:", level=2)
-    _add_consent_paragraph(document, f"Дата и время: {_safe_text(record.get('confirmed_at'))}")
-    _add_consent_paragraph(document, f"Уникальный ID получателя: {_safe_text(record.get('token'))}")
-    _add_consent_paragraph(document, f"Email получателя: {_safe_text(record.get('recipient'))}")
-    _add_consent_paragraph(document, f"Муниципальное образование: {_safe_text(record.get('mun_name'))}")
-    _add_consent_paragraph(document, f"ID строки: {_safe_text(record.get('row_id'))}")
-    _add_consent_paragraph(document, f"IP-адрес: {_safe_text(record.get('confirmed_ip'))}")
-    _add_consent_paragraph(document, f"User-Agent: {_safe_text(record.get('confirmed_user_agent'))}")
-
-    document.save(path)
+    write_consent_document(path, document_record)
     if normalize_job_id(job_id):
         try:
             from src.jobs.workspace import put_upload

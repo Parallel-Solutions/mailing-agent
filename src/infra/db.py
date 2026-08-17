@@ -277,11 +277,19 @@ def _mail_template_column_names(connection) -> set[str]:
 
 def _detect_schema_revision(connection) -> str | None:
     """Best-effort stamp when alembic_version lags behind the real schema."""
-    # 0032-0050: extends detection past the previous ceiling of
+    # 0032-0051: extends detection past the previous ceiling of
     # "0031_merge_onboarding_main" (see the recoverable-migration incident
     # this guards against). Checked newest-first, same table/column
     # introspection style as the rest of this function.
     #
+    # 0051 adds a durable document path to chain consent events.
+    if _has_column(
+        connection,
+        "campaign_chain_consent_events",
+        "consent_document_path",
+    ):
+        return "0051_chain_consent_docs"
+
     # 0050 is identified by the 0049 column plus the absence of the table it
     # deliberately drops. Checking 0049 first avoids treating an old schema
     # from before 0003 as current merely because that table is absent.

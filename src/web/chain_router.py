@@ -6,11 +6,14 @@ import mimetypes
 from html import escape
 from urllib.parse import quote
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from src.campaigns.chain_consent_service import (
+    MaterialsConsentDocumentError,
+    ensure_materials_request_document,
     record_materials_request,
     record_subscribe,
     record_unsubscribe,
@@ -27,8 +30,9 @@ from src.campaigns.chain_service import (
     record_branch_click,
     record_tracked_resource_open,
 )
+from src.generator.delivery.consent_document import CONSENT_DOCUMENT_TEXT_VERSION
 from src.infra.db import session_scope
-from src.infra.models import Campaign, CampaignRecipient
+from src.infra.models import Campaign, CampaignRecipient, MailTemplate
 
 
 def _page(title: str, message: str) -> HTMLResponse:
@@ -69,6 +73,56 @@ def _resolve_target_node(campaign_id: str, target_node_id: str) -> dict | None:
 def _is_duplicate_consent_token(exc: IntegrityError) -> bool:
     diag = getattr(getattr(exc, "orig", None), "diag", None)
     return getattr(diag, "constraint_name", None) == "idx_chain_consent_token"
+
+
+def _materials_request_evidence(
+    *,
+    campaign: Campaign,
+    recipient: CampaignRecipient,
+    target_node: dict,
+) -> dict:
+    template_ids = [
+        str(value).strip()
+        for value in (target_node.get("document_template_ids") or [])
+        if str(value or "").strip()
+    ]
+    templates_by_id: dict[str, MailTemplate] = {}
+    if template_ids:
+        with session_scope() as session:
+            templates = session.scalars(
+                select(MailTemplate).where(MailTemplate.id.in_(template_ids))
+            ).all()
+            templates_by_id = {str(template.id): template for template in templates}
+    material_names = [
+        str(templates_by_id[template_id].name or template_id).strip()
+        if template_id in templates_by_id
+        else template_id
+        for template_id in template_ids
+    ]
+    extra = dict(recipient.extra or {})
+    municipality = str(
+        extra.get("MUN_NAME")
+        or extra.get("mun_name")
+        or recipient.company
+        or ""
+    ).strip()
+    row_id = extra.get("ID") or extra.get("id") or recipient.row_index or recipient.id
+    return {
+        "consent_text_version": CONSENT_DOCUMENT_TEXT_VERSION,
+        "job_id": str(campaign.job_id or campaign.id),
+        "campaign_id": str(campaign.id),
+        "campaign_name": str(campaign.name or ""),
+        "campaign_owner": str(campaign.owner_username or ""),
+        "recipient_id": int(recipient.id),
+        "row_id": str(row_id),
+        "organization": str(recipient.company or ""),
+        "municipality": municipality,
+        "contact_name": str(recipient.contact_name or ""),
+        "target_node_name": str(target_node.get("name") or ""),
+        "email_template_id": str(target_node.get("email_template_id") or ""),
+        "document_template_ids": template_ids,
+        "material_names": material_names,
+    }
 
 
 def create_chain_router() -> APIRouter:
@@ -124,9 +178,9 @@ def create_chain_router() -> APIRouter:
         )
 
     @router.get("/chain/branch/{token}", response_class=HTMLResponse)
-    def chain_branch_click(token: str):
+    def chain_branch_click(token: str, request: Request):
         try:
-            return _handle_chain_branch_click(token)
+            return _handle_chain_branch_click(token, request)
         except ValueError as exc:
             return _page("Ссылка недоступна", str(exc))
         except IntegrityError as exc:
@@ -140,7 +194,7 @@ def create_chain_router() -> APIRouter:
                 raise
             return _page("Спасибо", "Мы уже зафиксировали ваш выбор по этой ссылке.")
 
-    def _handle_chain_branch_click(token: str) -> HTMLResponse:
+    def _handle_chain_branch_click(token: str, request: Request) -> HTMLResponse:
         result = record_branch_click(token)
 
         target_node = _resolve_target_node(
@@ -203,13 +257,24 @@ def create_chain_router() -> APIRouter:
         if is_email_node(target_node):
             if bool(target_node.get("consent_on_click")) and not result.get("test_email"):
                 with session_scope() as session:
+                    campaign = session.get(Campaign, str(result["campaign_id"]))
                     recipient = session.get(
                         CampaignRecipient, int(result["recipient_id"])
                     )
+                    if campaign is None or recipient is None:
+                        return _page(
+                            "Ссылка недоступна",
+                            "Рассылка или получатель не найдены.",
+                        )
                     recipient_extra = dict(recipient.extra or {}) if recipient else {}
                     email = (
                         str(recipient_extra.get("delivery_email") or "").strip()
                         or (recipient.email if recipient else "")
+                    )
+                    evidence = _materials_request_evidence(
+                        campaign=campaign,
+                        recipient=recipient,
+                        target_node=target_node,
                     )
                 record_materials_request(
                     campaign_id=str(result["campaign_id"]),
@@ -218,7 +283,14 @@ def create_chain_router() -> APIRouter:
                     node_id=str(result["target_node_id"]),
                     edge_id=str(result["edge_id"]),
                     token=token,
+                    ip=request.client.host if request.client else "",
+                    user_agent=request.headers.get("user-agent", ""),
+                    evidence=evidence,
                 )
+                try:
+                    ensure_materials_request_document(token)
+                except MaterialsConsentDocumentError as exc:
+                    return _page("Не удалось подтвердить запрос", str(exc))
             if result.get("send_status") not in {"sent", "sending"}:
                 dispatch_chain_followup(token)
 

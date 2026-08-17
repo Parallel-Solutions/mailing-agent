@@ -37,9 +37,12 @@ from src.generator.delivery.manager_stats import (
     normalize_statistics_period,
 )
 from src.infra.spend_ledger import build_spend_snapshot
+from src.infra.db import session_scope
+from src.infra.models import Campaign, CampaignChainConsentEvent
 from src.jobs.access import JobAccessDenied, authorize_job_access, job_is_visible
 from src.jobs.job_docs import list_job_ids_with_sent_mail
 from src.jobs.storage import normalize_job_id
+from src.jobs.workspace import ensure_local_file
 from src.security.auth import coerce_principal
 from src.web.download_sources import DOWNLOAD_HEADERS
 from src.web.errors import internal_server_error
@@ -355,6 +358,32 @@ def create_statistics_router(
             q=q,
         )
         return {"status": "ok", "result": build_consents_view(filters, page=page, per_page=per_page)}
+
+    @router.get("/api/sender/consents/{event_id}/document")
+    def sender_consent_document(
+        event_id: str,
+        principal: object = Depends(check_auth),
+    ):
+        with session_scope() as session:
+            event = session.get(CampaignChainConsentEvent, event_id)
+            if event is None or not event.consent_document_path:
+                raise HTTPException(status_code=404, detail="Документ согласия не найден.")
+            campaign = session.get(Campaign, event.campaign_id)
+            if campaign is None:
+                raise HTTPException(status_code=404, detail="Рассылка не найдена.")
+            job_id = str(campaign.job_id or campaign.id)
+            relative_path = str(event.consent_document_path)
+        ensure_job_access(job_id, principal, allow_missing=False)
+        try:
+            document_path = ensure_local_file(job_id, relative_path)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="Файл согласия не найден.") from exc
+        return FileResponse(
+            document_path,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename=Path(relative_path).name,
+            headers=DOWNLOAD_HEADERS,
+        )
 
     @router.get("/api/sender/chain-subscribes")
     def sender_chain_subscribes(

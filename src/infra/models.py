@@ -1152,6 +1152,15 @@ class CampaignChainConsentEvent(Base):
     token: Mapped[str] = mapped_column(String(36), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_ip: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    confirmed_user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    consent_document_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    consent_document_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    document_status: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    document_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    document_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("idx_chain_consent_campaign_action", "campaign_id", "action"),

@@ -3,12 +3,17 @@ from __future__ import annotations
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+from sqlalchemy import select
 
 from src.campaigns.chain_consent_service import (
     ACTION_MATERIALS_REQUEST,
     ACTION_SUBSCRIBE,
     ACTION_UNSUBSCRIBE,
     MARKETING_CONSENT_TTL_DAYS,
+    MaterialsConsentDocumentError,
+    ensure_materials_request_document,
     get_consent_stats,
     has_active_marketing_consent,
     record_materials_request,
@@ -16,6 +21,8 @@ from src.campaigns.chain_consent_service import (
     record_unsubscribe,
 )
 from src.generator.delivery.suppression_store import is_suppressed
+from src.infra.db import session_scope
+from src.infra.models import CampaignChainConsentEvent
 from tests.bootstrap import bootstrap_test_runtime
 
 
@@ -86,6 +93,7 @@ class ChainConsentServiceTests(unittest.TestCase):
         self.assertEqual(reason, "unsubscribe")
 
     def test_record_materials_request_is_idempotent(self) -> None:
+        evidence = {"job_id": self.campaign["job_id"], "material_names": ["КП МНГП"]}
         first = record_materials_request(
             campaign_id=self.campaign_id,
             recipient_id=self.recipient_id,
@@ -93,6 +101,9 @@ class ChainConsentServiceTests(unittest.TestCase):
             node_id="node-materials",
             edge_id="edge-materials",
             token=self.token,
+            ip="203.0.113.42",
+            user_agent="Test Browser",
+            evidence=evidence,
         )
         second = record_materials_request(
             campaign_id=self.campaign_id,
@@ -105,6 +116,93 @@ class ChainConsentServiceTests(unittest.TestCase):
         self.assertEqual(first["action"], ACTION_MATERIALS_REQUEST)
         self.assertTrue(first["created"])
         self.assertFalse(second["created"])
+        with session_scope() as session:
+            event = session.scalar(
+                select(CampaignChainConsentEvent).where(
+                    CampaignChainConsentEvent.token == self.token
+                )
+            )
+            assert event is not None
+            self.assertEqual(event.confirmed_ip, "203.0.113.42")
+            self.assertEqual(event.confirmed_user_agent, "Test Browser")
+            self.assertEqual(event.evidence_payload["material_names"], ["КП МНГП"])
+            self.assertEqual(event.document_status, "pending")
+
+    @patch("src.campaigns.chain_consent_service.put_upload")
+    @patch(
+        "src.campaigns.chain_consent_service.write_consent_document",
+        return_value="a" * 64,
+    )
+    def test_ensure_materials_request_document_marks_event_ready(
+        self,
+        mock_write,
+        mock_upload,
+    ) -> None:
+        record_materials_request(
+            campaign_id=self.campaign_id,
+            recipient_id=self.recipient_id,
+            email=self.email,
+            node_id="node-materials",
+            edge_id="edge-materials",
+            token=self.token,
+            ip="203.0.113.42",
+            user_agent="Test Browser",
+            evidence={
+                "job_id": self.campaign["job_id"],
+                "material_names": ["КП МНГП"],
+                "consent_text_version": "materials-consent-v1",
+            },
+        )
+
+        result = ensure_materials_request_document(self.token)
+
+        self.assertEqual(result["document_status"], "ready")
+        self.assertTrue(result["consent_document_path"].startswith("consents/"))
+        mock_write.assert_called_once()
+        mock_upload.assert_called_once()
+        with session_scope() as session:
+            event = session.scalar(
+                select(CampaignChainConsentEvent).where(
+                    CampaignChainConsentEvent.token == self.token
+                )
+            )
+            assert event is not None
+            self.assertEqual(event.document_status, "ready")
+            self.assertEqual(event.consent_document_sha256, "a" * 64)
+            self.assertEqual(event.consent_document_path, result["consent_document_path"])
+
+    @patch("src.campaigns.chain_consent_service.put_upload", side_effect=RuntimeError("S3 unavailable"))
+    @patch(
+        "src.campaigns.chain_consent_service.write_consent_document",
+        return_value="b" * 64,
+    )
+    def test_document_upload_error_is_recorded_and_can_be_retried(
+        self,
+        _mock_write,
+        _mock_upload,
+    ) -> None:
+        record_materials_request(
+            campaign_id=self.campaign_id,
+            recipient_id=self.recipient_id,
+            email=self.email,
+            node_id="node-materials",
+            edge_id="edge-materials",
+            token=self.token,
+            evidence={"job_id": self.campaign["job_id"]},
+        )
+
+        with self.assertRaises(MaterialsConsentDocumentError):
+            ensure_materials_request_document(self.token)
+
+        with session_scope() as session:
+            event = session.scalar(
+                select(CampaignChainConsentEvent).where(
+                    CampaignChainConsentEvent.token == self.token
+                )
+            )
+            assert event is not None
+            self.assertEqual(event.document_status, "error")
+            self.assertIn("S3 unavailable", event.document_error or "")
 
     def test_get_consent_stats(self) -> None:
         record_subscribe(
