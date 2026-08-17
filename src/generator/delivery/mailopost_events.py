@@ -108,7 +108,6 @@ def append_mailopost_events(payload: Any) -> dict[str, Any]:
             saved += 1
             try:
                 from src.generator.delivery.suppression_store import upsert_from_provider_event
-                from src.generator.delivery.send_guard import record_complaint
 
                 upsert_from_provider_event(
                     recipient=str(record.get("recipient") or ""),
@@ -127,8 +126,6 @@ def append_mailopost_events(payload: Any) -> dict[str, Any]:
                     smtp_response=str(record.get("smtp_response") or ""),
                     occurred_at=str(record.get("occurred_at") or ""),
                 )
-                if str(record.get("provider_status") or "").strip().lower() in {"spam", "complaint", "complained"}:
-                    record_complaint()
             except Exception:
                 logger.exception(
                     "mailopost_delivery_feedback_failed",

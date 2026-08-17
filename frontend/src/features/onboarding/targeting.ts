@@ -21,11 +21,19 @@ export function findVisibleOnboardingTarget(selector?: string) {
   if (!selector) return undefined;
 
   const overlayLayers = activeOverlayLayers();
-  return Array.from(document.querySelectorAll<HTMLElement>(selector)).find((element) => {
-    if (!isRendered(element)) return false;
-    if (element.matches(':disabled, [aria-disabled="true"]')) return false;
-    return overlayLayers.length === 0 || overlayLayers.some((layer) => layer.contains(element));
-  });
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>(selector)).filter(
+    (element) => (
+      isRendered(element)
+      && (overlayLayers.length === 0 || overlayLayers.some((layer) => layer.contains(element)))
+    ),
+  );
+
+  // Prefer an enabled match, but passive onboarding steps intentionally disable
+  // the exact control they spotlight (e.g. "Проверка подключения", "Старт") so
+  // the tour never triggers a real business write. When every match is
+  // disabled, still highlight it instead of pretending no target exists.
+  return candidates.find((element) => !element.matches(':disabled, [aria-disabled="true"]'))
+    ?? candidates[0];
 }
 
 export function isOnboardingRouteActive(

@@ -174,6 +174,7 @@ export function createEmptyChain(): EmailChain {
         kind: 'email',
         email_template_id: null,
         document_template_ids: [],
+        consent_on_click: false,
       },
     ],
     edges: [],
@@ -215,6 +216,7 @@ export function addChildEmailNode(chain: EmailChain, parentId: string): EmailCha
     kind: 'email',
     email_template_id: null,
     document_template_ids: [],
+    consent_on_click: false,
   });
 }
 

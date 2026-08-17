@@ -26,6 +26,7 @@ from src.generator.delivery.smtp_mailboxes import (
     verify_and_mark_mailbox,
     verify_smtp_credentials,
 )
+from src.generator.delivery.channel_guard import channel_state_blocks_send
 from src.generator.delivery.smtp_oauth import OAuthTokens
 from src.infra.db import session_scope
 from src.infra.models import Campaign, Company, SmtpMailbox
@@ -598,6 +599,7 @@ def resolve_connection(
     *,
     campaign: Campaign | None = None,
     visible_owners: Any = _CONNECTION_VISIBILITY_UNSET,
+    allow_warmup: bool = False,
 ) -> ResolvedConnection:
     visible_owners = _effective_connection_visibility(owner_username, visible_owners)
     with session_scope() as session:
@@ -606,6 +608,14 @@ def resolve_connection(
             raise LookupError("Подключение не найдено.")
         if row.delivery_guard_state == "disabled" or row.status == "disabled_by_guard":
             raise RuntimeError(row.delivery_guard_reason or "Delivery channel is disabled.")
+        if channel_state_blocks_send(
+            row.delivery_guard_state,
+            row.status,
+            allow_warmup=allow_warmup,
+        ):
+            raise RuntimeError(
+                "Обычная отправка приостановлена до завершения прогрева подключения."
+            )
         transport = connection_transport(row)
         sender_name = resolve_sender_name(
             row.owner_username,
@@ -681,7 +691,7 @@ def pick_available_connection(
             row = session.get(SmtpMailbox, connection_id)
             if row is None or row.owner_username != owner_username:
                 continue
-            if row.delivery_guard_state == "disabled" or row.status == "disabled_by_guard":
+            if channel_state_blocks_send(row.delivery_guard_state, row.status):
                 continue
             if _connection_at_limit(
                 row,

@@ -198,7 +198,13 @@ test.describe('Campaign UI consent/branch journey @email', () => {
     const stamp = Date.now();
 
     await mailpitDeleteAll();
-    const guard = await openAppAuthed(page);
+    const guard = await openAppAuthed(page, {
+      // This scenario opens the DOCX metadata editor only to select PDF output.
+      // The isolated E2E stack intentionally does not start the heavyweight
+      // optional OnlyOffice profile, so its editor bootstrap request is expected.
+      allowConsole: ['Failed to load resource: net::ERR_CONNECTION_REFUSED'],
+      allowFailedUrls: ['/web-apps/apps/api/documents/api.js'],
+    });
 
     // Connect a fresh Mailpit mailbox (distinct address from campaign-ui-journey.spec.ts's
     // to avoid any cross-spec collision if @email specs ever run concurrently).
@@ -246,6 +252,7 @@ test.describe('Campaign UI consent/branch journey @email', () => {
       childName,
       emailTemplateName: templateName,
       documentTemplateNames: [documentTemplateName],
+      consentOnClick: true,
     });
 
     // Return to the campaign draft via the chain builder's own "К рассылке"
@@ -261,7 +268,7 @@ test.describe('Campaign UI consent/branch journey @email', () => {
 
     // Sender.
     await goToCampaignStep(page, 'campaign-step-sender-label');
-    await selectAntdOption(page, 'Подключение отправителя', senderEmail);
+    await selectAntdOption(page, 'Подключение отправителя', senderEmail, { typeToSearch: true });
 
     // Recipients — just the deterministic valid list; the negative-fixture
     // paths (errors/duplicates) are already covered by campaign-ui-journey.spec.ts.
@@ -329,41 +336,12 @@ test.describe('Campaign UI consent/branch journey @email', () => {
     const branchResponse = await page.request.get(branchPath);
     expect(branchResponse.ok()).toBeTruthy();
 
-    // KNOWN PRODUCT-SIDE ISSUE — everything above this point (mailbox connect,
-    // template/chain build, negative-fixture recipient validation, real
-    // variable substitution in preview, schedule, launch, root email arriving
-    // in Mailpit with a working chain-branch link, and that link returning
-    // 200) is real, verified, unguarded coverage. The follow-up
-    // document-attachment send past this point is NOT — investigated across
-    // several live runs and root-caused, not just "flaky":
-    //
-    // `dispatch_chain_followup` (src/campaigns/chain_send_service.py:807)
-    // DOES claim the token and start the background send thread (confirmed:
-    // the token's `send_status` moves from `pending` to `sending` to
-    // `error` in `campaign_chain_tokens`, not staying `pending`/absent).
-    // The send fails with `mark_token_sent(token, error="Нет email,
-    // прошедшего проверку.")` (src/campaigns/chain_service.py:658-673) — the
-    // AGGREGATE fallback string from
-    // `validation_attempts_error` (src/campaigns/recipient_email_service.py:
-    // 171-173), which only fires when the per-candidate `attempts` list is
-    // completely EMPTY, i.e. `parse_email_candidates(recipient.email,
-    // recipient.email_fallback)` produced zero candidates for this
-    // recipient in this code path — not that the address failed validation
-    // (a real invalid/unreachable address would produce a specific reason
-    // string instead, per `_attempt_record` at line 91-99). Confirmed
-    // directly against the e2e Postgres DB
-    // (`SELECT token, error FROM campaign_chain_tokens WHERE
-    // send_status='error'`) — reproduced on every attempt, not intermittent.
-    // Root-launched sends (the row.Message this same spec's root email
-    // assertion above depends on) go through a DIFFERENT send path
-    // (`batch_worker.py`) that clearly does resolve `csv1@example.com`
-    // correctly, so this looks like a real gap specifically in the
-    // chain-followup document-send recipient-email resolution — worth a
-    // maintainer with more context on `recipient_email_service.py` looking
-    // at why `parse_email_candidates` (or its caller in this specific path)
-    // sees no candidates here. Flagged separately as a follow-up task; not
-    // something to silently work around in test code.
-    test.fixme(true, 'Chain follow-up document send fails with "Нет email, прошедшего проверку." — see comment above for root-cause evidence (campaign_chain_tokens.error, code path). Root email send + branch-link click both verified working.');
+    await expect(async () => {
+      const statsResponse = await page.request.get(`/api/v1/campaigns/${campaignId}/email-chain/stats`);
+      expect(statsResponse.ok()).toBeTruthy();
+      const statsBody = await statsResponse.json();
+      expect(Number(statsBody?.result?.consents?.materials_request?.count || 0)).toBe(1);
+    }).toPass({ timeout: 10_000, intervals: [500] });
 
     const followupMessage = await mailpitWaitForMessage(
       (m) => m.ID !== rootMessage.ID,

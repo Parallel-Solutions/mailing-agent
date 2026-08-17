@@ -106,10 +106,6 @@ def append_rusender_events(payload: Any) -> dict[str, Any]:
                     smtp_response=str(record.get("smtp_response") or ""),
                     occurred_at=str(record.get("occurred_at") or ""),
                 )
-                from src.generator.delivery.send_guard import record_complaint
-
-                if str(record.get("provider_status") or "").strip().lower() in {"spam", "complaint"}:
-                    record_complaint()
             except Exception:
                 logger.exception(
                     "rusender_delivery_feedback_failed",

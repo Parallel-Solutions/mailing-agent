@@ -277,6 +277,61 @@ def _mail_template_column_names(connection) -> set[str]:
 
 def _detect_schema_revision(connection) -> str | None:
     """Best-effort stamp when alembic_version lags behind the real schema."""
+    # 0032-0050: extends detection past the previous ceiling of
+    # "0031_merge_onboarding_main" (see the recoverable-migration incident
+    # this guards against). Checked newest-first, same table/column
+    # introspection style as the rest of this function.
+    #
+    # 0050 is identified by the 0049 column plus the absence of the table it
+    # deliberately drops. Checking 0049 first avoids treating an old schema
+    # from before 0003 as current merely because that table is absent.
+    if _has_column(connection, "mail_templates", "enforce_one_page"):
+        if not _has_table(connection, "send_guard_state"):
+            return "0050_drop_send_guard_state"
+        return "0049_template_page_limit"
+    if _has_column(connection, "delivery_attempts", "email_validation"):
+        return "0048_delivery_email_validation"
+    if _has_column(connection, "connection_warmup_programs", "warmup_mode"):
+        return "0047_rusender_fixed_warmup"
+
+    # 0045 forked into two revisions off 0044 ("0045_external_service_spends"
+    # and "0045_smtpbz_advisory"), merged back by "0046_merge_smtpbz_spends".
+    # "0045_smtpbz_advisory" is a pure idempotent data-repair UPDATE with no
+    # schema footprint, so it can't be distinguished from "not yet applied"
+    # by inspection — landing directly on the merge revision is safe for
+    # schema purposes; a DB recovered through this path simply skips
+    # re-running that idempotent cleanup (safe to invoke again separately).
+    if _has_table(connection, "external_service_spends"):
+        return "0046_merge_smtpbz_spends"
+    if _has_column(connection, "delivery_key_guards", "delivery_guard_monitoring_started_at"):
+        return "0044_delivery_guard_cycles"
+    if _has_table(connection, "email_validation_runs"):
+        return "0043_email_validation_preflight"
+    if _has_table(connection, "delivery_key_guards"):
+        return "0042_delivery_key_guards"
+    if _has_table(connection, "company_access_grants"):
+        return "0041_company_access_grants"
+    # 0040_repair_detached_chains is likewise a pure data-repair migration
+    # with no schema footprint (idempotent, guarded by its own WHERE
+    # clause) — falling through to the 0039 check below is safe; alembic
+    # will simply re-run it on the way to head.
+    if _has_table(connection, "smtp_open_tracking"):
+        return "0039_smtp_open_tracking"
+    if _has_table(connection, "smtp_sent_copies"):
+        return "0038_smtp_imap_sent_copy"
+    if _has_column(connection, "connection_warmup_programs", "smtp_connection_id"):
+        return "0037_fix_warmup_volume"
+    if _has_column(connection, "connection_warmup_programs", "run_number"):
+        return "0036_connection_warmup_runs"
+    if _has_column(connection, "connection_warmup_programs", "daily_end_time"):
+        return "0035_warmup_scheduling"
+    if _has_column(connection, "connection_warmup_programs", "recipients_consent_confirmed"):
+        return "0034_warmup_recipient_consent"
+    if _has_table(connection, "connection_warmup_programs"):
+        return "0033_connection_sender_warmup"
+    if _has_column(connection, "smtp_mailboxes", "sending_key_id"):
+        return "0032_rusender_sending_key_id"
+
     template_version_columns = _template_version_column_names(connection)
     has_template_source_text_cache = _TEMPLATE_SOURCE_TEXT_COLUMNS.issubset(
         template_version_columns
@@ -364,6 +419,7 @@ def init_db() -> None:
                 "Can't locate revision" in message
                 or "DuplicateTable" in message
                 or "already exists" in message
+                or "Multiple head" in message
             )
             if not recoverable:
                 raise

@@ -52,7 +52,6 @@ def append_unisender_go_events(payload: Any) -> dict[str, Any]:
         jobs.add(job_id)
         try:
             from src.generator.delivery.suppression_store import upsert_from_provider_event
-            from src.generator.delivery.send_guard import record_complaint
 
             provider_status = str(record.get("event_type") or "")
             upsert_from_provider_event(
@@ -61,8 +60,6 @@ def append_unisender_go_events(payload: Any) -> dict[str, Any]:
                 source="webhook_unisender_go",
                 job_id=job_id,
             )
-            if str(provider_status).strip().lower() in {"spam", "complaint", "complained"}:
-                record_complaint()
         except Exception:
             pass
     return {

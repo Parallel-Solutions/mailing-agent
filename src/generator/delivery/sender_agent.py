@@ -1934,12 +1934,6 @@ def _append_sent_mail_log(
         from src.jobs.job_docs import append_event
 
         append_event(job_id, "sent_mail_log", record)
-        try:
-            from src.generator.delivery.send_guard import record_sent
-
-            record_sent()
-        except Exception:
-            pass
     except Exception as exc:
         return (
             "Письмо отправлено, но не удалось записать его в журнал: "
@@ -2906,25 +2900,16 @@ def _run_rusender_request(request: Request, *, timeout: float) -> str:
         try:
             _wait_rusender_api_slot()
             with urlopen(request, timeout=timeout) as response:
-                from src.generator.delivery.send_guard import record_api_request
-
-                record_api_request(success=True)
                 return response.read().decode("utf-8", errors="replace")
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             exc.raw_body = raw  # type: ignore[attr-defined]
-            from src.generator.delivery.send_guard import record_api_request
-
-            record_api_request(success=not _is_retryable_rusender_exception(exc))
             if attempt < RUSENDER_RETRY_ATTEMPTS and _is_retryable_rusender_exception(exc):
                 _sleep_sender_retry(RUSENDER_RETRY_BASE_SECONDS * attempt)
                 last_error = exc
                 continue
             raise
         except Exception as exc:
-            from src.generator.delivery.send_guard import record_api_request
-
-            record_api_request(success=False)
             if attempt < RUSENDER_RETRY_ATTEMPTS and _is_retryable_rusender_exception(exc):
                 _sleep_sender_retry(RUSENDER_RETRY_BASE_SECONDS * attempt)
                 last_error = exc
@@ -4280,10 +4265,6 @@ def run_sender(
 
     job_paths = resolve_job_paths(job_id)
     data_xlsx_path = _resolve_sender_data_xlsx_path(job_id)
-    if not dry_run:
-        from src.generator.delivery.send_guard import assert_sending_allowed
-
-        assert_sending_allowed()
     output_dir = None if job_paths.uses_legacy_layout else job_paths.output_dir
     job_template_docx_path = job_paths.templates_dir / "mail_template.docx"
     job_template_txt_path = job_paths.templates_dir / "mail_template.txt"

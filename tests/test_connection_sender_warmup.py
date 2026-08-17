@@ -318,6 +318,117 @@ class ConnectionSenderWarmupTests(unittest.TestCase):
             self.assertTrue(program.suspended_by_campaign)
             self.assertEqual(delivery.status, "paused")
 
+    def test_crashed_sending_status_finalizes_as_error_without_resending(self) -> None:
+        """A delivery left at status='sending' (process crashed mid-send in
+        a prior attempt) must never be resent — we cannot know whether the
+        email already went out, so a duplicate must be avoided even at the
+        cost of finalizing as an error requiring manual follow-up."""
+        result = warmup.add_recipients(
+            self.connection_id,
+            self.owner,
+            ["stuck@gmail.com"],
+            visible_owners=self.visibility,
+        )
+        recipient_id = result["recipients"][0]["id"]
+        delivery_id = str(uuid4())
+        now = datetime.now(timezone.utc)
+        with session_scope() as session:
+            program = session.get(ConnectionWarmupProgram, result["id"])
+            program.status = "running"
+            session.add(ConnectionWarmupDelivery(
+                id=delivery_id,
+                program_id=result["id"],
+                recipient_id=recipient_id,
+                day_number=1,
+                run_number=1,
+                sequence_number=1,
+                status="sending",
+                scheduled_at=now,
+                created_at=now,
+                updated_at=now,
+            ))
+        with patch("src.campaigns.batch_worker._send_delivery_message") as send:
+            outcome = warmup.run_warmup_message({"delivery_id": delivery_id})
+        send.assert_not_called()
+        self.assertEqual(outcome["status"], "error")
+        with session_scope() as session:
+            delivery = session.get(ConnectionWarmupDelivery, delivery_id)
+            recipient = session.get(warmup.ConnectionWarmupRecipient, recipient_id)
+            self.assertEqual(delivery.status, "error")
+            self.assertIn("дублирования", delivery.error)
+            self.assertEqual(recipient.error_count, 1)
+
+    def test_first_send_failure_is_retryable_second_failure_is_terminal(self) -> None:
+        """max_attempts=2 at the task-queue layer must actually get a second
+        real attempt: a first failure should leave the delivery in a
+        non-terminal state so a retry re-enters and resends; only a second
+        consecutive failure should finalize as terminal 'error'."""
+        result = warmup.add_recipients(
+            self.connection_id,
+            self.owner,
+            ["retry@gmail.com"],
+            visible_owners=self.visibility,
+        )
+        recipient_id = result["recipients"][0]["id"]
+        delivery_id = str(uuid4())
+        now = datetime.now(timezone.utc)
+        with session_scope() as session:
+            program = session.get(ConnectionWarmupProgram, result["id"])
+            program.status = "running"
+            program.warmup_mode = warmup.FIXED_DAILY_MODE
+            program.duration_days = 1
+            session.add(ConnectionWarmupDelivery(
+                id=delivery_id,
+                program_id=result["id"],
+                recipient_id=recipient_id,
+                day_number=1,
+                run_number=1,
+                sequence_number=1,
+                status="queued",
+                scheduled_at=now,
+                created_at=now,
+                updated_at=now,
+            ))
+
+        with patch(
+            "src.campaigns.batch_worker._send_delivery_message",
+            side_effect=RuntimeError("smtp timeout"),
+        ) as send:
+            with self.assertRaises(RuntimeError):
+                warmup.run_warmup_message({"delivery_id": delivery_id})
+        self.assertEqual(send.call_count, 1)
+        with session_scope() as session:
+            delivery = session.get(ConnectionWarmupDelivery, delivery_id)
+            self.assertEqual(delivery.status, "send_retry_pending")
+            recipient = session.get(warmup.ConnectionWarmupRecipient, recipient_id)
+            self.assertEqual(recipient.error_count, 1)
+            program = session.get(ConnectionWarmupProgram, result["id"])
+            self.assertEqual(program.status, "running")
+            self.assertEqual(program.current_day, 1)
+
+        # Task-queue retry re-invokes the same delivery_id.
+        with patch(
+            "src.campaigns.batch_worker._send_delivery_message",
+            side_effect=RuntimeError("smtp timeout again"),
+        ) as send_again:
+            with self.assertRaises(RuntimeError):
+                warmup.run_warmup_message({"delivery_id": delivery_id})
+        self.assertEqual(send_again.call_count, 1, "the retry must actually attempt a real resend")
+        with session_scope() as session:
+            delivery = session.get(ConnectionWarmupDelivery, delivery_id)
+            self.assertEqual(delivery.status, "error")
+            recipient = session.get(warmup.ConnectionWarmupRecipient, recipient_id)
+            self.assertEqual(recipient.error_count, 2)
+            program = session.get(ConnectionWarmupProgram, result["id"])
+            self.assertEqual(program.status, "completed")
+
+        # A third invocation must short-circuit at the terminal check and
+        # must not call _send_delivery_message again.
+        with patch("src.campaigns.batch_worker._send_delivery_message") as send_third:
+            outcome = warmup.run_warmup_message({"delivery_id": delivery_id})
+        send_third.assert_not_called()
+        self.assertEqual(outcome["status"], "error")
+
     def test_rusender_open_event_is_visible_in_warmup_statistics(self) -> None:
         result = warmup.add_recipients(
             self.connection_id,

@@ -6,6 +6,7 @@ import {
   hasAiFixableWizardIssues,
   validateScheduleStep,
 } from './campaignStepValidation';
+import { resolveScheduleFormValues, scheduleToFormValues } from '@/utils/scheduleForm';
 
 describe('campaignStepValidation', () => {
   it('maps basics errors to step 0', () => {
@@ -144,6 +145,36 @@ describe('campaignStepValidation', () => {
     expect(validateScheduleStep({})).toEqual(
       expect.arrayContaining(['Укажите дату и время старта', 'Укажите интервал между пакетами']),
     );
+  });
+
+  it('does not mark the schedule step as error on a brand-new draft whose schedule form is unmounted', () => {
+    // Form.useWatch([], scheduleForm) yields {} until the Schedule step's
+    // Collapse panel mounts (e.g. a fresh draft opening on step 0).
+    const steps = buildCampaignStepValidation({
+      draft: { name: 'Черновик рассылки' },
+      validate: undefined,
+      scheduleValues: resolveScheduleFormValues({}, scheduleToFormValues(undefined)),
+    });
+    expect(steps[3].errors).toEqual([]);
+    expect(steps[3].status).not.toBe('error');
+  });
+
+  it('still reports schedule errors when the mounted form has a cleared start date', () => {
+    const steps = buildCampaignStepValidation({
+      draft: { name: 'A', email_chain_id: 'c1' },
+      validate: undefined,
+      scheduleValues: resolveScheduleFormValues(
+        {
+          batch_size: 25,
+          start_at: null,
+          interval_value: 1,
+          interval_unit: 'hours',
+        } as unknown as Partial<import('@/utils/scheduleForm').ScheduleFormValues>,
+        scheduleToFormValues(undefined),
+      ),
+    });
+    expect(steps[3].errors).toContain('Укажите дату и время старта');
+    expect(steps[3].status).toBe('error');
   });
 
   it('accepts batch size 1 and rejects zero', () => {

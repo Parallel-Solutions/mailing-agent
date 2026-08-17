@@ -51,6 +51,16 @@ describe('onboarding target selection', () => {
     expect(findVisibleOnboardingTarget('[data-onboarding-id="hidden"]')).toBeUndefined();
   });
 
+  it('still highlights a control that passive onboarding intentionally disables', () => {
+    const disabledSubmit = markRendered(document.createElement('button'));
+    disabledSubmit.dataset.onboardingId = 'connection-submit';
+    disabledSubmit.setAttribute('disabled', '');
+    document.body.append(disabledSubmit);
+
+    expect(findVisibleOnboardingTarget('[data-onboarding-id="connection-submit"]'))
+      .toBe(disabledSubmit);
+  });
+
 });
 
 describe('onboarding route matching', () => {

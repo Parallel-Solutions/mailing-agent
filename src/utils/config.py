@@ -47,10 +47,6 @@ class Settings(BaseSettings):
     )
     sender_domain_limit_window_seconds: int = 3600
 
-    send_guard_window_seconds: int = 3600
-    send_guard_complaint_rate_threshold: float = 0.001
-    send_guard_api_error_rate_threshold: float = 0.05
-    send_guard_min_samples: int = 20
     suppression_soft_bounce_ttl_days: int = 7
 
     # PostgreSQL

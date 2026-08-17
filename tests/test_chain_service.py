@@ -378,6 +378,15 @@ class ChainServiceTests(unittest.TestCase):
         self.assertEqual(normalized["version"], 2)
         self.assertEqual(normalized["nodes"][0]["kind"], "email")
 
+    def test_normalize_chain_rejects_duplicate_node_ids(self) -> None:
+        chain = empty_chain()
+        root = chain["root_node_id"]
+        chain["nodes"].append(
+            {"id": root, "name": "Дубликат узла", "email_template_id": "t1", "document_template_ids": []},
+        )
+        with self.assertRaises(ValueError):
+            normalize_chain(chain)
+
     def test_validate_link_node_requires_url(self) -> None:
         chain = empty_chain()
         root = chain["root_node_id"]

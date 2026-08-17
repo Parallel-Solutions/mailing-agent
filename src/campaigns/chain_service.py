@@ -339,6 +339,7 @@ def _normalize_node(raw: dict[str, Any]) -> dict[str, Any]:
     else:
         node["email_template_id"] = raw.get("email_template_id") or None
         node["document_template_ids"] = [str(x) for x in doc_ids if x]
+        node["consent_on_click"] = bool(raw.get("consent_on_click", False))
     return node
 
 
@@ -349,6 +350,8 @@ def normalize_chain(chain: dict[str, Any]) -> dict[str, Any]:
             continue
         nodes.append(_normalize_node(raw))
     node_ids = {n["id"] for n in nodes}
+    if len(node_ids) != len(nodes):
+        raise ValueError("Найдены дублирующиеся идентификаторы узлов цепочки.")
     node_by_id = {n["id"]: n for n in nodes}
     edges = []
     for raw in chain.get("edges") or []:

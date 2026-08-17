@@ -29,7 +29,7 @@ function buildAddMenu(
     items: [
       {
         key: 'email',
-        label: 'Письмо',
+        label: 'Следующее письмо (можно с документами)',
         onClick: () => onAddChildEmail(nodeId),
       },
       {
@@ -37,7 +37,7 @@ function buildAddMenu(
         label: 'Ссылка',
         children: (['custom', 'unsubscribe', 'subscribe'] as ChainLinkKind[]).map((kind) => ({
           key: `link-${kind}`,
-          label: LINK_KIND_LABELS[kind],
+          label: kind === 'custom' ? 'Внешняя ссылка (без письма)' : LINK_KIND_LABELS[kind],
           onClick: () => onAddChildLink(nodeId, kind),
         })),
       },

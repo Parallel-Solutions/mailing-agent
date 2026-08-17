@@ -314,10 +314,8 @@ def create_sender_router(
     async def sender_queue(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)
         from src.workers.task_queue import get_queue_snapshot
-        from src.generator.delivery.send_guard import get_send_guard_status
 
         snapshot = get_queue_snapshot(task_type="sender", job_id=job_id)
-        snapshot["send_guard"] = get_send_guard_status()
         return {"status": "ok", "result": snapshot}
 
     @router.post("/api/sender/scheduled/cancel")
@@ -355,17 +353,6 @@ def create_sender_router(
             details={"task_id": task_id},
         )
         return ok_response({"cancelled": True, "task": cancelled, "result": compact_sender_status(fresh)})
-
-    @router.post("/api/sender/resume")
-    async def sender_resume(principal: object = Depends(check_auth)):
-        from src.jobs.access import coerce_principal
-        from src.generator.delivery.send_guard import get_send_guard_status, resume_sending
-
-        actor = coerce_principal(principal)
-        if not actor.is_admin:
-            raise HTTPException(status_code=403, detail="Только администратор может возобновить отправку.")
-        resume_sending()
-        return {"status": "ok", "result": get_send_guard_status()}
 
     @router.get("/api/sender/suppression")
     async def sender_suppression_list(

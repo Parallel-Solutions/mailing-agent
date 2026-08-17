@@ -1,4 +1,4 @@
-"""Subscribe/unsubscribe consent tracking for email chains."""
+"""Consent and unsubscribe tracking for email chains."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from src.infra.models import CampaignChainConsentEvent
 MARKETING_CONSENT_TTL_DAYS = 365
 ACTION_SUBSCRIBE = "subscribe"
 ACTION_UNSUBSCRIBE = "unsubscribe"
+ACTION_MATERIALS_REQUEST = "materials_request"
 
 
 def _now() -> datetime:
@@ -108,6 +109,40 @@ def record_unsubscribe(
     return {"action": ACTION_UNSUBSCRIBE, "created": True}
 
 
+def record_materials_request(
+    *,
+    campaign_id: str,
+    recipient_id: int,
+    email: str,
+    node_id: str,
+    edge_id: str,
+    token: str,
+) -> dict[str, Any]:
+    """Record an explicit click requesting the next email and its materials."""
+
+    now = _now()
+    with session_scope() as session:
+        existing = _existing_event(session, token)
+        if existing is not None:
+            return {"action": ACTION_MATERIALS_REQUEST, "created": False}
+        session.add(
+            CampaignChainConsentEvent(
+                id=str(uuid.uuid4()),
+                campaign_id=campaign_id,
+                recipient_id=recipient_id,
+                email=str(email or "").strip().lower(),
+                action=ACTION_MATERIALS_REQUEST,
+                node_id=node_id,
+                edge_id=edge_id,
+                token=token,
+                created_at=now,
+                expires_at=None,
+            )
+        )
+        session.flush()
+        return {"action": ACTION_MATERIALS_REQUEST, "created": True}
+
+
 def get_consent_stats(campaign_id: str, *, session: Session | None = None) -> dict[str, Any]:
     def _query(active_session: Session) -> dict[str, Any]:
         rows = active_session.execute(
@@ -122,6 +157,9 @@ def get_consent_stats(campaign_id: str, *, session: Session | None = None) -> di
         return {
             "subscribe": {"count": counts.get(ACTION_SUBSCRIBE, 0)},
             "unsubscribe": {"count": counts.get(ACTION_UNSUBSCRIBE, 0)},
+            "materials_request": {
+                "count": counts.get(ACTION_MATERIALS_REQUEST, 0)
+            },
         }
 
     if session is not None:

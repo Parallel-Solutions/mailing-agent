@@ -21,12 +21,22 @@ export async function waitForFonts(page: Page): Promise<void> {
   });
 }
 
-export async function openAppAuthed(page: Page): Promise<ConsoleGuard> {
+export async function openAppAuthed(
+  page: Page,
+  options: ConsoleGuardOptions = {},
+): Promise<ConsoleGuard> {
   const guard = new ConsoleGuard(page, {
-    allowHttp4xxUrls: ['/api/auth/me', '/api/v1/templates/', '/api/v1/companies/'],
+    allowHttp4xxUrls: [
+      '/api/auth/me',
+      '/api/v1/templates/',
+      '/api/v1/companies/',
+      ...(options.allowHttp4xxUrls || []),
+    ],
+    allowFailedUrls: options.allowFailedUrls || [],
     allowConsole: [
       // Optional lazy-loaded preview thumbnails and company logos may 404 in E2E seed data.
       'Failed to load resource: the server responded with a status of 404 (Not Found)',
+      ...(options.allowConsole || []),
     ],
   });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
