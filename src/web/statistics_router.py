@@ -109,10 +109,20 @@ def create_statistics_router(
         job_id: str | None = None,
         campaign: str | None = None,
     ) -> tuple[str, ...]:
-        selected = normalize_job_id(job_id or campaign)
+        # job_id/campaign may carry a single id or a comma-separated list (the
+        # "Рассылка" filter supports selecting several campaigns at once).
+        raw = job_id or campaign or ""
+        selected: list[str] = []
+        seen: set[str] = set()
+        for item in raw.split(","):
+            normalized = normalize_job_id(item)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                selected.append(normalized)
         if selected:
-            ensure_job_access(selected, principal, allow_missing=False)
-            return (selected,)
+            for job in selected:
+                ensure_job_access(job, principal, allow_missing=False)
+            return tuple(selected)
         return tuple(_list_mailing_jobs_for_stats(principal))
 
     def _build_filters(

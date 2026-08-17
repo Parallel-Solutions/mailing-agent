@@ -1,4 +1,4 @@
-import { Button, Card, Col, Divider, Empty, List, Modal, Row, Select, Space, Table, Typography } from 'antd';
+import { Alert, Button, Card, Col, Divider, Empty, List, Modal, Row, Select, Space, Table, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { statisticsApi } from '@/api/statistics';
@@ -17,7 +17,11 @@ export function CampaignAnalyticsTab() {
     openDrilldown,
     setError,
   } = useStatistics();
-  const jobId = filters.campaign || '';
+  const selectedCampaignIds = (filters.campaign || '').split(',').filter(Boolean);
+  // Chain/link analytics is inherently a per-campaign view, so with several
+  // campaigns selected in the top filter we show the detail for the first
+  // one and surface a hint rather than silently ignoring the rest.
+  const jobId = selectedCampaignIds[0] || '';
 
   const query = useQuery({
     queryKey: [
@@ -220,6 +224,14 @@ export function CampaignAnalyticsTab() {
 
   return (
     <div>
+      {selectedCampaignIds.length > 1 ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Выбрано несколько рассылок. Детальная аналитика по письмам и ссылкам показана для первой из них — для сводных показателей по всем выбранным рассылкам используйте вкладку «Показатели рассылок»."
+        />
+      ) : null}
       <Row gutter={[12, 12]} align="middle" style={{ marginBottom: 16 }}>
         <Col flex="auto">
           {jobId ? (

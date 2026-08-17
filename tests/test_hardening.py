@@ -178,6 +178,14 @@ class DatabaseRuntimeGuardTests(unittest.TestCase):
                 side_effect=lambda _connection, table: table
                 == "user_onboarding_states",
             ),
+            # None of the 0032-0046 markers are present in this simulated
+            # schema — without this, an unpatched _has_column against a
+            # MagicMock connection would return truthy for every call
+            # (`.scalar() is not None` on a MagicMock's default chain is
+            # always True), short-circuiting on the newest column-based
+            # check long before reaching the table-based one this test
+            # actually exercises.
+            patch.object(db, "_has_column", return_value=False),
         ):
             revision = db._detect_schema_revision(MagicMock())
 
@@ -193,6 +201,7 @@ class DatabaseRuntimeGuardTests(unittest.TestCase):
                 return_value=set(db._TEMPLATE_SOURCE_TEXT_COLUMNS),
             ),
             patch.object(db, "_has_table", return_value=False),
+            patch.object(db, "_has_column", return_value=False),
         ):
             revision = db._detect_schema_revision(MagicMock())
 

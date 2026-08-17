@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from sqlalchemy.exc import IntegrityError
 
 from src.campaigns.chain_consent_service import record_subscribe, record_unsubscribe
 from src.campaigns.chain_send_service import dispatch_chain_followup
@@ -116,9 +117,20 @@ def create_chain_router() -> APIRouter:
     @router.get("/chain/branch/{token}", response_class=HTMLResponse)
     def chain_branch_click(token: str):
         try:
-            result = record_branch_click(token)
+            return _handle_chain_branch_click(token)
         except ValueError as exc:
             return _page("Ссылка недоступна", str(exc))
+        except IntegrityError:
+            # record_branch_click's clicked_at check-then-set isn't locked,
+            # so two concurrent clicks on the same subscribe/unsubscribe
+            # link can both see already_clicked=False and both attempt to
+            # record consent — the loser hits a uniqueness violation here.
+            # That's not a real failure, just a race: treat it the same as
+            # "already confirmed" instead of surfacing a 500.
+            return _page("Спасибо", "Мы уже зафиксировали ваш выбор по этой ссылке.")
+
+    def _handle_chain_branch_click(token: str) -> HTMLResponse:
+        result = record_branch_click(token)
 
         target_node = _resolve_target_node(
             str(result.get("campaign_id") or ""),

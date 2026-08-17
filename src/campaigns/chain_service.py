@@ -349,6 +349,8 @@ def normalize_chain(chain: dict[str, Any]) -> dict[str, Any]:
             continue
         nodes.append(_normalize_node(raw))
     node_ids = {n["id"] for n in nodes}
+    if len(node_ids) != len(nodes):
+        raise ValueError("Найдены дублирующиеся идентификаторы узлов цепочки.")
     node_by_id = {n["id"]: n for n in nodes}
     edges = []
     for raw in chain.get("edges") or []:

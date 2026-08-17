@@ -40,8 +40,14 @@ function Ensure-EnvFile {
 
 function Invoke-Compose {
   # Explicit array: PowerShell must not bind -d/-T as common parameters.
+  # `& @Compose @ComposeArgs` looks like it splats $Compose as "command +
+  # leading args", but Windows PowerShell 5.1 has no such thing — splatting
+  # only binds a command's own parameters, so `@Compose` right after `&` is
+  # instead stringified (space-joined) into a single, nonexistent command
+  # name. Invoke the first element directly and pass the rest as a plain
+  # positional array instead.
   param([Parameter(Mandatory = $true)][string[]]$ComposeArgs)
-  & @Compose @ComposeArgs
+  & $Compose[0] ($Compose[1..($Compose.Length - 1)] + $ComposeArgs)
   if ($LASTEXITCODE -ne 0) {
     throw "docker compose failed with exit code $LASTEXITCODE"
   }
@@ -105,7 +111,7 @@ function Cmd-Test {
 
 function Cmd-Report {
   if (-not (Test-Path $ReportPath)) {
-    throw "Report not found: $ReportPath — run tests first."
+    throw "Report not found: $ReportPath - run tests first."
   }
   Write-Host "Opening $ReportPath"
   Start-Process $ReportPath
@@ -121,8 +127,8 @@ function Cmd-Full {
   $workerHealthy = ''
   do {
     Start-Sleep -Seconds 3
-    $appId = & @Compose @('ps', '-q', 'app') 2>$null
-    $workerId = & @Compose @('ps', '-q', 'worker') 2>$null
+    $appId = & $Compose[0] ($Compose[1..($Compose.Length - 1)] + @('ps', '-q', 'app')) 2>$null
+    $workerId = & $Compose[0] ($Compose[1..($Compose.Length - 1)] + @('ps', '-q', 'worker')) 2>$null
     $appHealthy = if ($appId) { docker inspect --format='{{.State.Health.Status}}' $appId 2>$null } else { '' }
     $workerHealthy = if ($workerId) { docker inspect --format='{{.State.Health.Status}}' $workerId 2>$null } else { '' }
     if ($appHealthy -eq 'healthy' -and $workerHealthy -eq 'healthy') { break }

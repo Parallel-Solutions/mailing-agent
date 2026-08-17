@@ -21,12 +21,31 @@ import { expect, type Page } from '@playwright/test';
  * for both that wrapper and plain ProFormSelect fields, so it is used
  * everywhere in this module for consistency.
  */
-export async function selectAntdOption(page: Page, formItemLabel: string, optionText: string): Promise<void> {
+export async function selectAntdOption(
+  page: Page,
+  formItemLabel: string,
+  optionText: string,
+  options?: {
+    // Types `optionText` into the field before matching, narrowing AntD's
+    // option list to what's actually needed. Opt-in (default off, matching
+    // the prior behavior exactly) because typing is a no-op for fields
+    // without `showSearch` (their search input is `readOnly`) but would
+    // silently filter results to zero on a searchable field whose
+    // `optionFilterProp` doesn't match this text. Needed for fields backed
+    // by lists that grow over repeated test runs (e.g. connections) — AntD
+    // virtualizes long dropdowns, so a freshly created option can sit past
+    // the render window and a plain DOM text filter never finds it.
+    typeToSearch?: boolean;
+  },
+): Promise<void> {
   const formItem = page
     .locator('.ant-form-item')
     .filter({ has: page.locator('.ant-form-item-label label', { hasText: formItemLabel }) })
     .first();
   await formItem.locator('.ant-select-selector').first().click();
+  if (options?.typeToSearch) {
+    await page.keyboard.type(optionText);
+  }
   await page
     .locator('.ant-select-dropdown:visible .ant-select-item-option', { hasText: optionText })
     .first()

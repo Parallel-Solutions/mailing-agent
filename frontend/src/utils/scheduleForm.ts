@@ -57,6 +57,23 @@ export function formatScheduleDateTime(iso?: string | null, _timezone?: string):
   return formatLocalDateTime(iso);
 }
 
+/**
+ * `Form.useWatch([], form)` resolves to `{}` (not `undefined`) while the
+ * schedule step's form panel is unmounted (no registered fields yet, e.g. on
+ * a brand-new draft that opens on a different wizard step) and to partial
+ * objects mid-mount. `{}` is truthy, so a plain `watched || fallback` never
+ * falls back and every field reads as "missing". Merge the watched values
+ * over the saved-schedule defaults instead: absent fields keep their
+ * persisted value, and a field the user actually cleared (e.g. `start_at:
+ * null`) still surfaces as empty.
+ */
+export function resolveScheduleFormValues(
+  watched: Partial<ScheduleFormValues> | undefined | null,
+  fallback: ScheduleFormValues,
+): ScheduleFormValues {
+  return { ...fallback, ...(watched ?? {}) };
+}
+
 export function scheduleToFormValues(schedule?: {
   batch_size?: number;
   start_at?: string | null;

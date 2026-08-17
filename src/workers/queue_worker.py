@@ -185,10 +185,6 @@ def _run_claimed_task(task: dict[str, Any], worker_id: str) -> None:
     task_id = str(task["id"])
     task_type = str(task["task_type"])
     job_id = str(task.get("job_id") or "").strip() or None
-    if task_type == "sender":
-        from src.generator.delivery.send_guard import assert_sending_allowed
-
-        assert_sending_allowed()
     timeout_seconds = _task_timeout_seconds(task_type)
     heartbeat_seconds = max(1, int(settings.background_queue_heartbeat_seconds))
     lease_seconds = max(heartbeat_seconds * 2, int(settings.background_queue_lease_seconds))
@@ -359,25 +355,9 @@ def main() -> None:
             last_campaign_reconciliation
         )
         last_template_text_backfill = _run_template_text_backfill_if_due(last_template_text_backfill)
-        # When sending is auto-paused (e.g. an API error-rate spike), only
-        # actual sending must stop. Previously this skipped claim_task
-        # entirely, so a global send pause silently froze every task type on
-        # the shared worker, including the unrelated SMTP.BZ recipient
-        # validation check (which only calls an HTTP verification API and
-        # never sends mail). Everything else — sender, documents, warmups,
-        # etc. — keeps its existing paused-while-sending-is-paused behavior.
-        only_task_types: set[str] | None = None
-        try:
-            from src.generator.delivery.send_guard import is_sending_paused
-
-            if is_sending_paused():
-                only_task_types = {"email_validation"}
-        except Exception:
-            logger.exception("queue_worker_send_guard_check_failed")
         task = claim_task(
             worker_id=worker_id,
             lease_seconds=lease_seconds,
-            only_task_types=only_task_types,
         )
         now = time.monotonic()
         if now - last_orphan_reconciliation >= 60:

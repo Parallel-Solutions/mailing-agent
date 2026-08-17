@@ -24,7 +24,10 @@ function ratePair(count: unknown, rate: unknown): string {
 
 export function CampaignFullAnalyticsTab() {
   const { filters, refreshNonce, refreshProviders, setError } = useStatistics();
-  const jobId = filters.campaign || '';
+  const selectedCampaignIds = (filters.campaign || '').split(',').filter(Boolean);
+  // Full analytics (delivery log, chain, documents) is a per-campaign view —
+  // with several campaigns selected in the top filter we show the first one.
+  const jobId = selectedCampaignIds[0] || '';
   const [deliveryPage, setDeliveryPage] = useState(1);
   const [sentLogPage, setSentLogPage] = useState(1);
   const [attemptsPage, setAttemptsPage] = useState(1);
@@ -115,6 +118,15 @@ export function CampaignFullAnalyticsTab() {
           {result.period_to ? ` — ${String(result.period_to)}` : ''}
         </Typography.Text>
       </div>
+
+      {selectedCampaignIds.length > 1 ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Выбрано несколько рассылок. Полная аналитика показана для первой из них."
+        />
+      ) : null}
 
       {refreshFlags.length ? (
         <Alert

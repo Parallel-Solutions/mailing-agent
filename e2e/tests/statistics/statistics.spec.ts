@@ -56,6 +56,10 @@ test.describe('Statistics page @smoke', () => {
       .first();
     await expect(firstCampaign).toBeVisible();
     await firstCampaign.click();
+    // The filter now supports selecting several campaigns (chips), so unlike
+    // a single-select it doesn't auto-close on pick — close it explicitly
+    // before interacting with elements underneath.
+    await page.keyboard.press('Escape');
 
     const totalCard = page.locator('[data-testid$="-total-card"]').first();
     await expect(totalCard).toBeVisible();
@@ -92,6 +96,8 @@ test.describe('Statistics page @smoke', () => {
       .locator('.ant-select-item-option-content')
       .innerText();
     await firstCampaign.click();
+    // Multi-select stays open after a pick — close it before reopening below.
+    await page.keyboard.press('Escape');
 
     await expect(page).toHaveURL(/campaign=/);
     await campaignFilter.click();

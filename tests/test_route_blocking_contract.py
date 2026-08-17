@@ -15,7 +15,6 @@ ALLOWED_ASYNC_FUNCTIONS = {
     ("sender_router.py", "rusender_webhook_tokenized"),
     ("sender_router.py", "mailopost_webhook_tokenized"),
     ("sender_router.py", "sender_queue"),
-    ("sender_router.py", "sender_resume"),
     ("sender_router.py", "sender_suppression_list"),
     ("sender_router.py", "sender_suppression_add"),
     ("sender_router.py", "sender_suppression_remove"),

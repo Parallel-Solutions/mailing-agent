@@ -60,7 +60,7 @@ function AdvancedFiltersModal() {
             ]
           : null,
       providers: filters.providers ? filters.providers.split(',').filter(Boolean) : [],
-      campaign: filters.campaign || undefined,
+      campaign: filters.campaign ? filters.campaign.split(',').filter(Boolean) : [],
       consent_status: filters.consent_status || undefined,
       manager_action: filters.manager_action || undefined,
       organization: filters.organization || undefined,
@@ -102,7 +102,7 @@ function AdvancedFiltersModal() {
               period_to: period?.[1]?.format('YYYY-MM-DD'),
               providers: (values.providers as string[] | undefined)?.join(',') || undefined,
               provider: undefined,
-              campaign: values.campaign || undefined,
+              campaign: (values.campaign as string[] | undefined)?.join(',') || undefined,
               consent_status: values.consent_status || undefined,
               manager_action: values.manager_action || undefined,
               organization: values.organization || undefined,
@@ -128,9 +128,11 @@ function AdvancedFiltersModal() {
         </Form.Item>
         <Form.Item name="campaign" label="Рассылка">
           <Select
+            mode="multiple"
             allowClear
             showSearch
             optionFilterProp="label"
+            maxTagCount={2}
             options={campaigns.map((item) => ({
               value: String(item.job_id),
               label: String(item.title || 'Рассылка без названия'),
@@ -182,7 +184,9 @@ function ExportReportModal() {
 
   useEffect(() => {
     if (modal !== 'export') return;
-    setJobId(filters.campaign || undefined);
+    // Export is always for a single campaign; default to the first one
+    // selected in the top filter (which may hold several, comma-joined).
+    setJobId(filters.campaign?.split(',')[0] || undefined);
     setPeriod([
       filters.period_from ? dayjs(filters.period_from) : null,
       filters.period_to ? dayjs(filters.period_to) : null,

@@ -160,7 +160,7 @@ test.describe('Campaign UI journey @email', () => {
 
     // Step 4: sender.
     await goToCampaignStep(page, 'campaign-step-sender-label');
-    await selectAntdOption(page, 'Подключение отправителя', senderEmail);
+    await selectAntdOption(page, 'Подключение отправителя', senderEmail, { typeToSearch: true });
 
     // Step 5: recipients — negative fixtures first, then the deterministic valid list.
     await goToCampaignStep(page, 'campaign-step-recipients-label');
@@ -269,6 +269,9 @@ test.describe('Campaign UI journey @email', () => {
       .locator('.ant-select-dropdown:visible .ant-select-item-option', { hasText: campaignName })
       .first()
       .click();
+    // Multi-select stays open after a pick — close it before reading the
+    // KPI cards underneath.
+    await page.keyboard.press('Escape');
 
     // `campaign-analytics-sent-card` (buildKpis' default testPrefix) is only
     // the exact testid when the analytics view renders its flat per-campaign

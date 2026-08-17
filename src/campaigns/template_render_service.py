@@ -525,7 +525,11 @@ def render_document_template_for_recipient(
                     render_fingerprint=render_fingerprint,
                 )
                 return delivery_name, rendered_data
-            file_kind = "kp" if str(tmpl.template_type or "").strip().lower() in {"kp", "document"} else None
+            file_kind = template_service.infer_document_file_kind(
+                template_type=str(tmpl.template_type or ""),
+                filename=source_name,
+                editor_state=dict(version.editor_state or {}) if isinstance(version.editor_state, dict) else {},
+            )
             from src.generator.generation.pdf_safe import is_kp_docx
 
             if is_kp_docx(source_path):

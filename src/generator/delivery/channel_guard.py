@@ -49,6 +49,28 @@ GUARD_ACTIONS = {"throttle", "disable", "warmup"}
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+def channel_state_blocks_send(
+    delivery_guard_state: str | None,
+    status: str | None,
+    *,
+    allow_warmup: bool = False,
+) -> bool:
+    """Single source of truth for whether a connection may take a send.
+
+    Used both by ``reserve_channel_send_slot`` below (the low-level slot
+    reservation) and by ``resolve_connection``/``pick_available_connection``
+    in ``src.campaigns.connection_service`` (connection selection for a
+    campaign send), so a connection warming up can't be picked for a normal
+    send only to be rejected downstream with no fallback to another
+    connection.
+    """
+    if delivery_guard_state == "disabled" or status == "disabled_by_guard":
+        return True
+    if delivery_guard_state == "warmup" and not allow_warmup:
+        return True
+    return False
+
+
 class DeliveryChannelDisabled(RuntimeError):
     """Raised when a delivery channel was disabled by its error guard."""
 
@@ -968,7 +990,7 @@ def reserve_channel_send_slot(
             raise DeliveryChannelDisabled(
                 row.delivery_guard_reason or "Канал отключён из-за ошибок доставки."
             )
-        if row.delivery_guard_state == "warmup" and not allow_warmup:
+        if channel_state_blocks_send(row.delivery_guard_state, row.status, allow_warmup=allow_warmup):
             raise DeliveryChannelDisabled(
                 "Обычная отправка приостановлена до завершения прогрева подключения."
             )

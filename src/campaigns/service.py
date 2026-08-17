@@ -644,6 +644,18 @@ def update_campaign(
         ):
             if field in data and (data[field] is not None or field == "email_chain_id"):
                 setattr(row, field, data[field])
+        if row.send_scenario == "email_chain" and not row.email_chain_id:
+            # A campaign in chain mode is also valid with an embedded chain
+            # stored directly on draft_payload (publish_email_chain writes
+            # it there when no standalone email_chain_id is attached) — only
+            # reject when NEITHER a linked chain NOR embedded chain content
+            # exists, mirroring migration 0040_repair_detached_campaign_chains'
+            # own definition of the bad state it had to bulk-repair.
+            embedded_nodes = ((row.draft_payload or {}).get("email_chain") or {}).get("nodes")
+            if not isinstance(embedded_nodes, list) or not embedded_nodes:
+                raise ValueError(
+                    "Для сценария «Цепочка писем» необходимо выбрать или создать цепочку писем."
+                )
         if "connection_ids" in data or "smtp_mailbox_id" in data:
             _apply_sender_fields(row, data)
         if "tags" in data:
@@ -1501,7 +1513,12 @@ def validate_campaign_for_launch(
         warnings: list[str] = []
         if not (camp.name or "").strip():
             errors.append("Укажите название рассылки")
-        if not (camp.email_chain_id or "").strip():
+        # "materials_now" is the one scenario that sends a document/materials
+        # email directly, with no chain involved — "consent_then_materials"
+        # and "email_chain" both walk an email chain (for the consent
+        # request or the whole flow respectively), so only "materials_now"
+        # is exempt from needing one attached.
+        if camp.send_scenario != "materials_now" and not (camp.email_chain_id or "").strip():
             errors.append("Выберите цепочку писем")
         from src.campaigns.connection_service import validate_connection_ids
 

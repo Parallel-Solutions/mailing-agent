@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from src.campaigns.chain_send_service import run_chain_followup
-from src.campaigns.chain_service import LINK_KIND_UNSUBSCRIBE
+from src.campaigns.chain_service import LINK_KIND_SUBSCRIBE, LINK_KIND_UNSUBSCRIBE
 from src.generator.delivery.suppression_store import is_suppressed
 from src.infra.db import session_scope
 from src.infra.models import CampaignChainToken, CampaignRecipient
@@ -281,6 +281,52 @@ class ChainTestSendApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("Спасибо", response.text)
         mock_dispatch.assert_called_once_with(token_value)
+
+    @patch("src.web.chain_router.record_subscribe")
+    def test_concurrent_subscribe_click_race_returns_friendly_page_not_500(self, mock_record_subscribe) -> None:
+        """record_branch_click's clicked_at check-then-set isn't row-locked,
+        so two concurrent clicks on the same subscribe link can both see
+        already_clicked=False and both attempt to record consent — the
+        loser must not surface an unhandled IntegrityError as a 500."""
+        from sqlalchemy.exc import IntegrityError
+
+        mock_record_subscribe.side_effect = IntegrityError("INSERT", {}, Exception("duplicate key"))
+
+        loaded = self.client.get(f"/api/v1/campaigns/{self.campaign_id}/email-chain")
+        chain = loaded.json()["result"]["chain"]
+        chain["nodes"].append(
+            {
+                "id": "node-sub",
+                "name": "Подписаться",
+                "kind": "link",
+                "link_kind": LINK_KIND_SUBSCRIBE,
+            }
+        )
+        saved = self.client.put(f"/api/v1/campaigns/{self.campaign_id}/email-chain", json=chain)
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+        with session_scope() as session:
+            recipient = session.scalar(
+                select(CampaignRecipient).where(CampaignRecipient.campaign_id == self.campaign_id)
+            )
+            assert recipient is not None
+            token = CampaignChainToken(
+                token=str(uuid.uuid4()),
+                campaign_id=self.campaign_id,
+                recipient_id=int(recipient.id),
+                edge_id="edge-sub",
+                source_node_id=self.root_node_id,
+                target_node_id="node-sub",
+                send_status="pending",
+            )
+            session.add(token)
+            session.flush()
+            token_value = token.token
+
+        response = self.client.get(f"/chain/branch/{token_value}")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("Спасибо", response.text)
 
 
 if __name__ == "__main__":

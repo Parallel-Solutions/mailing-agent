@@ -1387,6 +1387,28 @@ def run_warmup_message(kwargs: dict[str, Any]) -> dict[str, Any]:
             raise LookupError("Программа или получатель прогрева не найдены.")
         if delivery.status in {"accepted", "delivered", "hard_bounced", "soft_bounced", "complaint", "error", "cancelled"}:
             return {"delivery_id": delivery_id, "status": delivery.status}
+        if delivery.status == "sending":
+            # A previous attempt crashed mid-send (process killed/OOM/lease
+            # expired) after this status was committed but before the network
+            # call finished. We cannot know whether the email actually went
+            # out, so we must not risk a duplicate by resending here.
+            delivery.status = "error"
+            delivery.error = (
+                "Прервано во время отправки на предыдущей попытке; повторная "
+                "отправка не выполнена во избежание дублирования."
+            )
+            delivery.task_id = None
+            delivery.updated_at = _now()
+            if recipient is not None:
+                recipient.error_count = int(recipient.error_count or 0) + 1
+                recipient.last_error = delivery.error
+                recipient.updated_at = _now()
+            return {"delivery_id": delivery_id, "status": "error"}
+        # Remember the pre-send status so the exception handler below can
+        # tell a first failure from a repeat one and only finalize as
+        # terminal "error" once the task-queue's own max_attempts is
+        # genuinely exhausted (see the final commit block further down).
+        previous_status = delivery.status
         if program.status != "running":
             delivery.status = "paused"
             delivery.task_id = None
@@ -1502,12 +1524,23 @@ def run_warmup_message(kwargs: dict[str, Any]) -> dict[str, Any]:
         }
     except Exception as exc:
         message_id = ""
-        status = "error"
         error = str(exc)[:4000]
+        # Only finalize as genuinely terminal "error" on the second
+        # consecutive failure of this delivery — matches _enqueue_delivery's
+        # hardcoded max_attempts=2, so the task-queue's own retry actually
+        # gets a chance to call _send_delivery_message again instead of
+        # short-circuiting at the terminal-status check above. Known
+        # limitation: this caps retry allowance at exactly one extra attempt;
+        # revisit if max_attempts ever changes from 2.
+        status = "error" if previous_status == "send_retry_pending" else "send_retry_pending"
 
     with session_scope() as session:
-        delivery = session.get(ConnectionWarmupDelivery, delivery_id)
-        recipient = session.get(ConnectionWarmupRecipient, recipient_id)
+        delivery = session.execute(
+            select(ConnectionWarmupDelivery).where(ConnectionWarmupDelivery.id == delivery_id).with_for_update()
+        ).scalar_one_or_none()
+        recipient = session.execute(
+            select(ConnectionWarmupRecipient).where(ConnectionWarmupRecipient.id == recipient_id).with_for_update()
+        ).scalar_one_or_none()
         if delivery is not None:
             delivery.status = status
             delivery.provider_message_id = message_id or None
@@ -1525,7 +1558,7 @@ def run_warmup_message(kwargs: dict[str, Any]) -> dict[str, Any]:
                 recipient.last_error = error
             recipient.updated_at = _now()
     _advance_after_day(program_id, day_number)
-    if status == "error":
+    if status in {"error", "send_retry_pending"}:
         raise RuntimeError(error)
     return {"delivery_id": delivery_id, "status": status, "provider_message_id": message_id}
 

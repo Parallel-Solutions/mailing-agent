@@ -484,6 +484,152 @@ class TemplateRenderServiceTests(unittest.TestCase):
         self.assertFalse(convert_multi.call_args.kwargs["compact_kp_body"])
         self.assertEqual(mock_convert_kp.call_count, 1)
 
+    @patch("src.generator.generation.pdf_safe.is_kp_docx", return_value=False)
+    @patch("src.campaigns.template_render_service._convert_kp_docx_to_pdf")
+    @patch("src.campaigns.template_render_service._convert_docx_to_pdf")
+    @patch("src.campaigns.template_render_service.render_docx")
+    def test_ordinary_document_with_enforce_one_page_does_not_take_kp_path(
+        self,
+        mock_render_docx,
+        mock_convert_multi,
+        mock_convert_kp,
+        _mock_is_kp_docx,
+    ) -> None:
+        """Every uploaded file-document template is stored with
+        template_type='document' (normalize_file_template_type maps
+        'kp'/'contract' -> 'document'), so the send-time file_kind must come
+        from infer_document_file_kind (editor_state / legacy template_type /
+        filename token) — not from a bare template_type=='document' check,
+        which used to be true for every file-document template and forced
+        ordinary multi-page contracts through the one-page KP fitter."""
+
+        def _fake_render(source: Path, replacements: list[tuple[str, str]], output: Path, context: dict) -> Path:
+            output.write_bytes(source.read_bytes())
+            return output
+
+        mock_render_docx.side_effect = _fake_render
+
+        def _write_pdf(docx_path: Path, pdf_path: Path, **kwargs: object) -> None:
+            pdf_path.write_bytes(b"%PDF-1.4 rendered")
+
+        mock_convert_multi.side_effect = _write_pdf
+
+        source_docx = Document()
+        source_docx.add_paragraph("Договор оказания услуг")
+        source_docx.add_paragraph("Раздел 1. Общие положения")
+        payload = BytesIO()
+        source_docx.save(payload)
+        uploaded = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document", "name": "Обычный договор"},
+            files={
+                "file": (
+                    "dogovor_okazaniya_uslug.docx",
+                    payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        template_id = uploaded.json()["result"]["id"]
+        updated = self.client.patch(
+            f"/api/v1/templates/{template_id}",
+            json={"is_template": True, "attachment_output_format": "pdf"},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertTrue(updated.json()["result"]["enforce_one_page"])
+
+        with session_scope() as session:
+            recipient = session.get(CampaignRecipient, int(self.recipient_id))
+            campaign = session.get(Campaign, self.campaign_id)
+            assert recipient is not None and campaign is not None
+            session.expunge(recipient)
+            session.expunge(campaign)
+
+        filename, data = template_render_service.render_document_template_for_recipient(
+            template_id=template_id,
+            recipient=recipient,
+            campaign=campaign,
+            job_id=self.job_id,
+            force=True,
+        )
+        self.assertTrue(filename)
+        self.assertTrue(data.startswith(b"%PDF"))
+        mock_convert_kp.assert_not_called()
+        mock_convert_multi.assert_called_once()
+
+    @patch("src.generator.generation.pdf_safe.is_kp_docx", return_value=False)
+    @patch("src.campaigns.template_render_service._convert_kp_docx_to_pdf")
+    @patch("src.campaigns.template_render_service.render_docx")
+    def test_document_file_kind_marker_in_editor_state_still_takes_kp_path(
+        self,
+        mock_render_docx,
+        mock_convert_kp,
+        _mock_is_kp_docx,
+    ) -> None:
+        """Regression guard: a real KP document (marked via editor_state,
+        independent of filename) must still take the one-page KP path even
+        though template_type is 'document' like every other file template."""
+
+        def _fake_render(source: Path, replacements: list[tuple[str, str]], output: Path, context: dict) -> Path:
+            output.write_bytes(source.read_bytes())
+            return output
+
+        mock_render_docx.side_effect = _fake_render
+
+        def _write_pdf(docx_path: Path, pdf_path: Path, **kwargs: object) -> None:
+            pdf_path.write_bytes(b"%PDF-1.4 rendered")
+
+        mock_convert_kp.side_effect = _write_pdf
+
+        source_docx = Document()
+        source_docx.add_paragraph("Коммерческое предложение")
+        payload = BytesIO()
+        source_docx.save(payload)
+        uploaded = self.client.post(
+            "/api/v1/templates/upload",
+            data={"template_type": "document", "name": "КП без токена в имени файла"},
+            files={
+                "file": (
+                    "plain_name_no_marker.docx",
+                    payload.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        template_id = uploaded.json()["result"]["id"]
+        updated = self.client.patch(
+            f"/api/v1/templates/{template_id}",
+            json={"is_template": True, "attachment_output_format": "pdf"},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        with session_scope() as session:
+            tmpl = session.get(MailTemplate, template_id)
+            assert tmpl is not None and tmpl.active_version_id
+            version = session.get(TemplateVersion, tmpl.active_version_id)
+            assert version is not None
+            version.editor_state = {**(version.editor_state or {}), "document_file_kind": "kp"}
+            session.flush()
+
+        with session_scope() as session:
+            recipient = session.get(CampaignRecipient, int(self.recipient_id))
+            campaign = session.get(Campaign, self.campaign_id)
+            assert recipient is not None and campaign is not None
+            session.expunge(recipient)
+            session.expunge(campaign)
+
+        filename, data = template_render_service.render_document_template_for_recipient(
+            template_id=template_id,
+            recipient=recipient,
+            campaign=campaign,
+            job_id=self.job_id,
+            force=True,
+        )
+        self.assertTrue(filename)
+        self.assertTrue(data.startswith(b"%PDF"))
+        mock_convert_kp.assert_called_once()
+
     def test_docx_attachment_keeps_original_format_by_default(self) -> None:
         source_docx = Document()
         source_docx.add_paragraph("Документ без конвертации")

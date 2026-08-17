@@ -9,6 +9,7 @@ from cryptography.fernet import Fernet
 from src.campaigns.connection_service import (
     create_connection,
     pick_available_connection,
+    resolve_connection,
     update_connection,
     validate_connection_ids,
 )
@@ -19,7 +20,7 @@ from src.campaigns.service import (
     upsert_schedule,
 )
 from src.infra.db import session_scope
-from src.infra.models import CampaignRecipient
+from src.infra.models import CampaignRecipient, SmtpMailbox
 from src.security.user_store import create_user
 from tests.bootstrap import bootstrap_test_runtime
 
@@ -205,6 +206,52 @@ class MultiSenderConnectionTests(unittest.TestCase):
 
     def test_validate_connection_ids_requires_at_least_one(self) -> None:
         self.assertEqual(validate_connection_ids([], self.owner), "Выберите подключение отправителя")
+
+    def test_pick_available_connection_skips_warmup_connection(self) -> None:
+        """A connection mid-warmup must not be selected for a normal send —
+        it would only be rejected downstream by reserve_channel_send_slot,
+        permanently failing the recipient with the default on_error=skip."""
+        warming = create_connection(
+            self.owner,
+            {
+                "transport": "rusender",
+                "email": "warming@example.com",
+                "sending_key_id": 42,
+            },
+        )
+        healthy = create_connection(
+            self.owner,
+            {
+                "transport": "mailopost",
+                "email": "healthy@example.com",
+                "api_token": "mp_healthy",
+            },
+        )
+        with session_scope() as session:
+            row = session.get(SmtpMailbox, warming["id"])
+            row.delivery_guard_state = "warmup"
+
+        ids = [warming["id"], healthy["id"]]
+        picked = pick_available_connection(ids, self.owner, {}, {})
+
+        self.assertIsNotNone(picked)
+        self.assertEqual(picked.id, healthy["id"])
+
+    def test_resolve_connection_rejects_warmup_connection(self) -> None:
+        warming = create_connection(
+            self.owner,
+            {
+                "transport": "rusender",
+                "email": "warming@example.com",
+                "sending_key_id": 42,
+            },
+        )
+        with session_scope() as session:
+            row = session.get(SmtpMailbox, warming["id"])
+            row.delivery_guard_state = "warmup"
+
+        with self.assertRaises(RuntimeError):
+            resolve_connection(warming["id"], self.owner)
 
 
 if __name__ == "__main__":

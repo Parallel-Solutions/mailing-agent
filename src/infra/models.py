@@ -426,16 +426,6 @@ class SuppressionEntry(Base):
     )
 
 
-class SendGuardState(Base):
-    __tablename__ = "send_guard_state"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    pause_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
 class SmtpMailbox(Base):
     __tablename__ = "smtp_mailboxes"
 

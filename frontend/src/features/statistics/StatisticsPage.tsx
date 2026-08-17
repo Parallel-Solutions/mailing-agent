@@ -47,13 +47,25 @@ function StatisticsPageInner() {
   const { isAppAdmin } = usePermissions();
 
   const campaignsQuery = useQuery({
-    queryKey: ['stats-campaigns-shell', refreshNonce],
+    // Deliberately NOT keyed on refreshNonce: this is an unscoped, whole-
+    // account query (every non-archived job, no filters) used only to
+    // populate the campaign-picker dropdown. Restarting it every 30s (the
+    // auto-refresh interval below) could outrun its own completion on an
+    // account with a lot of history, leaving the dropdown perpetually
+    // empty while every other, properly job-scoped query on this page
+    // loads fine. Refetch it far less aggressively instead.
+    queryKey: ['stats-campaigns-shell'],
     queryFn: () => statisticsApi.campaigns(),
+    refetchInterval: 5 * 60 * 1000,
   });
 
   useEffect(() => {
     if (campaignsQuery.data) setCampaigns(asRecordArray(campaignsQuery.data.campaigns));
   }, [campaignsQuery.data, setCampaigns]);
+
+  useEffect(() => {
+    if (campaignsQuery.isError) setError('Не удалось загрузить список рассылок.');
+  }, [campaignsQuery.isError, setError]);
 
   useEffect(() => {
     const timer = window.setInterval(() => requestRefresh(), AUTO_REFRESH_MS);
@@ -114,13 +126,18 @@ function StatisticsPageInner() {
             />
             <Select
               data-testid="statistics-campaign-filter"
+              mode="multiple"
               allowClear
               showSearch
               optionFilterProp="label"
               placeholder="Все рассылки"
-              style={{ minWidth: 200 }}
-              value={filters.campaign || undefined}
-              onChange={(value) => setFilters({ campaign: value || undefined }, { resetPages: true })}
+              style={{ minWidth: 240 }}
+              maxTagCount={2}
+              loading={campaignsQuery.isLoading}
+              value={filters.campaign ? filters.campaign.split(',') : []}
+              onChange={(values: string[]) =>
+                setFilters({ campaign: values.length ? values.join(',') : undefined }, { resetPages: true })
+              }
               options={campaigns.map((item) => ({
                 value: String(item.job_id),
                 label: String(item.title || 'Рассылка без названия'),
@@ -140,7 +157,13 @@ function StatisticsPageInner() {
               options={PROVIDER_OPTIONS.filter((item) => item.value)}
             />
             <Button onClick={openFiltersModal}>Расширенные фильтры</Button>
-            <Button type="primary" onClick={() => requestRefresh({ provider: true })}>
+            <Button
+              type="primary"
+              onClick={() => {
+                requestRefresh({ provider: true });
+                void campaignsQuery.refetch();
+              }}
+            >
               Обновить
             </Button>
           </Space>

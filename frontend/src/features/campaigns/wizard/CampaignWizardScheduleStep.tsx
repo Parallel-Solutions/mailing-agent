@@ -61,7 +61,12 @@ export function CampaignWizardScheduleStep({
             name="interval_value"
             min={1}
             width="sm"
-            fieldProps={{ precision: 0 }}
+            // The wrapping Form.Item's label ("Интервал между пакетами") isn't
+            // associated with either of its two inner controls (interval_value
+            // + interval_unit both live in their own nameless Form.Items), so
+            // `getByLabel` can't resolve it to this field. Give it an explicit
+            // accessible name matching the visible label.
+            fieldProps={{ precision: 0, 'aria-label': 'Интервал между пакетами' }}
             rules={[{ required: true, message: 'Укажите интервал' }]}
             formItemProps={{ style: { marginBottom: 0 } }}
           />

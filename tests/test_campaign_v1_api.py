@@ -49,6 +49,36 @@ class CampaignV1ApiTests(unittest.TestCase):
         self.assertEqual(linked.status_code, 200, linked.text)
         return chain_id
 
+    def test_setting_email_chain_scenario_without_a_chain_is_rejected(self) -> None:
+        """Migration 0040_repair_detached_campaign_chains had to bulk-repair
+        drafts stuck in send_scenario='email_chain' with no email_chain_id.
+        The old guard only covered the explicit-detach direction (clearing
+        email_chain_id while in chain mode) — a PATCH setting the scenario
+        to email_chain alone, with no chain ever attached, must be rejected
+        instead of reproducing the same bad state."""
+        created = self.client.post("/api/v1/campaigns", json={"name": "Chainless"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+
+        rejected = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"send_scenario": "email_chain"},
+        )
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+
+    def test_setting_email_chain_scenario_with_a_chain_still_succeeds(self) -> None:
+        created = self.client.post("/api/v1/campaigns", json={"name": "Chained"})
+        self.assertEqual(created.status_code, 200)
+        campaign_id = created.json()["result"]["id"]
+        chain_id = self._attach_required_chain(campaign_id)
+
+        patched = self.client.patch(
+            f"/api/v1/campaigns/{campaign_id}",
+            json={"send_scenario": "email_chain", "email_chain_id": chain_id},
+        )
+        self.assertEqual(patched.status_code, 200, patched.text)
+        self.assertEqual(patched.json()["result"]["send_scenario"], "email_chain")
+
     def test_create_update_schedule_launch_pause(self) -> None:
         created = self.client.post("/api/v1/campaigns", json={"name": "API Campaign", "mail_subject": "Hello"})
         self.assertEqual(created.status_code, 200)

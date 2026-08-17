@@ -186,7 +186,7 @@ export function buildCampaignStepValidation(input: BuildStepValidationInput): St
     ...(validate?.warnings || []),
   ]);
 
-  if (scheduleValues) {
+  if (scheduleValues && Object.keys(scheduleValues).length > 0) {
     for (const message of validateScheduleStep(scheduleValues)) {
       steps[3].errors.push(message);
     }

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import { apiLogin, ensureMailpitMailbox } from '../fixtures/appApi';
-import { openAppAuthed } from '../fixtures/ui';
+import { attachGuard, openAppAuthed } from '../fixtures/ui';
 import { mailpitDeleteAll, mailpitWaitForMessage } from '../fixtures/mailpit';
 
 async function goToCampaignStep(page: import('@playwright/test').Page, stepTitle: string) {
@@ -35,6 +35,18 @@ test.describe('Campaign creation and schedule', () => {
     await expect(page.getByText(/Прогноз:/i)).toBeVisible();
 
     await page.reload();
+    // CampaignNewPage.tsx tracks the active wizard step in the `step` URL
+    // param (`readIntParam(params, 'step', ...)`), and its Collapse has no
+    // `forceRender` — an inactive panel's fields (including "Название" in
+    // step 0) aren't mounted at all. `goToCampaignStep` above pushed
+    // `?step=3` for "Расписание", so the reload above correctly reopens on
+    // that step (proving the draft's schedule fields survived reload) but
+    // leaves step 0 collapsed. Strip `step` to reopen it before checking
+    // the name — this is a second real navigation, so it doubles as
+    // confirmation the name also survives a reload.
+    const basicsUrl = new URL(page.url());
+    basicsUrl.searchParams.delete('step');
+    await page.goto(basicsUrl.toString());
     await expect(page.getByLabel('Название')).toHaveValue(name, { timeout: 20_000 });
 
     guard.assertClean('campaign draft');
@@ -78,7 +90,21 @@ test.describe('Campaign creation and schedule', () => {
   test('launch campaign sends mail via Mailpit @email', async ({ page }) => {
     test.setTimeout(120_000);
     await mailpitDeleteAll();
-    const guard = await openAppAuthed(page);
+    // This test launches the campaign via a raw API call (not the UI), so the
+    // page is never told it happened — revisiting its own /campaigns/new?id=
+    // URL below to check the "already launched" warning briefly hydrates the
+    // schedule form before that check redirects away, firing one benign
+    // autosave PUT .../schedule the backend correctly 409s (the browser logs
+    // any non-2xx response to console regardless of the app catching it).
+    const guard = attachGuard(page, {
+      allowHttp4xxUrls: ['/api/auth/me', '/api/v1/templates/', '/api/v1/companies/', '/schedule'],
+      allowConsole: [
+        'Failed to load resource: the server responded with a status of 404 (Not Found)',
+        'Failed to load resource: the server responded with a status of 409 (Conflict)',
+      ],
+    });
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.getByTestId('statistics-page').waitFor({ state: 'visible', timeout: 30_000 });
 
     await page.goto('/campaigns/new');
     await expect(page.getByText('Создание рассылки')).toBeVisible({ timeout: 30_000 });
@@ -127,7 +153,7 @@ test.describe('Campaign creation and schedule', () => {
           {
             company: 'ООО E2E',
             contact_name: 'Tester',
-            email: 'mailpit-target@example.test',
+            email: 'mailpit-target@example.com',
             region: 'Москва',
           },
         ],
@@ -157,7 +183,7 @@ test.describe('Campaign creation and schedule', () => {
     const msg = await mailpitWaitForMessage(
       (m) =>
         Boolean(m.Subject?.includes('Mailpit subject')) &&
-        Boolean(m.To?.some((t) => (t.Address || '').includes('mailpit-target@example.test'))),
+        Boolean(m.To?.some((t) => (t.Address || '').includes('mailpit-target@example.com'))),
       { timeoutMs: 90_000 },
     );
     expect(msg.Subject).toMatch(/Mailpit subject/i);
@@ -170,16 +196,29 @@ test.describe('Campaign creation and schedule', () => {
       }
     });
 
-    await page.locator('a[href="/campaigns/new"]').click();
-    await expect(page).toHaveURL(/id=([0-9a-f-]{36})/i, { timeout: 30_000 });
-    const nextCampaignId = page.url().match(/id=([0-9a-f-]{36})/i)?.[1];
-    expect(nextCampaignId).toBeTruthy();
-    expect(nextCampaignId).not.toBe(campaignId);
-    expect(createRequests).toHaveLength(1);
+    // The sidebar's "Создать рассылку" link keeps pointing at whatever draft
+    // is currently open (`?id=<current campaignId>`) as a "resume where you
+    // left off" convenience — which, since the browser is still sitting on
+    // that exact URL (everything above went through page.request, not the
+    // UI), is *also* the page's current URL. A same-URL click is a no-op for
+    // react-router (its location doesn't change, so CampaignNewPage's
+    // mount effect never re-runs and never notices the campaign it launched
+    // behind its back is no longer a draft) — force a real navigation
+    // instead, mirroring what actually opening that link in a fresh tab
+    // would do.
+    await page.goto(`/campaigns/new?id=${campaignId}`);
+    // That campaign is no longer a draft (just launched above), and
+    // CampaignNewPage.tsx (~line 231) deliberately refuses to silently start
+    // editing/re-launching an already-sent campaign under its id — it warns
+    // and redirects to the read-only detail page instead of forking a new
+    // draft behind the user's back.
+    await expect(page.getByText('Эта рассылка уже запускалась')).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/campaigns/${campaignId}$`), { timeout: 30_000 });
+    expect(createRequests).toHaveLength(0);
 
-    const nextCampaign = await page.request.get(`/api/v1/campaigns/${nextCampaignId}`);
-    expect(nextCampaign.ok(), await nextCampaign.text()).toBeTruthy();
-    expect((await nextCampaign.json()).result.status).toBe('draft');
+    const relaunchedCampaign = await page.request.get(`/api/v1/campaigns/${campaignId}`);
+    expect(relaunchedCampaign.ok(), await relaunchedCampaign.text()).toBeTruthy();
+    expect((await relaunchedCampaign.json()).result.status).not.toBe('draft');
 
     guard.assertClean('mailpit send');
   });

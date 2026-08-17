@@ -54,6 +54,7 @@ import { readIntParam } from '@/utils/urlState';
 import { validateCampaignBasics } from '@/utils/validators';
 import {
   formValuesToSchedulePayload,
+  resolveScheduleFormValues,
   scheduleToFormValues,
 } from '@/utils/scheduleForm';
 import { computeLocalSchedulePreview } from '@/utils/schedulePreview';
@@ -490,6 +491,19 @@ export function CampaignNewPage() {
           SCHEDULE_FORM_FIELDS.map((name) => ({ name, touched: false })),
         );
         queryClient.setQueryData(['campaign-schedule', id], updated);
+      } catch (error) {
+        // `onValuesChange={persistSchedule}` (below) fires on the antd Form's
+        // own hydration too, not just real user edits — visiting a campaign
+        // that was launched behind this page's back (e.g. via API, or in
+        // another tab) can hydrate the schedule form before the mount
+        // effect's own not-a-draft check has redirected away, firing this
+        // autosave into a campaign the backend correctly refuses to touch
+        // (`_ensure_campaign_editable` → `campaign_not_editable`, 409). That
+        // is expected and harmless here (we're about to navigate off this
+        // page); only surface a real failure.
+        if (!(error instanceof ApiError && error.payload.code === 'campaign_not_editable')) {
+          throw error;
+        }
       } finally {
         schedulePendingWritesRef.current = Math.max(
           0,
@@ -636,7 +650,9 @@ export function CampaignNewPage() {
 
   const watchedSchedule = Form.useWatch([], scheduleForm);
   const schedulePreview = useMemo(() => {
-    const payload = formValuesToSchedulePayload(watchedSchedule || scheduleToFormValues(schedule));
+    const payload = formValuesToSchedulePayload(
+      resolveScheduleFormValues(watchedSchedule, scheduleToFormValues(schedule)),
+    );
     return computeLocalSchedulePreview({
       recipientCount: recipientsQuery.data?.total || 0,
       batchSize: payload?.batch_size || schedule?.batch_size || 25,
@@ -651,7 +667,7 @@ export function CampaignNewPage() {
       buildCampaignStepValidation({
         draft: draftForValidation,
         validate: launchValidation.hasChecked ? launchValidation.data : undefined,
-        scheduleValues: watchedSchedule || scheduleInitialValues,
+        scheduleValues: resolveScheduleFormValues(watchedSchedule, scheduleInitialValues),
       }),
     [draftForValidation, launchValidation.hasChecked, launchValidation.data, watchedSchedule, scheduleInitialValues],
   );

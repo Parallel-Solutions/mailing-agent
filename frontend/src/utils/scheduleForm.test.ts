@@ -4,6 +4,7 @@ import {
   intervalFromSeconds,
   intervalToSeconds,
   parseScheduleDateTime,
+  resolveScheduleFormValues,
   scheduleToFormValues,
 } from './scheduleForm';
 import dayjs from 'dayjs';
@@ -93,5 +94,53 @@ describe('scheduleForm', () => {
     expect(values.interval_value).toBe(1);
     expect(values.interval_unit).toBe('hours');
     expect(values.start_at.toISOString()).toBe('2026-07-16T12:00:00.000Z');
+  });
+
+  describe('resolveScheduleFormValues', () => {
+    it('falls back to saved schedule values when the watched form is an empty object', () => {
+      // Form.useWatch([], form) resolves to {} (not undefined) while the
+      // Schedule step's form panel is unmounted — a plain `||` fallback
+      // treats {} as truthy and never falls back (the bug this guards).
+      const fallback = scheduleToFormValues({
+        batch_size: 10,
+        start_at: '2026-07-16T12:00:00.000Z',
+        interval_seconds: 86400,
+      });
+
+      const resolved = resolveScheduleFormValues({}, fallback);
+
+      expect(resolved.batch_size).toBe(10);
+      expect(resolved.interval_value).toBe(1);
+      expect(resolved.interval_unit).toBe('days');
+      expect(resolved.start_at.toISOString()).toBe('2026-07-16T12:00:00.000Z');
+    });
+
+    it('fills only the fields missing from a partially mounted form', () => {
+      const fallback = scheduleToFormValues(undefined);
+
+      const resolved = resolveScheduleFormValues({ batch_size: 7 }, fallback);
+
+      expect(resolved.batch_size).toBe(7);
+      expect(resolved.interval_value).toBe(fallback.interval_value);
+      expect(resolved.interval_unit).toBe(fallback.interval_unit);
+      expect(resolved.start_at).toBe(fallback.start_at);
+    });
+
+    it('keeps a value the user actually cleared', () => {
+      const fallback = scheduleToFormValues(undefined);
+
+      const resolved = resolveScheduleFormValues(
+        { start_at: null } as unknown as Partial<import('./scheduleForm').ScheduleFormValues>,
+        fallback,
+      );
+
+      expect(resolved.start_at).toBeNull();
+    });
+
+    it('treats an undefined watch value as untouched', () => {
+      const fallback = scheduleToFormValues(undefined);
+
+      expect(resolveScheduleFormValues(undefined, fallback)).toEqual(fallback);
+    });
   });
 });

@@ -261,7 +261,7 @@ test.describe('Campaign UI consent/branch journey @email', () => {
 
     // Sender.
     await goToCampaignStep(page, 'campaign-step-sender-label');
-    await selectAntdOption(page, 'Подключение отправителя', senderEmail);
+    await selectAntdOption(page, 'Подключение отправителя', senderEmail, { typeToSearch: true });
 
     // Recipients — just the deterministic valid list; the negative-fixture
     // paths (errors/duplicates) are already covered by campaign-ui-journey.spec.ts.
