@@ -423,7 +423,7 @@ def fill_gaps(job_id: str, verify_emails: bool = False) -> dict:
             shutil.copy2(paths.data_xlsx, dst)   # копия в output/ — чтобы скачивание нашло файл
             try:
                 from src.parser_new.tools.postprocess import postprocess_file
-                stats = postprocess_file(str(dst), max_email_lookups=2000, check_all=True)
+                stats = postprocess_file(str(dst), max_email_lookups=None, check_all=True)
             except Exception as e:
                 logger.warning(f"[fill] проверка почт не выполнена: {e}")
                 return {"reply": f"Проверка почт не выполнена: {e}",

@@ -93,8 +93,44 @@ def start(job_id: Optional[str]) -> None:
         r = _get_redis()
         if r:
             r.delete(_channel(job_id))
+            r.delete(f"parser:stop:{job_id}")   # снять флаг остановки прошлого прогона
     except Exception as e:
         logger.debug(f"[progress] start failed: {e}")
+
+def request_stop(job_id: str | None) -> None:
+    """Ставит флаг остановки для job_id (живёт 1 час)."""
+    if not job_id:
+        return
+    try:
+        r = _get_redis()
+        if r:
+            r.setex(f"parser:stop:{job_id}", 3600, "1")
+    except Exception as e:
+        logger.debug(f"[progress] request_stop failed: {e}")
+
+
+def is_stop_requested(job_id: str | None = None) -> bool:
+    """Проверяет флаг остановки. job_id берём из контекста, если не передан."""
+    job_id = job_id or get_job()
+    if not job_id:
+        return False
+    try:
+        r = _get_redis()
+        return bool(r and r.exists(f"parser:stop:{job_id}"))
+    except Exception:
+        return False
+
+
+def clear_stop(job_id: str | None) -> None:
+    """Снимает флаг — вызывать в start(), чтобы прошлый стоп не убил новый прогон."""
+    if not job_id:
+        return
+    try:
+        r = _get_redis()
+        if r:
+            r.delete(f"parser:stop:{job_id}")
+    except Exception:
+        pass
 
 
 def emit(text: str, kind: str = "progress") -> None:

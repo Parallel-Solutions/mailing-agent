@@ -35,6 +35,9 @@ export const parserApi = {
   fillGaps: (jobId: string, verifyEmails: boolean, signal?: AbortSignal) =>
     api.post<ParserChatResponse>('/api/parser/fill', { job_id: jobId, verify_emails: verifyEmails }, signal),
 
+  cancel: (jobId: string) =>
+    api.post('/api/parser/cancel', { job_id: jobId }),
+
   downloadResult: async (jobId: string): Promise<File> => {
     const response = await fetch(
       `/api/parser/download-result?job_id=${encodeURIComponent(jobId)}`,
@@ -47,6 +50,23 @@ export const parserApi = {
     const disposition = response.headers.get('Content-Disposition') || '';
     const match = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(disposition);
     const filename = match ? decodeURIComponent(match[1].replace(/"/g, '')) : 'parser-result.xlsx';
+    return new File([blob], filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+  },
+
+  downloadPartial: async (jobId: string): Promise<File> => {
+    const response = await fetch(
+      `/api/parser/download-partial?job_id=${encodeURIComponent(jobId)}`,
+      { credentials: 'include' },
+    );
+    if (!response.ok) {
+      throw new ApiError(response.status, 'Промежуточный файл ещё не готов');
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(disposition);
+    const filename = match ? decodeURIComponent(match[1].replace(/"/g, '')) : 'parser-partial.xlsx';
     return new File([blob], filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`, {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });

@@ -92,6 +92,16 @@ def create_download_router(
             media_type=resolved.meta.media_type,
             filename=resolved.meta.filename,
         )
+    
+    @router.get("/api/parser/download-partial")
+    def download_parser_partial(job_id: str | None = None, principal: object = Depends(check_auth)):
+        ensure_job_access(job_id, principal, allow_missing=True)
+        resolved = resolve_or_http("parser-partial", job_id)
+        return download_response(
+            resolved.path,
+            media_type=resolved.meta.media_type,
+            filename=resolved.meta.filename,
+        )
 
     @router.get("/api/parser/download-failed")
     def download_parser_failed(job_id: str | None = None, principal: object = Depends(check_auth)):

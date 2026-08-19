@@ -222,6 +222,14 @@ def create_parser_router(
         result = fill_gaps(job_id, verify_emails)
         return {"status": "ok", **result}
 
+    @router.post("/api/parser/cancel")
+    def parser_cancel(payload: JobScopedRequest | None = Body(default=None), principal: object = Depends(check_auth)):
+        job_id = None if payload is None else payload.job_id
+        ensure_job_access(job_id, principal, allow_missing=True)
+        from src.parser_new.progress import request_stop
+        request_stop(job_id)
+        return {"status": "ok"}
+
     @router.get("/api/parser/progress")
     def parser_progress(job_id: str | None = None, principal: object = Depends(check_auth)):
         ensure_job_access(job_id, principal, allow_missing=True)

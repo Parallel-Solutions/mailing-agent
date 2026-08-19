@@ -21,6 +21,7 @@ import argparse
 import re
 import sys
 import time
+import os
 import random
 from dataclasses import dataclass
 from datetime import datetime
@@ -44,7 +45,7 @@ except ImportError:
     from tools.regions import get_region_code
 
 try:
-    from src.parser_new.progress import emit as _emit
+    from src.parser_new.progress import emit as _emit, is_stop_requested
 except Exception:
     def _emit(*a, **k):
         pass
@@ -70,6 +71,22 @@ def _label() -> str:
         return mo_label()
     except Exception:
         return "МО"
+
+def _atomic_save(wb, path: Path) -> None:
+    """Пишем во временный файл и атомарно подменяем — иначе скачивание
+    промежуточного результата может поймать недописанный xlsx в момент save()."""
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        wb.save(str(tmp))
+        os.replace(str(tmp), str(path))   # атомарно в пределах одного тома
+    except OSError as e:
+        logger.debug(f"[batch] атомарное сохранение не удалось ({e}), пишу напрямую")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        wb.save(str(path))
 
 
 # ==============================
@@ -819,6 +836,17 @@ def run(
             _emit(f"Начинаю сбор данных: {total} {_label()}.")
 
     for i, rec in enumerate(records, 1):
+        if is_stop_requested():
+            _atomic_save(wb, out_path)
+            wb_failed.save(str(failed_path))
+            logger.info(f"[batch] остановка по флагу на {i-1}/{total}")
+            _emit(f"Остановлено по команде. Собрано {i-1} из {total}, файл сохранён.")
+            return {
+                "processed": processed, "found": found, "not_found": not_found,
+                "liquidated": liquidated_count,
+                "output_path": str(out_path), "failed_path": str(failed_path),
+                "interrupted": True,
+            }
         try:
             print(f"[{i}/{total}] {rec.sub_rf} | {rec.mun_r_name} | {rec.mun_name[:40]}...", end=" ", flush=True)
 
@@ -853,7 +881,7 @@ def run(
                 _emit(f"Собрал данные: {i} из {total} {_label()}…")
 
             if i % save_every == 0:
-                wb.save(str(out_path))
+                _atomic_save(wb, out_path)
                 wb_failed.save(str(failed_path))
                 logger.info(f"Прогресс сохранён: {i}/{total}")
 
@@ -878,8 +906,7 @@ def run(
             print(f"❌ ошибка: {e}")
 
     # Финальное сохранение
-    # Финальное сохранение
-    wb.save(str(out_path))
+    _atomic_save(wb, out_path)
     wb_failed.save(str(failed_path))
 
     # Дозаполнение B/C/D по названию из E — ДО постпроверки названий МО,

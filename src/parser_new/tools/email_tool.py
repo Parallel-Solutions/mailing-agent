@@ -81,8 +81,24 @@ _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 _EMAIL_FINDALL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 # мусорные адреса — не считаем их почтой администрации
-_JUNK = ["@gosuslugi.ru", "example.", "@sentry", "noreply@", "no-reply@",
+_JUNK = ["example.", "@sentry", "noreply@", "no-reply@",
          "@2x.", "@sentry.io", "your@", "mail@mail."]
+
+_HOSTER_DOMAINS = {
+    "beget.com", "beget.ru", "reg.ru", "nic.ru", "timeweb.ru", "timeweb.com",
+    "sweb.ru", "spaceweb.ru", "masterhost.ru", "jino.ru", "ihc.ru",
+    "hostland.ru", "fornex.com", "firstvds.ru", "ispmanager.com",
+    "cloudflare.com", "godaddy.com", "namecheap.com",
+}
+
+# фразы страниц-заглушек: домен припаркован / не оплачен / продаётся
+_PARKED_MARKERS = [
+    "домен припаркован", "домен не оплачен", "срок регистрации домена",
+    "домен продаётся", "домен продается", "сайт временно недоступен",
+    "домен зарегистрирован", "хостинг закончился", "приостановлено оказание услуг",
+    "parked domain", "domain is for sale", "this domain", "buy this domain",
+    "account suspended", "site temporarily unavailable",
+]
 
 
 def clean_email(raw: str) -> str:
@@ -176,6 +192,13 @@ def _emails_from_page(url: str) -> list[str]:
         logger.debug(f"[email] заход на {url[:50]} не удался: {e}")
         return []
 
+    # Уровень 2: страница-заглушка припаркованного/неоплаченного домена.
+    # Берём почту с такой страницы нельзя — это не сайт организации.
+    page_text = soup.get_text(" ", strip=True).lower()
+    if any(marker in page_text for marker in _PARKED_MARKERS):
+        logger.info(f"[email] {url[:50]}: похоже на заглушку домена — почту не беру")
+        return []
+
     found: list[str] = []
     for a in soup.select("a[href^='mailto:']"):
         addr = a.get("href", "")[len("mailto:"):].split("?")[0].strip()
@@ -190,6 +213,11 @@ def _emails_from_page(url: str) -> list[str]:
         if not c or cl in seen:
             continue
         if any(j in cl for j in _JUNK):
+            continue
+        # Уровень 1: почта на домене хостера/регистратора — не организации
+        domain = cl.split("@")[-1]
+        if domain in _HOSTER_DOMAINS:
+            logger.info(f"[email] отбросил почту хостера: {c}")
             continue
         seen.add(cl)
         clean.append(c)
