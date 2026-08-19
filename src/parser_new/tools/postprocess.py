@@ -28,7 +28,7 @@ try:
     from src.parser_new.tools.email_tool import (
         clean_email, _find_official_site, _emails_from_site, _prioritize,
     )
-    from src.parser_new.progress import emit as _emit
+    from src.parser_new.progress import emit as _emit, is_stop_requested
 except ImportError:                      # запуск из каталога parser_new
     from logger import logger
     from batch_processor import COL, DATA_START_ROW
@@ -36,10 +36,12 @@ except ImportError:                      # запуск из каталога pa
         clean_email, _find_official_site, _emails_from_site, _prioritize,
     )
     try:
-        from progress import emit as _emit
+        from progress import emit as _emit, is_stop_requested
     except Exception:
         def _emit(*a, **k):
             pass
+        def is_stop_requested(*a, **k):
+            return False
 
 
 # ==============================
@@ -236,7 +238,7 @@ def _lookup_site_emails(adm: str, region: str) -> tuple[str, list[str]]:
 
 
 def postprocess_file(file_path: str,
-                     max_email_lookups: int = 40,
+                     max_email_lookups: int | None = 40,
                      enrich_suspicious: bool = True,
                      check_all: bool = False) -> dict:
     """Доводит уже созданный файл: почта с сайтов + город в названии.
@@ -305,11 +307,17 @@ def postprocess_file(file_path: str,
         return stats
 
     # --- 2. Почта: с сетью, поэтому с предохранителем ---
-    targets = targets[:max_email_lookups]
+    if max_email_lookups is not None:
+        targets = targets[:max_email_lookups]
     logger.info(f"[postprocess] добираю почту по {len(targets)} строкам")
     _emit(f"Уточняю почту на официальных сайтах: {len(targets)} организаций…")
 
     for i, r in enumerate(targets, 1):
+        if is_stop_requested():
+            wb.save(str(path))
+            _emit(f"Остановлено по команде. Проверено {i-1} из {len(targets)}, файл сохранён.")
+            logger.info(f"[postprocess] остановка по флагу на {i-1}/{len(targets)}")
+            break
         adm = str(ws.cell(r, col_adm).value or "").strip()
         region = str(ws.cell(r, col_sub).value or "").strip() if col_sub else ""
         cur = clean_email(str(ws.cell(r, col_osn).value or ""))

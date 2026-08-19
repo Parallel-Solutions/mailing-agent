@@ -56,6 +56,7 @@ DOWNLOAD_KIND_ALIASES = {
     "output": "output",
     "data-xlsx": "data-xlsx",
     "parser-result": "parser-result",
+    "parser-partial": "parser-partial",
     "parser-failed": "parser-failed",
     "correction-report": "correction-report",
     "sender-delivery-report": "sender-delivery-report",
@@ -129,6 +130,14 @@ def download_source_meta(kind: str) -> DownloadSourceMeta:
             title="Результат парсера",
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename="batch_result.xlsx",
+        ),
+        "parser-partial": DownloadSourceMeta(
+            kind="parser-partial",
+            preview_mode=PreviewMode.TABLE,
+            download_path="/api/parser/download-partial",
+            title="Промежуточный результат парсера",
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename="batch_partial.xlsx",
         ),
         "parser-failed": DownloadSourceMeta(
             kind="parser-failed",
@@ -322,6 +331,24 @@ def resolve_download_path(
         if not data_path.exists():
             raise DownloadResolutionError(404, "Файл data.xlsx не найден.")
         return ResolvedDownload(path=data_path, meta=meta)
+    
+    if normalized == "parser-partial":
+        # Промежуточный снимок: тот же batch_*.xlsx, что и parser-result, но БЕЗ
+        # гейта parser_table_verified — отдаём «как есть», пока сбор ещё идёт.
+        if job_id:
+            search_dirs = [resolve_job_paths(job_id).output_dir]
+        else:
+            search_dirs = [legacy_parser_output_dir()]
+        latest = latest_matching_file(
+            search_dirs, pattern="batch_*.xlsx", exclude_substring="FAILED"
+        )
+        if latest is None:
+            raise DownloadResolutionError(404, "Промежуточный файл ещё не готов — сбор только начался.")
+        meta = DownloadSourceMeta(
+            kind=meta.kind, preview_mode=meta.preview_mode, download_path=meta.download_path,
+            title=meta.title, media_type=meta.media_type, filename=latest.name,
+        )
+        return ResolvedDownload(path=latest, meta=meta)
 
     if normalized in {"parser-result", "parser-failed"}:
         if not parser_table_verified(job_id, get_parser_status=get_parser_status, safe_int=safe_int):

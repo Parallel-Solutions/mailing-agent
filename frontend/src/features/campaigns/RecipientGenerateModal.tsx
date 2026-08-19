@@ -45,12 +45,15 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
   const [running, setRunning] = useState(false);
   const [hasFile, setHasFile] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [downloadingPartial, setDownloadingPartial] = useState(false);
+  const [wasAborted, setWasAborted] = useState(false);
   const [topupMode, setTopupMode] = useState<'fill' | 'find'>('fill');
   const [verifyEmails, setVerifyEmails] = useState(false);
   const [emailStats, setEmailStats] = useState<EmailCheckStats | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const streamRef = useRef<EventSource | null>(null);
   const timeoutRef = useRef<number | null>(null);
+  const lastCountRef = useRef<string>('');
 
   useEffect(() => {
     if (!open) return;
@@ -61,6 +64,7 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
     setLogs([]);
     setRunning(false);
     setHasFile(false);
+    setWasAborted(false);
     form.setFieldsValue({
       what: '',
       where: '',
@@ -119,6 +123,26 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
     }
   };
 
+  const handleDownloadPartial = async () => {
+    setDownloadingPartial(true);
+    try {
+      const file = await parserApi.downloadPartial(jobId);
+      const url = URL.createObjectURL(file);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = file.name || `recipients_partial_${jobId}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Не удалось скачать промежуточный файл';
+      message.error(detail);
+    } finally {
+      setDownloadingPartial(false);
+    }
+  };
+
   const handleSubmit = async () => {
     const isFill = mode === 'topup' && topupMode === 'fill';
 
@@ -149,8 +173,9 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
     setPhase('running');
     setRunning(true);
     setHasFile(false);
+    setWasAborted(false);
     setEmailStats(null);
-    setLogs(['Запрос отправлен агенту…']);
+    setLogs(['Запрос отправлен агенту...']);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -162,10 +187,11 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
     armTimeout();
 
     streamRef.current = parserApi.openProgressStream(jobId, (event) => {
-      // Любое событие (в т.ч. keep-alive «ping» без текста) означает, что сервер
-      // жив, — отодвигаем обрыв. В лог пишем только содержательные, текстовые.
       armTimeout();
-      if (event.text) appendLog(event.text);
+      if (event.text) {
+        lastCountRef.current = event.text;
+        appendLog(event.text);
+      }
     });
 
     try {
@@ -198,14 +224,27 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
       }
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === 'AbortError';
+      setWasAborted(true);
       appendLog(
         aborted
-          ? 'Ожидание прервано. Если сбор ещё идёт на сервере, попробуйте скачать результат позже.'
-          : error instanceof Error
-            ? error.message
-            : 'Не удалось связаться с агентом таблицы',
+          ? 'Ожидание прервано. Сохраняю собранное на текущий момент…'
+          : 'Связь прервалась. Пробую сохранить собранное на текущий момент…',
       );
-      message.error(aborted ? 'Генерация прервана' : 'Ошибка генерации списка');
+      try {
+        const file = await parserApi.downloadPartial(jobId);
+        const imported = await campaignsApi.importRecipients(campaignId, file);
+        appendLog(
+          `В таблицу загружено промежуточно: ${imported.import?.total ?? 0}. ` +
+          'Данные НЕ прошли проверку официальных названий — возможны неточности.',
+        );
+        message.warning('Загружены промежуточные данные (без проверки названий)');
+        onImported();
+      } catch {
+        appendLog('Собрать пока нечего — в таблицу ничего не загружено.');
+        message[aborted ? 'info' : 'error'](
+          aborted ? 'Промежуточных данных для загрузки нет' : 'Ошибка генерации списка',
+        );
+      }
       setPhase('done');
     } finally {
       if (timeoutRef.current !== null) {
@@ -238,13 +277,22 @@ export function RecipientGenerateModal({ open, campaignId, jobId, mode = 'genera
         ) : (
           <Space>
             {running ? (
-              <Button danger onClick={() => abortRef.current?.abort()}>
-                Остановить ожидание
+              <Button danger onClick={() => {
+                void parserApi.cancel(jobId);
+                appendLog(`Остановлено. Последнее: ${lastCountRef.current || 'ещё не считалось'}`);
+                window.setTimeout(() => abortRef.current?.abort(), 1500);
+              }}>
+                Остановить
               </Button>
             ) : null}
             {!running && hasFile ? (
               <Button loading={downloading} onClick={() => void handleDownload()}>
                 Скачать таблицу
+              </Button>
+            ) : null}
+            {!running && wasAborted ? (
+              <Button loading={downloadingPartial} onClick={() => void handleDownloadPartial()}>
+                Скачать промежуточный результат
               </Button>
             ) : null}
             <Button type="primary" disabled={running} onClick={onClose}>
