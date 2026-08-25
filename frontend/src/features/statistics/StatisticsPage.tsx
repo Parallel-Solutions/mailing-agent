@@ -133,7 +133,7 @@ function StatisticsPageInner() {
               placeholder="Все рассылки"
               style={{ minWidth: 240 }}
               maxTagCount={2}
-              loading={campaignsQuery.isLoading}
+              loading={campaignsQuery.isFetching}
               value={filters.campaign ? filters.campaign.split(',') : []}
               onChange={(values: string[]) =>
                 setFilters({ campaign: values.length ? values.join(',') : undefined }, { resetPages: true })
@@ -159,6 +159,7 @@ function StatisticsPageInner() {
             <Button onClick={openFiltersModal}>Расширенные фильтры</Button>
             <Button
               type="primary"
+              loading={campaignsQuery.isFetching}
               onClick={() => {
                 requestRefresh({ provider: true });
                 void campaignsQuery.refetch();

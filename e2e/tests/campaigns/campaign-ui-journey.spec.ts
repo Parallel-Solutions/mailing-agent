@@ -2,7 +2,12 @@ import { test, expect, type Page } from '@playwright/test';
 import path from 'node:path';
 import { openAppAuthed } from '../fixtures/ui';
 import { mailpitDeleteAll, mailpitWaitForMessage } from '../fixtures/mailpit';
-import { createSimpleEmailTemplate, createChainWithRootTemplate, selectAntdOption } from '../fixtures/chains';
+import {
+  createSimpleEmailTemplate,
+  createChainWithRootTemplate,
+  selectAntdOption,
+  settleConfirmedVariableMapping,
+} from '../fixtures/chains';
 
 /**
  * Switches the campaign wizard's active accordion panel by clicking its header
@@ -136,9 +141,10 @@ test.describe('Campaign UI journey @email', () => {
 
     // Step 3: build a template + chain via the UI, then return to the draft.
     const templateName = `E2E UI Template ${stamp}`;
+    const uniqueSubject = `E2E UI Subject ${stamp}`;
     await createSimpleEmailTemplate(page, {
       name: templateName,
-      subject: `E2E UI Subject ${stamp}`,
+      subject: uniqueSubject,
       bodyText: `Journey marker ${stamp}`,
     });
 
@@ -217,9 +223,15 @@ test.describe('Campaign UI journey @email', () => {
     // loaded (the assertions above), so force the click past Playwright's
     // actionability/stability wait rather than keep chasing the root cause
     // of the churn — that's a product-side investigation, not a test one.
-    const dialog = page.getByRole('dialog');
-    await page.getByRole('button', { name: 'Закрыть' }).click({ force: true });
-    await expect(dialog).toBeHidden({ timeout: 10_000 });
+    const previewDialog = page.getByRole('dialog', { name: 'Предпросмотр цепочки писем' });
+    await previewDialog.getByRole('button', { name: 'Закрыть' }).click({ force: true });
+    await expect(previewDialog).toBeHidden({ timeout: 10_000 });
+
+    // Mapping auto-suggest runs while the preview is open. Under load it can
+    // finish at the same moment as the preview closes and replace that modal
+    // with its review dialog. Wait for the confirmed state and close only the
+    // mapping dialog instead of asserting that every dialog disappeared.
+    await settleConfirmedVariableMapping(page);
 
     // Step 7: schedule — start_at is now mandatory (ProFormDateTimePicker,
     // CampaignWizardScheduleStep.tsx). Type directly into the input rather than
@@ -253,7 +265,7 @@ test.describe('Campaign UI journey @email', () => {
     // preview step, closing the loop.
     const message = await mailpitWaitForMessage(
       (m) => Boolean(m.To?.some((t) => (t.Address || '').toLowerCase().includes('csv1@example.com'))),
-      { timeoutMs: 90_000 },
+      { timeoutMs: 90_000, subjectIncludes: uniqueSubject },
     );
     expect(message.HTML || message.Text || '').toContain('Сергей');
 
@@ -261,6 +273,13 @@ test.describe('Campaign UI journey @email', () => {
     // have no open-tracking pixel, so only "Отправлено в почтовый провайдер" is
     // asserted here — not "Открыто".
     await page.goto('/?tab=campaign-analytics', { waitUntil: 'domcontentloaded' });
+    const refreshButton = page.getByRole('button', { name: 'Обновить' });
+    const campaignsRefetched = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return response.request().method() === 'GET' && url.pathname === '/api/sender/campaigns' && response.ok();
+    });
+    await refreshButton.click();
+    await campaignsRefetched;
     const campaignFilter = page.getByTestId('statistics-campaign-filter');
     await expect(campaignFilter).toBeVisible({ timeout: 20_000 });
     await campaignFilter.click();

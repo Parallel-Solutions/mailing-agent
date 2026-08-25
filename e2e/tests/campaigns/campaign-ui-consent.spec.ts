@@ -7,7 +7,13 @@ import {
   mailpitGetAttachment,
   extractFirstHttpUrl,
 } from '../fixtures/mailpit';
-import { createSimpleEmailTemplate, createChainWithRootTemplate, addDocumentFollowupNode, selectAntdOption } from '../fixtures/chains';
+import {
+  createSimpleEmailTemplate,
+  createChainWithRootTemplate,
+  addDocumentFollowupNode,
+  selectAntdOption,
+  settleConfirmedVariableMapping,
+} from '../fixtures/chains';
 
 /**
  * Scenario B covers the chain branch/follow-up mechanism — the real,
@@ -300,6 +306,7 @@ test.describe('Campaign UI consent/branch journey @email', () => {
     const startButton = page.getByRole('button', { name: 'Старт' });
     await expect(startButton).toBeEnabled({ timeout: 30_000 });
     await expect(page.locator('.ant-alert-error')).toHaveCount(0);
+    await settleConfirmedVariableMapping(page);
     await startButton.click();
     await expect(page).toHaveURL(/\/campaigns\/[0-9a-f-]{36}/i, { timeout: 30_000 });
 
@@ -318,13 +325,10 @@ test.describe('Campaign UI consent/branch journey @email', () => {
     expect(branchUrl, `expected a chain branch link in: ${(rootMessage.HTML || rootMessage.Text || '').slice(0, 500)}`).toBeTruthy();
     expect(branchUrl).toContain('/chain/branch/');
 
-    // Simulate the recipient's click: a plain, unauthenticated GET
-    // (`GET /chain/branch/{token}`, `src/web/chain_router.py:116-119`, no
-    // `check_auth` anywhere in its inclusion chain per `main.py:1368`). This
-    // calls `record_branch_click` then `dispatch_chain_followup`, which
-    // claims the follow-up token and sends the follow-up email on a
-    // background daemon thread (`src/campaigns/chain_send_service.py:807-816`)
-    // — the HTTP response below returns before that send completes.
+    // A GET only renders the explicit confirmation landing page. This keeps
+    // mail security scanners/link previewers from recording consent. The
+    // unauthenticated POST below is the recipient's explicit confirmation;
+    // the unguessable branch token is the capability carried by the email.
     //
     // The link's host is whatever the app is configured to consider its own
     // public origin (e.g. `localhost:9806`) — real for a human clicking from
@@ -333,7 +337,15 @@ test.describe('Campaign UI consent/branch journey @email', () => {
     // docker-compose.e2e.yml). Request the path against the configured
     // baseURL instead of the literal link host.
     const branchPath = new URL(branchUrl!).pathname + new URL(branchUrl!).search;
-    const branchResponse = await page.request.get(branchPath);
+    const landingResponse = await page.request.get(branchPath);
+    expect(landingResponse.ok()).toBeTruthy();
+    expect(await landingResponse.text()).toContain('Подтвердить и получить материалы');
+
+    const beforeConfirmStats = await page.request.get(`/api/v1/campaigns/${campaignId}/email-chain/stats`);
+    expect(beforeConfirmStats.ok()).toBeTruthy();
+    expect(Number((await beforeConfirmStats.json())?.result?.consents?.materials_request?.count || 0)).toBe(0);
+
+    const branchResponse = await page.request.post(branchPath);
     expect(branchResponse.ok()).toBeTruthy();
 
     await expect(async () => {

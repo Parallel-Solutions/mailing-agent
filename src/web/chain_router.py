@@ -25,6 +25,8 @@ from src.campaigns.chain_service import (
     LINK_KIND_UNSUBSCRIBE,
     find_node,
     get_email_chain,
+    inspect_branch_token,
+    inspect_tracked_resource,
     is_email_node,
     is_link_node,
     record_branch_click,
@@ -61,6 +63,56 @@ def _page(title: str, message: str) -> HTMLResponse:
     return HTMLResponse(html)
 
 
+def _confirmation_page(
+    token: str,
+    *,
+    action_prefix: str,
+    title: str,
+    message: str,
+    button_label: str,
+) -> HTMLResponse:
+    safe_title = escape(title)
+    safe_message = escape(message)
+    safe_button_label = escape(button_label)
+    action = escape(
+        f"{action_prefix.rstrip('/')}/{quote(token, safe='')}",
+        quote=True,
+    )
+    html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="robots" content="noindex,nofollow"/>
+  <title>{safe_title}</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; background: #f5f5f5; margin: 0; padding: 40px 16px; }}
+    .card {{ max-width: 520px; margin: 0 auto; background: #fff; border-radius: 8px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }}
+    h1 {{ font-size: 20px; margin: 0 0 12px; }}
+    p {{ margin: 0 0 20px; color: #444; line-height: 1.5; }}
+    button {{ border: 0; border-radius: 6px; padding: 11px 18px; background: #1677ff; color: #fff; font: inherit; cursor: pointer; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>{safe_title}</h1>
+    <p>{safe_message}</p>
+    <form method="post" action="{action}">
+      <button type="submit">{safe_button_label}</button>
+    </form>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Robots-Tag": "noindex, nofollow",
+        },
+    )
+
+
 def _resolve_target_node(campaign_id: str, target_node_id: str) -> dict | None:
     with session_scope() as session:
         camp = session.get(Campaign, campaign_id)
@@ -73,6 +125,16 @@ def _resolve_target_node(campaign_id: str, target_node_id: str) -> dict | None:
 def _is_duplicate_consent_token(exc: IntegrityError) -> bool:
     diag = getattr(getattr(exc, "orig", None), "diag", None)
     return getattr(diag, "constraint_name", None) == "idx_chain_consent_token"
+
+
+def _click_request_metadata(request: Request) -> dict[str, str]:
+    """Return request evidence after Uvicorn has applied trusted proxy headers."""
+
+    return {
+        "ip": request.client.host if request.client else "",
+        "user_agent": request.headers.get("user-agent", ""),
+        "http_method": request.method,
+    }
 
 
 def _materials_request_evidence(
@@ -125,24 +187,128 @@ def _materials_request_evidence(
     }
 
 
+def _branch_confirmation_page(token: str, target_node: dict) -> HTMLResponse:
+    if is_email_node(target_node):
+        if bool(target_node.get("consent_on_click")):
+            return _confirmation_page(
+                token,
+                action_prefix="/chain/branch",
+                title="Подтвердите получение материалов",
+                message=(
+                    "Нажимая кнопку, вы подтверждаете запрос материалов и согласие "
+                    "на обработку данных, необходимых для их отправки."
+                ),
+                button_label="Подтвердить и получить материалы",
+            )
+        return _confirmation_page(
+            token,
+            action_prefix="/chain/branch",
+            title="Продолжить",
+            message="Нажмите кнопку, чтобы продолжить и получить следующее письмо.",
+            button_label="Продолжить",
+        )
+
+    if is_link_node(target_node):
+        link_kind = str(target_node.get("link_kind") or "").strip().lower()
+        if link_kind == LINK_KIND_SUBSCRIBE:
+            return _confirmation_page(
+                token,
+                action_prefix="/chain/branch",
+                title="Подтвердите подписку",
+                message=(
+                    "Нажимая кнопку, вы подтверждаете согласие на получение "
+                    "новостей и рекламных рассылок."
+                ),
+                button_label="Подтвердить подписку",
+            )
+        if link_kind == LINK_KIND_UNSUBSCRIBE:
+            return _confirmation_page(
+                token,
+                action_prefix="/chain/branch",
+                title="Подтвердите отписку",
+                message="Нажмите кнопку, чтобы отказаться от дальнейших писем.",
+                button_label="Отписаться",
+            )
+        if link_kind == LINK_KIND_CUSTOM:
+            return _confirmation_page(
+                token,
+                action_prefix="/chain/branch",
+                title="Перейти по ссылке",
+                message="Нажмите кнопку, чтобы открыть ссылку из письма.",
+                button_label="Перейти",
+            )
+
+    return _page("Ссылка недоступна", "Неизвестный тип блока.")
+
+
 def create_chain_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/chain/content/{token}")
-    def tracked_content_click(token: str):
+    def tracked_content_landing(token: str, request: Request):
         try:
-            result = record_tracked_resource_open(token, kind="link")
+            context = inspect_tracked_resource(token, kind="link")
+        except ValueError as exc:
+            return _page("Ссылка недоступна", str(exc))
+        target_url = str(context.get("target_url") or "").strip()
+        if not target_url.lower().startswith(("http://", "https://")):
+            return _page("Ссылка недоступна", "URL не настроен.")
+        if context.get("test_email"):
+            return _handle_tracked_content_open(token, request)
+        return _confirmation_page(
+            token,
+            action_prefix="/chain/content",
+            title="Перейти по ссылке",
+            message="Нажмите кнопку, чтобы открыть ссылку из письма.",
+            button_label="Перейти",
+        )
+
+    @router.post("/chain/content/{token}")
+    def confirm_tracked_content_open(token: str, request: Request):
+        return _handle_tracked_content_open(token, request)
+
+    def _handle_tracked_content_open(token: str, request: Request):
+        try:
+            result = record_tracked_resource_open(
+                token,
+                kind="link",
+                **_click_request_metadata(request),
+            )
         except ValueError as exc:
             return _page("Ссылка недоступна", str(exc))
         target_url = str(result.get("target_url") or "").strip()
         if not target_url.lower().startswith(("http://", "https://")):
             return _page("Ссылка недоступна", "URL не настроен.")
-        return RedirectResponse(url=target_url, status_code=302)
+        status_code = 303 if request.method == "POST" else 302
+        return RedirectResponse(url=target_url, status_code=status_code)
 
     @router.get("/chain/document/{token}")
-    def tracked_document_open(token: str):
+    def tracked_document_landing(token: str, request: Request):
         try:
-            result = record_tracked_resource_open(token, kind="document")
+            context = inspect_tracked_resource(token, kind="document")
+        except ValueError as exc:
+            return _page("Документ недоступен", str(exc))
+        if context.get("test_email"):
+            return _handle_tracked_document_open(token, request)
+        return _confirmation_page(
+            token,
+            action_prefix="/chain/document",
+            title="Открыть документ",
+            message="Нажмите кнопку, чтобы открыть документ из письма.",
+            button_label="Открыть документ",
+        )
+
+    @router.post("/chain/document/{token}")
+    def confirm_tracked_document_open(token: str, request: Request):
+        return _handle_tracked_document_open(token, request)
+
+    def _handle_tracked_document_open(token: str, request: Request):
+        try:
+            result = record_tracked_resource_open(
+                token,
+                kind="document",
+                **_click_request_metadata(request),
+            )
         except ValueError as exc:
             return _page("Документ недоступен", str(exc))
         with session_scope() as session:
@@ -180,22 +346,40 @@ def create_chain_router() -> APIRouter:
     @router.get("/chain/branch/{token}", response_class=HTMLResponse)
     def chain_branch_click(token: str, request: Request):
         try:
+            context = inspect_branch_token(token)
+            target_node = _resolve_target_node(
+                str(context.get("campaign_id") or ""),
+                str(context.get("target_node_id") or ""),
+            )
+            if target_node is None:
+                return _page("Ссылка недоступна", "Целевой блок не найден.")
+            if not context.get("test_email"):
+                return _branch_confirmation_page(token, target_node)
             return _handle_chain_branch_click(token, request)
         except ValueError as exc:
             return _page("Ссылка недоступна", str(exc))
         except IntegrityError as exc:
-            # record_branch_click's clicked_at check-then-set isn't locked,
-            # so two concurrent clicks on the same subscribe/unsubscribe
-            # link can both see already_clicked=False and both attempt to
-            # record consent — the loser hits a uniqueness violation here.
-            # That's not a real failure, just a race: treat it the same as
-            # "already confirmed" instead of surfacing a 500.
+            # Keep the public endpoint idempotent if a legacy row or an
+            # unexpected retry still reaches the consent-token uniqueness
+            # constraint instead of surfacing a 500 to the recipient.
             if not _is_duplicate_consent_token(exc):
                 raise
             return _page("Спасибо", "Мы уже зафиксировали ваш выбор по этой ссылке.")
 
-    def _handle_chain_branch_click(token: str, request: Request) -> HTMLResponse:
-        result = record_branch_click(token)
+    @router.post("/chain/branch/{token}", response_class=HTMLResponse)
+    def confirm_chain_branch_click(token: str, request: Request):
+        try:
+            return _handle_chain_branch_click(token, request)
+        except ValueError as exc:
+            return _page("Ссылка недоступна", str(exc))
+        except IntegrityError as exc:
+            if not _is_duplicate_consent_token(exc):
+                raise
+            return _page("Спасибо", "Мы уже зафиксировали ваш выбор по этой ссылке.")
+
+    def _handle_chain_branch_click(token: str, request: Request) -> Response:
+        request_metadata = _click_request_metadata(request)
+        result = record_branch_click(token, **request_metadata)
 
         target_node = _resolve_target_node(
             str(result.get("campaign_id") or ""),
@@ -250,7 +434,8 @@ def create_chain_router() -> APIRouter:
                 url = str(target_node.get("link_url") or "").strip()
                 if not url:
                     return _page("Ссылка недоступна", "URL не настроен.")
-                return RedirectResponse(url=url, status_code=302)
+                status_code = 303 if request.method == "POST" else 302
+                return RedirectResponse(url=url, status_code=status_code)
 
             return _page("Ссылка недоступна", "Неизвестный тип ссылки.")
 
@@ -283,8 +468,8 @@ def create_chain_router() -> APIRouter:
                     node_id=str(result["target_node_id"]),
                     edge_id=str(result["edge_id"]),
                     token=token,
-                    ip=request.client.host if request.client else "",
-                    user_agent=request.headers.get("user-agent", ""),
+                    ip=request_metadata["ip"],
+                    user_agent=request_metadata["user_agent"],
                     evidence=evidence,
                 )
                 try:

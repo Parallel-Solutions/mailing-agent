@@ -12,7 +12,13 @@ from sqlalchemy import select
 
 from src.campaigns.chain_consent_service import MaterialsConsentDocumentError
 from src.campaigns.chain_send_service import run_chain_followup
-from src.campaigns.chain_service import LINK_KIND_SUBSCRIBE, LINK_KIND_UNSUBSCRIBE
+from src.campaigns.chain_service import (
+    LINK_KIND_CUSTOM,
+    LINK_KIND_SUBSCRIBE,
+    LINK_KIND_UNSUBSCRIBE,
+    TRACKED_CONTENT_EDGE_PREFIX,
+    TRACKED_DOCUMENT_EDGE_PREFIX,
+)
 from src.generator.delivery.suppression_store import is_suppressed
 from src.infra.db import session_scope
 from src.infra.models import (
@@ -260,8 +266,68 @@ class ChainTestSendApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("Вы отписаны", response.text)
 
+        with session_scope() as session:
+            stored_token = session.get(CampaignChainToken, token_value)
+            assert stored_token is not None
+            self.assertEqual(stored_token.clicked_ip, "testclient")
+            self.assertTrue(stored_token.clicked_user_agent)
+            self.assertEqual(stored_token.clicked_http_method, "GET")
+
         suppressed, _reason = is_suppressed("alice@example.com")
         self.assertFalse(suppressed)
+
+    def test_recipient_unsubscribe_get_requires_post_confirmation(self) -> None:
+        loaded = self.client.get(f"/api/v1/campaigns/{self.campaign_id}/email-chain")
+        chain = loaded.json()["result"]["chain"]
+        chain["nodes"].append(
+            {
+                "id": "node-unsub",
+                "name": "Отписаться",
+                "kind": "link",
+                "link_kind": LINK_KIND_UNSUBSCRIBE,
+            }
+        )
+        saved = self.client.put(
+            f"/api/v1/campaigns/{self.campaign_id}/email-chain",
+            json=chain,
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+        with session_scope() as session:
+            recipient = session.scalar(
+                select(CampaignRecipient).where(
+                    CampaignRecipient.campaign_id == self.campaign_id
+                )
+            )
+            assert recipient is not None
+            token = CampaignChainToken(
+                token=str(uuid.uuid4()),
+                campaign_id=self.campaign_id,
+                recipient_id=int(recipient.id),
+                edge_id="edge-unsub",
+                source_node_id=self.root_node_id,
+                target_node_id="node-unsub",
+                send_status="pending",
+            )
+            session.add(token)
+            session.flush()
+            token_value = token.token
+
+        landing = self.client.get(f"/chain/branch/{token_value}")
+        self.assertEqual(landing.status_code, 200, landing.text)
+        self.assertIn("Подтвердите отписку", landing.text)
+        suppressed, _reason = is_suppressed("alice@example.com")
+        self.assertFalse(suppressed)
+        with session_scope() as session:
+            stored = session.get(CampaignChainToken, token_value)
+            assert stored is not None
+            self.assertIsNone(stored.clicked_at)
+
+        response = self.client.post(f"/chain/branch/{token_value}")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("Вы отписаны", response.text)
+        suppressed, _reason = is_suppressed("alice@example.com")
+        self.assertTrue(suppressed)
 
     @patch("src.web.chain_router.dispatch_chain_followup")
     def test_email_branch_click_dispatches_followup(self, mock_dispatch) -> None:
@@ -283,10 +349,143 @@ class ChainTestSendApiTests(unittest.TestCase):
             session.flush()
             token_value = token_row.token
 
-        response = self.client.get(f"/chain/branch/{token_value}")
+        landing = self.client.get(f"/chain/branch/{token_value}")
+        self.assertEqual(landing.status_code, 200, landing.text)
+        self.assertIn("Продолжить", landing.text)
+        mock_dispatch.assert_not_called()
+        with session_scope() as session:
+            stored = session.get(CampaignChainToken, token_value)
+            assert stored is not None
+            self.assertIsNone(stored.clicked_at)
+
+        response = self.client.post(f"/chain/branch/{token_value}")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("Спасибо", response.text)
         mock_dispatch.assert_called_once_with(token_value)
+        with session_scope() as session:
+            stored = session.get(CampaignChainToken, token_value)
+            assert stored is not None
+            self.assertEqual(stored.clicked_http_method, "POST")
+
+    def test_custom_link_get_requires_post_before_redirect(self) -> None:
+        loaded = self.client.get(f"/api/v1/campaigns/{self.campaign_id}/email-chain")
+        chain = loaded.json()["result"]["chain"]
+        chain["nodes"].append(
+            {
+                "id": "node-custom",
+                "name": "Telegram",
+                "kind": "link",
+                "link_kind": LINK_KIND_CUSTOM,
+                "link_url": "https://t.me/example",
+            }
+        )
+        saved = self.client.put(
+            f"/api/v1/campaigns/{self.campaign_id}/email-chain",
+            json=chain,
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+        with session_scope() as session:
+            recipient = session.scalar(
+                select(CampaignRecipient).where(
+                    CampaignRecipient.campaign_id == self.campaign_id
+                )
+            )
+            assert recipient is not None
+            token = CampaignChainToken(
+                token=str(uuid.uuid4()),
+                campaign_id=self.campaign_id,
+                recipient_id=int(recipient.id),
+                edge_id="edge-custom",
+                source_node_id=self.root_node_id,
+                target_node_id="node-custom",
+                send_status="pending",
+            )
+            session.add(token)
+            session.flush()
+            token_value = token.token
+
+        landing = self.client.get(f"/chain/branch/{token_value}")
+        self.assertEqual(landing.status_code, 200, landing.text)
+        self.assertIn("Перейти по ссылке", landing.text)
+        with session_scope() as session:
+            stored = session.get(CampaignChainToken, token_value)
+            assert stored is not None
+            self.assertIsNone(stored.clicked_at)
+
+        response = self.client.post(
+            f"/chain/branch/{token_value}",
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303, response.text)
+        self.assertEqual(response.headers["location"], "https://t.me/example")
+
+    def test_tracked_content_and_document_gets_require_post(self) -> None:
+        with session_scope() as session:
+            recipient = session.scalar(
+                select(CampaignRecipient).where(
+                    CampaignRecipient.campaign_id == self.campaign_id
+                )
+            )
+            assert recipient is not None
+            content_token = CampaignChainToken(
+                token=str(uuid.uuid4()),
+                campaign_id=self.campaign_id,
+                recipient_id=int(recipient.id),
+                edge_id=f"{TRACKED_CONTENT_EDGE_PREFIX}external",
+                source_node_id=self.root_node_id,
+                target_node_id="",
+                error="https://example.test/page",
+            )
+            document_token = CampaignChainToken(
+                token=str(uuid.uuid4()),
+                campaign_id=self.campaign_id,
+                recipient_id=int(recipient.id),
+                edge_id=f"{TRACKED_DOCUMENT_EDGE_PREFIX}doc-1",
+                source_node_id=self.root_node_id,
+                target_node_id="doc-1",
+            )
+            session.add_all([content_token, document_token])
+            session.flush()
+            content_token_value = content_token.token
+            document_token_value = document_token.token
+
+        content_landing = self.client.get(f"/chain/content/{content_token_value}")
+        document_landing = self.client.get(f"/chain/document/{document_token_value}")
+        self.assertIn("Перейти по ссылке", content_landing.text)
+        self.assertIn("Открыть документ", document_landing.text)
+        with session_scope() as session:
+            self.assertIsNone(
+                session.get(CampaignChainToken, content_token_value).clicked_at
+            )
+            self.assertIsNone(
+                session.get(CampaignChainToken, document_token_value).clicked_at
+            )
+
+        content_response = self.client.post(
+            f"/chain/content/{content_token_value}",
+            follow_redirects=False,
+        )
+        self.assertEqual(content_response.status_code, 303, content_response.text)
+        self.assertEqual(
+            content_response.headers["location"],
+            "https://example.test/page",
+        )
+        with patch(
+            "src.campaigns.template_render_service.resolve_cached_attachment",
+            return_value=("offer.pdf", b"%PDF-test"),
+        ):
+            document_response = self.client.post(
+                f"/chain/document/{document_token_value}"
+            )
+        self.assertEqual(document_response.status_code, 200, document_response.text)
+        self.assertEqual(document_response.content, b"%PDF-test")
+        with session_scope() as session:
+            stored_content = session.get(CampaignChainToken, content_token_value)
+            stored_document = session.get(CampaignChainToken, document_token_value)
+            assert stored_content is not None and stored_document is not None
+            self.assertEqual(stored_content.clicked_http_method, "POST")
+            self.assertEqual(stored_document.clicked_http_method, "POST")
 
     @patch("src.web.chain_router.dispatch_chain_followup")
     @patch("src.web.chain_router.ensure_materials_request_document")
@@ -330,7 +529,27 @@ class ChainTestSendApiTests(unittest.TestCase):
             session.flush()
             token_value = token_row.token
 
-        response = self.client.get(f"/chain/branch/{token_value}")
+        landing = self.client.get(f"/chain/branch/{token_value}")
+        self.assertEqual(landing.status_code, 200, landing.text)
+        self.assertIn("Подтвердите получение материалов", landing.text)
+        self.assertIn('method="post"', landing.text)
+        mock_ensure_document.assert_not_called()
+        mock_dispatch.assert_not_called()
+        with session_scope() as session:
+            event = session.scalar(
+                select(CampaignChainConsentEvent).where(
+                    CampaignChainConsentEvent.token == token_value
+                )
+            )
+            token_row = session.get(CampaignChainToken, token_value)
+            self.assertIsNone(event)
+            assert token_row is not None
+            self.assertIsNone(token_row.clicked_at)
+            self.assertIsNone(token_row.clicked_ip)
+            self.assertIsNone(token_row.clicked_user_agent)
+            self.assertIsNone(token_row.clicked_http_method)
+
+        response = self.client.post(f"/chain/branch/{token_value}")
         self.assertEqual(response.status_code, 200, response.text)
         mock_ensure_document.assert_called_once_with(token_value)
         mock_dispatch.assert_called_once_with(token_value)
@@ -349,6 +568,11 @@ class ChainTestSendApiTests(unittest.TestCase):
             self.assertEqual(event.document_status, "pending")
             self.assertEqual(event.evidence_payload["campaign_id"], self.campaign_id)
             self.assertEqual(event.evidence_payload["target_node_name"], "Письмо 2")
+            token_row = session.get(CampaignChainToken, token_value)
+            assert token_row is not None
+            self.assertEqual(token_row.clicked_ip, "testclient")
+            self.assertTrue(token_row.clicked_user_agent)
+            self.assertEqual(token_row.clicked_http_method, "POST")
 
     @patch("src.web.chain_router.dispatch_chain_followup")
     @patch(
@@ -390,18 +614,20 @@ class ChainTestSendApiTests(unittest.TestCase):
             session.flush()
             token_value = token_row.token
 
-        response = self.client.get(f"/chain/branch/{token_value}")
+        landing = self.client.get(f"/chain/branch/{token_value}")
+        self.assertEqual(landing.status_code, 200, landing.text)
+        self.assertIn("Подтвердите получение материалов", landing.text)
+        mock_dispatch.assert_not_called()
+
+        response = self.client.post(f"/chain/branch/{token_value}")
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("Не удалось подтвердить запрос", response.text)
         mock_dispatch.assert_not_called()
 
     @patch("src.web.chain_router.record_subscribe")
-    def test_concurrent_subscribe_click_race_returns_friendly_page_not_500(self, mock_record_subscribe) -> None:
-        """record_branch_click's clicked_at check-then-set isn't row-locked,
-        so two concurrent clicks on the same subscribe link can both see
-        already_clicked=False and both attempt to record consent — the
-        loser must not surface an unhandled IntegrityError as a 500."""
+    def test_duplicate_subscribe_confirmation_returns_friendly_page_not_500(self, mock_record_subscribe) -> None:
+        """A duplicate confirmation conflict must not surface as a 500."""
         from sqlalchemy.exc import IntegrityError
 
         original = SimpleNamespace(
@@ -440,7 +666,16 @@ class ChainTestSendApiTests(unittest.TestCase):
             session.flush()
             token_value = token.token
 
-        response = self.client.get(f"/chain/branch/{token_value}")
+        landing = self.client.get(f"/chain/branch/{token_value}")
+        self.assertEqual(landing.status_code, 200, landing.text)
+        self.assertIn("Подтвердите подписку", landing.text)
+        mock_record_subscribe.assert_not_called()
+        with session_scope() as session:
+            token = session.get(CampaignChainToken, token_value)
+            assert token is not None
+            self.assertIsNone(token.clicked_at)
+
+        response = self.client.post(f"/chain/branch/{token_value}")
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("Спасибо", response.text)

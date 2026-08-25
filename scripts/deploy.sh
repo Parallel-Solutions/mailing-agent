@@ -198,12 +198,23 @@ echo "=== Stop application writers for a consistent data backup ==="
 "${COMPOSE[@]}" stop app worker
 
 DEPLOY_COMPLETE=0
+CADDY_CONFIG_BACKUP=""
+CADDY_CONFIG_RELOADED=0
 restore_services_on_failure() {
   local status=$?
   if (( status != 0 && DEPLOY_COMPLETE == 0 )); then
+    if (( CADDY_CONFIG_RELOADED )) && [[ -n "$CADDY_CONFIG_BACKUP" && -f "$CADDY_CONFIG_BACKUP" ]]; then
+      echo "ERROR: deploy failed after Caddy reload; restoring previous proxy config." >&2
+      cp "$CADDY_CONFIG_BACKUP" "$REPO_ROOT/Caddyfile"
+      docker exec "${CADDY_CONTAINER:-mailing-agent-caddy}" \
+        caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || true
+    fi
     echo "ERROR: deploy failed; attempting to restart available production services." >&2
     docker start mailing-agent-minio-1 >/dev/null 2>&1 || true
     docker start mailing-agent-app-1 mailing-agent-worker-1 >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$CADDY_CONFIG_BACKUP" && -f "$CADDY_CONFIG_BACKUP" ]]; then
+    unlink "$CADDY_CONFIG_BACKUP" 2>/dev/null || true
   fi
   return "$status"
 }
@@ -294,6 +305,12 @@ wait_for_url "$APP_LOCAL_BASE_URL/ready" "local ready"
 wait_for_container_health "mailing-agent-app-1" "app"
 wait_for_container_health "mailing-agent-worker-1" "worker"
 
+echo "=== Refresh Caddy config ==="
+CADDY_CONFIG_BACKUP="$(mktemp "${TMPDIR:-/tmp}/mailing-agent-deploy-caddyfile.XXXXXX")"
+cp "$REPO_ROOT/Caddyfile" "$CADDY_CONFIG_BACKUP"
+bash ./scripts/reload-caddy-config.sh
+CADDY_CONFIG_RELOADED=1
+
 echo "=== Health checks (public) ==="
 wait_for_url "$PUBLIC_BASE_URL/health" "public health"
 wait_for_url "$PUBLIC_BASE_URL/ready" "public ready"
@@ -319,6 +336,8 @@ fi
 
 refresh_restricted_deploy_helpers
 
+unlink "$CADDY_CONFIG_BACKUP" 2>/dev/null || true
+CADDY_CONFIG_BACKUP=""
 DEPLOY_COMPLETE=1
 echo ""
 echo "Deploy complete."

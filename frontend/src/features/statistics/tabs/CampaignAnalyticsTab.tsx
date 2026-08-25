@@ -468,7 +468,7 @@ export function CampaignAnalyticsTab() {
         open={Boolean(selectedLink)}
         onCancel={() => setSelectedLink(null)}
         footer={null}
-        width={820}
+        width={1180}
         title={
           selectedLink
             ? `${String(selectedLink.step_name || 'Письмо')}: ${String(selectedLink.label || selectedLink.url || 'Ссылка')}`
@@ -510,6 +510,27 @@ export function CampaignAnalyticsTab() {
                   : 'Дата перехода',
               dataIndex: 'clicked_at',
               render: (value) => formatLocalDateTime(String(value || '')),
+            },
+            {
+              title: 'IP',
+              dataIndex: 'clicked_ip',
+              width: 150,
+              render: (value) => String(value || '—'),
+            },
+            {
+              title: 'Метод',
+              dataIndex: 'clicked_http_method',
+              width: 85,
+              render: (value) => String(value || '—'),
+            },
+            {
+              title: 'User-Agent',
+              dataIndex: 'clicked_user_agent',
+              ellipsis: true,
+              render: (value) => {
+                const text = String(value || '—');
+                return <Typography.Text title={text}>{text}</Typography.Text>;
+              },
             },
           ]}
         />
