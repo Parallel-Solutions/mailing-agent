@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 import re
@@ -13,7 +14,8 @@ from sqlalchemy.orm import Session
 from src.campaigns.suppression_service import apply_global_email_suppression
 from src.generator.delivery.consent_document import write_consent_document
 from src.infra.db import session_scope
-from src.infra.models import Campaign, CampaignChainConsentEvent
+from src.infra.models import Campaign, CampaignChainConsentEvent, CampaignChainToken
+from src.infra.object_store import get_bytes, job_key
 from src.jobs import resolve_job_paths
 from src.jobs.workspace import put_upload
 from src.utils.logger import logger
@@ -137,6 +139,13 @@ def record_materials_request(
 
     now = _now()
     with session_scope() as session:
+        # Branch tokens exist for every public chain click. Locking the token
+        # serializes the initial consent-event insert before its own row exists.
+        session.scalar(
+            select(CampaignChainToken)
+            .where(CampaignChainToken.token == token)
+            .with_for_update()
+        )
         existing = _existing_event(session, token)
         if existing is not None:
             if existing.action == ACTION_MATERIALS_REQUEST and existing.confirmed_at is None:
@@ -189,8 +198,15 @@ def _document_token_part(token: str) -> str:
 def ensure_materials_request_document(token: str) -> dict[str, Any]:
     """Create and upload one deterministic DOCX for a materials-request event."""
 
+    caught_error: Exception | None = None
+    result: dict[str, Any] | None = None
+    job_id = ""
     with session_scope() as session:
-        event = _existing_event(session, token)
+        event = session.execute(
+            select(CampaignChainConsentEvent)
+            .where(CampaignChainConsentEvent.token == token)
+            .with_for_update()
+        ).scalar_one_or_none()
         if event is None or event.action != ACTION_MATERIALS_REQUEST:
             raise MaterialsConsentDocumentError("Событие согласия на получение материалов не найдено.")
         if event.document_status == DOCUMENT_STATUS_READY and event.consent_document_path:
@@ -216,48 +232,52 @@ def ensure_materials_request_document(token: str) -> dict[str, Any]:
             "confirmed_user_agent": event.confirmed_user_agent or "",
         }
 
-    date_part = confirmed_at.date().isoformat()
-    relative_path = (
-        f"consents/{date_part}/chain-{_document_token_part(token)}_consent.docx"
-    )
-    local_path = resolve_job_paths(job_id).root_dir / relative_path
-    try:
-        digest = write_consent_document(local_path, document_record)
-        put_upload(job_id, relative_path, local_path)
-        generated_at = _now()
-        with session_scope() as session:
-            event = _existing_event(session, token)
-            if event is None:
-                raise MaterialsConsentDocumentError("Событие согласия исчезло во время сохранения.")
+        date_part = confirmed_at.date().isoformat()
+        relative_path = (
+            f"consents/{date_part}/chain-{_document_token_part(token)}_consent.docx"
+        )
+        local_path = resolve_job_paths(job_id).root_dir / relative_path
+        try:
+            digest = write_consent_document(local_path, document_record)
+            put_upload(job_id, relative_path, local_path)
+            stored_digest = hashlib.sha256(
+                get_bytes(job_key(job_id, relative_path))
+            ).hexdigest()
+            if stored_digest != digest:
+                raise RuntimeError(
+                    "SHA-256 загруженного документа согласия не совпадает с локальным файлом."
+                )
+            generated_at = _now()
             event.consent_document_path = relative_path
             event.consent_document_sha256 = digest
             event.document_status = DOCUMENT_STATUS_READY
             event.document_error = None
             event.document_generated_at = generated_at
             session.flush()
-        return {
-            "document_status": DOCUMENT_STATUS_READY,
-            "consent_document_path": relative_path,
-            "consent_document_sha256": digest,
-        }
-    except MaterialsConsentDocumentError:
-        raise
-    except Exception as exc:
-        error_text = str(exc).strip() or exc.__class__.__name__
-        with session_scope() as session:
-            event = _existing_event(session, token)
-            if event is not None:
-                event.document_status = DOCUMENT_STATUS_ERROR
-                event.document_error = error_text[:4000]
-                session.flush()
-        logger.exception(
-            "chain_materials_consent_document_failed",
-            token=token,
-            job_id=job_id,
-        )
+            result = {
+                "document_status": DOCUMENT_STATUS_READY,
+                "consent_document_path": relative_path,
+                "consent_document_sha256": digest,
+            }
+        except Exception as exc:
+            caught_error = exc
+            error_text = str(exc).strip() or exc.__class__.__name__
+            event.document_status = DOCUMENT_STATUS_ERROR
+            event.document_error = error_text[:4000]
+            session.flush()
+            logger.exception(
+                "chain_materials_consent_document_failed",
+                token=token,
+                job_id=job_id,
+            )
+
+    if caught_error is not None:
         raise MaterialsConsentDocumentError(
             "Не удалось сохранить документ согласия. Повторите переход по ссылке."
-        ) from exc
+        ) from caught_error
+    if result is None:
+        raise MaterialsConsentDocumentError("Документ согласия не был сохранён.")
+    return result
 
 
 def get_consent_stats(campaign_id: str, *, session: Session | None = None) -> dict[str, Any]:

@@ -594,9 +594,83 @@ def create_branch_tokens(
     return tokens
 
 
-def record_branch_click(token: str) -> dict[str, Any]:
+def inspect_branch_token(token: str) -> dict[str, Any]:
+    """Return branch context without recording a click or advancing the chain."""
+
     with session_scope() as session:
         row = session.get(CampaignChainToken, token)
+        if row is None:
+            raise ValueError("Ссылка не найдена")
+        recipient = session.get(CampaignRecipient, int(row.recipient_id))
+        if recipient is None:
+            raise ValueError("Получатель не найден")
+        return {
+            "token": row.token,
+            "campaign_id": row.campaign_id,
+            "recipient_id": row.recipient_id,
+            "edge_id": row.edge_id,
+            "source_node_id": row.source_node_id,
+            "target_node_id": row.target_node_id,
+            "already_clicked": row.clicked_at is not None,
+            "send_status": row.send_status,
+            "test_email": row.test_email,
+        }
+
+
+def inspect_tracked_resource(token: str, *, kind: str) -> dict[str, Any]:
+    """Return tracked link/document context without recording an interaction."""
+
+    expected_prefix = (
+        TRACKED_DOCUMENT_EDGE_PREFIX
+        if kind == "document"
+        else TRACKED_CONTENT_EDGE_PREFIX
+    )
+    with session_scope() as session:
+        row = session.get(CampaignChainToken, token)
+        if row is None or not str(row.edge_id or "").startswith(expected_prefix):
+            raise ValueError("Ссылка не найдена")
+        recipient = session.get(CampaignRecipient, int(row.recipient_id))
+        if recipient is None:
+            raise ValueError("Получатель не найден")
+        return {
+            "token": row.token,
+            "campaign_id": row.campaign_id,
+            "recipient_id": row.recipient_id,
+            "source_node_id": row.source_node_id,
+            "template_id": row.target_node_id if kind == "document" else "",
+            "target_url": str(row.error or "") if kind == "link" else "",
+            "already_opened": row.clicked_at is not None,
+            "test_email": row.test_email,
+        }
+
+
+def _store_first_click_request_metadata(
+    row: CampaignChainToken,
+    *,
+    ip: str = "",
+    user_agent: str = "",
+    http_method: str = "",
+) -> None:
+    """Persist bounded request evidence for the first counted interaction."""
+
+    row.clicked_ip = str(ip or "").strip()[:128] or None
+    row.clicked_user_agent = str(user_agent or "").strip()[:4000] or None
+    row.clicked_http_method = str(http_method or "").strip().upper()[:8] or None
+
+
+def record_branch_click(
+    token: str,
+    *,
+    ip: str = "",
+    user_agent: str = "",
+    http_method: str = "",
+) -> dict[str, Any]:
+    with session_scope() as session:
+        row = session.scalar(
+            select(CampaignChainToken)
+            .where(CampaignChainToken.token == token)
+            .with_for_update()
+        )
         if row is None:
             raise ValueError("Ссылка не найдена")
         recipient = session.get(CampaignRecipient, int(row.recipient_id))
@@ -605,6 +679,12 @@ def record_branch_click(token: str) -> dict[str, Any]:
         already_clicked = row.clicked_at is not None
         if not already_clicked:
             row.clicked_at = _now()
+            _store_first_click_request_metadata(
+                row,
+                ip=ip,
+                user_agent=user_agent,
+                http_method=http_method,
+            )
             if not row.test_email:
                 extra = dict(recipient.extra or {})
                 chain_state = dict(extra.get("chain") or {})
@@ -629,14 +709,25 @@ def record_branch_click(token: str) -> dict[str, Any]:
         }
 
 
-def record_tracked_resource_open(token: str, *, kind: str) -> dict[str, Any]:
+def record_tracked_resource_open(
+    token: str,
+    *,
+    kind: str,
+    ip: str = "",
+    user_agent: str = "",
+    http_method: str = "",
+) -> dict[str, Any]:
     expected_prefix = (
         TRACKED_DOCUMENT_EDGE_PREFIX
         if kind == "document"
         else TRACKED_CONTENT_EDGE_PREFIX
     )
     with session_scope() as session:
-        row = session.get(CampaignChainToken, token)
+        row = session.scalar(
+            select(CampaignChainToken)
+            .where(CampaignChainToken.token == token)
+            .with_for_update()
+        )
         if row is None or not str(row.edge_id or "").startswith(expected_prefix):
             raise ValueError("Ссылка не найдена")
         recipient = session.get(CampaignRecipient, int(row.recipient_id))
@@ -645,6 +736,12 @@ def record_tracked_resource_open(token: str, *, kind: str) -> dict[str, Any]:
         already_opened = row.clicked_at is not None
         if not already_opened and not row.test_email:
             row.clicked_at = _now()
+            _store_first_click_request_metadata(
+                row,
+                ip=ip,
+                user_agent=user_agent,
+                http_method=http_method,
+            )
             session.flush()
         return {
             "token": row.token,
@@ -771,6 +868,13 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
                             "clicked_at": token.clicked_at.isoformat()
                             if token.clicked_at
                             else "",
+                            "clicked_ip": str(token.clicked_ip or ""),
+                            "clicked_user_agent": str(
+                                token.clicked_user_agent or ""
+                            ),
+                            "clicked_http_method": str(
+                                token.clicked_http_method or ""
+                            ),
                         }
                     )
 
@@ -861,6 +965,13 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
                             "clicked_at": (
                                 token.clicked_at.isoformat() if token.clicked_at else ""
                             ),
+                            "clicked_ip": str(token.clicked_ip or ""),
+                            "clicked_user_agent": str(
+                                token.clicked_user_agent or ""
+                            ),
+                            "clicked_http_method": str(
+                                token.clicked_http_method or ""
+                            ),
                         }
                     )
                 content_id = str(content_tokens[0].edge_id or "")
@@ -926,6 +1037,13 @@ def get_chain_click_stats(campaign_id: str) -> dict[str, Any]:
                             ),
                             "clicked_at": (
                                 token.clicked_at.isoformat() if token.clicked_at else ""
+                            ),
+                            "clicked_ip": str(token.clicked_ip or ""),
+                            "clicked_user_agent": str(
+                                token.clicked_user_agent or ""
+                            ),
+                            "clicked_http_method": str(
+                                token.clicked_http_method or ""
                             ),
                         }
                     )

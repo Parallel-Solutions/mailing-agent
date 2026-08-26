@@ -179,6 +179,44 @@ class ProductionDeploySafetyContractTests(unittest.TestCase):
         )
         self.assertNotIn("minio/minio:latest", compose)
 
+    def test_production_proxy_headers_are_trusted_without_public_app_port(self) -> None:
+        overlay = (PROJECT_ROOT / "docker-compose.prod.yml").read_text(
+            encoding="utf-8"
+        )
+        audit = (PROJECT_ROOT / "scripts" / "prod-audit.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("FORWARDED_ALLOW_IPS:", overlay)
+        self.assertIn('127.0.0.1:${APP_PUBLIC_PORT:-9806}:9806', overlay)
+        self.assertNotIn("FORWARDED_ALLOW_IPS: *", overlay)
+        self.assertIn('[[ "$forwarded_allow_ips" == "*" ]]', audit)
+
+    def test_caddy_access_log_is_rotated_and_chain_tokens_are_redacted(self) -> None:
+        caddy = (PROJECT_ROOT / "deploy" / "Caddyfile").read_text(
+            encoding="utf-8"
+        )
+        reload_script = (
+            PROJECT_ROOT / "scripts" / "reload-caddy-config.sh"
+        ).read_text(encoding="utf-8")
+        deploy = (PROJECT_ROOT / "scripts" / "deploy.sh").read_text(
+            encoding="utf-8"
+        )
+        audit = (PROJECT_ROOT / "scripts" / "prod-audit.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("output file /data/access/offer-access.json", caddy)
+        self.assertIn("roll_keep_for 720h", caddy)
+        self.assertIn("request>uri regexp", caddy)
+        self.assertIn("[REDACTED]", caddy)
+        self.assertIn("request>headers>Authorization delete", caddy)
+        self.assertIn("caddy validate", reload_script)
+        self.assertIn("restore_previous_config", reload_script)
+        self.assertIn("bash ./scripts/reload-caddy-config.sh", deploy)
+        self.assertIn("deploy failed after Caddy reload", deploy)
+        self.assertIn('cp "$CADDY_CONFIG_BACKUP" "$REPO_ROOT/Caddyfile"', deploy)
+        self.assertIn("Caddy access logging", audit)
+
     def test_backup_restore_verifier_uses_disposable_volumes(self) -> None:
         verifier = (PROJECT_ROOT / "scripts" / "verify-backup-restore.sh").read_text(
             encoding="utf-8"

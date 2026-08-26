@@ -1,0 +1,30 @@
+offer.parresh.ru {
+	log {
+		output file /data/access/offer-access.json {
+			mode 0600
+			roll_at 00:00
+			roll_size 100mb
+			roll_keep 31
+			roll_keep_for 720h
+		}
+		format filter {
+			request>uri regexp "^(/chain/(?:branch|content|document)/)[^/?]+(.*)$" "${1}[REDACTED]${2}"
+			request>headers>Authorization delete
+			request>headers>Cookie delete
+			resp_headers>Set-Cookie delete
+			wrap json
+		}
+	}
+
+	handle /onlyoffice/* {
+		uri strip_prefix /onlyoffice
+		reverse_proxy onlyoffice:80 {
+			header_up X-Forwarded-Host {http.request.host}/onlyoffice
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	handle {
+		reverse_proxy mailing-agent-app-1:9806
+	}
+}

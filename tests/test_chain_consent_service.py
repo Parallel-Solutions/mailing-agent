@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import time
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -128,15 +131,17 @@ class ChainConsentServiceTests(unittest.TestCase):
             self.assertEqual(event.evidence_payload["material_names"], ["КП МНГП"])
             self.assertEqual(event.document_status, "pending")
 
+    @patch("src.campaigns.chain_consent_service.get_bytes", return_value=b"stored-consent")
     @patch("src.campaigns.chain_consent_service.put_upload")
     @patch(
         "src.campaigns.chain_consent_service.write_consent_document",
-        return_value="a" * 64,
+        return_value=hashlib.sha256(b"stored-consent").hexdigest(),
     )
     def test_ensure_materials_request_document_marks_event_ready(
         self,
         mock_write,
         mock_upload,
+        mock_get_bytes,
     ) -> None:
         record_materials_request(
             campaign_id=self.campaign_id,
@@ -160,6 +165,7 @@ class ChainConsentServiceTests(unittest.TestCase):
         self.assertTrue(result["consent_document_path"].startswith("consents/"))
         mock_write.assert_called_once()
         mock_upload.assert_called_once()
+        mock_get_bytes.assert_called_once()
         with session_scope() as session:
             event = session.scalar(
                 select(CampaignChainConsentEvent).where(
@@ -168,8 +174,86 @@ class ChainConsentServiceTests(unittest.TestCase):
             )
             assert event is not None
             self.assertEqual(event.document_status, "ready")
-            self.assertEqual(event.consent_document_sha256, "a" * 64)
+            self.assertEqual(
+                event.consent_document_sha256,
+                hashlib.sha256(b"stored-consent").hexdigest(),
+            )
             self.assertEqual(event.consent_document_path, result["consent_document_path"])
+
+    @patch("src.campaigns.chain_consent_service.get_bytes", return_value=b"stored-consent")
+    @patch("src.campaigns.chain_consent_service.put_upload")
+    @patch("src.campaigns.chain_consent_service.write_consent_document")
+    def test_concurrent_document_generation_uses_single_writer(
+        self,
+        mock_write,
+        mock_upload,
+        mock_get_bytes,
+    ) -> None:
+        digest = hashlib.sha256(b"stored-consent").hexdigest()
+
+        def slow_write(*_args, **_kwargs):
+            time.sleep(0.2)
+            return digest
+
+        mock_write.side_effect = slow_write
+        record_materials_request(
+            campaign_id=self.campaign_id,
+            recipient_id=self.recipient_id,
+            email=self.email,
+            node_id="node-materials",
+            edge_id="edge-materials",
+            token=self.token,
+            evidence={"job_id": self.campaign["job_id"]},
+        )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda _index: ensure_materials_request_document(self.token),
+                    range(2),
+                )
+            )
+
+        self.assertEqual({item["document_status"] for item in results}, {"ready"})
+        self.assertEqual({item["consent_document_sha256"] for item in results}, {digest})
+        mock_write.assert_called_once()
+        mock_upload.assert_called_once()
+        mock_get_bytes.assert_called_once()
+
+    @patch("src.campaigns.chain_consent_service.get_bytes", return_value=b"different")
+    @patch("src.campaigns.chain_consent_service.put_upload")
+    @patch(
+        "src.campaigns.chain_consent_service.write_consent_document",
+        return_value=hashlib.sha256(b"local-consent").hexdigest(),
+    )
+    def test_uploaded_document_hash_mismatch_is_recorded(
+        self,
+        _mock_write,
+        _mock_upload,
+        _mock_get_bytes,
+    ) -> None:
+        record_materials_request(
+            campaign_id=self.campaign_id,
+            recipient_id=self.recipient_id,
+            email=self.email,
+            node_id="node-materials",
+            edge_id="edge-materials",
+            token=self.token,
+            evidence={"job_id": self.campaign["job_id"]},
+        )
+
+        with self.assertRaises(MaterialsConsentDocumentError):
+            ensure_materials_request_document(self.token)
+
+        with session_scope() as session:
+            event = session.scalar(
+                select(CampaignChainConsentEvent).where(
+                    CampaignChainConsentEvent.token == self.token
+                )
+            )
+            assert event is not None
+            self.assertEqual(event.document_status, "error")
+            self.assertIn("SHA-256", event.document_error or "")
 
     @patch("src.campaigns.chain_consent_service.put_upload", side_effect=RuntimeError("S3 unavailable"))
     @patch(

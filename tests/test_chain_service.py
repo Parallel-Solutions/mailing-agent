@@ -9,6 +9,7 @@ from src.campaigns.chain_service import (
     delete_chain,
     empty_chain,
     get_chain_click_stats,
+    inspect_branch_token,
     load_chain,
     normalize_chain,
     publish_chain,
@@ -128,11 +129,65 @@ class ChainServiceTests(unittest.TestCase):
             token_value = token.token
             recipient_id = recipient.id
 
-        first = record_branch_click(token_value)
-        second = record_branch_click(token_value)
+        first = record_branch_click(
+            token_value,
+            ip="203.0.113.10",
+            user_agent="first-agent",
+            http_method="post",
+        )
+        second = record_branch_click(
+            token_value,
+            ip="203.0.113.20",
+            user_agent="second-agent",
+            http_method="GET",
+        )
         self.assertFalse(first["already_clicked"])
         self.assertTrue(second["already_clicked"])
         self.assertEqual(first["recipient_id"], recipient_id)
+        with session_scope() as session:
+            stored = session.get(CampaignChainToken, token_value)
+            assert stored is not None
+            self.assertEqual(stored.clicked_ip, "203.0.113.10")
+            self.assertEqual(stored.clicked_user_agent, "first-agent")
+            self.assertEqual(stored.clicked_http_method, "POST")
+
+    def test_inspect_branch_token_has_no_click_side_effect(self) -> None:
+        from src.infra.db import session_scope
+        from src.infra.models import CampaignChainToken, CampaignRecipient
+
+        chain = empty_chain()
+        with session_scope() as session:
+            recipient = CampaignRecipient(
+                campaign_id=self.campaign["id"],
+                row_index=0,
+                company="A",
+                contact_name="B",
+                email="inspect@example.com",
+            )
+            session.add(recipient)
+            session.flush()
+            token = CampaignChainToken(
+                token=str(uuid.uuid4()),
+                campaign_id=self.campaign["id"],
+                recipient_id=recipient.id,
+                edge_id="edge-inspect",
+                source_node_id=chain["root_node_id"],
+                target_node_id=chain["root_node_id"],
+            )
+            session.add(token)
+            session.flush()
+            token_value = token.token
+
+        inspected = inspect_branch_token(token_value)
+
+        self.assertFalse(inspected["already_clicked"])
+        with session_scope() as session:
+            stored = session.get(CampaignChainToken, token_value)
+            assert stored is not None
+            self.assertIsNone(stored.clicked_at)
+            self.assertIsNone(stored.clicked_ip)
+            self.assertIsNone(stored.clicked_user_agent)
+            self.assertIsNone(stored.clicked_http_method)
 
     def test_click_stats_group_links_by_email_chain_step(self) -> None:
         from src.infra.db import session_scope
@@ -208,6 +263,9 @@ class ChainServiceTests(unittest.TestCase):
                         source_node_id=second_node,
                         target_node_id=link_node,
                         clicked_at=clicked_at,
+                        clicked_ip="203.0.113.30",
+                        clicked_user_agent="stats-agent",
+                        clicked_http_method="GET",
                     ),
                 ]
             )
@@ -223,6 +281,10 @@ class ChainServiceTests(unittest.TestCase):
             stats["steps"][1]["links"][0]["clickers"][0]["email"],
             "ivan@example.test",
         )
+        clicker = stats["steps"][1]["links"][0]["clickers"][0]
+        self.assertEqual(clicker["clicked_ip"], "203.0.113.30")
+        self.assertEqual(clicker["clicked_user_agent"], "stats-agent")
+        self.assertEqual(clicker["clicked_http_method"], "GET")
 
     def test_click_stats_keep_email_steps_without_links(self) -> None:
         chain = empty_chain()

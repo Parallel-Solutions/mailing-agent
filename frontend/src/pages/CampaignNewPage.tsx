@@ -837,6 +837,7 @@ export function CampaignNewPage() {
       step !== 4 ||
       !id ||
       mappingConfirmed ||
+      mappingAutoSuggest.isRunning ||
       !launchValidation.hasChecked ||
       launchMappingErrors.length === 0 ||
       mappingModalOpen
@@ -854,6 +855,7 @@ export function CampaignNewPage() {
     launchValidation.hasChecked,
     mappingConfirmed,
     mappingModalOpen,
+    mappingAutoSuggest.isRunning,
     openWizardModal,
     step,
   ]);

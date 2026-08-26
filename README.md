@@ -158,7 +158,7 @@ nano .env.docker
 
 
 
-В `.env.docker` обязательно задать реальные значения `APP_PASSWORD`, `PUBLIC_BASE_URL`, ключи LLM и настройки отправщика писем. `PUBLIC_BASE_URL` должен быть внешним адресом сервиса, потому что он используется в consent-ссылках из писем и webhook-сценариях.
+В `.env.docker` обязательно задать реальные значения `APP_PASSWORD`, `PUBLIC_BASE_URL`, ключи LLM и настройки отправщика писем. `PUBLIC_BASE_URL` должен быть внешним адресом сервиса, потому что он используется в consent-ссылках из писем и webhook-сценариях. Для корректного IP в доказательствах согласия задайте `FORWARDED_ALLOW_IPS` адресом или CIDR фактического nginx/reverse proxy; значение `*` запрещено production-аудитом.
 
 
 
@@ -295,13 +295,22 @@ MAILING_AGENT_IMAGE=ghcr.io/parallel-solutions/mailing-agent:latest ./scripts/de
 ./scripts/prod-audit.sh
 ```
 
+Caddy access-логи пишутся в persistent volume контейнера по пути
+`/data/access/offer-access.json`, ротируются ежедневно/по 100 MB и хранятся до
+30 суток. Токены `/chain/branch`, `/chain/content` и `/chain/document`, а также
+Cookie/Authorization в логах маскируются. У первого засчитанного перехода IP,
+User-Agent и HTTP-метод дополнительно сохраняются в `campaign_chain_tokens`.
+Публичные ссылки веток, отписки, внешних ресурсов и документов на `GET` только
+показывают страницу с одной кнопкой; действие и статистика фиксируются после
+`POST`. Это не даёт почтовым сканерам ссылок продвигать пользователя по воронке.
+
 `deploy.sh --pull` сначала проверяет, что текущая Alembic-ревизия production-БД входит в граф миграций checkout. Затем он останавливает `app`/`worker` и **до любых изменений инфраструктурных контейнеров** запускает [`scripts/backup-prod-data.sh`](scripts/backup-prod-data.sh): создаёт и проверяет `pg_dump`, снимает согласованный snapshot named volume MinIO, считает SHA-256 и записывает manifest с ревизией и контрольными количествами строк. Только после успешного backup выполняются `docker pull` + `up --force-recreate`. При ошибке скрипт пытается вернуть остановленные сервисы.
 
 Backup-файлы находятся в `/var/backups/mailing-agent/`: `mailing-<UTC>.dump`, `minio-<UTC>.tar`, `backup-<UTC>.manifest`. По умолчанию сохраняются 30 дампов PostgreSQL и 3 полных snapshot MinIO; значения регулируются `PROD_BACKUP_KEEP_COUNT` и `PROD_MINIO_BACKUP_KEEP_COUNT`. Backup-скрипт откажется работать, если контейнеры подключены не к production volumes `mailing-agent_pgdata` / `mailing-agent_minio-data`, если видит test-volume или если `app`/`worker` ещё пишут данные.
 
 Run a full restore drill with `bash scripts/verify-backup-restore.sh /var/backups/mailing-agent/backup-<UTC>.manifest`. It verifies checksums, restores PostgreSQL and MinIO into disposable containers and volumes, checks the Alembic revision and row counts, and removes only the temporary resources it created. The manifest records the exact MinIO image ID for reproducibility.
 
-Остальная часть deploy поднимает закреплённый OnlyOffice, сверяет Image ID, ждёт local (`:9806`), public health и публичный API редактора, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. `--skip-git-update` разрешён для root-owned wrapper, который сам проверяет принадлежность SHA к `origin/main`. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, JWT-защита редактора, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе. Не используйте на production `docker compose down -v` / `down --volumes`.
+Остальная часть deploy поднимает закреплённый OnlyOffice, сверяет Image ID, ждёт local (`:9806`), public health и публичный API редактора, затем гоняет [`scripts/prod-audit.sh`](scripts/prod-audit.sh) как gate. `--skip-git-update` разрешён для root-owned wrapper, который сам проверяет принадлежность SHA к `origin/main`. Overlay [`docker-compose.prod.yml`](docker-compose.prod.yml): `PUBLIC_BASE_URL`, доверенные proxy-заголовки без wildcard, порт приложения только на `127.0.0.1`, JWT-защита редактора, без RuSender click-tracking, без bind-mount `./src`, MinIO только на `127.0.0.1`. Всегда поднимайте `app` и `worker` вместе. Не используйте на production `docker compose down -v` / `down --volumes`.
 
 ### Server checklist (после первого деплоя / при сомнениях)
 
@@ -418,6 +427,8 @@ Runtime-данные на хосте: `./logs` и `./tmp` (рабочая пап
 - `SENDER_DOMAIN_LIMITS_JSON` — лимиты отправки на домены получателей за окно `SENDER_DOMAIN_LIMIT_WINDOW_SECONDS`;
 
 - `PUBLIC_BASE_URL` — внешний URL сервиса для consent-ссылок и webhooks;
+
+- `FORWARDED_ALLOW_IPS` — IP/CIDR доверенного reverse proxy для корректной фиксации IP получателя; не используйте `*`;
 
 - `CONSENT_TOKEN_TTL_HOURS` — срок действия публичных consent-ссылок, по умолчанию 720 часов;
 

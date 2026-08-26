@@ -5,6 +5,27 @@
 import { expect, type Page } from '@playwright/test';
 
 /**
+ * Waits until campaign variable mapping is confirmed and dismisses a review
+ * dialog if auto-suggest opened one while another wizard modal was active.
+ * The dialog may re-render or close between observations, so the assertion
+ * retries the whole observation/click sequence instead of holding a stale
+ * button locator across that transition.
+ */
+export async function settleConfirmedVariableMapping(page: Page): Promise<void> {
+  await expect(page.getByText('подтверждено', { exact: true })).toBeVisible({ timeout: 30_000 });
+  const mappingDialog = page.getByRole('dialog', { name: 'Сопоставление переменных' });
+  await expect(async () => {
+    if (await mappingDialog.isVisible()) {
+      const okButton = mappingDialog.locator('button').filter({ hasText: /^OK$/ });
+      if (await okButton.isVisible()) {
+        await okButton.click({ force: true }).catch(() => {});
+      }
+    }
+    expect(await mappingDialog.isVisible()).toBe(false);
+  }).toPass({ timeout: 20_000, intervals: [250] });
+}
+
+/**
  * Opens an AntD `<Select>` located by its Form.Item label text, then clicks the
  * dropdown option whose visible text contains `optionText`.
  *

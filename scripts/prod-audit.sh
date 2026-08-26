@@ -249,6 +249,35 @@ for svc in app worker; do
   fi
 done
 
+section "TRUSTED PROXY HEADERS"
+forwarded_allow_ips="$("${COMPOSE[@]}" exec -T app printenv FORWARDED_ALLOW_IPS 2>/dev/null || true)"
+echo "app FORWARDED_ALLOW_IPS=${forwarded_allow_ips:-<empty>}"
+if [[ -z "$forwarded_allow_ips" ]]; then
+  fail "app FORWARDED_ALLOW_IPS is empty; recipient IP evidence would resolve to the proxy"
+elif [[ "$forwarded_allow_ips" == "*" ]]; then
+  fail "app FORWARDED_ALLOW_IPS='*' trusts spoofed forwarding headers"
+fi
+
+section "Caddy access logging"
+caddy_container="${CADDY_CONTAINER:-mailing-agent-caddy}"
+caddy_status="$(docker inspect "$caddy_container" --format '{{.State.Status}}' 2>/dev/null || true)"
+echo "caddy status=${caddy_status:-missing}"
+if [[ "$caddy_status" != "running" ]]; then
+  fail "Caddy is not running (container=$caddy_container status=${caddy_status:-missing})"
+elif ! docker exec "$caddy_container" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null; then
+  fail "Caddy config validation failed"
+else
+  echo "caddy config validation OK"
+fi
+if [[ ! -f deploy/Caddyfile || ! -f Caddyfile ]] || ! cmp -s deploy/Caddyfile Caddyfile; then
+  fail "Mounted Caddyfile differs from deploy/Caddyfile"
+fi
+if ! docker exec "$caddy_container" test -f /data/access/offer-access.json; then
+  fail "Caddy access log was not created at /data/access/offer-access.json"
+else
+  echo "caddy access log OK: /data/access/offer-access.json"
+fi
+
 section "Forbidden / optional containers (must be stopped on prod)"
 # Hardcoded known offenders + any container from e2e/test compose projects.
 forbidden_patterns=(

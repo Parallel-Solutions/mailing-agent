@@ -25,6 +25,9 @@ services:
       APP_ENVIRONMENT: production
       DATABASE_EXPECTED_NAME: mailing
       PUBLIC_BASE_URL: https://offer.parresh.ru
+      # Uvicorn may use forwarding headers only from the host reverse proxy.
+      # Keep this scoped to loopback/Docker networks; never set it to "*".
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1,172.16.0.0/12}
       RUSENDER_TRACK_LINKS: "0"
       ONLYOFFICE_EDITOR_PUBLIC_URL: https://offer.parresh.ru/onlyoffice
       ONLYOFFICE_APP_INTERNAL_URL: http://app:9806
@@ -35,6 +38,8 @@ services:
       - ./tmp:/app/tmp
       - ./storage:/app/legacy/storage:ro
       - chroma-data:/app/src/parser_new/memory/vectors
+    ports: !reset
+      - "127.0.0.1:${APP_PUBLIC_PORT:-9806}:9806"
     depends_on:
       onlyoffice:
         condition: service_healthy
