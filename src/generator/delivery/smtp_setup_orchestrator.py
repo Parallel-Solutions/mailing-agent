@@ -98,9 +98,12 @@ def analyze_smtp_setup(
         (probe and probe.reachable) or _has_high_confidence_discovery(discoveries)
     ):
         action = build_fallback_setup_action(context)
-    elif action.action == "show_password":
+    elif action.action not in {"show_app_password", "show_oauth"}:
+        # Whatever the AI came back with (show_password, apply_settings, or any other
+        # action) must not override a deterministic rule that requires an app password
+        # or OAuth for a known provider.
         fallback = build_fallback_setup_action(context)
-        if fallback.action != "show_password":
+        if fallback.action in {"show_app_password", "show_oauth"}:
             action = fallback
     session_id = setup_session_id or str(uuid4())
     _setup_sessions[session_id] = {

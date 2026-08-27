@@ -66,6 +66,11 @@ class SetupAction:
 
 def advise_smtp_setup(context: dict[str, Any]) -> SetupAction:
     fallback = build_fallback_setup_action(context)
+    if fallback.action in {"show_app_password", "show_oauth"}:
+        # Provider already identified deterministically (gmail/outlook/yandex/mailru) —
+        # we have a vetted, provider-specific flow, so the AI must not replace it with
+        # a more generic (and potentially wrong, e.g. plain-password) suggestion.
+        return fallback
     if not SMTP_SETUP_AI_ENABLED:
         return fallback
     client = _build_llm_client()

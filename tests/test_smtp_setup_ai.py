@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from src.generator.delivery.smtp_setup_ai import build_fallback_setup_action
+from src.generator.delivery.smtp_setup_ai import advise_smtp_setup, build_fallback_setup_action
 
 
 class SmtpSetupAiTests(unittest.TestCase):
@@ -196,6 +197,44 @@ class SmtpSetupAiTests(unittest.TestCase):
         )
         self.assertEqual(action.action, "show_app_password")
         self.assertEqual(action.recommended_settings["host"], "smtp.mail.ru")
+
+    @patch("src.generator.delivery.smtp_setup_ai._build_llm_client")
+    @patch("src.generator.delivery.smtp_setup_ai.SMTP_SETUP_AI_ENABLED", True)
+    def test_known_provider_skips_ai_entirely(self, mock_build_client) -> None:
+        # Mail.ru is a known provider with a deterministic app-password flow — the AI
+        # must not even be consulted, let alone allowed to override it.
+        context = {
+            "email": "personal.offer@parresh.ru",
+            "domain": "parresh.ru",
+            "provider_hint": "mailru",
+            "probe": {
+                "host": "smtp.mail.ru",
+                "port": 465,
+                "use_ssl": True,
+                "use_starttls": False,
+                "reachable": True,
+                "provider": "mailru",
+                "source": "mx_hint",
+            },
+            "discoveries": [
+                {
+                    "provider": "mailru",
+                    "host": "smtp.mail.ru",
+                    "port": 465,
+                    "use_ssl": True,
+                    "use_starttls": False,
+                    "source": "mx_hint",
+                    "confidence": "high",
+                }
+            ],
+            "oauth_available": {"google": False, "microsoft": False},
+        }
+
+        action = advise_smtp_setup(context)
+
+        mock_build_client.assert_not_called()
+        self.assertEqual(action.action, "show_app_password")
+        self.assertFalse(action.ai_used)
 
 
 if __name__ == "__main__":
